@@ -130,6 +130,32 @@ describe("Codex app-server Codex driver", () => {
     await session.close({ reason: "test complete" });
   });
 
+  it.each(["extension", "codex_app_server"])("does not request a cold extension checkpoint for one-shot %s sessions", async kind => {
+    const transport = new FakeCodexTransport();
+    transport.rejectMethods.set("paperclip/harnessCheckpoint", new Error("snapshot is unsupported"));
+    const driver = makeDriver([transport], {
+      driverIdentity: { kind, displayName: "Fixture", version: "1" }, capabilities: { resume: false },
+    });
+    const session = await driver.openSession({ runId: "one-shot", normalizedSessionId: "one-shot", workingDirectory: WORKSPACE });
+    try {
+      expect((await session.snapshot()).extensionCheckpoint).toBeUndefined();
+      expect(transport.calls.some(call => call.method === "paperclip/harnessCheckpoint")).toBe(false);
+    } finally { await session.close({ reason: "test complete" }); }
+  });
+
+  it("preserves checkpoint errors for resumable extensions", async () => {
+    const transport = new FakeCodexTransport();
+    const driver = makeDriver([transport], {
+      driverIdentity: { kind: "extension", displayName: "Fixture", version: "1" }, capabilities: { resume: true },
+    });
+    transport.rejectMethods.set("paperclip/harnessCheckpoint", new Error("snapshot is unsupported"));
+    const session = await driver.openSession({ runId: "resume-required", normalizedSessionId: "resume-required", workingDirectory: WORKSPACE });
+    try {
+      await expect(session.snapshot()).rejects.toThrow("snapshot is unsupported");
+      expect(transport.calls.some(call => call.method === "paperclip/harnessCheckpoint")).toBe(true);
+    } finally { await session.close({ reason: "test complete" }); }
+  });
+
   it.each(["codex_app_server", "acpx_runtime"])("keeps startup provider evidence for the selected %s driver", async kind => {
     const transport = new FakeCodexTransport();
     transport.rejectMethods.set("thread/start", new CodexRpcError(JSON.stringify({ error: {

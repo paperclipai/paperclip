@@ -661,6 +661,134 @@ fn drain_and_suspend_after_stop_do_not_restart_the_provider() {
     assert_eq!(executor.state.as_ref().unwrap().generation, generation);
 }
 
+fn snapshot_rejecting_fixture(resume: bool) -> (Fixture, Command) {
+    let mut fixture = Fixture::new();
+    let script = fixture.profile.entrypoint.as_ref().unwrap().path.clone();
+    let source = fs::read_to_string(&script).unwrap()
+        .replace("capabilities:{resume:true}", &format!("capabilities:{{resume:{resume}}}"))
+        .replace(
+            "if(method==='snapshot') return reply(id,{providerSessionId:'native-session',lastSequence:sequence,accounting:{requests:completed}});",
+            &format!("if(method==='snapshot') {{require('node:fs').writeFileSync({},'unexpected snapshot');process.stdout.write(JSON.stringify({{schema:'paperclip.harness.v1',id,ok:false,error:{{code:'snapshot_unsupported',message:'No provider snapshot handler',retryable:false}}}})+'\\n');return;}}", json!(fixture.root.join("snapshot-attempted"))),
+        );
+    fs::remove_file(&script).unwrap();
+    fs::write(&script, source).unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o400)).unwrap();
+    fixture.profile.entrypoint = Some(artifact(script));
+    let mut prepare = fixture.prepare();
+    prepare.payload["provider"]["capabilities"]["resume"] = json!(resume);
+    (fixture, prepare)
+}
+
+#[test]
+fn one_shot_snapshot_bookkeeping_and_stop_never_require_provider_snapshots() {
+    let (fixture, prepare) = snapshot_rejecting_fixture(false);
+    let mut executor = fixture.executor();
+    executor.execute(&prepare).unwrap();
+    executor
+        .execute(&command("session.open", json!({})))
+        .unwrap();
+    for complete in [false, true] {
+        if complete {
+            executor
+                .execute(&command("turn.start", json!({"complete":true})))
+                .unwrap();
+        }
+        let snapshot = executor
+            .execute(&command("session.snapshot", json!({})))
+            .unwrap();
+        assert!(snapshot.result.get("extensionCheckpoint").is_none());
+        assert!(executor.state.as_ref().unwrap().snapshot.is_none());
+    }
+    let events = executor.retained_events().unwrap();
+    assert_eq!(events.last().unwrap().event_type, "run.terminal");
+    executor.acknowledge_events(events.len()).unwrap();
+    let group = executor.process.as_ref().unwrap().process_group_id();
+    let stopped = executor.execute(&command("turn.stop", json!({}))).unwrap();
+    assert_eq!(stopped.result["providerExitConfirmed"], true);
+    require_group_absent(group).unwrap();
+    for kind in ["runner.drain", "runner.suspend"] {
+        let result = executor.execute(&command(kind, json!({}))).unwrap();
+        assert!(result.result["extensionCheckpoint"].is_null());
+        assert_eq!(result.result["providerExitConfirmed"], true);
+    }
+    assert!(!fixture.root.join("snapshot-attempted").exists());
+    assert!(!executor.poisoned);
+    assert!(executor.exported_checkpoint().is_none());
+    let mut restored = fixture.executor();
+    restored.retained_events().unwrap();
+    assert!(restored.exported_checkpoint().is_none());
+    assert!(restored
+        .execute(&command("session.resume", json!({})))
+        .unwrap_err()
+        .to_string()
+        .contains("does not support"));
+    assert!(restored.process.is_none());
+    assert!(restored
+        .execute(&command("run.attach", json!({"paperclipNextAuthority":{}})))
+        .is_err());
+}
+
+#[test]
+fn one_shot_suspend_and_shutdown_physically_stop_without_optional_snapshots() {
+    for suspend in [false, true] {
+        let (fixture, prepare) = snapshot_rejecting_fixture(false);
+        let mut executor = fixture.executor();
+        executor.execute(&prepare).unwrap();
+        executor
+            .execute(&command("session.open", json!({})))
+            .unwrap();
+        let group = executor.process.as_ref().unwrap().process_group_id();
+        if suspend {
+            let result = executor
+                .execute(&command("runner.suspend", json!({})))
+                .unwrap();
+            assert!(result.result.get("extensionCheckpoint").is_none());
+        } else {
+            executor.shutdown().unwrap();
+        }
+        require_group_absent(group).unwrap();
+        assert!(executor.process.is_none());
+        assert!(executor.exported_checkpoint().is_none());
+        assert!(!fixture.root.join("snapshot-attempted").exists());
+        assert!(!executor.poisoned);
+    }
+}
+
+#[test]
+fn one_shot_does_not_adopt_a_cold_continuation_checkpoint() {
+    let (fixture, mut prepare) = snapshot_rejecting_fixture(false);
+    prepare.payload["provider"]["checkpoint"] = json!({
+        "schema":"paperclip.harness-checkpoint.v1", "identity":fixture.profile.identity,
+        "normalizedSessionId":fixture.config.normalized_session_id, "model":"fixture-model",
+        "config":{}, "providerState":{}, "processGroup":null,
+    });
+    let mut executor = fixture.executor();
+    assert!(executor
+        .execute(&prepare)
+        .unwrap_err()
+        .to_string()
+        .contains("does not support"));
+    assert!(executor.process.is_none());
+    assert!(executor.state.is_none());
+}
+
+#[test]
+fn resumable_harness_still_requires_a_valid_provider_snapshot() {
+    let (fixture, prepare) = snapshot_rejecting_fixture(true);
+    let mut executor = fixture.executor();
+    executor.execute(&prepare).unwrap();
+    executor
+        .execute(&command("session.open", json!({})))
+        .unwrap();
+    assert!(executor
+        .execute(&command("session.snapshot", json!({})))
+        .is_err());
+    assert!(fixture.root.join("snapshot-attempted").exists());
+    assert!(executor.exported_checkpoint().is_none());
+    assert!(executor.poisoned);
+    assert!(executor.process.is_none());
+}
+
 #[test]
 fn protocol_loss_exports_only_a_snapshot_captured_after_settlement() {
     for (prior_settled, settled) in [(false, false), (true, false), (false, true)] {

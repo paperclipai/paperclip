@@ -814,7 +814,7 @@ export class CodexHarnessSession
 
   async snapshot(): Promise<PersistedHarnessSession> {
     this.assertProtocolIntegrity();
-    const portableCheckpoint = this.driverKind === "extension"
+    const portableCheckpoint = this.driverKind === "extension" && this.capabilities.resume === true
       ? (await this.transport.request("paperclip/harnessCheckpoint", {})).checkpoint
       : undefined;
     // Live bookkeeping is valid even while a turn cannot export a portable

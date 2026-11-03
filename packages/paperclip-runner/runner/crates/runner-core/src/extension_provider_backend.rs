@@ -337,6 +337,9 @@ impl ExtensionCommandExecutor {
         let snapshot = if let Some(checkpoint) =
             provider.get("checkpoint").filter(|value| !value.is_null())
         {
+            if provider["capabilities"]["resume"].as_bool() != Some(true) {
+                return Err(invalid("extension does not support session resumption"));
+            }
             if checkpoint["schema"] != json!("paperclip.harness-checkpoint.v1")
                 || checkpoint["identity"]
                     != serde_json::to_value(&profile.identity)
@@ -487,7 +490,15 @@ impl ExtensionCommandExecutor {
             Ok(())
         })
     }
+    fn supports_resume(&self) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|state| state.provider["capabilities"]["resume"].as_bool() == Some(true))
+    }
     fn capture_snapshot(&mut self) -> Result<(), DurableRunnerError> {
+        if !self.supports_resume() {
+            return Ok(());
+        }
         let settled = self.state.as_ref().is_some_and(|state| !state.active_turn);
         let snapshot = self.request("snapshot", json!({}))?;
         self.update(|state| {
@@ -502,6 +513,9 @@ impl ExtensionCommandExecutor {
         })
     }
     fn exported_checkpoint(&self) -> Option<Value> {
+        if !self.supports_resume() {
+            return None;
+        }
         let state = self.state.as_ref()?;
         let snapshot = state.snapshot.as_ref()?;
         if state.active_turn || !state.pending_requests.is_empty() {
@@ -616,6 +630,16 @@ impl CommandExecutor for ExtensionCommandExecutor {
             return Ok(CommandExecution::result(
                 json!({"stopped":true,"providerExitConfirmed":true,"extensionCheckpoint":self.exported_checkpoint()}),
             ));
+        }
+        if !self.supports_resume()
+            && (command.command_type == "session.resume"
+                || self.process.is_none()
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.generation > 0))
+        {
+            return Err(invalid("extension does not support session resumption"));
         }
         self.ensure_process()?;
         if command.command_type == "request.resolve" {

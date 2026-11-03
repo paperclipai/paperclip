@@ -13,7 +13,7 @@ import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXEC
 const runnerBinary = process.env.PAPERCLIP_EXTENSION_TEST_RUNNERD ?? defaultCapabilityRunnerdBinary();
 const digest = (bytes: string | Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
-async function fixture(mode: "complete" | "hold" | "requests" | "plan" | "core-completion-only" = "complete") {
+async function fixture(mode: "complete" | "hold" | "requests" | "plan" | "core-completion-only" | "one-shot" = "complete") {
   const root = await realpath(await mkdtemp(join(tmpdir(), "runner-native-extension-")));
   const source = await realpath(process.execPath);
   const command = join(root, "node");
@@ -33,7 +33,7 @@ async function fixture(mode: "complete" | "hold" | "requests" | "plan" | "core-c
     entrypoint: { path: entrypoint, sha256: digest(await readFile(entrypoint)) }, args: [], environmentKeys: [] };
   const provider = { kind: "extension" as const, harnessId: identity.harnessId, release: identity, model: "fixture-exact-model",
     config: { mode, pidPath: join(root, "provider.pid"), outputPath: join(root, "output.json") },
-    capabilities: { resume: true, typedEvents: true, interruption: true, structuredResult: true, dynamicTools: true, usage: mode === "core-completion-only",
+    capabilities: { resume: mode !== "one-shot", typedEvents: true, interruption: true, structuredResult: true, dynamicTools: true, usage: mode === "core-completion-only",
       ...(mode === "requests" ? { runtimeRequestResolution: true } : {}), ...(mode === "plan" ? { planning: true } : {}) } };
   const assetDigest = "0".repeat(64);
   await writeFile(join(root, "AGENTS.md"), "Follow the assigned fixture instructions.");
@@ -144,6 +144,9 @@ it("runs an independent harness through real runnerd, semantic tool replies and 
       dynamicToolHandler: async () => ({ value: resumedNonce }),
       transportFactory: context => f.createBundle(context?.persistedSession?.extensionCheckpoint, resumedInput.binding.runId).transport,
     });
+    expect(await resumedBackend.recoverSession!({ ...checkpoint, extensionCheckpoint: undefined },
+      { signal: new AbortController().signal })).toMatchObject({ recovered: false, reason: "extension checkpoint is invalid" });
+    expect(f.bundles).toHaveLength(1);
     const resumed = await resumedBackend.recoverSession!(checkpoint, { signal: new AbortController().signal });
     expect(resumed.recovered).toBe(true);
     const resumedSession = resumed.session!;
@@ -210,6 +213,37 @@ it("settles Core-owned completion without a duplicate provider proposal and drai
     await session.close({ reason: "fixture complete" });
     const pid = Number(await readFile(join(f.root, "provider.pid"), "utf8"));
     expect(() => process.kill(pid, 0)).toThrow();
+  } finally {
+    for (const bundle of f.bundles) await bundle.transport.close().catch(() => {});
+    await rm(f.root, { recursive: true, force: true });
+  }
+}, 30_000);
+
+it("settles a one-shot native extension without requesting an unsupported checkpoint", async () => {
+  const f = await fixture("one-shot");
+  const backend = createRunnerdNativeSessionBackend(f.input, {
+    retainedSystemInstructions: "Pinned one-shot instructions",
+    dynamicTools: [{ name: "get_fixture_value", description: "Read the fixture value", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
+    dynamicToolHandler: async () => ({ value: "one-shot-controller-value" }),
+    transportFactory: () => f.bundle.transport,
+  });
+  try {
+    const session = await backend.openSession({ identity: { runId: f.input.binding.runId, sessionId: "fixture_session",
+      companyId: f.input.binding.companyId, agentId: f.input.binding.agentId, issueId: f.input.binding.issueId }, workingDirectory: f.root });
+    expect(await session.capabilities()).toMatchObject({ resume: false });
+    await session.startTurn({ message: { role: "user", text: "Complete this one-shot task." } });
+    for await (const event of session.events()) if (event.eventType === "turn.completed") break;
+    expect((await session.result())?.result.reportedWorkDisposition).toBe("done");
+    const snapshot = await session.snapshot();
+    expect(snapshot.extensionCheckpoint).toBeUndefined();
+    expect(snapshot.terminal?.reportedWorkDisposition).toBe("done");
+    await session.close({ reason: "one-shot fixture complete" });
+    await expect(readFile(join(f.root, "output.json.snapshot-attempt"))).rejects.toMatchObject({ code: "ENOENT" });
+    const pid = Number(await readFile(join(f.root, "provider.pid"), "utf8"));
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(f.bundle.evidence()).toMatchObject({ runnerExited: true, runnerExitCode: 0 });
+    expect(await backend.recoverSession!(snapshot, { signal: new AbortController().signal })).toMatchObject({ recovered: false });
+    expect(f.bundles).toHaveLength(1);
   } finally {
     for (const bundle of f.bundles) await bundle.transport.close().catch(() => {});
     await rm(f.root, { recursive: true, force: true });

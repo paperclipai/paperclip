@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,11 +17,12 @@ vi.mock("../runner-harness-registry.js", async () => ({
   ...await vi.importActual("../runner-harness-registry.js"),
   runnerHarnessRegistry: () => state.registry,
 }));
-vi.mock("../../home-paths.js", () => ({ resolvePaperclipInstanceRoot: () => state.runtimeRoot }));
+vi.mock("../../home-paths.js", async () => ({
+  ...await vi.importActual("../../home-paths.js"),
+  resolvePaperclipHomeDir: () => state.runtimeRoot,
+  resolvePaperclipInstanceRoot: () => state.runtimeRoot,
+}));
 vi.mock("./plugin-runner-probe.js", () => ({ probePluginRunnerEnvironment: state.remoteProbe }));
-vi.mock("./native-session-executor.js", () => ({ stageRemoteRunnerDirectory: async (input: { sourcePath: string; targetPath: string }) => {
-  await cp(input.sourcePath, input.targetPath, { recursive: true });
-} }));
 
 const roots: string[] = [];
 const database = {} as Db;
@@ -101,7 +102,16 @@ async function fixture() {
 
 afterEach(async () => {
   vi.unstubAllEnvs();
-  await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
+  async function restoreFixtureDirectories(directory: string) {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      if (entry.isDirectory()) await restoreFixtureDirectories(path.join(directory, entry.name));
+    }
+    await chmod(directory, 0o700);
+  }
+  for (const root of roots.splice(0)) {
+    await restoreFixtureDirectories(root);
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 describe("installed native harness probes", () => {
@@ -177,34 +187,62 @@ describe("installed native harness probes", () => {
         credentialIdentity: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) }));
   });
 
-  it.each(["local", "remote", "lost-remote-wrapper", "unconfirmed-remote-proof"])("reaps a descendant that ignores TERM after its harness leader exits (%s)", async mode => {
-    const { root, context } = await fixture();
+  it.each(["local", "remote", "lost-remote-wrapper", "unconfirmed-remote-proof", "unconfirmed-remote-files"])("reaps a descendant that ignores TERM after its harness leader exits (%s)", async mode => {
+    const { root, packageRoot, context } = await fixture();
     const descendant = path.join(root, "descendant.pid");
     (context.config.extensionConfig as Record<string, unknown>).descendant = descendant;
     let denyRetirementProof = mode === "unconfirmed-remote-proof";
-    const runner: CommandManagedRuntimeRunner = { execute: input => new Promise((resolveResult, reject) => {
-      if (denyRetirementProof && input.args?.[1]?.includes("Harness process retirement remains unconfirmed")) {
-        resolveResult({ exitCode: null, signal: null, timedOut: true, stdout: "", stderr: "Synthetic cleanup transport outage", pid: null, startedAt: null });
-        return;
+    let denyFileRemoval = mode === "unconfirmed-remote-files";
+    const readonlySource = path.join(packageRoot, "readonly-assets");
+    const outside = path.join(root, "unrelated-installation");
+    let linkedOutside = false;
+    if (mode === "remote") {
+      await mkdir(readonlySource);
+      await writeFile(path.join(readonlySource, "asset.json"), "{}");
+      await chmod(readonlySource, 0o555);
+      await mkdir(outside);
+      await writeFile(path.join(outside, "keep.txt"), "unchanged");
+      await chmod(outside, 0o555);
+    }
+    const sourceMode = (await lstat(packageRoot)).mode & 0o777;
+    const runner: CommandManagedRuntimeRunner = { execute: async input => {
+      if (denyFileRemoval && input.args?.[1]?.includes("fs.promises.rm(")) {
+        await chmod(path.dirname(input.args[2]!), 0o555);
       }
-      const child = spawn(input.command, input.args ?? [], { cwd: input.cwd, env: { ...process.env, ...input.env } });
-      let stdout = "", stderr = "", timedOut = false;
-      child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
-      const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, input.timeoutMs ?? 10_000);
-      child.once("error", error => { clearTimeout(timer); reject(error); });
-      child.once("close", (exitCode, signal) => { clearTimeout(timer); resolveResult({ exitCode, signal, timedOut, stdout, stderr, pid: child.pid ?? null, startedAt: null }); });
-      if (mode === "lost-remote-wrapper" && input.args?.[0] === "-e" && input.args[2]?.includes('"recordPath"')) {
-        // Kill the execution wrapper after the harness owns a live descendant.
-        // A later command must recover its recorded group and prove absence.
-        void (async () => {
-          const deadline = Date.now() + 5000;
-          while (Date.now() < deadline) {
-            try { await readFile(descendant); await readFile(path.join(root, "probe.json")); child.kill("SIGKILL"); return; }
-            catch { await new Promise(resolveWait => setTimeout(resolveWait, 10)); }
-          }
-        })();
+      if (mode === "remote" && !linkedOutside && input.args?.[1]?.includes("fs.promises.rm(")) {
+        const stagedRoot = input.args[2]!;
+        expect((await lstat(stagedRoot)).mode & 0o777).toBe(0o555);
+        expect((await lstat(path.join(stagedRoot, "readonly-assets"))).mode & 0o777).toBe(0o555);
+        await chmod(stagedRoot, 0o755);
+        await symlink(outside, path.join(stagedRoot, "outside-link"));
+        await chmod(stagedRoot, 0o555);
+        linkedOutside = true;
       }
-    }) };
+      return new Promise((resolveResult, reject) => {
+        if (denyRetirementProof && input.args?.[1]?.includes("Harness process retirement remains unconfirmed")) {
+          resolveResult({ exitCode: null, signal: null, timedOut: true, stdout: "", stderr: "Synthetic cleanup transport outage", pid: null, startedAt: null });
+          return;
+        }
+        const child = spawn(input.command, input.args ?? [], { cwd: input.cwd, env: { ...process.env, ...input.env } });
+        let stdout = "", stderr = "", timedOut = false;
+        child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
+        const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, input.timeoutMs ?? 10_000);
+        child.once("error", error => { clearTimeout(timer); reject(error); });
+        child.once("close", (exitCode, signal) => { clearTimeout(timer); resolveResult({ exitCode, signal, timedOut, stdout, stderr, pid: child.pid ?? null, startedAt: null }); });
+        child.stdin.end(input.stdin);
+        if (mode === "lost-remote-wrapper" && input.args?.[0] === "-e" && input.args[2]?.includes('"recordPath"')) {
+          // Kill the execution wrapper after the harness owns a live descendant.
+          // A later command must recover its recorded group and prove absence.
+          void (async () => {
+            const deadline = Date.now() + 5000;
+            while (Date.now() < deadline) {
+              try { await readFile(descendant); await readFile(path.join(root, "probe.json")); child.kill("SIGKILL"); return; }
+              catch { await new Promise(resolveWait => setTimeout(resolveWait, 10)); }
+            }
+          })();
+        }
+      });
+    } };
     if (mode !== "local") {
       context.executionTarget = { kind: "remote", transport: "sandbox", remoteCwd: root, runner };
     }
@@ -218,18 +256,33 @@ describe("installed native harness probes", () => {
       const observed = JSON.parse(await readFile(path.join(root, "probe.json"), "utf8"));
       expect(() => process.kill(observed.pid, 0)).toThrow();
       expect(() => process.kill(pid!, 0)).toThrow();
-      if (mode === "unconfirmed-remote-proof") {
+      if (mode === "unconfirmed-remote-proof" || mode === "unconfirmed-remote-files") {
         expect(cleanupFailure).toBeInstanceOf(NativeEnvironmentProbeCleanupError);
         if (!(cleanupFailure instanceof NativeEnvironmentProbeCleanupError)) throw cleanupFailure;
-        await expect(cleanupFailure.retired).rejects.toThrow("retirement remains unconfirmed");
-        expect(await readdir(path.join(root, ".paperclip-runtime", "harness-probes"))).not.toEqual([]);
+        await expect(cleanupFailure.retired).rejects.toThrow(mode === "unconfirmed-remote-proof"
+          ? "retirement remains unconfirmed" : "files remain pending cleanup");
+        const probeDirectory = path.join(root, ".paperclip-runtime", "harness-probes");
+        const staged = (await readdir(probeDirectory, { withFileTypes: true })).filter(entry => entry.isDirectory());
+        expect(staged).toHaveLength(1);
+        const stagedRoot = path.join(probeDirectory, staged[0]!.name);
+        expect(JSON.parse(await readFile(`${stagedRoot}.process.json`, "utf8"))).toMatchObject({ retired: true });
+        if (mode === "unconfirmed-remote-proof") expect((await lstat(stagedRoot)).mode & 0o777).toBe(0o555);
         denyRetirementProof = false;
+        denyFileRemoval = false;
+        await chmod(probeDirectory, 0o700);
         await cleanupFailure.retryCleanup!();
       } else {
         expect(cleanupFailure).toBeUndefined();
         expect(result?.status).toBe(mode === "lost-remote-wrapper" ? "fail" : "pass");
       }
       if (mode !== "local") expect(await readdir(path.join(root, ".paperclip-runtime", "harness-probes"))).toEqual([]);
+      expect((await lstat(packageRoot)).mode & 0o777).toBe(sourceMode);
+      if (mode === "remote") {
+        expect(linkedOutside).toBe(true);
+        expect((await lstat(readonlySource)).mode & 0o777).toBe(0o555);
+        expect((await lstat(outside)).mode & 0o777).toBe(0o555);
+        expect(await readFile(path.join(outside, "keep.txt"), "utf8")).toBe("unchanged");
+      }
     } finally {
       pid ??= await readFile(descendant, "utf8").then(Number).catch(() => undefined);
       if (pid) try { process.kill(pid, "SIGKILL"); } catch { /* Already retired by the production helper. */ }

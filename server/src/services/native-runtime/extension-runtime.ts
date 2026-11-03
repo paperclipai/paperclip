@@ -246,6 +246,26 @@ const remoteProcessCleanup = String.raw`
  process.stdout.write(JSON.stringify({nonce,confirmed:true}));
 })().catch(()=>{process.stderr.write('Harness process retirement remains unconfirmed');process.exitCode=1;});`;
 
+const remoteProbeFilesCleanup = String.raw`
+(async()=>{
+ const fs=require('node:fs'),path=require('node:path'),[packageRoot,recordPath]=process.argv.slice(1);
+ const writableDirectories=async(directory,isRoot=false)=>{
+  let stat;try{stat=await fs.promises.lstat(directory)}catch(error){if(error.code==='ENOENT')return;throw error}
+  if(stat.isSymbolicLink()||!stat.isDirectory()){if(isRoot)throw Error('root');return}
+  const handle=await fs.promises.open(directory,fs.constants.O_RDONLY|fs.constants.O_DIRECTORY|fs.constants.O_NOFOLLOW);
+  try{
+   const verified=await handle.stat();if(!verified.isDirectory())throw Error('directory');
+   await handle.chmod((verified.mode&0o7777)|0o200);
+   for(const entry of await fs.promises.readdir(directory,{withFileTypes:true})){
+    if(entry.isDirectory()&&!entry.isSymbolicLink())await writableDirectories(path.join(directory,entry.name));
+   }
+  }finally{await handle.close()}
+ };
+ await writableDirectories(packageRoot,true);
+ await fs.promises.rm(packageRoot,{recursive:true,force:true});
+ await fs.promises.rm(recordPath,{force:true});
+})().catch(()=>{process.exitCode=1});`;
+
 function retainedProbeCleanup(operationError: unknown, cleanupError: unknown, cleanup: () => Promise<void>) {
   let running: Promise<void> | undefined;
   const retryCleanup = () => running ??= cleanup().finally(() => { running = undefined; });
@@ -270,8 +290,7 @@ async function probeRemoteHarnessProcess(profile: ExtensionLaunchProfile, provid
       if (receipt.nonce !== id || receipt.confirmed !== true) throw new Error("Remote harness retirement proof is invalid");
       retired = true;
     }
-    const removed = await runner.execute({ command: profile.command.path, args: ["-e",
-      "const fs=require('node:fs');Promise.all(process.argv.slice(1).map(path=>fs.promises.rm(path,{recursive:true,force:true}))).catch(()=>{process.exitCode=1})", packageRoot, recordPath],
+    const removed = await runner.execute({ command: profile.command.path, args: ["-e", remoteProbeFilesCleanup, packageRoot, recordPath],
       timeoutMs: 6000, bypassSession: true });
     if (removed.exitCode !== 0 || removed.timedOut) throw new Error("Remote harness probe files remain pending cleanup");
     cleaned = true;

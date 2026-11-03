@@ -34,7 +34,14 @@ readline.createInterface({ input: process.stdin }).on("line", line => {
     fs.writeFileSync(provider.config.pidPath, String(process.pid));
     return reply(id, { identity: params.identity, capabilities: provider.capabilities });
   }
-  if (method === "snapshot") return reply(id, { nativeSessionId, turns });
+  if (method === "snapshot") {
+    if (provider.config.mode === "one-shot") {
+      fs.writeFileSync(provider.config.outputPath + ".snapshot-attempt", "snapshot");
+      return process.stdout.write(JSON.stringify({ schema: "paperclip.harness.v1", id, ok: false,
+        error: { code: "capability_unavailable", message: "This one-shot harness does not support snapshots", retryable: false } }) + "\n");
+    }
+    return reply(id, { nativeSessionId, turns });
+  }
   if (method === "close") return reply(id, {});
   const command = params.command;
   if (command.type === "session.open") emit("session.started", {

@@ -114,7 +114,8 @@ function isAbsoluteHarnessResourcePath(resource: string): boolean {
   return (windows || (resource.startsWith("/") && resource !== "/" && !resource.includes("\\")))
     && (!unc || parts.length >= 2)
     && !parts.some(part => part === "." || part === ".."
-      || (windows && (!part || /[<>:"|?*]/u.test(part) || /[. ]$/u.test(part))));
+      || (windows && (!part || /[<>:"|?*]/u.test(part) || /[. ]$/u.test(part)
+        || /^(?:CON|PRN|AUX|NUL|CONIN\$|CONOUT\$|COM[1-9¹²³]|LPT[1-9¹²³])$/iu.test(part.split(".", 1)[0]!.replace(/ +$/u, "")))));
 }
 
 export function parseRunnerHarnessCheckpoint(value: unknown): RunnerHarnessCheckpoint {
