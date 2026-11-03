@@ -603,9 +603,18 @@ Options:
 
 import { fileURLToPath } from "node:url";
 
+function realpathOrResolvedPath(filePath: string): string {
+  const resolvedPath = path.resolve(filePath);
+  try {
+    return fs.realpathSync.native(resolvedPath);
+  } catch {
+    return resolvedPath;
+  }
+}
+
 const isDirectRun =
   Boolean(process.argv[1]) &&
-  path.resolve(process.argv[1]) === path.resolve(fileURLToPath(import.meta.url));
+  realpathOrResolvedPath(process.argv[1]) === realpathOrResolvedPath(fileURLToPath(import.meta.url));
 
 if (isDirectRun) {
   main().catch((err) => {
