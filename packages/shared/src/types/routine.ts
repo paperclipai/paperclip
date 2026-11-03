@@ -220,6 +220,7 @@ export interface RoutineRun {
   routineRevisionId?: string | null;
   idempotencyKey: string | null;
   triggerPayload: Record<string, unknown> | null;
+  createdByRunId?: string | null;
   dispatchFingerprint: string | null;
   linkedIssueId: string | null;
   coalescedIntoRunId: string | null;
