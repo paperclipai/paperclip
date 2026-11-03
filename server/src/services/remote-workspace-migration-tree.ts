@@ -3,6 +3,7 @@ import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
+import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import type { StorageService } from "../storage/types.js";
 import { captureRemoteWorkspaceDirectory, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-workspace-snapshot-storage.js";
@@ -41,7 +42,7 @@ export function validateImportedWorkspaceChildren(raw: unknown): ImportedWorkspa
 export async function offlineWorkspaceMigrationBlockers(db: ReadDb) {
   if (process.env.PAPERCLIP_EPHEMERAL_MIGRATION !== "true") return ["offline_maintenance_required"];
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-    .where(inArray(heartbeatRuns.status, ["running", "queued"])).limit(1);
+    .where(offlineMigrationExecutionWhere()).limit(1);
   return active ? ["active_execution_requires_drain"] : [];
 }
 

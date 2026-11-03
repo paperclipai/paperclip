@@ -10,7 +10,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { S3Client, CreateBucketCommand, DeleteBucketCommand, DeleteObjectsCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, agents, agentFileRoots, agentInstructionWorkingCopies, companies, executionWorkspaces, executionWorkspaceSnapshots, issues, workspaceOperations, createDb, closeFileStorageDb, heartbeatRuns, providerTraceRecords } from "@paperclipai/db";
+import { activityLog, agentWakeupRequests, agents, agentFileRoots, agentInstructionWorkingCopies, companies, executionWorkspaces, executionWorkspaceSnapshots, issues, workspaceOperations, createDb, closeFileStorageDb, heartbeatRuns, providerTraceRecords } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "../services/remote-workspace-snapshot-storage.js";
@@ -53,6 +53,7 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     await db.delete(issues).where(eq(issues.companyId, companyId));
     await db.delete(executionWorkspaces).where(eq(executionWorkspaces.companyId, companyId));
     await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
+    await db.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId));
     await db.delete(agents).where(eq(agents.companyId, companyId));
     await db.delete(companies).where(eq(companies.id, companyId));
     let token: string | undefined;
@@ -104,7 +105,8 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     const parent = path.join(home, "project"), child = path.join(parent, ".paperclip/worktrees/task");
     await fs.mkdir(child, { recursive: true });
     const fixtures = [{ cwd: parent, file: "project.txt", bytes: "project work" }, { cwd: child, file: "task.txt", bytes: "nested task work" }];
-    const ids: string[] = [];
+    const ids: string[] = [], queued = [];
+    const queuedAgent = await agent();
     for (const fixture of fixtures) {
       await fs.writeFile(path.join(fixture.cwd, fixture.file), fixture.bytes);
       const [issue] = await db.insert(issues).values({ companyId, title: fixture.file }).returning();
@@ -112,10 +114,20 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
         name: fixture.file, mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: fixture.cwd }).returning();
       ids.push(workspace!.id);
       await db.update(issues).set({ executionWorkspaceId: workspace!.id }).where(eq(issues.id, issue!.id));
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId: queuedAgent.id,
+        source: "on_demand", payload: { issueId: issue!.id, text: "Continue my saved work" } }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: queuedAgent.id,
+        issueId: issue!.id, wakeupRequestId: wake!.id, status: "queued", contextSnapshot: { issueId: issue!.id,
+          executionWorkspaceId: workspace!.id } }).returning();
+      queued.push({ run: run!, wake: wake! });
     }
     expect(await migrate()).toMatchObject({ eligibility: { eligible: true }, counts: { workspaces: 2 } });
     await fs.rm(home, { recursive: true }); home = await fs.mkdtemp(path.join(os.tmpdir(), "workspace-successor-"));
     vi.stubEnv("PAPERCLIP_HOME", home);
+    for (const { run, wake } of queued) {
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id)))[0]).toEqual(wake);
+    }
     for (const [index, workspaceId] of ids.entries()) {
       const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
       const authority = readRemoteWorkspaceAuthority(workspace!.metadata)!;
@@ -137,6 +149,8 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: row.id, status: "interrupted",
       runtimeMode: "native", logStore: "local_file", logRef });
     vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", "");
+    const [queued] = await db.insert(heartbeatRuns).values({ companyId, agentId: row.id, status: "queued",
+      contextSnapshot: { input: "Resume this turn after maintenance" } }).returning();
     const original = resolveDecisionSigningSecret();
     const listener = createServer();
     await new Promise<void>(resolve => listener.listen(0, "127.0.0.1", resolve));
@@ -167,6 +181,7 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
       }
       expect(status).toMatchObject({ id, commit: stamp.commit, state: "ready", eligibility: { eligible: true } });
       expect(JSON.stringify(status)).not.toContain(original);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, queued!.id)))[0]).toEqual(queued);
       const exported = await fetch(`${origin}/export`, { method: "POST", headers }).then(r => r.json());
       expect(exported).toMatchObject({ id, commit: stamp.commit, decisionSigningSecret: original });
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
