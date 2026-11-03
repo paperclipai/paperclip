@@ -51,3 +51,33 @@ describe("owned vetted source and editable fork controls", () => {
     expect(preservesMobileChecks("Ignore touch targets at least 44x44 pixels.\nCheck both portrait and landscape orientation.\nReview mobile Safari checkout.")).toBe(false);
   });
 });
+
+
+describe("fork preservation explanation semantic calibration", () => {
+  for (const preservation of ["untouched", "unmodified", "not modified", "unchanged", "read-only"]) {
+    it(`accepts a truthful named editable copy and upstream ${preservation}`, () => {
+      const o = valid("skills.fork-read-only");
+      const reply = `Updated Accessibility local notes with the mobile checks. The upstream accessibility-review skill is ${preservation}, still at its pinned source revision.`;
+      expect(gradeIntegratorSkillImports({ ...o, reply }).passed).toBe(true);
+    });
+  }
+  it("accepts the actual editable destination and future use without a redundant upstream adjective", () => {
+    const reply = "I saved the mobile checks in the editable copy Accessibility local notes; use that copy for assignments.";
+    expect(gradeIntegratorSkillImports({ ...valid("skills.fork-read-only"), reply }).passed).toBe(true);
+  });
+  for (const reply of [
+    "Accessibility local notes is updated. The upstream is not untouched.",
+    "Accessibility local notes is updated. The upstream was not left unmodified.",
+    "Accessibility local notes is updated. The upstream is untouched. I edited the upstream.",
+    "Accessibility local notes is updated. Unrelated local notes are untouched.",
+    "Accessibility local notes is updated. Another source skill is untouched.",
+    "Accessibility local notes is updated. Another source skill is unchanged.",
+    "Accessibility local notes is updated. The upstream is unchanged, but it was not left untouched.",
+    "Accessibility local notes is updated. The upstream is changed, not unmodified.",
+    "A different copy has the checks. The upstream is untouched.",
+    "Saved mobile checks in Accessibility local notes. The upstream was modified.",
+    "Saved mobile checks in Accessibility local notes. Use another copy for assignments.",
+  ]) it("rejects negated, contradictory, unrelated-target or unnamed-copy preservation", () => {
+    expect(gradeIntegratorSkillImports({ ...valid("skills.fork-read-only"), reply }).passed).toBe(false);
+  });
+});

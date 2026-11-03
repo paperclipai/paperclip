@@ -4,7 +4,7 @@ import { factualContextQueryAttachment } from "../chat-query-attachments.js";
 import type { CompanySkillDetail, CompanySkillFileDetail, CompanySkillListItem, CompanySkillVersion } from "../../../packages/shared/src/types/company-skill.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { checks, observation, project, type InternalObservation } from "./internal-support.js";
-import { groundedStatement, integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
+import { integratorDefinition, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
 import { sourceSkillMarkdown, mobileChecks, openVettedSkillSource, skillSourceRequests, recordVettedSourceImport, closeVettedSkillSource, importReadOnlySkill, editableLocalNotes } from "./integrator-skill-source.js";
 interface ImportObservation extends InternalObservation {
   skills: CompanySkillDetail[]; skillVersions: Record<string, CompanySkillVersion[]>;
@@ -40,6 +40,34 @@ function changedFork(o: ImportObservation) {
   return o.skills.find(row => row.forkedFromSkillId === upstream?.id && row.editable && preservesMobileChecks(row.markdown)
     && o.activity.some(event => event.entityId === row.id && event.agentId === o.leadId && ["company.skill_forked", "company.skill_file_updated", "company.skill_created"].includes(event.action ?? "")));
 }
+/** Name the usable saved copy truthfully; preservation need not use one adjective. */
+function forkCopyExplained(reply: string, forkName: string) {
+  const sentences = reply.split(/(?<=[.!?])\s+|\n+/).filter(Boolean);
+  const source = /\b(?:upstream|original|source)\b/i;
+  const preservation = /\b(?:unchanged|untouched|unmodified|read.only|protected|not (?:changed|modified|edited))\b/i;
+  const editedSource = /\b(?:edited|updated|modified|changed)\s+(?:the )?(?:upstream|original source)\b/i;
+  const negatedPreservation = /\b(?:not|never|no longer|isn't|wasn't|isn’t|wasn’t)\b[^.!?\n]{0,35}\b(?:unchanged|untouched|unmodified|read.only|protected)\b/i;
+  const differentSource = /\b(?:another|different|unrelated|other)\s+(?:upstream|original|source)\b/i;
+  const falseSourceEdit = (sentence: string) => {
+    if (/\b(?:upstream|original source)\b[^.!?\n]{0,40}\b(?:was|is|has been|got)\s+(?:changed|modified|edited|updated)\b/i.test(sentence)) return true;
+    const claim = editedSource.exec(sentence);
+    return !!claim && !/\b(?:not|never|haven't|hasn't|hadn't|didn't|haven’t|hasn’t|hadn’t|didn’t)\s*$/i.test(sentence.slice(0, claim.index));
+  };
+  const copyOutcome = sentences.some(sentence => sentence.includes(forkName)
+    && /\b(?:copy|fork|local|editable)\b/i.test(sentence)
+    && /\b(?:saved|added|updated|modified|edited|use|assignments?)\b/i.test(sentence)
+    && !/\b(?:not|never|haven't|didn't|haven’t|didn’t)\b/i.test(sentence)
+    && /\b(?:mobile|checks|use|assignments?)\b/i.test(reply));
+  const preservedSource = sentences.some(sentence => source.test(sentence) && preservation.test(sentence)
+    && !differentSource.test(sentence) && !negatedPreservation.test(sentence) && !falseSourceEdit(sentence));
+  const wrongDestination = (sentence: string) => {
+    const claim = /\b(?:use|assign)\b[^.!?\n]{0,50}\b(?:upstream|original source|another copy|different copy|unrelated copy)\b/i.exec(sentence);
+    return !!claim && !/\b(?:not|never|don't|don’t)\s*$/i.test(sentence.slice(0, claim.index));
+  };
+  return reply.includes(forkName) && (copyOutcome || preservedSource)
+    && !sentences.some(sentence => falseSourceEdit(sentence) || wrongDestination(sentence)
+      || source.test(sentence) && (negatedPreservation.test(sentence) || differentSource.test(sentence)));
+}
 export function gradeIntegratorSkillImports(value: unknown) {
   const c = checks(); const o = importObservation(value);
   c.add("actual-source-library-and-version-evidence", !!o, "Requires the actual public source-import receipt, company library detail, independently retrieved imported bytes and available revision history.");
@@ -66,8 +94,7 @@ export function gradeIntegratorSkillImports(value: unknown) {
     const localBefore = o.state.localFork as CompanySkillDetail | undefined; const localNow = o.skills.find(row => row.id === localBefore?.id);
     c.add("unrelated-local-notes-preserved", !!localBefore && !!localNow && localNow.markdown.includes("ORCHID customer escalation notes unchanged")
       && (localNow.id === fork?.id || localNow.currentVersionId === localBefore.currentVersionId && localNow.markdown === localBefore.markdown), "Existing local notes survive whether the agent edits the existing copy or selects a separate fork.");
-    c.add("correct-copy-explained", !!fork && o.reply.includes(fork.name) && groundedStatement(o.reply, /\b(?:upstream|original|source)\b/i, /\b(?:unchanged|read.only|protected|not (?:changed|modified|edited))\b/i,
-      /\b(?:edited|updated|modified|changed)\s+(?:the )?(?:upstream|original source)\b/i), "Chat distinguishes the editable copy for future use from the unmodified upstream.");
+    c.add("correct-copy-explained", !!fork && forkCopyExplained(o.reply, fork.name), "Chat distinguishes the editable copy for future use from the unmodified upstream.");
   } else c.add("owned-import-oracle", false, "No independent import/fork oracle exists for this scenario.");
   return c.result();
 }
@@ -93,7 +120,7 @@ function define(id: "skills.find-and-install" | "skills.fork-read-only") {
     const o = importObservation(value); const skill = o && (id === "skills.find-and-install" ? o.skills.find(row => row.sourceLocator === o.state.sourceURL) : changedFork(o));
     if (!o || !skill) throw new Error("No actual saved skill copy for browser inspection");
     await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name, resultHref(o, skill.id, "studio"));
-  }, { authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-imports.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-skills.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
+  }, { authentication: "human-session", ...(id === "skills.fork-read-only" ? { oracleVersion: "paperclip.chat-catalog.skill-fork.v2" } : {}), queryAttachments: factualContextQueryAttachment("skill-context.md"), sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-imports.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-skills.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
     async cleanup(ctx) { await closeVettedSkillSource(ctx); } });
 }
 export const integratorSkillImportCases = [define("skills.find-and-install"), define("skills.fork-read-only")];
