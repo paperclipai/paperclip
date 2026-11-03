@@ -7,8 +7,6 @@ interface DropTarget {
   reset: () => void;
 }
 
-// A new-task dialog can open over an existing task. Only its composer should
-// receive the drop, even while it is temporarily unable to accept attachments.
 const targets: DropTarget[] = [];
 
 function activeTarget() {
@@ -69,7 +67,6 @@ export function ComposerFileDropTarget({
       const accepted = accepts(event);
       reset();
       if (!accepted) return;
-      // Capture before the rich editor and dialog handlers to attach each file once.
       event.preventDefault();
       event.stopPropagation();
       const files = Array.from(event.dataTransfer?.files ?? []);
