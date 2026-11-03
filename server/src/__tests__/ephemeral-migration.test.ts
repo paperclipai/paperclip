@@ -22,6 +22,7 @@ import { materializeInstructionBytes } from "../services/agent-instruction-files
 import { verifyAgentFileObjects } from "../services/agent-file-maintenance.js";
 import { getStorageService } from "../storage/index.js";
 import { resolveDecisionSigningSecret } from "../services/decision-signing.js";
+import { getRunLogStore } from "../services/run-log-store.js";
 
 // Explicit real-dependency qualification. Never contacts off-host storage in
 // the default test path; use a disposable S3-compatible service and PostgreSQL.
@@ -127,7 +128,14 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
   }, 120_000);
   const entry = fileURLToPath(new URL("../../dist-runtime/ephemeral-migration.mjs", import.meta.url));
   it.skipIf(!existsSync(entry))("runs the actual bundled maintenance entry with plain Node and exits cleanly", async () => {
-    await agent();
+    const row = await agent(), runId = randomUUID();
+    const logRef = `${companyId}/${row.id}/${runId}.ndjson`, logRoot = path.join(home, "old-run-logs");
+    const history = '{"stream":"stdout","chunk":"unfinished historical output"}\n{"partial":';
+    vi.stubEnv("RUN_LOG_BASE_PATH", logRoot);
+    await fs.mkdir(path.dirname(path.join(logRoot, logRef)), { recursive: true });
+    await fs.writeFile(path.join(logRoot, logRef), history);
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId: row.id, status: "interrupted",
+      runtimeMode: "native", logStore: "local_file", logRef });
     vi.stubEnv("PAPERCLIP_DECISION_SIGNING_SECRET", "");
     const original = resolveDecisionSigningSecret();
     const listener = createServer();
@@ -161,6 +169,10 @@ describe.skipIf(!process.env.PAPERCLIP_TEST_S3_ENDPOINT)("existing-volume enroll
       expect(JSON.stringify(status)).not.toContain(original);
       const exported = await fetch(`${origin}/export`, { method: "POST", headers }).then(r => r.json());
       expect(exported).toMatchObject({ id, commit: stamp.commit, decisionSigningSecret: original });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(run).toMatchObject({ status: "interrupted", logStore: "s3_archive", logBytes: null, logSha256: null });
+      await fs.rm(logRoot, { recursive: true });
+      expect((await getRunLogStore().read({ store: "s3_archive", logRef: run!.logRef! })).content).toBe(history);
       expect((await fetch(`${origin}/api/companies`, { headers })).status).toBe(404);
       child.kill("SIGTERM");
       expect(await Promise.race([exited, delay(12_000).then(() => { throw new Error("Maintenance did not exit gracefully"); })])).toEqual({ code: 0, signal: null });

@@ -343,7 +343,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       }
     },
     async read(handle, opts = {}) {
-      if (handle.store !== "s3_segments") throw new Error("Invalid object run log backend");
+      if (handle.store !== "s3_segments" && handle.store !== "s3_archive") throw new Error("Invalid object run log backend");
       const store = journal(handle.logRef),
         snapshot = await store.head(opts.signal);
       if (!snapshot || snapshot.head.deleted) throw new Error("Object run log not found");

@@ -51,6 +51,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
     do {
       signal.throwIfAborted();
       const page = await migrateRunEvidence(db, { apply: true, kinds: [kind], limit: 50, signal,
+        preserveHistoricalFiles: true,
         ...(kind === "log" ? { afterRunId: after } : { afterTraceId: after }) });
       if (page.items.some(item => item.state !== "migrated")) throw new Error(`${kind}_migration_blocked`);
       counts[kind] = (counts[kind] ?? 0) + page.items.length;
