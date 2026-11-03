@@ -34,6 +34,9 @@ export function canBoardManageRuntime(
   return membership.membershipRole !== "viewer" && membership.membershipRole !== null;
 }
 
+/** Client affordance for board task mutations; the server rechecks issue access. */
+export const canBoardResolveRecoveryAction = canBoardManageRuntime;
+
 /**
  * The execution workspace a reconcile action should target. The recovery card is rendered from a
  * specific `workspace_validation` recovery action whose evidence pins the workspace that diverged;
