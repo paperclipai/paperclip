@@ -64,11 +64,12 @@ event, and it skips a group that is already present. A managed `env` value
 overrides a workspace value with the same key. The `permissions` block is not
 changed.
 
-Paperclip records the groups and env keys that it manages in its own run state,
-keyed by the workspace path. On the next run it removes the previous managed
-entries before it applies the current ones. An edit or a removal of
-`managedHooks` therefore takes effect, and a hook group that you wrote yourself
-stays.
+Paperclip records the groups and env keys that it adds in its own run state,
+keyed by the workspace path. On the next run it removes those entries before it
+applies the current ones. An edit or a removal of `managedHooks` therefore takes
+effect, and a hook group or env value that you wrote yourself stays. Paperclip
+records only what it added itself, so a workspace value that happens to match the
+managed block is not removed later.
 
 A value that is not a set of hook groups (each group holds a list of commands
 with a `type`, and a `command` for `type: "command"`) and string env values adds

@@ -1788,13 +1788,21 @@ async function writePaperclipClaudeSettings(input: {
   for (const key of previousManaged.envKeys) {
     if (!(key in managedHooks.env)) delete mergedEnv[key];
   }
+  const ownedHooks: Record<string, unknown[]> = {};
   for (const [event, groups] of Object.entries(managedHooks.hooks)) {
     const current = Array.isArray(mergedHooks[event]) ? [...(mergedHooks[event] as unknown[])] : [];
     for (const group of groups) {
       if (current.some((entry) => stableJson(entry) === stableJson(group))) continue;
       current.push(group);
+      (ownedHooks[event] ??= []).push(group);
     }
-    mergedHooks[event] = current;
+    if (current.length > 0) mergedHooks[event] = current;
+  }
+  const ownedEnvKeys: string[] = [];
+  for (const [key, value] of Object.entries(managedHooks.env)) {
+    if (mergedEnv[key] === value) continue;
+    mergedEnv[key] = value;
+    ownedEnvKeys.push(key);
   }
   const managedHookEvents = Object.keys(managedHooks.hooks);
   const managedHookCount = managedHookEvents.reduce((total, event) => total + managedHooks.hooks[event].length, 0);
@@ -1808,8 +1816,7 @@ async function writePaperclipClaudeSettings(input: {
     else delete next.hooks;
   }
   if (envChanged) {
-    const nextEnv = { ...mergedEnv, ...managedHooks.env };
-    if (Object.keys(nextEnv).length > 0) next.env = nextEnv;
+    if (Object.keys(mergedEnv).length > 0) next.env = mergedEnv;
     else delete next.env;
   }
   await writeFileAtomically({
@@ -1817,11 +1824,12 @@ async function writePaperclipClaudeSettings(input: {
     contents: `${JSON.stringify(next, null, 2)}\n`,
     mode: 0o600,
   });
-  if (managedHookEvents.length > 0 || managedEnvKeys.length > 0) {
+  const ownedEventCount = Object.keys(ownedHooks).length;
+  if (ownedEventCount > 0 || ownedEnvKeys.length > 0) {
     await fs.mkdir(path.dirname(manifestPath), { recursive: true });
     await writeFileAtomically({
       target: manifestPath,
-      contents: `${JSON.stringify({ hooks: managedHooks.hooks, envKeys: managedEnvKeys }, null, 2)}\n`,
+      contents: `${JSON.stringify({ hooks: ownedHooks, envKeys: ownedEnvKeys }, null, 2)}\n`,
       mode: 0o600,
     });
   } else {

@@ -3057,6 +3057,27 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(cleared.env).toBeUndefined();
   });
 
+  it("keeps a workspace hook group that matches the managed block when the block is cleared", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    const shared = { hooks: [{ type: "command", command: "echo shared" }] };
+    const settingsPath = path.join(cwd, ".claude", "settings.local.json");
+    await fs.mkdir(path.join(cwd, ".claude"), { recursive: true });
+    await fs.writeFile(settingsPath, JSON.stringify({ hooks: { SessionStart: [shared] } }, null, 2), "utf8");
+
+    await runExecutor(
+      { agent: "claude", stateDir, cwd, managedHooks: { hooks: { SessionStart: [shared] } } },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+    const applied = JSON.parse(await fs.readFile(settingsPath, "utf8")) as { hooks?: Record<string, unknown[]> };
+    expect(applied.hooks?.SessionStart).toEqual([shared]);
+
+    await runExecutor({ agent: "claude", stateDir, cwd }, { context: { paperclipWorkspace: { cwd } } });
+    const cleared = JSON.parse(await fs.readFile(settingsPath, "utf8")) as { hooks?: Record<string, unknown[]> };
+    expect(cleared.hooks?.SessionStart).toEqual([shared]);
+  });
+
   it("ignores a malformed managedHooks value instead of writing it to the settings file", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
