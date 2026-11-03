@@ -149,14 +149,16 @@ describe("bounded native text batch persistence", () => {
   it("rolls back the whole reservation when an insertion fails", async () => {
     const runId = await makeRun();
     await db.execute(sql`create function reject_native_batch_fixture() returns trigger language plpgsql as $$
-      begin if new.source_event_id = 'reject-batch-fixture' then raise exception 'batch insert rejected'; end if; return new; end $$`);
+      begin if new.source_event_id = 'reject-batch-fixture' then raise exception 'batch insert rejected'; end if; return new; end; $$`);
     await db.execute(sql`create trigger reject_native_batch_fixture before insert on heartbeat_run_events
       for each row execute function reject_native_batch_fixture()`);
     try {
       const bad = event(runId, 2);
       bad.nativeSource!.sourceEventId = "reject-batch-fixture";
       bad.nativeSource!.canonicalPayload.sourceEventId = "reject-batch-fixture";
-      await expect(appendHeartbeatRunEvents(db, [event(runId, 1), bad])).rejects.toThrow("batch insert rejected");
+      await expect(appendHeartbeatRunEvents(db, [event(runId, 1), bad])).rejects.toMatchObject({
+        cause: { message: "batch insert rejected" },
+      });
       expect(await read(runId)).toMatchObject({ run: { nextEventSeq: 1, eventCursorProjectionSeq: 0 }, events: [], cursors: [] });
     } finally {
       await db.execute(sql`drop trigger reject_native_batch_fixture on heartbeat_run_events`);
