@@ -1,4 +1,5 @@
 import express from "express";
+import { probeReviewApproval } from "../../../tests/runner-e2e/chat-catalog-domains/external-app-review-probe.js";
 import request from "supertest";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -3203,6 +3204,42 @@ describe("issue thread interaction routes", () => {
       .send({ answers: [] });
     expect(missingRun.status).toBe(422);
     expect(missingRun.body).toMatchObject({ code: "interaction_run_attribution_required" });
+  });
+
+  it.each([false, true])("the catalog approval probe distinguishes missing attribution from governed-action denial (drop header: %s)", async dropHeader => {
+    const approveToolActionRequest = vi.fn();
+    const revokeKey = vi.fn(async () => undefined);
+    mockIssueService.getById.mockResolvedValue(createIssue({ status: "todo" }));
+    mockInteractionService.getForIssue.mockResolvedValue({
+      id: "interaction-tool-probe", companyId: "company-1", issueId: ISSUE_ID,
+      kind: "request_confirmation", status: "pending", createdByAgentId: CREATED_AGENT_ID,
+      sourceRunId: RUN_1, effectiveResolverPolicy: "human_only",
+      payload: { version: 1, prompt: "Approve the action?", toolAction: { version: 1, actionRequestId: "action-probe", toolName: "notes_update" } },
+    });
+    const receipt = await probeReviewApproval({
+      baseURL: "https://fixture.example", companyId: "company-1", agentId: CREATED_AGENT_ID, issueId: ISSUE_ID,
+      interaction: { id: "interaction-tool-probe", status: "pending", sourceRunId: RUN_1 },
+      run: { id: RUN_1, companyId: "company-1", agentId: CREATED_AGENT_ID, status: "succeeded", contextSnapshot: { issueId: ISSUE_ID } },
+      invocation: { companyId: "company-1", agentId: CREATED_AGENT_ID, issueId: ISSUE_ID, runId: RUN_1, status: "awaiting_approval" },
+      privateSecrets: [], createKey: async () => ({ id: "probe-key", token: "synthetic-test-key" }), revokeKey,
+      boundary: async () => ({ interactionStatus: "pending", invocationStatus: "awaiting_approval", actionStatus: "pending", providerWrites: approveToolActionRequest.mock.calls.length, trustRuleIds: [] }),
+      send: async (url, options) => {
+        const headers = new Headers(options?.headers);
+        const actorRun = dropHeader ? undefined : headers.get("x-paperclip-run-id");
+        const app = await createApp({ type: "agent", companyId: "company-1", agentId: CREATED_AGENT_ID, runId: actorRun }, { approveToolActionRequest });
+        const res = await request(app).post(new URL(String(url)).pathname)
+          .set("Authorization", headers.get("authorization")!).send(JSON.parse(options?.body as string));
+        return Response.json(res.body, { status: res.status });
+      },
+    });
+    expect(receipt).toEqual({ status: dropHeader ? 422 : 403,
+      code: dropHeader ? "interaction_run_attribution_required" : "interaction_governed_action_denied",
+      boundaryUnchanged: true, keyRevoked: true });
+    expect(approveToolActionRequest).not.toHaveBeenCalled();
+    expect(mockInteractionService.acceptInteraction).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(revokeKey).toHaveBeenCalledExactlyOnceWith("probe-key");
   });
 
   it("rejects an invalid run attribution before resolving or waking", async () => {

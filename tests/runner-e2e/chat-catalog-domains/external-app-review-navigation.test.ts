@@ -6,6 +6,8 @@ vi.mock("@playwright/test",()=>({expect:(node:any)=>({toBeVisible:async()=>{if(!
 vi.mock("./external-provider.js",()=>({startNotesProvider:async()=>({calls:[],failWrites:vi.fn(),close:vi.fn()}),connectNotes:async()=>({connectionId:"connection",write:["write"]})}));
 vi.mock("./identity-support.js",()=>({openStandingChat:async()=>({id:"source"}),probeAgentPermission:async()=>403}));
 vi.mock("../chat-query-attachments.js",()=>({uploadFactualQueryAttachment:async()=>({issueId:"source"}),chatQueryWithAttachments:(q:string)=>q,verifyChatQueryAttachments:async()=>true}));
+vi.mock("./external-app-review-probe.js", () => ({ probeReviewApproval: vi.fn(async () => ({status: 403, code: "interaction_governed_action_denied", boundaryUnchanged: true, keyRevoked: true})) }));
+import { probeReviewApproval } from "./external-app-review-probe.js";
 import { appReviewExternalCases } from "./external-app-review.js";
 afterEach(()=>vi.restoreAllMocks());
 function fixture(fault?:"wrong preview"|"missing takeover"|"wrong app"|"wrong action"|"missing disclosure"|"wrong full body"|"wrong hash"|"wrong date"){
@@ -25,7 +27,7 @@ function fixture(fault?:"wrong preview"|"missing takeover"|"wrong app"|"wrong ac
  const page={locator:(selector:string)=>{events.push(selector);return timeline;},getByTestId:(id:string)=>{expect(id).toBe("task-chat-composer-takeover");return review;}};
  const ctx={scenario:{id:"app-permissions.ask-before-action",query:"Add this launch update to our notes app."},input:{page,fixtures:{company:{id:"company"},agent:{id:"ceo"}},api:{
   get:async(path:string)=>path==="/api/auth/get-session"?{user:{id:"person"}}:path.endsWith("/tools/trust-rules")?{trustRules:[]}:path.endsWith("/interactions")?[card]:path.endsWith("/runs/source-native/decisions")?{runId:"source-native",decisions:[{invocation:{id:"invocation",companyId:"company",agentId:"ceo",issueId:"source",runId:"source-native",connectionId:"connection",catalogEntryId:"write",argumentsHash,status:"awaiting_approval"},actionRequest:{id:"action",status:"pending",canonicalArgumentsHash:argumentsHash}}]}:Promise.reject(Error("Unexpected fixture read")),
-  post:async()=>({id:"project"}),patch:async()=>({}),},evidence:async()=>{}},refreshIssue:async()=>{},issue:()=>({id:"source",conversationState:"waiting"}),allRuns:async()=>[{id:"source-native",status:"succeeded",contextSnapshot:{issueId:"source"}}]} as unknown as ChatCatalogContext;
+  post:async()=>({id:"project"}),patch:async()=>({}),},evidence:async()=>{}},refreshIssue:async()=>{},issue:()=>({id:"source",conversationState:"waiting"}),allRuns:async()=>[{id:"source-native",companyId:"company",agentId:"ceo",status:"succeeded",contextSnapshot:{issueId:"source"}}]} as unknown as ChatCatalogContext;
  const definition=appReviewExternalCases[0]!;return{ctx,definition,events,declined:()=>declined};
 }
 it("the actual approval caller opens its selected timeline request and decides only in the real composer takeover",async()=>{
@@ -33,6 +35,7 @@ it("the actual approval caller opens its selected timeline request and decides o
  await expect(f.definition.act!(f.ctx,state)).rejects.toThrow("Stop after selected decline");
  expect(f.declined()).toBe(true);expect(f.events).toEqual(['[id="interaction-selected"]',"open exact review","inspect selected proposal","selected decline"]);
  expect(state.agentApproveStatus).toBe(403);
+ expect(probeReviewApproval).toHaveBeenCalledWith(expect.objectContaining({companyId:"company",agentId:"ceo",issueId:"source",interaction:expect.objectContaining({id:"selected",sourceRunId:"source-native"}),run:expect.objectContaining({id:"source-native",companyId:"company",agentId:"ceo",status:"succeeded"}),invocation:expect.objectContaining({companyId:"company",agentId:"ceo",issueId:"source",runId:"source-native",status:"awaiting_approval"})}));
 });
 it.each(["wrong preview","missing takeover","wrong app","wrong action","missing disclosure","wrong full body","wrong hash","wrong date"] as const)("does not decide a %s",async fault=>{
  const f=fixture(fault),state=await f.definition.setup(f.ctx);
