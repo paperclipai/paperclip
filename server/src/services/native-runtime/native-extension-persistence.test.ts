@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile, access } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile, access, chmod, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -7,7 +7,8 @@ import { parseNativeExecutionInput, NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECU
   canonicalNativeRuntimeContextDigest, nativeRuntimePromptDigest } from "../../vendor/paperclip-runner/index.js";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import type { RunnerHarnessCheckpoint } from "@paperclipai/runner-sdk/contracts";
-import { buildNativeHarnessBackupManifest, providerSessionIdentityFromDurableProviderState, resolveNativeBilling, resolveNativeHarnessPersistenceProfile } from "./native-session-executor.js";
+import { buildNativeHarnessBackupManifest, providerSessionIdentityFromDurableProviderState, resolveNativeBilling, resolveNativeHarnessPersistenceProfile,
+  stageRemoteRunnerDirectory, syncRemoteRunnerDirectoryOut } from "./native-session-executor.js";
 import { prepareRemoteExtensionCheckpoint } from "./extension-session-persistence.js";
 
 const roots: string[] = [];
@@ -56,11 +57,15 @@ it("uses only core-observed native identities and refuses normalized IDs as inve
   expect(resolveNativeHarnessPersistenceProfile(execution).directories.map(directory => directory.name)).toEqual(["runner", "extension"]);
 });
 
-const runner: Pick<CommandManagedRuntimeRunner, "execute"> = { execute: spec => new Promise(resolve => {
-  const child = spawn(spec.command, spec.args ?? [], { cwd: spec.cwd, stdio: ["ignore", "pipe", "pipe"] });
+const runner: CommandManagedRuntimeRunner = { execute: spec => new Promise((resolve, reject) => {
+  const child = spawn(spec.command, spec.args ?? [], { cwd: spec.cwd, stdio: ["pipe", "pipe", "pipe"] });
   let stdout = "", stderr = "";
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, spec.timeoutMs ?? 10_000);
   child.stdout.on("data", data => { stdout += data; }); child.stderr.on("data", data => { stderr += data; });
-  child.once("close", (exitCode, signal) => resolve({ exitCode, signal, stdout, stderr, timedOut: false, pid: child.pid ?? null, startedAt: null }));
+  child.once("error", error => { clearTimeout(timer); reject(error); });
+  child.once("close", (exitCode, signal) => { clearTimeout(timer); resolve({ exitCode, signal, stdout, stderr, timedOut, pid: child.pid ?? null, startedAt: null }); });
+  child.stdin.end(spec.stdin);
 }) };
 
 async function fixture(outcome: "resumed" | "replacement") {
@@ -90,7 +95,10 @@ async function fixture(outcome: "resumed" | "replacement") {
     await mkdir(join(remoteSessionRoot, "filesystem"), { recursive: true });
     await cp(join(backupRoot, "extension"), remoteHomeDirectory, { recursive: true });
   }
-  const restoreHome = vi.fn(async (source: string, target: string) => { await mkdir(join(remoteSessionRoot, "filesystem"), { recursive: true }); await cp(source, target, { recursive: true }); });
+  const restoreHome = vi.fn(async (source: string, target: string) => stageRemoteRunnerDirectory({
+    target: { kind: "remote", transport: "sandbox", remoteCwd: root, runner }, runner,
+    sourcePath: source, targetPath: target, mode: 0o700, preservePermissions: true,
+  }));
   const input = { checkpoint, backup: { root: backupRoot, manifest }, currentRunId: "next", checkpointSourceRunId: "prior", remoteSessionRoot,
     remoteStateDirectory, remoteHomeDirectory, acquisitionOutcome: outcome,
     currentProviderLeaseId: outcome === "resumed" ? "prior-lease" : "replacement-lease", runner, restoreHome };
@@ -105,9 +113,62 @@ it.each(["resumed", "replacement"] as const)("recovers only the native home on a
   expect(f.restoreHome).toHaveBeenCalledTimes(outcome === "replacement" ? 1 : 0);
 });
 
+it.each([false, true])("preserves mode-sensitive native history through capture and replacement restore (sync APIs %s)", async hasSyncApis => {
+  const f = await fixture("replacement");
+  const liveHome = join(f.root, "live-home");
+  await mkdir(join(liveHome, "sessions"), { recursive: true });
+  const modes = new Map([["native-history.json", 0o644], ["sessions/tool.sh", 0o755], ["sessions/readonly.json", 0o444]]);
+  for (const [name, mode] of modes) {
+    await writeFile(join(liveHome, name), name === "native-history.json" ? '{"turns":1}' : "native state");
+    await chmod(join(liveHome, name), mode);
+  }
+  await chmod(join(liveHome, "sessions"), 0o755);
+  const syncOut = vi.fn(async () => { throw new Error("Sync API cannot certify permission preservation"); });
+  const syncIn = vi.fn(async () => { throw new Error("Sync API cannot certify permission preservation"); });
+  const transfer: CommandManagedRuntimeRunner = hasSyncApis ? { ...runner, syncOut, syncIn } : runner;
+  const previousUmask = process.umask(0o077);
+  try {
+    const capturedHome = join(f.input.backup.root, "extension");
+    await syncRemoteRunnerDirectoryOut({ runner: transfer, sourcePath: liveHome, targetPath: capturedHome, mode: 0o700, preservePermissions: true });
+    for (const [name, mode] of modes) expect((await stat(join(capturedHome, name))).mode & 0o777).toBe(mode);
+    expect((await stat(join(capturedHome, "sessions"))).mode & 0o777).toBe(0o755);
+    const providerState = JSON.parse(await readFile(join(f.input.backup.root, "runner", "extension-provider-state.json"), "utf8"));
+    f.input.backup.manifest = buildNativeHarnessBackupManifest({ backupRoot: f.input.backup.root, execution,
+      runnerInstanceId: "prior-runner", providerSessionIdentity: providerSessionIdentityFromDurableProviderState({ execution, providerState }),
+      sourceProviderLeaseId: "prior-lease" });
+    const restoreHome = vi.fn(async (source: string, target: string) => stageRemoteRunnerDirectory({
+      target: { kind: "remote", transport: "sandbox", remoteCwd: f.root, runner: transfer }, runner: transfer,
+      sourcePath: source, targetPath: target, mode: 0o700, preservePermissions: true,
+    }));
+    await prepareRemoteExtensionCheckpoint({ ...f.input, runner: transfer, restoreHome });
+    for (const [name, mode] of modes) expect((await stat(join(f.input.remoteHomeDirectory, name))).mode & 0o777).toBe(mode);
+    expect((await stat(join(f.input.remoteHomeDirectory, "sessions"))).mode & 0o777).toBe(0o755);
+    await expect(access(join(f.input.remoteStateDirectory, "runner-state.json"))).rejects.toThrow();
+    expect(syncOut).not.toHaveBeenCalled(); expect(syncIn).not.toHaveBeenCalled();
+  } finally { process.umask(previousUmask); }
+});
+
+it("restores a 0644 checkpoint through the production staging helper without changing its proof", async () => {
+  const f = await fixture("replacement");
+  await chmod(join(f.input.backup.root, "extension", "native-history.json"), 0o644);
+  const providerState = JSON.parse(await readFile(join(f.input.backup.root, "runner", "extension-provider-state.json"), "utf8"));
+  f.input.backup.manifest = buildNativeHarnessBackupManifest({ backupRoot: f.input.backup.root, execution,
+    runnerInstanceId: "prior-runner", providerSessionIdentity: providerSessionIdentityFromDurableProviderState({ execution, providerState }),
+    sourceProviderLeaseId: "prior-lease" });
+  await prepareRemoteExtensionCheckpoint(f.input);
+  expect((await stat(join(f.input.remoteHomeDirectory, "native-history.json"))).mode & 0o777).toBe(0o644);
+});
+
 it("refuses a reused lease whose prior settled epoch or native history changed", async () => {
   const f = await fixture("resumed");
   await writeFile(join(f.input.remoteHomeDirectory, "native-history.json"), '{"turns":2}');
+  await expect(prepareRemoteExtensionCheckpoint(f.input)).rejects.toThrow("source_unproven");
+  expect(f.restoreHome).not.toHaveBeenCalled();
+});
+
+it("refuses a reused native home whose permissions changed without changing its bytes", async () => {
+  const f = await fixture("resumed");
+  await chmod(join(f.input.remoteHomeDirectory, "native-history.json"), 0o644);
   await expect(prepareRemoteExtensionCheckpoint(f.input)).rejects.toThrow("source_unproven");
   expect(f.restoreHome).not.toHaveBeenCalled();
 });

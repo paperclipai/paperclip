@@ -11636,6 +11636,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   targetPath: string;
   mode: number;
   excludeEntries?: readonly string[];
+  preservePermissions?: boolean;
 }): Promise<void> {
   if (
     !(await remoteRunnerPathExists({
@@ -11650,7 +11651,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   const excludeArgs = archiveExcludeArgs(excluded)
     .map((argument) => `'${argument}'`)
     .join(" ");
-  if (input.runner.syncOut) {
+  if (input.runner.syncOut && !input.preservePermissions) {
     let syncSourcePath = input.sourcePath;
     let snapshotPath: string | null = null;
     let providerExclude: string[] | null = null;
@@ -11742,7 +11743,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
       "tar",
       [
         "--no-same-owner",
-        "--no-same-permissions",
+        input.preservePermissions ? "-p" : "--no-same-permissions",
         "-xzf",
         "-",
         "-C",
@@ -13596,6 +13597,7 @@ async function createRunnerdBackendWithinSessionClaim(
             sourcePath: resolve(backup.root, directory.name),
             targetPath,
             mode: 0o700,
+            preservePermissions: input.execution.provider.kind === "extension",
           });
         }
       },
@@ -13640,7 +13642,7 @@ async function createRunnerdBackendWithinSessionClaim(
       currentProviderLeaseId: sandboxLeaseAcquisition?.providerLeaseId ?? remoteTarget.leaseId ?? undefined,
       runner: remoteCommandRunner,
       restoreHome: (sourcePath, targetPath) => stageRemoteRunnerDirectory({
-        target: remoteTarget, runner: remoteCommandRunner, sourcePath, targetPath, mode: 0o700 }),
+        target: remoteTarget, runner: remoteCommandRunner, sourcePath, targetPath, mode: 0o700, preservePermissions: true }),
     });
     await recordHarnessBackupStampForCurrentLease(backup);
   };
@@ -13994,6 +13996,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     targetPath,
                     mode: 0o700,
                     excludeEntries: directory.excludeEntries,
+                    preservePermissions: input.execution.provider.kind === "extension",
                   });
                   if (!existsSync(targetPath)) {
                     throw new Error("runner_harness_state_mismatch: checkpoint_directory_missing");
