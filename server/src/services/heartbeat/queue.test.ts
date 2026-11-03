@@ -86,7 +86,7 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
   let db: Db;
   beforeAll(async () => {
     if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-queue-module");
-    db = createDb(external ?? database!.connectionString);
+    db = createDb(external ?? database!.connectionString, { maxConnections: 4 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     await db?.$client.end();

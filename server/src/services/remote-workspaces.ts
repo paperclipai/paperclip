@@ -25,7 +25,7 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { persistActivity } from "./activity-log.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
-  requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
+  REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
 } from "./remote-workspace-transport.js";
 import {
   beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
@@ -196,6 +196,8 @@ export async function reserveRemoteWorkspace(input: {
       if (authority.writerRunId && authority.writerRunId !== input.runId) {
         const [prior] = await tx.select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId,
           issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+          runtimeMode: heartbeatRuns.runtimeMode, nativeSessionId: heartbeatRuns.nativeSessionId, runnerInstanceId: heartbeatRuns.runnerInstanceId,
+          errorCode: heartbeatRuns.errorCode, executionRecovery: sql<unknown>`${heartbeatRuns.resultJson}->'executionRecovery'`,
           contextIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
           lastOutputAt: heartbeatRuns.lastOutputAt, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
         }).from(heartbeatRuns).where(and(
@@ -211,8 +213,14 @@ export async function reserveRemoteWorkspace(input: {
         }
         const leases = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
           eq(environmentLeases.heartbeatRunId, authority.writerRunId)));
+        const bootstrap = object(prior?.executionRecovery);
+        const pristinePreparation = !authority.location && !authority.snapshotId && prior?.status === "failed"
+          && prior.runtimeMode === "legacy" && prior.nativeSessionId === null && prior.runnerInstanceId === null
+          && prior.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE
+          && bootstrap.kind === "bootstrap" && bootstrap.providerWorkStarted === false;
         const unusedReservation = !authority.dirty && prior && ["failed", "cancelled", "interrupted", "timed_out", "succeeded"].includes(prior.status)
-          && leases.every(hasRemoteTerminationReceipt);
+          && leases.every(lease => hasRemoteTerminationReceipt(lease) || (pristinePreparation
+            && lease.releasedAt && lease.cleanupStatus === "success" && ["released", "expired", "failed"].includes(lease.status)));
         if (!unusedReservation) throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
       }
       if (authority.writerRunId === input.runId) return existing;
@@ -281,16 +289,19 @@ async function cleanupSavedExports(input: { db: Db; companyId: string; workspace
     for (const row of rows) {
       await input.assertOwned();
       let cleaned = false;
+      let lastError: string | null = null;
       try {
         await cleanupRemoteWorkspaceArchive({ target: input.target,
           remoteCwd: row.phase === "remote_workspace_restore" ? path.posix.dirname(input.location.remoteCwd) : input.location.remoteCwd,
           operationId: row.id });
         cleaned = true;
-      } catch { /* Keep a durable retry obligation; the acknowledged snapshot is safe. */ }
+      } catch (error) {
+        lastError = error instanceof RemoteWorkspaceOperationTimeoutError ? error.message : "remote_workspace_export_cleanup_failed";
+      }
       await input.assertOwned();
       await input.db.update(workspaceOperations).set({ metadata: sql`jsonb_set(coalesce(${workspaceOperations.metadata}, '{}'::jsonb),
         '{exportCleanup}', coalesce(${workspaceOperations.metadata}->'exportCleanup', '{}'::jsonb) ||
-        ${JSON.stringify({ state: cleaned ? "cleaned" : "pending", lastError: cleaned ? null : "remote_workspace_export_cleanup_failed" })}::jsonb)`,
+        ${JSON.stringify({ state: cleaned ? "cleaned" : "pending", lastError })}::jsonb)`,
         updatedAt: new Date() })
         .where(and(eq(workspaceOperations.id, row.id), eq(workspaceOperations.companyId, input.companyId),
           inArray(workspaceOperations.status, ["succeeded", "failed"])));
@@ -352,9 +363,23 @@ export async function prepareRemoteWorkspace(input: {
           restorationIdentity: preparationIdentity });
       } finally { await rm(scratch, { recursive: true, force: true }); }
     } else {
-      await prepareRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, source: initial.source,
-        preparationIdentity,
-        resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
+      try {
+        await prepareRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, source: initial.source,
+          preparationIdentity,
+          resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
+      } catch (error) {
+        if (error instanceof RemoteWorkspaceOperationTimeoutError && error.operation === "prepare"
+          && !initial.dirty && !initial.location) {
+          const [latest] = await input.db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
+            .where(and(eq(executionWorkspaces.companyId, input.workspace.companyId), eq(executionWorkspaces.id, input.workspace.id)));
+          const current = readRemoteWorkspaceAuthority(latest?.metadata);
+          if (current && current.epoch === initial.epoch && current.writerRunId === input.runId
+            && !current.dirty && !current.location && !current.snapshotId) {
+            throw new RemoteWorkspacePreparationTimeoutError(error);
+          }
+        }
+        throw error;
+      }
     }
   }
   for (const repository of (input.source ?? initial.source).repositories ?? []) {
@@ -369,11 +394,19 @@ export async function prepareRemoteWorkspace(input: {
   }
   const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string }> = [];
   const recoverySourceRunIds = input.workspace.metadata?.remoteWorkspaceRecoverySourceRunIds;
-  if (!sameAllocation && Array.isArray(recoverySourceRunIds) && recoverySourceRunIds.length && input.workspace.sourceIssueId) {
+  if (!sameAllocation && Array.isArray(recoverySourceRunIds) && recoverySourceRunIds.length) {
+    // Shared and inherited workspaces retain their original source task. The
+    // current writer's task owns its recovery attachments, including a child's
+    // preserved files recorded during migration of an ancestor's workspace.
+    const [run] = await input.db.select({ nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
+      contextIssueId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'issueId'` }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.workspace.companyId), eq(heartbeatRuns.id, input.runId)));
+    const issueId = run?.nativeIssueId ?? run?.issueId ?? run?.contextIssueId;
+    if (typeof issueId !== "string") throw new Error("remote_workspace_recovery_task_missing");
     const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-recovery-import-"));
     try {
       const recovered = await attachPreservedWorkspaceSnapshots({ db: input.db, companyId: input.workspace.companyId,
-        issueId: input.workspace.sourceIssueId, sourceRunIds: recoverySourceRunIds as string[], cwd: scratch });
+        issueId, sourceRunIds: recoverySourceRunIds as string[], cwd: scratch });
       for (const item of recovered) {
         const relative = `.paperclip-recovered/${item.operationId}`;
         await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{

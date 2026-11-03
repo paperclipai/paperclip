@@ -154,3 +154,15 @@ Scope: cli
 Storybook: No authored story required for doctor/health command results.
 Production: Run doctor against an owned data directory; check readiness and nonzero failures. A listening port alone does not prove readiness; repair requires observing the repaired result.
 Sources: Source: [doctor.ts](../../cli/src/commands/doctor.ts). Tests: [doctor.test.ts](../../cli/src/__tests__/doctor.test.ts)
+
+
+Incoming API wake is an optional Cloud deployment capability. On an owned qualified
+stack, close the browser, retain valid saved credentials, let the stack sleep,
+and send an ordinary API request. Check the persisted result and current
+revocation/company authorization after wake, truthful retry failures, and return
+to idle after successful API activity ends. Brokered GitHub bot wake uses the
+existing durable connector queue and exact registration ownership. Direct
+webhooks, persistent transports and personal GitHub credential continuity retain
+their explicit dependencies. [Source protocol](../../doc/idle-incoming-wake.md)
+and [local fixtures](../../server/src/__tests__/idle-incoming-wake.test.ts) cover
+these boundaries; they do not establish deployed host/database suspension.
