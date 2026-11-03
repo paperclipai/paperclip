@@ -33,7 +33,7 @@ export function LegacyProjectRepository({ workspace, projectRef }: { workspace: 
       <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(workspace.repoUrl ?? "")}>Edit</Button>
     </div> : <form className="flex flex-col gap-2" onSubmit={(event) => { event.preventDefault(); if (!save.isPending) save.mutate(); }}>
       <Input aria-label="Existing repo URL" type="url" value={draft} disabled={save.isPending} onChange={(event) => setDraft(event.target.value)} />
-      {save.isError && <p role="alert" className="text-sm text-destructive">{describeError(save.error).body}</p>} // query-error-ok: mutation result
+      {save.status === "error" && <p role="alert" className="text-sm text-destructive">{describeError(save.error).body}</p>}
       <div className="flex justify-end gap-2"><Button type="button" variant="ghost" disabled={save.isPending} onClick={() => setDraft(null)}>Cancel</Button><Button type="submit" disabled={save.isPending}>Save URL</Button></div>
     </form>}
   </div>;

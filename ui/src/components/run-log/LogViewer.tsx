@@ -400,6 +400,12 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     };
     return () => { refreshLogRef.current = null; };
   }, [persistedLog.refetch, persistedLog.isFetching]);
+  const previousStream = useRef({ runId: run.id, epoch: stream.epoch });
+  useEffect(() => {
+    const previous = previousStream.current;
+    previousStream.current = { runId: run.id, epoch: stream.epoch };
+    if (visible && logSourceEnabled && previous.runId === run.id && previous.epoch !== stream.epoch) refreshLogRef.current?.();
+  }, [run.id, stream.epoch, visible, logSourceEnabled]);
   useEffect(() => connection.onRecover(() => refreshEventsRef.current?.(true)), [connection]);
 
   const censorUsernameInLogs = useQuery({

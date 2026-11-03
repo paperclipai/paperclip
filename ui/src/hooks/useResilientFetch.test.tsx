@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act, StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
@@ -85,6 +85,15 @@ describe("useResilientFetch", () => {
   }
 
   const last = () => results[results.length - 1]!;
+  it("restarts an aborted initial read during StrictMode effect replay", async () => {
+    act(() => root.render(<StrictMode><ConnectivityProvider store={store}><Harness /></ConnectivityProvider></StrictMode>));
+    expect(attempts).toHaveLength(2);
+    expect(attempts[0]!.signal.aborted).toBe(true);
+    expect(attempts[1]!.signal.aborted).toBe(false);
+    await act(async () => { attempts[1]!.resolve({ title: "StrictMode result" }); await attempts[1]!.promise; });
+    expect(last().view.kind).toBe("ready");
+    expect(container.textContent).toBe("StrictMode result");
+  });
   const settle = async () => {
     await act(async () => {
       await Promise.resolve();

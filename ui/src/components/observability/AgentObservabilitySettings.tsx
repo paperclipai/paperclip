@@ -185,7 +185,7 @@ function AgentObservabilitySettingsContainer({ companyId }: { companyId: string 
       ? { ...current, settings: { ...current.settings, lastTest: receipt } } : current);
   }, onError: reject });
   useEffect(() => { setError(null); setConflict(false); save.reset(); test.reset(); remove.reset(); }, [companyId]);
-  if (query.isPending) return <p className="text-sm text-muted-foreground">Loading agent observability…</p>;
+  if (["loading", "reconnecting"].includes(queryView.kind)) return <p className="text-sm text-muted-foreground">Loading agent observability…</p>;
   if (!query.data) return <div role="alert" className="space-y-2 text-sm"><p>Agent observability settings could not be loaded.</p><Button variant="outline" size="sm" onClick={() => void query.refetch()}>Retry</Button></div>;
   return <AgentObservabilitySettingsView key={companyId} companyId={companyId} settings={query.data.settings} canManage={query.data.canManage}
     saving={save.isPending} removing={remove.isPending} testing={test.isPending} error={error ?? ((queryView.kind === "error") ? "Saved settings could not be refreshed. Your draft is unchanged." : null)} conflict={conflict} resetKey={resetKey}

@@ -44,6 +44,7 @@ export function ProjectAccessMembers({ project, canManage }: { project: Project;
   const membersView = useQueryView(membersQuery);
   const directoryView = useQueryView(directoryQuery);
   const agentsView = useQueryView(agentsQuery);
+  const membersWaiting = ["loading", "reconnecting"].includes(membersView.kind);
   const activeKeys = useMemo(
     () => new Set((membersQuery.data ?? []).map((member) => `${member.subjectType}:${member.subjectId}`)),
     [membersQuery.data],
@@ -122,7 +123,7 @@ export function ProjectAccessMembers({ project, canManage }: { project: Project;
                 placeholder="Add a person or agent"
                 searchPlaceholder="Search people and agents"
                 emptyMessage="No more company members to add"
-                loading={directoryQuery.isLoading || agentsQuery.isLoading}
+                loading={[directoryView.kind, agentsView.kind].some(kind => ["loading", "reconnecting"].includes(kind))}
                 className="min-w-0 flex-1"
               />
               <Button size="sm" disabled={!canManage || !selection || addMember.isPending} onClick={() => addMember.mutate()}>
@@ -160,7 +161,7 @@ export function ProjectAccessMembers({ project, canManage }: { project: Project;
                   </div>
                 );
               })}
-              {membersQuery.isLoading ? <p className="py-3 text-sm text-muted-foreground">Loading access…</p> : null}
+              {membersWaiting ? <p className="py-3 text-sm text-muted-foreground">Loading access…</p> : null}
               {membersView.kind === "error" ? (
                 <p className="py-3 text-sm text-destructive">Couldn&apos;t load project access members.</p>
               ) : null}

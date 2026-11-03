@@ -268,6 +268,7 @@ export function useResilientFetch<TData>(options: ResilientFetchOptions<TData>):
 
   useEffect(() => {
     if (!enabled) return;
+    mountedRef.current = true;
     failureCountRef.current = 0;
     begin();
     return cancel;

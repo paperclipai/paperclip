@@ -78,6 +78,7 @@ export function Cases() {
     placeholderData: (previous, previousQuery) => previousQuery?.queryKey[1] === selectedCompanyId ? previous : undefined,
   });
   const casesQueryView = useQueryView(casesQuery);
+  const casesWaiting = ["loading", "reconnecting"].includes(casesQueryView.kind);
   const typesQuery = useQuery({
     queryKey: [...queryKeys.cases.list(selectedCompanyId ?? ""), "types"],
     queryFn: () => casesApi.listTypes(selectedCompanyId!),
@@ -147,7 +148,7 @@ export function Cases() {
             data-page-search-target="true" onChange={event => setFilter("q", event.target.value)} className="h-8 pl-8" />
         </div>
         <p role="status" className="whitespace-nowrap text-xs text-muted-foreground">
-          {casesQuery.isFetching ? (casesQuery.isPending ? "Loading cases…" : "Updating cases…")
+          {casesWaiting ? "Loading cases…" : casesQuery.isFetching ? "Updating cases…"
             : (casesQueryView.kind === "error") ? ""
               : page > 1 && records.length > 0 ? `${offset + 1}–${offset + records.length} cases`
                 : `${records.length}${hasNext ? "+" : ""} ${records.length === 1 && !hasNext ? "case" : "cases"}`}
@@ -186,7 +187,7 @@ export function Cases() {
         }}>Retry filters</Button>
       </div> : null}
 
-      {casesQuery.isPending ? <div aria-hidden="true" className="space-y-2">
+      {casesWaiting ? <div aria-hidden="true" className="space-y-2">
         {Array.from({ length: 6 }, (_, index) => <Skeleton key={index} className="h-16 w-full rounded-none" />)}
       </div> : (casesQueryView.kind === "error") ? <div role="alert" className="flex flex-wrap items-center gap-3 py-6 text-sm">
         <p>Cases couldn’t be loaded.</p>
