@@ -124,7 +124,8 @@ scenarios:
       The agent explains the personal primary-agent choice and directs the person to Morgan's
       supported profile control, including the replacement confirmation. After the human action,
       the preference belongs only to that person and company; a valid recent chat can still
-      reopen first. Chat does not falsely report a preference write by the agent.
+      reopen first. Chat does not falsely report a preference write by the agent or invent a
+      primary setting in the conversation picker.
   - id: agents.pause-agent
     capabilities:
       - agents/lifecycle
