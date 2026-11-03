@@ -1403,6 +1403,11 @@ const ISSUE_WAKE_DIAGNOSTIC_KNOWN_SOURCES = new Set([
 ]);
 
 const ISSUE_WAKE_DIAGNOSTIC_KNOWN_REASONS = new Set([
+  "execution_owner_active",
+  "execution_reconciliation_required",
+  "execution_review_requested",
+  "execution_approval_requested",
+  "execution_changes_requested",
   "issue_execution_deferred",
   "chat_task_completed",
   "issue_assigned",
@@ -1592,6 +1597,9 @@ function buildIssueWakeDiagnosis(input: {
   }
   if (latest?.kind === "wake_request") {
     if (latest.status === "deferred_issue_execution") {
+      if (latest.reason === "execution_owner_active") {
+        return "The previous execution still owns its process or environment lease. This handoff is saved and will be checked again after cleanup; no successor can start until ownership is released.";
+      }
       return `The most recent wake for ${blockerDiagnosticLabel(input.issue)} is deferred${wakeDiagnosticReasonPhrase(
         latest.reason,
       )}.`;

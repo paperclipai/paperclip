@@ -47,6 +47,7 @@ import { issueRecoveryActionService } from "../../../services/issue-recovery-act
 import { readContinuationAttempt } from "../../../services/recovery/run-liveness-continuations.js";
 import { withRecoveryContext } from "../../../services/recovery/status-only-context.js";
 import { parseIssueExecutionState } from "../../../services/issue-execution-policy.js";
+import { handoffWakeKey, readHandoffWake } from "../../../services/heartbeat/handoff-wake.js";
 import {
   queuedCommentIdsFromWakePayload,
   withQueuedCommentIdsInWakePayload,
@@ -229,7 +230,9 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
     },
 
     async findNextDeferredWake({ companyId, issueId, excludedWakeIds }) {
+      const retainedHandoffIds: string[] = [];
       while (true) {
+        const excluded = [...(excludedWakeIds ?? []), ...retainedHandoffIds];
         const row = await tx
           .select()
           .from(agentWakeupRequests)
@@ -237,7 +240,7 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
             and(
               eq(agentWakeupRequests.companyId, companyId),
               eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS),
-              excludedWakeIds?.length ? notInArray(agentWakeupRequests.id, excludedWakeIds) : undefined,
+              excluded.length ? notInArray(agentWakeupRequests.id, excluded) : undefined,
               sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
               interruptQueueId ? eq(agentWakeupRequests.id, interruptQueueId) : undefined,
               interruptQueueId ? eq(agentWakeupRequests.agentId, run.agentId) : undefined,
@@ -247,6 +250,20 @@ function buildTransaction(tx: Db, deps: WakeQueuePostgresAdapterDeps, db: Db, ru
           .limit(1)
           .then((rows) => rows[0] ?? null);
         if (!row) return null;
+        const handoff = readHandoffWake(row.payload);
+        if (handoff) {
+          const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+          if (!issue || handoff.key !== handoffWakeKey(issue, row.agentId, handoff.reason)) {
+            await tx.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date(),
+              error: "Execution handoff no longer matches the current assignment or review stage",
+            }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, row.id),
+              eq(agentWakeupRequests.status, DEFERRED_WAKE_STATUS)));
+            continue;
+          }
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionHandoff, companyId);
+          retainedHandoffIds.push(row.id);
+          continue;
+        }
         const candidate = toDeferredWakeCandidate(row);
         try {
           const authorizedFailedChatRetry = await authorizeFailedChatRunRetryWake(

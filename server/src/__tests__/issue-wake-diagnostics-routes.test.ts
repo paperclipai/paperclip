@@ -267,7 +267,8 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(serialized).not.toContain("\"error\"");
   });
 
-  it.each(["chat_task_completed", "issue_execution_deferred"])("preserves the known %s reason without exposing completion payloads", async reason => {
+  it.each(["chat_task_completed", "issue_execution_deferred", "execution_reconciliation_required", "execution_review_requested",
+    "execution_approval_requested", "execution_changes_requested", "execution_owner_active"])("preserves the known %s reason without exposing completion payloads", async reason => {
     const company = await seedCompany(db);
     const agent = await seedAgent(db, company.id);
     const issue = await seedIssue(db, { companyId: company.id, title: "Completion target", assigneeAgentId: agent.id });
@@ -278,6 +279,10 @@ describeEmbeddedPostgres("issue wake diagnostics route", () => {
     expect(res.status).toBe(200);
     expect(res.body.events).toMatchObject([{ reason, status: "deferred_issue_execution", source: "automation" }]);
     expect(JSON.stringify(res.body)).not.toContain("PRIVATE_DELIVERY_ID");
+    if (reason === "execution_owner_active") {
+      expect(res.body.diagnosis).toContain("checked again after cleanup");
+      expect(res.body.diagnosis).toContain("no successor can start until ownership is released");
+    }
   });
 
   it("returns null diagnosis for an unblocked issue with no wake history", async () => {
