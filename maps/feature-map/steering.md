@@ -93,12 +93,7 @@ The explicit [follow-up/Stop/resume journey](../../tests/runner-e2e/followup-sto
 requires a later user message before continuation. The
 [database Stop accounting regression](../../server/src/services/native-runtime/native-stop-accounting.integration.test.ts)
 checks complete and late receipts without another provider turn. These are
-separate scopes; database success does not establish deployed or Slack acceptance. The
-[delayed-finalization database regression](../../server/src/__tests__/native-run-projection-work.test.ts)
-uses actual run-only Stop around accepted-result and workspace-finalization
-boundaries. It preserves cancelled run/wake history while the existing server
-arbiter evaluates the accepted task result, then verifies idle projection recovery. It provides fixture evidence,
-not provider termination or hosted acceptance.
+separate scopes; database success does not establish deployed or Slack acceptance.
 
 Manual: queue three distinguishable messages. Edit one, reorder them, reload,
 and confirm the saved order. Discard one and confirm it never reaches execution.
