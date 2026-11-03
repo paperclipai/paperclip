@@ -1308,6 +1308,26 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     expect(Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Approve & run")?.disabled).toBe(true);
   });
 
+  it.each(["argumentsSummaryJson", "argumentsHash"] as const)("rejects oversized whitespace before trimming %s", field => {
+    const interaction = structuredClone(pendingToolActionWriteInteraction);
+    const oversized = " ".repeat(field === "argumentsSummaryJson" ? 20_001 : 256);
+    interaction.payload.toolAction![field] = oversized;
+    const trim = String.prototype.trim;
+    let oversizedTrimCalls = 0;
+    const spy = vi.spyOn(String.prototype, "trim").mockImplementation(function (this: string) {
+      if (String(this) === oversized) oversizedTrimCalls++;
+      return trim.call(this);
+    });
+    try {
+      const host = renderCard({ interaction });
+      expect(host.querySelector("details")).toBeNull();
+      expect(host.textContent).toContain("Request arguments are unavailable.");
+      expect(oversizedTrimCalls).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("keeps the destructive request warning and approval styling", () => {
     const host = renderCard({ interaction: pendingToolActionDestructiveInteraction, onAcceptInteraction: vi.fn(), onRejectInteraction: vi.fn() });
     expect(host.textContent).toContain("cannot be undone");
