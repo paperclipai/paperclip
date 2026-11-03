@@ -840,6 +840,8 @@ export function Routines() {
           issues={routineExecutionIssues ?? []}
           isLoading={recentRunsLoading || recentRunsView.kind === "reconnecting"}
           error={recentRunsView.kind === "error" ? (recentRunsView.error as Error) : null}
+          onRetry={recentRunsView.retry}
+          retrying={recentRunsView.isFetching}
           agents={agents}
           projects={projects}
           liveIssueIds={liveIssueIds}

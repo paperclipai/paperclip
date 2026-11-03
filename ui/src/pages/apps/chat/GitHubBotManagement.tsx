@@ -75,13 +75,13 @@ export function GitHubRepositoryAccess({
     if (scroller.current) scroller.current.scrollTop = 0;
   }, [search]);
   useEffect(() => {
-    if (!list.hasNextPage || list.isFetching || listView.kind === "error" || pending || !more.current || typeof IntersectionObserver === "undefined") return;
+    if (!list.hasNextPage || list.isFetching || list.isError || listView.kind === "error" || pending || !more.current || typeof IntersectionObserver === "undefined") return;
     const observer = new IntersectionObserver(([entry]) => {
       if (entry?.isIntersecting) void list.fetchNextPage({ cancelRefetch: false });
     }, { root: scroller.current });
     observer.observe(more.current);
     return () => observer.disconnect();
-  }, [list.hasNextPage, list.isFetching, listView.kind, list.fetchNextPage, pending]);
+  }, [list.hasNextPage, list.isFetching, list.isError, listView.kind, list.fetchNextPage, pending]);
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between gap-3">

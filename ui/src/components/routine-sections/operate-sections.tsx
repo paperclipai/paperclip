@@ -41,6 +41,8 @@ export function RunsSection() {
       issues={issues ?? []}
       isLoading={isLoading || issuesView.kind === "reconnecting"}
       error={issuesView.kind === "error" ? (issuesView.error as Error) : null}
+      onRetry={issuesView.retry}
+      retrying={issuesView.isFetching}
       agents={agents}
       projects={projects}
       liveIssueIds={new Set(hasLiveRun && activeIssueId ? [activeIssueId] : [])}

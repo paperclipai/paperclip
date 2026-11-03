@@ -18,8 +18,8 @@ vi.mock("@/api/browser-use", () => ({ browserUseApi: {
 let root: Root, host: HTMLDivElement, cache: QueryClient;
 let hidden = false, paneVisible = true;
 const browser: TaskBrowser = { id: "browser", sessionId: "session", issueId: "task", status: "idle", runStatus: "completed", progress: null, error: null, costCents: 0, idleDeadline: null, expiresAt: null, createdAt: "2026-09-29T00:00:00Z" };
-async function render(active = true) {
-  await act(async () => root.render(<QueryClientProvider client={cache}><TooltipProvider><TaskBrowserPanel issueId="task" browser={browser} active={active} /></TooltipProvider></QueryClientProvider>));
+async function render(active = true, selectedBrowser = browser) {
+  await act(async () => root.render(<QueryClientProvider client={cache}><TooltipProvider><TaskBrowserPanel issueId="task" browser={selectedBrowser} active={active} /></TooltipProvider></QueryClientProvider>));
 }
 async function tick(ms: number) { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); }
 async function viewerLoaded() { await act(async () => host.querySelector('iframe')!.dispatchEvent(new Event('load'))); }
@@ -154,4 +154,30 @@ it("ignores a viewer response for a previous browser", async () => {
   await act(async () => root.render(<ConnectivityProvider store={store}><QueryClientProvider client={cache}><TooltipProvider><TaskBrowserPanel issueId="task" browser={{ ...browser, id: "browser-2" }} /></TooltipProvider></QueryClientProvider></ConnectivityProvider>));
   await act(async () => { resolveFirst({ url: "https://live.browser-use.com/first", viewport: "default" }); });
   expect(host.querySelector("iframe")?.getAttribute("src")).toBe("https://live.browser-use.com/second");
+});
+
+
+it("accepts the first fixed viewport and control state after switching browsers", async () => {
+  vi.spyOn(HTMLIFrameElement.prototype, "getBoundingClientRect").mockReturnValue({ width: 1000, height: 700 } as DOMRect);
+  vi.mocked(browserUseApi.viewer).mockResolvedValueOnce({ url: "https://live.browser-use.com/fixed", viewport: "phone", viewportState: { preset: "phone", width: 390, height: 844 } });
+  await render();
+  await viewerLoaded(); await tick(1000);
+  await act(async () => host.querySelector('[aria-label="Browser options"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+  expect(document.body.textContent).toContain("Phone");
+  await act(async () => document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+  expect(browserUseApi.resize).not.toHaveBeenCalled();
+  vi.mocked(browserUseApi.viewer).mockResolvedValueOnce({ url: "https://live.browser-use.com/other", viewport: "tablet", viewportState: { preset: "tablet", width: 768, height: 1024 } });
+  await render(true, { ...browser, id: "other-browser" });
+  await viewerLoaded(); await tick(1000);
+  await act(async () => host.querySelector('[aria-label="Browser options"]')!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+  expect(document.body.textContent).toContain("Tablet");
+  expect(browserUseApi.resize).not.toHaveBeenCalled();
+});
+
+
+it("accepts initial viewer control state before automatic sizing is enabled", async () => {
+  vi.mocked(browserUseApi.viewer).mockResolvedValueOnce({ url: "https://live.browser-use.com/controlled", viewport: "fit", viewportState: { preset: "fit", controlledElsewhere: true } });
+  await render();
+  expect(host.textContent).toContain("Size follows another viewer");
+  expect(browserUseApi.resize).not.toHaveBeenCalled();
 });

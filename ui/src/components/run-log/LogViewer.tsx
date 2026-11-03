@@ -362,7 +362,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   const persistedLog = useResilientFetch({
     key: ["run-log", run.companyId, run.id, run.logRef ?? null, isLive ? null : run.logBytes, shouldPollShellLog],
     enabled: visible && logSourceEnabled,
-    refetchInterval: shouldPollShellLog && !stream.healthy ? 2000 : false,
+    refetchInterval: logSequenceRef.current.needsCatchup || (shouldPollShellLog && !stream.healthy) ? 2000 : false,
     fetcher: async (signal) => {
       const offset = logOffsetRef.current;
       try {
