@@ -133,6 +133,11 @@ queda en el workspace de un run:
   reporte y seguí con el resto de las etapas.
 - No releas un archivo que ya leíste en este run. No re-listes un directorio que
   ya listaste.
+- **No re-medas lo que ya está medido en el issue.** Si el hilo ya tiene un
+  cuadro, una sonda o un veredicto con fecha, partí de ahí y actualizá sólo lo
+  que cambió. Re-medir todo desde cero es la forma más común de quemar una
+  corrida entera (un triaje de portfolio son ~150k tokens si no se reutiliza el
+  cuadro previo).
 - No esperes a otro agente haciendo polling. Si dependés de otro, dejá el
   handoff y seguí; el comentario en el issue lo despierta.
 - No repitas llamadas de diagnóstico para "confirmar" algo que ya te dijo un
