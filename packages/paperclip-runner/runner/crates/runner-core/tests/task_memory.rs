@@ -22,6 +22,7 @@ fn only_the_launch_flag_adds_the_note_and_the_monitor() {
     let task_cgroup: PathBuf = directory.join("task-a");
     fs::create_dir(&task_cgroup).unwrap();
     fs::write(directory.join("memory.max"), "6442450944\n").unwrap();
+    fs::write(task_cgroup.join("memory.events"), "oom_kill 0\n").unwrap();
     set_task_cgroup(task_cgroup);
 
     let instructions = instructions_with_memory_note("Do the work.", 4096);

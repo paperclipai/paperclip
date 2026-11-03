@@ -6,14 +6,14 @@
 use crate::durable::{
     DurableRunnerConfig, DurableRunnerError, DurableState, DurableStateStore, EventPriority,
 };
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::json;
 use std::borrow::Cow;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
-const CHECK_INTERVAL: Duration = Duration::from_secs(2);
 const MAX_NOTICES: u32 = 64;
 const BYTES_PER_GIB: u64 = 1 << 30;
 
@@ -99,26 +99,43 @@ pub fn instructions_with_memory_note(instructions: &str, max_bytes: usize) -> Co
     }
 }
 
-/// Records a run notice when the kernel reports a new kill in this task.
+/// Records a run notice when the kernel reports a new kill in this task. The
+/// kernel signals each change to memory.events, so an idle Runner reads nothing.
 pub struct TaskMemoryMonitor {
     task_cgroup: PathBuf,
-    reported: Option<u64>,
+    reported: u64,
     notices: u32,
-    next_check: Instant,
+    changed: Arc<AtomicBool>,
+    _watcher: RecommendedWatcher,
 }
 
 impl TaskMemoryMonitor {
     pub fn new() -> Option<Self> {
-        TASK_CGROUP.get().cloned().map(Self::for_cgroup)
+        TASK_CGROUP.get().cloned().and_then(Self::for_cgroup)
     }
 
-    fn for_cgroup(task_cgroup: PathBuf) -> Self {
-        Self {
+    /// Runner takes the starting count before it executes any command, so work it
+    /// starts is counted and a restarted Runner does not report earlier kills.
+    fn for_cgroup(task_cgroup: PathBuf) -> Option<Self> {
+        let changed = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&changed);
+        let mut watcher = notify::recommended_watcher(move |_| {
+            signal.store(true, Ordering::Relaxed);
+        })
+        .ok()?;
+        watcher
+            .watch(
+                &task_cgroup.join("memory.events"),
+                RecursiveMode::NonRecursive,
+            )
+            .ok()?;
+        Some(Self {
+            reported: read_kills(&task_cgroup)?,
             task_cgroup,
-            reported: None,
             notices: 0,
-            next_check: Instant::now(),
-        }
+            changed,
+            _watcher: watcher,
+        })
     }
 
     pub fn poll(
@@ -127,41 +144,38 @@ impl TaskMemoryMonitor {
         state: &mut DurableState,
         store: &DurableStateStore,
     ) {
-        let now = Instant::now();
-        if now < self.next_check {
-            return;
-        }
-        self.next_check = now + CHECK_INTERVAL;
-        let Some(kills) = read_kills(&self.task_cgroup) else {
-            return;
-        };
-        // A restarted Runner must not report kills again from an earlier process.
-        let reported = *self.reported.get_or_insert(kills);
-        if kills <= reported {
-            return;
-        }
-        if state.lifecycle != "ready"
+        // A change stays pending until a run can record it.
+        if self.notices >= MAX_NOTICES
+            || !self.changed.load(Ordering::Relaxed)
+            || state.lifecycle != "ready"
             || state.warm_transition.is_some()
             || state.run_id != config.run_id
-            || self.notices >= MAX_NOTICES
         {
             return;
         }
-        if self.record(kills, reported, config, state, store).is_ok() {
+        self.changed.store(false, Ordering::Relaxed);
+        let Some(kills) = read_kills(&self.task_cgroup) else {
+            return;
+        };
+        if kills <= self.reported {
+            return;
+        }
+        if self.record(kills, config, state, store).is_ok() {
             self.notices += 1;
-            self.reported = Some(kills);
+            self.reported = kills;
+        } else {
+            self.changed.store(true, Ordering::Relaxed);
         }
     }
 
     fn record(
         &self,
         total: u64,
-        reported: u64,
         config: &DurableRunnerConfig,
         state: &mut DurableState,
         store: &DurableStateStore,
     ) -> Result<(), DurableRunnerError> {
-        let new_kills = total - reported;
+        let new_kills = total - self.reported;
         let limit = read_limit(&self.task_cgroup)
             .map(|limit| format!("{} ", format_limit(limit)))
             .unwrap_or_default();
@@ -198,6 +212,7 @@ impl TaskMemoryMonitor {
 mod tests {
     use super::*;
     use std::fs;
+    use std::time::{Duration, Instant};
     use uuid::Uuid;
 
     struct TestDirectory(PathBuf);
@@ -280,20 +295,29 @@ mod tests {
             .collect()
     }
 
-    fn poll_now(
+    /// Polls until a watcher event has had time to produce the wanted notices.
+    fn poll_for_notices(
         monitor: &mut TaskMemoryMonitor,
         config: &DurableRunnerConfig,
         state: &mut DurableState,
         store: &DurableStateStore,
+        wanted: usize,
     ) {
-        monitor.next_check = Instant::now();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while notices(state).len() < wanted && Instant::now() < deadline {
+            monitor.poll(config, state, store);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // Later events must not add a notice.
+        std::thread::sleep(Duration::from_millis(100));
         monitor.poll(config, state, store);
+        assert_eq!(notices(state).len(), wanted);
     }
 
     fn monitor(directory: &TestDirectory) -> TaskMemoryMonitor {
         directory.write_limit("6442450944\n");
         directory.write_kills(0);
-        TaskMemoryMonitor::for_cgroup(directory.task_cgroup())
+        TaskMemoryMonitor::for_cgroup(directory.task_cgroup()).unwrap()
     }
 
     #[test]
@@ -347,17 +371,14 @@ mod tests {
         let directory = TestDirectory::create();
         let (config, store, mut state) = setup(&directory);
         let mut monitor = monitor(&directory);
-        poll_now(&mut monitor, &config, &mut state, &store);
-        assert!(notices(&state).is_empty());
+        poll_for_notices(&mut monitor, &config, &mut state, &store, 0);
 
         directory.write_kills(1);
-        poll_now(&mut monitor, &config, &mut state, &store);
-        poll_now(&mut monitor, &config, &mut state, &store);
+        poll_for_notices(&mut monitor, &config, &mut state, &store, 1);
         directory.write_kills(4);
-        poll_now(&mut monitor, &config, &mut state, &store);
+        poll_for_notices(&mut monitor, &config, &mut state, &store, 2);
 
         let notices = notices(&state);
-        assert_eq!(notices.len(), 2);
         assert_eq!(notices[0]["schema"], "paperclip.provider.notice.v1");
         assert_eq!(notices[0]["noticeId"], "task-memory-kill-1");
         assert_eq!(notices[0]["severity"], "warning");
@@ -373,16 +394,19 @@ mod tests {
     }
 
     #[test]
-    fn monitor_ignores_kills_from_before_it_started() {
+    fn monitor_ignores_only_kills_from_before_it_started() {
         let directory = TestDirectory::create();
         let (config, store, mut state) = setup(&directory);
-        let mut monitor = monitor(&directory);
+        directory.write_limit("6442450944\n");
         directory.write_kills(5);
-        poll_now(&mut monitor, &config, &mut state, &store);
-        assert!(notices(&state).is_empty());
+        let mut monitor = TaskMemoryMonitor::for_cgroup(directory.task_cgroup()).unwrap();
+        // This kill comes after the start but before the first poll.
         directory.write_kills(6);
-        poll_now(&mut monitor, &config, &mut state, &store);
-        assert_eq!(notices(&state).len(), 1);
+        poll_for_notices(&mut monitor, &config, &mut state, &store, 1);
+        assert_eq!(
+            notices(&state)[0]["summary"],
+            "The 6 GiB task memory limit killed a process in this task (6 so far)."
+        );
     }
 
     #[test]
@@ -390,29 +414,56 @@ mod tests {
         let directory = TestDirectory::create();
         let (config, store, mut state) = setup(&directory);
         let mut monitor = monitor(&directory);
-        poll_now(&mut monitor, &config, &mut state, &store);
         directory.write_kills(2);
         state.lifecycle = "reconnecting".into();
-        poll_now(&mut monitor, &config, &mut state, &store);
-        assert!(notices(&state).is_empty());
+        poll_for_notices(&mut monitor, &config, &mut state, &store, 0);
         state.lifecycle = "ready".into();
-        poll_now(&mut monitor, &config, &mut state, &store);
+        poll_for_notices(&mut monitor, &config, &mut state, &store, 1);
+    }
+
+    #[test]
+    fn monitor_reads_nothing_until_the_file_changes() {
+        let directory = TestDirectory::create();
+        let (config, store, mut state) = setup(&directory);
+        let mut monitor = monitor(&directory);
+        directory.write_kills(3);
+        std::thread::sleep(Duration::from_millis(100));
+        // A read would now report 3 kills, so only the missing signal can stop it.
+        monitor.changed.store(false, Ordering::Relaxed);
+        monitor.poll(&config, &mut state, &store);
+        assert!(notices(&state).is_empty());
+        monitor.changed.store(true, Ordering::Relaxed);
+        monitor.poll(&config, &mut state, &store);
         assert_eq!(notices(&state).len(), 1);
     }
 
     #[test]
-    fn monitor_bounds_notices_and_checks_at_an_interval() {
+    fn monitor_bounds_notices() {
         let directory = TestDirectory::create();
         let (config, store, mut state) = setup(&directory);
         let mut monitor = monitor(&directory);
-        monitor.poll(&config, &mut state, &store);
-        directory.write_kills(1);
-        monitor.poll(&config, &mut state, &store);
-        assert!(notices(&state).is_empty());
-        for count in 1..=u64::from(MAX_NOTICES) + 5 {
+        for count in 1..=u64::from(MAX_NOTICES) {
             directory.write_kills(count);
-            poll_now(&mut monitor, &config, &mut state, &store);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while notices(&state).len() < count as usize && Instant::now() < deadline {
+                monitor.poll(&config, &mut state, &store);
+                std::thread::sleep(Duration::from_millis(1));
+            }
         }
         assert_eq!(notices(&state).len(), MAX_NOTICES as usize);
+        directory.write_kills(u64::from(MAX_NOTICES) + 1);
+        poll_for_notices(
+            &mut monitor,
+            &config,
+            &mut state,
+            &store,
+            MAX_NOTICES as usize,
+        );
+    }
+
+    #[test]
+    fn monitor_needs_a_cgroup_with_memory_accounting() {
+        let directory = TestDirectory::create();
+        assert!(TaskMemoryMonitor::for_cgroup(directory.task_cgroup()).is_none());
     }
 }
