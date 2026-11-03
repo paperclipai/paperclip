@@ -35,15 +35,23 @@ it("binds closed rejection shapes to the actual offered finish schema without re
     });
     expect(rejected.result.isError).toBe(true);
   }
+  const unrelated = await rpc(bridge, 8, "tools/call", {
+    name: "paperclip_finish", arguments: { ...report, summary: 42, continuation: null, PRIVATE_FIELD: "PRIVATE_INPUT_VALUE" },
+  });
+  expect(unrelated.result.isError).toBe(true);
   expect(handler).toHaveBeenCalledTimes(2);
   expect(messages.map(message => JSON.parse(message))).toEqual([
     { schema: "paperclip.opencode.finish-input-diagnostic/v1", stage: "offered", schemaSha256: digest },
-    ...["string", "array", "number", "boolean"].map(continuationShape => ({
+    ...["string", "array", "number", "boolean"].map((continuationShape, index) => ({
       schema: "paperclip.opencode.finish-input-diagnostic/v1", stage: "input_rejected",
-      schemaSha256: digest, rootShape: "object", continuationShape,
+      schemaSha256: digest, callIdSha256: createHash("sha256").update(String(index + 4)).digest("hex"),
+      validationCategory: "continuation", rootShape: "object", continuationShape,
     })),
+    { schema: "paperclip.opencode.finish-input-diagnostic/v1", stage: "input_rejected",
+      schemaSha256: digest, callIdSha256: createHash("sha256").update("8").digest("hex"),
+      validationCategory: "other", rootShape: "object", continuationShape: "null" },
   ]);
-  expect(JSON.stringify(messages)).not.toMatch(/PRIVATE_INPUT_VALUE|Completed|criteria|continuation.*must|instancePath/);
+  expect(JSON.stringify(messages)).not.toMatch(/PRIVATE_INPUT_VALUE|PRIVATE_FIELD|Completed|criteria|continuation.*must|instancePath/);
 });
 
 it("reports the effective supplied schema and bounds diagnostics without admitting rejected inputs", async () => {
@@ -63,9 +71,9 @@ it("reports the effective supplied schema and bounds diagnostics without admitti
   expect(handler).not.toHaveBeenCalled();
   expect(messages).toHaveLength(9);
   expect(JSON.parse(messages[0]!)).toMatchObject({ schemaSha256: createHash("sha256").update(JSON.stringify(inputSchema)).digest("hex") });
-  expect(JSON.parse(messages[1]!)).toMatchObject({ rootShape: "array", continuationShape: "omitted" });
-  expect(JSON.parse(messages[2]!)).toMatchObject({ rootShape: "object", continuationShape: "null" });
-  expect(messages.every(message => Buffer.byteLength(message) < 320)).toBe(true);
+  expect(JSON.parse(messages[1]!)).toMatchObject({ rootShape: "array", continuationShape: "omitted", validationCategory: "root" });
+  expect(JSON.parse(messages[2]!)).toMatchObject({ rootShape: "object", continuationShape: "null", validationCategory: "continuation" });
+  expect(messages.every(message => Buffer.byteLength(message) < 448)).toBe(true);
 });
 
 it("keeps diagnostics optional and nonfatal while preserving cancellation", async () => {
