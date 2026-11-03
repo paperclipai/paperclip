@@ -375,8 +375,8 @@ export async function readIdleSleepSafety(
         if (!owned() || !scheduledRoutines || !scheduledIssueMonitors) return undefined;
         const routine = await readIdleRoutineSchedule(tx, ownerId!, now());
         const issue = await readIdleIssueSchedule(tx, ownerId!, now());
-        diagnostic?.record("routines.schedule", routine.blocked ? "present" : "none");
-        diagnostic?.record("issues.schedule", issue.blocked ? "present" : "none");
+        diagnostic?.record("routines.schedule", routine.inspectionComplete === false ? "unknown" : routine.blocked ? "present" : "none");
+        diagnostic?.record("issues.schedule", issue.inspectionComplete === false ? "unknown" : issue.blocked ? "present" : "none");
         diagnostic?.expect(["deadlines.catalog"]);
         failureReason = "deadlines.catalog";
         if (routine.blocked || issue.blocked) deadlineProof = { blocked: true };
