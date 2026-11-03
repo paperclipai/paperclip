@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { ExternalLink, Loader2, Play, ScrollText, Wrench } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -31,12 +32,12 @@ const STATE_BADGE_CLASSES: Record<ActiveWorkspaceAccessState, string> = {
 };
 
 const STATE_LABELS: Record<ActiveWorkspaceAccessState, string> = {
-  provisioning: "Provisioning",
-  validating: "Validating clone",
-  ready: "Ready",
-  degraded: "Degraded",
-  repairing: "Repairing",
-  failed: "Failed",
+  get provisioning() { return t("localizationWorkspaces.accessState_provisioning"); },
+  get validating() { return t("localizationWorkspaces.accessState_validating"); },
+  get ready() { return t("localizationWorkspaces.accessState_ready"); },
+  get degraded() { return t("localizationWorkspaces.accessState_degraded"); },
+  get repairing() { return t("localizationWorkspaces.accessState_repairing"); },
+  get failed() { return t("localizationWorkspaces.accessState_failed"); },
 };
 
 const ACTION_ICONS = {
@@ -64,6 +65,7 @@ export function WorkspaceAccessCard({
   onViewLogs: () => void;
   errorMessage?: string | null;
 }) {
+  const { t } = useTranslation();
   const Icon = ACTION_ICONS[access.action.kind];
   const isWaiting = access.action.kind === "wait";
   const handlers: Record<WorkspaceAccessState["action"]["kind"], () => void> = {
@@ -115,14 +117,10 @@ export function WorkspaceAccessCard({
             {access.action.label}
           </Button>
           {access.state === "ready" && !access.handoffAvailable ? (
-            <span className="text-xs text-muted-foreground">
-              Signs in with the snapshot-local credentials captured when this clone was made.
-            </span>
+            <span className="text-xs text-muted-foreground">{t("workspaces.access.snapshotCredentials")}</span>
           ) : null}
           {access.state === "ready" && access.handoffAvailable ? (
-            <span className="text-xs text-muted-foreground">
-              Uses a single-use login handoff — no password needed.
-            </span>
+            <span className="text-xs text-muted-foreground">{t("workspaces.access.singleUseHandoff")}</span>
           ) : null}
         </div>
         {errorMessage ? (

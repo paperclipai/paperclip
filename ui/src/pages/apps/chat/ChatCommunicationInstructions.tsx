@@ -1,3 +1,5 @@
+import { chatUiErrorMessage, type ChatUiError } from "./chat-copy";
+import { t, useTranslation } from "@/i18n";
 import { useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -6,10 +8,11 @@ export function ChatCommunicationInstructions({ value, onSave }: {
   value: string;
   onSave: (instructions: string) => Promise<void>;
 }) {
+  useTranslation();
   const id = useId();
   const [draft, setDraft] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ChatUiError | null>(null);
   const [saved, setSaved] = useState(false);
   const text = draft ?? value;
   const dirty = text.trim() !== value;
@@ -25,15 +28,15 @@ export function ChatCommunicationInstructions({ value, onSave }: {
         setDraft(null);
         setSaved(true);
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Couldn’t save instructions. Try again.");
+        setError(cause instanceof Error ? cause.message : { key: "sep28Apps.instructionsFailed" });
       } finally {
         setPending(false);
       }
     }}>
       <div className="space-y-1">
-        <label id={`${id}-label`} htmlFor={id} className="text-sm font-semibold">Additional communication instructions</label>
+        <label id={`${id}-label`} htmlFor={id} className="text-sm font-semibold">{t("oct19Apps.additionalCommunicationInstructions")}</label>
         <p id={`${id}-help`} className="text-sm text-muted-foreground">
-          Applies to new conversations.
+          {t("oct19Apps.newConversationsOnly")}
         </p>
       </div>
       <Textarea
@@ -43,16 +46,16 @@ export function ChatCommunicationInstructions({ value, onSave }: {
         disabled={pending}
         maxLength={4000}
         rows={4}
-        placeholder="For example: Keep replies brief and explain technical terms."
+        placeholder={t("oct19Apps.communicationPlaceholder")}
         onChange={(event) => { setDraft(event.target.value); setSaved(false); setError(null); }}
       />
-      {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+      {error && <p role="alert" className="text-sm text-destructive">{chatUiErrorMessage(error)}</p>}
       <div className="flex items-center justify-between gap-3">
         <div>
-          {dirty ? <Button type="button" variant="ghost" disabled={pending} onClick={() => { setDraft(null); setError(null); setSaved(false); }}>Cancel</Button>
-            : saved ? <span role="status" className="text-sm text-muted-foreground">Saved. Applies to new tasks.</span> : null}
+          {dirty ? <Button type="button" variant="ghost" disabled={pending} onClick={() => { setDraft(null); setError(null); setSaved(false); }}>{t("pages.cliAuth.cancel")}</Button>
+            : saved ? <span role="status" className="text-sm text-muted-foreground">{t("sep28Apps.instructionsSaved")}</span> : null}
         </div>
-        <Button type="submit" disabled={!dirty || pending}>{pending ? "Saving…" : "Save instructions"}</Button>
+        <Button type="submit" disabled={!dirty || pending}>{pending ? t("localizationProjectRepositories.saving") : t("sep28Apps.saveInstructions")}</Button>
       </div>
     </form>
   );

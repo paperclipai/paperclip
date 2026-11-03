@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+
 /**
  * Shared error classification and user-facing copy.
  *
@@ -64,50 +66,50 @@ const UNAVAILABLE_BODY = "Paperclip is temporarily unavailable. Please try again
 
 const CODE_COPY: Record<string, { title: string; body: string }> = {
   tenant_app_unavailable: {
-    title: "Reconnecting to Paperclip",
-    body: "Paperclip is restarting or updating. Please try again in a moment.",
+    get title() { return t("nov02Core.error.tenantUnavailableTitle"); },
+    get body() { return t("nov02Core.error.tenantUnavailableBody"); },
   },
   tenant_app_starting: {
-    title: "Paperclip is starting",
-    body: "Paperclip is starting up. Please try again in a few seconds.",
+    get title() { return t("nov02Core.error.startingTitle"); },
+    get body() { return t("nov02Core.error.startingBody"); },
   },
   WORKER_UNAVAILABLE: {
-    title: "Plugin unavailable",
-    body: "This plugin is restarting. Please try again in a moment.",
+    get title() { return t("nov02Core.error.pluginTitle"); },
+    get body() { return t("nov02Core.error.pluginBody"); },
   },
   TIMEOUT: {
-    title: "Request timed out",
-    body: "This took too long to respond. Please try again in a moment.",
+    get title() { return t("nov02Core.error.timeoutTitle"); },
+    get body() { return t("nov02Core.error.timeoutBody"); },
   },
   // Issue-thread interaction resolution (moved from lib/interaction-resolution-error.ts).
   interaction_audience_denied: {
-    title: "You can’t respond to this card",
-    body: "You are not in this card's resolver audience.",
+    get title() { return t("nov02Core.error.interactionTitle"); },
+    get body() { return t("nov02Core.error.audienceBody"); },
   },
   interaction_forbidden: {
-    title: "You can’t respond to this card",
-    body: "You do not have permission to respond to this card.",
+    get title() { return t("nov02Core.error.interactionTitle"); },
+    get body() { return t("nov02Core.error.forbiddenInteractionBody"); },
   },
   interaction_settled: {
-    title: "Already handled",
-    body: "This request is no longer waiting for a decision.",
+    get title() { return t("nov02Core.error.settledTitle"); },
+    get body() { return t("nov02Core.error.settledBody"); },
   },
   interaction_submit_failed: {
-    title: "Couldn't submit",
-    body: "Couldn't submit. Try again.",
+    get title() { return t("nov02Core.error.submitTitle"); },
+    get body() { return t("nov02Core.error.submitBody"); },
   },
 };
 
 const KIND_COPY: Record<ErrorKind, { title: string; body: string }> = {
   // Moved from `ApiUnavailableError` (api/response.ts).
-  transient: { title: "Connection interrupted", body: UNAVAILABLE_BODY },
-  auth: { title: "Signed out", body: "Your session has ended. Sign in again to continue." },
-  forbidden: { title: "Not allowed", body: "You don’t have permission to do that." },
-  not_found: { title: "Not found", body: "This item doesn’t exist or was moved." },
-  conflict: { title: "Out of date", body: "This changed since you loaded it. Refresh and try again." },
-  invalid: { title: "Check your input", body: "Some details aren’t valid. Review them and try again." },
-  aborted: { title: "Cancelled", body: "The request was cancelled." },
-  unknown: { title: "Something went wrong", body: "An unexpected error occurred. Please try again." },
+  transient: { get title() { return t("nov02Core.error.transientTitle"); }, get body() { return t("nov02Core.error.transientBody"); } },
+  auth: { get title() { return t("nov02Core.error.authTitle"); }, get body() { return t("nov02Core.error.authBody"); } },
+  forbidden: { get title() { return t("nov02Core.error.forbiddenTitle"); }, get body() { return t("nov02Core.error.forbiddenBody"); } },
+  not_found: { get title() { return t("nov02Core.error.notFoundTitle"); }, get body() { return t("nov02Core.error.notFoundBody"); } },
+  conflict: { get title() { return t("nov02Core.error.conflictTitle"); }, get body() { return t("nov02Core.error.conflictBody"); } },
+  invalid: { get title() { return t("nov02Core.error.invalidTitle"); }, get body() { return t("nov02Core.error.invalidBody"); } },
+  aborted: { get title() { return t("nov02Core.error.abortedTitle"); }, get body() { return t("nov02Core.error.abortedBody"); } },
+  unknown: { get title() { return t("nov02Core.error.unknownTitle"); }, get body() { return t("nov02Core.error.unknownBody"); } },
 };
 
 /** Copy for a specific code or kind, for callers that build their own messages. */
@@ -277,7 +279,7 @@ export function describeError(err: unknown, options: DescribeErrorOptions = {}):
   else body = readableServerMessage(err) ?? fallback.body;
 
   const title = options.action && kind !== "transient"
-    ? `Couldn't ${options.action}`
+    ? t("nov02Core.error.actionTitle", { action: options.action })
     : (coded?.title ?? fallback.title);
   return { title, body, retryable };
 }

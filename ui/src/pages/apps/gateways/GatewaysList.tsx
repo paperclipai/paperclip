@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus, Search } from "lucide-react";
@@ -29,6 +30,7 @@ import {
 } from "./gateway-helpers";
 
 export function GatewaysList() {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { pushToast } = useToast();
@@ -39,11 +41,11 @@ export function GatewaysList() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Connectors", href: "/apps" },
-      { label: "Gateways" },
+      { label: t("localizationConnections.connectors16"), href: "/apps" },
+      { label: t("pages.apps.subNav.gateways") },
     ]);
     return () => setBreadcrumbs([]);
-  }, [setBreadcrumbs]);
+  }, [setBreadcrumbs, t]);
 
   const gatewaysQuery = useQuery({
     queryKey: gatewaysQueryKey(selectedCompanyId ?? "__none__"),
@@ -96,25 +98,25 @@ export function GatewaysList() {
       }),
     onSuccess: async (gateway) => {
       pushToast({
-        title: gateway.status === "active" ? "Gateway on" : "Gateway off",
+        title: gateway.status === "active" ? t("localizationApps.gatewayOn275") : t("localizationApps.gatewayOff276"),
         body:
           gateway.status === "active"
-            ? `${gateway.name} is exposing its tools again.`
-            : `${gateway.name} is off — every client goes silent.`,
+            ? t("localizationApps.gatewayExposingTools", { name: gateway.name })
+            : t("localizationApps.gatewayTurnedOff", { name: gateway.name }),
         tone: "success",
       });
       await queryClient.invalidateQueries({ queryKey: gatewaysQueryKey(selectedCompanyId!) });
     },
     onError: (error) =>
       pushToast({
-        title: "Couldn't update the gateway",
+        title: t("localizationApps.couldnTUpdateTheGateway279"),
         body: error instanceof Error ? error.message : String(error),
         tone: "error",
       }),
   });
 
   if (!selectedCompanyId) {
-    return <div className="p-6 text-sm text-muted-foreground">Select an organization to manage gateways.</div>;
+    return <div className="p-6 text-sm text-muted-foreground">{t("localizationApps.selectAnOrganizationToManageGateways280")}</div>;
   }
 
   const gateways = gatewaysQuery.data?.gateways ?? [];
@@ -133,11 +135,8 @@ export function GatewaysList() {
   return (
     <div className="max-w-5xl space-y-5">
       <header className="space-y-1">
-        <h1 className="text-2xl font-bold tracking-tight">Apps</h1>
-        <p className="text-sm text-muted-foreground">
-          A gateway is one safe MCP endpoint that exposes only the apps you assign. Hand it to a client
-          like Cursor or Claude Desktop.
-        </p>
+        <h1 className="text-2xl font-bold tracking-tight">{t("nav.apps")}</h1>
+        <p className="text-sm text-muted-foreground">{t("localizationApps.aGatewayIsOneSafeMCPEndpointThatExposesOnlyTh310")}</p>
       </header>
 
       {gatewaysQuery.isLoading ? (
@@ -157,15 +156,13 @@ export function GatewaysList() {
               <Input
                 value={search}
                 onChange={(event) => setSearch(event.target.value)}
-                placeholder="Search by name, app, or owner"
+                placeholder={t("localizationApps.searchByNameAppOrOwner311")}
                 className="pl-9"
-                aria-label="Search gateways"
+                aria-label={t("localizationApps.searchGateways312")}
               />
             </div>
             <Button onClick={() => setCreating(true)}>
-              <Plus className="mr-1.5 h-4 w-4" />
-              New gateway
-            </Button>
+              <Plus className="mr-1.5 h-4 w-4" />{t("localizationApps.newGateway289")}</Button>
           </div>
 
           {(() => {
@@ -180,7 +177,7 @@ export function GatewaysList() {
                 gateway,
                 profile,
                 scope: formatScope(gateway, projectNames, agentNames),
-                appsLabel: `${apps.length} ${apps.length === 1 ? "app" : "apps"}${
+                appsLabel: `${t("localizationApps.appCount", { count: apps.length })}${
                   profile ? ` · ${allowedToolsLabel(profile)}` : ""
                 }`,
                 active: activeTokenCount(gateway),
@@ -195,12 +192,12 @@ export function GatewaysList() {
                 disabled={toggleMutation.isPending}
                 onClick={(event) => event.stopPropagation()}
                 onCheckedChange={() => toggleMutation.mutate({ gateway })}
-                aria-label={`Turn ${gateway.name} ${isGatewayOn(gateway) ? "off" : "on"}`}
+                aria-label={isGatewayOn(gateway) ? t("localizationApps.turnGatewayOff", { name: gateway.name }) : t("localizationApps.turnGatewayOn", { name: gateway.name })}
               />
             );
             const empty = (
               <div className="px-4 py-8 text-center text-sm text-muted-foreground">
-                No gateways match “{search.trim()}”.
+                {t("localizationApps.noGatewaysMatch", { query: search.trim() })}
               </div>
             );
             return (
@@ -210,12 +207,12 @@ export function GatewaysList() {
                   <table className="w-full min-w-(--sz-40rem) text-sm">
                     <thead>
                       <tr className="border-b border-border bg-muted/40 text-left text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                        <th className="whitespace-nowrap px-4 py-2.5">Gateway</th>
-                        <th className="whitespace-nowrap px-4 py-2.5">Scope</th>
-                        <th className="whitespace-nowrap px-4 py-2.5">Apps</th>
-                        <th className="whitespace-nowrap px-4 py-2.5">Tokens</th>
-                        <th className="whitespace-nowrap px-4 py-2.5">Last used</th>
-                        <th className="whitespace-nowrap px-4 py-2.5 text-right">On</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">{t("localizationApps.gateway316")}</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">{t("localizationSkills.scope118")}</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">{t("nav.apps")}</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">{t("pages.userProfile.tokens")}</th>
+                        <th className="whitespace-nowrap px-4 py-2.5">{t("pages.apps.connections.columnLastUsed")}</th>
+                        <th className="whitespace-nowrap px-4 py-2.5 text-right">{t("pages.instanceSettings.on")}</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -232,7 +229,7 @@ export function GatewaysList() {
                           <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{scope}</td>
                           <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">{appsLabel}</td>
                           <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
-                            {active} active{expiring > 0 ? ` · ${expiring} expiring` : ""}
+                            {t("localizationApps.activeCount", { count: active })}{expiring > 0 ? t("localizationApps.expiringCount", { count: expiring }) : ""}
                           </td>
                           <td className="whitespace-nowrap px-4 py-3 text-muted-foreground">
                             {lastUsed ? <RelativeTime value={lastUsed} /> : "—"}
@@ -267,14 +264,14 @@ export function GatewaysList() {
                         <div className="shrink-0">{toggle(gateway)}</div>
                       </div>
                       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
-                        <MobileField label="Scope" value={scope} />
-                        <MobileField label="Apps" value={appsLabel} />
+                        <MobileField label={t("localizationSkills.scope118")} value={scope} />
+                        <MobileField label={t("nav.apps")} value={appsLabel} />
                         <MobileField
-                          label="Tokens"
-                          value={`${active} active${expiring > 0 ? ` · ${expiring} expiring` : ""}`}
+                          label={t("pages.userProfile.tokens")}
+                          value={`${t("localizationApps.activeCount", { count: active })}${expiring > 0 ? t("localizationApps.expiringCount", { count: expiring }) : ""}`}
                         />
                         <MobileField
-                          label="Last used"
+                          label={t("pages.apps.connections.columnLastUsed")}
                           value={lastUsed ? <RelativeTime value={lastUsed} /> : "—"}
                         />
                       </dl>
@@ -289,11 +286,8 @@ export function GatewaysList() {
           })()}
 
           <div className="rounded-lg border border-border bg-muted/30 px-4 py-3">
-            <div className="text-sm font-semibold text-foreground">Why a gateway?</div>
-            <p className="mt-1 text-sm text-muted-foreground">
-              You pick which apps go through it, who can use it, and how. Revoke the token, the whole
-              gateway goes silent — no app-by-app cleanup.
-            </p>
+            <div className="text-sm font-semibold text-foreground">{t("localizationApps.whyAGateway318")}</div>
+            <p className="mt-1 text-sm text-muted-foreground">{t("localizationApps.youPickWhichAppsGoThroughItWhoCanUseItAndHowR319")}</p>
           </div>
         </div>
       )}
@@ -310,6 +304,7 @@ export function GatewaysList() {
 
 /** One label:value pair inside a mobile stacked card. */
 function MobileField({ label, value }: { label: string; value: ReactNode }) {
+  useTranslation();
   return (
     <div className="min-w-0">
       <dt className="text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">{label}</dt>
@@ -319,17 +314,13 @@ function MobileField({ label, value }: { label: string; value: ReactNode }) {
 }
 
 function EmptyGateways({ onCreate }: { onCreate: () => void }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-2xl border border-dashed border-border p-12 text-center">
-      <h2 className="text-lg font-semibold text-foreground">No gateways yet</h2>
-      <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
-        Group your connected apps into one safe endpoint you can hand to a client, then revoke it in one
-        move.
-      </p>
+      <h2 className="text-lg font-semibold text-foreground">{t("localizationApps.noGatewaysYet320")}</h2>
+      <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">{t("localizationApps.groupYourConnectedAppsIntoOneSafeEndpointYouC321")}</p>
       <Button className="mt-5" onClick={onCreate}>
-        <Plus className="mr-1.5 h-4 w-4" />
-        New gateway
-      </Button>
+        <Plus className="mr-1.5 h-4 w-4" />{t("localizationApps.newGateway289")}</Button>
     </div>
   );
 }

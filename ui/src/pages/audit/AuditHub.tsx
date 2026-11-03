@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useCallback, useEffect } from "react";
 import { History } from "lucide-react";
 import { EmptyState } from "@/components/EmptyState";
@@ -14,12 +15,14 @@ import { AgentCommentary } from "./AgentCommentary";
 import { RoutineAuditActivity } from "./RoutineAuditActivity";
 import {
   AUDIT_SECTIONS,
+  auditSectionLabel,
   auditScopeFromSearchParams,
   auditSectionHref,
   type AuditSection,
 } from "./audit-navigation";
 
 export function AuditHub({ section }: { section: AuditSection }) {
+  const { t } = useTranslation();
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -44,10 +47,10 @@ export function AuditHub({ section }: { section: AuditSection }) {
   useEffect(() => {
     const current = AUDIT_SECTIONS.find((candidate) => candidate.value === section);
     setBreadcrumbs([
-      { label: "Audit", href: section === "activity" ? undefined : "/activity" },
-      ...(section === "activity" || !current ? [] : [{ label: current.label }]),
+      { label: t("localizationActivity.audit"), href: section === "activity" ? undefined : "/activity" },
+      ...(section === "activity" || !current ? [] : [{ label: auditSectionLabel(current.value) }]),
     ]);
-  }, [section, setBreadcrumbs]);
+  }, [section, setBreadcrumbs, t]);
 
   const handleModeChange = useCallback(
     (next: AuditFeedMode) => {
@@ -109,13 +112,13 @@ export function AuditHub({ section }: { section: AuditSection }) {
   }, [setSearchParams]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={History} message="Select an organization to view Audit." />;
+    return <EmptyState icon={History} message={t("localizationActivity.selectAuditOrg")} />;
   }
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">Audit</h1>
+        <h1 className="text-3xl font-semibold tracking-tight text-foreground">{t("localizationActivity.audit")}</h1>
       </div>
 
       <Tabs
@@ -125,7 +128,7 @@ export function AuditHub({ section }: { section: AuditSection }) {
           navigate(auditSectionHref(next, scope));
         }}
       >
-        <PageTabBar items={AUDIT_SECTIONS} value={section} align="start" />
+        <PageTabBar items={AUDIT_SECTIONS.map((item) => ({ ...item, label: auditSectionLabel(item.value) }))} value={section} align="start" />
       </Tabs>
 
       {section === "commentary" ? (

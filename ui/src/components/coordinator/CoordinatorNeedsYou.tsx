@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
@@ -33,6 +34,7 @@ import { CoordinatorTaskMotion } from "./CoordinatorTaskCommitment";
 type Group = "none" | "task" | "agent" | "project";
 
 function HistoryPanel({ companyId, agents, onClose, mobile = false }: { companyId: string; agents: Agent[]; onClose: () => void; mobile?: boolean }) {
+  useTranslation();
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
   const [outcome, setOutcome] = useState("");
@@ -50,32 +52,33 @@ function HistoryPanel({ companyId, agents, onClose, mobile = false }: { companyI
   const items = history.data?.pages.flatMap((page) => page.items) ?? [];
   const groups = new Map<string, typeof items>();
   for (const item of items) {
-    const label = groupBy === "task" ? item.issueIdentifier ?? item.issueTitle : groupBy === "agent" ? item.agentName ?? "Other agents" : groupBy === "project" ? item.projectName ?? "No project" : "";
+    const label = groupBy === "task" ? item.issueIdentifier ?? item.issueTitle : groupBy === "agent" ? item.agentName ?? t("nov02Root.copy2dc61bdad7") : groupBy === "project" ? item.projectName ?? t("nov02Root.copyf34c2be0d1") : "";
     groups.set(label, [...(groups.get(label) ?? []), item]);
   }
   const slot = typeof document !== "undefined" ? document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID) : null;
-  const tab = <SidePanelTab id="decision-history" label="Decision history" active onSelect={() => {}} onClose={onClose} />;
+  const tab = <SidePanelTab id="decision-history" label={t("nov02Root.copyb211a72680")} active onSelect={() => {}} onClose={onClose} />;
   return <div className="space-y-5" data-coordinator-decision-history>
-    {!mobile ? <>{slot ? createPortal(tab, slot) : tab}<h2 className="text-lg font-medium">Decision history</h2></> : null}
-    <ToolbarSearch query={search} onQueryChange={setSearch} label="Search decision history" placeholder="Search decisions or task IDs…" />
+    {!mobile ? <>{slot ? createPortal(tab, slot) : tab}<h2 className="text-lg font-medium">{t("nov02Root.copyb211a72680")}</h2></> : null}
+    <ToolbarSearch query={search} onQueryChange={setSearch} label={t("nov02Root.copy1945564f8c")} placeholder={t("nov02Root.copy30cc465366")} />
     <div className="grid grid-cols-2 gap-2">
-      <NativeSelect aria-label="Filter decision outcomes" value={outcome} onChange={(event) => setOutcome(event.target.value)}>
-        <option value="">All outcomes</option><option value="accepted">Approved</option><option value="answered">Answered</option><option value="rejected">Changes requested</option><option value="decided">Decided</option><option value="cancelled">Cancelled</option><option value="expired">Expired</option>
+      <NativeSelect aria-label={t("nov02Root.copy83cd18b6ed")} value={outcome} onChange={(event) => setOutcome(event.target.value)}>
+        <option value="">{t("nov02Root.copy1d7f920d0d")}</option><option value="accepted">{t("nov02Root.copy87b42e40c2")}</option><option value="answered">{t("nov02Root.copy665590354e")}</option><option value="rejected">{t("nov02Root.copy10a92a8ad3")}</option><option value="decided">{t("nov02Root.copy30ba702eee")}</option><option value="cancelled">{t("nov02Root.copyd353a99eb4")}</option><option value="expired">{t("nov02Root.copy424a2551d3")}</option>
       </NativeSelect>
-      <NativeSelect aria-label="Sort decision history" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option></NativeSelect>
-      <NativeSelect aria-label="Filter decision history by agent" value={agentId} onChange={(event) => setAgentId(event.target.value)} className="col-span-2"><option value="">All agents</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
-      <NativeSelect aria-label="Filter decision history by project" value={projectId} onChange={(event) => setProjectId(event.target.value)} className="col-span-2"><option value="">All projects</option>{(projects.data ?? []).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</NativeSelect>
-      <NativeSelect aria-label="Group decision history" value={groupBy} onChange={(event) => setGroupBy(event.target.value as Group)} className="col-span-2"><option value="none">No grouping</option><option value="task">By task</option><option value="agent">By agent</option><option value="project">By project</option></NativeSelect>
+      <NativeSelect aria-label={t("nov02Root.copyba964b9027")} value={sort} onChange={(event) => setSort(event.target.value as typeof sort)}><option value="newest">{t("nov02Root.copyffb6f5764b")}</option><option value="oldest">{t("nov02Root.copy6e2ebdab3c")}</option></NativeSelect>
+      <NativeSelect aria-label={t("nov02Root.copy054d244deb")} value={agentId} onChange={(event) => setAgentId(event.target.value)} className="col-span-2"><option value="">{t("nov02Root.copy54c32d3e2c")}</option>{agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
+      <NativeSelect aria-label={t("nov02Root.copyf001d03519")} value={projectId} onChange={(event) => setProjectId(event.target.value)} className="col-span-2"><option value="">{t("nov02Root.copy4b87271b6b")}</option>{(projects.data ?? []).map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</NativeSelect>
+      <NativeSelect aria-label={t("nov02Root.copy8172c3c20b")} value={groupBy} onChange={(event) => setGroupBy(event.target.value as Group)} className="col-span-2"><option value="none">{t("nov02Root.copya638b9f67f")}</option><option value="task">{t("nov02Root.copyf99a5eeffd")}</option><option value="agent">{t("nov02Root.copy0cb8a70228")}</option><option value="project">{t("nov02Root.copy9335958ece")}</option></NativeSelect>
     </div>
-    {history.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading decisions…</p> : null}
-    {history.isError ? <div role="alert" className="space-y-2 text-sm"><p>Decision history could not be loaded.</p><Button variant="outline" onClick={() => void history.refetch()}>Retry</Button></div> : null}
-    {!history.isPending && !history.isError && !items.length ? <p className="text-sm text-muted-foreground">No decisions match these filters.</p> : null}
-    <div className="space-y-4">{[...groups].map(([label, entries]) => <section key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{entries.map((item) => <div key={item.id} className="space-y-1"><Receipt item={item} onOpen={navigate} /><p className="px-1 text-xs text-muted-foreground"><time dateTime={item.resolvedAt}>{new Date(item.resolvedAt).toLocaleString()}</time></p></div>)}</section>)}</div>
-    {history.hasNextPage ? <Button variant="outline" disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? "Loading…" : "Load more decisions"}</Button> : null}
+    {history.isPending ? <p role="status" className="text-sm text-muted-foreground">{t("nov02Root.copy627476df62")}</p> : null}
+    {history.isError ? <div role="alert" className="space-y-2 text-sm"><p>{t("nov02Root.copyb57cd47b6a")}</p><Button variant="outline" onClick={() => void history.refetch()}>{t("nov02Root.copy942087cc2d")}</Button></div> : null}
+    {!history.isPending && !history.isError && !items.length ? <p className="text-sm text-muted-foreground">{t("nov02Root.copyd1bb591aa4")}</p> : null}
+    <div className="space-y-4">{[...groups].map(([label, entries]) => <section key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{entries.map((item) => <div key={item.id} className="space-y-1"><Receipt item={item} onOpen={navigate} /><p className="px-1 text-xs text-muted-foreground"><time dateTime={item.resolvedAt}>{new Date(item.resolvedAt).toLocaleString(i18n.resolvedLanguage)}</time></p></div>)}</section>)}</div>
+    {history.hasNextPage ? <Button variant="outline" disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? t("nov02Root.copyba3bbbe10d") : t("nov02Root.copy10e74bc684")}</Button> : null}
   </div>;
 }
 
 export function CoordinatorNeedsYou() {
+  useTranslation();
   const { selectedCompanyId } = useCompany();
   const { userId } = useCoordinatorWorkspaceEnabled();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -118,12 +121,12 @@ export function CoordinatorNeedsYou() {
     const result = new Map<string, DecisionHistoryItem[]>();
     for (const item of visibleRecentItems) {
       const label = groupBy === "task" ? item.issueIdentifier ?? item.issueTitle
-        : groupBy === "agent" ? item.agentName ?? "Other agents"
-          : groupBy === "project" ? item.projectName ?? "No project" : "";
+        : groupBy === "agent" ? item.agentName ?? t("nov02Root.copy2dc61bdad7")
+          : groupBy === "project" ? item.projectName ?? t("nov02Root.copyf34c2be0d1") : "";
       result.set(label, [...(result.get(label) ?? []), item]);
     }
     return [...result];
-  }, [visibleRecentItems, groupBy]);
+  }, [visibleRecentItems, groupBy, i18n.resolvedLanguage]);
   const pendingItems = useMemo(() => {
     const receipts = new Set(recentItems.map((item) => item.id));
     const items = new Map((feed.data?.items ?? []).map((item) => [`${item.sourceKind}:${item.subject.id}`, item]));
@@ -135,16 +138,16 @@ export function CoordinatorNeedsYou() {
     if (agentFilter && agentId !== agentFilter && item.originAgentName !== agentMap.get(agentFilter)?.name) return false;
     if (projectFilter && item.project?.id !== projectFilter) return false;
     return [item.subject.title, item.relatedIssue?.title, item.relatedIssue?.identifier, item.originAgentName, item.project?.name, attentionDetailLine(item)].join(" ").toLocaleLowerCase().includes(query.trim().toLocaleLowerCase());
-  }).sort((a, b) => (sort === "oldest" ? 1 : -1) * (Date.parse(a.activityAt) - Date.parse(b.activityAt))), [pendingItems, agentFilter, projectFilter, query, sort, agentMap]);
+  }).sort((a, b) => (sort === "oldest" ? 1 : -1) * (Date.parse(a.activityAt) - Date.parse(b.activityAt))), [pendingItems, agentFilter, projectFilter, query, sort, agentMap, i18n.resolvedLanguage]);
   const groups = useMemo(() => {
     const result = new Map<string, AttentionItem[]>();
     for (const item of filtered.slice(0, renderLimit)) {
-      const label = groupBy === "task" ? item.relatedIssue?.identifier ?? item.relatedIssue?.title ?? "Other decisions"
-        : groupBy === "agent" ? item.originAgentName ?? "Other agents" : groupBy === "project" ? item.project?.name ?? "No project" : "";
+      const label = groupBy === "task" ? item.relatedIssue?.identifier ?? item.relatedIssue?.title ?? t("nov02Root.copye8d0efb555")
+        : groupBy === "agent" ? item.originAgentName ?? t("nov02Root.copy2dc61bdad7") : groupBy === "project" ? item.project?.name ?? t("nov02Root.copyf34c2be0d1") : "";
       result.set(label, [...(result.get(label) ?? []), item]);
     }
     return [...result];
-  }, [filtered, groupBy, renderLimit]);
+  }, [filtered, groupBy, renderLimit, i18n.resolvedLanguage]);
   useEffect(() => {
     if (!deepLinkDecisionId || !selectedCompanyId || !pendingItems.some(item => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId)) return;
     // A saved decision link takes precedence over local toolbar filters and the
@@ -160,12 +163,12 @@ export function CoordinatorNeedsYou() {
   }, [deepLinkDecisionId, selectedCompanyId, pendingItems, filtered, query, agentFilter, projectFilter, renderLimit, reducedMotion, setSearchParams]);
   const projects = useMemo(() => [...new Map([
     ...pendingItems.flatMap((item) => item.project ? [[item.project.id, item.project.name] as const] : []),
-    ...recentItems.flatMap((item) => item.projectId ? [[item.projectId, item.projectName ?? "Unnamed project"] as const] : []),
-  ]).entries()], [pendingItems, recentItems]);
+    ...recentItems.flatMap((item) => item.projectId ? [[item.projectId, item.projectName ?? t("nov02Root.copyedba1e3834")] as const] : []),
+  ]).entries()], [pendingItems, recentItems, i18n.resolvedLanguage]);
   const filtersActive = Boolean(query.trim() || agentFilter || projectFilter);
   const closeHistory = useCallback(() => { setHistoryOpen(false); closePanel(); }, [closePanel]);
   const showHistory = () => { setHistoryOpen(true); if (!isMobile) setPanelVisible(true); };
-  useEffect(() => { setBreadcrumbs([{ label: "Needs You" }]); }, [setBreadcrumbs]);
+  useEffect(() => { setBreadcrumbs([{ label: t("nov02Root.copyecc0c1e742") }]); }, [setBreadcrumbs, i18n.resolvedLanguage]);
   useEffect(() => {
     setSettling([]); setHistoryOpen(false); setNow(Date.now()); closePanel();
     return closePanel;
@@ -191,32 +194,32 @@ export function CoordinatorNeedsYou() {
     void feed.refetch();
   };
   const duration = typeof document === "undefined" ? 0 : parseCssTimeMs(getComputedStyle(document.documentElement).getPropertyValue("--motion-duration-base")) / 1_000;
-  if (!selectedCompanyId) return <p className="text-sm text-muted-foreground">Choose a company to see its decisions.</p>;
-  return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you mx-auto w-full max-w-4xl space-y-6" aria-label="Needs You">
+  if (!selectedCompanyId) return <p className="text-sm text-muted-foreground">{t("nov02Root.copyba231bf587")}</p>;
+  return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you mx-auto w-full max-w-4xl space-y-6" aria-label={t("nov02Root.copyecc0c1e742")}>
     {isMobile ? <Sheet open={historyOpen} onOpenChange={open => { if (!open) closeHistory(); }}>
       <SheetContent side="bottom" aria-describedby={undefined} className="mobile-task-side-panel inset-0 h-dvh max-h-dvh w-full max-w-none gap-0 border-0 p-0 pt-(--sz-safe-top) pb-(--sz-safe-bottom)">
-        <SheetHeader><SheetTitle>Decision history</SheetTitle></SheetHeader>
+        <SheetHeader><SheetTitle>{t("nov02Root.copyb211a72680")}</SheetTitle></SheetHeader>
         <div className="min-h-0 flex-1 overflow-y-auto p-4"><HistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} onClose={closeHistory} mobile /></div>
       </SheetContent>
     </Sheet> : null}
-    <header className="flex items-center justify-between gap-3"><h1 className="text-2xl font-medium">Needs You</h1><Button variant="ghost" onClick={showHistory}><History className="size-4" />Decision history</Button></header>
-    <div role="toolbar" aria-label="Decisions controls" className="flex flex-wrap items-center gap-2">
-      <ToolbarSearch query={query} onQueryChange={setQuery} label="Search decisions" placeholder="Search decisions or task IDs…" />
-      <NativeSelect aria-label="Filter decisions by agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} className="w-auto"><option value="">All agents</option>{(agentQuery.data ?? []).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
-      <NativeSelect aria-label="Filter decisions by project" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} className="w-auto"><option value="">All projects</option>{projects.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</NativeSelect>
-      <NativeSelect aria-label="Group decisions" value={groupBy} onChange={(event) => setGroupBy(event.target.value as Group)} className="w-auto"><option value="none">No grouping</option><option value="task">By task</option><option value="agent">By agent</option><option value="project">By project</option></NativeSelect>
-      <NativeSelect aria-label="Sort decisions" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="w-auto"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></NativeSelect>
+    <header className="flex items-center justify-between gap-3"><h1 className="text-2xl font-medium">{t("nov02Root.copyecc0c1e742")}</h1><Button variant="ghost" onClick={showHistory}><History className="size-4" />{t("nov02Root.copyb211a72680")}</Button></header>
+    <div role="toolbar" aria-label={t("nov02Root.copy46d825044a")} className="flex flex-wrap items-center gap-2">
+      <ToolbarSearch query={query} onQueryChange={setQuery} label={t("nov02Root.copya941e56ee6")} placeholder={t("nov02Root.copy30cc465366")} />
+      <NativeSelect aria-label={t("nov02Root.copy2b6bef3668")} value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} className="w-auto"><option value="">{t("nov02Root.copy54c32d3e2c")}</option>{(agentQuery.data ?? []).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
+      <NativeSelect aria-label={t("nov02Root.copyacdc140d39")} value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} className="w-auto"><option value="">{t("nov02Root.copy4b87271b6b")}</option>{projects.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</NativeSelect>
+      <NativeSelect aria-label={t("nov02Root.copy1538bb8573")} value={groupBy} onChange={(event) => setGroupBy(event.target.value as Group)} className="w-auto"><option value="none">{t("nov02Root.copya638b9f67f")}</option><option value="task">{t("nov02Root.copyf99a5eeffd")}</option><option value="agent">{t("nov02Root.copy0cb8a70228")}</option><option value="project">{t("nov02Root.copy9335958ece")}</option></NativeSelect>
+      <NativeSelect aria-label={t("nov02Root.copy35a19db586")} value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="w-auto"><option value="newest">{t("nov02Root.copyffb6f5764b")}</option><option value="oldest">{t("nov02Root.copy6e2ebdab3c")}</option></NativeSelect>
     </div>
-    {feed.isPending ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Loading decisions…</p> : null}
-    {feed.isError ? <div role="alert" className="space-y-2"><p className="text-sm">Decisions could not be loaded.</p><Button variant="outline" onClick={() => void feed.refetch()}>Retry</Button></div> : null}
-    {!feed.isPending && !feed.isError && filtered.length === 0 ? <div className="space-y-3 py-8 text-center"><p className="text-sm text-muted-foreground">{filtersActive && !visibleRecentItems.length ? "No decisions match these filters." : pendingItems.length ? "No open decisions match these filters." : "You're caught up."}</p><Button variant="ghost" onClick={showHistory}>Open decision history<ArrowUpRight className="size-4" /></Button></div> : null}
+    {feed.isPending ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{t("nov02Root.copy627476df62")}</p> : null}
+    {feed.isError ? <div role="alert" className="space-y-2"><p className="text-sm">{t("nov02Root.copyebc96aa563")}</p><Button variant="outline" onClick={() => void feed.refetch()}>{t("nov02Root.copy942087cc2d")}</Button></div> : null}
+    {!feed.isPending && !feed.isError && filtered.length === 0 ? <div className="space-y-3 py-8 text-center"><p className="text-sm text-muted-foreground">{filtersActive && !visibleRecentItems.length ? t("nov02Root.copyd1bb591aa4") : pendingItems.length ? t("nov02Root.copy5d1ee46f99") : t("nov02Root.copy48254fca20")}</p><Button variant="ghost" onClick={showHistory}>{t("nov02Root.copy4e9f8d783f")}<ArrowUpRight className="size-4" /></Button></div> : null}
     {groups.map(([label, items]) => <div key={label} className="space-y-4">{label ? <h2 className="text-sm font-medium text-muted-foreground">{label}</h2> : null}{items.map((item) => {
       const issueId = item.relatedIssue?.id ?? String(item.subject.metadata?.issueId ?? "");
       const interaction = item.sourceKind === "issue_thread_interaction" && isInlineResolvable(item) && issueId;
       const decision = item.sourceKind === "decision" && isInlineResolvable(item);
       const stalledReview = item.sourceKind === "review" && item.subject.kind === "issue" && isInlineResolvable(item) && item.subject.metadata?.reviewAttentionState === "stalled";
       const taskRef = item.relatedIssue ?? (item.subject.kind === "issue" ? item.subject : null);
-      const taskLink = taskRef?.href ? <button type="button" onClick={() => { if (taskRef.href) navigate(taskRef.href); }} className="flex max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground"><span className="shrink-0">{taskRef.identifier ?? "Open task"}</span><span className="truncate">{taskRef.title}</span><ArrowUpRight className="size-4 shrink-0" /></button> : null;
+      const taskLink = taskRef?.href ? <button type="button" onClick={() => { if (taskRef.href) navigate(taskRef.href); }} className="flex max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground"><span className="shrink-0">{taskRef.identifier ?? t("nov02Root.copy6b5c9394cb")}</span><span className="truncate">{taskRef.title}</span><ArrowUpRight className="size-4 shrink-0" /></button> : null;
       const id = `${item.sourceKind}:${item.subject.id}`;
       const receipt = settlingIds.has(id) ? recentItems.find(entry => entry.id === id) : undefined;
       const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
@@ -229,15 +232,15 @@ export function CoordinatorNeedsYou() {
           onResolved(item);
         }} />
           : decision ? <DecisionResolver companyId={selectedCompanyId} decisionId={item.subject.id} originIssue={item.relatedIssue} agentMap={agentMap} onResolved={() => onResolved(item)} />
-          : stalledReview ? <><h2 className="text-lg font-medium">Choose how this task continues</h2><p className="text-sm">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p><StalledReviewActions footerSlot={taskLink} issueId={item.subject.id} companyId={selectedCompanyId} reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)} approveLabel="Mark task done" onResolved={() => { void feed.refetch(); void recent.refetch(); }} /></>
-          : <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p><Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>Open to review<ArrowUpRight className="size-4" /></Button></>}
+          : stalledReview ? <><h2 className="text-lg font-medium">{t("nov02Root.copy11a940b375")}</h2><p className="text-sm">{t("nov02Root.copy1e925f4404")}</p><StalledReviewActions footerSlot={taskLink} issueId={item.subject.id} companyId={selectedCompanyId} reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)} approveLabel={t("nov02Root.copyb33502efc8")} onResolved={() => { void feed.refetch(); void recent.refetch(); }} /></>
+          : <><h2 className="text-lg font-medium">{item.subject.title ?? item.whyNow}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p><Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>{t("nov02Root.copyc7bb7cad82")}<ArrowUpRight className="size-4" /></Button></>}
         {!interaction && !stalledReview ? taskLink : null}
       </article>}
       </CoordinatorTaskMotion>
       </motion.div>;
     })}</div>)}
-    {filtered.length > renderLimit ? <Button variant="outline" onClick={() => setRenderLimit((value) => value + 40)}>Show more decisions</Button> : null}
-    {visibleRecentItems.length ? <section className="space-y-3" aria-label="Recent Decisions"><h2 className="text-sm font-medium text-muted-foreground">Recent Decisions</h2>{recentGroups.map(([label, items]) => <div key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{items.map((item) => <motion.div layout={!reducedMotion} layoutId={reducedMotion ? undefined : item.id} transition={{ duration }} key={item.id}><Receipt item={item} onOpen={navigate} /></motion.div>)}</div>)}</section> : null}
-    {recent.isError ? <p role="alert" className="text-sm text-muted-foreground">Recent decisions could not be loaded. <button className="underline" onClick={() => void recent.refetch()}>Retry</button></p> : null}
+    {filtered.length > renderLimit ? <Button variant="outline" onClick={() => setRenderLimit((value) => value + 40)}>{t("nov02Root.copy2ac1733d89")}</Button> : null}
+    {visibleRecentItems.length ? <section className="space-y-3" aria-label={t("nov02Root.copy339d5d6374")}><h2 className="text-sm font-medium text-muted-foreground">{t("nov02Root.copy339d5d6374")}</h2>{recentGroups.map(([label, items]) => <div key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{items.map((item) => <motion.div layout={!reducedMotion} layoutId={reducedMotion ? undefined : item.id} transition={{ duration }} key={item.id}><Receipt item={item} onOpen={navigate} /></motion.div>)}</div>)}</section> : null}
+    {recent.isError ? <p role="alert" className="text-sm text-muted-foreground">{t("nov02Root.copyb39fb0cdcb")} <button className="underline" onClick={() => void recent.refetch()}>{t("nov02Root.copy942087cc2d")}</button></p> : null}
   </section></LayoutGroup>;
 }

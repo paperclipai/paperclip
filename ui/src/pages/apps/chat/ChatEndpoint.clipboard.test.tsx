@@ -11,6 +11,8 @@ import { ChatSetupSidebarProvider } from "@/context/ChatSetupSidebarContext";
 import { ChatSetupSidebar } from "@/components/chat/ChatSetupNavigation";
 import { ChatEndpointSetup } from "./ChatEndpointSetup";
 import { ChatEndpointDetail } from "./ChatEndpointDetail";
+import { i18n } from "@/i18n";
+import { chatUiErrorMessage, type ChatUiError } from "./chat-copy";
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -76,7 +78,8 @@ describe("chat setup and identity-link clipboard actions", () => {
   let execCommand: ReturnType<typeof vi.fn>;
   const secret = "synthetic-one-time-webhook-secret";
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     localStorage.clear();
     vi.spyOn(window, "open").mockReturnValue(null);
     mocks.listAgents.mockResolvedValue([{ id: "agent-a", name: "Maya", status: "idle" }]);
@@ -116,7 +119,7 @@ describe("chat setup and identity-link clipboard actions", () => {
         "/chat-identity/confirm?token=synthetic-private-confirmation-token",
     });
   });
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root.unmount());
     client.clear();
     container.remove();
@@ -124,6 +127,7 @@ describe("chat setup and identity-link clipboard actions", () => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
     vi.useRealTimers();
   });
   async function settle() {
@@ -659,6 +663,37 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(mocks.create).not.toHaveBeenCalled();
   });
 
+  it("switches setup EN → RU → EN without changing credentials, manifests, links, or connection requests", async () => {
+    await render("slack");
+    const credential = container.querySelector<HTMLInputElement>('input[type="password"]')!;
+    flushSync(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(credential, "synthetic-token-kept-in-form");
+      credential.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+    await click("View Slack App Manifest");
+    const manifest = document.querySelector<HTMLTextAreaElement>("textarea")!;
+    const manifestValue = manifest.value;
+    const reads = mocks.get.mock.calls.length;
+    const localError: ChatUiError = { key: "chatUi.privateKeyEmpty" };
+    const diagnostic = "Provider response: DO_NOT_TRANSLATE 403";
+    for (const language of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(language);
+      await settle();
+      expect(container.querySelector('input[type="password"]')).toBe(credential);
+      expect(credential.value).toBe("synthetic-token-kept-in-form");
+      expect(document.querySelector("textarea")).toBe(manifest);
+      expect(manifest.value).toBe(manifestValue);
+      expect(document.body.textContent).toContain(i18n.t("chatUi.chatEndpointSetup.slackAppManifest"));
+      expect(container.querySelector("h1")?.textContent).toContain("Slack");
+      expect(mocks.get).toHaveBeenCalledTimes(reads);
+      expect(mocks.generateSetupSecret).not.toHaveBeenCalled();
+      expect(chatUiErrorMessage(localError)).toContain(language === "ru" ? "Файл пуст" : "That file is empty");
+      expect(chatUiErrorMessage(diagnostic)).toBe(diagnostic);
+      expect(mocks.setBreadcrumbs.mock.calls.at(-1)?.[0]?.[1]?.label).toBe(i18n.t("chatUi.chatEndpointSetup.connectChat"));
+    }
+  });
+
   it("keeps manual existing-App recovery write-only without generating or copying credentials", async () => {
     await render("github");
     await click("I already have an App");
@@ -672,6 +707,45 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(container.textContent).not.toContain("Generate webhook secret");
     expect(mocks.generateSetupSecret).not.toHaveBeenCalled();
     expect(copied).toEqual([]);
+  });
+
+  it("preserves the complete Teams manifest and permission protocol while switching UI locale", async () => {
+    await render("microsoft-teams");
+    const manifest = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    expect(manifest).not.toBeNull();
+    const original = manifest.value;
+    const reads = mocks.get.mock.calls.length;
+    for (const language of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(language);
+      await settle();
+      expect(container.querySelector("textarea")).toBe(manifest);
+      expect(manifest.value).toBe(original);
+      const parsed = JSON.parse(manifest.value);
+      expect(parsed.authorization.permissions.resourceSpecific).toEqual([
+        { name: "ChannelMessage.Read.Group", type: "Application" },
+        { name: "ChatMessage.Read.Chat", type: "Application" },
+      ]);
+      expect(parsed.bots[0].commandLists[0].commands.map((command: { title: string }) => command.title)).toEqual(["/status", "/new", "/close"]);
+      expect(mocks.get).toHaveBeenCalledTimes(reads);
+      expect(mocks.setup).not.toHaveBeenCalled();
+    }
+  });
+
+  it("preserves Telegram command text inside localized provider instructions", async () => {
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    await render("telegram");
+    for (const language of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(language);
+      await settle();
+      const commands = [...container.querySelectorAll("code")].map((node) => node.textContent);
+      expect(commands).toContain("/newbot");
+      expect(commands).toContain("bot");
+      expect(commands).toContain("/task@bot_username <request>");
+      const button = [...container.querySelectorAll("button")].find((node) => node.textContent?.includes("BotFather"));
+      expect(button).toBeDefined();
+      flushSync(() => button!.click());
+      expect(open).toHaveBeenLastCalledWith("https://t.me/BotFather", "_blank", "noopener,noreferrer");
+    }
   });
 
   it("copies a reusable Slack invitation without granting access or exposing a private confirmation token", async () => {

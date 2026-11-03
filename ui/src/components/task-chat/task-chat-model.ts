@@ -112,6 +112,8 @@ export interface TaskChatMessageItem {
   kind: "message";
   author: TaskChatAuthorKind;
   authorName?: string;
+  /** Canonical provenance for render-time fallback localization; never stored in comments. */
+  humanAuthorFallback?: "board" | "you" | "user";
   /** Human identity comes from the company directory, matched by stored user ID. */
   authorUserId?: string | null;
   authorAvatarUrl?: string | null;
@@ -166,10 +168,12 @@ export interface TaskChatMessageItem {
    */
   presentation?: IssueCommentPresentation | null;
   metadata?: IssueCommentMetadata | null;
+  /** Original authorship, distinct from a system-notice presentation chosen by another author. */
+  sourceAuthorType?: string | null;
   chatMessage?: IssueCommentMetadata["chatMessage"];
   /** Agent that owns the source run, used to build run-detail links in metadata rows. */
   runAgentId?: string | null;
-  /** Raw comment timestamp (ISO) — the collapsed system row shows relative time. */
+  /** Raw comment timestamp (ISO) for locale-aware display; never a chronology override. */
   createdAtIso?: string;
 }
 
@@ -270,8 +274,11 @@ export interface TaskChatMarkerItem {
   /** An actionable credential denial is always expanded in the task conversation. */
   credentialAccess?: {
     agentName: string;
+    /** UI-only provenance; names that equal the fallback text remain verbatim. */
+    agentNameIsFallback?: boolean;
     credentialName?: string;
     deniedUser: string;
+    deniedUserKind?: "self" | "named" | "unknown";
     settingsHref: string;
   };
 }
@@ -284,6 +291,8 @@ export interface TaskChatUsageItem {
   /** Present when the measurement is not scoped to the current run. */
   label?: string;
   detail?: string;
+  /** Trusted local copy only; provider-supplied detail stays literal. */
+  detailMessage?: "providerSessionUsage" | "cumulativeSessionUsage";
 }
 
 export interface TaskChatActivityPhaseItem {
@@ -373,6 +382,9 @@ export interface TaskChatProviderActivityItem {
   status: TaskChatProviderActivityStatus;
   title: string;
   summary?: string;
+  /** Marks only the native parser's empty-message fallback. */
+  summaryMessage?: "providerNotice";
+  titleMessage?: "providerNotice";
   details: TaskChatProtocolDetail[];
   steps: TaskChatProtocolStep[];
   links: TaskChatProtocolLink[];

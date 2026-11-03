@@ -1,3 +1,4 @@
+import { t as translateOct26, useTranslation as useOct26Translation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { Repeat } from "lucide-react";
 import { Link } from "@/lib/router";
@@ -8,6 +9,7 @@ import { cn } from "../../lib/utils";
 import { PropertyRow } from "./primitives";
 
 export function RoutineOriginRow({ routineId }: { routineId: string }) {
+  useOct26Translation();
   const { data: routine } = useQuery({
     queryKey: queryKeys.routines.detail(routineId),
     queryFn: () => routinesApi.get(routineId),
@@ -17,7 +19,7 @@ export function RoutineOriginRow({ routineId }: { routineId: string }) {
   if (!title) return null;
 
   return (
-    <PropertyRow label="Routine">
+    <PropertyRow label={translateOct26("localizationActivity.routine")}>
       <Link
         to={`/routines/${routineId}`}
         className={cn(

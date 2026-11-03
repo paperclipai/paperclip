@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AiConnectionAccountIdentity, AiManagedConnectionSummary, ConnectionGrant, ToolConnection } from "@paperclipai/shared";
+import { i18n } from "@/i18n";
 import { AiConnectionAccountDetails } from "./AiConnectionAccountDetails";
 import { ManagedAiConnectionDetails } from "./ManagedAiConnectionDetails";
 
@@ -50,7 +51,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(async () => root.unmount());
+  await act(async () => { root.unmount(); await i18n.changeLanguage("en"); });
   client.clear();
   host.remove();
   vi.unstubAllGlobals();
@@ -134,4 +135,113 @@ it("reuses recent identity observations and invalidates them after reconnect", a
   expect(identityCalls()).toHaveLength(2);
   expect(host.textContent).toContain("new-account@example.test");
   expect(host.textContent).not.toContain("avery@example.test");
+});
+
+it("updates mounted account labels without refetching or changing provider and owner identities", async () => {
+  const before = JSON.stringify([account, grant, observation]);
+  await render();
+  const section = host.querySelector("section")!;
+  const details = host.querySelector("dl")!;
+  const calls = fetchMock.mock.calls.length;
+  for (const [locale, heading, provider, organization, method, access, owner] of [
+    ["en", "Connected account", "Claude account", "Organization", "Sign-in method", "Access", "Personal · Sam"],
+    ["ru", "Подключённый аккаунт", "Учётная запись Claude", "Организация", "Способ входа", "Доступ", "Личное · Sam"],
+    ["en", "Connected account", "Claude account", "Organization", "Sign-in method", "Access", "Personal · Sam"],
+  ] as const) {
+    await act(async () => { await i18n.changeLanguage(locale); });
+    expect(host.querySelector("section")).toBe(section);
+    expect(host.querySelector("dl")).toBe(details);
+    expect(section.getAttribute("aria-label")).toBe(heading);
+    expect(section.querySelector("h3")?.textContent).toBe(heading);
+    expect([...details.querySelectorAll("dt")].map(label => label.textContent)).toEqual([provider, organization, method, access]);
+    expect(section.textContent).toContain(owner);
+    expect(section.textContent).toContain("avery@example.test");
+    expect(section.textContent).toContain("Example team");
+    expect(fetchMock).toHaveBeenCalledTimes(calls);
+    expect(JSON.stringify([account, grant, observation])).toBe(before);
+  }
+});
+
+it("retranslates a pending account check without restarting or aborting it", async () => {
+  blocked = true;
+  await render();
+  const status = host.querySelector('[role="status"]')!;
+  for (const [locale, text] of [
+    ["en", "Checking account details…"],
+    ["ru", "Проверяем данные учётной записи…"],
+    ["en", "Checking account details…"],
+  ] as const) {
+    await act(async () => { await i18n.changeLanguage(locale); });
+    expect(host.querySelector('[role="status"]')).toBe(status);
+    expect(status.textContent).toBe(text);
+    expect(identityCalls()).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].aborted).toBe(false);
+  }
+});
+
+it.each([
+  ["unsupported", "Account details are not available for this sign-in method.", "Для этого способа входа данные учётной записи недоступны."],
+  ["connection_unavailable", "Reconnect or enable this connection to check its account details.", "Повторно подключите или включите это подключение, чтобы проверить данные учётной записи."],
+  ["authentication_required", "Reconnect this account to check its account details.", "Подключите эту учётную запись повторно, чтобы проверить её данные."],
+  ["permission_denied", "Anthropic did not permit this connection to read the account email.", "Anthropic не предоставил этому подключению доступ к адресу электронной почты учётной записи."],
+  ["rate_limited", "Anthropic limited this account check. Try again later.", "Anthropic ограничил проверку этой учётной записи. Повторите попытку позже."],
+  ["provider_unavailable", "Could not read the account details. Try again later.", "Не удалось получить данные учётной записи. Повторите попытку позже."],
+  ["invalid_response", "Anthropic did not return an account email.", "Anthropic не вернул адрес электронной почты учётной записи."],
+] as const)("retranslates only the canonical %s notice without another identity request", async (errorCode, message, russian) => {
+  observation = { ...known, status: errorCode === "rate_limited" || errorCode === "provider_unavailable" ? "error" : "unavailable", errorCode, message };
+  const before = JSON.stringify(observation);
+  await render();
+  const notice = host.querySelector("p")!;
+  const button = host.querySelector("button");
+  for (const [locale, text, retry] of [["en", message, "Retry account check"], ["ru", russian, "Повторить проверку учётной записи"], ["en", message, "Retry account check"]] as const) {
+    await act(async () => { await i18n.changeLanguage(locale); });
+    expect(host.querySelector("p")).toBe(notice);
+    expect(notice.textContent).toBe(text);
+    expect(host.querySelector("button")).toBe(button);
+    if (observation.status === "error") expect(button?.textContent).toBe(retry);
+    else expect(button).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(observation)).toBe(before);
+  }
+});
+
+it.each([
+  ["rate_limited", "RAW_CUSTOM_PROVIDER_DIAGNOSTIC"],
+  ["future_provider_status", "Anthropic limited this account check. Try again later."],
+  [undefined, "Anthropic limited this account check. Try again later."],
+  ["toString", "RAW_PROTOTYPE_NAMED_STATUS"],
+  ["permission_denied", "Anthropic limited this account check. Try again later."],
+] as const)("preserves unmatched notice %s and its account labels across locale changes", async (errorCode, message) => {
+  observation = { ...known, status: "error", errorCode: errorCode as AiConnectionAccountIdentity["errorCode"], message };
+  const before = JSON.stringify(observation);
+  await render();
+  const notice = host.querySelector('[role="alert"]');
+  for (const locale of ["en", "ru", "en"]) {
+    await act(async () => { await i18n.changeLanguage(locale); });
+    expect(host.querySelector('[role="alert"]')).toBe(notice);
+    expect(notice?.textContent).toBe(message);
+    expect(host.textContent).toContain("avery@example.test");
+    expect(host.textContent).toContain("Example team");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(observation)).toBe(before);
+  }
+});
+
+it.each(["personal", "shared"] as const)("translates missing identity labels for %s accounts without making an unsupported request", async ownership => {
+  const saved: AiManagedConnectionSummary = { ...account, method: "api_key", ownership, ownerName: undefined };
+  const before = JSON.stringify(saved);
+  await render(saved);
+  for (const [locale, missing, access] of [
+    ["en", "Not available", ownership === "shared" ? "Company shared" : "Personal · Account owner"],
+    ["ru", "Недоступно", ownership === "shared" ? "Общее для организации" : "Личное · Владелец аккаунта"],
+    ["en", "Not available", ownership === "shared" ? "Company shared" : "Personal · Account owner"],
+  ] as const) {
+    await act(async () => { await i18n.changeLanguage(locale); });
+    expect(host.textContent).toContain(missing);
+    expect(host.textContent).toContain(access);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(saved)).toBe(before);
+  }
 });

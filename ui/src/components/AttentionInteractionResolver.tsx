@@ -1,4 +1,5 @@
 import { useMemo, type ReactNode } from "react";
+import { useTranslation } from "@/i18n";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
@@ -61,6 +62,7 @@ export function AttentionInteractionResolver({
   footerSlot,
   onResolved,
 }: AttentionInteractionResolverProps) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
 
   const { data: interactions, isLoading, error } = useQuery({
@@ -138,7 +140,7 @@ export function AttentionInteractionResolver({
     return (
       <div className="space-y-3 py-3">
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
-          <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading decision…
+          <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("localizationFinalAudit.loadingDecision")}
         </div>
         <DecisionCardFooter leading={footerSlot} />
       </div>
@@ -149,7 +151,7 @@ export function AttentionInteractionResolver({
     return (
       <div className="space-y-3 py-3">
         <p className="text-xs text-muted-foreground">
-          This decision is no longer available — it may have been resolved elsewhere.
+          {t("localizationFinalAudit.decisionUnavailable")}
         </p>
         <DecisionCardFooter leading={footerSlot} />
       </div>

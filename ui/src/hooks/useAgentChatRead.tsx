@@ -4,6 +4,7 @@ import { isUuidLike } from "@paperclipai/shared";
 import { ApiError } from "@/api/client";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { useTranslation } from "@/i18n";
 
 type Seen = { id: string; at: number };
 const READ_RETRY_DELAYS = [500, 1_500];
@@ -12,6 +13,7 @@ const ChatReadContext = createContext<((message: Seen) => void) | null>(null);
 export function AgentChatReadProvider({ issueId, companyId, userId, children }: {
   issueId?: string; companyId: string; userId: string | null; children: ReactNode;
 }) {
+  const { t } = useTranslation();
   const client = useQueryClient();
   const [error, setError] = useState(false);
   const scope = useMemo(() => ({ active: true, pending: null as Seen | null, seenIds: new Set<string>(), sentAt: -Infinity,
@@ -86,7 +88,7 @@ export function AgentChatReadProvider({ issueId, companyId, userId, children }: 
     if (!scope.busy && scope.retryTimer === null) queueMicrotask(() => { void flush(); });
   }, [issueId, scope, flush]);
   return <ChatReadContext.Provider value={issueId ? seen : null}>
-    {error && <p role="alert" className="text-sm text-destructive">Couldn’t mark this chat read.</p>}
+    {error && <p role="alert" className="text-sm text-destructive">{t("nov02Core.chatReadFailed")}</p>}
     {children}
   </ChatReadContext.Provider>;
 }

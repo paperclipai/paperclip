@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import type {
   Approval,
   HeartbeatRun,
@@ -12,7 +13,7 @@ import {
   type IssueFilterState,
   type IssueFilterWorkspaceContext,
 } from "./issue-filters";
-import { formatAssigneeUserLabel } from "./assignees";
+import { formatAssigneeUserDisplayLabel as formatAssigneeUserLabel } from "./assignees";
 
 export const RECENT_ISSUES_LIMIT = 100;
 export const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
@@ -524,7 +525,7 @@ export function getInboxSearchSupplementIssues({
 
 function formatDefaultWorkspaceGroupLabel(name: string | null | undefined): string {
   const normalizedName = name?.trim();
-  return normalizedName ? `${normalizedName} (default)` : "Default workspace";
+  return normalizedName ? t("localizationActivityChrome.defaultNamedWorkspace", { name: normalizedName }) : t("localizationActivityChrome.defaultWorkspace");
 }
 
 function resolveDefaultProjectWorkspaceInfo(
@@ -640,7 +641,7 @@ export function resolveIssueWorkspaceGroup(
 
   return {
     key: "workspace:none",
-    label: "No workspace",
+    label: t("localizationActivityChrome.noWorkspace"),
   };
 }
 
@@ -846,10 +847,10 @@ const inboxWorkItemKindOrder: InboxWorkItem["kind"][] = [
 ];
 
 const inboxWorkItemKindLabels: Record<InboxWorkItem["kind"], string> = {
-  issue: "Tasks",
-  approval: "Approvals",
-  failed_run: "Failed runs",
-  join_request: "Join requests",
+  get issue() { return t("localizationActivityChrome.tasks"); },
+  get approval() { return t("localizationActivityChrome.approvals"); },
+  get failed_run() { return t("localizationActivityChrome.failedRuns"); },
+  get join_request() { return t("localizationActivityChrome.joinRequests"); },
 };
 
 function resolveIssueAssigneeGroup(
@@ -871,18 +872,18 @@ function resolveIssueAssigneeGroup(
   if (issue.assigneeUserId) {
     return {
       key: `assignee:user:${issue.assigneeUserId}`,
-      label: formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, userLabelById) ?? "User",
+      label: formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, userLabelById) ?? t("localizationActivityChrome.user"),
     };
   }
 
-  return { key: "assignee:none", label: "Unassigned" };
+  return { key: "assignee:none", label: t("localizationActivityChrome.unassigned") };
 }
 
 function resolveIssueProjectGroup(
   issue: Pick<Issue, "projectId">,
   { projectById }: Pick<InboxWorkspaceGroupingOptions, "projectById">,
 ): { key: string; label: string } {
-  if (!issue.projectId) return { key: "project:none", label: "No project" };
+  if (!issue.projectId) return { key: "project:none", label: t("localizationActivityChrome.noProject") };
 
   const projectName = projectById?.get(issue.projectId)?.name?.trim();
   return {

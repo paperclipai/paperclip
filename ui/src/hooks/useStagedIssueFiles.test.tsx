@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { act } from "react";
+import { i18n } from "@/i18n";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { readStagedIssueFiles, writeStagedIssueFiles, type StagedIssueFile } from "../lib/staged-issue-files";
@@ -20,14 +21,15 @@ function Harness({ owner = "user-a", company = "company-a", pending = false }: {
 describe("staged task file recovery", () => {
   let root: Root;
   let container: HTMLDivElement;
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     vi.mocked(readStagedIssueFiles).mockReset().mockResolvedValue([]);
     vi.mocked(writeStagedIssueFiles).mockReset().mockResolvedValue();
     container = document.createElement("div");
     document.body.appendChild(container);
     root = createRoot(container);
   });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
+  afterEach(async () => { await act(async () => root.unmount()); container.remove(); await i18n.changeLanguage("en"); });
 
   it.each(["owner", "company"] as const)("ignores an old restore after the %s changes", async (field) => {
     let release!: (files: StagedIssueFile[]) => void;
@@ -58,6 +60,30 @@ describe("staged task file recovery", () => {
     expect(current.restoring).toBe(false);
     await act(async () => current.setFiles([image]));
     expect(container.textContent).toBe("reference.png");
+  });
+
+  it.each(["restore", "save"] as const)("changes %s error language without repeating storage operations or losing files", async (failure) => {
+    if (failure === "restore") vi.mocked(readStagedIssueFiles).mockRejectedValue(new Error("storage unavailable"));
+    else vi.mocked(writeStagedIssueFiles).mockRejectedValue(new Error("quota exceeded"));
+    await act(async () => root.render(<Harness />));
+    if (failure === "save") await act(async () => current.setFiles([image]));
+    const files = current.files;
+    const setFiles = current.setFiles;
+    const reads = vi.mocked(readStagedIssueFiles).mock.calls.length;
+    const writes = vi.mocked(writeStagedIssueFiles).mock.calls.length;
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      const expected = failure === "restore"
+        ? language === "ru" ? "Не удалось восстановить сохранённые файлы. Прикрепите их снова перед созданием задачи." : "Saved files could not be restored. Attach them again before you create the task."
+        : language === "ru" ? "Не удалось сохранить файлы в этом браузере. Не закрывайте страницу, пока не создадите задачу." : "Files could not be saved in this browser. Keep this page open until you create the task.";
+      expect(current.error).toBe(expected);
+      expect(current.files).toBe(files);
+      expect(current.setFiles).toBe(setFiles);
+      expect(current.restoring).toBe(false);
+      expect(readStagedIssueFiles).toHaveBeenCalledTimes(reads);
+      expect(writeStagedIssueFiles).toHaveBeenCalledTimes(writes);
+    }
+    if (failure === "save") expect(current.files[0].file).toBe(image.file);
   });
 
   it("keeps files selected before the account is known", async () => {

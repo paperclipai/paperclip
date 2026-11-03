@@ -1,3 +1,5 @@
+import { useTranslation, i18n } from "@/i18n";
+import { taskChatDisplayLabel, taskChatEnumLabel, taskThreadErrorDisplay, taskThreadResourceDisplay } from "./task-chat-display";
 import { useContext, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
@@ -98,6 +100,7 @@ function StatusIcon({
   status: string;
   className?: string;
 }) {
+  useTranslation();
   if (["running", "pending", "in_progress", "waiting"].includes(status)) {
     return (
       <Loader2
@@ -148,6 +151,7 @@ function CardShell({
   testId: string;
   presentation?: "timeline" | "takeover";
 }) {
+  useTranslation();
   const titleRow = (
     <div className="flex min-w-0 items-center gap-2">
       <Icon aria-hidden className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -162,7 +166,7 @@ function CardShell({
           )}
         >
           <StatusIcon status={status} className="h-3.5 w-3.5" />
-          {status.replaceAll("_", " ")}
+          {taskChatEnumLabel(status)}
         </span>
       ) : null}
     </div>
@@ -216,7 +220,7 @@ function CardShell({
                 )}
               >
                 <StatusIcon status={status} className="h-3.5 w-3.5" />
-                {status.replaceAll("_", " ")}
+                {taskChatEnumLabel(status)}
               </span>
             ) : null}
           </div>
@@ -233,9 +237,10 @@ function CardShell({
 }
 
 function PlanSteps({ steps }: { steps: TaskChatProtocolStep[] }) {
+  const { t } = useTranslation();
   if (steps.length === 0) return null;
   return (
-    <ol className="flex flex-col gap-1.5" aria-label="Plan steps">
+    <ol className="flex flex-col gap-1.5" aria-label={t("localizationTaskRuntime.ui_Plan_steps_ynvmd")}>
       {steps.map((step) => (
         <li key={step.id} className="flex items-start gap-2 text-sm">
           <StatusIcon status={step.status} className="mt-0.5 shrink-0" />
@@ -259,6 +264,7 @@ function ProviderActivityCard({
 }: {
   item: TaskChatProviderActivityItem;
 }) {
+  const { t } = useTranslation();
   const Icon = FAMILY_ICON[item.family];
   const hasDetails =
     item.details.length > 0 ||
@@ -268,14 +274,14 @@ function ProviderActivityCard({
   return (
     <CardShell
       icon={Icon}
-      title={item.title}
+      title={item.titleMessage === "providerNotice" ? t("oct26Transcript.providerNotice") : item.title}
       status={item.status}
-      summary={item.summary}
+      summary={item.summaryMessage === "providerNotice" ? t("oct26Transcript.providerNotice") : item.summary}
       testId={`task-chat-provider-${item.family}`}
     >
       {item.steps.length > 0 ? <PlanSteps steps={item.steps} /> : null}
       {item.children.length > 0 ? (
-        <ul className="flex flex-col gap-2" aria-label="Delegated agents">
+        <ul className="flex flex-col gap-2" aria-label={t("localizationTaskRuntime.ui_Delegated_agents_13tp3u0")}>
           {item.children.map((child) => (
             <li
               key={child.id}
@@ -308,7 +314,7 @@ function ProviderActivityCard({
         </ul>
       ) : null}
       {item.links.length > 0 ? (
-        <ul className="flex flex-col gap-2" aria-label="Research sources">
+        <ul className="flex flex-col gap-2" aria-label={t("localizationTaskRuntime.ui_Research_sources_ah4v6e")}>
           {item.links.map((link) => (
             <li key={link.href}>
               <a
@@ -339,7 +345,7 @@ function ProviderActivityCard({
           )}
         >
           <summary className="flex cursor-pointer list-none items-center gap-1 text-xs font-medium text-muted-foreground">
-            <ChevronDown aria-hidden className="h-3.5 w-3.5" /> Details
+            <ChevronDown aria-hidden className="h-3.5 w-3.5" /> {t("localizationTaskRuntime.ui_Details_43f6md")}
           </summary>
           {item.details.length > 0 ? (
             <dl className="mt-2 flex min-w-0 flex-col gap-1.5 text-xs">
@@ -348,7 +354,7 @@ function ProviderActivityCard({
                   key={`${detail.label}:${detail.value}`}
                   className="grid min-w-0 grid-cols-1 gap-0.5 sm:grid-cols-(--gtc-task-chat-details) sm:gap-3"
                 >
-                  <dt className="text-muted-foreground">{detail.label}</dt>
+                  <dt className="text-muted-foreground">{taskChatDisplayLabel(detail.label)}</dt>
                   <dd
                     className={cn(
                       "min-w-0 break-words text-foreground",
@@ -368,7 +374,7 @@ function ProviderActivityCard({
           ) : null}
           {item.outputTruncated ? (
             <p className="mt-1 text-xs text-muted-foreground">
-              Output truncated to 8 KiB.
+              {t("localizationTaskRuntime.ui_Output_truncated_to_8_KiB_8ikmgl")}
             </p>
           ) : null}
         </details>
@@ -388,25 +394,26 @@ function diffStats(file: TaskChatWorkspaceChangeItem["files"][number]) {
 }
 
 function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
+  const { t } = useTranslation();
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
   const selected =
     item.files.find((file) => file.path === selectedPath) ?? null;
   const visibleFiles = expanded ? item.files : item.files.slice(0, 3);
   const fileCount = item.totals.files || item.files.length;
-  const fileLabel = `${fileCount} ${fileCount === 1 ? "file" : "files"}`;
+  const fileLabel = t("localizationTaskRuntime.fileCount", { count: fileCount });
   const stats = [
     item.totals.additions == null ? null : `+${item.totals.additions}`,
     item.totals.deletions == null ? null : `−${item.totals.deletions}`,
   ].filter(Boolean).join(" ");
   const summary = item.complete
-    ? `${fileLabel} changed${stats ? ` · ${stats}` : ""}`
-    : "Workspace changes in progress";
+    ? t("localizationTaskRuntime.workspaceChanged", { files: fileLabel, stats: stats ? ` · ${stats}` : "" })
+    : t("localizationTaskRuntime.ui_Workspace_changes_in_progress_1wkfybx");
   return (
     <>
       <CardShell
         icon={GitBranch}
-        title="Workspace changes"
+        title={t("localizationTaskRuntime.ui_Workspace_changes_jsfzxb")}
         status={item.complete ? "completed" : "running"}
         summary={summary}
         testId="task-chat-workspace-change"
@@ -426,8 +433,8 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
                     : file.path}
                 </span>
                 <span className="text-xs capitalize text-muted-foreground">
-                  {file.binary ? "binary · " : ""}
-                  {file.operation.replaceAll("_", " ")}
+                  {file.binary ? t("localizationTaskRuntime.binaryPrefix") : ""}
+                  {taskChatEnumLabel(file.operation)}
                 </span>
               </span>
               {diffStats(file)}
@@ -443,8 +450,8 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
               onClick={() => setExpanded((value) => !value)}
             >
               {expanded
-                ? "Show fewer files"
-                : `Show ${item.files.length - 3} more files`}
+                ? t("localizationTaskRuntime.ui_Show_fewer_files_19sxrv2")
+                : t("localizationTaskRuntime.showMoreFiles", { count: item.files.length - 3 })}
             </Button>
           ) : null}
           {item.files.length > 0 ? (
@@ -454,7 +461,7 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
               variant="outline"
               onClick={() => setSelectedPath(item.files[0].path)}
             >
-              Review diff
+              {t("localizationTaskRuntime.ui_Review_diff_4g0ynk")}
             </Button>
           ) : null}
         </div>
@@ -468,13 +475,13 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
         <DialogContent className="w-full max-w-(--pct-90) overflow-hidden">
           <DialogHeader>
             <DialogTitle className="font-mono text-sm">
-              {selected?.path ?? "Workspace diff"}
+              {selected?.path ?? t("localizationTaskRuntime.ui_Workspace_diff_1xapm55")}
             </DialogTitle>
           </DialogHeader>
           {item.files.length > 1 ? (
             <div
               className="flex max-w-full gap-1 overflow-x-auto pb-1"
-              aria-label="Changed files"
+              aria-label={t("localizationTaskRuntime.ui_Changed_files_4ic1b0")}
             >
               {item.files.map((file) => (
                 <Button
@@ -491,7 +498,7 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
           ) : null}
           {selected?.binary ? (
             <p className="rounded-sm bg-muted/50 p-3 text-sm text-muted-foreground">
-              Binary file; text diff is unavailable.
+              {t("localizationTaskRuntime.ui_Binary_file_text_diff_is_unavailable_88qdpt")}
             </p>
           ) : selected?.diff ? (
             <pre className="max-h-(--sz-70vh) overflow-auto whitespace-pre rounded-sm bg-muted/50 p-3 font-mono text-xs">
@@ -499,7 +506,7 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
             </pre>
           ) : (
             <p className="rounded-sm bg-muted/50 p-3 text-sm text-muted-foreground">
-              No inline patch was recorded for this file.
+              {t("localizationTaskRuntime.ui_No_inline_patch_was_recorded_for_this_file_192rzv9")}
             </p>
           )}
         </DialogContent>
@@ -509,12 +516,13 @@ function WorkspaceChangeCard({ item }: { item: TaskChatWorkspaceChangeItem }) {
 }
 
 function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const extension = item.displayName.includes(".")
     ? item.displayName.split(".").at(-1)?.toUpperCase()
-    : "FILE";
+    : t("localizationTaskRuntime.ui_FILE_1aoihs3");
   const label =
-    item.presentation === "generic" ? "File" : titleCaseKey(item.presentation);
+    item.presentation === "generic" ? t("localizationTaskRuntime.ui_File_bygjtv") : taskChatDisplayLabel(titleCaseKey(item.presentation));
   const workspaceFileRef = useMemo(
     () => ({
       path: item.path,
@@ -523,7 +531,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
       column: null,
       raw: item.path,
     }),
-    [item.line, item.path],
+    [i18n.resolvedLanguage, item.line, item.path],
   );
   return (
     <>
@@ -533,7 +541,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
         status={
           item.source === "runner_verified" ? "completed" : "informational"
         }
-        summary={`${label} · ${extension}${item.line ? ` · line ${item.line}` : ""}`}
+        summary={t("localizationTaskRuntime.workspaceFileSummary", { label, extension, line: item.line ? t("localizationTaskRuntime.lineNumber", { number: item.line }) : "" })}
         testId="task-chat-workspace-file"
       >
         <div className="flex flex-wrap items-center gap-2">
@@ -547,9 +555,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
             size="sm"
             variant="outline"
             onClick={() => setOpen(true)}
-          >
-            Preview
-          </Button>
+          >{t("pages.pipelines.preview")}</Button>
         </div>
       </CardShell>
       <Dialog open={open} onOpenChange={setOpen}>
@@ -560,8 +566,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
           <p className="font-mono text-xs text-muted-foreground">{item.path}</p>
           {item.preview == null ? (
             <p className="rounded-sm bg-muted/50 p-3 text-sm text-muted-foreground">
-              Preview unavailable. The verified workspace reference is still
-              available above.
+              {t("localizationTaskRuntime.ui_Preview_unavailable_The_verified_workspace_reference_is_still_ava_1ymr00k")}
             </p>
           ) : item.presentation === "document" ? (
             <div className="max-h-(--sz-70vh) overflow-auto rounded-sm bg-muted/30 p-3">
@@ -582,7 +587,7 @@ function WorkspaceFileCard({ item }: { item: TaskChatWorkspaceFileItem }) {
           )}
           {item.previewTruncated ? (
             <p className="text-xs text-muted-foreground">
-              Preview truncated by the runner.
+              {t("localizationTaskRuntime.ui_Preview_truncated_by_the_runner_oadqf9")}
             </p>
           ) : null}
         </DialogContent>
@@ -602,6 +607,7 @@ function RuntimeQuestionHistory({
 }: {
   item: TaskChatRuntimeRequestItem;
 }) {
+  const { t } = useTranslation();
   const questionSet = item.questionSet;
   if (!questionSet) return null;
   return (
@@ -628,8 +634,8 @@ function RuntimeQuestionHistory({
           ))}
           <p className="text-xs text-muted-foreground">
             {item.status === "resolved"
-              ? "Answer details were not recorded by this older runtime."
-              : `No answers were submitted; this request was ${item.status}.`}
+              ? t("localizationTaskRuntime.ui_Answer_details_were_not_recorded_by_this_older_runtime_xf1h96")
+              : t(`localizationTaskRuntime.runtimeNoAnswers_${item.status}`)}
           </p>
         </div>
       )}
@@ -642,14 +648,15 @@ function RuntimeQuestionReceipt({
 }: {
   item: TaskChatRuntimeRequestItem;
 }) {
+  const { t } = useTranslation();
   const label =
     item.status === "resolved"
-      ? "Questions answered"
+      ? t("localizationTaskRuntime.ui_Questions_answered_1gq8n6p")
       : item.status === "cancelled"
-        ? "Questions cancelled"
+        ? t("localizationTaskRuntime.ui_Questions_cancelled_f03gr5")
         : item.status === "expired"
-          ? "Questions expired"
-          : "Questions resolved";
+          ? t("localizationTaskRuntime.ui_Questions_expired_k6e3ev")
+          : t("localizationTaskRuntime.ui_Questions_resolved_spxuhi");
   return (
     <details className="group" data-testid="task-chat-runtime-request">
       <summary className="flex min-h-8 cursor-pointer list-none items-center gap-2 rounded-sm px-1 py-1.5 text-sm leading-5 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
@@ -673,7 +680,7 @@ function RuntimeQuestionReceipt({
       <div className="pb-3 pl-7 pr-1">
         <div className="mb-3">
           <p className="text-sm font-medium text-foreground">
-            {item.questionSet?.title ?? "Runtime input"}
+            {item.questionSet?.title ?? t("localizationTaskRuntime.ui_Runtime_input_1mp4blz")}
           </p>
           <p className="mt-1 text-sm text-muted-foreground">{item.prompt}</p>
         </div>
@@ -698,6 +705,7 @@ function RuntimeRequestCard({
   imageUploadHandler?: (file: File) => Promise<string>;
   mentions?: MentionOption[];
 }) {
+  const { t } = useTranslation();
   const historyIssueId = useContext(TaskChatRequestHistoryContext);
   const draftKey = requestedDraftKey ?? (historyIssueId
     ? `paperclip:task-input:${historyIssueId}:runtime:${item.runId}:${item.requestId}`
@@ -705,12 +713,12 @@ function RuntimeRequestCard({
   const title =
     item.questionSet?.title ??
     (item.requestType === "permission"
-      ? "Runtime permission"
-      : "Runtime input");
+      ? t("localizationTaskRuntime.ui_Runtime_permission_xu3vry")
+      : t("localizationTaskRuntime.ui_Runtime_input_1mp4blz"));
   const fields =
     item.fields.length > 0
       ? item.fields
-      : [{ name: "answer", label: "Response", placeholder: null }];
+      : [{ name: "answer", get label() { return t("localizationTaskRuntime.ui_Response_nrnldq"); }, placeholder: null }];
   const [values, setValues] = useState<Record<string, string>>(() =>
     draftKey ? loadStructuredDraft(draftKey, {}) : {},
   );
@@ -747,7 +755,7 @@ function RuntimeRequestCard({
       setError(
         cause instanceof Error
           ? cause.message
-          : "The runtime request could not be resolved.",
+          : t("localizationTaskRuntime.ui_The_runtime_request_could_not_be_resolved_z2c4vc"),
       );
     }
   };
@@ -846,7 +854,7 @@ function RuntimeRequestCard({
               size="sm"
               disabled={!onDecision || submitting || !canSubmitInput}
             >
-              {submitting ? "Submitting…" : "Submit response"}
+              {submitting ? t("localizationTaskRuntime.ui_Submitting_ruylux") : t("localizationTaskRuntime.ui_Submit_response_rvs8i4")}
             </Button>
             {item.choices.some((choice) => choice.key === "decline") ? (
               <Button
@@ -855,9 +863,7 @@ function RuntimeRequestCard({
                 variant="outline"
                 disabled={!onDecision || submitting}
                 onClick={() => void submit({ action: "decline" })}
-              >
-                Deny
-              </Button>
+              >{t("localizationAgents.ui359_Deny")}</Button>
             ) : null}
             {presentation === "timeline" ? (
               <Button
@@ -867,7 +873,7 @@ function RuntimeRequestCard({
                 disabled={!onDecision || submitting}
                 onClick={() => void submit({ action: "cancel" })}
               >
-                Cancel
+                {t("localizationTaskRuntime.ui_Cancel_ew9em3")}
               </Button>
             ) : null}
           </div>
@@ -899,19 +905,19 @@ function RuntimeRequestCard({
                   }
                 }}
               >
-                {submitting ? "Submitting…" : choice.label}
+                {submitting ? t("localizationTaskRuntime.ui_Submitting_ruylux") : choice.label}
               </Button>
             ))}
         </div>
       ) : null}
       {item.status === "pending" && !onDecision ? (
         <p className="mt-2 text-xs text-muted-foreground">
-          Resolve this request in the active runtime session.
+          {t("localizationTaskRuntime.ui_Resolve_this_request_in_the_active_runtime_session_17reyyc")}
         </p>
       ) : null}
       {error ? (
         <p className="mt-2 text-xs text-destructive" role="alert">
-          {error}
+          {taskThreadErrorDisplay(error)}
         </p>
       ) : null}
     </CardShell>
@@ -940,6 +946,7 @@ function ResultCard({
 }: {
   item: Extract<TaskChatProtocolItem, { surface: "run_result" }>;
 }) {
+  const { t } = useTranslation();
   const hasDetails =
     item.verification.length > 0 ||
     item.remainingWork.length > 0 ||
@@ -948,7 +955,7 @@ function ResultCard({
   return (
     <CardShell
       icon={PackageCheck}
-      title="Run result"
+      title={t("localizationTaskRuntime.ui_Run_result_1sf8wlz")}
       status={item.disposition}
       summary={item.summary}
       testId="task-chat-run-result"
@@ -957,7 +964,7 @@ function ResultCard({
         <div className="flex flex-col gap-3 text-sm">
           {item.blocker ? (
             <div className="rounded-sm bg-muted/50 p-2">
-              <strong>Blocked: {item.blocker.reasonCode}</strong>
+              <strong>{t("localizationTaskRuntime.ui_Blocked_zi7yob")} {item.blocker.reasonCode}</strong>
               <p className="mt-1 text-muted-foreground">
                 {item.blocker.unblockAction}
               </p>
@@ -966,7 +973,7 @@ function ResultCard({
           {item.verification.length > 0 ? (
             <ul
               className="flex flex-col gap-1"
-              aria-label="Verification results"
+              aria-label={t("localizationTaskRuntime.ui_Verification_results_r1etw0")}
             >
               {item.verification.map((check, index) => (
                 <li
@@ -996,7 +1003,7 @@ function ResultCard({
               {item.remainingWork.map((work, index) => (
                 <li key={`${work.description}:${index}`}>
                   {work.description}
-                  {work.blocksCompletion ? " · blocks completion" : ""}
+                  {work.blocksCompletion ? t("localizationTaskRuntime.blocksCompletion") : ""}
                 </li>
               ))}
             </ul>
@@ -1024,12 +1031,13 @@ function TerminalCard({
 }: {
   item: Extract<TaskChatProtocolItem, { surface: "run_terminal" }>;
 }) {
+  const { t } = useTranslation();
   return (
     <CardShell
       icon={TerminalSquare}
-      title="Run ended"
+      title={t("localizationTaskRuntime.ui_Run_ended_dj5y8q")}
       status={item.runState}
-      summary={[item.disposition.replaceAll("_", " "), item.stopReason]
+      summary={[taskChatEnumLabel(item.disposition), item.stopReason]
         .filter(Boolean)
         .join(" · ")}
       testId="task-chat-run-terminal"
@@ -1042,6 +1050,7 @@ function ResourceCard({
 }: {
   item: Extract<TaskChatProtocolItem, { surface: "resource" }>;
 }) {
+  useTranslation();
   const { enabled: artifactsV1 } = useArtifactsV1Enabled();
   if (artifactsV1) {
     // Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): one full-width row named after the file. A
@@ -1075,12 +1084,13 @@ function ResourceCard({
       : item.resourceKind === "attachment"
         ? FileCode2
         : PackageCheck;
+  const display = taskThreadResourceDisplay(item);
   const body = (
     <CardShell
       icon={Icon}
-      title={item.title}
+      title={display.title}
       status={null}
-      summary={item.subtitle}
+      summary={display.subtitle}
       testId={`task-chat-resource-${item.resourceKind}`}
     />
   );
@@ -1104,6 +1114,7 @@ export function TaskChatProtocolCard({
   imageUploadHandler,
   mentions,
 }: TaskChatProtocolCardProps) {
+  useTranslation();
   switch (item.surface) {
     case "provider_activity":
       return <ProviderActivityCard item={item} />;

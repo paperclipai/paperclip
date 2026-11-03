@@ -1,5 +1,6 @@
 import { Archive, CodeXml, File, FileText, Film, Globe, Image, Music, Presentation, Table2, type LucideIcon } from "lucide-react";
 import type { CompanyArtifact } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 /**
  * What the V1 artwork knows about an artifact. Each surface adapts its own
@@ -24,6 +25,8 @@ export interface ArtifactSubject {
   /** A versioned task document, as opposed to an attached Markdown file. */
   isTaskDocument?: boolean;
   sizeLabel?: string | null;
+  /** Numeric file size for locale-aware display; externally supplied labels stay verbatim. */
+  sizeBytes?: number | null;
   /** ISO timestamp; a thread attachment has none of its own. */
   updatedAt?: string | null;
   taskIdentifier?: string | null;
@@ -81,7 +84,11 @@ const FALLBACK_LABEL: Record<ArtifactKind, string> = {
 /** The type in caps, from the real extension when there is one. */
 export function labelOf(subject: ArtifactSubject): string {
   if (subject.kind === "link") return "URL";
-  return (extOf(subject) ?? FALLBACK_LABEL[subject.kind]).toUpperCase();
+  const ext = extOf(subject);
+  if (ext) return ext.toUpperCase();
+  const genericLabels = { code: "oct26Artifacts.typeCode", file: "oct26Artifacts.typeFile", image: "oct26Artifacts.typeImage", video: "oct26Artifacts.typeVideo" };
+  if (subject.kind === "code" || subject.kind === "file" || subject.kind === "image" || subject.kind === "video") return t(genericLabels[subject.kind]);
+  return FALLBACK_LABEL[subject.kind];
 }
 
 /** The glyph: the mock draws PDF with three bars; every other type takes its lucide icon. */

@@ -1,13 +1,15 @@
+import { i18n, t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import type { ActivityEvent } from "@paperclipai/shared";
 import { cn } from "@/lib/utils";
+import { routineRunSourceLabel, routineRunStatusLabel } from "@/lib/routine-run-display";
 
 export type RoutineActivityEvent = Pick<ActivityEvent, "id" | "action" | "details" | "createdAt">;
 
 function formatTime(value: string | Date): string {
   try {
-    return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    return new Date(value).toLocaleTimeString(i18n.language, { hour: "2-digit", minute: "2-digit" });
   } catch {
     return String(value);
   }
@@ -15,16 +17,36 @@ function formatTime(value: string | Date): string {
 
 function summarizeEvent(event: RoutineActivityEvent): string {
   const details = event.details;
-  if (event.action === "routine.webhook_test_received") return "Connection working · No run or task created";
-  if (event.action === "routine.webhook_test_rejected") return "Update the key in your app and resend";
-  if (event.action === "routine.webhook_received") return "Authentication passed";
-  if (event.action === "routine.webhook_rejected") return "Check the key in your sending app";
+  if (event.action === "routine.webhook_test_received") return t("sep28Routines.activityTestWorking");
+  if (event.action === "routine.webhook_test_rejected") return t("sep28Routines.activityUpdateKey");
+  if (event.action === "routine.webhook_received") return t("sep28Routines.activityAuthPassed");
+  if (event.action === "routine.webhook_rejected") return t("sep28Routines.activityCheckKey");
   if (!details) return "";
   if (typeof details.changeSummary === "string") return details.changeSummary;
-  if (event.action === "routine.run_triggered") return `${details.source === "webhook" ? "Webhook" : details.source === "schedule" ? "Schedule" : "Manual"} · ${details.status === "issue_created" ? "Task created" : String(details.status ?? "").replaceAll("_", " ")}`;
+  if (event.action === "routine.run_triggered") return `${details.source === "webhook" ? t("localizationRoutines.webhook") : details.source === "schedule" ? t("localizationRoutines.schedule") : t("sep28Routines.manual")} · ${details.status === "issue_created" ? t("sep28Routines.taskCreated") : routineRunStatusLabel(String(details.status ?? ""))}`;
   return Object.entries(details).filter(([key]) => !/id$/i.test(key)).slice(0, 3)
-    .map(([key, value]) => `${key.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ").toLowerCase()}: ${formatDetailValue(value)}`)
+    .map(([key, value]) => `${detailLabel(key)}: ${detailDisplayValue(key, value)}`)
     .join(" · ");
+}
+
+function detailLabel(key: string): string {
+  const keys: Record<string, string> = {
+    kind: "localizationRoutines.kind", label: "localizationRoutines.label",
+    title: "localizationRoutineHistory.title", source: "localizationRoutines.source",
+    status: "localizationRoutines.status", timezone: "sep28Routines.timeZone",
+    signingMode: "localizationRoutines.signingMode", replayWindowSec: "localizationRoutines.replayWindow",
+    concurrencyPolicy: "localizationRoutines.concurrencyPolicy", catchUpPolicy: "localizationRoutines.catchUpPolicy",
+    enabled: "sep28Routines.activityFields.enabled", setupPending: "sep28Routines.activityFields.setupPending",
+    cronExpression: "sep28Routines.activityFields.cronExpression", revisionNumber: "sep28Routines.activityFields.revisionNumber",
+  };
+  return keys[key] ? t(keys[key]) : key.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " ").toLowerCase();
+}
+
+function detailDisplayValue(key: string, value: unknown): string {
+  if ((key === "kind" || key === "source") && typeof value === "string") return routineRunSourceLabel(value);
+  if (key === "status" && typeof value === "string") return routineRunStatusLabel(value);
+  if (typeof value === "boolean") return t(value ? "localizationRoutines.true" : "localizationRoutines.false");
+  return formatDetailValue(value);
 }
 
 function formatDetailValue(value: unknown): string {
@@ -40,14 +62,14 @@ function formatDetailValue(value: unknown): string {
 }
 
 const actionLabels: Record<string, string> = {
-  "routine.webhook_test_received": "Connection test passed",
-  "routine.webhook_test_rejected": "Connection test rejected",
-  "routine.webhook_received": "Webhook event received",
-  "routine.webhook_rejected": "Webhook authentication failed",
-  "routine.created": "Routine created", "routine.updated": "Routine updated",
-  "routine.trigger_created": "Trigger added", "routine.trigger_updated": "Trigger updated",
-  "routine.trigger_deleted": "Trigger removed", "routine.trigger_removed": "Trigger removed", "routine.trigger_restored": "Trigger restored", "routine.trigger_setup_finished": "Webhook setup finished", "routine.trigger_secret_rotated": "Webhook key replaced",
-  "routine.run_triggered": "Routine started", "routine.run_created": "Run created",
+  get "routine.webhook_test_received"() { return t("sep28Routines.testPassed"); },
+  get "routine.webhook_test_rejected"() { return t("sep28Routines.testRejectedAction"); },
+  get "routine.webhook_received"() { return t("sep28Routines.webhookReceived"); },
+  get "routine.webhook_rejected"() { return t("sep28Routines.webhookAuthFailed"); },
+  get "routine.created"() { return t("sep28Routines.routineCreated"); }, get "routine.updated"() { return t("sep28Routines.routineUpdated"); },
+  get "routine.trigger_created"() { return t("sep28Routines.triggerAdded"); }, get "routine.trigger_updated"() { return t("sep28Routines.triggerUpdated"); },
+  get "routine.trigger_deleted"() { return t("sep28Routines.triggerRemoved"); }, get "routine.trigger_removed"() { return t("sep28Routines.triggerRemoved"); }, get "routine.trigger_restored"() { return t("sep28Routines.triggerRestored"); }, get "routine.trigger_setup_finished"() { return t("sep28Routines.setupFinished"); }, get "routine.trigger_secret_rotated"() { return t("sep28Routines.keyReplaced"); },
+  get "routine.run_triggered"() { return t("sep28Routines.routineStarted"); }, get "routine.run_created"() { return t("sep28Routines.runCreated"); },
 };
 function actionLabel(action: string) {
   return actionLabels[action] ?? action.replace(/^routine[._]/, "").replaceAll("_", " ").replaceAll(".", " ").replace(/^./, (char) => char.toUpperCase());
@@ -55,6 +77,7 @@ function actionLabel(action: string) {
 
 /** Activity log row with an expandable JSON payload (§3.7). */
 export function RoutineActivityRow({ event }: { event: RoutineActivityEvent }) {
+  useTranslation();
   const [expanded, setExpanded] = useState(false);
   const hasPayload = event.details != null && Object.keys(event.details).length > 0;
 

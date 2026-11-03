@@ -9,6 +9,7 @@ import type { CaseDetail as CaseDetailData, CaseHandoffView } from "@/api/cases"
 import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { CaseDetail } from "./CaseDetail";
+import { i18n } from "@/i18n";
 
 const cases = vi.hoisted(() => ({
   get: vi.fn(), listChildren: vi.fn(), listEvents: vi.fn(), listHandoffs: vi.fn(),
@@ -97,7 +98,41 @@ describe("read-only CaseDetail", () => {
     agents.list.mockResolvedValue([{ id: "agent-1", name: "Writer", status: "idle" }, { id: "agent-2", name: "Verifier", status: "paused" }]);
     project.get.mockResolvedValue({ id: "project-1", name: "Paperclip" });
   });
-  afterEach(() => { flushSync(() => root.unmount()); container.remove(); clients.splice(0).forEach(client => client.clear()); });
+  afterEach(async () => { flushSync(() => root.unmount()); container.remove(); clients.splice(0).forEach(client => client.clear()); await i18n.changeLanguage("en"); });
+
+  it("switches mounted document and handoff views while preserving open content and read-only requests", async () => {
+    const pending = handoff({ instructions: "Raw instructions {{name}}", workflowTransition: { from: { workflowId: "a", name: "Raw old workflow", phase: "Raw old phase" }, to: { workflowId: "b", name: "Raw next workflow", phase: "Raw next phase" }, documentRevisionId: "rev-2" } });
+    const record = { ...detail(), workflowId: "a", workflow: { id: "a", name: "Raw workflow" }, phase: "Raw phase", workIssueId: "task-1", workIssue: { id: "task-1", identifier: "PAP-123", title: "Raw task", status: "in_progress", statusVersion: 1, assigneeAgentId: "agent-1", assigneeAgentName: "Writer" }, pendingHandoff: pending };
+    const before = JSON.stringify(record);
+    cases.get.mockResolvedValue(record);
+    cases.listHandoffs.mockResolvedValue({ items: [pending], nextCursor: null });
+    render();
+    await waitFor(() => expect(container.textContent).toContain("Waiting for Writer to finish."));
+    const handoffDetails = container.querySelector('[aria-label="Case handoffs"] details') as HTMLDetailsElement;
+    handoffDetails.open = true;
+    click(button("Launch draft"));
+    await waitFor(() => expect(document.body.textContent).toContain("Current authorized draft"));
+    expand("Revision history");
+    await waitFor(() => expect(document.body.textContent).toContain("Earlier draft"));
+    const reads = [cases.get, cases.listChildren, cases.listHandoffs, cases.getDocument, cases.listRevisions, agents.list].map(fn => fn.mock.calls.length);
+    await i18n.changeLanguage("ru");
+    await waitFor(() => expect(document.body.textContent).toContain("История версий"));
+    expect(container.querySelector('[aria-label="Работа над материалом"]')?.textContent).toContain("Ожидание завершения работы: Writer.");
+    expect(container.textContent).toContain("Далее: Raw next workflow · verification");
+    expect(handoffDetails.open).toBe(true);
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
+    expect(document.body.textContent).toContain("Current authorized draft");
+    expect(document.body.textContent).toContain("Earlier draft");
+    expect(document.body.textContent).toContain("Raw instructions {{name}}");
+    expect(document.body.textContent).toContain("Raw old workflow · Raw old phase → Raw next workflow · Raw next phase");
+    expect(container.querySelector('a[href="/api/assets/asset-1/content"]')?.textContent).toContain("Launch report.pdf");
+    expect(container.querySelector('input,textarea,[contenteditable="true"]')).toBeNull();
+    await i18n.changeLanguage("en");
+    await waitFor(() => expect(document.body.textContent).toContain("Revision history"));
+    expect([cases.get, cases.listChildren, cases.listHandoffs, cases.getDocument, cases.listRevisions, agents.list].map(fn => fn.mock.calls.length)).toEqual(reads);
+    for (const fn of [cases.patch, cases.upsertDocument, cases.deleteDocument, cases.restoreDocumentRevision, cases.retryHandoff, cases.cancelHandoff]) expect(fn).not.toHaveBeenCalled();
+    expect(JSON.stringify(record)).toBe(before);
+  });
 
   it("shows saved facts, passive work, readable references and preserves browse context without editing", async () => {
     render();

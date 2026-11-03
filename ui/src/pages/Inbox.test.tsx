@@ -854,28 +854,31 @@ describe("Inbox toolbar", () => {
     });
     const root = createRoot(container);
 
-    await act(async () => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <Inbox />
-        </QueryClientProvider>,
-      );
-    });
-    // Workspace metadata resolves independently of the task list.
-    await vi.waitFor(() => {
-      expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Aurora");
-    });
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      // Workspace metadata resolves independently of the task list.
+      await vi.waitFor(() => {
+        expect(container.querySelector('[data-slot="task-row"]')?.textContent).toContain("Workspace Aurora");
+      });
 
-    const taskRow = container.querySelector('[data-slot="task-row"]');
-    const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');
-    const timestamp = taskRow?.querySelector('[data-slot="task-row-timestamp"]');
-    expect(taskRow?.textContent).toContain("Workspace Aurora");
-    expect(identifier?.textContent).toBe("PAP-904");
-    expect(timestamp).not.toBeNull();
-    if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
-    expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
-
-    act(() => root.unmount());
+      const taskRow = container.querySelector('[data-slot="task-row"]');
+      const identifier = taskRow?.querySelector('[data-slot="task-row-identifier"]');
+      const timestamp = taskRow?.querySelector('[data-slot="task-row-timestamp"]');
+      expect(taskRow?.textContent).toContain("Workspace Aurora");
+      expect(identifier?.textContent).toBe("PAP-904");
+      expect(timestamp).not.toBeNull();
+      if (!identifier || !timestamp) throw new Error("Expected canonical identifier and timestamp columns");
+      expect(identifier.compareDocumentPosition(timestamp) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    } finally {
+      await act(() => root.unmount());
+      queryClient.clear();
+    }
   });
 
   it("hides workspace grouping when isolated workspaces are disabled", async () => {
@@ -937,7 +940,7 @@ describe("Inbox toolbar", () => {
     const root = createRoot(container);
     const render = () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
     await act(render);
-    await vi.waitFor(() => expect(container.textContent).toContain(streamlined ? "Select an organization" : "Select a company"));
+    await vi.waitFor(() => expect(container.textContent).toContain("Select an organization"));
     companyState.selectedCompanyId = "company-1";
     apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Cold company task" })]);
     await act(render);

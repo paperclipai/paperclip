@@ -1,3 +1,5 @@
+import { t, useTranslation } from "@/i18n";
+import { taskChatDurationLabel, taskChatDisplayLabel } from "./task-chat-display";
 import { useRef, type ReactNode } from "react";
 import type { ExecutionProjection } from "@paperclipai/shared";
 import { useSecondTick } from "@/hooks/useSecondTick";
@@ -47,10 +49,10 @@ function currentActivityStatusItems(
 function formatCompactDuration(ms: number | null): string | null {
   if (ms == null || !Number.isFinite(ms)) return null;
   const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  if (totalSeconds < 60) return `${totalSeconds}s`;
+  if (totalSeconds < 60) return taskChatDurationLabel(`${totalSeconds}s`);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`;
+  return taskChatDurationLabel(seconds === 0 ? `${minutes}m` : `${minutes}m ${seconds}s`);
 }
 
 function terminalStatusFailed(status: string): boolean {
@@ -75,6 +77,7 @@ function RunnerTurnStatus({
   continuedAfterSteering?: boolean;
   waitingLabel?: string | null;
 }) {
+  useTranslation();
   const terminal = isTerminalRunStatus(status);
   useSecondTick(!terminal && startedAtMs != null);
   const elapsedMs =
@@ -87,10 +90,17 @@ function RunnerTurnStatus({
   const elapsed = formatCompactDuration(elapsedMs);
 
   const failed = terminalStatusFailed(status);
-  const label = terminal ? (failed ? "Stopped" : "Worked") : waitingLabel ?? "Working";
-  const suffix = terminal
-    ? elapsed ? ` ${failed ? "after" : "for"} ${elapsed}` : ""
-    : waitingLabel ? elapsed ? ` · ${elapsed}` : "" : ` for ${elapsed ?? "0s"}`;
+  const label = terminal ? (failed ? t("localizationTaskRuntime.ui_Stopped_118y86m") : t("localizationTaskRuntime.worked")) : waitingLabel ?? t("localizationTaskRuntime.ui_Working_1pyssg8");
+  const semanticLabel = terminal
+    ? elapsed
+      ? t(failed ? "localizationTaskRuntime.stoppedAfter" : "localizationTaskRuntime.workedDuration", { duration: elapsed })
+      : label
+    : waitingLabel
+      ? `${label}${elapsed ? ` · ${elapsed}` : ""}`
+      : t("localizationTaskRuntime.workingFor", { duration: elapsed ?? taskChatDurationLabel("0s") });
+  const visibleLabel = continuedAfterSteering
+    ? t("localizationTaskRuntime.continuedAfterSteeringLabel", { label: semanticLabel })
+    : semanticLabel;
 
   return (
     <span
@@ -100,17 +110,17 @@ function RunnerTurnStatus({
       aria-live="polite"
       aria-atomic="true"
     >
-      {continuedAfterSteering ? <span data-conversation-meta="">Continued after steering · </span> : null}
-      {label}<span data-conversation-meta="">{suffix}</span>
+      <span data-conversation-meta="">{visibleLabel}</span>
     </span>
   );
 }
 
 function RunnerCurrentActivityTail({ status, waitingLabel }: { status: string; waitingLabel?: string | null }) {
+  useTranslation();
   const shimmer = useTaskChatShimmer("working");
   if (isTerminalRunStatus(status)) return null;
   return <div className="mt-2 flex min-h-8 min-w-0 items-center gap-2 px-1 py-1 text-xs text-muted-foreground" data-testid="task-chat-current-activity" data-turn-position="tail">
-    <span className={cn(!waitingLabel && shimmer && "shimmer-text shimmer-text-muted")} aria-live="polite" data-testid="task-chat-current-activity-label">{waitingLabel ?? "Thinking"}</span>
+    <span className={cn(!waitingLabel && shimmer && "shimmer-text shimmer-text-muted")} aria-live="polite" data-testid="task-chat-current-activity-label">{waitingLabel ?? t("localizationTaskRuntime.ui_Thinking_jkajtp")}</span>
   </div>;
 }
 
@@ -129,13 +139,14 @@ interface RunnerHeaderProps {
 
 function runnerWaitingLabel({ runId, status, execution, preparationLabel }: RunnerHeaderProps) {
   if (isTerminalRunStatus(status)) return null;
-  if (execution?.phase === "waiting_for_provider") return execution.label;
+  if (execution?.phase === "waiting_for_provider") return taskChatDisplayLabel(execution.label);
   if (!runId && preparationLabel) return preparationLabel;
-  return status === "queued" ? execution?.label ?? "Queued" : null;
+  return status === "queued" ? taskChatDisplayLabel(execution?.label ?? "Queued") : null;
 }
 
 /** One identity stays mounted while admission discovers the run's renderer. */
 export function TaskChatRunnerHeader({ statusContent, ...props }: RunnerHeaderProps & { statusContent?: ReactNode }) {
+  useTranslation();
   return <div className="flex min-h-8 min-w-0 items-center gap-2 pb-1 pt-2" data-testid="task-chat-runner-identity-row">
     {props.agentName ? <TaskChatAgentIdentity agentName={props.agentName} agentIcon={props.agentIcon} agent={props.agent} /> : null}
     {statusContent ?? <RunnerTurnStatus status={props.status} startedAtMs={props.startedAtMs} finishedAtMs={props.finishedAtMs}
@@ -186,6 +197,7 @@ export function TaskChatRunnerTurn({
     decision: TaskChatRuntimeRequestDecision,
   ) => void | Promise<void>;
 }) {
+  useTranslation();
   const terminal = isTerminalRunStatus(status);
   const waitingLabel = runnerWaitingLabel({ runId, status, execution, preparationLabel, startedAtMs });
   const yielded = items.some(
@@ -255,7 +267,7 @@ export function TaskChatRunnerTurn({
           role="status"
           data-testid="task-chat-activity-unavailable"
         >
-          Live runner activity is temporarily unavailable. Retrying…
+          {t("localizationTaskRuntime.ui_Live_runner_activity_is_temporarily_unavailable_Retrying_ts41ok")}
         </div>
       ) : null}
       {timelineRows.length > 0 ? (

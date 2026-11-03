@@ -5,6 +5,8 @@ export interface VoiceTranscriptEntry {
   text: string;
   final: boolean;
   interrupted?: boolean;
+  /** UI-only provenance; spoken/provider text never receives this flag. */
+  generated?: "task_update";
 }
 export interface VoiceTranscriptUpdate {
   segmentId?: string;

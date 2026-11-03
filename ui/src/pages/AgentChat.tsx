@@ -1,4 +1,6 @@
+import { Trans } from "react-i18next";
 import { useCallback, useEffect, useRef } from "react";
+import { useTranslation } from "@/i18n";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { agentChatsApi } from "@/api/agentChats";
 import { agentsApi } from "@/api/agents";
@@ -14,6 +16,7 @@ import { TaskDetailSurface } from "./IssueDetail";
 import { isUuidLike, type Issue } from "@paperclipai/shared";
 
 export function AgentChat() {
+  const { t } = useTranslation();
   const { agentRef = "" } = useParams<{ agentRef: string }>();
   const { selectedCompanyId } = useCompany();
   const { enabled, loaded } = useAgentChatEnabled();
@@ -58,7 +61,7 @@ export function AgentChat() {
       recordAgentChatVisit(agent.companyId, userId, agent.id, chat.data?.id ?? null);
   }, [enabled, agent?.id, agent?.companyId, userId, session.isSuccess, chat.isSuccess, chat.data?.id]);
   const ensureIssue = useCallback(async () => {
-    if (!agent || !selectedCompanyId) throw new Error("Agent not found");
+    if (!agent || !selectedCompanyId) throw new Error(t("sep12Screens.agentNotFoundError"));
     if (chat.data) return chat.data;
     const promise = (creating.current ??= agentChatsApi.ensure(
       selectedCompanyId,
@@ -74,21 +77,19 @@ export function AgentChat() {
       creating.current = null;
       throw error;
     }
-  }, [agent, selectedCompanyId, chat.data, client, userId]);
+  }, [agent, selectedCompanyId, chat.data, client, userId, t]);
   // An outage before anything loaded keeps the quiet loading copy; loaded
   // data renders through it.
   const reconnecting = agentsView.kind === "reconnecting" || sessionView.kind === "reconnecting"
     || chatView.kind === "reconnecting" || (!rosterAgent && historyView.kind === "reconnecting");
   if (!loaded || agents.isPending || session.isPending || historyAgent.isFetching && !agent || reconnecting)
     return (
-      <p className="text-sm text-muted-foreground">Loading conversation…</p>
+      <p className="text-sm text-muted-foreground">{t("sep12Screens.loadingConversation")}</p>
     );
   if (!enabled && !chat.data)
     return (
       <p className="text-sm text-muted-foreground">
-        Agent Chat is disabled for this instance. An administrator can enable it in{" "}
-        <Link className="underline underline-offset-4" to="/company/settings/instance/experimental#experimental-enableAgentChat">Experimental settings</Link>.
-        {" "}Your workspace preference does not change Chat availability. Existing history remains available through task links.
+        <Trans i18nKey="nov2Pages.chat.disabled" defaults="Agent Chat is disabled for this instance. An administrator can enable it in <settings>Experimental settings</settings>. Your workspace preference does not change Chat availability. Existing history remains available through task links." components={{ settings: <Link className="underline underline-offset-4" to="/company/settings/instance/experimental#experimental-enableAgentChat" /> }} />
       </p>
     );
   const failed = [agentsView, chatView, ...(rosterAgent ? [] : [historyView])].find((view) => view.kind === "error");
@@ -97,16 +98,16 @@ export function AgentChat() {
       <QueryErrorState
         size="page"
         error={failed.error}
-        action="load this conversation"
+        action={t("nov2Pages.action.load_conversation", { defaultValue: "load this conversation" })}
         onRetry={failed.retry}
         retrying={failed.isFetching}
       />
     );
   if (!agent)
-    return <p className="text-sm text-destructive">Agent not found.</p>;
+    return <p className="text-sm text-destructive">{t("sep12Screens.agentNotFound")}</p>;
   if (chat.isPending)
     return (
-      <p className="text-sm text-muted-foreground">Loading conversation…</p>
+      <p className="text-sm text-muted-foreground">{t("sep12Screens.loadingConversation")}</p>
     );
   return (
     <TaskDetailSurface

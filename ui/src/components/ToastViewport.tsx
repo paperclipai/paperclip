@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { AgentAvatar } from "./AgentAvatar";
 import { deriveInitials } from "./Identity";
 import { Avatar, AvatarFallback, AvatarImage } from "./ui/avatar";
@@ -33,6 +34,7 @@ function AnimatedToast({
   toast: ToastItem;
   onDismiss: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [visible, setVisible] = useState(false);
 
   useEffect(() => {
@@ -92,7 +94,7 @@ function AnimatedToast({
         </div>
         <button
           type="button"
-          aria-label="Dismiss notification"
+          aria-label={t("localizationCommonTail.dismissNotification")}
           onClick={() => onDismiss(toast.id)}
           className="mt-0.5 shrink-0 rounded p-1 opacity-50 hover:bg-black/10 hover:opacity-100 dark:hover:bg-white/10"
         >
@@ -104,6 +106,7 @@ function AnimatedToast({
 }
 
 export function ToastViewport() {
+  useTranslation();
   const toasts = useToastState();
   const { dismissToast } = useToastActions();
 

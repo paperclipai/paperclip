@@ -1,4 +1,5 @@
 import { useCallback, useState, useSyncExternalStore } from "react";
+import { useTranslation } from "@/i18n";
 
 const UPDATED = "paperclip:pinned-navigation-updated";
 const EMPTY = "[]";
@@ -17,6 +18,7 @@ function parse(value: string): string[] {
 
 /** Personal browser navigation preference. Stores route names, never work data. */
 export function usePinnedNavigation(userId: string | null | undefined) {
+  const { t } = useTranslation();
   const key = userId ? `paperclip.coordinator.pinned-nav.v1:${encodeURIComponent(userId)}` : null;
   const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
   const subscribe = useCallback((notify: () => void) => {
@@ -37,9 +39,9 @@ export function usePinnedNavigation(userId: string | null | undefined) {
       setFailure(null);
       window.dispatchEvent(new CustomEvent(UPDATED, { detail: key }));
     } catch {
-      setFailure({ key, message: "Couldn’t save pinned pages. Allow browser storage and try again." });
+      setFailure({ key, message: "nov02Core.pinsStorageFailed" });
     }
   }
 
-  return { pins: parse(snapshot), toggle, canPin: !!key, error: failure?.key === key ? failure.message : null };
+  return { pins: parse(snapshot), toggle, canPin: !!key, error: failure?.key === key ? t(failure.message) : null };
 }

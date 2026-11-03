@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { i18n } from "@/i18n";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -130,6 +131,7 @@ describe("AgentToolsTab", () => {
     });
     container.remove();
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
   });
 
   async function renderTab() {
@@ -258,6 +260,14 @@ describe("AgentToolsTab", () => {
     expect(text).not.toContain("Block other agent");
     // Unavailable tool surfaced from the full tool list minus allowed.
     expect(text).toContain("github.delete_repo");
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    expect(container.textContent).toContain("Действующие права доступа");
+    expect(container.textContent).toContain("не может расширить его");
+    expect(container.textContent).toContain("1 инструмент");
+    expect(container.textContent).toContain("Require approval for writes");
+    expect(container.textContent).toContain("github.delete_repo");
+    expect(mockToolsApi.putConnectionInstalls).not.toHaveBeenCalled();
   });
 
   it("shows the empty allow-list message when no profile applies", async () => {
@@ -435,10 +445,16 @@ describe("AgentToolsTab", () => {
     expect(installCheckbox).toBeTruthy();
     await act(async () => {
       installCheckbox!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await i18n.changeLanguage("ru");
+    });
+    expect(installCheckbox?.getAttribute("aria-checked")).toBe("true");
+    expect(installCheckbox?.getAttribute("aria-label")).toBe("Установить Production GitHub для агента Coder");
+    await act(async () => {
       await new Promise((resolve) => window.setTimeout(resolve, 300));
     });
     await flushReact();
 
+    expect(mockToolsApi.putConnectionInstalls).toHaveBeenCalledTimes(1);
     expect(mockToolsApi.putConnectionInstalls).toHaveBeenCalledWith("conn-1", [
       { targetType: "agent", targetId: "agent-1" },
     ]);

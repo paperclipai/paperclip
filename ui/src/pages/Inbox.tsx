@@ -1,3 +1,4 @@
+import { t, i18n, useTranslation } from "@/i18n";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { describeError } from "../api/errors";
@@ -41,8 +42,8 @@ import {
   type IssueFilterState,
 } from "../lib/issue-filters";
 import { collectLiveIssueIds, collectSubtreeLiveCounts } from "../lib/liveIssueIds";
-import { formatAssigneeUserLabel } from "../lib/assignees";
-import { buildCompanyUserLabelMap, buildCompanyUserProfileMap } from "../lib/company-members";
+import { formatAssigneeUserDisplayLabel as formatAssigneeUserLabel } from "../lib/assignees";
+import { buildCompanyUserLabelMap, buildCompanyUserProfileMap, companyUserProfileDisplayLabel } from "../lib/company-members";
 import {
   armIssueDetailInboxQuickArchive,
   createIssueDetailLocationState,
@@ -296,11 +297,11 @@ function firstNonEmptyLine(value: string | null | undefined): string | null {
 }
 
 function runFailureMessage(run: HeartbeatRun): string {
-  return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? "Run exited with an error.";
+  return firstNonEmptyLine(run.error) ?? firstNonEmptyLine(run.stderrExcerpt) ?? t("pages.inbox.runExitedWithError");
 }
 
 function approvalStatusLabel(status: Approval["status"]): string {
-  return status.replaceAll("_", " ");
+  return t(`status.${status}`, { defaultValue: status.replaceAll("_", " ") });
 }
 
 function readIssueIdFromRun(run: HeartbeatRun): string | null {
@@ -334,7 +335,7 @@ export function formatJoinRequestInboxLabel(
   },
 ) {
   if (joinRequest.requestType !== "human") {
-    return `Agent join request${joinRequest.agentName ? `: ${joinRequest.agentName}` : ""}`;
+    return t("pages.inbox.agentJoinRequest", { name: joinRequest.agentName ? `: ${joinRequest.agentName}` : "" });
   }
 
   const requesterName = nonEmptyLabel(joinRequest.requesterUser?.name);
@@ -347,7 +348,7 @@ export function formatJoinRequestInboxLabel(
   if (requesterEmail) return requesterEmail;
   if (requesterName) return requesterName;
   if (requesterId) return requesterId;
-  return "Human join request";
+  return t("pages.inbox.humanJoinRequest");
 }
 
 
@@ -356,6 +357,7 @@ type NonIssueUnreadState = "visible" | "fading" | "hidden" | null;
 // Rows outside SwipeToArchive (non-archivable tabs/sections) still need the
 // hover-follows-selection band that SwipeToArchive's surface normally paints.
 function InboxRowSurface({ selected, children }: { selected: boolean; children: ReactNode }) {
+  useTranslation();
   return <div className={cn(selected && "rounded-lg bg-accent/50")}>{children}</div>;
 }
 
@@ -388,18 +390,19 @@ export function FailedRunInboxRow({
   selected?: boolean;
   className?: string;
 }) {
+  useTranslation();
   const issueId = readIssueIdFromRun(run);
   const issue = issueId ? issueById.get(issueId) ?? null : null;
   const interruption = issue?.interruption;
   useSecondTick(interruption?.state === "retry_scheduled");
   const retrySeconds = Math.max(0, Math.ceil((Date.parse(interruption?.nextRetryAt ?? "") - Date.now()) / 1000));
-  const displayError = isRetrying || interruption?.state === "working" ? "Thinking"
-    : interruption?.state === "retry_scheduled" ? `Trying again in ${retrySeconds}s…`
-      : interruption?.state === "failed" ? "Couldn’t finish this attempt. Your message is saved."
+  const displayError = isRetrying || interruption?.state === "working" ? t("localizationTaskRuntime.ui_Thinking_jkajtp")
+    : interruption?.state === "retry_scheduled" ? t("oct26Finish.retryIn", { seconds: retrySeconds })
+      : interruption?.state === "failed" ? t("oct26Finish.attemptFailed")
         : interruption?.state === "waiting_for_user" ? ({
-          approval: "Approval required", reconnect: "Reconnect account", assign_agent: "Assign an agent", choose_model: "Choose a supported model",
-          resume: "Work is paused", budget: "Budget limit reached",
-          project_access: "Agent needs project access",
+          approval: t("oct26Finish.approvalRequired"), reconnect: t("oct26Finish.reconnectAccount"), assign_agent: t("oct26Finish.assignAgent"), choose_model: t("oct26Finish.chooseModel"),
+          resume: t("oct26Finish.workPaused"), budget: t("oct26Finish.budgetReached"),
+          project_access: t("oct26Finish.projectAccessNeeded"),
         }[interruption.userAction ?? "resume"]) : runFailureMessage(run);
   const retryAvailable = !interruption || interruption.canRetry;
   const showUnreadSlot = unreadState !== null;
@@ -421,7 +424,7 @@ export function FailedRunInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-blue-500/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={t("pages.inbox.markAsRead", { defaultValue: "Mark as read" })}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -456,7 +459,7 @@ export function FailedRunInboxRow({
                   {issue.title}
                 </>
               ) : (
-                <>Failed run{linkedAgentName ? ` — ${linkedAgentName}` : ""}</>
+                <>{t("pages.inbox.failedRun", { name: linkedAgentName ? ` — ${linkedAgentName}` : "" })}</>
               )}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
@@ -480,14 +483,14 @@ export function FailedRunInboxRow({
             disabled={isRetrying}
           >
             <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-            {isRetrying ? "Thinking" : "Retry"}
+            {isRetrying ? t("localizationTaskRuntime.ui_Thinking_jkajtp") : "Retry"}
           </Button>}
           {!showUnreadSlot && (
             <button
               type="button"
               onClick={onDismiss}
               className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
-              aria-label="Dismiss"
+              aria-label={t("pages.inbox.dismiss", { defaultValue: "Dismiss" })}
             >
               <X className="h-4 w-4" />
             </button>
@@ -504,14 +507,14 @@ export function FailedRunInboxRow({
           disabled={isRetrying}
         >
           <RotateCcw className="mr-1.5 h-3.5 w-3.5" />
-          {isRetrying ? "Thinking" : "Retry"}
+          {isRetrying ? t("localizationTaskRuntime.ui_Thinking_jkajtp") : "Retry"}
         </Button>}
         {!showUnreadSlot && (
           <button
             type="button"
             onClick={onDismiss}
             className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
-            aria-label="Dismiss"
+            aria-label={t("pages.inbox.dismiss", { defaultValue: "Dismiss" })}
           >
             <X className="h-4 w-4" />
           </button>
@@ -546,6 +549,7 @@ function ApprovalInboxRow({
   selected?: boolean;
   className?: string;
 }) {
+  useTranslation();
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
   const showResolutionButtons =
@@ -570,7 +574,7 @@ function ApprovalInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-blue-500/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={t("pages.inbox.markAsRead", { defaultValue: "Mark as read" })}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -601,8 +605,8 @@ function ApprovalInboxRow({
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
               <span className="capitalize">{approvalStatusLabel(approval.status)}</span>
-              {requesterName ? <span>requested by {requesterName}</span> : null}
-              <span>updated {timeAgo(approval.updatedAt)}</span>
+              {requesterName ? <span>{t("pages.inbox.requestedBy", { name: requesterName })}</span> : null}
+              <span>{t("pages.inbox.updated", { time: timeAgo(approval.updatedAt) })}</span>
             </span>
           </span>
         </Link>
@@ -619,7 +623,7 @@ function ApprovalInboxRow({
                   onClick={onApprove}
                   disabled={isPending}
                 >
-                  Approve
+                  {t("pages.inbox.approve", { defaultValue: "Approve" })}
                 </Button>
                 <Button
                   variant="destructive"
@@ -628,7 +632,7 @@ function ApprovalInboxRow({
                   onClick={onReject}
                   disabled={isPending}
                 >
-                  Reject
+                  {t("pages.inbox.reject", { defaultValue: "Reject" })}
                 </Button>
               </>
             ) : null}
@@ -643,7 +647,7 @@ function ApprovalInboxRow({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            {t("pages.inbox.approve", { defaultValue: "Approve" })}
           </Button>
           <Button
             variant="destructive"
@@ -652,7 +656,7 @@ function ApprovalInboxRow({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            {t("pages.inbox.reject", { defaultValue: "Reject" })}
           </Button>
         </div>
       ) : null}
@@ -683,6 +687,7 @@ function JoinRequestInboxRow({
   selected?: boolean;
   className?: string;
 }) {
+  useTranslation();
   const label = formatJoinRequestInboxLabel(joinRequest);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";
@@ -703,7 +708,7 @@ function JoinRequestInboxRow({
                   "inline-flex h-4 w-4 items-center justify-center rounded-full transition-colors",
                   "hover:bg-blue-500/20",
                 )}
-                aria-label="Mark as read"
+                aria-label={t("pages.inbox.markAsRead", { defaultValue: "Mark as read" })}
               >
                 <span className={cn(
                   "block h-2 w-2 rounded-full transition-opacity duration-300",
@@ -727,8 +732,8 @@ function JoinRequestInboxRow({
               {label}
             </span>
             <span className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
-              <span>requested {timeAgo(joinRequest.createdAt)} from IP {joinRequest.requestIp}</span>
-              {joinRequest.adapterType && <span>adapter: {joinRequest.adapterType}</span>}
+              <span>{t("pages.inbox.requestedFromIp", { time: timeAgo(joinRequest.createdAt), ip: joinRequest.requestIp })}</span>
+              {joinRequest.adapterType && <span>{t("pages.inbox.adapter", { type: joinRequest.adapterType })}</span>}
             </span>
           </span>
         </div>
@@ -742,7 +747,7 @@ function JoinRequestInboxRow({
             onClick={onApprove}
             disabled={isPending}
           >
-            Approve
+            {t("pages.inbox.approve", { defaultValue: "Approve" })}
           </Button>
           <Button
             variant="destructive"
@@ -751,7 +756,7 @@ function JoinRequestInboxRow({
             onClick={onReject}
             disabled={isPending}
           >
-            Reject
+            {t("pages.inbox.reject", { defaultValue: "Reject" })}
           </Button>
         </div>
       </div>
@@ -762,7 +767,7 @@ function JoinRequestInboxRow({
           onClick={onApprove}
           disabled={isPending}
         >
-          Approve
+          {t("pages.inbox.approve", { defaultValue: "Approve" })}
         </Button>
         <Button
           variant="destructive"
@@ -771,7 +776,7 @@ function JoinRequestInboxRow({
           onClick={onReject}
           disabled={isPending}
         >
-          Reject
+          {t("pages.inbox.reject", { defaultValue: "Reject" })}
         </Button>
       </div>
     </div>
@@ -786,6 +791,7 @@ function InboxCollectionToolbar({
   feedback,
   ariaLabel,
 }: CollectionToolbarProps & { streamlined: boolean }) {
+  useTranslation();
   if (streamlined) {
     return (
       <CollectionToolbar
@@ -833,6 +839,7 @@ export interface InboxSurfaceProps {
 }
 
 export function Inbox(props: InboxSurfaceProps = {}) {
+  useTranslation();
   const { enabled: streamlinedUiEnabled } = useStreamlinedUiEnabled();
   const coordinator = useCoordinatorPresentation();
   return streamlinedUiEnabled || coordinator ? <StreamlinedInbox {...props} /> : <LegacyInbox />;
@@ -841,8 +848,9 @@ export function Inbox(props: InboxSurfaceProps = {}) {
 function StreamlinedInbox({
   tab: tabOverride,
   toolbarContext,
-  surfaceLabel = "Inbox",
+  surfaceLabel = t("nav.inbox"),
 }: InboxSurfaceProps) {
+  useTranslation();
   const streamlinedUiEnabled = true;
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
@@ -1150,24 +1158,24 @@ function StreamlinedInbox({
     for (const issueId of archivingIssueIds) issueIds.add(issueId);
     for (const issueId of unarchivingIssueIds) issueIds.delete(issueId);
     return issueIds;
-  }, [archivingIssueIds, guardedArchiveIssueIds, undoableArchiveIssueIds, unarchivingIssueIds]);
+  }, [i18n.resolvedLanguage, archivingIssueIds, guardedArchiveIssueIds, undoableArchiveIssueIds, unarchivingIssueIds]);
 
   const companyUserLabelMap = useMemo(
     () => buildCompanyUserLabelMap(companyMembers?.users),
-    [companyMembers?.users],
+    [i18n.resolvedLanguage, companyMembers?.users],
   );
   const companyUserProfileMap = useMemo(
     () => buildCompanyUserProfileMap(companyMembers?.users),
-    [companyMembers?.users],
+    [i18n.resolvedLanguage, companyMembers?.users],
   );
 
   const mineIssues = useMemo(
     () => getRecentTouchedIssues(mineIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
-    [locallyArchivedIssueIds, mineIssuesRaw],
+    [i18n.resolvedLanguage, locallyArchivedIssueIds, mineIssuesRaw],
   );
   const touchedIssues = useMemo(
     () => getRecentTouchedIssues(touchedIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
-    [locallyArchivedIssueIds, touchedIssuesRaw],
+    [i18n.resolvedLanguage, locallyArchivedIssueIds, touchedIssuesRaw],
   );
   const sourceSearchIds = useMemo(() => [...new Set([...mineIssuesRaw, ...touchedIssuesRaw].map((issue) => issue.id))].sort(), [mineIssuesRaw, touchedIssuesRaw]);
   const { data: sourceSearchMatches = [], isLoading: isSourceSearchLoading, error: sourceSearchError } = useQuery<Issue[]>({
@@ -1214,7 +1222,7 @@ function StreamlinedInbox({
       ...touchedIssuesRaw,
       ...remoteIssueSearchResults,
     ]),
-    [issues, liveRuns, mineIssuesRaw, remoteIssueSearchResults, touchedIssuesRaw],
+    [i18n.resolvedLanguage, issues, liveRuns, mineIssuesRaw, remoteIssueSearchResults, touchedIssuesRaw],
   );
   const inboxIssueIdsForExternalObjectSummaries = useMemo(() => {
     const issueIds = new Set<string>();
@@ -1222,7 +1230,7 @@ function StreamlinedInbox({
     for (const issue of touchedIssues) issueIds.add(issue.id);
     for (const issue of remoteIssueSearchResults) issueIds.add(issue.id);
     return [...issueIds];
-  }, [mineIssues, remoteIssueSearchResults, touchedIssues]);
+  }, [i18n.resolvedLanguage, mineIssues, remoteIssueSearchResults, touchedIssues]);
   const {
     summaries: externalObjectSummaryByIssueId,
     isLoading: externalObjectSummariesLoading,
@@ -1236,18 +1244,18 @@ function StreamlinedInbox({
   const issueFilterContext = useMemo(() => ({
     externalObjectSummaryByIssueId,
     externalObjectSummariesReady: externalObjectSummariesReady && !externalObjectSummariesLoading,
-  }), [externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
+  }), [i18n.resolvedLanguage, externalObjectSummariesLoading, externalObjectSummariesReady, externalObjectSummaryByIssueId]);
   const visibleMineIssues = useMemo(
     () => applyIssueFilters(mineIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    [i18n.resolvedLanguage, mineIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const visibleTouchedIssues = useMemo(
     () => applyIssueFilters(touchedIssues, issueFilters, currentUserId, false, liveIssueIds, issueFilterContext),
-    [touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
+    [i18n.resolvedLanguage, touchedIssues, issueFilters, currentUserId, liveIssueIds, issueFilterContext],
   );
   const unreadTouchedIssues = useMemo(
     () => visibleTouchedIssues.filter((issue) => issue.isUnreadForMe),
-    [visibleTouchedIssues],
+    [i18n.resolvedLanguage, visibleTouchedIssues],
   );
   const creatorOptions = useMemo<CreatorOption[]>(() => {
     const options = new Map<string, CreatorOption>();
@@ -1256,7 +1264,7 @@ function StreamlinedInbox({
     if (currentUserId) {
       options.set(`user:${currentUserId}`, {
         id: `user:${currentUserId}`,
-        label: currentUserId === "local-board" ? "Board" : "Me",
+        label: currentUserId === "local-board" ? t("pages.inbox.board") : t("filter.me"),
         kind: "user",
         searchText: currentUserId === "local-board" ? "board me human local-board" : `me board human ${currentUserId}`,
       });
@@ -1308,34 +1316,34 @@ function StreamlinedInbox({
       if (a.kind !== b.kind) return a.kind === "user" ? -1 : 1;
       return a.label.localeCompare(b.label);
     });
-  }, [agents, currentUserId, mineIssues, touchedIssues]);
+  }, [i18n.resolvedLanguage, agents, currentUserId, mineIssues, touchedIssues]);
   const issuesToRender = useMemo(
     () => {
       if (tab === "mine") return visibleMineIssues;
       if (tab === "unread") return unreadTouchedIssues;
       return visibleTouchedIssues;
     },
-    [tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
+    [i18n.resolvedLanguage, tab, visibleMineIssues, visibleTouchedIssues, unreadTouchedIssues],
   );
 
   const agentById = useMemo(() => {
     const map = new Map<string, string>();
     for (const agent of agents ?? []) map.set(agent.id, agent.name);
     return map;
-  }, [agents]);
+  }, [i18n.resolvedLanguage, agents]);
 
   const issueById = useMemo(() => {
     const map = new Map<string, Issue>();
     for (const issue of issues ?? []) map.set(issue.id, issue);
     return map;
-  }, [issues]);
+  }, [i18n.resolvedLanguage, issues]);
   const projectById = useMemo(() => {
     const map = new Map<string, { name: string; color: string | null }>();
     for (const project of projects ?? []) {
       map.set(project.id, { name: project.name, color: project.color });
     }
     return map;
-  }, [projects]);
+  }, [i18n.resolvedLanguage, projects]);
   const projectWorkspaceById = useMemo(() => {
     const map = new Map<string, { name: string; projectId: string }>();
     for (const project of projects ?? []) {
@@ -1344,7 +1352,7 @@ function StreamlinedInbox({
       }
     }
     return map;
-  }, [projects]);
+  }, [i18n.resolvedLanguage, projects]);
   const defaultProjectWorkspaceIdByProjectId = useMemo(() => {
     const map = new Map<string, string>();
     for (const project of projects ?? []) {
@@ -1355,7 +1363,7 @@ function StreamlinedInbox({
       if (defaultWorkspaceId) map.set(project.id, defaultWorkspaceId);
     }
     return map;
-  }, [projects]);
+  }, [i18n.resolvedLanguage, projects]);
   const executionWorkspaceById = useMemo(() => {
     const map = new Map<string, {
       name: string;
@@ -1375,7 +1383,7 @@ function StreamlinedInbox({
       });
     }
     return map;
-  }, [executionWorkspaces, projectWorkspaceById]);
+  }, [i18n.resolvedLanguage, executionWorkspaces, projectWorkspaceById]);
   const inboxWorkspaceGrouping = useMemo<InboxWorkspaceGroupingOptions>(
     () => ({
       agentById,
@@ -1386,7 +1394,7 @@ function StreamlinedInbox({
       userLabelById: companyUserLabelMap,
       currentUserId,
     }),
-    [
+    [i18n.resolvedLanguage,
       agentById,
       companyUserLabelMap,
       currentUserId,
@@ -1396,19 +1404,19 @@ function StreamlinedInbox({
       projectWorkspaceById,
     ],
   );
-  const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [visibleIssueColumns]);
+  const visibleIssueColumnSet = useMemo(() => new Set(visibleIssueColumns), [i18n.resolvedLanguage, visibleIssueColumns]);
   const availableIssueColumns = useMemo(
     () => getAvailableInboxIssueColumns(isolatedWorkspacesEnabled),
-    [isolatedWorkspacesEnabled],
+    [i18n.resolvedLanguage, isolatedWorkspacesEnabled],
   );
-  const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [availableIssueColumns]);
+  const availableIssueColumnSet = useMemo(() => new Set(availableIssueColumns), [i18n.resolvedLanguage, availableIssueColumns]);
   const visibleTrailingIssueColumns = useMemo(
     () => issueTrailingColumns.filter((column) => visibleIssueColumnSet.has(column) && availableIssueColumnSet.has(column)),
-    [availableIssueColumnSet, visibleIssueColumnSet],
+    [i18n.resolvedLanguage, availableIssueColumnSet, visibleIssueColumnSet],
   );
   const visibleTaskDataColumns = useMemo(
     () => visibleTrailingIssueColumns.filter((column) => column !== "updated"),
-    [visibleTrailingIssueColumns],
+    [i18n.resolvedLanguage, visibleTrailingIssueColumns],
   );
   const showTaskTimestamp = visibleIssueColumnSet.has("updated") && availableIssueColumnSet.has("updated");
 
@@ -1430,7 +1438,7 @@ function StreamlinedInbox({
       );
     }
     return filtered;
-  }, [approvals, tab, allApprovalFilter, currentUserId, dismissedAtByKey]);
+  }, [i18n.resolvedLanguage, approvals, tab, allApprovalFilter, currentUserId, dismissedAtByKey]);
   const showJoinRequestsCategory =
     allCategoryFilter === "everything" || allCategoryFilter === "join_requests";
   const showTouchedCategory =
@@ -1444,7 +1452,7 @@ function StreamlinedInbox({
     if (tab === "all" && !showFailedRunsCategory) return [];
     if (tab === "mine") return failedRuns.filter((run) => isHeartbeatRunVisibleInMine(run, currentUserId));
     return failedRuns;
-  }, [failedRuns, tab, showFailedRunsCategory, currentUserId]);
+  }, [i18n.resolvedLanguage, failedRuns, tab, showFailedRunsCategory, currentUserId]);
 
   const joinRequestsForTab = useMemo(() => {
     if (tab === "all" && !showJoinRequestsCategory) return [];
@@ -1454,7 +1462,7 @@ function StreamlinedInbox({
       );
     }
     return joinRequests;
-  }, [joinRequests, tab, showJoinRequestsCategory, dismissedAtByKey]);
+  }, [i18n.resolvedLanguage, joinRequests, tab, showJoinRequestsCategory, dismissedAtByKey]);
 
   const workItemsToRender = useMemo(
     () =>
@@ -1464,7 +1472,7 @@ function StreamlinedInbox({
         failedRuns: failedRunsForTab,
         joinRequests: joinRequestsForTab,
       }),
-    [approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab],
+    [i18n.resolvedLanguage, approvalsToRender, issuesToRender, showApprovalsCategory, showTouchedCategory, tab, failedRunsForTab, joinRequestsForTab],
   );
 
   const filteredWorkItems = useMemo(() => {
@@ -1509,7 +1517,7 @@ function StreamlinedInbox({
       }
       return false;
     });
-  }, [
+  }, [i18n.resolvedLanguage,
     workItemsToRender,
     agentById,
     defaultProjectWorkspaceIdByProjectId,
@@ -1535,7 +1543,7 @@ function StreamlinedInbox({
           defaultProjectWorkspaceIdByProjectId,
         })
         : [],
-    [
+    [i18n.resolvedLanguage,
       defaultProjectWorkspaceIdByProjectId,
       executionWorkspaceById,
       isolatedWorkspacesEnabled,
@@ -1560,7 +1568,7 @@ function StreamlinedInbox({
         liveIssueIds,
         issueFilterContext,
       }),
-    [
+    [i18n.resolvedLanguage,
       archivedSearchIssues,
       currentUserId,
       filteredWorkItems,
@@ -1576,7 +1584,7 @@ function StreamlinedInbox({
       ...archivedSearchIssues.map((issue) => issue.id),
       ...issueSearchSupplementResults.map((issue) => issue.id),
     ]),
-    [archivedSearchIssues, issueSearchSupplementResults],
+    [i18n.resolvedLanguage, archivedSearchIssues, issueSearchSupplementResults],
   );
 
   // --- Parent-child nesting for inbox issues ---
@@ -1631,7 +1639,7 @@ function StreamlinedInbox({
       inboxWorkspaceGrouping,
       { keyPrefix: "other-search:", searchSection: "other", nestingEnabled },
     ),
-  ], [
+  ], [i18n.resolvedLanguage,
     archivedSearchIssues,
     filteredWorkItems,
     groupBy,
@@ -1670,7 +1678,7 @@ function StreamlinedInbox({
         allApprovalFilter,
         issueFilters,
       ]),
-    [
+    [i18n.resolvedLanguage,
       allApprovalFilter,
       allCategoryFilter,
       groupBy,
@@ -1705,7 +1713,7 @@ function StreamlinedInbox({
     // orderCommitToken forces re-adoption at a commit boundary; inboxSortViewIdentity
     // forces it on a view change even when the fresh sections keep their identity.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [freshGroupedSections, inboxSortViewIdentity, orderCommitToken]);
+  }, [i18n.resolvedLanguage, freshGroupedSections, inboxSortViewIdentity, orderCommitToken]);
 
   const inboxSortAttention = useInboxSortAttention({
     viewIdentity: inboxSortViewIdentity,
@@ -1725,7 +1733,7 @@ function StreamlinedInbox({
   }, [groupBy, inboxWorkspaceGrouping, openNewIssue]);
   const totalVisibleWorkItems = useMemo(
     () => groupedSections.reduce((count, group) => count + group.displayItems.length, 0),
-    [groupedSections],
+    [i18n.resolvedLanguage, groupedSections],
   );
   const toggleInboxParentCollapse = useCallback((parentId: string) => {
     setCollapsedInboxParents((prev) => {
@@ -1750,7 +1758,7 @@ function StreamlinedInbox({
   // Build flat navigation list from visible rows so keyboard traversal respects collapsed groups.
   const flatNavItems = useMemo((): NavEntry[] => {
     return buildInboxKeyboardNavEntries(groupedSections, collapsedGroupKeys, collapsedInboxParents);
-  }, [collapsedGroupKeys, collapsedInboxParents, groupedSections]);
+  }, [i18n.resolvedLanguage, collapsedGroupKeys, collapsedInboxParents, groupedSections]);
   // Read the current nav list from event handlers without recreating them (and
   // without capturing a stale array), so hover can resolve the row's key.
   const flatNavItemsRef = useRef(flatNavItems);
@@ -1774,28 +1782,28 @@ function StreamlinedInbox({
       }
     }
     return collectSubtreeLiveCounts(nodes, liveIssueIds);
-  }, [groupedSections, liveIssueIds]);
+  }, [i18n.resolvedLanguage, groupedSections, liveIssueIds]);
   const topFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
       if (entry.type === "top") map.set(entry.itemKey, index);
     });
     return map;
-  }, [flatNavItems]);
+  }, [i18n.resolvedLanguage, flatNavItems]);
   const childFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
       if (entry.type === "child") map.set(entry.issueId, index);
     });
     return map;
-  }, [flatNavItems]);
+  }, [i18n.resolvedLanguage, flatNavItems]);
   const groupFlatIndex = useMemo(() => {
     const map = new Map<string, number>();
     flatNavItems.forEach((entry, index) => {
       if (entry.type === "group") map.set(entry.groupKey, index);
     });
     return map;
-  }, [flatNavItems]);
+  }, [i18n.resolvedLanguage, flatNavItems]);
 
   const agentName = (id: string | null) => {
     if (!id) return null;
@@ -1863,7 +1871,7 @@ function StreamlinedInbox({
       navigate(`/approvals/${id}?resolved=approved`);
     },
     onError: (err) => {
-      setActionError(describeError(err, { action: "approve this request" }).body);
+      setActionError(describeError(err, { action: t("nov2Pages.action.approve_this_request", { defaultValue: "approve this request" }) }).body);
     },
   });
 
@@ -1874,7 +1882,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.approvals.list(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(describeError(err, { action: "reject this request" }).body);
+      setActionError(describeError(err, { action: t("nov2Pages.action.reject_this_request", { defaultValue: "reject this request" }) }).body);
     },
   });
 
@@ -1889,7 +1897,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to approve join request");
+      setActionError(err instanceof Error ? err.message : t("pages.inbox.failedToApproveJoin"));
     },
   });
 
@@ -1902,7 +1910,7 @@ function StreamlinedInbox({
       queryClient.invalidateQueries({ queryKey: queryKeys.sidebarBadges(selectedCompanyId!) });
     },
     onError: (err) => {
-      setActionError(err instanceof Error ? err.message : "Failed to reject join request");
+      setActionError(err instanceof Error ? err.message : t("pages.inbox.failedToRejectJoin"));
     },
   });
 
@@ -1947,8 +1955,8 @@ function StreamlinedInbox({
     },
     onError: (error) => {
       pushToast({
-        title: "Run retry failed",
-        body: error instanceof Error ? error.message : "Unable to retry run",
+        title: t("localizationIssueDetail.ui_Run_retry_failed"),
+        body: error instanceof Error ? error.message : t("localizationIssueDetail.ui_Unable_to_retry_run"),
         tone: "error",
       });
     },
@@ -2021,7 +2029,7 @@ function StreamlinedInbox({
       return { companyId: selectedCompanyId, previousData };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to archive task");
+      setActionError(err instanceof Error ? err.message : t("pages.inbox.failedToArchiveTask"));
       if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
       setArchivingIssueIds((prev) => {
         const next = new Set(prev);
@@ -2062,7 +2070,7 @@ function StreamlinedInbox({
       return { companyId: selectedCompanyId };
     },
     onError: (err, id, context) => {
-      setActionError(err instanceof Error ? err.message : "Failed to undo inbox archive");
+      setActionError(err instanceof Error ? err.message : t("pages.inbox.failedToUndoArchive"));
       if (context?.companyId) {
         beginLocalInboxArchive(context.companyId, id);
         boundLocalInboxArchive(context.companyId, id);
@@ -2534,7 +2542,7 @@ function StreamlinedInbox({
   );
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
+    return <EmptyState icon={InboxIcon} message={t("oct5Core.selectOrganizationSurface", { surface: surfaceLabel })} />;
   }
 
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -2555,30 +2563,30 @@ function StreamlinedInbox({
       issueFilters.statuses.includes(status as IssueFilterState["statuses"][number]),
     );
   const issueFilterFeedback = issueFilters.liveOnly
-    ? "Live runs only — tasks currently connected to an agent run."
+    ? t("localizationIssueLists.liveFilterHelp", { defaultValue: "Live runs only — tasks currently connected to an agent run." })
     : activeStatusFilterApplied
-      ? "Active statuses — open tasks, whether or not an agent is running."
+      ? t("localizationIssueLists.activeFilterHelp", { defaultValue: "Active statuses — open tasks, whether or not an agent is running." })
       : null;
   return (
     <div className="space-y-6">
       <IssueRowDetailsNotice
         error={optionalSourceError ?? rowDetailsError}
-        message={optionalSourceError ? "Some inbox items couldn’t load. Showing available items." : undefined}
-        retryLabel={optionalSourceError ? "Retry missing items" : undefined}
+        message={optionalSourceError ? t("nov2Pages.inbox.partial", { defaultValue: "Some inbox items couldn’t load. Showing available items." }) : undefined}
+        retryLabel={optionalSourceError ? t("nov2Pages.inbox.retryMissing", { defaultValue: "Retry missing items" }) : undefined}
         onRetry={optionalSourceError ? retryFailedSources : () => void retryRowDetails()}
       />
       <InboxCollectionToolbar
         streamlined={streamlinedUiEnabled}
-        ariaLabel={`${surfaceLabel} controls`}
+        ariaLabel={t("oct5Core.surfaceControls", { surface: surfaceLabel })}
         context={toolbarContext ?? (
           <Tabs value={tab} onValueChange={(value) => navigate(`/inbox/${value}`)}>
             <PageTabBar
               items={[
-                { value: "mine", label: "Mine" },
-                { value: "recent", label: "Recent" },
-                { value: "unread", label: "Unread" },
-                { value: "blocked", label: "Blocked" },
-                { value: "all", label: "All" },
+                { value: "mine", get label() { return t("pages.inbox.tabMine", { defaultValue: "Mine" }); } },
+                { value: "recent", get label() { return t("pages.inbox.tabRecent", { defaultValue: "Recent" }); } },
+                { value: "unread", get label() { return t("pages.inbox.tabUnread", { defaultValue: "Unread" }); } },
+                { value: "blocked", get label() { return t("pages.inbox.tabBlocked", { defaultValue: "Blocked" }); } },
+                { value: "all", get label() { return t("pages.inbox.tabAll", { defaultValue: "All" }); } },
               ]}
             />
           </Tabs>
@@ -2588,7 +2596,7 @@ function StreamlinedInbox({
             <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
-              placeholder={`Search ${surfaceLabel.toLowerCase()}…`}
+              placeholder={t("oct5Core.searchSurface", { surface: surfaceLabel.toLowerCase() })}
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -2639,7 +2647,7 @@ function StreamlinedInbox({
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", blockedGroupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={t("pages.inbox.group", { defaultValue: "Group" })}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
@@ -2675,7 +2683,7 @@ function StreamlinedInbox({
                   }));
                 }}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which columns stay visible"
+                title={t("oct5Core.chooseColumns")}
                 iconOnly
               />
               <Popover>
@@ -2685,7 +2693,7 @@ function StreamlinedInbox({
                     variant="outline"
                     size="icon"
                     className="h-8 w-8 shrink-0"
-                    title="Sort"
+                    title={t("pages.inbox.sort", { defaultValue: "Sort" })}
                   >
                     <ArrowUpDown className="h-3.5 w-3.5" />
                   </Button>
@@ -2718,7 +2726,7 @@ function StreamlinedInbox({
                 size="icon"
                 className={cn("hidden h-8 w-8 shrink-0 sm:inline-flex", nestingEnabled && "bg-accent")}
                 onClick={toggleNesting}
-                title={nestingEnabled ? "Disable parent-child nesting" : "Enable parent-child nesting"}
+                title={nestingEnabled ? t("pages.inbox.disableNesting", { defaultValue: "Disable parent-child nesting" }) : t("pages.inbox.enableNesting", { defaultValue: "Enable parent-child nesting" })}
               >
                 <ListTree className="h-3.5 w-3.5" />
               </Button>
@@ -2758,7 +2766,7 @@ function StreamlinedInbox({
                     variant="outline"
                     size="icon"
                     className={cn("h-8 w-8 shrink-0", groupBy !== "none" && "bg-accent")}
-                    title="Group"
+                    title={t("pages.inbox.group", { defaultValue: "Group" })}
                   >
                     <Layers className="h-3.5 w-3.5" />
                   </Button>
@@ -2766,11 +2774,11 @@ function StreamlinedInbox({
                 <PopoverContent align="end" className="w-40 p-2">
                   <div className="space-y-0.5">
                     {([
-                      ["none", "None"],
-                      ["type", "Type"],
-                      ["assignee", "Responsible"],
-                      ["project", "Project"],
-                      ...(isolatedWorkspacesEnabled ? ([["workspace", "Workspace"]] as const) : []),
+                      ["none", t("status.none")],
+                      ["type", t("pages.inbox.groupByType")],
+                      ["assignee", t("pages.inbox.groupByAssignee")],
+                      ["project", t("pages.inbox.groupByProject")],
+                      ...(isolatedWorkspacesEnabled ? ([["workspace", t("pages.inbox.groupByWorkspace")]] as const) : []),
                     ] as const).map(([value, label]) => (
                       <button
                         key={value}
@@ -2800,7 +2808,7 @@ function StreamlinedInbox({
                   }));
                 }}
                 onResetColumns={() => setIssueColumns(DEFAULT_INBOX_ISSUE_COLUMNS)}
-                title="Choose which columns stay visible"
+                title={t("oct5Core.chooseColumns")}
                 iconOnly
                 rowPresentation={streamlinedUiEnabled ? "task" : "legacy"}
               />
@@ -2814,19 +2822,19 @@ function StreamlinedInbox({
                     onClick={() => setShowMarkAllReadConfirm(true)}
                     disabled={markAllReadMutation.isPending}
                   >
-                    {markAllReadMutation.isPending ? "Marking…" : "Mark all as read"}
+                    {markAllReadMutation.isPending ? t("pages.inbox.marking", { defaultValue: "Marking…" }) : t("pages.inbox.markAllAsRead", { defaultValue: "Mark all as read" })}
                   </Button>
                   <Dialog open={showMarkAllReadConfirm} onOpenChange={setShowMarkAllReadConfirm}>
                     <DialogContent className="sm:max-w-md">
                       <DialogHeader>
-                        <DialogTitle>Mark all as read?</DialogTitle>
+                        <DialogTitle>{t("pages.inbox.markAllAsReadConfirm", { defaultValue: "Mark all as read?" })}</DialogTitle>
                         <DialogDescription>
-                          This will mark {unreadIssueIds.length} unread {unreadIssueIds.length === 1 ? "item" : "items"} as read.
+                          {t("localizationIssueLists.markAllRead", { count: unreadIssueIds.length })}
                         </DialogDescription>
                       </DialogHeader>
                       <DialogFooter>
                         <Button variant="outline" onClick={() => setShowMarkAllReadConfirm(false)}>
-                          Cancel
+                          {t("pages.inbox.cancel", { defaultValue: "Cancel" })}
                         </Button>
                         <Button
                           onClick={() => {
@@ -2834,7 +2842,7 @@ function StreamlinedInbox({
                             markAllReadMutation.mutate(unreadIssueIds);
                           }}
                         >
-                          Mark all as read
+                          {t("pages.inbox.markAllAsRead", { defaultValue: "Mark all as read" })}
                         </Button>
                       </DialogFooter>
                     </DialogContent>
@@ -2854,8 +2862,8 @@ function StreamlinedInbox({
 
       {listError && (
         <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
-          <p>Unable to load the inbox: {listError.message}</p>
-          <Button variant="outline" size="sm" onClick={() => { retryFailedSources(); if (externalObjectSummariesError) retryExternalObjectSummaries(); }}>Retry</Button>
+          <p>{t("nov2Pages.inbox.loadError", { defaultValue: "Unable to load the inbox: {{error}}", error: listError.message })}</p>
+          <Button variant="outline" size="sm" onClick={() => { retryFailedSources(); if (externalObjectSummariesError) retryExternalObjectSummaries(); }}>{t("oct26Transcript.retry", { defaultValue: "Retry" })}</Button>
         </div>
       )}
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
@@ -2892,14 +2900,14 @@ function StreamlinedInbox({
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={
             searchQuery.trim()
-              ? "No inbox items match your search."
+              ? t("pages.inbox.noSearchMatches", { defaultValue: "No inbox items match your search." })
               : tab === "mine"
-              ? "Inbox zero."
+              ? t("pages.inbox.inboxZero", { defaultValue: "Inbox zero." })
               : tab === "unread"
-              ? "No new inbox items."
+              ? t("pages.inbox.noNewItems", { defaultValue: "No new inbox items." })
               : tab === "recent"
-                ? "No recent inbox items."
-                : "No inbox items match these filters."
+                ? t("pages.inbox.noRecentItems", { defaultValue: "No recent inbox items." })
+                : t("pages.inbox.noFilterMatches", { defaultValue: "No inbox items match these filters." })
           }
         />
       )}
@@ -2982,7 +2990,7 @@ function StreamlinedInbox({
                           type="button"
                           data-slot="icon-button"
                           className="inline-flex h-4 w-4 shrink-0 items-center justify-center"
-                          aria-label={isExpanded ? "Collapse sub-tasks" : "Expand sub-tasks"}
+                          aria-label={isExpanded ? t("localizationIssueLists.collapseSubtasks", { defaultValue: "Collapse sub-tasks" }) : t("localizationIssueLists.expandSubtasks", { defaultValue: "Expand sub-tasks" })}
                           onClick={(event) => {
                             event.preventDefault();
                             event.stopPropagation();
@@ -3041,7 +3049,7 @@ function StreamlinedInbox({
                       ) : undefined}
                       titleSuffix={hasChildren && !isExpanded ? (
                         <span className="ml-1.5 text-xs text-muted-foreground">
-                          ({childCount} sub-task{childCount !== 1 ? "s" : ""})
+                          ({t("localizationIssueLists.subtaskCount", { count: childCount })})
                         </span>
                       ) : undefined}
                       mobileTitleMeta={streamlinedUiEnabled ? issueActivityTimestamp(issue) : undefined}
@@ -3084,7 +3092,7 @@ function StreamlinedInbox({
                             creatorAgent={agents?.find((agent) => agent.id === issue.createdByAgentId)}
                             assigneeUserName={
                               formatAssigneeUserLabel(issue.assigneeUserId, currentUserId, companyUserLabelMap)
-                              ?? assigneeUserProfile?.label
+                              ?? companyUserProfileDisplayLabel(assigneeUserProfile)
                               ?? null
                             }
                             assigneeUserAvatarUrl={assigneeUserProfile?.image ?? null}
@@ -3120,7 +3128,7 @@ function StreamlinedInbox({
                       >
                         <div className="h-px flex-1 bg-border/80" />
                         <span className="shrink-0 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
-                          {group.searchSection === "archived" ? "Archived" : "Other results"}
+                          {group.searchSection === "archived" ? t("status.archived", { defaultValue: "Archived" }) : t("pages.inbox.otherResults", { defaultValue: "Other results" })}
                         </span>
                         <div className="h-px flex-1 bg-border/80" />
                       </div>,
@@ -3157,8 +3165,8 @@ function StreamlinedInbox({
                               variant="ghost"
                               size="icon-xs"
                               className="-mr-2 text-muted-foreground"
-                              title={`New task in ${group.label}`}
-                              aria-label={`New task in ${group.label}`}
+                              title={t("pages.inbox.newTaskIn", { group: group.label })}
+                              aria-label={t("pages.inbox.newTaskIn", { group: group.label })}
                               onClick={(event) => {
                                 event.stopPropagation();
                                 openCreateIssueForGroup(group);
@@ -3228,7 +3236,7 @@ function StreamlinedInbox({
                             className="shrink-0 text-(length:--text-micro) font-medium uppercase tracking-wider text-muted-foreground/70"
                             data-date-group-label=""
                           >
-                            Earlier
+                            {t("pages.inbox.earlier", { defaultValue: "Earlier" })}
                           </span>
                         </div>,
                       );
@@ -3443,7 +3451,7 @@ function StreamlinedInbox({
           {showSeparatorBefore("alerts") && <Separator />}
           <div>
             <h3 className="mb-3 text-sm font-semibold uppercase tracking-wide text-muted-foreground">
-              Alerts
+              {t("pages.inbox.alerts", { defaultValue: "Alerts" })}
             </h3>
             <div className="divide-y divide-border border border-border">
               {showAggregateAgentError && (
@@ -3454,15 +3462,14 @@ function StreamlinedInbox({
                   >
                     <AlertTriangle className="h-4 w-4 shrink-0 text-red-600 dark:text-red-400" />
                     <span className="text-sm">
-                      <span className="font-medium">{dashboard!.agents.error}</span>{" "}
-                      {dashboard!.agents.error === 1 ? "agent has" : "agents have"} errors
+                      {t("localizationIssueLists.agentErrors", { count: dashboard!.agents.error })}
                     </span>
                   </Link>
                   <button
                     type="button"
                     onClick={() => dismissAlert("alert:agent-errors")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
-                    aria-label="Dismiss"
+                    aria-label={t("pages.inbox.dismiss", { defaultValue: "Dismiss" })}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -3476,16 +3483,14 @@ function StreamlinedInbox({
                   >
                     <AlertTriangle className="h-4 w-4 shrink-0 text-yellow-400" />
                     <span className="text-sm">
-                      Budget at{" "}
-                      <span className="font-medium">{dashboard!.costs.monthUtilizationPercent}%</span>{" "}
-                      utilization this month
+                      {t("localizationIssueLists.budgetUtilization", { defaultValue: "Budget at {{percent}}% utilization this month", percent: dashboard!.costs.monthUtilizationPercent })}
                     </span>
                   </Link>
                   <button
                     type="button"
                     onClick={() => dismissAlert("alert:budget")}
                     className="rounded-md p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover/alert:opacity-100"
-                    aria-label="Dismiss"
+                    aria-label={t("pages.inbox.dismiss", { defaultValue: "Dismiss" })}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>

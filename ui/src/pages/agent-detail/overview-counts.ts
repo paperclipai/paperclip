@@ -1,3 +1,5 @@
+import { formatNumber } from "@/lib/utils";
+
 export type WindowCount = { count: number; atLeast: boolean };
 
 export function countSince<T extends { createdAt: string | Date }>(
@@ -17,5 +19,5 @@ export function countSince<T extends { createdAt: string | Date }>(
 }
 
 export function formatWindowCount({ count, atLeast }: WindowCount) {
-  return atLeast ? `${count}+` : String(count);
+  return atLeast ? `${formatNumber(count)}+` : formatNumber(count);
 }

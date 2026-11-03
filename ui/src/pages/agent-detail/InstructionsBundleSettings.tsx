@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { ChevronDown, Loader2, Settings2 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
@@ -13,17 +14,19 @@ type LoadState =
   | { kind: "idle" }
   | { kind: "loading" }
   | { kind: "loaded"; root: string; entry: string }
-  | { kind: "error"; field: Field | null; message: string };
+  | { kind: "error"; field: Field | null; message: string; messageKey?: string; values?: Record<string, string> };
 
-export function checkExternalProfile(root: string, entry: string): { field: Field; message: string } | null {
-  if (!root.startsWith("/") && !root.startsWith("~")) return { field: "root", message: "Use an absolute path that starts with / or ~." };
+export function checkExternalProfile(root: string, entry: string): { field: Field; message: string; messageKey: string } | null {
+  if (!root.startsWith("/") && !root.startsWith("~")) return { field: "root", message: t("nov2Pages.instructions.absolutePath", { defaultValue: "Use an absolute path that starts with / or ~." }), messageKey: "nov2Pages.instructions.absolutePath" };
   if (entry.startsWith("/") || entry.split(/[\\/]/).includes("..")) {
-    return { field: "entry", message: "The entry file has to sit inside the root path." };
+    return { field: "entry", message: t("nov2Pages.instructions.entryInside", { defaultValue: "The entry file has to sit inside the root path." }), messageKey: "nov2Pages.instructions.entryInside" };
   }
   return null;
 }
 
-const errorMessage = (error: unknown, fallback: string) => (error instanceof Error && error.message ? error.message : fallback);
+const errorMessage = (error: unknown, messageKey: string, values?: Record<string, string>) => (
+  error instanceof Error && error.message ? { message: error.message } : { message: "", messageKey, values }
+);
 
 export function InstructionsBundleSettings({
   agentId,
@@ -44,6 +47,7 @@ export function InstructionsBundleSettings({
   blocked: boolean;
   onSwitched: () => void;
 }) {
+  useTranslation();
   const queryClient = useQueryClient();
   const [root, setRoot] = useState(mode === "external" ? rootPath : "");
   const [entry, setEntry] = useState(mode === "external" ? entryFile : "");
@@ -75,7 +79,7 @@ export function InstructionsBundleSettings({
         companyId,
       );
     } catch (error) {
-      setLoad({ kind: "error", field: null, message: errorMessage(error, `Couldn’t read ${trimmedEntry} in ${trimmedRoot}.`) });
+      setLoad({ kind: "error", field: null, ...errorMessage(error, "nov2Pages.instructions.readError", { entry: trimmedEntry, root: trimmedRoot }) });
       return;
     }
     await refresh();
@@ -91,7 +95,7 @@ export function InstructionsBundleSettings({
       onSwitched();
       setLoad({ kind: "idle" });
     } catch (error) {
-      setLoad({ kind: "error", field: null, message: errorMessage(error, "Couldn’t switch back to the managed bundle.") });
+      setLoad({ kind: "error", field: null, ...errorMessage(error, "nov2Pages.instructions.switchError") });
     }
   };
 
@@ -101,18 +105,18 @@ export function InstructionsBundleSettings({
     <Collapsible defaultOpen={mode === "external"} className="flex flex-col gap-(--agent-detail-module-gap)">
       <CollapsibleTrigger className="group flex w-fit items-center gap-1.5 rounded-sm text-sm text-muted-foreground transition-colors outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring data-[state=open]:text-foreground">
         <Settings2 className="size-4" aria-hidden />
-        Advanced settings
+        {t("oct19Core.advancedSettings", { defaultValue: "Advanced settings" })}
         <ChevronDown className="size-4 transition-transform group-data-[state=open]:rotate-180" aria-hidden />
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <AgentPanel className="gap-4 p-(--agent-detail-module-inset)" aria-label="External management">
+        <AgentPanel className="gap-4 p-(--agent-detail-module-inset)" aria-label={t("nov2Pages.instructions.external", { defaultValue: "External management" })}>
           <div className="min-w-0">
-            <p className="text-sm font-semibold text-foreground">External management</p>
-            <p className="mt-0.5 text-xs text-muted-foreground">Point this agent at a directory on disk. Paperclip checks that the entry file exists before it switches over.</p>
+            <p className="text-sm font-semibold text-foreground">{t("nov2Pages.instructions.external", { defaultValue: "External management" })}</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">{t("nov2Pages.instructions.description", { defaultValue: "Point this agent at a directory on disk. Paperclip checks that the entry file exists before it switches over." })}</p>
           </div>
           <div className="grid gap-(--agent-detail-module-gap) sm:grid-cols-2">
             <label className="flex min-w-0 flex-col gap-1.5">
-              <span className="text-xs text-muted-foreground">Root path</span>
+              <span className="text-xs text-muted-foreground">{t("pages.agentDetail.rootPath", { defaultValue: "Root path" })}</span>
               <Input
                 value={root}
                 onChange={(event) => edit(setRoot)(event.target.value)}
@@ -123,7 +127,7 @@ export function InstructionsBundleSettings({
               />
             </label>
             <label className="flex min-w-0 flex-col gap-1.5">
-              <span className="text-xs text-muted-foreground">Entry file</span>
+              <span className="text-xs text-muted-foreground">{t("pages.agentDetail.entryFile", { defaultValue: "Entry file" })}</span>
               <Input
                 value={entry}
                 onChange={(event) => edit(setEntry)(event.target.value)}
@@ -137,22 +141,22 @@ export function InstructionsBundleSettings({
           <div className="flex flex-wrap items-center justify-end gap-3">
             {mode === "external" ? (
               <Button variant="ghost" size="sm" className="mr-auto -ml-3" onClick={() => void switchToManaged()} disabled={busy || blocked}>
-                Use managed bundle
+                {t("nov2Pages.instructions.managed", { defaultValue: "Use managed bundle" })}
               </Button>
             ) : null}
             <p role="status" aria-live="polite" className="flex min-w-0 items-center gap-2 text-xs">
-              {blocked ? <span className="text-muted-foreground">Save or discard your file changes first.</span> : null}
-              {!blocked && load.kind === "error" ? <span className="text-destructive">{load.message}</span> : null}
+              {blocked ? <span className="text-muted-foreground">{t("nov2Pages.instructions.saveFirst", { defaultValue: "Save or discard your file changes first." })}</span> : null}
+              {!blocked && load.kind === "error" ? <span className="text-destructive">{load.messageKey ? t(load.messageKey, load.values) : load.message}</span> : null}
               {!blocked && load.kind === "loaded" ? (
                 <span className="flex items-center gap-2 text-muted-foreground">
                   <span className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-saved)" aria-hidden />
-                  Loaded {load.entry} from {load.root}
+                  {t("nov2Pages.instructions.loaded", { defaultValue: "Loaded {{entry}} from {{root}}", entry: load.entry, root: load.root })}
                 </span>
               ) : null}
             </p>
             <Button size="sm" onClick={() => void loadProfile()} disabled={!trimmedRoot || !trimmedEntry || busy || blocked || unchanged}>
               {busy ? <Loader2 className="animate-spin motion-reduce:animate-none" /> : null}
-              {busy ? "Loading…" : "Load profile"}
+              {busy ? t("localizationCommonChrome.loading", { defaultValue: "Loading…" }) : t("nov2Pages.instructions.load", { defaultValue: "Load profile" })}
             </Button>
           </div>
         </AgentPanel>

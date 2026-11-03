@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { storybookAgents } from "../../../storybook/fixtures/paperclipData";
 import { TooltipProvider } from "../ui/tooltip";
 import { AgentBulkSettingsSheet } from "./AgentBulkSettingsSheet";
+import { i18n, t } from "@/i18n";
 
 const api = vi.hoisted(() => ({ models: vi.fn(), accounts: vi.fn(), update: vi.fn(), get: vi.fn() }));
 vi.mock("@/api/agents", () => ({ agentsApi: { adapterModels: api.models, updateRuntimeSettings: api.update, get: api.get } }));
@@ -69,9 +70,33 @@ afterEach(async () => {
   await act(async () => root?.unmount());
   client?.clear();
   document.body.innerHTML = "";
+  await i18n.changeLanguage("en");
 });
 
 describe("bulk model editing", () => {
+  it("preserves the model draft and reactive local failure without replaying a bulk update on locale change", async () => {
+    api.update.mockRejectedValue(undefined);
+    await render([agent("Agent {{RAW}}")]);
+    await chooseModel("provider/{{MODEL}}", true);
+    const accounts = api.accounts.mock.calls.length, models = api.models.mock.calls.length;
+    for (const language of ["ru", "en", "ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(document.body.textContent).toContain("provider/{{MODEL}}");
+      expect(document.body.textContent).toContain("Agent {{RAW}}");
+      expect(api.accounts).toHaveBeenCalledTimes(accounts); expect(api.models).toHaveBeenCalledTimes(models);
+      expect(api.update).not.toHaveBeenCalled(); expect(onClose).not.toHaveBeenCalled();
+    }
+    await act(async () => button("Update 1 agent").click());
+    await vi.waitFor(() => expect(button("Retry 1 agent")).toBeDefined());
+    for (const language of ["ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(document.body.textContent).toContain(t("oct26Settings.bulk.saveError"));
+      expect(button(t("oct26Settings.bulk.retryAgents", { count: 1 })).disabled).toBe(false);
+      expect(api.update).toHaveBeenCalledExactlyOnceWith("Agent {{RAW}}", expect.objectContaining({ harness: "hermes_local", model: "provider/{{MODEL}}", expected: { model: "old-model", aiConnection: null } }), "company-1");
+      expect(onClose).not.toHaveBeenCalled();
+    }
+  });
+
   it("refreshes an Antigravity catalog when its saved binding or environment changes", async () => {
     const first = { provider: "google", method: "subscription", mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" } as const;
     const second = { ...first, connectionId: "22222222-2222-4222-8222-222222222222", grantId: "44444444-4444-4444-8444-444444444444" };

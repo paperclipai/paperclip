@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { CaseSummary } from "@/api/cases";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { EntityRow } from "@/components/EntityRow";
@@ -17,17 +18,18 @@ export function CaseListRow({
   search?: string;
   columns?: readonly CaseColumn[];
 }) {
+  const { t } = useTranslation();
   const caseHref = useCaseHref();
   const task = caseData.workIssue;
   const show = new Set(columns);
   const showWork = show.has("phase") || show.has("assignee");
   const assignee = task?.assigneeAgentId
-    ? { id: task.assigneeAgentId, name: task.assigneeAgentName ?? "Agent" }
+    ? { id: task.assigneeAgentId, name: task.assigneeAgentName ?? t("oct26Cases.agent") }
     : null;
   const work = task ? <>
     {show.has("phase") && caseData.phase ? <span className="text-xs text-muted-foreground">{caseData.phase}</span> : null}
-    {show.has("assignee") && (assignee ? <AgentIdentity agent={assignee} size="xs" /> : <span className="text-xs text-muted-foreground">Unassigned</span>)}
-  </> : <span className="text-xs text-muted-foreground">{caseData.workIssueId ? "Task unavailable" : "No task linked"}</span>;
+    {show.has("assignee") && (assignee ? <AgentIdentity agent={assignee} size="xs" /> : <span className="text-xs text-muted-foreground">{t("oct26Cases.unassigned")}</span>)}
+  </> : <span className="text-xs text-muted-foreground">{caseData.workIssueId ? t("oct26Cases.taskUnavailable") : t("oct26Cases.noTask")}</span>;
   const subtitle = [show.has("identifier") ? caseData.identifier : null, show.has("type") ? caseData.caseType : null,
     show.has("project") ? projectName : null].filter(Boolean);
 

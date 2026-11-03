@@ -1,12 +1,13 @@
 // @vitest-environment jsdom
 
-import { useState } from "react";
+import { act as reactAct, useState } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanySecret, EnvBinding } from "@paperclipai/shared";
 import { EnvironmentVariablesEditor } from "./index";
 import { SecretPicker } from "./SecretPicker";
+import { i18n } from "@/i18n";
 
 // Radix (DropdownMenu/Popover) relies on Pointer Capture APIs that jsdom omits.
 const OriginalPointerEvent = globalThis.PointerEvent;
@@ -111,6 +112,7 @@ describe("EnvironmentVariablesEditor", () => {
   });
 
   afterEach(async () => {
+    await i18n.changeLanguage("en");
     // Restore real timers first (the PAP-12478 test swaps in fake timers and may
     // exit without restoring if it throws) so unmount cleanup runs on real timers
     // and gets drained below.
@@ -229,6 +231,32 @@ describe("EnvironmentVariablesEditor", () => {
     expect(onChange).toHaveBeenLastCalledWith({ FOO: { type: "plain", value: "bar" } });
   });
 
+  it("translates the value placeholder EN → RU → EN without changing the raw variable draft or committing it", async () => {
+    const value = { CUSTOM_RUNTIME_NAME: { type: "plain" as const, value: "" } };
+    const original = JSON.stringify(value);
+    const onChange = vi.fn();
+    await reactAct(async () => render(<EnvironmentVariablesEditor value={value} secrets={secrets} onChange={onChange} onCreateSecret={async () => secrets[0]} />));
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const name = nameInputs()[0];
+    const draft = "Raw runtime text {{value}} / <name>";
+    await reactAct(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, draft);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    for (const [locale, placeholder] of [["en", "value"], ["ru", "значение"], ["en", "value"]] as const) {
+      await reactAct(async () => { await i18n.changeLanguage(locale); });
+      expect(input.isConnected).toBe(true);
+      expect(input.placeholder).toBe(placeholder);
+      expect(input.value).toBe(draft);
+      expect(name.isConnected).toBe(true);
+      expect(name.value).toBe("CUSTOM_RUNTIME_NAME");
+      expect(onChange).not.toHaveBeenCalled();
+      expect(JSON.stringify(value)).toBe(original);
+    }
+    await reactAct(async () => saveButton().click());
+    expect(onChange).toHaveBeenCalledExactlyOnceWith({ CUSTOM_RUNTIME_NAME: { type: "plain", value: draft } });
+  });
+
   it("flushes unsaved editor changes before an enclosing form submits", async () => {
     const submittedValues: Array<Record<string, EnvBinding> | undefined> = [];
 
@@ -306,6 +334,33 @@ describe("EnvironmentVariablesEditor", () => {
     await flush();
 
     expect(savedValues).toEqual([{ FOO: { type: "plain", value: "bar" } }]);
+  });
+
+  it.each(["en", "ru"])("flushes a marked outer save in %s without changing variable names or values", async (locale) => {
+    const savedValues: Array<Record<string, EnvBinding>> = [];
+    function MarkedSaveHarness() {
+      const [value, setValue] = useState<Record<string, EnvBinding>>({ FOO: { type: "plain", value: "" } });
+      return (
+        <div>
+          <EnvironmentVariablesEditor value={value} secrets={secrets} onChange={(next) => setValue(next ?? {})} onCreateSecret={async () => secrets[0]} />
+          <button type="button" data-env-draft-commit="true" onClick={() => savedValues.push(value)}>
+            {locale === "ru" ? "Сохранить настройки" : "Save settings"}
+          </button>
+        </div>
+      );
+    }
+    render(<MarkedSaveHarness />);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    setter.call(input, "literal-value");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    await flush();
+    await i18n.changeLanguage(locale);
+    await flush();
+    expect(input.value).toBe("literal-value");
+    container.querySelector<HTMLButtonElement>('[data-env-draft-commit="true"]')!.click();
+    await flush();
+    expect(savedValues).toEqual([{ FOO: { type: "plain", value: "literal-value" } }]);
   });
 
   it("makes unsaved fields and save controls prominent while editing", async () => {

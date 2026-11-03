@@ -1,8 +1,10 @@
+import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
 import { useInfiniteQuery, useMutation, useQuery } from "@tanstack/react-query";
 import type { AgentInstructionsFileDetail } from "@paperclipai/shared";
 import { agentsApi } from "../api/agents";
 import { Button } from "./ui/button";
+import { formatDateTime } from "../lib/utils";
 
 export function InstructionHistory({
   agentId,
@@ -19,6 +21,7 @@ export function InstructionHistory({
   disabled: boolean;
   onRestored: (file: AgentInstructionsFileDetail) => void;
 }) {
+  useTranslation();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const history = useInfiniteQuery({
@@ -63,12 +66,12 @@ export function InstructionHistory({
         aria-expanded={open}
         onClick={() => setOpen(!open)}
       >
-        History
+        {t("oct5Core.s0086")}
       </Button>
       {open && (
         <div className="space-y-3">
           {history.isLoading && (
-            <p className="text-sm text-muted-foreground">Loading revisions…</p>
+            <p className="text-sm text-muted-foreground">{t("oct5Core.s0087")}</p>
           )}
           {error && (
             <p role="alert" className="text-sm text-destructive">
@@ -88,9 +91,9 @@ export function InstructionHistory({
                   <span className="font-mono">{revision.id.slice(0, 8)}</span>
                 </Button>
                 <span className="text-sm text-muted-foreground">
-                  {revision.source} ·{" "}
-                  {new Date(revision.createdAt).toLocaleString()}
-                  {revision.id === currentRevisionId ? " · Current" : ""}
+                  {t(`oct5Core.revisionSource_${revision.source}`, { defaultValue: revision.source })} ·{" "}
+                  {formatDateTime(revision.createdAt)}
+                  {revision.id === currentRevisionId ? t("oct5Core.currentRevision") : ""}
                 </span>
               </div>
             ))}
@@ -101,24 +104,24 @@ export function InstructionHistory({
               disabled={history.isFetchingNextPage}
               onClick={() => void history.fetchNextPage()}
             >
-              Older revisions
+              {t("oct5Core.s0088")}
             </Button>
           )}
           {diff.data && (
             <>
-              <p className="text-sm text-muted-foreground">Selected revision</p>
+              <p className="text-sm text-muted-foreground">{t("oct5Core.s0089")}</p>
               <pre className="whitespace-pre-wrap break-words rounded-md border border-border p-3 font-mono text-sm">
                 {diff.data.from.content}
               </pre>
               <p className="text-sm text-muted-foreground">
-                Changes from selected revision to current
+                {t("oct5Core.s0090")}
               </p>
               <pre className="whitespace-pre-wrap break-words rounded-md border border-border p-3 font-mono text-sm">
-                {diff.data.removed && `Removed:\n${diff.data.removed}\n`}
-                {diff.data.added && `Added:\n${diff.data.added}`}
+                {diff.data.removed && t("oct5Core.removedLines", { content: diff.data.removed })}
+                {diff.data.added && t("oct5Core.addedLines", { content: diff.data.added })}
                 {!diff.data.removed &&
                   !diff.data.added &&
-                  "No content changes."}
+                  t("oct5Core.s0091")}
               </pre>
               <Button
                 type="button"
@@ -129,11 +132,11 @@ export function InstructionHistory({
                 }
                 onClick={() => restore.mutate()}
               >
-                Restore as new revision
+                {t("oct5Core.s0092")}
               </Button>
               {disabled && (
                 <p className="text-sm text-muted-foreground">
-                  Save or cancel your edits before restoring.
+                  {t("oct5Core.s0093")}
                 </p>
               )}
             </>

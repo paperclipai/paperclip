@@ -8,10 +8,12 @@ import { useSignOut } from "@/hooks/useSignOut";
 import { PluginSlotMount, usePluginSlots } from "@/plugins/slots";
 import { CompanyPatternIcon } from "./CompanyPatternIcon";
 import { Skeleton } from "./ui/skeleton";
+import { useTranslation } from "@/i18n";
 
 /** Reserve the trigger's space until its owner is known. Never flash another name. */
 function OrganizationSwitcherLoading({ collapsed }: { collapsed: boolean }) {
-  return <div role="status" aria-label="Loading organization" aria-busy="true"
+  const { t } = useTranslation();
+  return <div role="status" aria-label={t("sep28Core.loadingOrganization")} aria-busy="true"
     className="flex h-9 min-w-0 flex-1 items-center gap-2 px-4">
     <Skeleton className="size-5 shrink-0" />
     {!collapsed && <>

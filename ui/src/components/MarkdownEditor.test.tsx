@@ -1,5 +1,7 @@
 // @vitest-environment jsdom
 
+import { act as reactAct } from "react";
+import { i18n } from "@/i18n";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
@@ -34,6 +36,7 @@ const mdxEditorMockState = vi.hoisted(() => ({
   /** Every string handed to the editor's imperative `insertMarkdown`. */
   insertedMarkdownValues: [] as string[],
   suppressHtmlProcessingValues: [] as boolean[],
+  translation: null as null | ((key: string, fallback: string, values?: Record<string, unknown>) => string),
 }));
 
 /**
@@ -71,6 +74,7 @@ vi.mock("@mdxeditor/editor", async () => {
       onError,
       className,
       suppressHtmlProcessing,
+      translation,
     }: {
       markdown: string;
       placeholder?: string;
@@ -78,6 +82,7 @@ vi.mock("@mdxeditor/editor", async () => {
       onError?: (error: unknown) => void;
       suppressHtmlProcessing?: boolean;
       className?: string;
+      translation?: (key: string, fallback: string, values?: Record<string, unknown>) => string;
     },
     forwardedRef: React.ForwardedRef<{
       setMarkdown: (value: string) => void;
@@ -88,6 +93,7 @@ vi.mock("@mdxeditor/editor", async () => {
     if (mdxEditorMockState.throwOnRender) {
       throw new Error("Rich editor render crashed");
     }
+    mdxEditorMockState.translation = translation ?? null;
     mdxEditorMockState.markdownValues.push(markdown);
     mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
     const [content, setContent] = React.useState(markdown);
@@ -1070,6 +1076,64 @@ describe("MarkdownEditor", () => {
     });
   });
 
+  it.each(["en", "ru"])("recognizes the browser Files token for drag/drop in %s", async (locale) => {
+    const root = createRoot(container);
+    const onDropFile = vi.fn();
+    const file = new File(["unchanged bytes"], "Original report.zip", { type: "application/zip" });
+    try {
+      await reactAct(async () => {
+        await i18n.changeLanguage(locale);
+        root.render(<MarkdownEditor value="Original markdown" onChange={() => {}} onDropFile={onDropFile} />);
+      });
+      await flush();
+      const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement;
+      expect(scope).not.toBeNull();
+      await reactAct(async () => { scope!.dispatchEvent(createFileDragEvent("dragenter")); });
+      expect(scope!.className).toContain("ring-1");
+      const dragOver = createFileDragEvent("dragover");
+      await reactAct(async () => { scope!.dispatchEvent(dragOver); });
+      expect(dragOver.defaultPrevented).toBe(true);
+      expect(dragOver.dataTransfer.dropEffect).toBe("copy");
+      const drop = createFileDragEvent("drop");
+      drop.dataTransfer.files.push(file);
+      await reactAct(async () => { scope!.dispatchEvent(drop); });
+      expect(onDropFile).toHaveBeenCalledExactlyOnceWith(file);
+      expect(scope!.className).not.toContain("ring-1");
+      expect(mdxEditorMockState.insertedMarkdownValues).toEqual([]);
+    } finally {
+      await reactAct(async () => root.unmount());
+      await i18n.changeLanguage("en");
+    }
+  });
+
+  it.each(["en", "ru"])("leaves mixed Files/text clipboard data to the file handler in %s", async (locale) => {
+    const root = createRoot(container);
+    try {
+      await reactAct(async () => {
+        await i18n.changeLanguage(locale);
+        root.render(<MarkdownEditor value="Original markdown" onChange={() => {}} />);
+      });
+      await flush();
+      const scope = container.querySelector('[data-testid="mdx-editor"]')?.parentElement;
+      expect(scope).not.toBeNull();
+      const mixed = new Event("paste", { bubbles: true, cancelable: true });
+      const getData = vi.fn(() => "# File caption\n\n- unchanged text");
+      Object.defineProperty(mixed, "clipboardData", { value: { types: ["Files", "text/plain"], getData } });
+      await reactAct(async () => { scope!.dispatchEvent(mixed); });
+      expect(mixed.defaultPrevented).toBe(false);
+      expect(getData).not.toHaveBeenCalled();
+      expect(mdxEditorMockState.insertedMarkdownValues).toEqual([]);
+      const plain = new Event("paste", { bubbles: true, cancelable: true });
+      Object.defineProperty(plain, "clipboardData", { value: { types: ["text/plain"], getData } });
+      await reactAct(async () => { scope!.dispatchEvent(plain); });
+      expect(plain.defaultPrevented).toBe(true);
+      expect(mdxEditorMockState.insertedMarkdownValues).toEqual(["# File caption\n\n- unchanged text"]);
+    } finally {
+      await reactAct(async () => root.unmount());
+      await i18n.changeLanguage("en");
+    }
+  });
+
   it("shows the editor-scoped dropzone by default when files are dragged over it", async () => {
     const root = createRoot(container);
 
@@ -1725,5 +1789,37 @@ describe("MarkdownEditor", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+});
+
+describe("MarkdownEditor live locale", () => {
+  it("updates MDX toolbar and dialog translations without remounting or modifying stored markdown", async () => {
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+    const onChange = vi.fn();
+    const content = "Keep English user text and `status:in_progress` unchanged.";
+    try {
+      await reactAct(async () => {
+        await i18n.changeLanguage("ru");
+        root.render(<MarkdownEditor value={content} onChange={onChange} ariaLabel="Original explicit input label" />);
+      });
+      const editor = host.querySelector('[data-testid="mdx-editor"]');
+      expect(editor).not.toBeNull();
+      for (const locale of ["ru", "en", "ru"]) {
+        await reactAct(async () => { await i18n.changeLanguage(locale); });
+        expect(host.querySelector('[data-testid="mdx-editor"]')).toBe(editor);
+        expect(editor?.textContent).toBe(content);
+        expect(mdxEditorMockState.translation?.("contentArea.editableMarkdown", "Editable markdown")).toBe("Original explicit input label");
+        expect(mdxEditorMockState.translation?.("table.deleteTable", "Delete table")).toBe(locale === "ru" ? "Удалить таблицу" : "Delete table");
+        expect(mdxEditorMockState.translation?.("toolbar.undo", "Undo {{shortcut}}", { shortcut: "⌘Z" })).toBe(locale === "ru" ? "Отменить ⌘Z" : "Undo ⌘Z");
+        expect(mdxEditorMockState.translation?.("linkPreview.open", "Open {{url}} in new window", { url: "https://example.com/user" })).toBe(locale === "ru" ? "Открыть https://example.com/user в новом окне" : "Open https://example.com/user in new window");
+      }
+      expect(onChange).not.toHaveBeenCalled();
+    } finally {
+      await reactAct(async () => root.unmount());
+      host.remove();
+      await i18n.changeLanguage("en");
+    }
   });
 });

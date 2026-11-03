@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AiManagedConnectionSummary, ToolConnection } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
+import { i18n } from "@/i18n";
 import { ManagedAiConnectionDetails } from "./ManagedAiConnectionDetails";
 
 vi.mock("@/lib/router", () => ({ useNavigate: () => vi.fn() }));
@@ -56,7 +57,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
-  await act(async () => root.unmount());
+  await act(async () => { root.unmount(); await i18n.changeLanguage("en"); });
   client.clear();
   host.remove();
   vi.unstubAllGlobals();
@@ -124,4 +125,26 @@ it("cancels a stuck account read when the panel unmounts", async () => {
   expect(signals).toHaveLength(1);
   await act(async () => { root.render(null); });
   expect(signals[0].aborted).toBe(true);
+});
+
+it("retranslates the mounted retry action without refetching or changing saved account controls", async () => {
+  await render();
+  denied = true;
+  await act(async () => { await client.invalidateQueries(); await vi.advanceTimersByTimeAsync(0); });
+  const alert = host.querySelector('[role="alert"]')!;
+  const retry = alert.querySelector("button")!;
+  const controls = host.querySelector('[aria-label="AI account settings"]');
+  const before = JSON.stringify([accounts, grants]);
+  const calls = fetchMock.mock.calls.length;
+  for (const [locale, action] of [["en", "Retry"], ["ru", "Повторить"], ["en", "Retry"]] as const) {
+    await act(async () => { await i18n.changeLanguage(locale); });
+    expect(host.querySelector('[role="alert"]')).toBe(alert);
+    expect(alert.querySelector("button")).toBe(retry);
+    expect(retry.textContent).toBe(action);
+    expect(retry.disabled).toBe(false);
+    expect(host.querySelector('[aria-label="AI account settings"]')).toBe(controls);
+    expect(controls?.textContent).toBe(account.name);
+    expect(fetchMock).toHaveBeenCalledTimes(calls);
+    expect(JSON.stringify([accounts, grants])).toBe(before);
+  }
 });

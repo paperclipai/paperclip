@@ -13,6 +13,7 @@ import { useToastActions } from "@/context/ToastContext";
 import { useConnectivityStore } from "@/lib/connectivity";
 import { applyOptimisticIssueFieldUpdate, matchesIssueRef } from "@/lib/optimistic-issue-comments";
 import { queryKeys } from "@/lib/queryKeys";
+import { useTranslation } from "@/i18n";
 
 export interface UpdateIssueVariables {
   /** Issue id or identifier. */
@@ -182,10 +183,11 @@ export interface UpdateIssueMutation {
  * reconnect instead of failing.
  */
 export function useUpdateIssueMutation(options: UseUpdateIssueMutationOptions): UpdateIssueMutation {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const connectivity = useConnectivityStore();
-  const { companyId, invalidateKeys, onSuccess, onSettled, action = "update the task" } = options;
+  const { companyId, invalidateKeys, onSuccess, onSettled, action = t("nov02Core.updateTaskAction") } = options;
 
   const mutationOptions = {
     waitForTurn: (variables: UpdateIssueVariables) => issueWriteTurns.get(variables)?.ready,

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { Users } from "lucide-react";
 import type { InteractionAudienceDescription } from "../lib/interaction-audience";
 import { cn } from "../lib/utils";
@@ -25,6 +26,7 @@ export function InteractionAudienceLine({
   variant?: "card" | "compact";
   className?: string;
 }) {
+  useTranslation();
   const compact = variant === "compact";
   return (
     <div

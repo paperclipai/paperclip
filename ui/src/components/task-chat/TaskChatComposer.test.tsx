@@ -4,6 +4,7 @@ import { act, StrictMode, useState, type ComponentProps, type ReactElement } fro
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import {
   buildAgentMentionHref,
   buildSkillMentionHref,
@@ -12,7 +13,7 @@ import { parseRunnerGoalCommand, TaskChatComposer } from "./TaskChatComposer";
 import { ComposerAddMenu } from "./ComposerAddMenu";
 import { QuestionForm } from "./QuestionForm";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, IssueAttachment } from "@paperclipai/shared";
 import { agentsApi } from "@/api/agents";
 import { CoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import { DRAFT_DEBOUNCE_MS } from "../../lib/composer-draft";
@@ -65,11 +66,13 @@ vi.mock("@mdxeditor/editor", async () => {
       onChange,
       readOnly,
       contentEditableClassName,
+      placeholder,
     }: {
       markdown: string;
       onChange?: (value: string) => void;
       readOnly?: boolean;
       contentEditableClassName?: string;
+      placeholder?: string;
     },
     forwardedRef: React.ForwardedRef<MockHandle | null>,
   ) {
@@ -113,6 +116,7 @@ vi.mock("@mdxeditor/editor", async () => {
         ref={editableRef}
         data-testid="mdx-editor"
         data-content-class-name={contentEditableClassName}
+        data-placeholder={placeholder}
         contentEditable={!readOnly}
         suppressContentEditableWarning
         onInput={(e) => {
@@ -1060,6 +1064,64 @@ describe("TaskChatComposer", () => {
     );
   });
 
+  describe.each(["standard", "ask", "planning"] as const)("localized %s placeholder", (workMode) => {
+    it.each([
+      { mobile: false, assigned: false },
+      { mobile: true, assigned: false },
+      { mobile: false, assigned: true },
+      { mobile: true, assigned: true },
+    ])("preserves raw names and drafts on language changes (mobile=$mobile, assigned=$assigned)", async ({ mobile, assigned }) => {
+      const rawName = "Ada {{agent}} /RAW_NAME";
+      const options = [{ id: "agent:original-id", label: rawName }];
+      const originalOptions = JSON.stringify(options);
+      const onAdd = vi.fn();
+      const onPendingAssigneeChange = vi.fn();
+      const onWorkModeChange = vi.fn();
+      const expected = {
+        en: {
+          standard: (name: string) => mobile ? `Message ${name}…` : `Message ${name} — describe what you want done…`,
+          ask: (name: string) => mobile ? `Ask ${name}…` : `Ask ${name} a question — read-only, nothing runs…`,
+          planning: (name: string) => mobile ? `Plan with ${name}…` : `Plan with ${name} — shapes the plan doc, no code changes…`,
+        },
+        ru: {
+          standard: (name: string) => mobile ? `Написать: ${name}…` : `${name} — опишите, что нужно сделать…`,
+          ask: (name: string) => mobile ? `Задать вопрос: ${name}…` : `${name} — задайте вопрос. Только чтение, без запуска действий…`,
+          planning: (name: string) => mobile ? `Составить план: ${name}…` : `${name} — подготовка документа с планом. Без изменений кода…`,
+        },
+      };
+      try {
+        await i18n.changeLanguage("en");
+        render(<TaskChatComposer
+          onAdd={onAdd} workMode={workMode} mobile={mobile} draftKey="placeholder-locale-draft"
+          currentAssigneeValue={assigned ? options[0].id : undefined}
+          reassignOptions={options} onPendingAssigneeChange={onPendingAssigneeChange}
+          onWorkModeChange={onWorkModeChange}
+        />);
+        typeText("Original user draft /RAW_PATH {{agent}}");
+        const originalEditor = editable();
+        onPendingAssigneeChange.mockClear();
+        for (const locale of ["en", "ru", "en"] as const) {
+          await act(async () => { await i18n.changeLanguage(locale); });
+          const name = assigned ? rawName : locale === "ru" ? "агент" : "the agent";
+          const placeholder = editable().dataset.placeholder;
+          expect(placeholder).toBe(expected[locale][workMode](name));
+          if (locale === "ru" && !mobile) {
+            // A standalone name avoids imposing Russian case on arbitrary labels.
+            expect(placeholder?.startsWith(`${name} — `)).toBe(true);
+          }
+          expect(editable()).toBe(originalEditor);
+          expect(editable().textContent).toBe("Original user draft /RAW_PATH {{agent}}");
+          expect(JSON.stringify(options)).toBe(originalOptions);
+          expect(onAdd).not.toHaveBeenCalled();
+          expect(onPendingAssigneeChange).not.toHaveBeenCalled();
+          expect(onWorkModeChange).not.toHaveBeenCalled();
+        }
+      } finally {
+        await act(async () => { await i18n.changeLanguage("en"); });
+      }
+    });
+  });
+
   it("uses a compact mobile editor that can grow with the message", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" mobile />);
 
@@ -1910,19 +1972,24 @@ describe("TaskChatComposer", () => {
     expect(trigger().textContent).toContain("Me");
   });
 
-  it("shows human avatars in assignee options and after selection", async () => {
-    renderComposer({
-      onAdd: vi.fn(),
-      workMode: "standard",
-      enableReassign: true,
-      reassignOptions: [
-        { id: "agent:a1", label: "Clippy" },
-        { id: "user:u1", label: "Sam Rivera" },
-      ],
-      agentMap: new Map([["a1", { icon: "rocket" }]]),
-      userProfileMap: new Map([["u1", { label: "Sam Rivera", image: "/sam-avatar.png" }]]),
-      currentAssigneeValue: "agent:a1",
-    });
+  it("keeps assignee names, avatar and selected ID while the picker language changes", async () => {
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    render(
+      <TaskChatComposer
+        onAdd={onAdd}
+        workMode="standard"
+        enableReassign
+        reassignOptions={[
+          { id: "agent:a1", label: "Clippy" },
+          { id: "user:u1", label: "Sam Rivera" },
+        ]}
+        agentMap={new Map([["a1", { icon: "rocket" }]])}
+        userProfileMap={
+          new Map([["u1", { label: "Sam Rivera", image: "/sam-avatar.png" }]])
+        }
+        currentAssigneeValue="agent:a1"
+      />,
+    );
 
     const trigger = container.querySelector<HTMLButtonElement>(
       '[data-testid="task-chat-composer-assignee"]',
@@ -1931,6 +1998,20 @@ describe("TaskChatComposer", () => {
       trigger.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushAsync();
+
+    const picker = document.querySelector("[data-mobile-entity-picker]");
+    try {
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(document.querySelector("[data-mobile-entity-picker]")).toBe(picker);
+        expect(picker?.getAttribute("aria-label")).toBe(language === "ru" ? "Выбрать исполнителя" : "Select assignee");
+        expect(trigger.textContent).toContain("Clippy");
+        expect(picker?.textContent).toContain("Sam Rivera");
+        expect(onAdd).not.toHaveBeenCalled();
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
 
     const userOptionAvatar = document.querySelector(
       '[data-assignee-option-avatar="user:u1"]',
@@ -1946,6 +2027,14 @@ describe("TaskChatComposer", () => {
     expect(
       trigger.querySelector('[data-assignee-trigger-avatar="u1"]'),
     ).not.toBeNull();
+    typeText("Original message /RAW");
+    pressKey("Enter", { metaKey: true });
+    await flushAsync();
+    expect(onAdd).toHaveBeenCalledWith(
+      "Original message /RAW", undefined,
+      { assigneeAgentId: null, assigneeUserId: "u1" },
+      undefined, expect.any(String),
+    );
   });
 
   describe("draft persistence", () => {
@@ -2190,6 +2279,54 @@ describe("TaskChatComposer", () => {
   });
 
   describe("paused task takeover", () => {
+    afterEach(async () => { await i18n.changeLanguage("en"); });
+
+    it("preserves a paused draft through EN–RU–EN without resuming or submitting", async () => {
+      const onAdd = vi.fn();
+      const onResume = vi.fn();
+      const props = { onAdd, workMode: "standard" as const, draftKey: "pause-locale-draft" };
+      render(<TaskChatComposer {...props} />);
+      typeText("Draft stays **exactly** as written.");
+      render(<TaskChatComposer {...props} pause={{ scope: "leaf", onResume }} />);
+      const button = container.querySelector("button");
+      for (const language of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(container.querySelector("button")).toBe(button);
+        expect(container.textContent).toContain(language === "ru" ? "Черновик сохранён." : "Your draft is saved.");
+        expect(container.querySelector('[data-testid="mdx-editor"]')).toBeNull();
+        expect(onAdd).not.toHaveBeenCalled();
+        expect(onResume).not.toHaveBeenCalled();
+      }
+      render(<TaskChatComposer {...props} />);
+      expect(editable().textContent).toBe("Draft stays **exactly** as written.");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledExactlyOnceWith("Draft stays **exactly** as written.", undefined, undefined, undefined, expect.any(String));
+    });
+
+    it("retranslates a retained conversation goal error and preserves raw slash command submission", async () => {
+      const onAdd = vi.fn().mockResolvedValue(undefined);
+      const onRunnerGoalCommand = vi.fn();
+      render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" onRunnerGoalCommand={onRunnerGoalCommand} />);
+      typeText("/goal Keep the original goal text");
+      await act(async () => sendButton().click());
+      const editor = editable();
+      const alert = container.querySelector('[data-testid="task-chat-goal-error"]');
+      for (const language of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(editable()).toBe(editor);
+        expect(editor.textContent).toBe("/goal Keep the original goal text");
+        expect(container.querySelector('[data-testid="task-chat-goal-error"]')).toBe(alert);
+        expect(alert?.textContent).toBe(language === "ru"
+          ? "Если агент должен продолжать работу над целью, создайте отдельную задачу."
+          : "Create a separate task for work that needs an ongoing execution goal.");
+        expect(onAdd).not.toHaveBeenCalled();
+        expect(onRunnerGoalCommand).not.toHaveBeenCalled();
+      }
+      typeText("/new");
+      await act(async () => sendButton().click());
+      expect(onAdd).toHaveBeenCalledExactlyOnceWith("/new", undefined, undefined, undefined, expect.any(String));
+    });
+
     it("allows only standalone /new to resume a paused conversation through the normal composer", async () => {
       const onAdd = vi.fn().mockResolvedValue(undefined);
       render(<TaskChatComposer onAdd={onAdd} conversationMode workMode="standard" pause={{ scope: "leaf" }} />);
@@ -2791,6 +2928,28 @@ describe("TaskChatComposer", () => {
         expect(document.activeElement?.textContent).toBe("Second");
       });
 
+      it("preserves the current question and selected ID on language switches", async () => {
+        render(form());
+        click('[role="radio"]');
+        const selected = container.querySelector('[role="radio"]');
+        try {
+          for (const language of ["ru", "en", "ru"]) {
+            await act(async () => { await i18n.changeLanguage(language); });
+            expect(container.querySelector('[role="radio"]')).toBe(selected);
+            expect(selected?.getAttribute("aria-checked")).toBe("true");
+            expect(container.textContent).toContain("First");
+            expect(container.textContent).not.toContain("Second");
+          }
+        } finally {
+          await act(async () => { await i18n.changeLanguage("en"); });
+        }
+        act(() => { flushSync(() => buttonByText("Next")!.click()); });
+        expect(container.textContent).toContain("2 of 3");
+        expect(document.activeElement?.textContent).toBe("Second");
+        click('[aria-label="Previous question"]');
+        expect(container.querySelector('[role="radio"]')?.getAttribute("aria-checked")).toBe("true");
+      });
+
       it("keeps number-key selection on the same question", () => {
         render(form());
         const page = container.querySelector<HTMLElement>(".tc-question-page")!;
@@ -3174,6 +3333,29 @@ describe("TaskChatComposer", () => {
 describe("composer Stop", () => {
   function stopButton() { return container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]'); }
 
+  it("keeps Stop distinct from pause across language changes and retains the next draft", async () => {
+    const onStop = vi.fn(async () => {});
+    const onAdd = vi.fn(async () => {});
+    render(<TaskChatComposer workMode="standard" onAdd={onAdd} onStop={onStop} stopScope="subtree" />);
+    try {
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(stopButton()?.title).toBe(language === "ru" ? "Остановить генерацию ответа" : "Stop response");
+      }
+      expect(onStop).not.toHaveBeenCalled();
+      await act(async () => { stopButton()!.click(); });
+      expect(onStop).toHaveBeenCalledTimes(1);
+      typeText("User draft remains unchanged.");
+      await act(async () => { await i18n.changeLanguage("en"); });
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      expect(container.querySelector('[data-testid="mdx-editor"]')?.textContent).toBe("User draft remains unchanged.");
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(onStop).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
   it("switches Stop to Send with text, whitespace back to Stop, without interrupting on keyboard submit", async () => {
     const onStop = vi.fn(async () => {});
     const onAdd = vi.fn(async () => {});
@@ -3221,6 +3403,32 @@ describe("composer Stop", () => {
     expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it("refreshes a stop-verification error while preserving a draft and retry state", async () => {
+    const raw = "The stop was requested, but stopping could not be verified. Refresh and try Stop again if work is still running.";
+    const error = new Error(raw);
+    const onStop = vi.fn().mockRejectedValue(error);
+    const onAdd = vi.fn();
+    render(<TaskChatComposer workMode="standard" onAdd={onAdd} onStop={onStop} />);
+    await act(async () => { stopButton()!.click(); });
+    typeText("User draft with /RAW_PATH and {{placeholder}}");
+    const editor = editable();
+    try {
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(container.querySelector('[role="alert"]')?.textContent).toBe(language === "ru"
+          ? "Запрос на остановку отправлен, но подтвердить остановку не удалось. Обновите страницу и повторите остановку, если работа продолжается."
+          : raw);
+        expect(editable()).toBe(editor);
+        expect(editor.textContent).toBe("User draft with /RAW_PATH and {{placeholder}}");
+      }
+      expect(onStop).toHaveBeenCalledTimes(1);
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(error.message).toBe(raw);
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
+
   it("retains disabled Send when idle or when stop permission is absent", () => {
     render(<TaskChatComposer workMode="standard" onAdd={vi.fn()} />);
     expect(stopButton()).toBeNull();
@@ -3249,5 +3457,85 @@ describe("composer Stop", () => {
     await flushAsync();
     expect(stopButton()).toBeNull();
     expect(sendButton().disabled).toBe(failed);
+  });
+});
+
+describe("composer image localization", () => {
+  afterEach(async () => { await i18n.changeLanguage("en"); });
+
+  it("updates upload labels without replacing the preview, draft, or upload request", async () => {
+    let complete!: (attachment: IssueAttachment) => void;
+    const onAttachImage = vi.fn(() => new Promise<IssueAttachment>(resolve => { complete = resolve; }));
+    const onAdd = vi.fn();
+    const file = new File(["bytes"], "Image {{name}}.png", { type: "image/png" });
+    render(<TaskChatComposer workMode="standard" draftKey="localized-image-draft" onAdd={onAdd} onAttachImage={onAttachImage} />);
+    typeText("Original caption /RAW_PATH {{placeholder}}");
+    pasteFiles([file]);
+    await flushAsync();
+    const editor = editable();
+    const row = container.querySelector('[data-testid="task-chat-composer-images"]')!;
+    const preview = row.querySelector("img")!;
+    const previewUrl = preview.getAttribute("src");
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(row.getAttribute("aria-label")).toBe(language === "ru" ? "Прикреплённые изображения" : "Image attachments");
+      expect(row.querySelector('[role="status"]')?.textContent).toBe(language === "ru" ? "Загружаем Image {{name}}.png…" : "Uploading Image {{name}}.png…");
+      expect(row.querySelector("button")?.getAttribute("aria-label")).toBe(language === "ru" ? "Удалить Image {{name}}.png" : "Remove Image {{name}}.png");
+      expect(row.querySelector("img")).toBe(preview);
+      expect(preview.getAttribute("src")).toBe(previewUrl);
+      expect(preview.alt).toBe(file.name);
+      expect(editable()).toBe(editor);
+      expect(editor.textContent).toBe("Original caption /RAW_PATH {{placeholder}}");
+      expect(onAttachImage).toHaveBeenCalledExactlyOnceWith(file);
+      expect(onAdd).not.toHaveBeenCalled();
+    }
+    const attachment: IssueAttachment = {
+      id: "receipt-original",
+      companyId: "company",
+      issueId: "issue",
+      issueCommentId: null,
+      assetId: "asset-original",
+      provider: "paperclip",
+      objectKey: "receipt-original",
+      contentType: file.type,
+      byteSize: file.size,
+      sha256: "a".repeat(64),
+      originalFilename: file.name,
+      createdByAgentId: null,
+      createdByUserId: "user",
+      createdAt: new Date("2026-11-03T00:00:00Z"),
+      updatedAt: new Date("2026-11-03T00:00:00Z"),
+      contentPath: "/attachments/original.png",
+    };
+    await act(async () => { complete(attachment); });
+    flushSync(() => sendButton().click());
+    await flushAsync();
+    expect(onAttachImage).toHaveBeenCalledTimes(1);
+    expect(onAdd).toHaveBeenCalledWith("Original caption /RAW_PATH {{placeholder}}\n\n![Image {{name}}.png](/attachments/original.png)", undefined, undefined, ["receipt-original"], expect.any(String));
+  });
+
+  it.each([true, false])("refreshes only locally authored image upload errors (local=%s)", async (local) => {
+    const onAttachImage = local ? vi.fn().mockResolvedValue(undefined) : vi.fn().mockRejectedValue(new Error("Upload did not return a file URL"));
+    const onAdd = vi.fn();
+    const file = new File(["bytes"], "retry.png", { type: "image/png" });
+    render(<TaskChatComposer workMode="standard" onAdd={onAdd} onAttachImage={onAttachImage} />);
+    typeText("Keep the exact caption");
+    pasteFiles([file]);
+    await flushAsync();
+    const row = container.querySelector('[data-testid="task-chat-composer-images"]')!;
+    const retry = row.querySelector<HTMLButtonElement>('button[aria-label="Retry retry.png"]')!;
+    expect(retry).not.toBeNull();
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(row.querySelector('[role="alert"]')?.textContent).toBe(local && language === "ru" ? i18n.t("localizationTaskRuntime.ui_Upload_did_not_return_a_file_URL_gsrcr4") : "Upload did not return a file URL");
+      expect(retry.getAttribute("aria-label")).toBe(language === "ru" ? "Повторить загрузку файла «retry.png»" : "Retry retry.png");
+      expect(editable().textContent).toBe("Keep the exact caption");
+      expect(onAttachImage).toHaveBeenCalledTimes(1);
+      expect(onAdd).not.toHaveBeenCalled();
+    }
+    await act(async () => { retry.click(); });
+    expect(onAttachImage).toHaveBeenCalledTimes(2);
+    expect(onAttachImage.mock.calls[1]?.[0]).toBe(file);
+    expect(onAdd).not.toHaveBeenCalled();
   });
 });

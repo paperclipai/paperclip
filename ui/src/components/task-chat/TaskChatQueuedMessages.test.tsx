@@ -4,6 +4,7 @@ import { act, type ComponentProps } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
 import {
   reorderQueuedMessageEntries,
@@ -60,9 +61,10 @@ describe("TaskChatQueuedMessages", () => {
     root = createRoot(container);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     flushSync(() => root.unmount());
     container.remove();
+    await i18n.changeLanguage("en");
   });
 
   function render(
@@ -394,6 +396,58 @@ describe("TaskChatQueuedMessages", () => {
       ),
     ).toBeNull();
   });
+  it("keeps the optimistically sent queue absent across locale changes without repeating the action", async () => {
+    const acknowledgement = deferred<void>();
+    const onInterrupt = vi.fn().mockReturnValue(acknowledgement.promise);
+    const originalQueue = JSON.stringify(queue);
+    const props = render({ queue: { ...queue, protocol: "legacy", steeringDisposition: "unsupported" }, onInterrupt });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]');
+    const interrupt = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!;
+    await act(async () => interrupt.click());
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(container.contains(row)).toBe(false);
+    expect(container.querySelector('[data-testid="task-chat-queued-interrupt-comment-1"]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+    await act(async () => { acknowledgement.resolve(); await acknowledgement.promise; });
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
+      expect(container.querySelector('[data-testid="task-chat-queued-messages"]')).toBeNull();
+      expect(row?.textContent).toContain("First queued message");
+      expect(JSON.stringify(queue)).toBe(originalQueue);
+      expect(onInterrupt).toHaveBeenCalledTimes(1);
+      expect(props.onReorder).not.toHaveBeenCalled();
+      expect(props.onSteer).not.toHaveBeenCalled();
+      expect(props.onDiscard).not.toHaveBeenCalled();
+    }
+  });
+
+  it("retranslates a retained discard announcement without replaying the action or rebuilding unaffected rows", async () => {
+    const acknowledgement = deferred<void>();
+    const onDiscard = vi.fn().mockReturnValue(acknowledgement.promise);
+    const originalQueue = JSON.stringify(queue);
+    const props = render({ onDiscard });
+    const unaffected = container.querySelector('[data-testid="task-chat-queued-message-comment-2"]');
+    const discard = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-discard-comment-1"]')!;
+    await act(async () => discard.click());
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    expect(discard.disabled).toBe(true);
+    expect(container.querySelector(".sr-only")?.textContent).toBe("Сообщение удаляется из очереди.");
+    expect(container.querySelector('[data-testid="task-chat-queued-message-comment-2"]')).toBe(unaffected);
+    await act(async () => { acknowledgement.resolve(); await acknowledgement.promise; });
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBeNull();
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-2"]')).toBe(unaffected);
+      expect(container.querySelector(".sr-only")?.textContent).toBe(language === "ru"
+        ? "Сообщение удалено из очереди." : "Queued message discarded.");
+      expect(unaffected?.textContent).toContain("Second queued message");
+      expect(JSON.stringify(queue)).toBe(originalQueue);
+      expect(onDiscard).toHaveBeenCalledExactlyOnceWith("comment-1", "rev-1");
+      expect(props.onReorder).not.toHaveBeenCalled();
+      expect(props.onSteer).not.toHaveBeenCalled();
+    }
+  });
   it("keeps deferred sends visible and explains their current wait", async () => {
     const saved = { ...queue, targetRunId: null, executionWait: { reason: "decision_pending", message: "Resolve the pending approval before sending." } };
     const onInterrupt = vi.fn().mockResolvedValue(saved);
@@ -402,6 +456,49 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).toContain("First queued message");
     expect(container.textContent).toContain(saved.executionWait.message);
     expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled).toBe(false);
+  });
+  it.each([
+    {
+      name: "recognized server wait",
+      message: "Waiting for the previous environment to stop. Your message will start automatically.",
+      en: "Waiting for the previous environment to stop. Your message will start automatically.",
+      ru: "Ждём остановки предыдущей среды. Обработка сообщения начнётся автоматически.",
+    },
+    { name: "custom server wait", message: "RAW_PROVIDER_WAIT", en: "RAW_PROVIDER_WAIT", ru: "RAW_PROVIDER_WAIT" },
+    {
+      name: "missing wait message",
+      message: null,
+      en: "Messages are still queued. They will send when the task is ready.",
+      ru: "Сообщения остаются в очереди. Они будут отправлены, когда задача будет готова.",
+    },
+  ])("retranslates a deferred send's $name without resending or changing its payload", async ({ message, en, ru }) => {
+    const saved: IssueQueuedCommentQueue = {
+      ...queue,
+      targetRunId: null,
+      executionWait: message == null ? null : { reason: "remote_cleanup", message },
+    };
+    const before = JSON.stringify(saved);
+    const delivery = deferred<IssueQueuedCommentQueue>();
+    const props = render({ queue: saved, onInterrupt: vi.fn().mockReturnValue(delivery.promise) });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!.click(); });
+    await act(async () => { delivery.resolve(saved); await delivery.promise; });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]');
+    const status = container.querySelector('p[role="status"]');
+    expect(row).not.toBeNull();
+    expect(status).not.toBeNull();
+    for (const [locale, expected] of [["en", en], ["ru", ru], ["en", en]] as const) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBe(row);
+      expect(row?.textContent).toContain("First queued message");
+      expect(container.querySelector('p[role="status"]')).toBe(status);
+      expect(status?.textContent).toBe(expected);
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled).toBe(false);
+      expect(props.onInterrupt).toHaveBeenCalledOnce();
+      expect(props.onSteer).not.toHaveBeenCalled();
+      expect(props.onDiscard).not.toHaveBeenCalled();
+      expect(props.onReorder).not.toHaveBeenCalled();
+      expect(JSON.stringify(saved)).toBe(before);
+    }
   });
   it("clears a deferred wait message when a refreshed queue finishes sending", async () => {
     const saved = { ...queue, targetRunId: null, executionWait: { reason: "decision_pending", message: "Resolve the pending approval before sending." } };

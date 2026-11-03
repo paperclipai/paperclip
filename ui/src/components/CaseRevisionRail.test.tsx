@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CaseDocumentRevisions } from "@/api/cases";
 import { CaseRevisionRail } from "./CaseRevisionRail";
+import { i18n } from "@/i18n";
 
 function act(callback: () => void) {
   flushSync(callback);
@@ -119,6 +120,21 @@ describe("CaseRevisionRail", () => {
     expect(rev1Button).toBeTruthy();
     act(() => rev1Button!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await flush();
+    expect(container.querySelector('[data-testid="md"]')?.textContent).toBe("# First version");
+    try {
+      await i18n.changeLanguage("ru");
+      await flush();
+      expect(container.textContent).toContain("Редакции");
+      expect(container.textContent).toContain("ред. 1");
+      expect(container.querySelector('[data-testid="md"]')?.textContent).toBe("# First version");
+      expect(container.querySelector('button[aria-current="true"]')?.textContent).toContain("ред. 1");
+      expect(container.textContent).toContain("Cases Agent");
+      expect(mockCasesApi.listRevisions).toHaveBeenCalledTimes(1);
+      expect(mockCasesApi.listRevisions).toHaveBeenCalledWith("PAP-C7", "body");
+    } finally {
+      await i18n.changeLanguage("en");
+      await flush();
+    }
     expect(container.querySelector('[data-testid="md"]')?.textContent).toBe("# First version");
     act(() => root.unmount());
   });

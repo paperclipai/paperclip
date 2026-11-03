@@ -1,3 +1,4 @@
+import { t, i18n, useTranslation } from "@/i18n";
 import { useMemo, useState } from "react";
 import { Clock, X } from "lucide-react";
 import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
@@ -23,6 +24,8 @@ import {
   deriveMonitorState,
   formatMonitorAbsolute,
   formatMonitorEta,
+  formatMonitorEtaDisplay,
+  formatMonitorAbsoluteDisplay,
   useMonitorCountdown,
   type DerivedMonitorState,
   type MonitorDisplayState,
@@ -105,10 +108,10 @@ export function buildMonitorSurfaceCopy(
 
   if (derived.source === "scheduled-retry" && scheduledRetryReason === "workspace_busy") {
     return {
-      bannerTitle: "Waiting for workspace",
-      stripTitle: "Waiting for workspace",
-      bannerMeta: ["Another task is using this workspace. Work starts automatically when it is available."],
-      stripMeta: ["Work starts automatically when the workspace is available."],
+      bannerTitle: t("sep14Runtime.waitingForWorkspace"),
+      stripTitle: t("sep14Runtime.waitingForWorkspace"),
+      bannerMeta: [t("sep14Runtime.workspaceBusy")],
+      stripMeta: [t("sep14Runtime.workspaceAvailable")],
       tone: "info",
       workspaceWait: true,
     };
@@ -128,10 +131,10 @@ export function buildMonitorSurfaceCopy(
   }
   if (derived.source === "scheduled-retry" && scheduledRetryReason === "ai_connection_pool_wait") {
     return {
-      bannerTitle: "Pool exhausted",
-      stripTitle: "Pool exhausted",
-      bannerMeta: [`Usage recheck ${eta} · ${absolute} (your time)`, "Tasks with a selected account keep it while waiting. Work resumes when usage permits."],
-      stripMeta: [`Usage recheck ${eta} · ${absolute}`, "Tasks with a selected account keep it while waiting."],
+      bannerTitle: t("oct6Beta.copy009"),
+      stripTitle: t("oct6Beta.copy009"),
+      bannerMeta: [`Usage recheck ${eta} · ${absolute} (your time)`, t("oct6Beta.copy010")],
+      stripMeta: [`Usage recheck ${eta} · ${absolute}`, t("oct6Beta.copy011")],
       tone: "info",
     };
   }
@@ -148,15 +151,15 @@ export function buildMonitorSurfaceCopy(
       stripTitle = `Resumes ${eta}`;
       break;
     case "due-now":
-      bannerTitle = isScheduledRetryOnly ? "Agent retry due now" : "Waiting on monitor — due now";
-      stripTitle = "Due now";
-      statusHint = "Checking momentarily…";
+      bannerTitle = isScheduledRetryOnly ? t("localizationIssueChrome.monitorAgentDue") : t("localizationIssueChrome.monitorWaitDue");
+      stripTitle = t("localizationIssueChrome.monitorDue");
+      statusHint = t("localizationIssueChrome.monitorMomentarily");
       break;
     case "overdue":
     default:
       bannerTitle = isScheduledRetryOnly ? `Agent retry ${eta}` : `Waiting on monitor — ${eta}`;
       stripTitle = capitalize(eta);
-      statusHint = "Fires on next tick";
+      statusHint = t("localizationIssueChrome.monitorNextTick");
       break;
   }
 
@@ -179,7 +182,66 @@ export function buildMonitorSurfaceCopy(
   };
 }
 
+/** Display projection only; the raw builder remains stable for callers and tests. */
+export function buildMonitorSurfaceCopyDisplay(derived: DerivedMonitorState, now: MonitorDate, scheduledRetryReason?: string | null, pendingPullRequestReviews = 0, issueStatus?: string): MonitorSurfaceCopy | null {
+  const raw = buildMonitorSurfaceCopy(derived, now, scheduledRetryReason, pendingPullRequestReviews, issueStatus);
+  if (!raw || !derived.nextCheckAt || i18n.resolvedLanguage === "en") return raw;
+  if (raw.automaticChecksPaused) {
+    const hint = raw.checkUnavailable
+      ? t("nov02Components.resumeChecksSentence", { defaultValue: "Resume this task to continue checking." })
+      : t("nov02Components.blockedManualCheck", { defaultValue: "This task is blocked. You can ask the agent to check now." });
+    return { ...raw, bannerTitle: t("nov02Components.automaticChecksPaused", { defaultValue: "Automatic checks paused" }), stripTitle: t("nov02Components.automaticChecksPaused", { defaultValue: "Automatic checks paused" }), bannerMeta: [hint], stripMeta: [hint] };
+  }
+  if (raw.workspaceWait) {
+    return {
+      ...raw,
+      bannerTitle: t("sep14Runtime.waitingForWorkspace"),
+      stripTitle: t("sep14Runtime.waitingForWorkspace"),
+      bannerMeta: [t("sep14Runtime.workspaceBusy")],
+      stripMeta: [t("sep14Runtime.workspaceAvailable")],
+    };
+  }
+  const eta = formatMonitorEtaDisplay(derived.nextCheckAt, now);
+  const absolute = formatMonitorAbsoluteDisplay(derived.nextCheckAt, {}, now);
+  if (raw.pullRequestReview) {
+    return { ...raw, bannerTitle: t("oct19Tasks.reviewRequested"), stripTitle: t("oct19Tasks.reviewRequested"), bannerMeta: [t("oct19Tasks.nextCheckLocal", { eta, time: absolute })], stripMeta: [t("oct19Tasks.nextCheck", { eta, time: absolute })] };
+  }
+  if (derived.source === "scheduled-retry" && scheduledRetryReason === "ai_connection_pool_wait") {
+    return { ...raw, bannerTitle: t("oct6Beta.copy009"), stripTitle: t("oct6Beta.copy009"), bannerMeta: [t("oct6Beta.poolRecheckLocal", { eta, time: absolute }), t("oct6Beta.copy010")], stripMeta: [t("oct6Beta.poolRecheck", { eta, time: absolute }), t("oct6Beta.copy011")] };
+  }
+  const retryOnly = derived.source === "scheduled-retry";
+  let bannerTitle: string;
+  let stripTitle: string;
+  let statusHint: string | null = null;
+  switch (derived.state) {
+    case "scheduled":
+    case "retrying":
+      bannerTitle = t(retryOnly ? "localizationIssueChrome.monitorAgentResumes" : "localizationIssueChrome.monitorWaitResumes", { eta });
+      stripTitle = t("localizationIssueChrome.monitorResumes", { eta });
+      break;
+    case "due-now":
+      bannerTitle = t(retryOnly ? "localizationIssueChrome.monitorAgentDue" : "localizationIssueChrome.monitorWaitDue");
+      stripTitle = t("localizationIssueChrome.monitorDue");
+      statusHint = t("localizationIssueChrome.monitorMomentarily");
+      break;
+    default:
+      bannerTitle = t(retryOnly ? "localizationIssueChrome.monitorAgentOverdue" : "localizationIssueChrome.monitorWaitOverdue", { eta });
+      stripTitle = capitalize(eta);
+      statusHint = t("localizationIssueChrome.monitorNextTick");
+  }
+  const attempt = derived.attemptCount >= 1 ? t("localizationIssueChrome.monitorAttempt", { attempt: derived.attemptCount }) : null;
+  const service = derived.serviceName ? t("localizationIssueChrome.monitorService", { service: derived.serviceName }) : null;
+  return {
+    ...raw,
+    bannerTitle,
+    stripTitle,
+    bannerMeta: [statusHint, t("localizationIssueChrome.monitorLocalTime", { time: absolute }), attempt, service].filter((value): value is string => Boolean(value)),
+    stripMeta: [statusHint, absolute, attempt, service].filter((value): value is string => Boolean(value)),
+  };
+}
+
 function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number): MonitorSurfaceCopy | null {
+  const { t } = useTranslation();
   // `nextCheckAt` is stable for a given issue; derive once to seed the ticking
   // countdown cadence, then re-derive against the live clock so the surfaces
   // roll scheduled → due → overdue on their own.
@@ -188,7 +250,7 @@ function useMonitorSurfaceCopy(issue: Issue, pendingPullRequestReviews: number):
     return derived.source === "monitor" && areAutomaticMonitorChecksPaused(issue) ? null : derived.nextCheckAt;
   }, [issue]);
   const now = useMonitorCountdown(nextCheckAt);
-  return useMemo(() => buildMonitorSurfaceCopy(deriveMonitorState(issue, now), now, issue.scheduledRetry?.scheduledRetryReason, pendingPullRequestReviews, issue.status), [issue, now, pendingPullRequestReviews]);
+  return useMemo(() => buildMonitorSurfaceCopyDisplay(deriveMonitorState(issue, now), now, issue.scheduledRetry?.scheduledRetryReason, pendingPullRequestReviews, issue.status), [issue, now, pendingPullRequestReviews, t]);
 }
 
 function CheckNowButton({
@@ -200,6 +262,7 @@ function CheckNowButton({
   checkingNow: boolean;
   reviewRequested?: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <Button
       type="button"
@@ -209,12 +272,13 @@ function CheckNowButton({
       onClick={onCheckNow}
       disabled={checkingNow}
     >
-      {checkingNow ? "Checking…" : reviewRequested ? "Check status" : "Check now"}
+      {checkingNow ? t("localizationIssueChrome.checking") : reviewRequested ? t("oct19Tasks.checkStatus") : t("localizationIssueChrome.checkNow")}
     </Button>
   );
 }
 
 function CancelMonitorButton({ onCancel }: { onCancel: () => Promise<unknown> }) {
+  useTranslation();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -225,7 +289,7 @@ function CancelMonitorButton({ onCancel }: { onCancel: () => Promise<unknown> })
       await onCancel();
       setOpen(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to cancel the monitor. Try again.");
+      setError(err instanceof Error ? err.message : t("oct19Tasks.cancelMonitorFailed"));
     } finally {
       setPending(false);
     }
@@ -233,19 +297,19 @@ function CancelMonitorButton({ onCancel }: { onCancel: () => Promise<unknown> })
   return (
     <AlertDialog open={open} onOpenChange={(next) => { if (!pending) { setOpen(next); setError(null); } }}>
       <AlertDialogTrigger asChild>
-        <Button type="button" variant="ghost" size="icon" className="absolute right-2 top-2" aria-label="Cancel monitor" title="Cancel monitor">
+        <Button type="button" variant="ghost" size="icon" className="absolute right-2 top-2" aria-label={t("oct19Tasks.cancelMonitor")} title={t("oct19Tasks.cancelMonitor")}>
           <X className="h-4 w-4" aria-hidden="true" />
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Cancel monitor?</AlertDialogTitle>
-          <AlertDialogDescription>This removes the scheduled monitor check. The agent will no longer resume from this monitor. You can send a message to continue the task.</AlertDialogDescription>
+          <AlertDialogTitle>{t("oct19Tasks.cancelMonitorTitle")}</AlertDialogTitle>
+          <AlertDialogDescription>{t("oct19Tasks.cancelMonitorConsequence")}</AlertDialogDescription>
         </AlertDialogHeader>
         {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
         <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending}>Keep monitor</AlertDialogCancel>
-          <Button type="button" variant="destructive" disabled={pending} onClick={() => void cancel()}>{pending ? "Cancelling…" : "Cancel monitor"}</Button>
+          <AlertDialogCancel disabled={pending}>{t("oct19Tasks.keepMonitor")}</AlertDialogCancel>
+          <Button type="button" variant="destructive" disabled={pending} onClick={() => void cancel()}>{pending ? t("oct19Tasks.cancelling") : t("oct19Tasks.cancelMonitor")}</Button>
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>
@@ -274,6 +338,7 @@ export function IssueMonitorBanner({
   checkError,
   onCancelMonitor,
 }: IssueMonitorSurfaceProps) {
+  useTranslation();
   const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
   const copy = useMonitorSurfaceCopy(issue, reviews.length);
   if (!copy) return null;
@@ -311,6 +376,7 @@ export function IssueMonitorComposerStrip({
   checkError,
   className,
 }: IssueMonitorSurfaceProps & { className?: string }) {
+  const { t } = useTranslation();
   const reviews = getIssuePullRequests(workProducts).filter(pullRequestNeedsReview);
   const copy = useMonitorSurfaceCopy(issue, reviews.length);
   if (!copy) return null;
@@ -333,13 +399,13 @@ export function IssueMonitorComposerStrip({
         {onCheckNow && !copy.workspaceWait && !copy.checkUnavailable ? <CheckNowButton onCheckNow={onCheckNow} checkingNow={checkingNow} reviewRequested={copy.pullRequestReview} /> : null}
       </div>
       {!copy.automaticChecksPaused ? (
-        <p className="mt-1.5 text-xs text-muted-foreground">
-          {copy.pullRequestReview
-            ? "Review on GitHub, then check status to have the agent verify the result."
-            : copy.workspaceWait
-            ? "You can keep sending instructions while the agent waits."
-            : "Sending a reply wakes the agent now — before the scheduled check."}
-        </p>
+      <p className="mt-1.5 text-xs text-muted-foreground">
+        {copy.pullRequestReview
+          ? t("oct19Tasks.reviewPullRequestHint")
+          : copy.workspaceWait
+          ? t("sep14Runtime.keepSendingInstructions")
+          : t("localizationIssueChrome.replyWakesAgent")}
+      </p>
       ) : null}
       {checkError ? <p role="alert" className="text-sm text-destructive">{checkError}</p> : null}
     </div>

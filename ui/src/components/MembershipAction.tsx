@@ -3,6 +3,7 @@ import { Loader2, LogIn, LogOut } from "lucide-react";
 import type { ResourceMembershipState } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "../lib/utils";
+import { useTranslation } from "@/i18n";
 
 interface MembershipActionProps {
   state: ResourceMembershipState;
@@ -23,11 +24,12 @@ export function MembershipAction({
   onJoin,
   onLeave,
 }: MembershipActionProps) {
+  const { t } = useTranslation();
   const isLeft = state === "left";
   const label = pending
-    ? pendingState === "left" ? "Leaving..." : "Joining..."
-    : isLeft ? "Join" : "Leave";
-  const ariaLabel = `${isLeft ? "Join" : "Leave"} ${resourceName}`;
+    ? t(pendingState === "left" ? "localizationMembership.leaving" : "localizationMembership.joining")
+    : t(isLeft ? "localizationMembership.join" : "localizationMembership.leave");
+  const ariaLabel = t(isLeft ? "localizationMembership.joinNamed" : "localizationMembership.leaveNamed", { name: resourceName });
   const Icon = pending ? Loader2 : isLeft ? LogIn : LogOut;
 
   function handleClick(event: MouseEvent<HTMLButtonElement>) {
@@ -41,7 +43,7 @@ export function MembershipAction({
   return (
     <span
       className={cn(
-        "flex w-(--sz-66px) shrink-0 justify-end",
+        "flex min-w-(--sz-66px) shrink-0 justify-end",
         !isLeft && !compact
           ? "opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
           : "opacity-100",
@@ -55,7 +57,7 @@ export function MembershipAction({
         aria-busy={pending ? "true" : undefined}
         disabled={pending}
         onClick={handleClick}
-        className="w-(--sz-66px)"
+        className="min-w-(--sz-66px)"
       >
         <Icon className={cn("h-3 w-3", pending && "motion-safe:animate-spin")} />
         <span>{label}</span>

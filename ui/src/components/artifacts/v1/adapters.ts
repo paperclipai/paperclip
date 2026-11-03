@@ -52,6 +52,7 @@ export function subjectFromAttachment(attachment: IssueAttachment): ArtifactSubj
     thumbnailUrl: kind === "image" ? source : null,
     videoUrl: kind === "video" ? source : null,
     sizeLabel: sizeLabel(attachment.byteSize),
+    sizeBytes: attachment.byteSize,
     updatedAt: iso(attachment.updatedAt),
   };
 }
@@ -81,6 +82,7 @@ export function subjectFromWorkProduct(workProduct: IssueWorkProduct): ArtifactS
       thumbnailUrl: kind === "image" ? source : null,
       videoUrl: kind === "video" ? source : null,
       sizeLabel: sizeLabel(attachment?.byteSize ?? num(metadata, "byteSize") ?? num(metadata, "size")),
+      sizeBytes: attachment?.byteSize ?? num(metadata, "byteSize") ?? num(metadata, "size"),
       updatedAt,
     };
   }
@@ -114,6 +116,7 @@ export function subjectFromAttachmentRef(ref: AttachmentRef): ArtifactSubject {
     thumbnailUrl: kind === "image" ? source : null,
     videoUrl: kind === "video" ? source : null,
     sizeLabel: sizeLabel(ref.byteSize ?? null),
+    sizeBytes: ref.byteSize ?? null,
   };
 }
 

@@ -1,3 +1,4 @@
+import { useTranslation, i18n } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 
@@ -10,7 +11,7 @@ import type { StatusCardView } from "./types";
 
 function shortDate(iso: string | null): string {
   if (!iso) return "—";
-  return new Date(iso).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return new Date(iso).toLocaleDateString(i18n.resolvedLanguage, { month: "short", day: "numeric" });
 }
 
 export function ArchivedStatusCardRow({
@@ -24,6 +25,7 @@ export function ArchivedStatusCardRow({
   onRestore: () => void;
   restorePending?: boolean;
 }) {
+  const { t } = useTranslation();
   // Lifetime cost is a rollup of the card's full update ledger (live P1 data).
   const updatesQuery = useQuery({
     queryKey: queryKeys.statusCards.updates(card.id),
@@ -34,23 +36,19 @@ export function ArchivedStatusCardRow({
   return (
     <div className="flex items-center justify-between gap-4 rounded-lg border border-border bg-muted/30 px-4 py-3">
       <div className="min-w-0">
-        <p className="truncate text-sm font-semibold">{card.title ?? "Untitled card"}</p>
+        <p className="truncate text-sm font-semibold">{card.title ?? t("localizationStatusCards.untitledCard14")}</p>
         <p className="mt-0.5 text-xs text-muted-foreground" title={card.archivedAt ? formatDateTime(card.archivedAt) : undefined}>
-          archived {shortDate(card.archivedAt)} · last summary {shortDate(card.lastGeneratedAt)}
-          {rollup ? ` · lifetime ${formatTokens(rollup.totalTokens)} / ${formatCents(rollup.totalCostCents)}` : ""}
+          {t("localizationStatusCards.archivedDates", { archived: shortDate(card.archivedAt), summary: shortDate(card.lastGeneratedAt) })}
+          {rollup ? t("localizationStatusCards.lifetimeCost", { tokens: formatTokens(rollup.totalTokens), cost: formatCents(rollup.totalCostCents) }) : ""}
         </p>
       </div>
       {/* View is the more common intent on an archived row (reading the last
           summary); Restore is safe but secondary — it brings the card back
           stale and never auto-runs. */}
       <div className="flex shrink-0 gap-2">
-        <Button size="sm" onClick={onView}>
-          View
-        </Button>
+        <Button size="sm" onClick={onView}>{t("localizationSkills.view220")}</Button>
         <Button variant="outline" size="sm" onClick={onRestore} disabled={restorePending}>
-          {restorePending ? <Loader2 className="animate-spin" /> : null}
-          Restore
-        </Button>
+          {restorePending ? <Loader2 className="animate-spin" /> : null}{t("pages.agentDetail.restore")}</Button>
       </div>
     </div>
   );

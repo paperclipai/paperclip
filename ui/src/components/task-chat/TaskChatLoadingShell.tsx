@@ -1,4 +1,5 @@
 import { Skeleton } from "@/components/ui/skeleton";
+import { useTranslation } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { TaskChatComposerDock } from "./TaskChatComposerDock";
 import { taskChatComposerSurfaceClasses } from "./composer-surface";
@@ -8,10 +9,11 @@ export function TaskChatLoadingShell({ mobile, streamlined, coordinator }: {
   streamlined: boolean;
   coordinator: boolean;
 }) {
+  const { t } = useTranslation();
   return <div
     data-testid="task-chat-loading-frame"
     role="status"
-    aria-label="Loading conversation"
+    aria-label={t("localizationTaskThread.loadingConversation")}
     className="task-chat-loading-shell relative flex h-full min-h-0 w-full flex-1 flex-col overflow-hidden bg-background"
   >
     <div aria-hidden="true" className={cn(

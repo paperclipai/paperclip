@@ -8,6 +8,7 @@ import { GrokBotSetup } from "./GrokBotSetup";
 import { GrokBotSetupContent } from "./GrokBotSetupContent";
 import { copyTextToClipboard } from "@/lib/clipboard";
 import { GrokBotConnection } from "../GrokBotConnection";
+import { i18n, t } from "@/i18n";
 
 const api = vi.hoisted(() => ({ resume: vi.fn(), connection: vi.fn(), create: vi.fn(), pair: vi.fn(), configure: vi.fn(), verify: vi.fn(), retry: vi.fn() }));
 vi.mock("@/api/grokBot", () => ({ grokBotApi: api }));
@@ -16,7 +17,7 @@ vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 let root: Root;
 let host: HTMLDivElement;
 let cache: QueryClient;
-afterEach(() => { flushSync(() => root?.unmount()); host?.remove(); cache?.clear(); vi.resetAllMocks(); });
+afterEach(async () => { flushSync(() => root?.unmount()); host?.remove(); cache?.clear(); vi.resetAllMocks(); await i18n.changeLanguage("en"); });
 
 it("restores the same saved agent when a failed initial resume succeeds on retry", async () => {
   const companyId = "company-fixture", agentId = "agent-saved-night-shift";
@@ -58,7 +59,8 @@ it.each(["rejected", "unknown"])("offers an explicit retry only for a %s deliver
 });
 
 
-it("copies the masked pairing code and offers a retry after a clipboard failure", async () => {
+it.each(["en", "ru"])("copies the masked pairing code and retries clipboard failure in %s", async locale => {
+  await i18n.changeLanguage(locale);
   const pairingCode = "test_code_for_agent_pairing_12345";
   vi.mocked(copyTextToClipboard).mockRejectedValueOnce(new Error("Clipboard unavailable")).mockResolvedValueOnce();
   host = document.createElement("div"); document.body.appendChild(host); root = createRoot(host);
@@ -67,17 +69,17 @@ it("copies the masked pairing code and offers a retry after a clipboard failure"
     pairing={{ bindingId: "binding-fixture", pairingCode, expiresAt: new Date(Date.now() + 60_000).toISOString() }}
     webhookUrl="" webhookKey="" onDetails={() => {}} onCredentials={() => {}} onBack={() => {}}
     onExit={() => {}} onNext={() => {}} onRetry={() => {}} /></DialogContent></Dialog>));
-  const label = [...document.querySelectorAll("label")].find(element => element.textContent === "One-use pairing code")!;
+  const label = [...document.querySelectorAll("label")].find(element => element.textContent === t("oct19Voice.oneUsePairingCode_ysxala"))!;
   const input = document.getElementById(label.htmlFor) as HTMLInputElement;
   expect(input.type).toBe("password");
   expect(input.readOnly).toBe(true);
   expect(input.value).toBe(pairingCode);
   expect(document.body.textContent).not.toContain(pairingCode);
-  const copy = document.querySelector<HTMLButtonElement>('button[aria-label="Copy pairing code"]')!;
+  const copy = [...document.querySelectorAll<HTMLButtonElement>("button")].find(button => button.getAttribute("aria-label") === t("oct19Voice.copyPairingCode_bperj1"))!;
   flushSync(() => copy.click());
-  await vi.waitFor(() => expect(document.body.textContent).toContain("Copy failed"));
+  await vi.waitFor(() => expect(document.body.textContent).toContain(locale === "ru" ? "Не удалось скопировать" : "Copy failed"));
   flushSync(() => copy.click());
-  await vi.waitFor(() => expect(document.body.textContent).toContain("Copied!"));
+  await vi.waitFor(() => expect(document.body.textContent).toContain(locale === "ru" ? "Скопировано!" : "Copied!"));
   expect(copyTextToClipboard).toHaveBeenNthCalledWith(1, pairingCode);
   expect(copyTextToClipboard).toHaveBeenNthCalledWith(2, pairingCode);
   expect(document.body.textContent).not.toContain(pairingCode);

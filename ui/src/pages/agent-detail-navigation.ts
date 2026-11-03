@@ -1,3 +1,4 @@
+import { t } from "@/i18n";
 import { auditSectionHref, type AuditSection } from "./audit/audit-navigation";
 
 export type AgentAuditView = Extract<AuditSection, "activity" | "runs" | "costs" | "budgets">;
@@ -24,33 +25,33 @@ export const AGENT_DETAIL_NAVIGATION: ReadonlyArray<{
   items: ReadonlyArray<{ value: AgentLocalDetailView; label: string }>;
 }> = [
   {
-    label: "Agent",
+    get label() { return t("localizationAgents.navigation_Agent"); },
     items: [
-      { value: "overview", label: "Overview" },
-      { value: "instructions", label: "Identity" },
-      { value: "runtime", label: "Harness / Runtime" },
-      { value: "secrets", label: "Secrets & variables" },
-      { value: "permissions", label: "Permissions / Trust" },
-      { value: "advanced", label: "Advanced" },
+      { value: "overview", get label() { return t("localizationAgents.navigation_Overview"); } },
+      { value: "instructions", get label() { return t("localizationAgents.ui30_Identity"); } },
+      { value: "runtime", get label() { return t("localizationAgents.navigation_Harness_Runtime"); } },
+      { value: "secrets", get label() { return t("localizationAgentChrome.secretsAndVariables"); } },
+      { value: "permissions", get label() { return t("localizationAgents.navigation_Permissions_Trust"); } },
+      { value: "advanced", get label() { return t("pages.agentDetail.advanced"); } },
     ],
   },
   {
-    label: "Audit",
+    get label() { return t("pages.agentDetail.tabAudit"); },
     items: [
-      { value: "activity", label: "Activity" },
-      { value: "runs", label: "Runs" },
-      { value: "costs", label: "Costs" },
-      { value: "budgets", label: "Budgets" },
+      { value: "activity", get label() { return t("nav.activity"); } },
+      { value: "runs", get label() { return t("localizationActivity.runsLabel"); } },
+      { value: "costs", get label() { return t("nav.costs"); } },
+      { value: "budgets", get label() { return t("pages.costs.tabBudgets"); } },
     ],
   },
 ] as const;
 
 const HIDDEN_VIEW_LABELS: Partial<Record<AgentLocalDetailView, string>> = {
-  skills: "Skills",
-  tools: "Tools",
-  channels: "Channels",
-  "api-keys": "API Keys",
-  revisions: "Agent history",
+  get skills() { return t("localizationAgents.navigation_Skills", { defaultValue: "Skills" }); },
+  get tools() { return t("pages.agentDetail.breadcrumbTools", { defaultValue: "Tools" }); },
+  get channels() { return t("agentSetup.channels", { defaultValue: "Channels" }); },
+  get "api-keys"() { return t("localizationAgents.navigation_API_Keys", { defaultValue: "API Keys" }); },
+  get revisions() { return t("nov2Pages.agent.history", { defaultValue: "Agent history" }); },
 };
 
 export const AGENT_AUDIT_VIEWS: ReadonlySet<AgentLocalDetailView> = new Set(["activity", "runs", "costs", "budgets"]);
@@ -61,7 +62,7 @@ export function isAgentAuditView(view: AgentDetailView): view is AgentAuditView 
 
 export function agentDetailViewLabel(view: AgentLocalDetailView): string {
   const item = AGENT_DETAIL_NAVIGATION.flatMap((section) => section.items).find((entry) => entry.value === view);
-  return item?.label ?? HIDDEN_VIEW_LABELS[view] ?? "Overview";
+  return item?.label ?? HIDDEN_VIEW_LABELS[view] ?? t("localizationAgents.navigation_Overview");
 }
 
 export function parseAgentDetailView(value: string | null): AgentLocalDetailView {

@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ToggleSwitch } from '@/components/ui/toggle-switch';
@@ -10,14 +11,15 @@ export function SkillSourceSyncControls({ automaticUpdates, refreshing, disabled
   onRefresh: () => void;
   onAutomaticUpdates: (enabled: boolean) => void;
 }) {
+  useTranslation();
   return <div className="flex flex-wrap items-center gap-3">
     {showPreference && <label className="flex items-center gap-2 text-xs text-muted-foreground">
-      <ToggleSwitch checked={automaticUpdates} disabled={disabled} onCheckedChange={onAutomaticUpdates} aria-label="Automatic updates" />
-      Automatic updates
+      <ToggleSwitch checked={automaticUpdates} disabled={disabled} onCheckedChange={onAutomaticUpdates} aria-label={t("oct19Core.automaticUpdates")} />
+      {t("oct19Core.automaticUpdates")}
     </label>}
     <Button size="sm" variant="outline" disabled={disabled || refreshing} onClick={onRefresh}>
       <RefreshCw className={refreshing ? 'size-3.5 animate-spin motion-reduce:animate-none' : 'size-3.5'} />
-      {refreshing ? 'Refreshing…' : 'Refresh'}
+      {refreshing ? t("oct19Core.newSurface019") : t("oct19Core.newSurface020")}
     </Button>
   </div>;
 }

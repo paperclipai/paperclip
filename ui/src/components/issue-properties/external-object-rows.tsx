@@ -1,4 +1,5 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { t, useTranslation } from "@/i18n";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { IssueExternalObjectGroup } from "../../hooks/useIssueExternalObjects";
 import {
   externalObjectDisplayStatusLabel,
@@ -32,8 +33,8 @@ function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
   const displayKey = pill.displayKey?.trim();
   if (displayKey) return displayKey;
   if (pill.providerKey === "github") {
-    if (pill.objectType === "pull_request") return "Github PR";
-    if (pill.objectType === "issue") return "Github Issue";
+    if (pill.objectType === "pull_request") return t("localizationIssueDetail.githubPr");
+    if (pill.objectType === "issue") return t("localizationIssueDetail.githubIssue");
   }
   return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
 }
@@ -57,8 +58,8 @@ function githubObjectPropertyValue(url: string | null | undefined): string | nul
     if (parsed.hostname !== "github.com") return null;
     const [, owner, repo, kind, number] = parsed.pathname.split("/");
     if (!owner || !repo || !number) return null;
-    if (kind === "pull") return `PR ${number}`;
-    if (kind === "issues") return `Issue ${number}`;
+    if (kind === "pull") return t("localizationIssueDetail.prNumber", { number });
+    if (kind === "issues") return t("localizationIssueDetail.issueNumber", { number });
     return null;
   } catch {
     return null;
@@ -74,12 +75,12 @@ function externalObjectPropertyValue(group: IssueExternalObjectGroup): string {
   const statusLabel = externalObjectPropertyStatusLabel(group);
   const githubLabel = pill.providerKey === "github" ? githubObjectPropertyValue(pill.url) : null;
   const base = githubLabel ?? pill.displayTitle?.trim() ?? externalObjectRowDisplayKey(group);
-  return statusLabel ? `${base} - ${statusLabel}` : base;
+  return statusLabel ? t("localizationExternalChrome.valueStatus", { value: base, status: statusLabel }) : base;
 }
 
 function isMergedExternalObject(group: IssueExternalObjectGroup): boolean {
-  const statusLabel = externalObjectPropertyStatusLabel(group);
-  return group.pill.statusIconKey === "git-merge" || statusLabel.toLowerCase() === "merged";
+  const rawStatus = group.pill.statusLabel?.trim() || group.pill.statusCategory;
+  return group.pill.statusIconKey === "git-merge" || rawStatus.toLowerCase() === "merged";
 }
 
 function externalObjectPropertyTone(group: IssueExternalObjectGroup): string {
@@ -97,10 +98,11 @@ function externalObjectPropertyStatusIconKey(group: IssueExternalObjectGroup): s
 function externalObjectPropertyTitle(group: IssueExternalObjectGroup): string {
   const { pill, sourceLabels } = group;
   const base = pill.displayTitle ?? externalObjectPropertyValue(group);
-  return sourceLabels.length > 0 ? `${base} - ${sourceLabels.join(", ")}` : base;
+  return sourceLabels.length > 0 ? t("localizationExternalChrome.propertySourceTitle", { title: base, sources: sourceLabels.join(", ") }) : base;
 }
 
 function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGroup }) {
+  const { t } = useTranslation();
   const { pill } = group;
   const statusLabel = externalObjectPropertyStatusLabel(group);
   const providerLabel = externalObjectProviderLabel(pill.providerKey);
@@ -113,7 +115,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         liveness={pill.liveness}
         statusIconKey={externalObjectPropertyStatusIconKey(group)}
         sizeClassName="h-3.5 w-3.5"
-        label={`${providerLabel}: ${statusLabel}`}
+        label={t("localizationExternalChrome.providerStatus", { provider: providerLabel, status: statusLabel })}
       />
       <span className="min-w-0 truncate">{value}</span>
     </>
@@ -135,7 +137,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         data-external-liveness={pill.liveness}
         className={className}
         title={externalObjectPropertyTitle(group)}
-        aria-label={`${providerLabel} ${typeLabel} - ${statusLabel}: ${pill.displayTitle ?? value}`}
+        aria-label={t("localizationExternalChrome.propertyAria", { provider: providerLabel, type: typeLabel, status: statusLabel, title: pill.displayTitle ?? value })}
       >
         {content}
       </a>
@@ -149,7 +151,7 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
       data-external-liveness={pill.liveness}
       className={className}
       title={externalObjectPropertyTitle(group)}
-      aria-label={`${providerLabel} ${typeLabel} - ${statusLabel}: ${pill.displayTitle ?? value}`}
+      aria-label={t("localizationExternalChrome.propertyAria", { provider: providerLabel, type: typeLabel, status: statusLabel, title: pill.displayTitle ?? value })}
     >
       {content}
     </span>
@@ -167,17 +169,24 @@ export function ExternalObjectRows({
   externalObjectsError?: boolean;
   onRetryExternalObjects?: () => void;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
+  const previousExternalObjects = useRef(externalObjects);
 
   useEffect(() => {
+    const previous = previousExternalObjects.current;
+    previousExternalObjects.current = externalObjects;
+    // Translated source labels create new UI groups, but do not change the underlying records.
+    if (previous?.length === externalObjects?.length
+      && externalObjects?.every((entry, index) => entry.group === previous?.[index]?.group)) return;
     setExpanded(false);
   }, [externalObjects]);
 
   if (externalObjectsError) {
     return (
-      <PropertyRow label="External objects">
+      <PropertyRow label={t("localizationIssueDetail.ui_External_objects")}>
         <span className="text-xs text-muted-foreground">
-          Couldn't load external objects.
+          {t("localizationIssueDetail.ui_Couldn_t_load_external_objects")}
           {onRetryExternalObjects ? (
             <>
               {" "}
@@ -186,7 +195,7 @@ export function ExternalObjectRows({
                 className="text-primary underline-offset-2 hover:underline"
                 onClick={onRetryExternalObjects}
               >
-                Retry
+                {t("pages.inbox.retry")}
               </button>
             </>
           ) : null}
@@ -197,7 +206,7 @@ export function ExternalObjectRows({
 
   if (externalObjectsLoading) {
     return (
-      <PropertyRow label="External objects">
+      <PropertyRow label={t("localizationIssueDetail.ui_External_objects")}>
         <span className="h-4 w-24 animate-pulse rounded bg-muted/40" />
       </PropertyRow>
     );
@@ -226,7 +235,7 @@ export function ExternalObjectRows({
           );
         })}
       {expanded || hiddenExternalObjectCount > 0 ? (
-        <PropertyRow label="References">
+        <PropertyRow label={t("pages.secrets.fields.references")}>
           <ExpandRelationListButton
             hiddenCount={hiddenExternalObjectCount}
             expanded={expanded}

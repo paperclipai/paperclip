@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import type { IssueWorkProduct } from "@paperclipai/shared";
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -12,7 +13,16 @@ export function workProductStateBadge(
   workProduct: Pick<IssueWorkProduct, "type" | "status" | "reviewState" | "healthStatus">,
   label?: string | null,
 ): ReactNode {
-  if (workProduct.healthStatus === "unhealthy") return <Badge variant="destructive">Unhealthy</Badge>;
+  const text = label ?? stateChipFor(workProduct.type, workProduct.status, workProduct.reviewState)?.label;
+  return workProduct.healthStatus === "unhealthy" || text ? <WorkProductState workProduct={workProduct} label={label} /> : undefined;
+}
+
+function WorkProductState({ workProduct, label }: {
+  workProduct: Pick<IssueWorkProduct, "type" | "status" | "reviewState" | "healthStatus">;
+  label?: string | null;
+}) {
+  const { t } = useTranslation();
+  if (workProduct.healthStatus === "unhealthy") return <Badge variant="destructive">{t("oct26Artifacts.unhealthy")}</Badge>;
   const text = label ?? stateChipFor(workProduct.type, workProduct.status, workProduct.reviewState)?.label;
   return text ? <span className="text-xs text-muted-foreground">{text}</span> : undefined;
 }

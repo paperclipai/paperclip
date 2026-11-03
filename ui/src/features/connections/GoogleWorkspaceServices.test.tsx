@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { googleWorkspaceSelectedScopes, type ToolConnection } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GoogleWorkspaceServicesDialog } from "./GoogleWorkspaceServices";
+import { i18n, t } from "@/i18n";
 
 const listGrants = vi.hoisted(() => vi.fn());
 vi.mock("@/api/tools", () => ({ toolsApi: { listConnectionGrants: listGrants } }));
@@ -42,6 +43,7 @@ describe("Workspace service consent", () => {
     await act(async () => { root.unmount(); });
     client.clear();
     container.remove();
+    await i18n.changeLanguage("en");
   });
 
   it("defaults all three groups to write and submits only their selections", async () => {
@@ -51,6 +53,22 @@ describe("Workspace service consent", () => {
     expect(listGrants).not.toHaveBeenCalled();
     await click("Continue");
     expect(onContinue).toHaveBeenCalledWith({ gmail: "write", drive: "write", calendar: "write" });
+  });
+
+  it("keeps a service access draft mounted across language changes without replaying consent", async () => {
+    await render();
+    const select = document.querySelectorAll("select")[1]!;
+    await act(async () => { select.value = "read"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    for (const language of ["ru", "en", "ru"]) {
+      await act(async () => { await i18n.changeLanguage(language); });
+      expect(document.querySelectorAll("select")[1]).toBe(select);
+      expect(select.value).toBe("read");
+      expect(select.getAttribute("aria-label")).toBe(t("oct26Ui.workspace.access", { service: t("oct26Ui.workspace.drive") }));
+      expect(document.body.textContent).toContain(t("oct26Ui.workspace.driveDescription"));
+      expect(onContinue).not.toHaveBeenCalled(); expect(onCancel).not.toHaveBeenCalled(); expect(listGrants).not.toHaveBeenCalled();
+    }
+    await click(t("oct26Ui.workspace.continue"));
+    expect(onContinue).toHaveBeenCalledExactlyOnceWith({ gmail: "write", drive: "read", calendar: "write" });
   });
 
   it("restores the current user's saved request, not an organization or another user's broader grant", async () => {

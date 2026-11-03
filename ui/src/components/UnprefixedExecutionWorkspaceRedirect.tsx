@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import { executionWorkspacesApi } from "@/api/execution-workspaces";
 import { useCompany } from "@/context/CompanyContext";
@@ -32,7 +33,7 @@ function workspaceLookupGate(view: QueryViewState<unknown>, companiesLoading: bo
       <QueryErrorState
         size="page"
         error={view.error}
-        action="open this workspace"
+        action={t("nov02Components.actionOpenWorkspace", { defaultValue: "open this workspace" })}
         onRetry={view.retry}
         retrying={view.isFetching}
       />
@@ -43,6 +44,7 @@ function workspaceLookupGate(view: QueryViewState<unknown>, companiesLoading: bo
 
 /** Resolve a prefix-free workspace URL from the resource, not browsing state. */
 export function UnprefixedExecutionWorkspaceRedirect() {
+  useTranslation();
   const location = useLocation();
   const { workspaceId } = useParams<{ workspaceId?: string }>();
   const { companies, loading: companiesLoading } = useCompany();
@@ -68,6 +70,7 @@ export function UnprefixedExecutionWorkspaceRedirect() {
 
 /** Reject a prefixed URL when its prefix and workspace belong to different companies. */
 export function ExecutionWorkspaceCompanyGate() {
+  useTranslation();
   const { companyPrefix, workspaceId } = useParams<{
     companyPrefix?: string;
     workspaceId?: string;

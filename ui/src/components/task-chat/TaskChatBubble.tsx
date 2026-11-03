@@ -1,3 +1,5 @@
+import { useTranslation } from "@/i18n";
+import { taskChatTimestampDisplay } from "./task-chat-display";
 import { CoordinatorRelativeTime } from "@/components/coordinator/CoordinatorRelativeTime";
 import { useAgentChatRead } from "@/hooks/useAgentChatRead";
 import { Link } from "@/lib/router";
@@ -35,8 +37,8 @@ import {
 import {
   extractAttachmentRefs,
   extractImageRefs,
-  fileKindForAttachment,
-  formatFileSize,
+  fileKindForAttachmentDisplay as fileKindForAttachment,
+  formatFileSizeDisplay as formatFileSize,
   hydrateAttachmentRefs,
   isImageAttachment,
   stripStandaloneImageEmbeds,
@@ -92,6 +94,7 @@ export function TaskChatAgentIdentity({
   agentIcon?: string | null;
   agent?: AvatarAgent;
 }) {
+  useTranslation();
   const identity = (
     <>
       <span data-testid="task-chat-agent-avatar"><AgentAvatar agent={agent} name={agentName} size={24} /></span>
@@ -161,12 +164,13 @@ function TaskChatBubbleContent({
   onTryAgainNoLiveExecutionPath,
   tryAgainNoLiveExecutionPathPending,
 }: TaskChatBubbleProps) {
+  const { t } = useTranslation();
   const readRef = useAgentChatRead(item.id, item.createdAtIso, item.author === "agent" && !item.optimistic);
   const streamlined = useStreamlinedTaskChatPresentation();
   const coordinator = useCoordinatorPresentation();
   const recordedTimestamp = item.createdAtIso ?? (typeof item.atMs === "number" && Number.isFinite(item.atMs) ? new Date(item.atMs) : null);
   const timestamp = coordinator && recordedTimestamp && !item.optimistic
-    ? <CoordinatorRelativeTime value={recordedTimestamp} /> : item.timestamp;
+    ? <CoordinatorRelativeTime value={recordedTimestamp} /> : taskChatTimestampDisplay(item.createdAtIso ?? item.atMs, item.timestamp);
   const { enabled: artifactsV1 } = useArtifactsV1Enabled();
   const openText = useContext(TextAttachmentContext);
   // Task attachments share the page gallery; standalone images retain the bubble viewer.
@@ -253,11 +257,14 @@ function TaskChatBubbleContent({
     >
       {beforeTurn ? <div className="w-full pb-1">{beforeTurn}</div> : null}
       {item.chatMessage && <Link to={`/issues/${item.chatMessage.sourceTaskIdentifier}`} className="px-1 text-xs text-muted-foreground underline underline-offset-4">
-        From {item.chatMessage.sourceTaskIdentifier}
+        {t("nov02Components.fromTask", { defaultValue: "From {{identifier}}", identifier: item.chatMessage.sourceTaskIdentifier })}
       </Link>}
       {isHuman && !item.isCurrentUser && item.authorName ? (
         <span className="px-1 text-sm font-semibold text-foreground" data-testid="task-chat-human-identity" data-author-user-id={item.authorUserId}>
-          <Identity name={item.authorName} avatarUrl={paperclipHumanAvatarUrl(item.authorAvatarUrl)} size="default" className="gap-2" />
+          <Identity name={item.humanAuthorFallback === "board" ? t("localizationTaskRuntime.ui_Board_1hpelzf")
+            : item.humanAuthorFallback === "you" ? t("localizationTaskRuntime.ui_You_1efd4xo")
+              : item.humanAuthorFallback === "user" ? t("localizationTaskRuntime.ui_User_1qbyk9e") : item.authorName}
+            avatarUrl={paperclipHumanAvatarUrl(item.authorAvatarUrl)} size="default" className="gap-2" />
         </span>
       ) : null}
       {!isHuman && item.authorName && !hideAgentIdentity ? (
@@ -305,7 +312,7 @@ function TaskChatBubbleContent({
           data-testid="task-chat-bubble-media"
         >
           <span className="text-xs text-muted-foreground">
-            Images · {imageRefs.length}
+            {t("localizationTaskExecution.imagesCount", { count: imageRefs.length })}
           </span>
           <div className="grid grid-cols-4 gap-2">
             {imageRefs
@@ -315,7 +322,7 @@ function TaskChatBubbleContent({
                   key={ref.url}
                   type="button"
                   className="group aspect-video min-w-0 overflow-hidden rounded-md bg-muted outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label={`Open ${ref.name || `image ${index + 1}`}`}
+                  aria-label={t("localizationTaskRuntime.openImage", { name: ref.name || t("localizationTaskRuntime.imageNumber", { number: index + 1 }) })}
                   onClick={() => openImage(ref.url)}
                 >
                   <img
@@ -330,7 +337,7 @@ function TaskChatBubbleContent({
               <button
                 type="button"
                 className="aspect-video min-w-0 rounded-md bg-muted text-sm font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                aria-label={`Open ${imageRefs.length - 3} more screenshots`}
+                aria-label={t("localizationTaskRuntime.openMoreScreenshots", { count: imageRefs.length - 3 })}
                 onClick={() => openImage(imageRefs[3].url)}
               >
                 +{imageRefs.length - 3}
@@ -345,7 +352,7 @@ function TaskChatBubbleContent({
       {!artifactsV1 && attachmentRefs.length > 0 ? (
         <div className="flex max-w-(--pct-85) flex-col gap-2">
           <span className="text-xs text-muted-foreground">
-            Files · {attachmentRefs.length}
+            {t("localizationTaskRuntime.filesCount", { count: attachmentRefs.length })}
           </span>
           <AttachmentGroup data-testid="task-chat-bubble-attachments">
             {attachmentRefs.map((ref) => {
@@ -367,7 +374,7 @@ function TaskChatBubbleContent({
                     </AttachmentDescription>
                   </AttachmentContent>
                   <AttachmentTrigger
-                    aria-label={`Open ${ref.name}`}
+                    aria-label={t("localizationTaskRuntime.openImage", { name: ref.name })}
                     onClick={video ? () => openImage(ref.url) : undefined}
                     render={video ? <button type="button" /> :
                       <a
@@ -394,7 +401,7 @@ function TaskChatBubbleContent({
           data-testid="task-chat-verification-caveats"
         >
           <p className="font-medium text-amber-800 dark:text-amber-200">
-            Verification caveat
+            {t("localizationTaskRuntime.ui_Verification_caveat_8kn1cy")}
           </p>
           <ul className="mt-1 space-y-1 text-muted-foreground">
             {item.verificationCaveats.map((caveat, index) => (
@@ -416,7 +423,7 @@ function TaskChatBubbleContent({
       {coordinator && recordedTimestamp && attachedTurn ? <span className="px-1 text-(length:--text-micro) text-muted-foreground"><CoordinatorRelativeTime value={recordedTimestamp!} /></span> : null}
       {item.optimistic ? (
         <span className="flex items-center gap-1 px-1 text-(length:--text-micro) text-muted-foreground">
-          <span>{item.optimistic === "queued" ? "Queued" : "Sending…"}</span>
+          <span>{item.optimistic === "queued" ? t("status.queued") : t("localizationIssueDetail.ui_Sending")}</span>
           {item.optimistic === "queued" ? queuedAction : null}
         </span>
       ) : attachedTurn ? (
@@ -454,7 +461,7 @@ function TaskChatBubbleContent({
       ) : timestamp || sentFromIMessage ? (
         // Timestamps are always visible (round 9) — no longer hover-revealed.
         <span className="px-1 text-(length:--text-micro) text-muted-foreground">
-          {sentFromIMessage ? "Sent from iMessage" : null}
+          {sentFromIMessage ? t("communityPhoton.sentFromIMessage") : null}
           {sentFromIMessage && timestamp ? " · " : null}
           {timestamp}
         </span>

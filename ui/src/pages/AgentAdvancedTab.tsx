@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { basicSetup } from "codemirror";
@@ -33,6 +34,7 @@ export interface AgentAdvancedTabProps {
 }
 
 export function AgentAdvancedTab(props: AgentAdvancedTabProps) {
+  const { t } = useTranslation();
   const [initial, setInitial] = useState<AgentConfigurationSnapshot | null>(null);
   const query = useQuery({
     queryKey: ["agent-configuration-yaml", props.agent.companyId, props.agent.id],
@@ -45,14 +47,15 @@ export function AgentAdvancedTab(props: AgentAdvancedTabProps) {
   if (!initial) {
     if (query.error) return <div role="alert" className="space-y-3 text-sm">
       <p>{query.error.message}</p>
-      <Button variant="outline" onClick={() => query.refetch()}>Retry</Button>
+      <Button variant="outline" onClick={() => query.refetch()}>{t("oct26Transcript.retry", { defaultValue: "Retry" })}</Button>
     </div>;
-    return <p role="status" className="text-sm text-muted-foreground">Loading configuration…</p>;
+    return <p role="status" className="text-sm text-muted-foreground">{t("sep28Apps.copy84", { defaultValue: t("sep28Apps.copy84", { defaultValue: "Loading configuration…" }) })}</p>;
   }
   return <ConfigurationEditor key={props.agent.id} {...props} initial={initial} />;
 }
 
 function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingChange }: AgentAdvancedTabProps & { initial: AgentConfigurationSnapshot }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { pushToast } = useToastActions();
   const [saved, setSaved] = useState(initial);
@@ -70,15 +73,15 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
     try {
       const document = parseAgentConfigurationYaml(source);
       return { document, changes: planAgentConfiguration(saved, document).map(step => step.label), error: null };
-    } catch (cause) { return { document: null, changes: [], error: cause instanceof Error ? cause.message : "Invalid YAML" }; }
-  }, [source, saved]);
+    } catch (cause) { return { document: null, changes: [], error: cause instanceof Error ? cause.message : t("nov2Pages.agent.invalidYaml", { defaultValue: "Invalid YAML" }) }; }
+  }, [source, saved, t]);
   useEffect(() => { onDirtyChange(dirty || reloadRequired); }, [dirty, reloadRequired, onDirtyChange]);
   useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   const save = useMutation({
     mutationFn: async () => {
-      if (!validation.document) throw new Error(validation.error ?? "Invalid YAML");
-      if (reloadRequired) throw new Error("Reload saved before saving again.");
+      if (!validation.document) throw new Error(validation.error ?? t("nov2Pages.agent.invalidYaml", { defaultValue: "Invalid YAML" }));
+      if (reloadRequired) throw new Error(t("nov2Pages.agent.reloadFirst", { defaultValue: "Reload saved before saving again." }));
       return saveAgentConfiguration(saved, validation.document,
         receipt => { if (active.current) setReceipts(current => [...current, receipt]); },
         label => { if (active.current) setProgress(label); });
@@ -97,7 +100,7 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
       setReloadRequired(false);
       onSaved(configuration.agent);
       const warnings = configuration.agent.configurationWarnings;
-      pushToast({ title: "Agent saved", tone: warnings?.length ? "warn" : "success", body: warnings?.map(warning => warning.message).join("\n") });
+      pushToast({ title: t("localizationAgents.ui53_Agent_saved", { defaultValue: "Agent saved" }), tone: warnings?.length ? "warn" : "success", body: warnings?.map(warning => warning.message).join("\n") });
     },
     onSettled: () => {
       operationPending.current = false;
@@ -125,40 +128,42 @@ function ConfigurationEditor({ agent, initial, onDirtyChange, onSaved, onSavingC
   useEffect(() => { onSavingChange?.(busy); }, [busy, onSavingChange]);
   useEffect(() => () => onSavingChange?.(false), [onSavingChange]);
   return <div className="space-y-4">
-    <p className="text-sm text-muted-foreground">Omitted settings stay unchanged. Instruction file contents, inherited access, and history are available in their settings tabs.</p>
-    {receipts.length > 0 && <div className="space-y-3 rounded-md border border-border p-4" aria-label="Created credentials">
+    <p className="text-sm text-muted-foreground">{t("nov2Pages.advanced.omittedSettings", { defaultValue: "Omitted settings stay unchanged. Instruction file contents, inherited access, and history are available in their settings tabs." })}</p>
+    {receipts.length > 0 && <div className="space-y-3 rounded-md border border-border p-4" aria-label={t("nov2Pages.advanced.credentials", { defaultValue: "Created credentials" })}>
       {receipts.map((receipt, index) => <div key={`${receipt.id}-${index}`} className="space-y-2 text-sm">
         <p className="font-medium">{receipt.label}</p>
         {receipt.token ? <>
-          <p className="text-muted-foreground">Copy this key now. It won’t be shown again after leaving this page.</p>
-          <input readOnly aria-label={`${receipt.label} token`} value={receipt.token} className="w-full rounded-md border border-border bg-muted p-2 font-mono text-sm" />
+          <p className="text-muted-foreground">{t("nov2Pages.advanced.copyNow", { defaultValue: "Copy this key now. It won’t be shown again after leaving this page." })}</p>
+          <input readOnly aria-label={t("nov2Pages.advanced.token", { defaultValue: "{{label}} token", label: receipt.label })} value={receipt.token} className="w-full rounded-md border border-border bg-muted p-2 font-mono text-sm" />
         </> : <p className="font-mono text-muted-foreground">{receipt.id}</p>}
       </div>)}
     </div>}
     <AgentYamlEditor value={source} onChange={value => { setSource(value); if (!reloadRequired) setError(null); }} readOnly={busy} />
     {dirty && validation.changes.length > 0 && <details className="rounded-md border border-border p-3 text-sm">
-      <summary className="cursor-pointer font-medium">{validation.changes.length} {validation.changes.length === 1 ? "change" : "changes"} to apply</summary>
+      <summary className="cursor-pointer font-medium">{t("nov02Late.changesToApply", { count: validation.changes.length })}</summary>
       <ul className="mt-2 list-inside list-disc space-y-1">{validation.changes.map((label, index) => <li key={index}>{label}</li>)}</ul>
-      <p className="mt-2 text-muted-foreground">Changes save in this order. If one fails, earlier changes remain saved.</p>
+      <p className="mt-2 text-muted-foreground">{t("nov2Pages.advanced.saveOrder", { defaultValue: "Changes save in this order. If one fails, earlier changes remain saved." })}</p>
     </details>}
     {(validation.error || error) && <p role="alert" className="whitespace-pre-wrap text-sm text-destructive">{validation.error || error}</p>}
     <footer className="sticky bottom-0 z-10 flex items-center justify-between gap-3 border-t border-border bg-background py-4">
-      <Button variant="ghost" disabled={busy} onClick={() => { if (!operationPending.current) { operationPending.current = true; reload.mutate(); } }}>Reload saved</Button>
+      <Button variant="ghost" disabled={busy} onClick={() => { if (!operationPending.current) { operationPending.current = true; reload.mutate(); } }}>{t("nov2Pages.advanced.reload", { defaultValue: "Reload saved" })}</Button>
       <div className="flex items-center gap-3">
         <span role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
           {!save.isPending && !reload.isPending && dirty ? <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-(--agent-detail-dot-unsaved)" /> : null}
-          {save.isPending ? `Saving: ${progress || "configuration"}…` : reload.isPending ? "Loading configuration…" : dirty ? validation.document && !validation.changes.length ? "No configuration changes" : "Unsaved changes" : "No unsaved changes"}
+          {save.isPending ? t("nov2Pages.advanced.saving", { defaultValue: "Saving: {{step}}…", step: progress || t("nov2Pages.advanced.configuration", { defaultValue: "configuration" }) }) : reload.isPending ? t("sep28Apps.copy84", { defaultValue: "Loading configuration…" }) : dirty ? validation.document && !validation.changes.length ? t("nov2Pages.advanced.noChanges", { defaultValue: "No configuration changes" }) : t("localizationSecrets.unsavedChanges87", { defaultValue: "Unsaved changes" }) : t("nov2Pages.advanced.noUnsaved", { defaultValue: "No unsaved changes" })}
         </span>
-        <Button disabled={!dirty || busy || reloadRequired || !validation.document || !validation.changes.length} onClick={() => { if (!operationPending.current) { operationPending.current = true; save.mutate(); } }}>{save.isPending ? "Saving…" : "Save changes"}</Button>
+        <Button disabled={!dirty || busy || reloadRequired || !validation.document || !validation.changes.length} onClick={() => { if (!operationPending.current) { operationPending.current = true; save.mutate(); } }}>{save.isPending ? t("oct26Settings.common.saving", { defaultValue: "Saving…" }) : t("oct26Settings.common.saveChanges", { defaultValue: "Save changes" })}</Button>
       </div>
     </footer>
   </div>;
 }
 
 function AgentYamlEditor({ value, onChange, readOnly }: { value: string; onChange: (value: string) => void; readOnly: boolean }) {
+  const { t } = useTranslation();
   const container = useRef<HTMLDivElement>(null);
   const editor = useRef<EditorView | null>(null);
   const editability = useRef(new Compartment());
+  const accessibility = useRef(new Compartment());
   const change = useRef(onChange);
   change.current = onChange;
   const current = useRef(value);
@@ -170,7 +175,7 @@ function AgentYamlEditor({ value, onChange, readOnly }: { value: string; onChang
       state: EditorState.create({ doc: current.current, extensions: [
         basicSetup, yaml(),
         syntaxHighlighting(yamlHighlightStyle),
-        EditorView.contentAttributes.of({ "aria-label": "Agent YAML configuration", spellcheck: "false" }),
+        accessibility.current.of(EditorView.contentAttributes.of({ "aria-label": t("nov2Pages.advanced.yamlLabel", { defaultValue: "Agent YAML configuration" }), spellcheck: "false" })),
         editability.current.of([EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly)]),
         EditorView.updateListener.of(update => { if (update.docChanged) change.current(update.state.doc.toString()); }),
       ] }),
@@ -178,6 +183,9 @@ function AgentYamlEditor({ value, onChange, readOnly }: { value: string; onChang
     editor.current = view;
     return () => { view.destroy(); editor.current = null; };
   }, []);
+  useEffect(() => {
+    editor.current?.dispatch({ effects: accessibility.current.reconfigure(EditorView.contentAttributes.of({ "aria-label": t("nov2Pages.advanced.yamlLabel", { defaultValue: "Agent YAML configuration" }), spellcheck: "false" })) });
+  }, [t]);
   useEffect(() => {
     editor.current?.dispatch({ effects: editability.current.reconfigure([
       EditorState.readOnly.of(readOnly), EditorView.editable.of(!readOnly),

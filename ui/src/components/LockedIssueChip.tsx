@@ -1,6 +1,7 @@
 import { CircleHelp, Lock } from "lucide-react";
 import type { IssueLockedStub } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
+import { useTranslation } from "@/i18n";
 
 /**
  * Existence-only chip for a private issue referenced from a surface the current
@@ -29,15 +30,16 @@ export function LockedIssueChip({
   className?: string;
   unavailable?: boolean;
 }) {
+  const { t } = useTranslation();
   // Identifier is the only viewer-safe field on the stub. When the server
   // withheld even that, fall back to a neutral "Private" label so the chip
   // still reads as a locked reference rather than an empty box.
-  const label = identifier ?? (unavailable ? "Unavailable" : "Private");
+  const label = identifier ?? t(unavailable ? "oct19Voice.lockedUnavailable" : "oct19Voice.lockedPrivate");
   const Icon = unavailable ? CircleHelp : Lock;
   return (
     <span
       data-testid="locked-issue-chip"
-      aria-label={`${label} — ${unavailable ? "unavailable or you don't have access" : "private, you don't have access"}`}
+      aria-label={t(unavailable ? "oct19Voice.lockedUnavailableAria" : "oct19Voice.lockedPrivateAria", { label })}
       className={cn(
         "inline-flex shrink-0 select-none items-center gap-1 rounded-md border border-dashed border-border px-1.5 py-0.5",
         "font-mono text-(length:--text-nano) leading-tight text-muted-foreground sm:text-(length:--text-micro)",

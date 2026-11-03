@@ -1,4 +1,5 @@
 import type { FolderListItem, FolderListResult } from "@paperclipai/shared";
+import { t } from "@/i18n";
 
 /**
  * Pure tree helpers for the skill folder browser (Idea A, PAP-14038).
@@ -148,11 +149,11 @@ export function folderBreadcrumbTrail(
 export function reservedRootLabel(folder: Pick<FolderListItem, "systemKey" | "name">): string {
   switch (folder.systemKey) {
     case "my":
-      return "My Skills";
+      return t("localizationFolders.mySkills");
     case "projects":
-      return "Projects";
+      return t("localizationFolders.projects");
     case "bundled":
-      return "Bundled";
+      return t("localizationFolders.bundled");
     default:
       return folder.name;
   }
@@ -167,7 +168,7 @@ export function skillFolderDisplayPath(
   const trail = folderBreadcrumbTrail(model, folderId);
   if (trail.length === 0) return null;
   const labels = trail.map((folder) => reservedRootLabel(folder));
-  if (!trail[0]?.systemKey) labels.unshift("Organization");
+  if (!trail[0]?.systemKey) labels.unshift(t("localizationFolders.organization"));
   return labels.join(" / ");
 }
 
@@ -186,10 +187,10 @@ export function skillFolderPathDisplayFallback(folderPath: string | null | undef
 
   const root = segments[0]?.toLowerCase();
   const labels = segments.map(humanizeFolderPathSegment);
-  if (root === "my") labels[0] = "My Skills";
-  else if (root === "projects") labels[0] = "Projects";
-  else if (root === "bundled") labels[0] = "Bundled";
-  else labels.unshift("Organization");
+  if (root === "my") labels[0] = t("localizationFolders.mySkills");
+  else if (root === "projects") labels[0] = t("localizationFolders.projects");
+  else if (root === "bundled") labels[0] = t("localizationFolders.bundled");
+  else labels.unshift(t("localizationFolders.organization"));
   return labels.join(" / ");
 }
 

@@ -5,6 +5,8 @@ import { createRoot } from "react-dom/client";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Browse } from "./Browse";
+import { CatalogSourceFilters } from "./CatalogSourceFilters";
+import { i18n, t } from "@/i18n";
 import { aiConnectionRouterAppDefinition, getAppStoreDefinition } from "@paperclipai/shared";
 import { queryKeys } from "@/lib/queryKeys";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -250,6 +252,67 @@ describe("Connectors landing page", () => {
     }
     return client;
   }
+
+  it("retranslates action names without inflecting built-in or raw connector names", async () => {
+    const bot = getAppStoreDefinition("github-code-review-bot")!;
+    const rawName = "Research Bot — Север";
+    const raw = application({ id: "custom-application", applicationKey: "custom-research", metadata: {}, name: rawName });
+    const unknown = galleryEntry({ key: "unlisted-gateway", name: "Unlisted Service — Север" });
+    const secret = { ...getAppStoreDefinition("github")!, slug: "unlisted-key", name: "Service Token — Север" };
+    const original = JSON.stringify([bot, raw, unknown, secret]);
+    listGalleryMock.mockResolvedValue({ apps: [bot, unknown, secret] });
+    listApplicationsMock.mockResolvedValue({ applications: [raw] });
+    await renderBrowse();
+
+    for (const locale of ["en", "ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      await flushReact();
+      const action = locale === "ru" ? "Подключить" : "Connect";
+      const separator = locale === "ru" ? ": " : " ";
+      const botName = locale === "ru" ? "Бот проверки кода GitHub" : "GitHub Code Review Bot";
+      const addKey = locale === "ru" ? "Добавить ключ" : "Add key";
+      for (const [slug, name, expectedAction] of [
+        ["github-code-review-bot", botName, action],
+        ["custom-research", rawName, action],
+        ["unlisted-gateway", unknown.name, action],
+        ["unlisted-key", secret.name, addKey],
+      ]) {
+        const row = container.querySelector(`[data-app-slug="${slug}"]`)!;
+        expect(row.querySelector("h2")?.textContent).toBe(name);
+        expect([...row.querySelectorAll("button")].map(node => node.textContent), `${locale}/${slug} action`).toContain(expectedAction);
+        const button = [...row.querySelectorAll("button")].find(node => node.textContent === expectedAction)!;
+        expect(button.getAttribute("aria-label")).toBe(`${expectedAction}${separator}${name}`);
+        expect(button.textContent).toBe(expectedAction);
+      }
+      expect(JSON.stringify([bot, raw, unknown, secret])).toBe(original);
+    }
+  });
+
+  it("uses a plural installed filter across locale changes without translating its value", async () => {
+    const onChange = vi.fn();
+    root = createRoot(container);
+    try {
+      await act(async () => {
+        await i18n.changeLanguage("en");
+        root.render(<CatalogSourceFilters source="installed" onChange={onChange} />);
+      });
+      await flushReact();
+      const installedButton = container.querySelector<HTMLButtonElement>('button[data-state="on"]')!;
+      for (const language of ["en", "ru", "en"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        await flushReact();
+        expect(container.querySelector('button[data-state="on"]')).toBe(installedButton);
+        expect(installedButton.textContent).toBe(language === "ru" ? "Установленные" : "Installed");
+        expect(t("oct5Core.s0402")).toBe(language === "ru" ? "Установлен" : "Installed");
+        await act(() => installedButton.click());
+        expect(onChange).not.toHaveBeenCalled();
+      }
+      await act(async () => [...container.querySelectorAll("button")].find(button => button.textContent === "All")!.click());
+      expect(onChange).toHaveBeenCalledExactlyOnceWith("all");
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
 
   it("shows provider catalog rows and splits legacy gateway accounts by API format", async () => {
     const slugs = ["notion", "openrouter", "bedrock", "google", "responses-api", "messages-api", "chat-completions-api", "local"];

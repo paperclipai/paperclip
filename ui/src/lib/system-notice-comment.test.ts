@@ -1,9 +1,130 @@
 // @vitest-environment node
 
-import { describe, expect, it } from "vitest";
-import { buildSystemNoticeProps, mapCommentMetadataToSystemNoticeSections } from "./system-notice-comment";
+import { afterEach, describe, expect, it } from "vitest";
+import { i18n } from "@/i18n";
+import { buildSystemNoticeProps, mapCommentMetadataToSystemNoticeSections, systemNoticeBodyDisplay, systemNoticeMetadataLabelDisplay, systemNoticeMetadataValueDisplay } from "./system-notice-comment";
+
+afterEach(async () => { await i18n.changeLanguage("en"); });
 
 describe("mapCommentMetadataToSystemNoticeSections", () => {
+  it.each(["constructor", "toString", "__proto__"])("keeps unknown property-like metadata unchanged: %s", async (value) => {
+    await i18n.changeLanguage("ru");
+    expect(systemNoticeMetadataLabelDisplay(value)).toBe(value);
+    expect(systemNoticeMetadataValueDisplay({ kind: "text", label: "Next action", value })).toBe(value);
+  });
+  it.each([
+    ["Workspace scan timed out", "Превышен лимит времени на проверку рабочей области", "Check repository access and server load, then retry the task.", "Проверьте доступ к репозиторию и нагрузку на сервер, затем повторите запуск задачи.", "workspace_git_scan_timeout"],
+    ["Workspace scan queue is full", "Очередь проверки рабочих областей заполнена", "Check server load and the workspace scan queue, then retry the task.", "Проверьте нагрузку на сервер и очередь проверки рабочих областей, затем повторите запуск задачи.", "workspace_git_scan_saturated"],
+    ["Workspace scan exceeded its limit", "Превышен лимит проверки рабочей области", "Check the repository size and workspace scan output limit before retrying the task.", "Прежде чем повторить запуск задачи, проверьте размер репозитория и лимит объёма вывода проверки рабочей области.", "workspace_git_scan_output_limit"],
+    ["Workspace scan failed", "Не удалось проверить рабочую область", "Inspect the failed run and check repository access and integrity before retrying the task.", "Прежде чем повторить запуск задачи, изучите неудачный запуск и проверьте доступ к репозиторию и его целостность.", "workspace_git_scan_failed"],
+    ["Workspace scan was cancelled", "Проверка рабочей области отменена", "Inspect why workspace preparation was cancelled before retrying the task.", "Прежде чем повторить запуск задачи, выясните, почему подготовка рабочей области была отменена.", "workspace_git_scan_cancelled"],
+  ])("localizes the canonical %s notice without rewriting its stored evidence", async (title, russianTitle, nextAction, russianNextAction, errorCode) => {
+    const body = `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${nextAction}`;
+    const presentation = { kind: "system_notice" as const, title, tone: "danger" as const, detailsDefaultOpen: false };
+    const metadata = { version: 1 as const, sourceRunId: "source-run-raw-id", sections: [{ title: "Recovery", rows: [
+      { type: "key_value" as const, label: "Next action", value: nextAction },
+      { type: "key_value" as const, label: "Failure summary", value: nextAction },
+      { type: "key_value" as const, label: "Recovery owner", value: nextAction },
+      { type: "key_value" as const, label: "Next action", value: `${nextAction} Custom provider instruction.` },
+      { type: "key_value" as const, label: "Failure code", value: errorCode },
+    ] }] };
+    const original = JSON.stringify({ presentation, metadata, body });
+    for (const locale of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(locale);
+      const props = buildSystemNoticeProps({ presentation, metadata, body });
+      expect(props.label).toBe(title);
+      expect(systemNoticeMetadataLabelDisplay(props.label!)).toBe(locale === "ru" ? russianTitle : title);
+      expect(systemNoticeMetadataValueDisplay(props.metadata![0]!.rows[0]!)).toBe(locale === "ru" ? russianNextAction : nextAction);
+      expect(systemNoticeMetadataValueDisplay(props.metadata![0]!.rows[1]!)).toBe(nextAction);
+      expect(systemNoticeMetadataValueDisplay(props.metadata![0]!.rows[2]!)).toBe(nextAction);
+      expect(systemNoticeMetadataValueDisplay(props.metadata![0]!.rows[3]!)).toBe(`${nextAction} Custom provider instruction.`);
+      expect(systemNoticeMetadataValueDisplay(props.metadata![0]!.rows[4]!)).toBe(errorCode);
+      expect(systemNoticeMetadataLabelDisplay(`${title}: custom provider detail`)).toBe(`${title}: custom provider detail`);
+      expect(props.body).toBe(body);
+      const input = { body, authorType: "system", presentation, metadata };
+      expect(systemNoticeBodyDisplay(input)).toBe(locale === "ru"
+        ? `Paperclip не смог подготовить рабочую область до запуска агента. Продолжить автоматическое восстановление не удалось. ${russianNextAction}`
+        : body);
+      // Identical prose is still user/agent content without canonical system provenance.
+      for (const authorType of ["user", "agent", "custom", null, undefined]) {
+        expect(systemNoticeBodyDisplay({ ...input, authorType })).toBe(body);
+      }
+      expect(systemNoticeBodyDisplay({ ...input, metadata: null })).toBe(body);
+      expect(systemNoticeBodyDisplay({ ...input, metadata: { ...metadata, sourceRunId: null } })).toBe(body);
+      expect(systemNoticeBodyDisplay({ ...input, metadata: { ...metadata, sections: [] } })).toBe(body);
+      for (const [label, value] of [
+        ["Failure code", "workspace_git_scan_unknown"],
+        ["Failure code", errorCode === "workspace_git_scan_timeout" ? "workspace_git_scan_failed" : "workspace_git_scan_timeout"],
+        ["Next action", "Custom provider remediation"],
+      ]) {
+        expect(systemNoticeBodyDisplay({ ...input, metadata: { ...metadata, sections: [{ rows:
+          metadata.sections[0]!.rows.map((row) => row.label === label ? { ...row, value } : row),
+        }] } })).toBe(body);
+      }
+      expect(systemNoticeBodyDisplay({ ...input, presentation: null })).toBe(body);
+      expect(systemNoticeBodyDisplay({ ...input, presentation: { ...presentation, title: "Custom provider notice" } })).toBe(body);
+      expect(systemNoticeBodyDisplay({ ...input, body: `${body} Custom provider detail.` })).toBe(`${body} Custom provider detail.`);
+      expect(JSON.stringify({ presentation, metadata, body })).toBe(original);
+    }
+  });
+
+  it("projects the AI repair title and known next action while preserving raw bodies and other metadata", async () => {
+    const nextAction = "Reconnect the selected AI account or choose an available connection, then continue the task.";
+    const body = "This task paused because its selected AI account is unavailable. Reconnect the account or choose an available connection to continue.";
+    const presentation = { kind: "system_notice" as const, title: "AI connection needs attention", tone: "danger" as const, detailsDefaultOpen: false };
+    const metadata = { version: 1 as const, sections: [{ title: "Recovery", rows: [
+      { type: "key_value" as const, label: "Next action", value: nextAction },
+      { type: "key_value" as const, label: "Failure summary", value: nextAction },
+      { type: "key_value" as const, label: "Next action", value: "Reconnect Keep English Name using custom settings." },
+    ] }] };
+    const original = JSON.stringify({ presentation, metadata, body });
+    for (const locale of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(locale);
+      const props = buildSystemNoticeProps({ presentation, metadata, body });
+      expect(props.label).toBe(presentation.title);
+      expect(props.body).toBe(body);
+      expect(systemNoticeMetadataLabelDisplay(props.label!)).toBe(locale === "en" ? presentation.title : "Нужно проверить подключение к сервису ИИ");
+      expect(systemNoticeMetadataValueDisplay(props.metadata![0]!.rows[0]!)).toBe(locale === "en" ? nextAction
+        : "Повторно подключите выбранную учётную запись сервиса ИИ или выберите доступное подключение, затем продолжите задачу.");
+      expect(systemNoticeMetadataValueDisplay(props.metadata![0]!.rows[1]!)).toBe(nextAction);
+      expect(systemNoticeMetadataValueDisplay(props.metadata![0]!.rows[2]!)).toBe("Reconnect Keep English Name using custom settings.");
+      expect(JSON.stringify({ presentation, metadata, body })).toBe(original);
+    }
+  });
+
+  it("renders Photon provenance labels without changing metadata keys, reply GUIDs, or user text", async () => {
+    const metadata = { version: 1 as const, sourceChannel: "imessage-photon" as const, sections: [{ title: "iMessage Photon sender", rows: [
+      { type: "key_value" as const, label: "Reply to message", value: "original-message-guid" },
+      { type: "key_value" as const, label: "Reply part", value: "p:0" },
+      { type: "key_value" as const, label: "Name", value: "Reply to message" },
+      { type: "key_value" as const, label: "Authority", value: "Linked Paperclip user" },
+      { type: "key_value" as const, label: "Authority", value: "Sponsored external guest (restricted)" },
+      { type: "key_value" as const, label: "Name", value: "Linked Paperclip user" },
+      { type: "key_value" as const, label: "Provider ID", value: "imessage:+15555550111" },
+    ] }] };
+    const original = JSON.stringify(metadata);
+    const expected = mapCommentMetadataToSystemNoticeSections(metadata);
+    for (const locale of ["en", "ru", "en"]) {
+      await i18n.changeLanguage(locale);
+      const sections = mapCommentMetadataToSystemNoticeSections(metadata);
+      expect(sections).toEqual(expected);
+      expect(systemNoticeMetadataLabelDisplay(sections[0]!.title!)).toBe(i18n.t("communityPhoton.senderMetadata"));
+      for (const [index, key] of ["replyToMessage", "replyPart"].entries()) {
+        expect(systemNoticeMetadataLabelDisplay(sections[0]!.rows[index]!.label)).toBe(i18n.t(`communityPhoton.${key}`));
+      }
+      expect(systemNoticeMetadataValueDisplay(sections[0]!.rows[0]!)).toBe("original-message-guid");
+      expect(systemNoticeMetadataValueDisplay(sections[0]!.rows[1]!)).toBe("p:0");
+      expect(systemNoticeMetadataValueDisplay(sections[0]!.rows[2]!)).toBe("Reply to message");
+      expect(systemNoticeMetadataValueDisplay(sections[0]!.rows[3]!)).toBe(i18n.t("communityPhoton.linkedUser"));
+      expect(systemNoticeMetadataValueDisplay(sections[0]!.rows[4]!)).toBe(i18n.t("communityPhoton.sponsoredGuest"));
+      expect(systemNoticeMetadataValueDisplay(sections[0]!.rows[5]!)).toBe("Linked Paperclip user");
+      expect(systemNoticeMetadataValueDisplay(sections[0]!.rows[6]!)).toBe("imessage:+15555550111");
+      expect(systemNoticeMetadataLabelDisplay("Provider ID")).toBe(i18n.t("communityPhoton.providerId"));
+      expect(systemNoticeMetadataLabelDisplay("Authority")).toBe(i18n.t("communityPhoton.authority"));
+      expect(systemNoticeMetadataLabelDisplay("Name")).toBe(i18n.t("communityPhoton.senderName"));
+      expect(JSON.stringify(metadata)).toBe(original);
+    }
+  });
   it("maps server metadata row types to SystemNotice rows", () => {
     const sections = mapCommentMetadataToSystemNoticeSections(
       {

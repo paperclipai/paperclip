@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useState, type ReactNode } from "react";
 import { ChevronRight } from "lucide-react";
 import type { ToolCatalogEntry, ToolConnection } from "@paperclipai/shared";
@@ -34,13 +35,14 @@ export function SetupPanel({
   permissionsLoading: boolean;
   onOpenPermissions: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="space-y-10">
       {identities}
-      <SetupLinkSection title="Agents" summary={agentsSummary} onClick={onOpenPermissions} />
+      <SetupLinkSection title={t("nav.agents")} summary={agentsSummary} onClick={onOpenPermissions} />
       <SetupLinkSection
-        title="Actions"
-        summary={permissionsLoading ? "Loading permissions…" : permissionsSummary ?? "Manage permissions"}
+        title={t("pages.apps.connections.columnActions")}
+        summary={permissionsLoading ? t("localizationApps.loadingPermissions449") : permissionsSummary ?? t("localizationApps.managePermissions450")}
         onClick={onOpenPermissions}
       />
       {appDefinitionSlug(galleryEntry) === "google-sheets" && (
@@ -66,6 +68,7 @@ function SetupLinkSection({
   summary: string;
   onClick: () => void;
 }) {
+  useTranslation();
   return (
     <section className="space-y-3">
       <h2 className="text-sm font-semibold text-foreground">{title}</h2>
@@ -104,27 +107,26 @@ export function connectionProviderName(
 }
 
 function PostHogConfigurationSection({ connection }: { connection: ToolConnection }) {
+  const { t } = useTranslation();
   const raw = connection.config?.methodConfig;
   const config = raw && typeof raw === "object" && !Array.isArray(raw)
     ? raw as Record<string, unknown>
     : {};
-  const method = connection.config?.connectionMethodKey === "mcp-oauth" ? "PostHog sign-in" : "Personal API key";
-  const features = typeof config.features === "string" ? config.features : "None";
-  const tools = typeof config.tools === "string" && config.tools ? config.tools : "None";
+  const method = connection.config?.connectionMethodKey === "mcp-oauth" ? t("localizationApps.postHogSignIn455") : t("localizationApps.personalAPIKey456");
+  const features = typeof config.features === "string" ? config.features : t("status.none");
+  const tools = typeof config.tools === "string" && config.tools ? config.tools : t("status.none");
   const rows = [
-    ["Connection method", method],
-    ["Project pin", typeof config.projectId === "string" ? config.projectId : "Use active project"],
-    ["Read-only mode", config.readOnly === true ? "On" : "Off"],
-    ["Feature groups", features],
-    ["Individual tools", tools],
-    ["Response mode", typeof config.mode === "string" ? config.mode : "tools"],
+    [t("localizationApps.connectionMethod458"), method],
+    [t("localizationApps.projectPin459"), typeof config.projectId === "string" ? config.projectId : t("localizationApps.useActiveProject460")],
+    [t("localizationApps.readOnlyMode461"), config.readOnly === true ? t("pages.instanceSettings.on") : t("pages.instanceSettings.off")],
+    [t("localizationApps.featureGroups462"), features],
+    [t("localizationApps.individualTools463"), tools],
+    [t("localizationApps.responseMode464"), typeof config.mode === "string" ? config.mode : "tools"],
   ];
   return (
     <section>
-      <h2 className="text-sm font-bold text-foreground">PostHog access scope</h2>
-      <p className="mt-0.5 text-sm text-muted-foreground">
-        PostHog uses its normal account defaults unless you narrow the optional controls below.
-      </p>
+      <h2 className="text-sm font-bold text-foreground">{t("localizationApps.postHogAccessScope465")}</h2>
+      <p className="mt-0.5 text-sm text-muted-foreground">{t("localizationApps.postHogUsesItsNormalAccountDefaultsUnlessYouN466")}</p>
       <dl className="mt-4 divide-y divide-border">
         {rows.map(([label, value]) => (
           <div key={label} className="grid gap-1 py-2 sm:grid-cols-3 sm:gap-4">
@@ -155,6 +157,7 @@ function GoogleSheetsAllowlistSection({
   disabled: boolean;
   onUpdateConfig: (config: Record<string, unknown>) => void;
 }) {
+  const { t } = useTranslation();
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const ids = currentSpreadsheetIds(connection);
@@ -164,15 +167,13 @@ function GoogleSheetsAllowlistSection({
   return (
     <section>
       <div>
-        <h2 className="text-sm font-bold text-foreground">Sheets agents can use</h2>
-        <p className="mt-0.5 text-sm text-muted-foreground">
-          Agents can only use the sheets listed here.
-        </p>
+        <h2 className="text-sm font-bold text-foreground">{t("localizationApps.sheetsAgentsCanUse467")}</h2>
+        <p className="mt-0.5 text-sm text-muted-foreground">{t("localizationApps.agentsCanOnlyUseTheSheetsListedHere468")}</p>
       </div>
 
       <div className="mt-4 space-y-2">
         {ids.length === 0 ? (
-          <div className="text-sm text-muted-foreground">No sheets are connected yet.</div>
+          <div className="text-sm text-muted-foreground">{t("localizationApps.noSheetsAreConnectedYet469")}</div>
         ) : (
           ids.map((id) => {
             const sheetUrl = googleSheetsUrlForId(id);
@@ -184,12 +185,11 @@ function GoogleSheetsAllowlistSection({
                   rel="noreferrer"
                   className="min-w-0 flex-1 text-sm font-medium text-foreground underline-offset-2 hover:underline"
                 >
-                  <span className="block truncate">Open sheet</span>
+                  <span className="block truncate">{t("localizationApps.openSheet470")}</span>
                   <span className="block truncate font-mono text-xs font-normal text-muted-foreground">
                     {sheetUrl}
                   </span>
-                  <span className="block truncate font-mono text-(length:--text-micro) font-normal text-muted-foreground/80">
-                    ID: {id}
+                  <span className="block truncate font-mono text-(length:--text-micro) font-normal text-muted-foreground/80">{t("localizationApps.idValue", { id })}
                   </span>
                 </a>
                 <Button
@@ -197,11 +197,9 @@ function GoogleSheetsAllowlistSection({
                   size="sm"
                   variant="outline"
                   disabled={disabled || ids.length <= 1}
-                  title={ids.length <= 1 ? "Add another sheet before removing this one." : undefined}
+                  title={ids.length <= 1 ? t("localizationApps.addAnotherSheetBeforeRemovingThisOne472") : undefined}
                   onClick={() => saveIds(ids.filter((current) => current !== id))}
-                >
-                  Remove
-                </Button>
+                >{t("pages.profile.remove")}</Button>
               </div>
             );
           })
@@ -225,19 +223,17 @@ function GoogleSheetsAllowlistSection({
           onClick={() => {
             const parsed = parseGoogleSheetIds(draft);
             if (parsed.ids.length === 0) {
-              setError("Paste a Google Sheets link.");
+              setError(t("localizationApps.pasteAGoogleSheetsLink473"));
               return;
             }
             if (parsed.invalidCount > 0) {
-              setError("That doesn't look like a Google Sheets link.");
+              setError(t("localizationConnections.thatDoesnTLookLikeAGoogleSheetsLink65"));
               return;
             }
             saveIds(Array.from(new Set([...ids, ...parsed.ids])));
             setDraft("");
           }}
-        >
-          Add sheet
-        </Button>
+        >{t("localizationApps.addSheet475")}</Button>
       </div>
       {error && <div className="mt-2 text-xs text-destructive">{error}</div>}
     </section>
@@ -253,6 +249,7 @@ export function QuarantinedActionsReview({
   disabled: boolean;
   onSubmit: (enabledIds: string[]) => void;
 }) {
+  const { t } = useTranslation();
   const [enabledIds, setEnabledIds] = useState<Set<string>>(new Set());
   const count = entries.length;
   const selectedIds = entries.filter((entry) => enabledIds.has(entry.id)).map((entry) => entry.id);
@@ -260,12 +257,9 @@ export function QuarantinedActionsReview({
     <section className="space-y-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold text-amber-800 dark:text-amber-200">
-            Review {count} new {count === 1 ? "action" : "actions"}
+          <div className="text-sm font-semibold text-amber-800 dark:text-amber-200">{t("localizationApps.reviewNewActions", { count })}
           </div>
-          <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
-            Turn on the actions agents may use. Anything left off stays blocked when you save.
-          </p>
+          <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">{t("localizationApps.turnOnTheActionsAgentsMayUseAnythingLeftOffSt477")}</p>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -273,17 +267,13 @@ export function QuarantinedActionsReview({
             className="text-xs font-medium text-amber-800 hover:text-amber-950 dark:text-amber-200 dark:hover:text-amber-50"
             disabled={disabled}
             onClick={() => setEnabledIds(new Set(entries.map((entry) => entry.id)))}
-          >
-            Turn all on
-          </button>
+          >{t("pages.apps.connect.actions.turnAllOn")}</button>
           <button
             type="button"
             className="text-xs font-medium text-amber-800 hover:text-amber-950 dark:text-amber-200 dark:hover:text-amber-50"
             disabled={disabled}
             onClick={() => setEnabledIds(new Set())}
-          >
-            Turn all off
-          </button>
+          >{t("pages.apps.connect.actions.turnAllOff")}</button>
         </div>
       </div>
       <div className="divide-y divide-border">
@@ -299,7 +289,7 @@ export function QuarantinedActionsReview({
                 )}
               </div>
               <ToggleSwitch
-                aria-label={`${label} allowed`}
+                aria-label={t("localizationApps.allowedGroupLabel", { label })}
                 checked={enabled}
                 disabled={disabled}
                 onCheckedChange={(next) => {
@@ -317,10 +307,10 @@ export function QuarantinedActionsReview({
       </div>
       <div className="flex items-center justify-between gap-3">
         <span className="text-xs text-amber-700 dark:text-amber-300">
-          {selectedIds.length} of {count} will be on
+          {t("localizationApps.actionsWillBeOn", { selected: selectedIds.length, count })}
         </span>
         <Button size="sm" disabled={disabled} onClick={() => onSubmit(selectedIds)}>
-          {disabled ? "Saving…" : "Save choices"}
+          {disabled ? t("localizationSecrets.saving85") : t("localizationApps.saveChoices480")}
         </Button>
       </div>
     </section>

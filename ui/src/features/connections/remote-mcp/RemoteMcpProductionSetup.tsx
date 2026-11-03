@@ -1,3 +1,5 @@
+import { chatUiErrorMessage, type ChatUiError } from "@/pages/apps/chat/chat-copy";
+import { t, useTranslation } from "@/i18n";
 import { ConnectionInstructionsEditor } from "../ConnectionInstructions";
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -19,6 +21,8 @@ import { RemoteMcpConnectionSetup } from "./RemoteMcpConnectionSetup";
 import { remoteMcpProviders, type RemoteMcpProviderId } from "./providers";
 import type { RemoteMcpSetupActions, RemoteMcpSetupState } from "./types";
 
+class HeaderInputError extends Error {}
+
 function readAccessDraft(key: string): Partial<RemoteMcpSetupState> {
   try {
     const value = JSON.parse(sessionStorage.getItem(key) ?? "null");
@@ -30,6 +34,7 @@ function readAccessDraft(key: string): Partial<RemoteMcpSetupState> {
 export function RemoteMcpProductionSetup({ providerId, connection, host = "page", interactionId,
   upstreamServiceName, requestedAgentId, existingConnections = [], forceNewConnection, onUseExisting, onComplete, onCancel, onPhaseChange,
 }: ConnectionSetupFlowProps & { providerId: RemoteMcpProviderId; connection?: ToolConnection }) {
+  useTranslation();
   const provider = remoteMcpProviders[providerId];
   const template = getConnectableAppDefinition(providerId)?.agentInstructions;
   const [instructions, setInstructions] = useState(() => connection
@@ -57,7 +62,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
   }, []);
   const [showChoices, setShowChoices] = useState(!connection && !forceNewConnection && existingConnections.length > 0 && Boolean(onUseExisting));
   const [choicePending, setChoicePending] = useState<string | null>(null);
-  const [choiceError, setChoiceError] = useState<string | null>(null);
+  const [choiceError, setChoiceError] = useState<ChatUiError | null>(null);
   const savedConnection = useRef(connection);
   const busy = useRef(false);
   const authorizationUrl = useRef<string | undefined>(undefined);
@@ -71,7 +76,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
     managementUrl: typeof connection?.config?.managementUrl === "string" ? connection.config.managementUrl : "",
     auth: connection?.config?.mcpAuthMode === "bearer" ? "bearer" : connection?.authKind === "api_key" ? "headers" : provider.supportsBrowserAuth ? "auto" : "none",
     token: "", headers: [], connectStatus: oauthOutcome === "denied" ? "cancelled" : oauthOutcome === "failed" ? "oauth_failed" : "idle", connected: false,
-    identity: null, allAgents: true, agentIds: [], permissions: {}, tools: [], notice: connection?.authKind === "api_key" ? "Saved credentials are retained when these fields are left blank. Enter a replacement only to change them." : null, refreshing: false,
+    identity: null, allAgents: true, agentIds: [], permissions: {}, tools: [], notice: connection?.authKind === "api_key" ? { key: "sep28Apps.savedCredentials" } : null, refreshing: false,
     ...(!connection ? readAccessDraft(accessDraftKey) : {}),
     ...(requestedAgentId ? { allAgents: false, agentIds: [requestedAgentId] } : {}),
   }));
@@ -146,13 +151,13 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
       if (state.auth === "headers" || state.auth === "bearer") {
         for (const header of state.headers) {
           if (!header.name.trim() && !header.value) continue;
-          if (!header.name.trim() || !header.value) throw new Error("Enter both a name and value for each header.");
+          if (!header.name.trim() || !header.value) throw new HeaderInputError();
           credentials[`headers.${header.name.trim()}`] = header.value;
         }
       }
       const managementUrl = providerId === "executor" && state.managementUrl?.trim()
         ? aggregatorManagementUrl("executor", state.managementUrl.trim()) : null;
-      if (providerId === "executor" && state.managementUrl?.trim() && !managementUrl) throw new Error("Use an HTTPS console URL without credentials.");
+      if (providerId === "executor" && state.managementUrl?.trim() && !managementUrl) throw new Error(t("oct6Beta.copy162"));
       const prior = savedConnection.current;
       const result = await toolsApi.connectApp(selectedCompanyId, {
         galleryKey: providerId, connectionMethodKey: REMOTE_MCP_CONNECTOR_METHODS[providerId],
@@ -188,14 +193,14 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
         edit({ connectStatus: "sign_in", token: "", headers: [] });
         try {
           if (host === "dialog") {
-            if (!popup.current || popup.current.closed) throw new Error("Sign-in window unavailable");
+            if (!popup.current || popup.current.closed) throw new Error(t("oct6Beta.copy163"));
             popup.current.location.assign(target.url);
             popup.current.focus();
           } else navigateTopLevel(target.url);
         } catch {
           // The connection and OAuth session already exist. Preserve them and
           // let the native sign-in link recover a blocked browser handoff.
-          edit({ notice: "Paperclip couldn’t open sign-in. Use the sign-in link below to continue." });
+          edit({ notice: t("oct6Beta.copy164") });
           onPhaseChange?.("needs_retry");
         }
         return;
@@ -220,7 +225,7 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
       popup.current?.close();
       popup.current = null;
       onPhaseChange?.("needs_retry");
-      edit({ connectStatus: "idle", notice: error instanceof Error ? error.message : "Could not connect. Please try again." });
+      edit({ connectStatus: "idle", notice: error instanceof HeaderInputError ? { key: "sep28Apps.headerBoth" } : error instanceof Error ? error.message : { key: "sep28Apps.connectionFailed" } });
     } finally { busy.current = false; }
   };
   const actions: RemoteMcpSetupActions = {
@@ -247,12 +252,12 @@ export function RemoteMcpProductionSetup({ providerId, connection, host = "page"
   };
   if (showChoices && onUseExisting) return <RemoteMcpAccountChoice
     providerName={provider.name} upstreamServiceName={upstreamServiceName}
-    connections={existingConnections} pendingId={choicePending} error={choiceError}
+    connections={existingConnections} pendingId={choicePending} error={chatUiErrorMessage(choiceError)}
     onCancel={onCancel} onConnectNew={() => setShowChoices(false)} onSelect={(id) => {
       setChoicePending(id); setChoiceError(null);
-      void onUseExisting(id).catch((error) => { setChoiceError(error instanceof Error ? error.message : "Could not use this connection."); setChoicePending(null); });
+      void onUseExisting(id).catch((error) => { setChoiceError(error instanceof Error ? error.message : { key: "sep28Apps.useConnectionFailed" }); setChoicePending(null); });
     }} />;
-  if (connection && !installs.data) return <div className="space-y-3 p-8"><p>{installs.isError ? "Could not load saved access. Retry before changing this connection." : "Loading saved access…"}</p>{installs.isError && <button type="button" className="text-primary underline" onClick={() => void installs.refetch()}>Try again</button>}</div>;
+  if (connection && !installs.data) return <div className="space-y-3 p-8"><p>{installs.isError ? t("sep28Apps.loadAccessFailed") : t("sep28Apps.loadingAccess")}</p>{installs.isError && <button type="button" className="text-primary underline" onClick={() => void installs.refetch()}>{t("localizationProjectRepositories.retry")}</button>}</div>;
   // Header Cancel abandons unsaved input, including invalid URLs. The separate
   // Save & exit action persists a resumable draft through actions.saveExit.
   return <RemoteMcpConnectionSetup additionalSettings={template && instructions ? <ConnectionInstructionsEditor provider={provider.name} template={template} value={instructions} onChange={setInstructions} disabled={state.connectStatus === "connecting"} /> : undefined} settingsValid={instructionsValid} companyId={selectedCompanyId!} onCancel={onCancel ?? (() => navigate("/apps"))} upstreamServiceName={upstreamServiceName} host={host} lockedAgentId={requestedAgentId} authorizationUrl={authorizationUrl.current} provider={provider} connectionId={savedConnection.current?.id ?? ""} fixedGrantKind={savedConnection.current ? savedConnection.current.credentialPolicy === "per_user" ? "user" : "organization" : undefined} state={state} actions={actions} agents={agents.data ?? []} />;

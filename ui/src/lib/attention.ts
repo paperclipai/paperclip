@@ -1,3 +1,163 @@
+import { t, i18n } from "@/i18n";
+
+// Built-in copy only. Raw registries and group keys remain stable for sorting,
+// keyboard selection, storage, and API requests; user-authored titles stay raw.
+const ATTENTION_DISPLAY_KEYS: Readonly<Record<string, string>> = {
+  "Attention items whose issue has a pull_request work product.": "localizationAttention.ui_Attention_items_whose_issue_has_a_pull_request_work_product_9m69he",
+  "Pending request_confirmation interactions bound to the issue's plan document.": "localizationAttention.ui_Pending_request_confirmation_interactions_bound_to_the_issue_s_pl_v2dot7",
+  "Pending ask_user_questions interactions.": "localizationAttention.ui_Pending_ask_user_questions_interactions_58spge",
+  "1 hour": "localizationAttention.ui_1_hour_3eima2",
+  "4 hours": "localizationAttention.ui_4_hours_sznyog",
+  "Tomorrow morning": "localizationAttention.ui_Tomorrow_morning_1ohqmm2",
+  "Tomorrow": "localizationAttention.ui_Tomorrow_lgiq12",
+  "Next week": "localizationAttention.ui_Next_week_21mopg",
+  "Collapse decision": "localizationAttention.ui_Collapse_decision_1q5wpvk",
+  "Expand decision": "localizationAttention.ui_Expand_decision_hspu1",
+  "See less": "localizationAttention.ui_See_less_gwajrd",
+  "See more": "localizationAttention.ui_See_more_1dgp2j5",
+  "Open": "localizationAttention.ui_Open_n6hn1l",
+  "Restore": "localizationAttention.ui_Restore_4fiyr5",
+  "Row actions": "localizationAttention.ui_Row_actions_1p4jgww",
+  "Dismiss": "localizationAttention.ui_Dismiss_an1pf7",
+  "Open source": "localizationAttention.ui_Open_source_18gxi32",
+  "Decision actions": "localizationAttention.ui_Decision_actions_19txe2g",
+  "View issue": "localizationAttention.ui_View_issue_ll8pr7",
+  "Snooze": "localizationAttention.ui_Snooze_1k71mcf",
+  "Custom": "localizationAttention.ui_Custom_15dsham",
+  "Snooze until…": "localizationAttention.ui_Snooze_until_1q0vugz",
+  "Missing issue reference for this decision.": "localizationAttention.ui_Missing_issue_reference_for_this_decision_j06bre",
+  "This decision must be completed from its detail view.": "localizationAttention.ui_This_decision_must_be_completed_from_its_detail_view_1tl4i4",
+  "Optional decision note…": "localizationAttention.ui_Optional_decision_note_1aifkgv",
+  "Request revision": "localizationAttention.ui_Request_revision_122e0tr",
+  "Reject": "localizationAttention.ui_Reject_1kej36u",
+  "Approve": "localizationAttention.ui_Approve_1s2ov2y",
+  "Accept": "localizationAttention.ui_Accept_me22x5",
+  "Decline": "localizationAttention.ui_Decline_oo69tl",
+  "Options that require an unchanged target are disabled below.": "localizationAttention.ui_Options_that_require_an_unchanged_target_are_disabled_below_1dmyxy1",
+  "Blocked · stale": "localizationAttention.ui_Blocked_stale_1096tuj",
+  "This cancels an entire issue tree": "localizationAttention.ui_This_cancels_an_entire_issue_tree_1n37vzn",
+  "This issue and every sub-issue beneath it will be cancelled.": "localizationAttention.ui_This_issue_and_every_sub_issue_beneath_it_will_be_cancelled_ee7nwc",
+  "Type the issue identifier to confirm": "localizationAttention.ui_Type_the_issue_identifier_to_confirm_1agol6p",
+  "Cancel": "localizationAttention.ui_Cancel_ew9em3",
+  "Cancel tree": "localizationAttention.ui_Cancel_tree_1855b7d",
+  "Not now?": "localizationAttention.ui_Not_now_15jgv37",
+  "Dismiss — no effects": "localizationAttention.ui_Dismiss_no_effects_1rxnewg",
+  "The decision window closed": "localizationAttention.ui_The_decision_window_closed_1uvsdhe",
+  "A target issue was cancelled before this was decided.": "localizationAttention.ui_A_target_issue_was_cancelled_before_this_was_decided_1ppwusu",
+  "All target issues were completed before this was decided.": "localizationAttention.ui_All_target_issues_were_completed_before_this_was_decided_1c2m01",
+  "No response before the expiry deadline.": "localizationAttention.ui_No_response_before_the_expiry_deadline_ktjsos",
+  "The proposer was re-woken.": "localizationAttention.ui_The_proposer_was_re_woken_1r37fcn",
+  "This decision was withdrawn by the proposer before a response.": "localizationAttention.ui_This_decision_was_withdrawn_by_the_proposer_before_a_response_4h4apd",
+  "Dismissed — no effects were run.": "localizationAttention.ui_Dismissed_no_effects_were_run_1odou9h",
+  "Some effects may already have been applied. Review the results before asking the proposer to re-propose.": "localizationAttention.ui_Some_effects_may_already_have_been_applied_Review_the_results_bef_1vmqx9g",
+  "Filter": "localizationAttention.ui_Filter_1vvvdef",
+  "Group": "localizationAttention.ui_Group_1ihp9o",
+  "Sort": "localizationAttention.ui_Sort_10q0c8h",
+  "Clear": "localizationAttention.ui_Clear_1aeugy",
+  "Type": "localizationAttention.ui_Type_1m2zofh",
+  "Severity": "localizationAttention.ui_Severity_v7rniq",
+  "Project": "localizationAttention.ui_Project_y8csbi",
+  "No project": "localizationAttention.ui_No_project_d4oyzz",
+  "Workspace": "localizationAttention.ui_Workspace_aw4cba",
+  "No workspace": "localizationAttention.ui_No_workspace_xqgu2n",
+  "When to decide": "localizationAttention.ui_When_to_decide_x3itni",
+  "Pick date": "localizationAttention.ui_Pick_date_9qapa4",
+  "Queues": "localizationAttention.ui_Queues_1371eb5",
+  "No linked task to ask about": "localizationAttention.ui_No_linked_task_to_ask_about_17za1ul",
+  "Could not create queue": "localizationAttention.ui_Could_not_create_queue_1t00ob2",
+  "Queue": "localizationAttention.ui_Queue_16wbfbs",
+  "New queue name…": "localizationAttention.ui_New_queue_name_1s92cih",
+  "Create": "localizationAttention.ui_Create_16gte2l",
+  "No other queues yet.": "localizationAttention.ui_No_other_queues_yet_ka49ms",
+  "New queue…": "localizationAttention.ui_New_queue_1eo84cs",
+  "Ask agent for recommendation": "localizationAttention.ui_Ask_agent_for_recommendation_1cus65r",
+  "Please try again.": "localizationAttention.ui_Please_try_again_w91vc0",
+  "This decision has no linked task to route from.": "localizationAttention.ui_This_decision_has_no_linked_task_to_route_from_hlt0l8",
+  "Approval": "localizationAttention.ui_Approval_17ztw7a",
+  "Decision": "localizationAttention.ui_Decision_1gvmqkj",
+  "Decision requested": "localizationAttention.ui_Decision_requested_mnim7",
+  "Join request": "localizationAttention.ui_Join_request_1wxkjdw",
+  "Recovery": "localizationAttention.ui_Recovery_bx9hye",
+  "Productivity review": "localizationAttention.ui_Productivity_review_1r8mfpb",
+  "Task": "localizationActivity.taskLabel",
+  "Blocked dependency": "localizationAttention.ui_Blocked_dependency_1w9irog",
+  "Review": "localizationAttention.ui_Review_tnr3lt",
+  "Failed run": "localizationAttention.ui_Failed_run_1tnwnyx",
+  "Budget": "localizationAttention.ui_Budget_auevmw",
+  "Agent error": "localizationAttention.ui_Agent_error_kavbo4",
+  "Critical": "localizationAttention.ui_Critical_11om8bs",
+  "High": "localizationAttention.ui_High_1gq8xlp",
+  "Medium": "localizationAttention.ui_Medium_2pbr86",
+  "Low": "localizationAttention.ui_Low_1dcndpd",
+  "Decide now": "localizationAttention.ui_Decide_now_rgmzzx",
+  "New today": "localizationAttention.ui_New_today_157jk1o",
+  "Earlier": "localizationAttention.ui_Earlier_1ioa20r",
+  "Not set": "localizationAttention.ui_Not_set_1ntesau",
+  "Today": "localizationAttention.ui_Today_1sawk0u",
+  "This week": "localizationAttention.ui_This_week_1nvt7jn",
+  "Whenever": "localizationAttention.ui_Whenever_1dy6wc1",
+  "All": "localizationAttention.ui_All_wnjk2s",
+  "Yesterday": "localizationAttention.ui_Yesterday_14z5arr",
+  "Last 7 days": "localizationAttention.ui_Last_7_days_ewnjbj",
+  "This month": "localizationAttention.ui_This_month_1quvzxz",
+  "None": "localizationAttention.ui_None_deku7v",
+  "Date": "localizationAttention.ui_Date_ggjuyh",
+  "Newest first": "localizationAttention.ui_Newest_first_1nodtc5",
+  "Oldest first": "localizationAttention.ui_Oldest_first_1rto5ps",
+  "unknown": "localizationAttention.ui_unknown_174uabd",
+  "Apply effect": "localizationAttention.ui_Apply_effect_1twkct4",
+  "blocked by the permission boundary (fail-closed)": "localizationAttention.ui_blocked_by_the_permission_boundary_fail_closed_1bk176q",
+  "a referenced issue no longer exists": "localizationAttention.ui_a_referenced_issue_no_longer_exists_1rko4jc",
+  "the target changed since this was proposed": "localizationAttention.ui_the_target_changed_since_this_was_proposed_3ur12m",
+  "the effect errored while running": "localizationAttention.ui_the_effect_errored_while_running_18qq5sc",
+  "the effect could not run": "localizationAttention.ui_the_effect_could_not_run_tlpjeo",
+  "a new issue": "localizationAttention.ui_a_new_issue_1o9zm2l",
+  "Pending": "localizationAttention.ui_Pending_e8nfto",
+  "Expired": "localizationAttention.ui_Expired_1gcie36",
+  "Cancelled": "localizationAttention.ui_Cancelled_1a3t1vg",
+  "Dismissed": "localizationAttention.ui_Dismissed_1htslyq",
+  "Decided": "localizationAttention.ui_Decided_16psugv",
+  "Partial": "localizationAttention.ui_Partial_xcezp6",
+  "Failed": "localizationAttention.ui_Failed_npsixg",
+  "Destructive": "localizationAttention.ui_Destructive_c80sdf",
+  "view run": "localizationAttention.ui_view_run_9qu9ct",
+  "changed": "localizationAttention.ui_changed_jgug0r",
+};
+
+/** Only translate unchanged, system-created seed copy. Custom queue names and
+ * descriptions are user content, even when their text resembles a built-in. */
+export function decisionQueueTitleDisplay(queue: { key: string; title: string; createdByType?: string }): string {
+  const defaults: Record<string, [string, string]> = { prs: ["PRs", "queuePrs"], plans: ["Plans", "queuePlans"], questions: ["Questions", "queueQuestions"] };
+  const preset = defaults[queue.key];
+  return queue.createdByType === "system" && preset && queue.title === preset[0] ? t(`localizationAttention.${preset[1]}`) : queue.title;
+}
+
+export function decisionQueueDescriptionDisplay(queue: { key: string; description: string | null; createdByType?: string }): string | null {
+  const defaults: Record<string, [string, string]> = { prs: ["Pull-request and merge decisions detected from issue work products.", "queuePrsDescription"], plans: ["Plan revisions waiting for confirmation.", "queuePlansDescription"], questions: ["Structured questions waiting for a board response.", "queueQuestionsDescription"] };
+  const preset = defaults[queue.key];
+  return queue.createdByType === "system" && preset && queue.description === preset[0] ? t(`localizationAttention.${preset[1]}`) : queue.description;
+}
+
+export function attentionLabel(value: string): string {
+  const key = ATTENTION_DISPLAY_KEYS[value];
+  return key ? t(key) : value;
+}
+
+export function attentionGroupLabelDisplay(group: AttentionGroup): string | null {
+  if (group.label === null) return null;
+  if (group.key.startsWith("project:") && group.key !== `project:${NO_GROUP_SENTINEL}`) return group.label;
+  return attentionLabel(group.label);
+}
+
+export function decideByLabelDisplay(decideBy: string | null): string {
+  if (decideBy && /^\d{4}-\d{2}-\d{2}$/.test(decideBy)) {
+    const parsed = new Date(`${decideBy}T00:00:00.000Z`);
+    if (Number.isFinite(parsed.getTime())) return parsed.toLocaleDateString(i18n.resolvedLanguage, { month: "short", day: "numeric", timeZone: "UTC" });
+  }
+  return attentionLabel(decideByLabel(decideBy));
+}
+
+
 import type {
   AttentionDetailImage,
   AttentionFeed,
@@ -249,6 +409,37 @@ export function attentionDetailLine(item: AttentionItem): string | null {
 }
 
 /** Screenshot / thumbnail images attached to the detail block, if any. */
+/** Display projection of generated detail copy. Source excerpts and identifiers
+ * are passed through verbatim, and the raw helper remains available to callers. */
+export function attentionDetailLineDisplay(item: AttentionItem): string | null {
+  const detail = item.detail;
+  if (!detail) return null;
+  const quoted = (value: string | null | undefined) => {
+    const raw = value?.trim();
+    return raw ? (i18n.resolvedLanguage?.startsWith("ru") ? `«${raw}»` : `“${raw}”`) : null;
+  };
+  let label: string | null = null;
+  let excerpt: string | null = null;
+  switch (detail.kind) {
+    case "checkbox_confirmation": label = t("localizationAttention.detailOptions", { count: detail.optionCount }); excerpt = quoted(detail.promptExcerpt); break;
+    case "questions": label = t("localizationAttention.detailQuestions", { count: detail.questionCount }); excerpt = quoted(detail.firstQuestionText); break;
+    case "suggested_tasks": label = t("localizationAttention.detailTasks", { count: detail.taskCount }); excerpt = quoted(detail.firstTaskTitle); break;
+    case "item_verdicts": label = t("localizationAttention.detailVerdicts", { count: detail.itemCount }); excerpt = quoted(detail.promptExcerpt); break;
+    case "blocker": {
+      const blocker = detail.blockingIssue;
+      if (!blocker) return null;
+      const issue = [blocker.identifier, blocker.title].filter(Boolean).join(" ");
+      return issue ? t("localizationAttention.detailBlockedBy", { issue }) : null;
+    }
+    case "budget": {
+      const number = (value: number | string) => (i18n.resolvedLanguage ?? "en").split("-")[0] !== "en" ? Number(value).toLocaleString(i18n.resolvedLanguage) : String(value);
+      return t("localizationAttention.detailBudget", { percent: number(Math.round(detail.observedPercent)), observed: number(detail.amountObserved), limit: number(detail.amountLimit) });
+    }
+    default: return attentionDetailLine(item);
+  }
+  return excerpt ? `${label} — ${excerpt}` : label;
+}
+
 export function attentionDetailImages(item: AttentionItem): AttentionDetailImage[] {
   return (item.detail as AttentionItemDetail | null)?.images ?? [];
 }

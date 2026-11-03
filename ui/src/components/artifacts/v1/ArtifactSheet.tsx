@@ -1,4 +1,5 @@
 import { Play } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import type { CSSProperties } from "react";
 import sheet from "./assets/sheet-preview.svg";
 import { ICON_BARS, ICON_GLYPH, ICON_LABEL, ICON_PLAY, PREVIEW_BAR_ROWS, PREVIEW_BARS, PREVIEW_TITLE, SHEET } from "./geometry";
@@ -82,6 +83,7 @@ const LABEL: CSSProperties = {
 };
 
 export function IconSheet({ subject, play = false }: { subject: ArtifactSubject; play?: boolean }) {
+  useTranslation();
   return (
     <div className="artifact-sheet relative shrink-0 overflow-clip" data-artifact-sheet="icon">
       <Paper />

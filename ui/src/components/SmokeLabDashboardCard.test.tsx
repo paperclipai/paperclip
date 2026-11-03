@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 
-import { flushSync } from "react-dom";
-import type { ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SmokeLabDashboardCard } from "./SmokeLabDashboardCard";
+import { i18n } from "@/i18n";
 
 const getExperimentalMock = vi.hoisted(() => vi.fn());
 const listRunsMock = vi.hoisted(() => vi.fn());
@@ -33,14 +33,6 @@ vi.mock("@/lib/router", () => ({
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
-async function act(callback: () => void | Promise<void>) {
-  let result: void | Promise<void> = undefined;
-  flushSync(() => {
-    result = callback();
-  });
-  await result;
-}
-
 async function flushReact() {
   for (let i = 0; i < 3; i += 1) {
     await act(async () => {
@@ -65,8 +57,10 @@ const RUN = {
 describe("SmokeLabDashboardCard", () => {
   let container: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
+  let client: QueryClient;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     getExperimentalMock.mockResolvedValue({ enableSmokeLab: true });
@@ -91,14 +85,16 @@ describe("SmokeLabDashboardCard", () => {
     });
   });
 
-  afterEach(() => {
-    flushSync(() => root?.unmount());
+  afterEach(async () => {
+    await act(async () => root?.unmount());
+    client?.clear();
     container.remove();
+    await i18n.changeLanguage("en");
     vi.clearAllMocks();
   });
 
   async function render() {
-    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     root = createRoot(container);
     await act(async () => {
       root.render(
@@ -127,5 +123,52 @@ describe("SmokeLabDashboardCard", () => {
     expect(card?.getAttribute("href")).toBe("/apps/advanced/smoke-lab");
     expect(container.textContent).toContain("Integration smoke");
     expect(container.textContent).toContain("Failing paths: P3");
+  });
+
+  it.each([
+    { health: "green", status: "passed", stepStatus: "pass", en: "All paths passing", ru: "Все варианты подключения прошли проверку" },
+    { health: "amber", status: "running", stepStatus: "pass", en: "Needs a run", ru: "Нужно запустить проверку" },
+    { health: "red", status: "failed", stepStatus: "fail", en: "Failing paths: P3", ru: "Не прошли проверку: P3" },
+    { health: "unknown", status: null, stepStatus: null, en: "No runs yet", ru: "Запусков пока нет" },
+  ])("reactively translates $health health, title and date without refetching or changing canonical run data", async ({ health, status, stepStatus, en, ru }) => {
+    const run = status ? { ...RUN, status } : undefined;
+    const detail = {
+      run,
+      steps: stepStatus ? [{
+        id: "raw-step-1", companyId: "company-1", runId: "run-1", path: "P3",
+        scenarioStep: "allowed-read", status: stepStatus, detail: null,
+        screenshotArtifactRef: null, durationMs: null,
+        createdAt: RUN.startedAt, updatedAt: RUN.startedAt,
+      }] : [],
+    };
+    const original = JSON.stringify(detail);
+    listRunsMock.mockResolvedValue({ runs: run ? [run] : [] });
+    getRunMock.mockResolvedValue(detail);
+    await render();
+    const card = container.querySelector<HTMLAnchorElement>('[data-testid="smoke-lab-dashboard-card"]')!;
+    expect(card).not.toBeNull();
+
+    for (const [locale, title, healthText, hint] of [
+      ["en", "Integration smoke", en, "Run one from the Smoke Lab tab"],
+      ["ru", "Базовая проверка интеграций", ru, "Запустите проверку на вкладке «Лаборатория smoke-тестов»"],
+      ["en", "Integration smoke", en, "Run one from the Smoke Lab tab"],
+    ] as const) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(container.querySelector('[data-testid="smoke-lab-dashboard-card"]')).toBe(card);
+      expect(card.getAttribute("href")).toBe("/apps/advanced/smoke-lab");
+      expect(card.textContent).toContain(title);
+      expect(card.textContent).toContain(healthText);
+      if (run) {
+        const time = new Intl.DateTimeFormat(locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(RUN.startedAt));
+        expect(card.textContent).toContain(locale === "ru" ? `Последний запуск: ${time}` : `Last run ${time}`);
+      } else {
+        expect(card.textContent).toContain(hint);
+      }
+      expect(getExperimentalMock).toHaveBeenCalledTimes(1);
+      expect(listRunsMock).toHaveBeenCalledExactlyOnceWith("company-1");
+      if (health === "unknown") expect(getRunMock).not.toHaveBeenCalled();
+      else expect(getRunMock).toHaveBeenCalledExactlyOnceWith("company-1", "run-1");
+      expect(JSON.stringify(detail)).toBe(original);
+    }
   });
 });

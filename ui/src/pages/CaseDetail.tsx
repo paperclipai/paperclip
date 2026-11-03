@@ -21,9 +21,16 @@ import { CaseStatus } from "@/components/cases/CaseStatus";
 import { CaseWorkSummary } from "@/components/cases/CaseWorkSummary";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 import { formatDateTime } from "@/lib/utils";
 import { queryKeys } from "@/lib/queryKeys";
 import { caseAuditHref } from "./audit/audit-navigation";
+
+const CASE_LINK_ROLE_KEYS = {
+  origin: "oct26Cases.role.origin",
+  work: "oct26Cases.role.work",
+  reference: "oct26Cases.role.reference",
+} as const;
 
 function CaseRelation({ item, search }: { item: Pick<CaseSummary, "id" | "identifier" | "title" | "caseType" | "status">; search: string }) {
   const caseHref = useCaseHref();
@@ -37,6 +44,7 @@ export function CaseDetail() {
   const { caseIdentifier } = useParams<{ caseIdentifier: string }>();
   const { search } = useLocation();
   const caseHref = useCaseHref();
+  const { t } = useTranslation();
   const { setBreadcrumbs } = useBreadcrumbs();
   const caseQuery = useQuery({
     queryKey: queryKeys.cases.detail(caseIdentifier ?? ""),
@@ -64,8 +72,8 @@ export function CaseDetail() {
   const agents = useMemo(() => new Map((agentsQuery.data ?? []).map(agent => [agent.id, agent])), [agentsQuery.data]);
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Cases", href: listPath }, { label: caseData?.identifier ?? caseIdentifier ?? "Case" }]);
-  }, [setBreadcrumbs, listPath, caseData?.identifier, caseIdentifier]);
+    setBreadcrumbs([{ label: t("pages.caseDetail.casesCrumb"), href: listPath }, { label: caseData?.identifier ?? caseIdentifier ?? t("pages.caseDetail.caseFallback") }]);
+  }, [setBreadcrumbs, listPath, caseData?.identifier, caseIdentifier, t]);
 
   if (!caseIdentifier) return <Navigate to={listPath} replace />;
   if (caseQuery.isLoading || caseView.kind === "reconnecting") return <div data-testid="case-pages"><PageSkeleton variant="detail" /></div>;
@@ -74,10 +82,10 @@ export function CaseDetail() {
     const unavailable = caseQuery.error instanceof ApiError && [403, 404].includes(caseQuery.error.status);
     return <div data-testid="case-pages" className="space-y-4">
       {unavailable
-        ? <EmptyState icon={FolderOpen} message="Case not found" />
-        : <QueryErrorState size="page" error={caseQuery.error} action="load this case" onRetry={caseView.retry} retrying={caseView.isFetching} />}
+        ? <EmptyState icon={FolderOpen} message={t("oct26Cases.caseNotFound")} />
+        : <QueryErrorState size="page" error={caseQuery.error} action={t("nov2Pages.action.load_this_case", { defaultValue: "load this case" })} onRetry={caseView.retry} retrying={caseView.isFetching} />}
       <div className="flex justify-center gap-3">
-        <Button variant="link" asChild><Link to={listPath}>Back to cases</Link></Button>
+        <Button variant="link" asChild><Link to={listPath}>{t("oct26Cases.backToCases")}</Link></Button>
       </div>
     </div>;
   }
@@ -101,52 +109,52 @@ export function CaseDetail() {
       </div>
       <h1 className="text-2xl font-semibold tracking-tight">{caseData.title}</h1>
       {caseData.summary && <p className="max-w-3xl text-sm leading-relaxed text-muted-foreground">{caseData.summary}</p>}
-      {caseData.labels.length > 0 && <div className="flex flex-wrap gap-1.5" aria-label="Case labels">{caseData.labels.map(label => <Badge key={label.id} variant="secondary" className="font-normal">{label.name}</Badge>)}</div>}
+      {caseData.labels.length > 0 && <div className="flex flex-wrap gap-1.5" aria-label={t("oct26Cases.caseLabels")}>{caseData.labels.map(label => <Badge key={label.id} variant="secondary" className="font-normal">{label.name}</Badge>)}</div>}
     </header>
 
     <div className="min-w-0 space-y-8">
       <CaseWorkSummary caseData={caseData} agents={agents} />
-      {fields.length > 0 && <section className="space-y-3" aria-label="Case details">
-        <h2 className="text-sm font-semibold">Details</h2>
+      {fields.length > 0 && <section className="space-y-3" aria-label={t("oct26Cases.caseDetails")}>
+        <h2 className="text-sm font-semibold">{t("oct26Cases.details")}</h2>
         <CaseFieldsTable fields={Object.fromEntries(fields)} />
       </section>}
 
-      {(caseData.documents.length > 0 || taskDocuments.length > 0) && <section className="space-y-3" aria-label="Case documents">
-        <h2 className="text-sm font-semibold">Documents</h2>
+      {(caseData.documents.length > 0 || taskDocuments.length > 0) && <section className="space-y-3" aria-label={t("oct26Cases.caseDocuments")}>
+        <h2 className="text-sm font-semibold">{t("oct26Cases.documents")}</h2>
         <div className="divide-y divide-border">
           {taskDocuments.map(document => <CaseDocumentPreview key={document.id} caseIdentifier={caseData.identifier} document={document} />)}
           {caseData.documents.map(document => <CaseDocumentPreview key={`case:${caseData.id}:${document.key}`} caseIdentifier={caseData.identifier} document={document} />)}
         </div>
-        {caseData.taskDocumentsOmitted && <p className="text-xs text-muted-foreground">More documents are available on the linked tasks.</p>}
+        {caseData.taskDocumentsOmitted && <p className="text-xs text-muted-foreground">{t("oct26Cases.moreDocuments")}</p>}
       </section>}
 
-      {caseData.attachments.length > 0 && <section className="space-y-3" aria-label="Case attachments">
-        <h2 className="text-sm font-semibold">Attachments</h2>
+      {caseData.attachments.length > 0 && <section className="space-y-3" aria-label={t("oct26Cases.caseAttachments")}>
+        <h2 className="text-sm font-semibold">{t("oct26Cases.attachments")}</h2>
         {images.length > 0 && <CaseAttachmentsGallery attachments={images} />}
-        {files.length > 0 && <ul className="space-y-2">{files.map(attachment => <li key={attachment.id}><a href={caseAttachmentUrl(attachment)} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-2 text-sm text-primary hover:underline"><FileText aria-hidden className="size-4 shrink-0" /><span className="truncate">{attachment.asset.originalFilename ?? "Download attachment"}</span></a></li>)}</ul>}
+        {files.length > 0 && <ul className="space-y-2">{files.map(attachment => <li key={attachment.id}><a href={caseAttachmentUrl(attachment)} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-2 text-sm text-primary hover:underline"><FileText aria-hidden className="size-4 shrink-0" /><span className="truncate">{attachment.asset.originalFilename ?? t("oct26Cases.downloadAttachment")}</span></a></li>)}</ul>}
       </section>}
 
       {caseData.workIssueId && <CaseHandoffHistory caseId={caseData.id} task={caseData.workIssue} agents={agents} />}
 
       {relatedTasks.length > 0 && <details className="space-y-3">
-        <summary className="w-fit cursor-pointer text-sm font-semibold">Related tasks <span className="text-muted-foreground">{relatedTasks.length}</span></summary>
-        <ul className="space-y-2">{relatedTasks.map(link => <li key={link.id} className="flex flex-wrap items-center gap-2"><IssueReferencePill issue={link.issue} /><span className="text-sm text-muted-foreground">{link.issue.title}</span><span className="text-xs text-muted-foreground">{link.role}</span></li>)}</ul>
+        <summary className="w-fit cursor-pointer text-sm font-semibold">{t("oct26Cases.relatedTasks")} <span className="text-muted-foreground">{relatedTasks.length}</span></summary>
+        <ul className="space-y-2">{relatedTasks.map(link => <li key={link.id} className="flex flex-wrap items-center gap-2"><IssueReferencePill issue={link.issue} /><span className="text-sm text-muted-foreground">{link.issue.title}</span><span className="text-xs text-muted-foreground">{CASE_LINK_ROLE_KEYS[link.role] ? t(CASE_LINK_ROLE_KEYS[link.role]) : link.role}</span></li>)}</ul>
       </details>}
 
       {(caseData.parent || children.length > 0 || childrenQuery.isError) && <details className="space-y-3">
-        <summary className="w-fit cursor-pointer text-sm font-semibold">Related cases</summary>
-        {caseData.parent && <div className="space-y-1"><h3 className="text-xs text-muted-foreground">Parent</h3><CaseRelation item={caseData.parent} search={search} /></div>}
-        {children.length > 0 && <div className="space-y-1"><h3 className="text-xs text-muted-foreground">Children {children.length}</h3>{children.map(child => <CaseRelation key={child.id} item={child} search={search} />)}</div>}
-        {queryViewKind(childrenQuery) === "error" && <p role="alert" className="text-sm text-destructive">Child cases couldn’t be loaded.</p>}
+        <summary className="w-fit cursor-pointer text-sm font-semibold">{t("oct26Cases.relatedCases")}</summary>
+        {caseData.parent && <div className="space-y-1"><h3 className="text-xs text-muted-foreground">{t("oct26Cases.parent")}</h3><CaseRelation item={caseData.parent} search={search} /></div>}
+        {children.length > 0 && <div className="space-y-1"><h3 className="text-xs text-muted-foreground">{t("oct26Cases.children")} {children.length}</h3>{children.map(child => <CaseRelation key={child.id} item={child} search={search} />)}</div>}
+        {queryViewKind(childrenQuery) === "error" && <p role="alert" className="text-sm text-destructive">{t("oct26Cases.childrenError")}</p>}
       </details>}
 
-      {!fields.length && !caseData.documents.length && !taskDocuments.length && !caseData.attachments.length && <p className="text-sm text-muted-foreground">No findings recorded yet.</p>}
+      {!fields.length && !caseData.documents.length && !taskDocuments.length && !caseData.attachments.length && <p className="text-sm text-muted-foreground">{t("oct26Cases.noFindings")}</p>}
       <dl className="flex flex-wrap gap-x-6 gap-y-3 text-xs text-muted-foreground">
-        {projectQuery.data && <div className="space-y-1"><dt>Project</dt><dd><Link to={`/projects/${projectQuery.data.id}`} className="text-foreground hover:underline">{projectQuery.data.name}</Link></dd></div>}
-        <div className="space-y-1"><dt>Created</dt><dd><time dateTime={caseData.createdAt} className="font-mono">{formatDateTime(caseData.createdAt, { includeYear: false })}</time></dd></div>
-        <div className="space-y-1"><dt>Updated</dt><dd><time dateTime={caseData.updatedAt} className="font-mono">{formatDateTime(caseData.updatedAt, { includeYear: false })}</time></dd></div>
+        {projectQuery.data && <div className="space-y-1"><dt>{t("oct26Cases.field.project")}</dt><dd><Link to={`/projects/${projectQuery.data.id}`} className="text-foreground hover:underline">{projectQuery.data.name}</Link></dd></div>}
+        <div className="space-y-1"><dt>{t("oct26Cases.field.created")}</dt><dd><time dateTime={caseData.createdAt} className="font-mono">{formatDateTime(caseData.createdAt, { includeYear: false })}</time></dd></div>
+        <div className="space-y-1"><dt>{t("oct26Cases.field.updated")}</dt><dd><time dateTime={caseData.updatedAt} className="font-mono">{formatDateTime(caseData.updatedAt, { includeYear: false })}</time></dd></div>
       </dl>
-      <Link to={caseAuditHref(caseData.id)} className="inline-block text-sm text-muted-foreground hover:text-foreground hover:underline">View in Audit</Link>
+      <Link to={caseAuditHref(caseData.id)} className="inline-block text-sm text-muted-foreground hover:text-foreground hover:underline">{t("oct26Cases.viewInAudit")}</Link>
     </div>
   </div>;
 }

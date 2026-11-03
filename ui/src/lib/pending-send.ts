@@ -21,6 +21,7 @@
 
 import { classifyError, errorStatus } from "@/api/errors";
 import { CommentSubmissionUnknownError } from "./comment-submit-result";
+import { LocalizedUiError } from "./localized-ui-error";
 
 /** What to do after a send failed. */
 export type SendFailure =
@@ -37,9 +38,9 @@ export type SendOutcome = "sent" | SendFailure;
  * before failing). Everything else, including a plain `Error` thrown by the
  * caller, is a definitive answer.
  */
-export class PendingSendAccountChangedError extends Error {
+export class PendingSendAccountChangedError extends LocalizedUiError {
   constructor() {
-    super("Your account changed. The original request is kept for its owner.");
+    super("nov02Core.pendingAccountChanged");
     this.name = "PendingSendAccountChangedError";
   }
 }

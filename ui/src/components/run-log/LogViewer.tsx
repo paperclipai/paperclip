@@ -1,3 +1,4 @@
+import { t, useTranslation, i18n } from "@/i18n";
 import { TranscriptSequence } from "../../lib/transcript-sequence";
 import { readTranscriptRequest } from "../transcript/read-transcript-request";
 import { useTranscriptLiveStream } from "../../context/LiveUpdatesProvider";
@@ -47,7 +48,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
-  const [logError, setLogError] = useState<string | null>(null);
+  const [logError, setLogError] = useState<{ error?: Error; fallback: "load" | "more" } | null>(null);
   const [logOffset, setLogOffsetState] = useState(0);
   const logOffsetRef = useRef(0);
   const setLogOffset = useCallback((next: number | ((previous: number) => number)) => {
@@ -68,6 +69,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
     scrollHeight: 0,
     distanceFromBottom: Number.POSITIVE_INFINITY,
   });
+  useTranslation();
   const isLive = run.status === "running" || run.status === "queued";
   const shouldPollShellLog = shouldPollRunShellLog(run.status);
   const { data: workspaceOperations = [] } = useQuery({
@@ -244,7 +246,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
         failedRead = null;
       } catch {
         failed = true; failedRead = { requested, catchup };
-        if (!cancelled) setEventsError("Could not load events. Try again.");
+        if (!cancelled) setEventsError("nov02Root.copy68bddb5882");
       }
       if (cancelled) return;
       reading = false; setLoadingMoreEvents(false); setLoading(false);
@@ -387,7 +389,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       } catch (err) {
         if (cancelled) return;
         failed = shouldPollShellLog || !isRunLogUnavailable(err);
-        if (!isRunLogUnavailable(err)) setLogError(err instanceof Error ? err.message : "Failed to load run log");
+        if (!isRunLogUnavailable(err)) setLogError({ error: err instanceof Error ? err : undefined, fallback: "load" });
       }
       if (cancelled) return;
       reading = false;
@@ -411,7 +413,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
       setLogOffset(next);
       setHasMoreLog(result.nextOffset !== undefined);
     } catch (err) {
-      setLogError(err instanceof Error ? err.message : "Failed to load more run log");
+      setLogError({ error: err instanceof Error ? err : undefined, fallback: "more" });
     } finally {
       setLoadingMoreLog(false);
     }
@@ -455,11 +457,11 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
   }, [run.id]);
 
   if (loading && logLoading) {
-    return <p className="text-xs text-muted-foreground">Loading run logs...</p>;
+    return <p className="text-xs text-muted-foreground">{t("nov02Root.copyb719a3040d")}</p>;
   }
 
   if (events.length === 0 && logLines.length === 0 && !logError && !eventsError) {
-    return <p className="text-xs text-muted-foreground">No log events.</p>;
+    return <p className="text-xs text-muted-foreground">{t("nov02Root.copyd1e8132070")}</p>;
   }
 
   const levelColors: Record<string, string> = {
@@ -486,13 +488,13 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
 
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium text-muted-foreground">
-          Transcript ({transcript.length})
+          {t("nov02Root.transcriptCount", { count: transcript.length })}
         </span>
         <div className="flex items-center gap-2">
           <div className="inline-flex rounded-lg border border-border/70 bg-background/70 p-0.5">
             {(["nice", "raw"] as const).map((mode) => (
               <button
-                key={mode}
+                key={t(`localizationAgents.transcriptMode_${mode}`)}
                 type="button"
                 className={cn(
                   "rounded-md px-2.5 py-1 text-(length:--text-micro) font-medium capitalize transition-colors",
@@ -502,7 +504,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
                 )}
                 onClick={() => setTranscriptMode(mode)}
               >
-                {mode}
+                {t(`localizationAgents.transcriptMode_${mode}`)}
               </button>
             ))}
           </div>
@@ -518,7 +520,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
                 lastMetricsRef.current = readScrollMetrics(container);
               }}
             >
-              Jump to live
+              {t("nov02Root.copyce39c3a6bd")}
             </Button>
           )}
           {isLive && (
@@ -527,7 +529,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
                 <span className="animate-pulse absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
               </span>
-              Live
+              {t("nov02Root.copyb64ac05f17")}
             </span>
           )}
         </div>
@@ -539,7 +541,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           mode={transcriptMode}
           streaming={isLive}
           limit={isLive ? LIVE_TRANSCRIPT_RENDER_LIMIT : undefined}
-          emptyMessage={run.logRef ? "Waiting for transcript..." : "No persisted transcript for this run."}
+          emptyMessage={run.logRef ? t("nov02Root.copy8f7d4ad656") : t("nov02Root.copye8b062b8f5")}
         />
         {hasMoreLog && (
           <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-border/60 pt-3">
@@ -550,19 +552,18 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
               onClick={loadMorePersistedLog}
               disabled={loadingMoreLog}
             >
-              {loadingMoreLog ? "Loading..." : "Load more log"}
+              {loadingMoreLog ? t("nov02Root.copy47d2a515ef") : t("nov02Root.copy43baac37f5")}
             </Button>
             <span className="text-xs text-muted-foreground">
-              Showing the first {Math.round(logOffset / 1024).toLocaleString("en-US")} KB
               {typeof run.logBytes === "number" && run.logBytes > 0
-                ? ` of ${Math.round(run.logBytes / 1024).toLocaleString("en-US")} KB`
-                : ""}
+                ? t("nov02Root.logLoadedTotal", { loaded: Math.round(logOffset / 1024).toLocaleString(i18n.resolvedLanguage), total: Math.round(run.logBytes / 1024).toLocaleString(i18n.resolvedLanguage) })
+                : t("nov02Root.logLoaded", { loaded: Math.round(logOffset / 1024).toLocaleString(i18n.resolvedLanguage) })}
             </span>
           </div>
         )}
         {logError && (
           <div className="mt-3 rounded-xl border border-red-500/20 bg-red-500/[0.06] px-3 py-2 text-xs text-red-700 dark:text-red-300">
-            {logError}
+            {logError.error?.message ?? t(logError.fallback === "load" ? "nov02Root.copya4a2e5345f" : "nov02Root.copy3b62d2b970")}
           </div>
         )}
         <div ref={logEndRef} />
@@ -570,16 +571,16 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
 
       {(run.status === "failed" || run.status === "timed_out") && (
         <div className="rounded-lg border border-red-300 dark:border-red-500/30 bg-red-50 dark:bg-red-950/20 p-3 space-y-2">
-          <div className="text-xs font-medium text-red-700 dark:text-red-300">Failure details</div>
+          <div className="text-xs font-medium text-red-700 dark:text-red-300">{t("nov02Root.copy6317e0c6b6")}</div>
           {run.error && (
             <div className="text-xs text-red-600 dark:text-red-200">
-              <span className="text-red-700 dark:text-red-300">Error: </span>
+              <span className="text-red-700 dark:text-red-300">{t("nov02Root.copy6170629067")} </span>
               {redactPathText(run.error, censorUsernameInLogs)}
             </div>
           )}
           {run.stderrExcerpt && run.stderrExcerpt.trim() && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stderr excerpt</div>
+              <div className="text-xs text-red-700 dark:text-red-300 mb-1">{t("nov02Root.copy957d193102")}</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
                 {redactPathText(run.stderrExcerpt, censorUsernameInLogs)}
               </pre>
@@ -587,7 +588,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           )}
           {run.resultJson && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">adapter result JSON</div>
+              <div className="text-xs text-red-700 dark:text-red-300 mb-1">{t("nov02Root.copy4774d3f79f")}</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
                 {JSON.stringify(redactPathValue(run.resultJson, censorUsernameInLogs), null, 2)}
               </pre>
@@ -595,7 +596,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
           )}
           {run.stdoutExcerpt && run.stdoutExcerpt.trim() && !run.resultJson && (
             <div>
-              <div className="text-xs text-red-700 dark:text-red-300 mb-1">stdout excerpt</div>
+              <div className="text-xs text-red-700 dark:text-red-300 mb-1">{t("nov02Root.copy66ced6705b")}</div>
               <pre className="bg-red-50 dark:bg-neutral-950 rounded-md p-2 text-xs overflow-x-auto whitespace-pre-wrap text-red-800 dark:text-red-100">
                 {redactPathText(run.stdoutExcerpt, censorUsernameInLogs)}
               </pre>
@@ -606,11 +607,11 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
 
       {(events.length > 0 || eventsError) && (
         <div>
-          <div className="mb-2 text-xs font-medium text-muted-foreground">Events ({events.length})</div>
-          {eventsError && <p className="text-sm text-destructive">{eventsError}</p>}
+          <div className="mb-2 text-xs font-medium text-muted-foreground">{t("nov02Root.eventsCount", { count: events.length })}</div>
+          {eventsError && <p className="text-sm text-destructive">{t(eventsError)}</p>}
           {(hasMoreEvents || eventsError) && (
             <Button variant="outline" size="sm" disabled={loadingMoreEvents} onClick={() => loadMoreEventsRef.current?.()}>
-              {loadingMoreEvents ? "Loading..." : eventsError ? "Retry events" : "Load more events"}
+              {loadingMoreEvents ? t("nov02Root.copy47d2a515ef") : eventsError ? t("nov02Root.copy7dcf1911ce") : t("nov02Root.copy96f2482de8")}
             </Button>
           )}
           <div className="bg-neutral-100 dark:bg-neutral-950 rounded-lg p-3 font-mono text-xs space-y-0.5">
@@ -623,7 +624,7 @@ export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType
               return (
                 <div key={`${evt.runId}:${evt.seq}`} className="flex gap-2">
                   <span className="text-neutral-400 dark:text-neutral-600 shrink-0 select-none w-16">
-                    {new Date(evt.createdAt).toLocaleTimeString("en-US", { hour12: false })}
+                    {new Date(evt.createdAt).toLocaleTimeString(i18n.resolvedLanguage, { hour12: false })}
                   </span>
                   <span className={cn("shrink-0 w-14", evt.stream ? (streamColors[evt.stream] ?? "text-neutral-500") : "text-neutral-500")}>
                     {evt.stream ? `[${evt.stream}]` : ""}

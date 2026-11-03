@@ -1,6 +1,10 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import { act } from "react";
+import { i18n } from "@/i18n";
+import { commentsToTaskChatItems } from "./task-chat-adapter";
+import type { IssueChatComment } from "@/lib/issue-chat-messages";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
@@ -56,6 +60,49 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
       '[data-testid="task-chat-system-notice"] button[aria-expanded]',
     )!;
   }
+
+  it("localizes only proven system workspace notices and preserves expanded state and source content", async () => {
+    const nextAction = "Check repository access and server load, then retry the task.";
+    const body = `Paperclip could not prepare the workspace before the agent started. Automatic recovery could not continue. ${nextAction}`;
+    const comment: IssueChatComment = {
+      id: "workspace-system-notice", authorType: "system", body,
+      companyId: "company-1", issueId: "issue-1", authorAgentId: null, authorUserId: null,
+      presentation: { kind: "system_notice", title: "Workspace scan timed out", tone: "warning", detailsDefaultOpen: false },
+      metadata: { version: 1, sourceRunId: "raw-source-run", sections: [{ rows: [
+        { type: "key_value", label: "Failure code", value: "workspace_git_scan_timeout" },
+        { type: "key_value", label: "Next action", value: nextAction },
+      ] }] },
+      createdAt: new Date("2026-09-16T12:00:00Z"),
+      updatedAt: new Date("2026-09-16T12:00:00Z"),
+    };
+    const original = JSON.stringify(comment);
+    const item = commentsToTaskChatItems([comment])[0] as TaskChatMessageItem;
+    renderNotice(item);
+    flushSync(() => toggleButton().click());
+    const details = container.querySelector('[data-testid="task-chat-system-notice-details"]');
+    try {
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        expect(toggleButton().getAttribute("aria-expanded")).toBe("true");
+        expect(container.querySelector('[data-testid="task-chat-system-notice-details"]')).toBe(details);
+        expect(details?.textContent).toContain(language === "ru"
+          ? "Проверьте доступ к репозиторию и нагрузку на сервер"
+          : body);
+        expect(details?.textContent).toContain("workspace_git_scan_timeout");
+        if (language === "ru") expect(details?.textContent).not.toContain("Paperclip could not prepare");
+        expect(JSON.stringify(comment)).toBe(original);
+        expect(item.text).toBe(body);
+      }
+      for (const authorType of ["agent", "user"] as const) {
+        const custom = commentsToTaskChatItems([{ ...comment, authorType }])[0] as TaskChatMessageItem;
+        expect(custom.author).toBe("system");
+        renderNotice(custom);
+        expect(details?.textContent).toContain(body);
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); });
+    }
+  });
 
   it("collapses to a humanized one-liner with relative time and hides the raw body", () => {
     renderNotice();

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useCallback, useEffect, useState } from "react";
 import { Link2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ export function ManagedOAuthHandoffState({
   onRetry: () => void;
   onCancel: () => void;
 }) {
+  const { t } = useTranslation();
   const failed = phase === "error";
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6">
@@ -34,19 +36,19 @@ export function ManagedOAuthHandoffState({
         </span>
         <div className="min-w-0">
           <h1 className="text-xl font-bold tracking-tight">
-            {failed ? "Sign-in couldn’t continue" : "Preparing secure sign-in"}
+            {failed ? t("localizationApps.signInCouldnTContinue721") : t("localizationConnections.preparingSecureSignIn73")}
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             {failed
-              ? error ?? "Paperclip couldn’t prepare the provider sign-in. Try again."
+              ? error ?? t("localizationApps.paperclipCouldnTPrepareTheProviderSignInTryAg723")
               : phase === "reauthenticating"
-                ? "Your Paperclip sign-in is being refreshed."
-                : "Paperclip is opening the provider securely."}
+                ? t("localizationApps.yourPaperclipSignInIsBeingRefreshed724")
+                : t("localizationApps.paperclipIsOpeningTheProviderSecurely725")}
           </p>
           {failed ? (
             <div className="mt-6 flex items-center gap-2">
-              <Button type="button" onClick={onRetry}>Try again</Button>
-              <Button type="button" variant="ghost" onClick={onCancel}>Return to Paperclip</Button>
+              <Button type="button" onClick={onRetry}>{t("pages.apps.common.retry")}</Button>
+              <Button type="button" variant="ghost" onClick={onCancel}>{t("localizationApps.returnToPaperclip726")}</Button>
             </div>
           ) : null}
         </div>
@@ -57,14 +59,15 @@ export function ManagedOAuthHandoffState({
 
 /** Fixed tenant landing used only after Paperclip Cloud refreshes login. */
 export function PaperclipCloudOAuthHandoffPage() {
+  const { t } = useTranslation();
   const [phase, setPhase] = useState<ManagedOAuthHandoffPhase>("loading");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ key: string } | { message: string } | null>(null);
 
   const resume = useCallback(async () => {
     const handoff = readPendingCloudHandoff();
     if (!handoff) {
       setPhase("error");
-      setError("This sign-in expired. Return to Paperclip and start the connection again.");
+      setError({ key: "localizationApps.thisSignInExpiredReturnToPaperclipAndStartThe727" });
       return;
     }
     setPhase("loading");
@@ -73,14 +76,14 @@ export function PaperclipCloudOAuthHandoffPage() {
       const target = await prepareOAuthNavigation({ authorizationUrl: "", handoff });
       if (target.kind === "reauthentication") {
         setPhase("error");
-        setError("Paperclip couldn’t refresh this sign-in. Try again to continue.");
+        setError({ key: "localizationApps.paperclipCouldnTRefreshThisSignInTryAgainToCo728" });
         return;
       }
       clearPendingCloudHandoff();
       navigateTopLevel(target.url);
     } catch (caught) {
       setPhase("error");
-      setError(caught instanceof Error ? caught.message : "Paperclip couldn’t prepare secure sign-in.");
+      setError(caught instanceof Error ? { message: caught.message } : { key: "localizationApps.paperclipCouldnTPrepareSecureSignIn729" });
     }
   }, []);
 
@@ -91,7 +94,7 @@ export function PaperclipCloudOAuthHandoffPage() {
   return (
     <ManagedOAuthHandoffState
       phase={phase}
-      error={error}
+      error={error ? "key" in error ? t(error.key) : error.message : null}
       onRetry={() => void resume()}
       onCancel={() => {
         clearPendingCloudHandoff();

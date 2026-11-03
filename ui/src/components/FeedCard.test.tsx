@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import type { ActivityEvent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FeedCard } from "./FeedCard";
+import { i18n } from "@/i18n";
 
 const navigate = vi.fn();
 
@@ -48,6 +49,26 @@ describe("FeedCard", () => {
     act(() => root.render(<FeedCard event={{ ...event, details: { status: "in_review", externalConversationState: state } }} agentMap={new Map()} entityNameMap={new Map()} entityTitleMap={new Map()} />));
     expect(container.querySelector('[data-fc="verb"]')?.textContent).toBe(verb);
     act(() => root.unmount());
+  });
+
+  it("updates waiting-state wording without changing the event or remounting its link", async () => {
+    const waiting = { ...event, details: { status: "in_review", externalConversationState: "waiting" } };
+    const original = JSON.stringify(waiting);
+    const root = createRoot(container);
+    await act(async () => root.render(<FeedCard event={waiting} agentMap={new Map()} entityNameMap={new Map()} entityTitleMap={new Map()} />));
+    const link = container.querySelector('[data-fc="link"]');
+    try {
+      for (const language of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(language); });
+        const verb = container.querySelector('[data-fc="verb"]')?.textContent ?? "";
+        if (language === "en") expect(verb).toBe("moved to idle");
+        else expect(verb).toMatch(/[А-Яа-яЁё]/);
+        expect(container.querySelector('[data-fc="link"]')).toBe(link);
+        expect(JSON.stringify(waiting)).toBe(original);
+      }
+    } finally {
+      await act(async () => { await i18n.changeLanguage("en"); root.unmount(); });
+    }
   });
 
   it("uses the whole visible card as the entity link", () => {

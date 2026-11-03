@@ -1,3 +1,4 @@
+import { useTranslation, t } from "@/i18n";
 import { MarkdownWordStreaming, rehypeStreamingWords } from "./MarkdownWordStreaming";
 import { isValidElement, memo, useContext, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -59,6 +60,7 @@ function MarkdownAgentMention({ agentId, children, style }: {
   children: ReactNode;
   style?: React.CSSProperties;
 }) {
+  useTranslation();
   const companyId = useOptionalCompany()?.selectedCompanyId;
   // All mentions share the company list cache; never fetch one agent per chip.
   const { data: agents } = useQuery<Agent[]>({
@@ -154,6 +156,7 @@ function MarkdownIssueLink({
   children: ReactNode;
   documentLink?: boolean;
 }) {
+  const { t } = useTranslation();
   const queryClient = useQueryClient();
   const chatReference = useCoordinatorChatReference(issuePathId);
   const [engaged, setEngaged] = useState(false);
@@ -193,7 +196,7 @@ function MarkdownIssueLink({
   const identifier = data?.identifier ?? issuePathId;
   const title = data?.title ?? identifier;
   const status = data?.status;
-  const issueLabel = title !== identifier ? `Issue ${identifier}: ${title}` : `Issue ${identifier}`;
+  const issueLabel = t(title !== identifier ? "localizationCommonTail.issueWithTitle" : "localizationCommonTail.issueIdentifier", { identifier, title });
 
   // Until the fetch settles we don't yet know whether this viewer can read the
   // issue. Keep the mention a plain link (clickable, styled as today) but hold
@@ -237,6 +240,7 @@ function MarkdownCaseLink({
   identifier: string;
   children: ReactNode;
 }) {
+  const { t } = useTranslation();
   // Cases resolve via the get-by-identifier route; navigate there on click.
   // Kept boxless/underlined to match the issue mention treatment.
   const caseHref = useCaseHref();
@@ -245,7 +249,7 @@ function MarkdownCaseLink({
       to={caseHref(identifier)}
       data-mention-kind="case"
       className={cn("paperclip-markdown-case-ref", "font-normal underline")}
-      aria-label={`Case ${identifier}`}
+      aria-label={t("localizationCommonTail.caseIdentifier", { identifier })}
     >
       {children}
     </Link>
@@ -261,6 +265,7 @@ function MarkdownExternalLink({
   reference: MarkdownExternalReference;
   children: ReactNode;
 }) {
+  useTranslation();
   const provider = externalObjectProviderLabel(reference.providerKey);
   const displayKey = reference.displayKey?.trim() || provider;
   const statusLabel = externalObjectDisplayStatusLabel(reference);
@@ -651,6 +656,7 @@ function CodeBlock({
   children: ReactNode;
   preProps: React.HTMLAttributes<HTMLPreElement>;
 }) {
+  const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   const [failed, setFailed] = useState(false);
   const [wrapLines, setWrapLines] = useState(false);
@@ -676,8 +682,8 @@ function CodeBlock({
     }, 1500);
   }, [children]);
 
-  const copyLabel = failed ? "Copy failed" : copied ? "Copied!" : "Copy";
-  const wrapLabel = wrapLines ? "Unwrap lines" : "Wrap lines";
+  const copyLabel = t(failed ? "localizationCommonTail.copyFailed" : copied ? "localizationCommonTail.copiedCode" : "localizationCommonTail.copy");
+  const wrapLabel = t(wrapLines ? "localizationCommonTail.unwrapCode" : "localizationCommonTail.wrapCode");
 
   return (
     <div className="paperclip-markdown-codeblock" data-wrap-lines={wrapLines || undefined}>
@@ -724,7 +730,7 @@ function CodeBlock({
         <button
           type="button"
           onClick={handleCopy}
-          aria-label="Copy code"
+          aria-label={t("localizationCommonTail.copyCode")}
           title={copyLabel}
           className="paperclip-markdown-codeblock-action paperclip-markdown-codeblock-copy"
           style={codeBlockActionStyle}
@@ -744,6 +750,7 @@ function CodeBlock({
 }
 
 function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: boolean }) {
+  const { t } = useTranslation();
   const renderId = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const [svg, setSvg] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -771,7 +778,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
         const message =
           err instanceof Error && err.message
             ? err.message
-            : "Failed to render Mermaid diagram.";
+            : t("localizationCommonTail.mermaidFailed");
         setError(message);
       });
 
@@ -787,7 +794,7 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
       ) : (
         <>
           <p className={cn("paperclip-mermaid-status", error && "paperclip-mermaid-status-error")}>
-            {error ? `Unable to render Mermaid diagram: ${error}` : "Rendering Mermaid diagram..."}
+            {error ? t("localizationCommonTail.mermaidError", { error: error === "Failed to render Mermaid diagram." ? t("localizationCommonTail.mermaidFailed") : error }) : t("localizationCommonTail.mermaidLoading")}
           </p>
           <pre className="paperclip-mermaid-source">
             <code className="language-mermaid">{source}</code>
@@ -795,6 +802,24 @@ function MermaidDiagramBlock({ source, darkMode }: { source: string; darkMode: b
         </>
       )}
     </div>
+  );
+}
+
+function MarkdownScrollableTable({ node: _node, style, children, ...tableProps }: React.ComponentProps<"table"> & { node?: unknown }) {
+  const { t } = useTranslation();
+  return (
+    <div className="paperclip-markdown-table-scroll" role="region" aria-label={t("localizationCommonTail.scrollableTable")} tabIndex={0}>
+      <table {...tableProps} style={style}>{children}</table>
+    </div>
+  );
+}
+
+function MarkdownImageReference({ src, alt, title }: React.ComponentProps<"img">) {
+  const { t } = useTranslation();
+  return (
+    <span data-markdown-image-reference title={title}>
+      {t("oct5Core.imageReference", { alt: alt || t("oct5Core.untitledImage"), source: src ? ` (${src})` : "" })}
+    </span>
   );
 }
 
@@ -844,6 +869,8 @@ function MarkdownBodyImpl({
   // scroll position and text selection and causes visible flashing when a
   // parent re-renders frequently (see PAP-10767). Memoize both so re-renders
   // that don't change the inputs are cheap and non-destructive.
+  // Localized chrome subscribes inside stable child components so changing
+  // language does not rebuild this map or reset code-block interaction state.
   const remarkPlugins = useMemo<NonNullable<Options["remarkPlugins"]>>(() => {
     const plugins: NonNullable<Options["remarkPlugins"]> = [remarkGfm, remarkDropHtmlComments];
     if (enableWikiLinks) {
@@ -880,13 +907,7 @@ function MarkdownBodyImpl({
         {blockquoteChildren}
       </blockquote>
     ),
-    table: ({ node: _node, style: tableStyle, children: tableChildren, ...tableProps }) => (
-      <div className="paperclip-markdown-table-scroll" role="region" aria-label="Scrollable table" tabIndex={0}>
-        <table {...tableProps} style={tableStyle as React.CSSProperties | undefined}>
-          {tableChildren}
-        </table>
-      </div>
-    ),
+    table: MarkdownScrollableTable,
     td: ({ node: _node, style: tableCellStyle, children: tableCellChildren, ...tableCellProps }) => (
       <td {...tableCellProps} style={mergeTableCellStyle(tableCellStyle as React.CSSProperties | undefined)}>
         {tableCellChildren}
@@ -1031,13 +1052,10 @@ function MarkdownBodyImpl({
     },
     };
     if (mediaMode === "reference") {
-      map.img = ({ src, alt, title }) => (
-        <span data-markdown-image-reference title={title}>
-          Image: {alt || "Untitled image"}{src ? ` (${src})` : ""}
-        </span>
-      );
+      map.img = MarkdownImageReference;
     } else if (resolveImageSrc || onImageClick) {
-      map.img = ({ node: _node, src, alt, ...imgProps }) => {
+      map.img = function MarkdownClickableImage({ node: _node, src, alt, ...imgProps }) {
+        const { t } = useTranslation();
         const resolved = resolveImageSrc && src ? resolveImageSrc(src) : null;
         const finalSrc = resolved ?? src;
         return (
@@ -1047,7 +1065,7 @@ function MarkdownBodyImpl({
             alt={alt ?? ""}
             role={onImageClick && finalSrc ? "button" : undefined}
             tabIndex={onImageClick && finalSrc ? 0 : undefined}
-            aria-label={onImageClick && finalSrc ? `Open image: ${alt || "Untitled image"}` : undefined}
+            aria-label={onImageClick && finalSrc ? t("nov02Components.openImage", { defaultValue: "Open image: {{name}}", name: alt || t("oct5Core.untitledImage") }) : undefined}
             onClick={onImageClick && finalSrc ? (e) => {
               e.preventDefault();
               e.stopPropagation();

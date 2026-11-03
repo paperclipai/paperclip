@@ -1,3 +1,5 @@
+import { agentRoleLabel } from "@/lib/entity-labels";
+import { i18n, t, useTranslation } from "@/i18n";
 import { useId } from "react";
 import { Check, Circle, Loader2 } from "lucide-react";
 import { AGENT_ROLES, type CreateGrokInvitation, type DotPairing, type GrokConnection } from "@paperclipai/shared";
@@ -23,8 +25,9 @@ export interface GrokBotSetupContentProps {
   onCredentials: (url: string, key: string) => void;
   onBack: () => void; onExit: () => void; onNext: () => void; onRetry: () => void;
 }
-const steps = ["Identify Bot", "Connect access", "Enable assignments", "Verify"];
+const steps = () => [t("oct19Voice.identifyBot_1t1kff0"), t("oct19Voice.connectAccess_afh3wx"), t("oct19Voice.enableAssignments_ktcowc"), t("oct19Voice.verify_cl30w4")];
 export function GrokBotSetupContent(p: GrokBotSetupContentProps) {
+  useTranslation();
   const pairingCodeId = useId();
   const binding = p.connection?.binding;
   const routine = binding?.routine;
@@ -42,55 +45,55 @@ export function GrokBotSetupContent(p: GrokBotSetupContentProps) {
     <div className="min-h-0 space-y-6 overflow-y-auto px-6 pb-6 pt-8 sm:px-8">
       <div className="space-y-3 pr-5">
         <AdapterMark type="grok_bot" className="size-10" />
-        <DialogTitle className="text-xl font-semibold tracking-tight">{ready ? "Your Grok Bot is connected" : "Connect your Grok Bot"}</DialogTitle>
-        <DialogDescription className="text-sm leading-relaxed">{ready ? `${p.details.botName} can receive assignments and work with ${p.companyName}.` : `Bring an existing Bot into ${p.companyName}. It continues to run in Grok Bot.`}</DialogDescription>
+        <DialogTitle className="text-xl font-semibold tracking-tight">{ready ? t("oct19Voice.yourGrokBotIsConnected_1pow1yr") : t("oct19Voice.connectYourGrokBot_1exlp5q")}</DialogTitle>
+        <DialogDescription className="text-sm leading-relaxed">{ready ? t("oct19Voice.grokReady", { name: p.details.botName, company: p.companyName }) : t("oct19Voice.bringGrok", { company: p.companyName })}</DialogDescription>
       </div>
-      <ol aria-label="Grok Bot setup" className="grid grid-cols-4 gap-2 text-xs text-muted-foreground">
-        {steps.map((label, index) => <li key={label} aria-current={p.step === index ? "step" : undefined} className={p.step === index ? "font-medium text-foreground" : ""}>{index + 1}. {label}</li>)}
+      <ol aria-label={t("oct19Voice.grokBotSetup_43n4aa")} className="grid grid-cols-4 gap-2 text-xs text-muted-foreground">
+        {steps().map((label, index) => <li key={label} aria-current={p.step === index ? "step" : undefined} className={p.step === index ? "font-medium text-foreground" : ""}>{index + 1}. {label}</li>)}
       </ol>
-      {p.error && <div role="alert" className="space-y-2 text-sm text-destructive"><p>{p.error}</p><Button variant="outline" disabled={p.busy} onClick={p.onRetry}>Try again</Button></div>}
-      {p.loading ? <p role="status" className="text-sm text-muted-foreground">Restoring saved setup…</p> : p.approvalHref ? <p className="text-sm text-muted-foreground">An organization admin needs to approve this agent. Setup is saved and will resume after approval.</p> : <>
+      {p.error && <div role="alert" className="space-y-2 text-sm text-destructive"><p>{p.error}</p><Button variant="outline" disabled={p.busy} onClick={p.onRetry}>{t("oct19Voice.tryAgain_982hh6")}</Button></div>}
+      {p.loading ? <p role="status" className="text-sm text-muted-foreground">{t("oct19Voice.restoringSavedSetup_18miss2")}</p> : p.approvalHref ? <p className="text-sm text-muted-foreground">{t("oct19Voice.anOrganizationAdminNeedsToApprove_1ghe2y7")}</p> : <>
         {p.step === 0 && <div className="space-y-4">
-          <label className="block space-y-2 text-sm"><span>Paperclip name</span><Input value={p.details.name} disabled={p.created} onChange={e => p.onDetails({ ...p.details, name: e.target.value })} autoComplete="off" maxLength={100} /></label>
-          <label className="block space-y-2 text-sm"><span>Bot name in Grok</span><Input value={p.details.botName} disabled={p.created} onChange={e => p.onDetails({ ...p.details, botName: e.target.value })} autoComplete="off" maxLength={100} /></label>
-          <p className="text-xs text-muted-foreground">Use the name shown in the Grok Bot desktop app. Bot web links may no longer work.</p>
-          <label className="block space-y-2 text-sm"><span>Role</span><NativeSelect disabled={p.created} value={p.details.role ?? "general"} onChange={e => p.onDetails({ ...p.details, role: e.target.value as CreateGrokInvitation["role"] })}>{AGENT_ROLES.map(role => <option key={role} value={role}>{role.replaceAll("_", " ")}</option>)}</NativeSelect></label>
-          <label className="block space-y-2 text-sm"><span>Manager</span><NativeSelect disabled={p.created} value={p.details.reportsTo ?? ""} onChange={e => p.onDetails({ ...p.details, reportsTo: e.target.value || null })}><option value="">No manager</option>{p.managers.map(manager => <option key={manager.id} value={manager.id}>{manager.name}</option>)}</NativeSelect></label>
+          <label className="block space-y-2 text-sm"><span>{t("oct19Voice.paperclipName_17upqza")}</span><Input value={p.details.name} disabled={p.created} onChange={e => p.onDetails({ ...p.details, name: e.target.value })} autoComplete="off" maxLength={100} /></label>
+          <label className="block space-y-2 text-sm"><span>{t("oct19Voice.botNameInGrok_1c2y267")}</span><Input value={p.details.botName} disabled={p.created} onChange={e => p.onDetails({ ...p.details, botName: e.target.value })} autoComplete="off" maxLength={100} /></label>
+          <p className="text-xs text-muted-foreground">{t("oct19Voice.useTheNameShownInThe_6awqym")}</p>
+          <label className="block space-y-2 text-sm"><span>{t("oct19Voice.role_1402mgp")}</span><NativeSelect disabled={p.created} value={p.details.role ?? "general"} onChange={e => p.onDetails({ ...p.details, role: e.target.value as CreateGrokInvitation["role"] })}>{AGENT_ROLES.map(role => <option key={role} value={role}>{agentRoleLabel(role)}</option>)}</NativeSelect></label>
+          <label className="block space-y-2 text-sm"><span>{t("oct19Voice.manager_1u11j70")}</span><NativeSelect disabled={p.created} value={p.details.reportsTo ?? ""} onChange={e => p.onDetails({ ...p.details, reportsTo: e.target.value || null })}><option value="">{t("oct19Voice.noManager_axgz4t")}</option>{p.managers.map(manager => <option key={manager.id} value={manager.id}>{manager.name}</option>)}</NativeSelect></label>
         </div>}
         {p.step === 1 && <div className="space-y-4 text-sm">
-          <p>Copy the connection instructions into your Bot’s chat. Add the custom MCP plugin and complete its browser authorization.</p>
-          {p.connection?.resourceUrl && <AgentSetupPrompt prompt={buildGrokAccessPrompt(p.connection.resourceUrl, p.details.botName)} label="Copy connection instructions" title="Connect Paperclip access" description="Send these instructions to your Bot. The pairing code stays in your browser." />}
+          <p>{t("oct19Voice.copyTheConnectionInstructionsIntoYour_162g49j")}</p>
+          {p.connection?.resourceUrl && <AgentSetupPrompt prompt={buildGrokAccessPrompt(p.connection.resourceUrl, p.details.botName)} label={t("oct19Voice.copyConnectionInstructions_1utxah9")} title={t("oct19Voice.connectPaperclipAccess_19gyt4p")} description={t("oct19Voice.sendTheseInstructionsToYourBot_7l96yg")} />}
           {!binding?.connected && p.pairing && <div className="space-y-2">
-            <label htmlFor={pairingCodeId}>One-use pairing code</label>
+            <label htmlFor={pairingCodeId}>{t("oct19Voice.oneUsePairingCode_ysxala")}</label>
             <div className="flex items-center gap-2">
               <Input id={pairingCodeId} value={p.pairing.pairingCode} readOnly type="password" autoComplete="off" />
-              <CopyText text={p.pairing.pairingCode} ariaLabel="Copy pairing code" className={buttonVariants({ variant: "outline", size: "sm" })}>Copy code</CopyText>
+              <CopyText text={p.pairing.pairingCode} ariaLabel={t("oct19Voice.copyPairingCode_bperj1")} className={buttonVariants({ variant: "outline", size: "sm" })}>{t("oct19Voice.copyCode_106qgkp")}</CopyText>
             </div>
-            <p className="text-xs text-muted-foreground">Copy this code into Paperclip’s authorization page. Do not paste it into Bot chat. Expires {new Date(p.pairing.expiresAt).toLocaleTimeString()}.</p>
+            <p className="text-xs text-muted-foreground">{t("oct19Voice.pairCodeExpires", { time: new Date(p.pairing.expiresAt).toLocaleTimeString(i18n.resolvedLanguage) })}</p>
           </div>}
-          <p role="status" aria-live="polite" className="text-muted-foreground">{binding?.connected ? "Agent access connected." : "Watching for authorization. This connection works as the named agent."}</p>
-          <p className="text-xs text-muted-foreground">Grok plugins are account-wide. Linking one Bot does not isolate its credentials from other Bots on your account.</p>
+          <p role="status" aria-live="polite" className="text-muted-foreground">{binding?.connected ? t("oct19Voice.agentAccessConnected_10ouh5j") : t("oct19Voice.watchingForAuthorizationThisConnectionWorks_ro6kx")}</p>
+          <p className="text-xs text-muted-foreground">{t("oct19Voice.grokPluginsAreAccountWideLinking_iicy2s")}</p>
         </div>}
         {p.step === 2 && <div className="space-y-4 text-sm">
-          <p>Ask your Bot to create a webhook-only routine, then open its Webhook panel in the desktop app.</p>
-          {binding && <AgentSetupPrompt prompt={buildGrokRoutinePrompt(binding.id, p.details.botName)} label="Copy routine instructions" title="Enable assignments" description="Send this to the connected Bot. The routine wakes it when Paperclip work changes." />}
-          <p className="text-xs text-muted-foreground">If clicking the routine does nothing, use the “Webhook URL” navigation link the Bot supplies.</p>
-          {routine?.configured && !p.editingCredentials && !p.webhookUrl && !p.webhookKey ? <div className="space-y-2"><p role="status" className="text-muted-foreground">Routine credentials are stored. Continue to verify both directions.</p>{p.onEditCredentials && <Button variant="outline" onClick={p.onEditCredentials} disabled={p.busy}>Replace routine credentials</Button>}</div> : <>
-            <label className="block space-y-2"><span>Webhook URL</span><Input value={p.webhookUrl} onChange={e => p.onCredentials(e.target.value, p.webhookKey)} type="password" autoComplete="off" spellCheck={false} /></label>
-            <label className="block space-y-2"><span>Webhook key</span><Input value={p.webhookKey} onChange={e => p.onCredentials(p.webhookUrl, e.target.value)} type="password" autoComplete="off" spellCheck={false} /></label>
+          <p>{t("oct19Voice.askYourBotToCreateA_d8kc8p")}</p>
+          {binding && <AgentSetupPrompt prompt={buildGrokRoutinePrompt(binding.id, p.details.botName)} label={t("oct19Voice.copyRoutineInstructions_a0abjh")} title={t("oct19Voice.enableAssignments_ktcowc")} description={t("oct19Voice.sendThisToTheConnectedBot_1a2hu2g")} />}
+          <p className="text-xs text-muted-foreground">{t("oct19Voice.ifClickingTheRoutineDoesNothing_49ls3l")}</p>
+          {routine?.configured && !p.editingCredentials && !p.webhookUrl && !p.webhookKey ? <div className="space-y-2"><p role="status" className="text-muted-foreground">{t("oct19Voice.routineCredentialsAreStoredContinueTo_1dwf0r2")}</p>{p.onEditCredentials && <Button variant="outline" onClick={p.onEditCredentials} disabled={p.busy}>{t("oct19Voice.replaceRoutineCredentials_13pno8h")}</Button>}</div> : <>
+            <label className="block space-y-2"><span>{t("oct19Voice.webhookUrl_ijsn3v")}</span><Input value={p.webhookUrl} onChange={e => p.onCredentials(e.target.value, p.webhookKey)} type="password" autoComplete="off" spellCheck={false} /></label>
+            <label className="block space-y-2"><span>{t("oct19Voice.webhookKey_nzli0p")}</span><Input value={p.webhookKey} onChange={e => p.onCredentials(p.webhookUrl, e.target.value)} type="password" autoComplete="off" spellCheck={false} /></label>
           </>}
-          <p className="text-xs text-muted-foreground">Copy these fields directly from Grok into Paperclip. Credentials are stored securely and are never included in instructions.</p>
+          <p className="text-xs text-muted-foreground">{t("oct19Voice.copyTheseFieldsDirectlyFromGrok_19eqyz5")}</p>
         </div>}
-        {p.step === 3 && <section aria-label="Grok connection checks" className="space-y-4 text-sm">
-          {[{ label: "Assignment delivered", done: delivered }, { label: "Reply received", done: replied }].map(check => <p key={check.label} className="flex items-center gap-3">{check.done ? <Check className="size-4" /> : pending ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <Circle className="size-4 text-muted-foreground" />}{check.label}<span className="text-muted-foreground">{check.done ? "Complete" : "Waiting"}</span></p>)}
-          <p role="status" aria-live="polite" className="text-muted-foreground">{routine?.recoveryNeeded ? "Recovery needed. Inspect Grok’s activity in this agent’s configuration before another delivery." : ready ? "Both directions verified. Your Bot is ready for tasks." : replied ? "Both directions verified. Paperclip is finishing agent setup." : exchange?.status === "rejected" ? "The routine rejected delivery. Check its URL and key, then try again." : delivered ? "The routine accepted delivery. Waiting for an authenticated reply to Paperclip." : "Send a harmless challenge. This creates no task."}</p>
-          <p className="text-xs text-muted-foreground">Grok runs externally. Usage and spending are not reported. Paperclip contact does not prove the Bot is continuously available.</p>
+        {p.step === 3 && <section aria-label={t("oct19Voice.grokConnectionChecks_v977nn")} className="space-y-4 text-sm">
+          {[{ label: t("oct19Voice.assignmentDelivered_eetk08"), done: delivered }, { label: t("oct19Voice.replyReceived_270brm"), done: replied }].map(check => <p key={check.label} className="flex items-center gap-3">{check.done ? <Check className="size-4" /> : pending ? <Loader2 className="size-4 animate-spin motion-reduce:animate-none" /> : <Circle className="size-4 text-muted-foreground" />}{check.label}<span className="text-muted-foreground">{check.done ? t("oct19Voice.complete_rcgk2q") : t("oct19Voice.waiting_1jufdxk")}</span></p>)}
+          <p role="status" aria-live="polite" className="text-muted-foreground">{routine?.recoveryNeeded ? t("oct19Voice.recoveryNeededInspectGrokSActivity_htjkt9") : ready ? t("oct19Voice.bothDirectionsVerifiedYourBotIs_1k6okjc") : replied ? t("oct19Voice.bothDirectionsVerifiedPaperclipIsFinishing_14uvmr") : exchange?.status === "rejected" ? t("oct19Voice.theRoutineRejectedDeliveryCheckIts_xdklob") : delivered ? t("oct19Voice.theRoutineAcceptedDeliveryWaitingFor_178wpn0") : t("oct19Voice.sendAHarmlessChallengeThisCreates_evgp4x")}</p>
+          <p className="text-xs text-muted-foreground">{t("oct19Voice.grokRunsExternallyUsageAndSpending_agxe67")}</p>
         </section>}
       </>}
     </div>
     <div className="flex items-center justify-between gap-3 border-t px-6 py-4 sm:px-8">
-      <div className="flex items-center gap-2"><Button variant="ghost" onClick={p.onBack} disabled={p.busy}>Back</Button><Button variant="ghost" onClick={p.onExit} disabled={p.busy}>Save &amp; exit</Button></div>
-      {p.approvalHref ? <Button asChild><Link to={p.approvalHref} onClick={p.onExit}>Review approval</Link></Button> : <Button onClick={p.onNext} disabled={nextDisabled}>{p.busy ? "Saving…" : ready ? "Done" : p.step === 3 ? pending ? "Waiting for reply…" : replied ? "Finishing setup…" : "Verify connection" : "Continue"}</Button>}
+      <div className="flex items-center gap-2"><Button variant="ghost" onClick={p.onBack} disabled={p.busy}>{t("oct19Voice.back_1hzmxtu")}</Button><Button variant="ghost" onClick={p.onExit} disabled={p.busy}>{t("oct19Voice.saveExit_10o0pue")}</Button></div>
+      {p.approvalHref ? <Button asChild><Link to={p.approvalHref} onClick={p.onExit}>{t("oct19Voice.reviewApproval_jntaqg")}</Link></Button> : <Button onClick={p.onNext} disabled={nextDisabled}>{p.busy ? t("oct19Voice.saving_w7dncv") : ready ? t("oct19Voice.done_13cn9g1") : p.step === 3 ? pending ? t("oct19Voice.waitingForReply_2m26wj") : replied ? t("oct19Voice.finishingSetup_oq5xub") : t("oct19Voice.verifyConnection_1v2fb24") : t("oct19Voice.continue_1bipuuc")}</Button>}
     </div>
   </>;
 }

@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { buildFilterChips, type FilterChipLookups, type SearchFilters } from "@/lib/search-filters";
@@ -13,6 +14,7 @@ export function SearchFilterChips({
   onChange: (next: SearchFilters) => void;
   onClearAll: () => void;
 }) {
+  const { t } = useTranslation();
   const chips = buildFilterChips(filters, lookups);
   if (chips.length === 0) return null;
 
@@ -25,7 +27,7 @@ export function SearchFilterChips({
             type="button"
             className="rounded-full p-0.5 hover:bg-background/60"
             onClick={() => onChange(chip.remove(filters))}
-            aria-label={`Remove filter ${chip.label}`}
+            aria-label={t("localizationFilters.removeFilter", { defaultValue: "Remove filter {{label}}", label: chip.label })}
           >
             <X className="h-3 w-3" />
           </button>
@@ -36,7 +38,7 @@ export function SearchFilterChips({
         className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
         onClick={onClearAll}
       >
-        Clear all
+        {t("localizationFilters.clearAll", { defaultValue: "Clear all" })}
       </button>
     </div>
   );

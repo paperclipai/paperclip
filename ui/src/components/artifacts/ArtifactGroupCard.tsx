@@ -1,4 +1,5 @@
 import { Layers } from "lucide-react";
+import { useTranslation } from "@/i18n";
 import type { To } from "react-router-dom";
 import type { CompanyArtifactGroup } from "@/api/artifacts";
 import { Link } from "@/lib/router";
@@ -19,9 +20,10 @@ interface ArtifactGroupCardProps {
  * than one artifact.
  */
 export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
+  const { t } = useTranslation();
   const stacked = group.count > 1;
   const preview = group.previewArtifacts[0];
-  const countLabel = `${group.count} artifact${group.count === 1 ? "" : "s"}`;
+  const countLabel = t("localizationRoutines.artifactCount", { count: group.count });
 
   return (
     <div className="relative">
@@ -80,7 +82,7 @@ export function ArtifactGroupCard({ group, to }: ArtifactGroupCardProps) {
           <div className="mt-0.5 flex items-center gap-1.5 text-(length:--text-micro) text-muted-foreground/65">
             <span>{countLabel}</span>
             <span className="text-muted-foreground/50">·</span>
-            <span>Updated {formatDate(group.updatedAt)}</span>
+            <span>{t("localizationRoutines.updatedAt", { date: formatDate(group.updatedAt) })}</span>
           </div>
         </div>
       </Link>

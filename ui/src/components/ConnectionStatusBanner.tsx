@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useConnectivity, type ConnectivityStatus } from "@/lib/connectivity";
 
@@ -32,9 +33,7 @@ export function connectionBannerView(input: {
 
 export function pendingWritesCopy(count: number): string | null {
   if (count <= 0) return null;
-  return count === 1
-    ? "1 change will send when you’re back online."
-    : `${count} changes will send when you’re back online.`;
+  return t("nov02Root.pendingWrites", { count });
 }
 
 // Full-page reconnect screens (CloudAccessGate before the board opens) already
@@ -110,12 +109,13 @@ export function ConnectionStatusMessage({
   view: Exclude<ConnectionBannerView, "hidden">;
   pendingWrites?: number;
 }) {
+  useTranslation();
   const pending = view === "back_online" ? null : pendingWritesCopy(pendingWrites);
   const message = view === "back_online"
-    ? "Back online."
+    ? t("nov02Root.copy47bfa636e9")
     : view === "offline"
-      ? "You’re offline. Reconnecting when your network is back…"
-      : "Connection interrupted. Reconnecting automatically…";
+      ? t("nov02Root.copy8f8f4ecaf6")
+      : t("nov02Root.copy725cbac593");
 
   // Fixed, not in flow: the desktop shell is exactly `h-dvh` with clipped
   // overflow, so an in-flow banner would push the board's bottom off screen.

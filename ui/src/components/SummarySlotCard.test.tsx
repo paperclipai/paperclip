@@ -14,6 +14,7 @@ import type {
   SummarySlotRevision,
 } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { SummarySlotCard } from "./SummarySlotCard";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -454,6 +455,19 @@ describe("SummarySlotCard", () => {
 
     expect(container.textContent).toContain("Historical revision");
     expect(container.textContent).toContain("Old body");
+
+    const generationCalls = mockSummarySlotsApi.generate.mock.calls.length;
+    const originalLanguage = i18n.language;
+    try {
+      await act(async () => { await i18n.changeLanguage("ru"); });
+      expect(container.textContent).toContain("Предыдущая версия");
+      expect(container.textContent).toContain("3 версии");
+      expect(container.textContent).toContain("Old body");
+      expect(container.textContent).not.toContain("Current body");
+      expect(mockSummarySlotsApi.generate).toHaveBeenCalledTimes(generationCalls);
+    } finally {
+      await act(async () => { await i18n.changeLanguage(originalLanguage); });
+    }
 
     const latestButton = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
       (button) => button.textContent === "Latest",

@@ -11,9 +11,9 @@ import {
 import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useManagedSandboxOnly } from "@/hooks/useManagedSandboxOnly";
-import { cn } from "@/lib/utils";
+import { cn, relativeTime } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { timeAgo } from "@/lib/timeAgo";
+import { t, useTranslation } from "@/i18n";
 import type {
   WorkspaceServiceControlAction,
   WorkspaceServiceControlEntry,
@@ -116,7 +116,7 @@ function buildJobItem(
     workspaceCommandId: command.id,
     runtimeServiceId: null,
     serviceIndex: null,
-    disabledReason: command.disabledReason ?? (!command.command ? "This job is missing a command." : null),
+    disabledReason: command.disabledReason ?? (!command.command ? t("workspaces.runtime.missingJobCommand") : null),
   };
 }
 
@@ -166,7 +166,7 @@ export function buildWorkspaceRuntimeControlSections(input: {
       workspaceCommandId: null,
       runtimeServiceId: runtimeService.id,
       serviceIndex: runtimeService.configIndex ?? null,
-      disabledReason: "This runtime service no longer matches a configured workspace command.",
+      disabledReason: t("workspaces.runtime.unmatchedService"),
     }));
 
   return {
@@ -192,20 +192,21 @@ function isActiveStatusLabel(statusLabel: string) {
 function exposureFailureCopy(exposure: RuntimeExposureStatus | null) {
   if (exposure?.state === "failed") {
     return {
-      label: "HTTPS unavailable",
-      remediation: "Check the Tailscale broker and node HTTPS configuration.",
+      label: t("workspaces.runtime.httpsUnavailable"),
+      remediation: t("workspaces.runtime.httpsUnavailableHelp"),
     };
   }
   if (exposure?.state === "cleanup_pending") {
     return {
-      label: "HTTPS cleanup pending",
-      remediation: "Restart the host broker before reusing this port.",
+      label: t("workspaces.runtime.httpsCleanupPending"),
+      remediation: t("workspaces.runtime.httpsCleanupHelp"),
     };
   }
   return null;
 }
 
 function ExposureFailureDetail({ exposure }: { exposure: RuntimeExposureStatus | null }) {
+  useTranslation();
   const copy = exposureFailureCopy(exposure);
   if (!copy) return null;
   return (
@@ -267,14 +268,16 @@ export function buildWorkspaceServiceControlEntries(input: {
 
     const runtimeService = item.runtimeServiceId ? runtimeServicesById.get(item.runtimeServiceId) ?? null : null;
     const failureDetail = state === "failed"
-      ? `Service failed${runtimeService?.stoppedAt ? ` · ${timeAgo(runtimeService.stoppedAt)}` : ""}`
+      ? runtimeService?.stoppedAt
+        ? t("workspaces.runtime.serviceFailedWithTime", { time: relativeTime(runtimeService.stoppedAt) })
+        : t("workspaces.runtime.serviceFailed")
       : null;
     const exposure = runtimeService?.exposure ?? item.exposure;
     const exposureFailure = exposureFailureCopy(exposure);
     const exposureDetail = exposure?.state === "pending"
-      ? "Provisioning HTTPS…"
+      ? t("workspaces.runtime.httpsProvisioning")
       : exposure?.state === "ready"
-        ? "HTTPS ready"
+        ? t("workspaces.runtime.httpsReady")
         : exposureFailure
           ? `${exposureFailure.label} · ${exposureFailure.remediation}`
           : null;
@@ -360,6 +363,7 @@ function CommandActionButtons({
   square?: boolean;
   iconOnly?: boolean;
 }) {
+  useTranslation();
   const actions: WorkspaceRuntimeAction[] =
     item.kind === "job"
       ? ["run"]
@@ -372,13 +376,7 @@ function CommandActionButtons({
       {actions.map((action) => {
         const request = buildRequest(item, action);
         const Icon = action === "stop" ? Square : action === "restart" ? RotateCcw : Play;
-        const label = action === "run"
-          ? "Run"
-          : action === "start"
-            ? "Start"
-            : action === "stop"
-              ? "Stop"
-              : "Restart";
+        const label = t(`workspaces.actions.${action}`);
         const showSpinner = isPending && requestMatchesPending(pendingRequest, request);
         const disabled =
           isPending
@@ -431,6 +429,7 @@ function CommandSection({
   square?: boolean;
   iconOnly?: boolean;
 }) {
+  useTranslation();
   // Managed-sandbox-only policy: the working directory is a path on the
   // execution host, so the command rows drop it, and keep dropping it until the
   // policy is known. The URL, the port, and the command itself stay — they
@@ -456,8 +455,11 @@ function CommandSection({
                   <div className="space-y-1">
                     <div className="text-sm font-medium">{item.title}</div>
                     <div className="text-xs text-muted-foreground">
-                      {item.kind} · {item.statusLabel}
-                      {item.lifecycle ? ` · ${item.lifecycle}` : ""}
+                      {t(`workspaces.runtime.kind.${item.kind}`)} ·{" "}
+                      {item.statusLabel === "run once"
+                        ? t("workspaces.runtime.status.runOnce")
+                        : t(`workspaces.runtime.status.${item.statusLabel}`, { defaultValue: item.statusLabel })}
+                      {item.lifecycle ? ` · ${t(`workspaces.runtime.lifecycle.${item.lifecycle}`)}` : ""}
                     </div>
                   </div>
                   <CommandActionButtons
@@ -476,7 +478,7 @@ function CommandSection({
                       <ExternalLink className="h-3.5 w-3.5" />
                     </a>
                   ) : null}
-                  {item.port ? <div>Port {item.port}</div> : null}
+                  {item.port ? <div>{t("workspaces.fields.port")} {item.port}</div> : null}
                   {item.command ? <div className="break-all font-mono">{item.command}</div> : null}
                   {item.cwd && !hideHostPaths ? <div className="break-all font-mono">{item.cwd}</div> : null}
                   {item.disabledReason ? <div>{item.disabledReason}</div> : null}
@@ -492,7 +494,7 @@ function CommandSection({
                           ? "border-destructive/30 bg-destructive/10 text-destructive"
                           : "border-border text-muted-foreground",
                     )}>
-                      {item.healthStatus}
+                      {t(`workspaces.runtime.health.${item.healthStatus}`)}
                     </Badge>
                   </div>
                 ) : null}
@@ -509,13 +511,14 @@ export function WorkspaceRuntimeControls({
   sections,
   isPending = false,
   pendingRequest = null,
-  serviceEmptyMessage = "No services are configured for this workspace.",
-  jobEmptyMessage = "No one-shot jobs are configured for this workspace.",
+  serviceEmptyMessage = t("workspaces.runtime.noServicesConfigured"),
+  jobEmptyMessage = t("workspaces.runtime.noJobsConfigured"),
   disabledHint = null,
   onAction,
   className,
   square,
 }: WorkspaceRuntimeControlsProps) {
+  useTranslation();
   const runningCount = [...sections.services, ...sections.otherServices].filter(
     (item) => item.statusLabel === "running" || item.statusLabel === "starting",
   ).length;
@@ -525,7 +528,7 @@ export function WorkspaceRuntimeControls({
     <div className={cn("space-y-4", className)}>
       <div className={cn("border border-border/70 bg-background p-3", square ? "rounded-none" : "rounded-xl")}>
         <div className="space-y-1">
-          <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace commands</div>
+          <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">{t("workspaces.runtime.commands")}</div>
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="outline"
               className={cn(
@@ -536,12 +539,14 @@ export function WorkspaceRuntimeControls({
               )}
             >
               <Activity className="h-3.5 w-3.5" />
-              {runningCount > 0 ? `${runningCount} services running` : "No services running"}
+              {runningCount > 0
+                ? t("workspaces.runtime.servicesRunning", { count: runningCount })
+                : t("workspaces.runtime.noServicesRunning")}
             </Badge>
             <span className="text-xs text-muted-foreground">
               {sections.jobs.length > 0
-                ? `${sections.jobs.length} job${sections.jobs.length === 1 ? "" : "s"} available to run on demand.`
-                : "Each command can be controlled independently."}
+                ? t("workspaces.runtime.jobsAvailable", { count: sections.jobs.length })
+                : t("workspaces.runtime.independentCommands")}
             </span>
           </div>
           {visibleDisabledHint ? <p className="text-xs text-muted-foreground">{visibleDisabledHint}</p> : null}
@@ -549,8 +554,8 @@ export function WorkspaceRuntimeControls({
       </div>
 
       <CommandSection
-        title="Services"
-        description="Long-running commands that Paperclip can supervise for this workspace."
+        title={t("workspaces.runtime.services")}
+        description={t("workspaces.runtime.servicesDescription")}
         items={sections.services}
         emptyMessage={serviceEmptyMessage}
         disabledHint={visibleDisabledHint}
@@ -561,8 +566,8 @@ export function WorkspaceRuntimeControls({
       />
 
       <CommandSection
-        title="Jobs"
-        description="One-shot commands that run now and exit when they finish."
+        title={t("workspaces.runtime.jobs")}
+        description={t("workspaces.runtime.jobsDescription")}
         items={sections.jobs}
         emptyMessage={jobEmptyMessage}
         isPending={isPending}
@@ -573,8 +578,8 @@ export function WorkspaceRuntimeControls({
 
       {sections.otherServices.length > 0 ? (
         <CommandSection
-          title="Untracked services"
-          description="Running services that no longer match the current workspace command config."
+          title={t("workspaces.runtime.untrackedServices")}
+          description={t("workspaces.runtime.untrackedServicesDescription")}
           items={sections.otherServices}
           emptyMessage=""
           isPending={isPending}

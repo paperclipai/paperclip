@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import {
   CircleCheck,
   CircleAlert,
@@ -8,42 +9,43 @@ import {
 import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { adapterEnvironmentCheckMessageDisplay } from "@/lib/adapter-environment-check-display";
 export type TestState = "idle" | "running" | "pass" | "fail";
 
 const copy = {
   idle: {
-    title: "Test your agent",
-    description: "Check that your runtime and model can respond.",
-    action: "Run test",
+    get title() { return t("agentSetup.testAgent"); },
+    get description() { return t("agentSetup.testAgentDescription"); },
+    get action() { return t("agentSetup.runTest"); },
   },
   running: {
-    title: "Testing connection",
-    description: "Checking the runtime and waiting for a model response…",
-    action: "Testing…",
+    get title() { return t("agentSetup.testingConnection"); },
+    get description() { return t("agentSetup.testRuntimeDescription"); },
+    get action() { return t("agentSetup.testing"); },
   },
   pass: {
-    title: "Connection successful",
-    description: "Your runtime checks passed. Review the details below.",
-    action: "Test again",
+    get title() { return t("agentSetup.connectionSuccessful"); },
+    get description() { return t("agentSetup.testSuccessDescription"); },
+    get action() { return t("agentSetup.testAgain"); },
   },
   warn: {
-    title: "Connection needs attention",
-    description: "Review the test details before running your agent.",
-    action: "Test again",
+    get title() { return t("agentSetup.testAttention"); },
+    get description() { return t("agentSetup.testAttentionDescription"); },
+    get action() { return t("agentSetup.testAgain"); },
   },
   fail: {
-    title: "Couldn't connect",
-    description: "Check your model and provider connection, then try again.",
-    action: "Retry test",
+    get title() { return t("agentSetup.testFailed"); },
+    get description() { return t("agentSetup.testFailedDescription"); },
+    get action() { return t("agentSetup.retryTest"); },
   },
 } as const;
 
 const prerequisiteCopy = {
-  idle: { title: "Check prerequisites", description: "Check instance settings and public connection configuration.", action: "Check setup" },
-  running: { title: "Checking prerequisites", description: "Checking instance settings and public connection configuration…", action: "Checking…" },
-  pass: { title: "Setup checks passed", description: "Review the setup details before assigning work.", action: "Check again" },
-  warn: { title: "Pairing required", description: "Create this agent, then pair it and verify event delivery.", action: "Check again" },
-  fail: { title: "Prerequisite check failed", description: "Review the setup details and retry.", action: "Retry check" },
+  idle: { get title() { return t("oct19Core.prerequisite_idle_title"); }, get description() { return t("oct19Core.prerequisite_idle_description"); }, get action() { return t("oct19Core.prerequisite_idle_action"); } },
+  running: { get title() { return t("oct19Core.prerequisite_running_title"); }, get description() { return t("oct19Core.prerequisite_running_description"); }, get action() { return t("oct19Core.prerequisite_running_action"); } },
+  pass: { get title() { return t("oct19Core.prerequisite_pass_title"); }, get description() { return t("oct19Core.prerequisite_pass_description"); }, get action() { return t("oct19Core.prerequisite_pass_action"); } },
+  warn: { get title() { return t("oct19Core.prerequisite_warn_title"); }, get description() { return t("oct19Core.prerequisite_warn_description"); }, get action() { return t("oct19Core.prerequisite_warn_action"); } },
+  fail: { get title() { return t("oct19Core.prerequisite_fail_title"); }, get description() { return t("oct19Core.prerequisite_fail_description"); }, get action() { return t("oct19Core.prerequisite_fail_action"); } },
 } as const;
 
 export function RuntimeTestCard({
@@ -65,16 +67,17 @@ export function RuntimeTestCard({
   metadataOnly?: boolean;
   tone?: "card" | "tile";
 }) {
+  const { t } = useTranslation();
   const missingRuntime = state === "fail"
     ? result?.checks.find(check => check.code === "acpx_runtime_package_missing")
     : undefined;
   const content = missingRuntime
-    ? { ...copy.fail, title: "Runtime missing", description: missingRuntime.message }
+    ? { ...copy.fail, title: t("oct19Core.runtimeMissing"), description: adapterEnvironmentCheckMessageDisplay(missingRuntime) }
     : (variant === "prerequisites" ? prerequisiteCopy : copy)[state];
   const description = metadataOnly && state === "idle"
-    ? "Verify your saved token, runtime installation, and selected model without sending a model prompt."
+    ? t("oct26Finish.verifyMetadata")
     : metadataOnly && state === "running"
-      ? "Checking the saved token, runtime, and selected model…"
+      ? t("oct26Finish.checkingMetadata")
       : content.description;
   const Icon =
     state === "running"
@@ -86,7 +89,7 @@ export function RuntimeTestCard({
           : Play;
   return (
     <section
-      aria-label="Runtime test"
+      aria-label={t("agentSetup.runtimeTest")}
       data-agent-tile={tone === "tile" ? "" : undefined}
       className={tone === "tile" ? "rounded-lg bg-(--agent-detail-tile)" : "rounded-lg border border-border bg-card"}
     >
@@ -142,7 +145,7 @@ export function RuntimeTestCard({
               aria-hidden="true"
               className="size-3 transition-transform group-open:rotate-90"
             />
-            Test details
+            {t("agentSetup.testDetails")}
           </summary>
           <ul className="space-y-3 px-4 pb-4">
             {result.checks.map((check) => (
@@ -162,7 +165,7 @@ export function RuntimeTestCard({
                   />
                 )}
                 <div className="min-w-0 space-y-1">
-                  <p className="break-words text-foreground">{check.message}</p>
+                  <p className="break-words text-foreground">{adapterEnvironmentCheckMessageDisplay(check)}</p>
                   {check.detail && (
                     <p className="break-all text-muted-foreground">
                       {check.detail}

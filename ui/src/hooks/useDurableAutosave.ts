@@ -7,6 +7,7 @@ import { useConnectivityStore } from "@/lib/connectivity";
 import { classifySendFailure, MAX_ONLINE_RESENDS, resendDelayFor, type SendOutcome } from "@/lib/pending-send";
 import { useAutoResend } from "./useDurableSubmit";
 import { useDraftOwner, useDraftOwnerReader } from "./useDraftOwner";
+import { t, useTranslation } from "@/i18n";
 
 export type DurableAutosaveStatus =
   | "idle"
@@ -27,15 +28,15 @@ export type DurableAutosaveResult =
 export function autosaveLabel(status: DurableAutosaveStatus, error: ErrorDescription | null): string | null {
   switch (status) {
     case "saving":
-      return "Saving…";
+      return t("nov02Core.autosave.saving");
     case "saved":
-      return "Saved";
+      return t("nov02Core.autosave.saved");
     case "waiting":
-      return "Will save when reconnected";
+      return t("nov02Core.autosave.waiting");
     case "stalled":
-      return "Automatic saving paused";
+      return t("nov02Core.autosave.stalled");
     case "error":
-      return error ? `Couldn't save (${error.body.replace(/\.$/, "")})` : "Couldn't save";
+      return error ? t("nov02Core.autosave.failedReason", { reason: error.body.replace(/\.$/, "") }) : t("nov02Core.autosave.failed");
     default:
       return null;
   }
@@ -110,6 +111,7 @@ const SAVED_LINGER_MS = 1600;
  * - Errors become readable copy for "Couldn't save (reason)".
  */
 export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): DurableAutosave<T> {
+  useTranslation();
   const client = useContext(QueryClientContext);
   const owner = useDraftOwner();
   const readOwner = useDraftOwnerReader();
@@ -286,7 +288,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     if (admittedOwner !== undefined) registry.delete(JSON.stringify([undefined, target]));
     const job: Job = { token: Symbol(), registryKey: JSON.stringify([admittedOwner, target]), resends: 0, id: ++sequence.current, target, owner: admittedOwner, account: client ? bindAccount(client) : null, draft,
       save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
-      onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? "save" };
+      onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? t("nov02Core.saveAction") };
     const previous = jobs.current.get(target);
     if (previous) releaseJob(previous);
     let revision = registry.get(job.registryKey);

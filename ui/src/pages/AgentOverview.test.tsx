@@ -3,7 +3,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AgentDetail, AgentRuntimeState, HeartbeatRun, Issue } from "@paperclipai/shared";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { i18n } from "@/i18n";
 import { AgentOverview } from "./AgentDetail";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { queryKeys } from "../lib/queryKeys";
@@ -22,8 +23,10 @@ vi.mock("../components/MarkdownBody", () => ({
   MarkdownBody: ({ children }: { children: string }) => <div>{children}</div>,
 }));
 
+afterEach(async () => { await i18n.changeLanguage("en"); });
+
 describe("AgentOverview", () => {
-  it("leads with audit cards, then Profile, Skills and Recent tasks", () => {
+  it("leads with audit cards, then Profile, Skills and Recent tasks", async () => {
     const agent = {
       id: "agent-1",
       companyId: "company-1",
@@ -53,7 +56,7 @@ describe("AgentOverview", () => {
       sessionDisplayId: "codex-session-42",
     } as unknown as AgentRuntimeState;
 
-    const markup = renderToStaticMarkup(
+    const render = () => renderToStaticMarkup(
       <QueryClientProvider client={new QueryClient()}>
         <TooltipProvider>
         <AgentOverview
@@ -69,6 +72,7 @@ describe("AgentOverview", () => {
       </QueryClientProvider>,
     );
 
+    const markup = render();
     for (const label of ["Activity", "Runs", "Costs", "Budget used", "Profile", "Skills", "Recent tasks"]) {
       expect(markup).toContain(label);
     }
@@ -85,6 +89,22 @@ describe("AgentOverview", () => {
     expect(markup).not.toContain("Capabilities");
     expect(markup).not.toContain("agentId=agent-1");
     expect(markup).not.toContain("Created by");
+    for (const locale of ["ru", "en"] as const) {
+      await i18n.changeLanguage(locale);
+      const host = document.createElement("div");
+      host.innerHTML = render();
+      const labels = locale === "ru"
+        ? ["Активность", "Запуски", "Затраты", "Использовано из бюджета"]
+        : ["Activity", "Runs", "Costs", "Budget used"];
+      for (const [index, page] of ["activity", "runs", "costs", "budgets"].entries()) {
+        const link = host.querySelector(`a[href="/agents/codexcoder/${page}"]`);
+        expect(link).not.toBeNull();
+        expect(link?.textContent).toContain(labels[index]);
+      }
+      expect(host.textContent).toContain("Simplify agent information architecture");
+      expect(host.textContent).toContain("Design Guide");
+      expect(host.textContent).toContain("Check PR");
+    }
   });
 
   function renderOverview(createdByUserId: string | null, client: QueryClient) {

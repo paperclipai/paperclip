@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -28,18 +29,20 @@ export function PendingSendNotice({
   onCancel: () => void;
   className?: string;
 }) {
+  useTranslation();
+  const nounKey = ["message", "comment", "task", "update"].includes(noun) ? noun : "custom";
   const replayable = Boolean(onResendNow);
   const title = !replayable
-    ? `We couldn’t confirm whether this ${noun} was sent.`
+    ? t(`nov02Root.sendUnknown_${nounKey}`, { noun })
     : resending
-      ? "Sending…"
+      ? t("nov02Root.copyb8ed5279e8")
       : stalled
-        ? `Couldn’t send this ${noun} yet.`
-        : "Sending when reconnected…";
+        ? t(`nov02Root.sendStalled_${nounKey}`, { noun })
+        : t("nov02Root.copy8639e646e6");
   const detail = replayable
-    ? persisted ? `Your ${noun} is saved on this device.`
-      : "Browser storage is unavailable. Keep this tab open or copy your text before leaving."
-    : "It may already be in the conversation. Check it before sending again; Cancel keeps your text.";
+    ? persisted ? t(`nov02Root.sendSaved_${nounKey}`, { noun })
+      : t("nov02Root.copy164d7a9ab8")
+    : t("nov02Root.copycb18034a3c");
   return (
     <div
       role="status"
@@ -55,11 +58,11 @@ export function PendingSendNotice({
       <div className="flex items-center gap-2">
         {onResendNow ? (
           <Button type="button" size="sm" variant="outline" disabled={resending} onClick={onResendNow}>
-            Resend now
+            {t("nov02Root.copya4fab5c812")}
           </Button>
         ) : null}
         <Button type="button" size="sm" variant="ghost" disabled={resending} onClick={onCancel}>
-          Cancel
+          {t("nov02Root.copy19766ed6cc")}
         </Button>
       </div>
     </div>

@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { i18n, LOCALE_STORAGE_KEY, resolveInitialLocale } from "@/i18n";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -148,10 +149,11 @@ describe("SidebarAccountMenu", () => {
     mockGetCurrentBoardAccess.mockResolvedValue(boardAccess("owner"));
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     container.remove();
     document.body.innerHTML = "";
     vi.clearAllMocks();
+    await i18n.changeLanguage("en");
     vi.unstubAllGlobals();
   });
 
@@ -358,6 +360,17 @@ describe("SidebarAccountMenu", () => {
     const popover = document.body.querySelector('[data-slot="popover-content"]');
     expect(popover?.textContent).not.toContain("Feedback");
     expect(popover?.querySelector('a[href="https://paperclip.ing/feedback"]')).toBeNull();
+
+
+    await act(async () => { await i18n.changeLanguage("ru"); });
+    await flushReact();
+    expect(accountTrigger?.getAttribute("aria-label")).toBe(i18n.t("account.openAccountMenu"));
+    expect(feedbackButton?.getAttribute("aria-label")).toBe("Оставить отзыв");
+    expect(feedbackButton?.getAttribute("href")).toBe("https://paperclip.ing/feedback");
+    expect(popover?.textContent).toContain("Jane Example");
+    expect(popover?.textContent).toContain("jane@example.com");
+    expect(popover?.querySelector('a[href="/u/user-1"]')).toBeTruthy();
+    expect(mockAuthApi.signOut).not.toHaveBeenCalled();
 
     await act(async () => root.unmount());
   });
@@ -729,6 +742,62 @@ describe("SidebarAccountMenu", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("switches and persists EN–RU–EN through accessible native language buttons", async () => {
+    const storedLocale = localStorage.getItem(LOCALE_STORAGE_KEY);
+    localStorage.removeItem(LOCALE_STORAGE_KEY);
+    await i18n.changeLanguage("en");
+    const root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.health, { status: "ok", deploymentMode: "local_trusted" });
+    try {
+      await act(() => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <TooltipProvider><SidebarAccountMenu deploymentMode="local_trusted" open /></TooltipProvider>
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      const group = document.body.querySelector('[role="group"][aria-label="Language"]')!;
+      expect(group).not.toBeNull();
+      const english = group.querySelector<HTMLButtonElement>('button[lang="en"]')!;
+      const russian = group.querySelector<HTMLButtonElement>('button[lang="ru"]')!;
+      expect(group.querySelectorAll("button")).toHaveLength(2);
+      for (const button of [english, russian]) {
+        expect(button.type).toBe("button");
+        expect(button.disabled).toBe(false);
+        expect(button.tabIndex).toBe(0);
+        button.focus();
+        expect(document.activeElement).toBe(button);
+      }
+      for (const language of ["en", "ru", "en"]) {
+        if (i18n.resolvedLanguage !== language) {
+          await act(() => { (language === "ru" ? russian : english).click(); });
+          expect(localStorage.getItem(LOCALE_STORAGE_KEY)).toBe(language);
+          expect(resolveInitialLocale()).toBe(language);
+        }
+        expect(i18n.resolvedLanguage).toBe(language);
+        expect(document.documentElement.lang).toBe(language);
+        expect(group.getAttribute("aria-label")).toBe(language === "ru" ? "Язык" : "Language");
+        expect(group.querySelector('button[lang="en"]')).toBe(english);
+        expect(group.querySelector('button[lang="ru"]')).toBe(russian);
+        expect(english.getAttribute("aria-label")).toBe(language === "ru" ? "Английский" : "English");
+        expect(russian.getAttribute("aria-label")).toBe(language === "ru" ? "Русский" : "Russian");
+        expect(english.textContent).toBe(english.getAttribute("aria-label"));
+        expect(russian.textContent).toBe(russian.getAttribute("aria-label"));
+        expect(english.getAttribute("aria-pressed")).toBe(String(language === "en"));
+        expect(russian.getAttribute("aria-pressed")).toBe(String(language === "ru"));
+        expect(group.querySelectorAll('[aria-pressed="true"]')).toHaveLength(1);
+      }
+    } finally {
+      await act(() => root.unmount());
+      queryClient.clear();
+      if (storedLocale === null) localStorage.removeItem(LOCALE_STORAGE_KEY);
+      else localStorage.setItem(LOCALE_STORAGE_KEY, storedLocale);
+      await i18n.changeLanguage("en");
+    }
   });
 
   it("keeps sign-out hidden outside authenticated deployment mode", async () => {

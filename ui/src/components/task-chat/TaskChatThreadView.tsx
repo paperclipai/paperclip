@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { TaskBrowserActivity } from "../task-side-panel/TaskBrowserActivity";
 import { TaskChatProjectCreatedCard } from "./TaskChatProjectCreatedCard";
 import { TaskChatSkillCreatedCard } from "./TaskChatSkillCreatedCard";
@@ -133,6 +134,9 @@ function renderItem(
           item={attachedTurnItem}
           timestampPrefix={
             attachedTurnItem.standaloneHeader ? undefined : item.timestamp
+          }
+          timestampValue={
+            attachedTurnItem.standaloneHeader ? undefined : item.createdAtIso ?? item.atMs
           }
           leading={attachedTurnItem.standaloneHeader ? undefined : actions}
           renderChild={(child) =>
@@ -327,6 +331,7 @@ export function TaskChatThreadView({
   onOpenSkill,
   onOpenBrowser,
 }: TaskChatThreadViewProps) {
+  useTranslation();
   const streamlined = useStreamlinedTaskChatPresentation();
   const { items: visibleItems, retryMarkers } = useMemo(() => compactAdjacentErrors(items), [items]);
   const retryableMarkerId =

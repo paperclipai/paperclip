@@ -1,12 +1,13 @@
 import type { ChatEndpoint } from "@/api/chatEndpoints";
+import { t } from "@/i18n";
 import { isProvisionedSlackSetup } from "@paperclipai/shared";
 export { isProvisionedSlackSetup };
 export function slackSetupNavigation(method: string | undefined, availableStage = 1) {
   const managed = method === "managed";
   return {
-    labels: managed ? ["Choose agent", "Connect"] : isProvisionedSlackSetup(method)
-      ? ["Choose agent", "App configuration access token", "Install Slack app", "Send a message"]
-      : ["Choose agent", "Create Slack app", "Add credentials", "Verify Slack connection", "Connect your Slack account", "Try it"],
+    get labels() { return managed ? [t("chatUi.chatEndpointSetup.chooseAgent"), t("sep13Connections.connect")] : isProvisionedSlackSetup(method)
+      ? [t("chatUi.chatEndpointSetup.chooseAgent"), t("oct19Apps.appConfigurationToken"), t("oct19Apps.installSlackApp"), t("stableOct26Apps.sendMessage")]
+      : [t("chatUi.chatEndpointSetup.chooseAgent"), t("sep28Apps.copy235"), t("sep28Apps.copy236"), t("sep28Apps.copy237"), t("sep28Apps.copy198"), t("chatUi.chatEndpointSetup.tryIt")]; },
     toVisible: (step: number) => managed ? Math.min(step, 1) : step,
     toStage: (step: number) => managed && step === 1 ? availableStage : step,
   };

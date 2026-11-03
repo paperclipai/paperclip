@@ -1,3 +1,4 @@
+import { useTranslation } from "@/i18n";
 import { useLayoutEffect, useRef, useState } from "react";
 import type { Agent } from "@paperclipai/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
@@ -32,6 +33,7 @@ export function fitReports(widths: number[], available: number, gap: number, mor
 }
 
 export function AgentDirectReports({ reports }: { reports: Agent[] }) {
+  const { t } = useTranslation();
   const listRef = useRef<HTMLDivElement>(null);
   const measureRef = useRef<HTMLDivElement>(null);
   const [shown, setShown] = useState(reports.length);
@@ -54,7 +56,7 @@ export function AgentDirectReports({ reports }: { reports: Agent[] }) {
     observer.observe(list);
     observer.observe(measure);
     return () => observer.disconnect();
-  }, [reportsKey]);
+  }, [reportsKey, t]);
 
   const hidden = expanded ? 0 : Math.max(0, reports.length - shown);
   const visible = hidden > 0 ? reports.slice(0, shown) : reports;
@@ -74,12 +76,12 @@ export function AgentDirectReports({ reports }: { reports: Agent[] }) {
         ))}
         {hidden > 0 ? (
           <button type="button" className={toggleClass} onClick={() => setExpanded(true)}>
-            +{hidden} more
+            {t("nov2Pages.agent.moreReports", { defaultValue: "+{{count}} more", count: hidden })}
           </button>
         ) : null}
         {expanded && shown < reports.length ? (
           <button type="button" className={toggleClass} onClick={() => setExpanded(false)}>
-            Show less
+            {t("localizationIssueDetail.ui_Show_less", { defaultValue: "Show less" })}
           </button>
         ) : null}
       </div>
@@ -91,7 +93,7 @@ export function AgentDirectReports({ reports }: { reports: Agent[] }) {
               <span>{report.name}</span>
             </span>
           ))}
-          <span>+{reports.length} more</span>
+          <span>{t("nov2Pages.agent.moreReports", { defaultValue: "+{{count}} more", count: reports.length })}</span>
         </div>
       </div>
     </div>

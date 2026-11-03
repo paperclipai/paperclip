@@ -1,3 +1,5 @@
+import { t } from "@/i18n";
+import { APP_DEFINITION_COPY } from "./app-definition-copy";
 import { aiConnectionCatalogSlug, aiConnectionMetadataSchema, type AppDefinition, type ToolApplication, type ToolConnection } from "@paperclipai/shared";
 import { aiConnectionRouterSlug, aiConnectionRouterPluginKey } from "@paperclipai/shared";
 
@@ -13,11 +15,24 @@ export function appDefinitionSlug(entry: AppGalleryDisplayEntry | null | undefin
 }
 
 export function appDefinitionName(entry: AppGalleryDisplayEntry | null | undefined): string {
-  return entry?.name ?? appDefinitionSlug(entry) ?? "App";
+  return entry?.name ?? appDefinitionSlug(entry) ?? t("pages.apps.common.app");
+}
+
+/** Render a built-in name without changing the canonical name used by requests and matching. */
+export function appDefinitionDisplayName(entry: AppGalleryDisplayEntry | null | undefined): string {
+  return appDefinitionText(entry, appDefinitionName(entry));
+}
+
+/** Translate known built-in display text without changing custom metadata or API objects. */
+export function appDefinitionText(entry: AppGalleryDisplayEntry | string | null | undefined, source: string): string {
+  const slug = typeof entry === "string" ? entry : appDefinitionSlug(entry);
+  const copy = Object.hasOwn(APP_DEFINITION_COPY, slug) ? APP_DEFINITION_COPY[slug] : undefined;
+  const key = copy && Object.hasOwn(copy, source) ? copy[source] : undefined;
+  return key ? t(key) : source;
 }
 
 export function appDefinitionDescription(entry: AppGalleryDisplayEntry | null | undefined): string {
-  return entry?.description ?? entry?.tagline ?? "";
+  return appDefinitionText(entry, entry?.description ?? entry?.tagline ?? "");
 }
 
 export function appDefinitionLogoUrl(entry: AppGalleryDisplayEntry | null | undefined): string | undefined {

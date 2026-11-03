@@ -12,6 +12,7 @@ import { trackRecentAssignee, trackRecentAssigneeUser } from "../lib/recent-assi
 import { getLastProjectId, trackRecentProject } from "../lib/recent-projects";
 import { rememberComposerEffort } from "../lib/recent-composer-effort";
 import { addStagedFilesToIssue, NewIssueDialog } from "./NewIssueDialog";
+import { i18n } from "@/i18n";
 
 const primaryState = vi.hoisted(() => ({ primaryAgentId: null as string | null, loading: false }));
 const storedFiles = vi.hoisted(() => new Map<string, import("../lib/staged-issue-files").StagedIssueFile[]>());
@@ -176,7 +177,7 @@ vi.mock("../lib/assignees", () => ({
     assigneeAgentId?: string;
     assigneeUserId?: string;
   }) => assigneeAgentId ? `agent:${assigneeAgentId}` : assigneeUserId ? `user:${assigneeUserId}` : "",
-  currentUserAssigneeOption: (id: string | null) => id ? [{ id: `user:${id}`, label: "Me" }] : [],
+  currentUserAssigneeDisplayOptions: (id: string | null) => id ? [{ id: `user:${id}`, label: "Me" }] : [],
   parseAssigneeValue: (value: string) => ({
     assigneeAgentId: value.startsWith("agent:") ? value.slice("agent:".length) : null,
     assigneeUserId: value.startsWith("user:") ? value.slice("user:".length) : null,
@@ -432,6 +433,42 @@ describe("NewIssueDialog", () => {
     }
     document.body.innerHTML = "";
   });
+
+  it.each([["en", "dragenter"], ["ru", "dragenter"], ["en", "dragover"], ["ru", "dragover"]])(
+    "accepts literal Files via %s %s and stages the original file",
+    async (locale, eventType) => {
+      await i18n.changeLanguage(locale);
+      let rendered: ReturnType<typeof renderDialog>;
+      await reactAct(async () => { rendered = renderDialog(container); });
+      const { root } = rendered!;
+      try {
+        await flush();
+        const body = container.querySelector<HTMLDivElement>(".overscroll-contain");
+        expect(body).not.toBeNull();
+        const dataTransfer = { types: ["Files"], files: [] as File[], dropEffect: "none" };
+        const event = new Event(eventType, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+        await reactAct(async () => { body!.dispatchEvent(event); });
+        expect(event.defaultPrevented).toBe(true);
+        expect(body!.className).toContain("bg-accent/20");
+        if (eventType === "dragover") expect(dataTransfer.dropEffect).toBe("copy");
+        const file = new File(["unchanged bytes"], "Original report.zip", { type: "application/zip" });
+        dataTransfer.files.push(file);
+        const drop = new Event("drop", { bubbles: true, cancelable: true });
+        Object.defineProperty(drop, "dataTransfer", { value: dataTransfer });
+        await reactAct(async () => { body!.dispatchEvent(drop); });
+        await flush();
+        expect(drop.defaultPrevented).toBe(true);
+        expect(body!.className).not.toContain("bg-accent/20");
+        expect(container.textContent).toContain(file.name);
+        expect(mockIssuesApi.create).not.toHaveBeenCalled();
+        expect(mockIssuesApi.uploadAttachment).not.toHaveBeenCalled();
+      } finally {
+        await reactAct(async () => root.unmount());
+        await i18n.changeLanguage("en");
+      }
+    },
+  );
 
   const defaultAgents = [
     { id: "worker", name: "Worker", role: "engineer", status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} },
@@ -1700,6 +1737,21 @@ describe("NewIssueDialog", () => {
 
     await waitForAssertion(() => expect(container.querySelector('[role="alert"]')?.textContent).toContain("spec.pdf"));
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Attach it again");
+    const title = container.querySelector<HTMLInputElement>('input[aria-label="Task title"]')!;
+    const savedCreate = localStorage.getItem("paperclip:issue-draft:create-awaiting-files:user-1");
+    try {
+      for (const language of ["ru", "en", "ru"]) {
+        await reactAct(async () => { await i18n.changeLanguage(language); });
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain(language === "ru" ? "Прикрепите его снова, затем создайте задачу." : "Attach it again, then create the task.");
+        expect(container.querySelector('[role="alert"]')?.textContent).toContain("spec.pdf");
+        expect(title.value).toBe("Has files");
+        expect(localStorage.getItem("paperclip:issue-draft:create-awaiting-files:user-1")).toBe(savedCreate);
+        expect(mockIssuesApi.create).not.toHaveBeenCalled();
+        expect(mockIssuesApi.uploadAttachment).not.toHaveBeenCalled();
+      }
+    } finally {
+      await reactAct(async () => { await i18n.changeLanguage("en"); });
+    }
     await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
     await flush();
     expect(mockIssuesApi.create).not.toHaveBeenCalled();

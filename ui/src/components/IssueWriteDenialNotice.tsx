@@ -1,3 +1,4 @@
+import { t, i18n, useTranslation } from "@/i18n";
 import { Clock, EyeOff, ShieldX, UserCog } from "lucide-react";
 import {
   describeIssueWriteDenial,
@@ -64,6 +65,41 @@ const VISIBILITY_CODES: ReadonlySet<IssueWriteDenialCode> = new Set([
   "issue_write_not_visible",
 ]);
 
+/** Translate only the UI projection; shared denial/API evidence stays unchanged. */
+export function describeIssueWriteDenialDisplay(code: IssueWriteDenialCode, context: IssueWriteDenialContext = {}) {
+  const raw = describeIssueWriteDenial(code, context);
+  if (i18n.resolvedLanguage === "en") return raw;
+  const prefixes: Record<IssueWriteDenialCode, string> = {
+    issue_write_not_visible: "denialVisibility",
+    issue_write_actor_class_excluded: "denialClass",
+    issue_write_responsible_user_ceiling: "denialCeiling",
+    issue_write_responsible_user_unavailable: "denialUnavailable",
+    issue_write_assignee_run_lock: "denialLock",
+    cross_issue_influence_cap_exceeded: "denialCap",
+    cross_issue_influence_run_context_required: "denialContext",
+    issue_write_attribution_spoof_rejected: "denialSpoof",
+  };
+  const prefix = prefixes[code];
+  if (!prefix) return raw;
+  const values = {
+    issue: context.issueIdentifier?.trim() || t("localizationIssueChrome.denialThisTask"),
+    actor: context.actorLabel?.trim() || t("localizationIssueChrome.denialThisAgent"),
+    assignee: context.assigneeLabel?.trim() || t("localizationIssueChrome.denialAssignee"),
+    responsible: context.responsibleUserName?.trim() || t("localizationIssueChrome.denialResponsible"),
+    cap: context.cap ?? 20,
+    attempt: context.count,
+  };
+  const descriptionSuffix = code === "cross_issue_influence_cap_exceeded" && context.count != null ? "AttemptDescription" : "Description";
+  return {
+    ...raw,
+    boundary: t(`localizationIssueChrome.${prefix}Boundary`, values),
+    title: t(`localizationIssueChrome.${prefix}Title`, values),
+    description: t(`localizationIssueChrome.${prefix}${descriptionSuffix}`, values),
+    whoCanAct: t(`localizationIssueChrome.${prefix}Who`, values),
+    sanctionedPath: t(`localizationIssueChrome.${prefix}Path`, values),
+  };
+}
+
 export function IssueWriteDenialNotice({
   code,
   context,
@@ -73,7 +109,8 @@ export function IssueWriteDenialNotice({
   context?: IssueWriteDenialContext;
   className?: string;
 }) {
-  const copy = describeIssueWriteDenial(code, context ?? {});
+  const { t } = useTranslation();
+  const copy = describeIssueWriteDenialDisplay(code, context ?? {});
   const tone = TONE_CLASSES[copy.tone];
   const Icon = VISIBILITY_CODES.has(code) ? EyeOff : TONE_ICONS[copy.tone];
 
@@ -99,11 +136,11 @@ export function IssueWriteDenialNotice({
               label and the first words of the value together at every width. */}
           <dl className={cn("space-y-0.5 text-xs leading-5", tone.action)}>
             <div className="min-w-0">
-              <dt className="inline font-medium">Who can act:</dt>{" "}
+              <dt className="inline font-medium">{t("localizationIssueChrome.whoCanAct")}</dt>{" "}
               <dd className="inline">{copy.whoCanAct}</dd>
             </div>
             <div className="min-w-0">
-              <dt className="inline font-medium">Try this:</dt>{" "}
+              <dt className="inline font-medium">{t("localizationIssueChrome.tryThis")}</dt>{" "}
               <dd className="inline">{copy.sanctionedPath}</dd>
             </div>
           </dl>

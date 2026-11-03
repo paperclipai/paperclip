@@ -1,9 +1,11 @@
+import { t } from "@/i18n";
+
 export type TaskDateGroup = "today" | "yesterday" | "earlier";
 
 export const taskDateGroupLabels: Record<TaskDateGroup, string> = {
-  today: "Today",
-  yesterday: "Yesterday",
-  earlier: "Earlier",
+  get today() { return t("localizationActivityChrome.today"); },
+  get yesterday() { return t("localizationActivityChrome.yesterday"); },
+  get earlier() { return t("localizationActivityChrome.earlier"); },
 };
 
 function localCalendarOrdinal(date: Date): number {

@@ -4,23 +4,24 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { useTranslation } from "@/i18n";
 
 export function LegacyBoardSendNotice({ onDiscard }: { onDiscard: () => void }) {
+  const { t } = useTranslation();
   return <AlertDialog>
     <AlertDialogTrigger asChild>
-      <Button size="sm" variant="outline">Discard saved delivery record</Button>
+      <Button size="sm" variant="outline">{t("nov02Core.delivery.discardSaved")}</Button>
     </AlertDialogTrigger>
     <AlertDialogContent>
       <AlertDialogHeader>
-        <AlertDialogTitle>Discard saved delivery record?</AlertDialogTitle>
+        <AlertDialogTitle>{t("nov02Core.delivery.discardQuestion")}</AlertDialogTitle>
         <AlertDialogDescription>
-          First check Activity. Discarding this browser record does not cancel an update
-          that was already accepted. It lets you start a new update.
+          {t("nov02Core.delivery.description")}
         </AlertDialogDescription>
       </AlertDialogHeader>
       <AlertDialogFooter>
-        <AlertDialogCancel>Keep record</AlertDialogCancel>
-        <AlertDialogAction onClick={onDiscard}>Discard record</AlertDialogAction>
+        <AlertDialogCancel>{t("nov02Core.delivery.keep")}</AlertDialogCancel>
+        <AlertDialogAction onClick={onDiscard}>{t("nov02Core.delivery.discard")}</AlertDialogAction>
       </AlertDialogFooter>
     </AlertDialogContent>
   </AlertDialog>;

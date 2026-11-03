@@ -5,6 +5,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createChunkLoadRecovery, RELOAD_ABANDONED_MS } from "@/lib/chunk-load-recovery";
 import { AppErrorBoundary } from "./AppErrorBoundary";
+import { i18n, t } from "@/i18n";
 
 const captureBrowserExceptionMock = vi.hoisted(() => vi.fn());
 const reloadMock = vi.hoisted(() => vi.fn());
@@ -84,6 +85,22 @@ describe("AppErrorBoundary", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("updates captured error chrome across languages without replaying reporting or reload", async () => {
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<AppErrorBoundary><BoomRender /></AppErrorBoundary>));
+      const rawError = container.querySelector("pre");
+      for (const locale of ["ru", "en", "ru"]) {
+        await act(async () => { await i18n.changeLanguage(locale); });
+        expect(container.textContent).toContain(t("common.appError"));
+        expect(container.querySelector("pre")).toBe(rawError);
+        expect(rawError?.textContent).toBe("Maximum update depth exceeded");
+        expect(captureBrowserExceptionMock).toHaveBeenCalledTimes(1);
+        expect(reloadMock).not.toHaveBeenCalled();
+      }
+    } finally { await act(async () => root.unmount()); await i18n.changeLanguage("en"); }
   });
 
   it("reloads once for a failed lazy chunk, then shows the prompt if it fails again", async () => {

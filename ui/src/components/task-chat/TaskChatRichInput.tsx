@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import { useEffect, useRef, useState } from "react";
 import { ImagePlus, Loader2 } from "lucide-react";
 import {
@@ -37,10 +38,11 @@ export function TaskChatRichInput({
   onUploadingChange,
   ariaLabelledBy,
   testId = "task-chat-rich-input",
-  attachAriaLabel = "Attach image",
+  attachAriaLabel = t("localizationTaskRuntime.ui_Attach_image_1cuilex"),
   showImageAttachControls = false,
   questionAnswer = false,
 }: TaskChatRichInputProps) {
+  useTranslation();
   const editorRef = useRef<MarkdownEditorRef>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const uploadCountRef = useRef(0);
@@ -59,7 +61,7 @@ export function TaskChatRichInput({
   }
 
   async function uploadImage(file: File): Promise<string> {
-    if (!imageUploadHandler) throw new Error("Image uploads are unavailable.");
+    if (!imageUploadHandler) throw new Error(t("localizationTaskRuntime.ui_Image_uploads_are_unavailable_1tm0dbm"));
     uploadCountRef.current += 1;
     updateUploading(true);
     setUploadError(null);
@@ -69,7 +71,7 @@ export function TaskChatRichInput({
       setUploadError(
         error instanceof Error
           ? error.message
-          : "The image could not be uploaded.",
+          : t("localizationTaskRuntime.ui_The_image_could_not_be_uploaded_t4p3hw"),
       );
       throw error;
     } finally {
@@ -135,9 +137,9 @@ export function TaskChatRichInput({
             ) : (
               <ImagePlus aria-hidden className="h-3.5 w-3.5" />
             )}
-            Attach image
+            {t("localizationTaskRuntime.ui_Attach_image_1cuilex")}
           </Button>
-          <span>or drop/paste an image into the note</span>
+          <span>{t("localizationTaskRuntime.ui_or_drop_paste_an_image_into_the_note_1lg8kie")}</span>
         </div>
       ) : null}
       {uploadError ? (

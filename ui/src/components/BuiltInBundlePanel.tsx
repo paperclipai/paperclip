@@ -1,3 +1,4 @@
+import { t, useTranslation } from "@/i18n";
 import type { ReactNode } from "react";
 
 import { Link } from "@/lib/router";
@@ -47,6 +48,18 @@ function findResource(
   return resources?.find((resource) => resource.resourceKind === kind);
 }
 
+// Only known stock display copy is localized; custom or changed server text stays verbatim.
+function bundleDisplayText(key: string, field: "routineTitle" | "scheduleLabel", source: string): string {
+  if (key !== "reflection-coach") return source;
+  if (field === "routineTitle" && source === "Review recent agent trajectories for coaching proposals") {
+    return t("localizationAgentManagement.reflectionRoutineTitle");
+  }
+  if (field === "scheduleLabel" && source === "Weekly · Mon 09:00 UTC") {
+    return t("localizationAgentManagement.reflectionSchedule");
+  }
+  return source;
+}
+
 /** Readiness chip for a materialized resource. */
 function readinessVariant(resource: BuiltInManagedResourceState): ResourceStatusVariant {
   if (resource.stockStatus === "missing") return "missing";
@@ -75,26 +88,26 @@ function resourceActionCopy(
 ): ResourceActionCopy | null {
   if (resource.stockStatus === "stock_update_available") {
     return {
-      title: `Update ${label} to the newest default?`,
-      body: `You haven't edited this, so Paperclip will replace it with the newer shipped version. Nothing you customized is affected, and your adapter credentials and settings are not touched.`,
-      confirmLabel: "Update",
-      triggerLabel: "Update",
+      title: t("localizationAgentManagement.updateResourceTitle", { label }),
+      body: t("localizationAgentManagement.updateResourceBody"),
+      confirmLabel: t("pages.secrets.actions.update"),
+      triggerLabel: t("pages.secrets.actions.update"),
     };
   }
   if (resource.stockStatus === "operator_modified") {
     return {
-      title: `Reset ${label} to the shipped default?`,
-      body: `This replaces your edited version with Paperclip's current default. Your edits can't be recovered. Adapter credentials and settings are not touched.`,
-      confirmLabel: `Reset ${label}`,
-      triggerLabel: "Reset",
+      title: t("localizationAgentManagement.resetResourceTitle", { label }),
+      body: t("localizationAgentManagement.resetResourceBody"),
+      confirmLabel: t("localizationAgentManagement.resetResourceConfirm", { label }),
+      triggerLabel: t("workspaces.actions.reset"),
     };
   }
   if (resource.stockStatus === "missing") {
     return {
-      title: `Recreate ${label}?`,
-      body: `This resource is missing. Paperclip will recreate it from the shipped default. Adapter credentials and settings are not touched.`,
-      confirmLabel: "Recreate",
-      triggerLabel: "Recreate",
+      title: t("localizationAgentManagement.recreateResourceTitle", { label }),
+      body: t("localizationAgentManagement.recreateResourceBody"),
+      confirmLabel: t("localizationAgentManagement.recreate162"),
+      triggerLabel: t("localizationAgentManagement.recreate162"),
     };
   }
   return null;
@@ -111,13 +124,14 @@ function ResourceActionButton({
   onConfirm: () => void;
   pending: boolean;
 }) {
+  const { t } = useTranslation();
   const copy = resourceActionCopy(resource, label);
   if (!copy) return null;
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
         <Button variant="outline" size="sm" disabled={pending}>
-          {pending ? "Working…" : copy.triggerLabel}
+          {pending ? t("pages.auth.working") : copy.triggerLabel}
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
@@ -126,7 +140,7 @@ function ResourceActionButton({
           <AlertDialogDescription>{copy.body}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t("pages.cliAuth.cancel")}</AlertDialogCancel>
           <AlertDialogAction onClick={onConfirm}>{copy.confirmLabel}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -149,11 +163,12 @@ function ConfirmActionButton({
   pending: boolean;
   onConfirm: () => void;
 }) {
+  const { t } = useTranslation();
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
         <Button variant="outline" size="sm" disabled={pending}>
-          {pending ? "Working…" : triggerLabel}
+          {pending ? t("pages.auth.working") : triggerLabel}
         </Button>
       </AlertDialogTrigger>
       <AlertDialogContent>
@@ -162,7 +177,7 @@ function ConfirmActionButton({
           <AlertDialogDescription>{body}</AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogCancel>{t("pages.cliAuth.cancel")}</AlertDialogCancel>
           <AlertDialogAction onClick={onConfirm}>{confirmLabel}</AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -180,6 +195,7 @@ interface BundleRowProps {
 }
 
 function BundleRow({ label, secondary, chips, detail, detailTone = "muted", actions }: BundleRowProps) {
+  useTranslation();
   return (
     <div className="flex flex-col gap-1 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
       <div className="min-w-0 space-y-1">
@@ -209,11 +225,11 @@ function BundleRow({ label, secondary, chips, detail, detailTone = "muted", acti
 function driftDetail(resource: BuiltInManagedResourceState): string | undefined {
   switch (resource.stockStatus) {
     case "operator_modified":
-      return "You've edited this. Your changes are kept until you reset.";
+      return t("localizationAgentManagement.youVeEditedThisYourChangesAreKeptUntilYouReset163");
     case "stock_update_available":
-      return "Paperclip shipped a newer default.";
+      return t("localizationAgentManagement.paperclipShippedANewerDefault164");
     case "missing":
-      return "Not materialized yet — recreate it from the shipped default.";
+      return t("localizationAgentManagement.notMaterializedYetRecreateItFromTheShippedDefault165");
     default:
       return undefined;
   }
@@ -251,6 +267,7 @@ export function BuiltInBundlePanel({
   routineActionPending = null,
   className,
 }: BuiltInBundlePanelProps) {
+  const { t } = useTranslation();
   const { status, definition, resources } = state;
   const bundle = definition.bundle;
   if (!bundle) return null;
@@ -262,10 +279,10 @@ export function BuiltInBundlePanel({
   let adapterDetail: string | undefined;
   if (status === "pending_approval") {
     adapterChip = "pending_approval";
-    adapterDetail = "Waiting on board hire approval before this coach can run.";
+    adapterDetail = t("localizationAgentManagement.waitingOnBoardHireApprovalBeforeThisCoachCanRun166");
   } else if (!adapterReady) {
     adapterChip = "needs_setup";
-    adapterDetail = "Pick an adapter this coach can run on.";
+    adapterDetail = t("localizationAgentManagement.pickAnAdapterThisCoachCanRunOn167");
   }
 
   const skill = findResource(resources, "skill");
@@ -273,7 +290,9 @@ export function BuiltInBundlePanel({
   const routine = findResource(resources, "routine");
   const scheduleEnabled = routine?.scheduleEnabled === true;
   const routineKey = bundle.routine.routineKey;
-  const scheduleLabel = bundle.routine.scheduleLabel ?? "Weekly schedule";
+  const scheduleLabel = bundle.routine.scheduleLabel
+    ? bundleDisplayText(definition.key, "scheduleLabel", bundle.routine.scheduleLabel)
+    : t("localizationAgentManagement.weeklySchedule168");
   const proposalIssueRef = routine?.pendingUpdateIssueIdentifier ?? routine?.pendingUpdateIssueId ?? null;
   const proposalHref = proposalIssueRef && routine?.pendingUpdateInteractionId
     ? `/issues/${proposalIssueRef}#interaction-${routine.pendingUpdateInteractionId}`
@@ -302,7 +321,7 @@ export function BuiltInBundlePanel({
         actions={
           <>
             <Button asChild variant="link" size="sm">
-              <Link to={viewHref}>View</Link>
+              <Link to={viewHref}>{t("localizationSkills.view220")}</Link>
             </Button>
             <ResourceActionButton
               resource={resource}
@@ -317,26 +336,24 @@ export function BuiltInBundlePanel({
   };
 
   return (
-    <section className={cn("space-y-2", className)} aria-label="Bundle status">
-      <h3 className="text-sm font-medium">Bundle status</h3>
+    <section className={cn("space-y-2", className)} aria-label={t("localizationAgentManagement.bundleStatus169")}>
+      <h3 className="text-sm font-medium">{t("localizationAgentManagement.bundleStatus169")}</h3>
 
       <div className="divide-y rounded-lg border px-4">
         {/* Adapter — no resource entry; readiness is the agent lifecycle. */}
         <BundleRow
-          label="Adapter"
+          label={t("localizationAgents.ui38_Adapter")}
           chips={<ResourceStatusChip variant={adapterChip} />}
           detail={adapterDetail}
           actions={
-            <Button variant="outline" size="sm" onClick={onConfigure}>
-              Configure
-            </Button>
+            <Button variant="outline" size="sm" onClick={onConfigure}>{t("localizationRoutines.configure")}</Button>
           }
         />
 
         {skill &&
           renderResourceRow(
             "skill",
-            "Skill",
+            t("localizationSkills.skill615"),
             bundle.skill.displayName || skill.resourceKey,
             `/agents/${agentRef}/skills`,
             skill,
@@ -345,7 +362,7 @@ export function BuiltInBundlePanel({
         {instructions &&
           renderResourceRow(
             "instructions",
-            "Instructions",
+            t("pages.agentDetail.breadcrumbInstructions"),
             bundle.instructions.entryFile,
             `/agents/${agentRef}/instructions`,
             instructions,
@@ -353,8 +370,8 @@ export function BuiltInBundlePanel({
 
         {/* Routine — zero-token-by-default; the weekly schedule ships off. */}
         <BundleRow
-          label="Routine"
-          secondary={bundle.routine.title}
+          label={t("pages.secrets.targets.routine")}
+          secondary={bundleDisplayText(definition.key, "routineTitle", bundle.routine.title)}
           chips={
             <>
               <ResourceStatusChip
@@ -368,18 +385,18 @@ export function BuiltInBundlePanel({
           }
           detail={
             scheduleEnabled
-              ? "The weekly schedule is enabled and can create background work."
-              : "Nothing runs until you enable the weekly schedule — it costs zero tokens by default."
+              ? t("localizationAgentManagement.theWeeklyScheduleIsEnabledAndCanCreateBackgroundWork174")
+              : t("localizationAgentManagement.nothingRunsUntilYouEnableTheWeeklyScheduleItCostsZeroTo175")
           }
           actions={
             routine ? (
               <>
                 {onRunRoutine && (
                   <ConfirmActionButton
-                    title="Run Reflection Coach once?"
-                    body="Paperclip will create one routine task now. This does not enable the weekly schedule or turn on background work."
-                    triggerLabel="Run once"
-                    confirmLabel="Run once"
+                    title={t("localizationAgentManagement.runReflectionCoachOnce176")}
+                    body={t("localizationAgentManagement.paperclipWillCreateOneRoutineTaskNowThisDoesNotEnableTh177")}
+                    triggerLabel={t("localizationAgentManagement.runOnce178")}
+                    confirmLabel={t("localizationAgentManagement.runOnce178")}
                     pending={routineActionPending === "run"}
                     onConfirm={() => onRunRoutine(routineKey)}
                   />
@@ -387,20 +404,20 @@ export function BuiltInBundlePanel({
                 {scheduleEnabled
                   ? onDisableSchedule && (
                     <ConfirmActionButton
-                      title="Disable the weekly schedule?"
-                      body="Paperclip will stop future scheduled Reflection Coach runs. Manual Run once remains available."
-                      triggerLabel="Disable schedule"
-                      confirmLabel="Disable schedule"
+                      title={t("localizationAgentManagement.disableTheWeeklySchedule179")}
+                      body={t("localizationAgentManagement.paperclipWillStopFutureScheduledReflectionCoachRunsManu180")}
+                      triggerLabel={t("localizationAgentManagement.disableSchedule181")}
+                      confirmLabel={t("localizationAgentManagement.disableSchedule181")}
                       pending={routineActionPending === "disable"}
                       onConfirm={() => onDisableSchedule(routineKey)}
                     />
                   )
                   : onEnableSchedule && (
                     <ConfirmActionButton
-                      title="Enable the weekly schedule?"
-                      body="Paperclip will allow Reflection Coach to create routine tasks on the weekly schedule. It can spend tokens when those tasks run."
-                      triggerLabel="Enable weekly"
-                      confirmLabel="Enable weekly"
+                      title={t("localizationAgentManagement.enableTheWeeklySchedule182")}
+                      body={t("localizationAgentManagement.paperclipWillAllowReflectionCoachToCreateRoutineTasksOn183")}
+                      triggerLabel={t("localizationAgentManagement.enableWeekly184")}
+                      confirmLabel={t("localizationAgentManagement.enableWeekly184")}
                       pending={routineActionPending === "enable"}
                       onConfirm={() => onEnableSchedule(routineKey)}
                     />
@@ -408,7 +425,7 @@ export function BuiltInBundlePanel({
                 {driftVariant(routine) && (
                   <ResourceActionButton
                     resource={routine}
-                    label="routine"
+                    label={t("localizationAgentManagement.routineResource")}
                     onConfirm={() => onResetResource("routine")}
                     pending={resettingResource === "routine"}
                   />
@@ -419,12 +436,12 @@ export function BuiltInBundlePanel({
         />
         {proposalHref && (
           <BundleRow
-            label="Proposal"
+            label={t("localizationAgentManagement.proposal185")}
             chips={<ResourceStatusChip variant="proposal_pending" />}
-            detail="A proposed Reflection Coach update is waiting for review."
+            detail={t("localizationAgentManagement.aProposedReflectionCoachUpdateIsWaitingForReview186")}
             actions={
               <Button asChild variant="link" size="sm">
-                <Link to={proposalHref}>Review proposal</Link>
+                <Link to={proposalHref}>{t("localizationAgentManagement.reviewProposal187")}</Link>
               </Button>
             }
           />
