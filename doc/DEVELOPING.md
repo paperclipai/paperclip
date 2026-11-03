@@ -1132,6 +1132,43 @@ falls back to the fresh path automatically, so the cache can make a suite
 slower but never fail it or skip it: a migration that cannot apply still fails
 the suite on the fresh path.
 
+#### Typecheck memory
+
+TypeScript 7 is a native binary, so `NODE_OPTIONS=--max-old-space-size` does not
+limit `tsc`. Its peak memory depends on how much source one process checks and on
+the number of checkers, because each checker keeps its own copy of the types.
+
+`pnpm --filter @paperclipai/server typecheck` does not check one program.
+`server/scripts/typecheck-layers.mjs` reads the import graph and runs one `tsc`
+process per layer. Each layer reads the earlier layers as declarations:
+
+| Layer | Files |
+| --- | --- |
+| `below` | Files the largest import cycle depends on, and unrelated files |
+| `cycle` | The largest import cycle |
+| `above` | Files that depend on the cycle |
+| `tests` | Test files |
+
+The generated configs and declarations go in
+`server/node_modules/.cache/paperclip-typecheck`. You do not maintain a layer list.
+`server/tsconfig.json` remains the single program for editors and `pnpm build`.
+The server typecheck builds only the Runner's TypeScript output. Use
+`pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
+Runner binary.
+
+On a machine with 4 GiB of RAM or less, use this command:
+
+```sh
+pnpm typecheck:low-memory
+```
+
+It checks one package at a time and uses one thread for the server layers and the
+UI. Do not add `GOMEMLIMIT` to this path. It saves at most 300 MiB here, and it
+slows `tsc` by up to 20 times when the live heap goes above the limit.
+`pnpm build` still checks the whole server program and needs more than 8 GiB. The
+Docker image uses `pnpm --filter @paperclipai/server build:image`, which emits
+JavaScript without checks or declarations.
+
 #### Reused Runner build in the server build
 
 The server build vendors `packages/paperclip-runner/dist`, so its
