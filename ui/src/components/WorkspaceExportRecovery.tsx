@@ -9,6 +9,7 @@ import { canBoardResolveRecoveryAction, isRetainedWorkspaceExportCause } from ".
 import { queryKeys } from "../lib/queryKeys";
 import { classifySendFailure, pendingSendKeyFor, readPendingSend, writePendingSend } from "../lib/pending-send";
 import { asObject, cn } from "../lib/utils";
+import { createUuid } from "../lib/uuid";
 import { Button } from "./ui/button";
 
 /** Requests preservation; the existing worker owns stop, copyback and verification. */
@@ -108,7 +109,7 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
       // Unknown acceptance reuses its identity. A new bounded request requires
       // an explicit operator click and a freshly confirmed exhausted attempt.
       const record = (!restartFailedAttempt && previous) || {
-        idempotencyKey: crypto.randomUUID(), payload: { actionId: action.id, runId }, createdAt: Date.now(),
+        idempotencyKey: createUuid(), payload: { actionId: action.id, runId }, createdAt: Date.now(),
       };
       if (!writePendingSend(storageKey, record))
         throw new Error("The recovery request could not be saved in this browser. No request was sent.");

@@ -74,6 +74,19 @@ describe("governed retained-file recovery", () => {
     expect(container.textContent).not.toContain("Saved files recovered");
   });
 
+  it("requests file preservation on plain HTTP without crypto.randomUUID", async () => {
+    const originalCrypto = globalThis.crypto;
+    vi.stubGlobal("crypto", { getRandomValues: originalCrypto.getRandomValues.bind(originalCrypto) });
+    try {
+      await mount(); await click("Recover saved files");
+      expect(api.recover).toHaveBeenCalledExactlyOnceWith("issue-1", {
+        actionId: "action-1", runId: "run-1", idempotencyKey: expect.stringMatching(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+      });
+      expect(container.textContent).not.toContain("Saved files recovered");
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it.each(["viewer", "suspended", "foreign-company", "other-account"])("does not offer mutation with %s access", async kind => {
     client.setQueryData(queryKeys.access.currentBoardAccess, {
       userId: kind === "other-account" ? "board-2" : "board-1", source: "session", isInstanceAdmin: false,
