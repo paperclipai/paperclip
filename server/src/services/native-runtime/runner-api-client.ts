@@ -71,6 +71,16 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   return { input, operation };
 }
 
+export function localRunnerApiUrl(url: URL, env: NodeJS.ProcessEnv = process.env): URL {
+  const port = env.PAPERCLIP_LISTEN_PORT?.trim();
+  const own = env.PAPERCLIP_API_URL?.trim();
+  if (!port || !own) return url;
+  try {
+    if (url.origin !== new URL(own).origin || ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) return url;
+  } catch { return url; }
+  return new URL(`${url.pathname}${url.search}`, `http://127.0.0.1:${port}`);
+}
+
 export function runnerApiUrl(operation: RunnerApiOperation, input: RunnerApiCall, context: RunnerApiContext, apiUrl: string): URL {
   const origin = new URL(apiUrl);
   if (!["http:", "https:"].includes(origin.protocol) || origin.username || origin.password || origin.search || origin.hash) throw new Error("Invalid configured Paperclip API origin");
@@ -189,7 +199,7 @@ export async function executeRunnerApi(input: RunnerApiCall, context: RunnerApiC
   // Bound connection setup and stalled body reads, not the total download time.
   let timeout = setTimeout(() => controller.abort(), RUNNER_API_TIMEOUT_MS);
   try {
-    response = await (io.fetch ?? fetch)(url, { method: operation.method, headers, body, redirect: "manual", signal: controller.signal });
+    response = await (io.fetch ?? fetch)(localRunnerApiUrl(url), { method: operation.method, headers, body, redirect: "manual", signal: controller.signal });
     clearTimeout(timeout);
     if (sensitiveResponse) {
       timeout = setTimeout(() => controller.abort(), RUNNER_API_TIMEOUT_MS);

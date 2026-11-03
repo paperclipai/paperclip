@@ -1,4 +1,5 @@
 import { projectDiscoverySchema, createProjectSchema, createIssueSchema, setIssueTitleSchema, requiredQualityReviewSchema } from "@paperclipai/shared";
+import { localRunnerApiUrl } from "./native-runtime/runner-api-client.js";
 import { z } from "zod";
 import { CAPABILITY_SEMANTIC_TOOL_CATALOG } from "../vendor/paperclip-runner/index.js";
 import { badRequest } from "../errors.js";
@@ -53,7 +54,7 @@ export async function callProjectTool(input: {
       idempotencyKey: `chat-handoff:${input.issueId}:${key}`,
     });
   } else throw badRequest("Unknown project tool");
-  const response = await fetch(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${path}`, {
+  const response = await fetch(localRunnerApiUrl(new URL(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${path}`)), {
     method: input.name === "set_task_title" ? "PUT" : body ? "POST" : "GET",
     headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json",
       ...(input.receiptOnly ? { "X-Paperclip-Receipt-Only": "true" } : {}),
