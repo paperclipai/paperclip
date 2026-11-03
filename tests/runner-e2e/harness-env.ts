@@ -1,5 +1,6 @@
 import { PUBLIC_ORIGIN_CONTROL_ENV, PUBLIC_ORIGIN_RECEIPT_ENV } from "./chat-public-origin.js";
 import { scrubChatPrivateEnvironment } from "./chat-private-inputs.js";
+import { CHAT_ANNOUNCEMENT_FEED_URL, CHAT_ANNOUNCEMENT_SCENARIO } from "./chat-announcement-fixture.js";
 import { PRIVATE_DIAGNOSTICS_ENV } from "./private-diagnostics.js";
 import { installedDaytonaPluginKeys } from "./installed-daytona-plugin.js";
 import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
@@ -158,8 +159,12 @@ export function buildRunnerE2EProcessEnvironment(
   delete result.PAPERCLIP_E2E_GATEWAY_PHASE_PATH;
   delete result.PAPERCLIP_E2E_OTLP_RELAY_URL;
   delete result.PAPERCLIP_E2E_REMOTE_GATEWAY_ORIGIN;
-  // Announcements are unrelated to the scenarios and obscure screenshot evidence.
-  result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = "false";
+  // Only the isolated dismissal journey consumes the reviewed public staging feed.
+  // Other cells keep announcements disabled so ambient notices cannot obscure evidence.
+  const announcement = executions.length === 1 && executions[0]!.suite.id === "chat-features"
+    && executions[0]!.task.id === CHAT_ANNOUNCEMENT_SCENARIO;
+  result.PAPERCLIP_ANNOUNCEMENTS_ENABLED = announcement ? "true" : "false";
+  if (announcement) result.PAPERCLIP_ANNOUNCEMENTS_FEED_URL = CHAT_ANNOUNCEMENT_FEED_URL;
   delete result.OPENCODE_ALLOW_ALL_MODELS;
   // Discard ambient admission. Only explicit candidate cells authorize the
   // exact model in their isolated server; credentials still use company secrets.

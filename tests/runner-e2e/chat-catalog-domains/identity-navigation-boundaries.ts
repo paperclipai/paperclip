@@ -2,6 +2,7 @@ import { chatCatalogOriginalPhaseDeadline } from "../chat-catalog-contract.js";
 import { expect } from "@playwright/test";
 import type { ChatCatalogCase, ChatCatalogContext } from "../chat-catalog-contract.js";
 import { RunnerApiHttpError } from "../api.js";
+import { CHAT_ANNOUNCEMENT_MANIFEST } from "../chat-announcement-fixture.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
 import { checks, entity, project, sameTask, task, type Entity } from "./internal-support.js";
 import { identityDefinition, identityObservation, observeIdentity, openStandingChat, probeAgentPermission, waitForReply } from "./identity-support.js";
@@ -93,6 +94,7 @@ export const navigationBoundaryIdentityCases: readonly ChatCatalogCase[] = [
   identityDefinition("navigation-preferences.dismiss-announcement", async ctx => {
     const publication = await ctx.input.api.get<Publication | null>("/api/announcements/current");
     if (!publication?.id || !publication.title) throw new Error("Setup blocker: a real eligible server announcement publication is required; a fabricated browser card cannot qualify");
+    if (publication.id !== CHAT_ANNOUNCEMENT_MANIFEST.announcement.id || publication.title !== CHAT_ANNOUNCEMENT_MANIFEST.announcement.title) throw new Error("Setup blocker: the owned staging announcement publication is required");
     const session = await ctx.input.api.get<{ user: { id: string } }>("/api/auth/get-session");
     const browser = ctx.input.page.context().browser(); if (!browser || !ctx.input.privateSecrets) throw new Error("Missing real publication observer");
     const observer = await createAuthenticatedPerson({ api: ctx.input.api, browser, secrets: ctx.input.privateSecrets, name: "Riley" }); observers.set(ctx, observer);
@@ -112,7 +114,7 @@ export const navigationBoundaryIdentityCases: readonly ChatCatalogCase[] = [
         observerBeforePublicationId: observerPublication?.id, invalidAuditCompanyStatus };
     } catch (error) { try { await observer.dispose(); } finally { observers.delete(ctx); const id = otherCompanies.get(ctx); if (id) await ctx.input.api.delete(`/api/companies/${id}`, { allowNotFound: true }); otherCompanies.delete(ctx); } throw error; }
   }, gradeNavigationBoundary, {
-    sourceFiles: sources, authentication: "human-session",
+    sourceFiles: [...sources, "chat-announcement-fixture.ts", "harness-env.ts", "../../packages/shared/src/announcements.ts", "../../server/src/services/announcement-feed.ts", "../../server/src/routes/announcements.ts"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.announcement-dismissal.v2",
     async act(ctx, state) {
       await waitForReply(ctx); const publication = state.publication as Publication; const source = ctx.input.page.url();
       state.beforeHumanPublicationId = (await ctx.input.api.get<Publication | null>("/api/announcements/current"))?.id;
