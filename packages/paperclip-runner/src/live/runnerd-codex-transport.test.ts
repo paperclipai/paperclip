@@ -8248,7 +8248,7 @@ it("still fails closed when a real close grace period cannot fit a durable suspe
   }
 }, 30_000);
 
-it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accounting-rejected"] as const)("cold-restores a suspended provider session under its durable run binding (pending tail: %s)", async (pendingTail) => {
+it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accounting-rejected", "credentials-cleaned"] as const)("cold-restores a suspended provider session under its durable run binding (pending tail: %s)", async (pendingTail) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-cold-attach-"));
   const tracePath = join(stateDirectory, "provider-trace.ndjson");
   const skillRoot = join(stateDirectory, "runtime-skill");
@@ -8256,6 +8256,12 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
   await Promise.all([mkdir(skillRoot), mkdir(instructionRoot)]);
   await writeFile(join(skillRoot, "SKILL.md"), "# Assigned runtime skill\n");
   await writeFile(join(instructionRoot, "AGENTS.md"), "Runtime instructions\n");
+  const credentialsCleaned = pendingTail === "credentials-cleaned";
+  const sourceCodexHome = join(stateDirectory, "selected-account-first");
+  if (credentialsCleaned) {
+    await mkdir(sourceCodexHome);
+    await writeFile(join(sourceCodexHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "selected-account-fixture" }), { mode: 0o600 });
+  }
   const baseIdentity = {
     runnerInstanceId: "runner-cold-attach",
     environmentLeaseId: "lease-cold-attach",
@@ -8271,14 +8277,21 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
       stateDirectory,
       "--include-skill-instructions",
       "--durable-turn-ids",
+      ...(credentialsCleaned ? ["--require-codex-home-auth"] : []),
       "-c",
       'shell_environment_policy.set={PATH="/run/A"}',
     ),
     stateDirectory,
+    ...(credentialsCleaned ? { sourceCodexHome } : {}),
     environment: {
       PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-A-capability",
       PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
       PAPERCLIP_PROVIDER_TRACE_MAX_BYTES: String(64 * 1024 * 1024),
+      ...(credentialsCleaned ? {
+        PAPERCLIP_NATIVE_MCP_NAME: "assigned",
+        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp/first",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "first-assigned-gateway-credential",
+      } : {}),
     },
     lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
     runtimeContext: assignedRuntimeContext(skillRoot, instructionRoot),
@@ -8340,6 +8353,13 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
   if (!firstProviderThread) {
     throw new Error("cold attach fixture did not return a provider thread");
   }
+  const successorCodexHome = join(stateDirectory, "selected-account-next");
+  if (credentialsCleaned) {
+    await rm(join(stateDirectory, "codex-home", "auth.json"));
+    await rm(sourceCodexHome, { recursive: true });
+    await mkdir(successorCodexHome);
+    await writeFile(join(successorCodexHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "selected-account-fixture" }), { mode: 0o600 });
+  }
 
   // Model a retained provider-owned suffix: rotation must deliver and durably
   // accept it before attempting run.attach, rather than dropping or ACKing it.
@@ -8378,6 +8398,7 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
   let rejectStagedCommit = pendingTail === "restart-before-bootstrap";
   const rotatedOptions = {
     ...options,
+    ...(credentialsCleaned ? { sourceCodexHome: successorCodexHome } : {}),
     onStagedRunAttachment: pendingTail === "restart-before-bootstrap" ? async (authority: DurablePrpControlPlane) => {
       authority.setCheckpointPersistence(async checkpoint => {
         stagedCheckpoint = checkpoint;
@@ -8392,7 +8413,12 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
         await retainedAccepted;
       }
     } : undefined,
-    environment: { ...options.environment, PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-B-capability" },
+    environment: { ...options.environment, PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-B-capability",
+      ...(credentialsCleaned ? {
+        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp/current",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "current-assigned-gateway-credential",
+      } : {}),
+    },
     codexArgs: options.codexArgs.map((arg) => arg.replace('/run/A', '/run/B')),
     resumeDynamicTools: dynamicTools,
     resumeCompletionContract: {
@@ -8452,6 +8478,7 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
     }
     return;
   }
+  let recoveryError: unknown;
   try {
     const reading = rotated.transport.request("thread/read", {});
     void reading.catch(() => undefined);
@@ -8466,6 +8493,13 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
       } : JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
       expect(retainedCore.identity).toEqual(baseIdentity);
       expect(retainedCore.commands.some((command: { type: string }) => command.type === "run.attach")).toBe(false);
+      if (credentialsCleaned) {
+        const config = await readFile(join(stateDirectory, "codex-home", "config.toml"), "utf8");
+        expect(config).toContain("https://paperclip.example/mcp/current");
+        expect(config).toContain("current-assigned-gateway-credential");
+        expect(config).not.toContain("first-assigned-gateway-credential");
+        expect(currentHandler).not.toHaveBeenCalled();
+      }
     }
     releaseRetained();
     const read = await reading;
@@ -8497,9 +8531,15 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
       expect(target.stagedRunAttachment).toBeUndefined();
       expect(target.completedWarmTransition.receipt).toMatchObject({ oldIdentity: baseIdentity, newIdentity: secondIdentity });
     } else expect(await stat(join(stateDirectory, "authority-epochs"))).toBeDefined();
+  } catch (error) {
+    recoveryError = error;
+    throw error;
   } finally {
     releaseRetained();
-    await rotated.transport.close();
+    await rotated.transport.close().catch(error => {
+      if (recoveryError) throw new AggregateError([recoveryError, error], "Provider recovery and cleanup failed");
+      throw error;
+    });
   }
   const requestFrames = (await readFile(tracePath, "utf8"))
     .trim()
@@ -8745,6 +8785,8 @@ async function verifyLiveRunnerAdoption(
   adoptionAuthorization: "allow" | "deny" | "legacy" | "legacy-missing" | "missing-binding" = "allow",
   toolHandlerOrder?: "before" | "after" | "completion-before" | "completion-after",
   uncertainAtClose = false,
+  semanticRecoveryMode?: "denied-before-cancel" | "cleanup-only",
+  stopExitProofFault?: "missing" | "false",
 ) {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-live-adopt-"));
   const pendingCompletion = toolHandlerOrder?.startsWith("completion-") === true;
@@ -8774,7 +8816,7 @@ async function verifyLiveRunnerAdoption(
     authority = next;
     return {
       connectUrl: `ws://127.0.0.1:${address.port}/runner`,
-      ...(mismatchedArtifact || uncertainAtClose ? { checkpoint } : {}),
+      ...(mismatchedArtifact || uncertainAtClose || semanticRecoveryMode === "cleanup-only" ? { checkpoint } : {}),
       release: async () => {
         if (authority === next) authority = null;
       },
@@ -8817,7 +8859,19 @@ async function verifyLiveRunnerAdoption(
   const first = createCapabilityRunnerdCodexTransport(options);
   const pendingTool = vi.fn(() => new Promise<Record<string, unknown>>(() => undefined));
   if (toolHandlerOrder) first.transport.setServerRequestHandler(pendingTool);
-  const recoveredTool = vi.fn(async () => ({ result: { receipt: "known-outcome" }, isError: false }));
+  let releaseRecovery!: () => void;
+  const recoveryGate = new Promise<void>(resolve => { releaseRecovery = resolve; });
+  const recoveryDenied = new Error("execution authority revoked after Stop");
+  const recoveredTool = vi.fn(async () => {
+    if (semanticRecoveryMode) {
+      // Model server authority denying replay after Stop cleared the task lock.
+      // The gate holds that denial until reattachment has returned its session,
+      // before the caller invokes the eventual onSession cancellation callback.
+      await recoveryGate;
+      throw recoveryDenied;
+    }
+    return { result: { receipt: "known-outcome" }, isError: false };
+  });
   const redispatchedTool = vi.fn(async () => ({ success: true, contentItems: [] }));
   let runnerPid: number | null = null;
   let runnerStartedAt: string | null = null;
@@ -8919,6 +8973,7 @@ async function verifyLiveRunnerAdoption(
       ...options,
       ...(preparedTask && !adoptionAuthorization.startsWith("legacy") ? { authorizeRunnerAdoption } : {}),
       ...(uncertainAtClose ? { closeGraceMs: 2_000 } : {}),
+      ...(semanticRecoveryMode === "cleanup-only" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
       // Hash different stable bytes without replacing the real runner artifact
       // used by concurrent tests. Adoption must never execute this path.
       ...(mismatchedArtifact
@@ -9015,6 +9070,87 @@ async function verifyLiveRunnerAdoption(
       }),
     );
     if (toolHandlerOrder?.endsWith("after")) adopted.transport.setServerRequestHandler(redispatchedTool);
+    if (semanticRecoveryMode) {
+      const retained = authority as DurablePrpControlPlane | null;
+      expect(retained).not.toBeNull();
+      expect(retained!.store.state.committedEvents.some(event => event.eventType === "semantic_tool.input")).toBe(true);
+      expect(retained!.store.state.commands.filter(command => command.type === "turn.start")).toHaveLength(1);
+      expect(retained!.store.state.commands.some(command => command.type === "turn.interrupt")).toBe(false);
+      if (semanticRecoveryMode === "denied-before-cancel") {
+        await vi.waitFor(() => expect(recoveredTool).toHaveBeenCalledOnce());
+        // This is a real Core replay callback, not an artificial transport error.
+        // Deliver its denial before giving the caller its cancellation turn.
+        releaseRecovery();
+        await vi.waitFor(async () => {
+          await expect(adopted!.transport.request("thread/read", {})).rejects.toBe(recoveryDenied);
+        });
+        await expect(adopted.transport.request("turn/interrupt", {})).rejects.toBe(recoveryDenied);
+        expect(retained!.store.state.commands.some(command => command.type === "turn.interrupt")).toBe(false);
+      } else {
+        // Let all startup/handler microtasks and a real reconciliation read run.
+        // Cleanup must not enter replay even while its authority would deny it.
+        await adopted.transport.request("thread/read", {});
+        expect(recoveredTool).not.toHaveBeenCalled();
+        expect(redispatchedTool).not.toHaveBeenCalled();
+        releaseRecovery();
+        await expect(adopted.transport.request("turn/interrupt", {})).resolves.toEqual({});
+        expect(retained!.store.state.commands.filter(command => command.type === "turn.interrupt")).toMatchObject([{ status: "completed" }]);
+      }
+      expect(redispatchedTool).not.toHaveBeenCalled();
+      expect(retained!.store.state.commands.some(command => command.type === "semantic_tool.result")).toBe(false);
+      expect(retained!.store.state.commands.filter(command => command.type === "turn.start")).toHaveLength(1);
+      expect(duplicateLauncher).not.toHaveBeenCalled();
+      if (semanticRecoveryMode === "cleanup-only") {
+        const faultedStopProof = vi.fn();
+        if (stopExitProofFault) {
+          const queue = retained!.queueCommand.bind(retained!);
+          vi.spyOn(retained!, "queueCommand").mockImplementation((type, ...args) => {
+            const command = queue(type, ...args);
+            if (type === "turn.stop") {
+              let result = command.result;
+              Object.defineProperty(command, "result", {
+                enumerable: true,
+                configurable: true,
+                get: () => result,
+                set: value => {
+                  const receipt = value as { result?: Record<string, unknown> } | null;
+                  if (receipt?.result && typeof receipt.result === "object") {
+                    faultedStopProof(receipt.result.providerExitConfirmed);
+                    const stopped = { ...receipt.result };
+                    if (stopExitProofFault === "missing") delete stopped.providerExitConfirmed;
+                    else stopped.providerExitConfirmed = false;
+                    result = { ...receipt, result: stopped };
+                  } else result = value;
+                },
+              });
+            }
+            return command;
+          });
+          await expect(adopted.transport.close()).rejects.toBeInstanceOf(NativeSessionCloseUnrecoverableError);
+          expect(faultedStopProof).toHaveBeenCalledWith(true);
+          expect(checkpoint).toHaveBeenCalledExactlyOnceWith("unsettled");
+        } else {
+          await expect(adopted.transport.close()).resolves.toBeUndefined();
+          expect(checkpoint).toHaveBeenCalledExactlyOnceWith("settled");
+          expect(retained!.store.state.commands.filter(command => command.type === "turn.stop")).toMatchObject([{
+            status: "completed", result: { result: { providerExitConfirmed: true } },
+          }]);
+        }
+        expect(retained!.semanticToolResultsSettled()).toBe(false);
+        expect(retained!.store.state.commands.some(command => command.type === "semantic_tool.result")).toBe(false);
+        expect(retained!.store.state.committedEvents.some(event => event.eventType === "semantic_tool.input")).toBe(true);
+        if (!stopExitProofFault) {
+          expect(retained!.store.state.commands.filter(command => command.type === "runner.suspend")).toMatchObject([{ status: "completed" }]);
+          const runnerState = JSON.parse(await readFile(join(stateDirectory, "runner", "runner-state.json"), "utf8"));
+          expect(runnerState).toMatchObject({ ...identity, lifecycle: "suspended" });
+        }
+        const providerState = JSON.parse(await readFile(join(stateDirectory, "runner", "codex-provider-state.json"), "utf8"));
+        expect(providerState).toMatchObject({ activeProviderTurnId: null, pendingEvents: [], queuedEvents: [] });
+        expect(recoveredTool).not.toHaveBeenCalled();
+        expect(redispatchedTool).not.toHaveBeenCalled();
+      }
+      return;
+    }
     if (toolHandlerOrder) {
       await vi.waitFor(() => {
         expect(pendingCompletion ? redispatchedTool : recoveredTool).toHaveBeenCalledOnce();
@@ -9103,6 +9239,7 @@ async function verifyLiveRunnerAdoption(
       expect(commandTypes).not.toContain("runner.suspend");
     }
   } finally {
+    releaseRecovery();
     await adopted?.transport.close().catch(() => undefined);
     if (uncertainAtClose) {
       const providerPid = adopted?.evidence().codexPid;
@@ -9831,3 +9968,12 @@ it.each(["before", "after"] as const)("settles a saved tool outcome with the han
 
 it.each(["completion-before", "completion-after"] as const)("recovers a pending finish without an ordinary-tool lookup (%s)", order =>
   verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", order), 30_000);
+
+it("exposes semantic recovery before cancellation when the authority has been revoked", () =>
+  verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", "before", false, "denied-before-cancel"), 30_000);
+
+it.each(["before", "after", "completion-before", "completion-after"] as const)("allows cleanup-only adoption to cancel without replaying a pending semantic input (%s)", order =>
+  verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", order, false, "cleanup-only"), 30_000);
+
+it.each(["missing", "false"] as const)("refuses cleanup settlement when the exact stop receipt has %s provider exit proof", fault =>
+  verifyLiveRunnerAdoption(false, false, false, false, false, false, "allow", "before", false, "cleanup-only", fault), 30_000);

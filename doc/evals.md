@@ -1,5 +1,12 @@
 # Paperclip evaluation guide
 
+The explicit-only [verified API artifact transfer](../tests/runner-e2e/README.md#verified-api-artifact-transfer)
+cell checks a native Codex agent on Daytona installing an authorized saved API
+response and delivering unchanged bytes. The oracle binds the source capture,
+tool completion and independent attachment download, including the complete
+388131-byte synthetic description. Registration and oracle calibration are
+separate from live provider qualification.
+
 The explicit-only [Kimi Code qualification suite](../tests/runner-e2e/README.md#kimi-code-qualification)
 registers twenty candidate cells across local and Daytona. It reuses the
 browser, semantic interaction, file/artifact, Stop and continuation oracles with
@@ -50,9 +57,15 @@ OpenCode Product E2E cells. They
 verify saving an unstarted task and delegating a saved announcement back to chat,
 using ordinary production instructions, real browser messages and independent
 state/provenance checks. A separately selected native OpenCode/DeepSeek1017
-backlog cell measures TestOps integration acceptance with the same oracle and
-original bounds. Its source registration is not an AWS or TestOps pass. The
-broader YAML catalog remains planning inventory.
+backlog cell supplied historical TestOps integration acceptance with the same
+oracle and original bounds. Its former smoke plan and the three-case completion
+pilot are retired; their cases and measurements remain in history. The
+[full-catalog TestOps lane](../tests/runner-e2e/CHAT-FEATURES.md#full-catalog-in-testops)
+maps all 244 YAML scenarios into a separate candidate-scoped plan. Its app and
+fixtures use a preserved immutable catalog revision; trusted workflow helpers run
+from master. Registration, known gaps and private prerequisites remain distinct
+from measured results. This lane does not qualify the current master app or reset
+earlier campaign accounting.
 
 The explicit-only [Daytona restart continuity journey](../tests/runner-e2e/README.md)
 extends the existing native restart oracle to a 300-second controller outage

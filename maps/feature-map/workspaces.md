@@ -43,6 +43,15 @@ Live staging acceptance remains separate from these regression tests.
 
 Use the task’s workspace card or Files panel and follow its workspace link.
 
+Native artifact-copy verification: in an admitted standard-mode task, save a
+synthetic API response and call `download_artifact` with its saved identity and a
+new workspace-relative filename. Independently inspect the file's complete byte
+count and SHA-256 through the admitted filesystem. Retry the identical request;
+reject a conflicting destination, symlink, revoked authority and foreign artifact.
+The transfer does not change the content's untrusted status. See
+[API tools](../../doc/runner-api-tools.md#verified-artifact-installation) for support
+and limits. Provider-free regression evidence is not live remote qualification.
+
 ### `workspace-management`
 
 Open `/workspaces`, a project workspace, or `/execution-workspaces/:workspaceId` and its Services/Configuration/Runtime logs views.
@@ -74,9 +83,33 @@ or original Git remote. Read-only cross-project referenced folders must fail
 admission. Separate workspaces may run concurrently; shared concurrent writers
 must be rejected.
 
+Repeat remote capture with enough free space for the archive and normalized Git
+metadata, but not another working-tree copy. Verify saved files and Git state
+after restore. A concurrent file change must fail capture without publishing a
+receipt or retaining a partial archive. The
+[portable archive suite](../../server/src/services/remote-workspace-snapshot-archive.test.ts)
+checks the space allowance and concurrent-change boundary; its filesystem quota
+is controlled test input, not a live sandbox qualification.
+
+Create a child that inherits a saved isolated workspace or operator branch.
+Verify it continues the same files after the prior writer saves, including on a
+new allocation. Two bound children must not acquire concurrent writer authority.
+The [reservation regression](../../server/src/services/remote-workspace-reservation.test.ts)
+and [saved-file lifecycle suite](../../server/src/services/remote-workspaces.integration.test.ts)
+exercise inheritance, access checks, and file continuity with real PostgreSQL.
+Their filesystem transport is local test execution, not live sandbox/provider proof.
+
 The Files panel must label **Live workspace** or **Saved copy** with its save
 time. Confirm browse, preview, and download agree. A missing allocation with
 unsaved work must report unavailability rather than show an old save as current.
+After a final save clears dirty state and writer authority, Files must read the
+current committed saved version even while the old allocation is still recorded
+or its read transport is unavailable. Confirm the original bytes and Saved copy
+label; a new writer or dirty state must retain the live-read requirement.
+Clear the recorded allocation while a saved preview is loading: the pinned copy
+must remain readable. Epoch, snapshot, source, writer, dirty-state, and foreign
+or reintroduced location changes must still reject the read. Live reads keep
+their physical-location fence, and all private saved copies must be removed.
 Close must retain dirty/unfinished work and reject custom cleanup/teardown
 commands; a clean saved workspace can release compute while retaining files.
 Manual runtime commands, jobs, repairs, and service starts must reject remote
@@ -189,9 +222,12 @@ Manual: Provision a disposable workspace, wait for readiness, start an available
   encryption key. Edits after the last save still depend on the sandbox; there
   is no periodic workspace backup. The experiment does not remove the instance
   volume or establish zero-outage deployment for other data paths.
-- Terminal workspace cleanup wakes after committed task/workspace/PR changes and
-  restores cooldown deadlines at startup. Empty lanes stop scanning. Display Git
-  results can lag by thirty seconds. Compatible records share one advisory Git
+- Terminal workspace cleanup wakes after committed task/workspace/PR/finalization changes and
+  restores cooldown deadlines at startup. Empty lanes stop scanning. Metadata reads
+  do not inspect storage. Providers without ancestry inspection use finalized HEAD
+  and destination-aware GitHub proof before storage checks. Associated squash PRs
+  need not be recorded manually; wrong HEAD/base, unreachable integration commits,
+  or unavailable credentials retain the workspace. Compatible records share one advisory Git
   inspection per bounded page, while each record keeps its own delivery check.
   Destructive cleanup starts a separate Git scan even if an older scan is running.
   The [worker tests](../../server/src/__tests__/terminal-workspace-work.test.ts)

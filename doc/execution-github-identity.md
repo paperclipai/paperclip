@@ -210,6 +210,9 @@ tool, and proactive calls do not carry this authority. Repository URLs come from
 stored project workspaces. Foreground preparation uses the live run's accepted
 identity and standard trust checks, even when background project consent exists.
 Maintenance ignores originating run/agent context and uses project consent only.
+Core delivery-proof cleanup uses the same project consent before contacting GitHub,
+bound to the provider's stored source project and repository. It repeats authorization
+for the final proof before removal; a changed source or revoked grant retains storage.
 After archival, existing consent remains usable only for host-issued workspace
 inspection and removal. New provisioning and new consent remain blocked.
 

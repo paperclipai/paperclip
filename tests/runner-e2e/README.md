@@ -671,6 +671,31 @@ or `--offline` to require cached data. Offline mode supports reports and assets
 already visited; it reports uncached artifacts explicitly. The preview contains
 only published evidence, not private Playwright traces or videos.
 
+## Verified API artifact transfer
+
+The explicit-only `api-artifact-transfer` suite has one native Codex Daytona
+cell: `api-artifact-transfer.runner-codex.daytona.verified-artifact-copy`.
+It seeds a 388131-byte synthetic description containing Unicode and escaped
+characters. The agent must read the source through the authenticated API,
+install its saved response with `download_artifact`, and deliver the unchanged
+file. The oracle uses the persisted, redacted API and installation receipts, then
+independently downloads both the stored source and delivered attachment through
+the authorized public API. The server audit must identify that exact asset as an
+API capture from the tested company, agent and run. Their bytes, hashes, source
+ID and full content must agree. An uploaded substitute cannot satisfy provenance.
+A missing tool, incomplete receipt, copied substitute or one-byte loss fails.
+The browser must show the same downloadable attachment after reloading.
+
+This is one attempt, one native run and a ten-minute attempt deadline. Existing
+fixture ownership, credential isolation, usage reporting and cleanup apply.
+Use the protected Runner Full-Stack E2E workflow with this exact ID and the
+candidate branch. Its existing governed credentials and immutable image provide
+the live transport; local oracle tests and catalog registration are separate
+from a completed live pass. It is excluded from `--all`.
+
+Private evidence retains the normal run transcript. The added structured proof
+contains identities, counts and hashes; it does not publish the full API body.
+
 ## Credentials
 
 Copy `.env.runner-e2e.example` to `.env.runner-e2e.local` and fill only the
@@ -822,8 +847,16 @@ and asserts `created`, `resumed`, `resumed` lease acquisition on one sandbox.
 Runner Codex additionally proves stable native session, provider session,
 runner instance, PID, and process-start identity. The ordinary warm cell uses
 managed instructions and edits AGENT_HOME on every turn: a growing memory file,
-an unchanged 8 MiB binary, and a deletion. Public API reads independently verify
-the canonical bytes after every turn. Native checkpoint receipts must show only
+an unchanged 8 MiB binary, and a deletion. The temporary file contains exactly
+the nine ASCII bytes `temporary` without a trailing newline, so its transfer
+count is explicit in the prompt. Public API reads independently verify
+the canonical bytes after every turn. Save receipts come from the latest
+`instruction_save` event in the complete, paginated run log. Missing receipts,
+later failed saves, or events from another run fail the check; a successful run
+summary cannot replace this evidence. Definition version 5 preserves earlier
+results under their original receipt lookup. Review actions target the actual
+interaction card by its test ID and interaction ID, so the request navigation
+button cannot make the locator ambiguous. Native checkpoint receipts must show only
 the changed memory file transferred on turns 2 and 3; the PID oracle remains strict.
 The journal stress cell retains fixed external instructions as a control. Each warm turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
@@ -1074,6 +1107,13 @@ pnpm test:e2e:runner:models:update
 ```
 
 ## Daytona image
+
+The image builder retains only its stripped Runner executable and portable
+provider pack. The dependency install and pack build share one layer so the
+workspace and package store can be removed before export. Source-provenance
+changes can repeat the dependency install; this bounds retained builder disk
+at the cost of install-cache granularity. The build reports workspace and pack
+sizes, and final runtime and CLI checks still execute in the published image.
 
 The ephemeral Daytona fixture requests a 60-minute wall-clock lifetime at creation.
 The provider destroys each sandbox at that expiry in any state. This bound includes

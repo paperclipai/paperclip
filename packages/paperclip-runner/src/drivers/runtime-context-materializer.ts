@@ -443,23 +443,40 @@ export async function prepareIsolatedCodexHome(input: {
     join(input.codexHome, "skills"),
   );
 
-  // A compatible endpoint arrives as `PAPERCLIP_CODEX_PROVIDERS`, the same
-  // contract the Codex harness probe reads. Merge it with the managed
-  // projection so declaring an unused provider cannot remove a working route.
+  const { toml: providerConfig, modelProvider: selectedProvider } =
+    await codexProviderConfigFor(input);
+  await writeIsolatedCodexConfig(input, providerConfig);
+  await writeIsolatedCodexAuth(input, selectedProvider);
+}
+
+/**
+ * Resolve the provider tables this run writes.
+ *
+ * A compatible endpoint arrives as `PAPERCLIP_CODEX_PROVIDERS`, the same
+ * contract the Codex harness probe reads. It merges with the managed
+ * projection so declaring an unused provider cannot remove a working route.
+ */
+async function codexProviderConfigFor(input: {
+  environment?: Record<string, string | undefined>;
+  sourceCodexHome?: string | null;
+}): Promise<{ toml: string; modelProvider: string | null }> {
   const customProviders = codexCustomProviders(input.environment);
   // A selected custom provider owns routing for this run. Reading the source
   // home then could reject a stale managed entry the run never uses.
   const managedProviders = customProviders.modelProvider
     ? null
     : await managedCodexProviders(input.sourceCodexHome);
-  const { toml: providerConfig, modelProvider: selectedProvider } =
-    codexProviderToml(customProviders, managedProviders);
+  return codexProviderToml(customProviders, managedProviders);
+}
+
+async function writeIsolatedCodexConfig(input: CodexAuthInput & { nativeMcp?: NativeMcpLaunchBinding | null }, providerConfig: string): Promise<void> {
   const configPath = join(input.codexHome, "config.toml");
   await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
   await chmod(input.codexHome, 0o700);
   const temporaryConfig = join(input.codexHome, `.config-${randomUUID()}.tmp`);
   try {
     await writeFile(temporaryConfig, [
+      'cli_auth_credentials_store = "file"',
       providerConfig,
       codexObservabilityToml(input.observability?.otelConfig),
       // Codex shell snapshots serialize the provider process environment. The
@@ -484,7 +501,25 @@ export async function prepareIsolatedCodexHome(input: {
     await rename(temporaryConfig, configPath);
     await chmod(configPath, 0o600);
   } finally { await rm(temporaryConfig, { force: true }); }
+}
 
+type CodexAuthInput = {
+  codexHome: string;
+  sourceCodexHome?: string | null;
+  apiKey?: string | null;
+  environment?: Record<string, string | undefined>;
+  observability?: import("./agent-observability.js").ProviderObservabilityLaunch;
+};
+
+export async function prepareIsolatedCodexRecoveryHome(input: CodexAuthInput & { nativeMcp?: NativeMcpLaunchBinding | null }): Promise<void> {
+  const { toml: providerConfig, modelProvider: selectedProvider } =
+    await codexProviderConfigFor(input);
+  await writeIsolatedCodexConfig(input, providerConfig);
+  await writeIsolatedCodexAuth(input, selectedProvider);
+}
+
+async function writeIsolatedCodexAuth(input: CodexAuthInput, selectedProvider: string | null): Promise<void> {
+  await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
   const targetAuth = join(input.codexHome, "auth.json");
   await rm(targetAuth, { force: true });
   // Only a selected provider replaces the auth fallback. A table that overrides

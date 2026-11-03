@@ -544,6 +544,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   #turnReasoningMode: OpenCodeReasoningMode = "default";
   #emptyResponseRecovery: { turnId: string; priorMessages: Set<string>; responseStarted: boolean; responseFinished: boolean } | null = null;
   #emptyResponseAckTimer: ReturnType<typeof setTimeout> | undefined;
+  #interruptedTurnId: string | null = null;
   #pendingToolCalls = 0;
   readonly #runningNativeToolParts = new Set<string>();
   #abort = new AbortController();
@@ -695,6 +696,7 @@ class OpenCodeHarnessSession implements HarnessSession {
     this.#turnStartSourceSeq = this.#sourceSequence;
     this.#turnReasoningMode = reasoningMode;
     this.#emptyResponseRecovery = null;
+    this.#interruptedTurnId = null;
     this.#runningNativeToolParts.clear();
     this.#emit("turn.submitted", {
       envelopeSchema: this.#taskEnvelope.schema,
@@ -765,7 +767,7 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 
   #failEmptyResponse(turnId: string, message: string): void {
-    if (this.#closed || this.#activeTurnId !== turnId || this.#result !== null || this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return;
+    if (this.#closed || this.#activeTurnId !== turnId || this.#interruptedTurnId === turnId || this.#result !== null || this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return;
     this.#emit("turn.failed", { status: "failed", error: { code: "opencode_empty_response", message, retryable: false } }, { turnId });
     this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
     this.#activeTurnId = null;
@@ -774,6 +776,9 @@ class OpenCodeHarnessSession implements HarnessSession {
   #recoverEmptyResponse(turnId: string): boolean {
     if (this.#result !== null || this.#pendingRuntimeRequests.size > 0) return false;
     if (this.#pendingToolCalls > 0 || this.#runningNativeToolParts.size > 0) return true;
+    // An intentional pause needs the provider's idle fact, not another model
+    // request. Keep in-flight tool work gated by the checks above.
+    if (this.#interruptedTurnId === turnId) return false;
     const recovery = this.#emptyResponseRecovery;
     const boundary = Math.max(this.#turnStartSourceSeq, this.#lastNonTerminalToolSourceSeq);
     if (this.#completedTextParts.some(part => part.observedSourceSeq > boundary)) return false;
@@ -800,13 +805,18 @@ class OpenCodeHarnessSession implements HarnessSession {
   }
 
   async interrupt(input: { turnId?: string; reason?: string }): Promise<void> {
-    await this.#completionSettlement;
+    const turnId = this.#activeTurnId;
     if (
       input.turnId &&
-      this.#activeTurnId &&
-      input.turnId !== this.#activeTurnId
+      turnId &&
+      input.turnId !== turnId
     )
       throw new Error("stale OpenCode turn");
+    if (!turnId) return;
+    this.#interruptedTurnId = turnId;
+    this.#clearEmptyResponseAckTimer();
+    await this.#completionSettlement;
+    if (this.#activeTurnId !== turnId) return;
     await api(
       this.#fetch,
       this.#runtime,
@@ -982,12 +992,7 @@ class OpenCodeHarnessSession implements HarnessSession {
         `/question/${encodeURIComponent(input.requestId)}/reject?${workspace}`,
         { method: "POST" },
       ),
-      api(
-        this.#fetch,
-        this.#runtime,
-        `/session/${encodeURIComponent(this.#providerSessionId)}/abort`,
-        { method: "POST" },
-      ),
+      this.interrupt({ turnId: input.turnId, reason: "Durable user input handoff." }),
     ]).then(() => undefined);
     return { result: "handed_off", cleanup };
   }
@@ -1864,12 +1869,14 @@ class OpenCodeHarnessSession implements HarnessSession {
       turnId
     ) {
       if (this.#recoverEmptyResponse(turnId)) return;
+      const interrupted = this.#interruptedTurnId === turnId;
+      const status = interrupted ? "cancelled" : "completed";
       const fingerprint = canonicalJson({
-        status: "completed",
+        status,
         semanticResult: this.#resultFingerprint,
       });
       this.#terminalTurns.set(turnId, fingerprint);
-      this.#emitSettledFinalAgentMessage(turnId);
+      if (!interrupted) this.#emitSettledFinalAgentMessage(turnId);
       const workspace = this.#workspaceChangesByTurn.get(turnId);
       if (workspace !== undefined)
         this.#emit(
@@ -1884,7 +1891,7 @@ class OpenCodeHarnessSession implements HarnessSession {
       // Emit while this turn is still `#activeTurnId`; the gate in `#emit`
       // drops any frame whose turnId is not the active turn, so nulling it
       // first would make `#emit` drop this very event.
-      this.#emit("turn.completed", { status: "completed" }, { turnId });
+      this.#emit(interrupted ? "turn.cancelled" : "turn.completed", { status }, { turnId });
       this.#activeTurnId = null;
       return;
     }

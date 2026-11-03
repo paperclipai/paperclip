@@ -1062,25 +1062,60 @@ function StreamlinedInbox({
     refetchOnWindowFocus: false,
     staleTime: INBOX_HOT_PATH_STALE_MS,
   });
-  const contextIssueIds = useMemo(() => [...new Set([
-    ...(tab === "mine" ? mineIssuesRaw : touchedIssuesRaw).map((issue) => issue.parentId),
-    ...(heartbeatRuns ?? []).map(readIssueIdFromRun),
-  ].filter((id): id is string => Boolean(id)))].sort(), [tab, mineIssuesRaw, touchedIssuesRaw, heartbeatRuns]);
-  const { data: contextIssues = [], isLoading: isContextIssuesLoading, error: contextIssuesError } = useQuery<Issue[]>({
-    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "row-context", contextIssueIds],
-    placeholderData: (previous) => previous?.filter((issue) => issue.companyId === selectedCompanyId),
+  const { parentContextIds, failureContextIds, contextIssueIds } = useMemo(() => {
+    const sourceIssues = tab === "mine" ? mineIssuesRaw : touchedIssuesRaw;
+    const loadedIds = new Set(sourceIssues.map((issue) => issue.id));
+    // Failure cards need interruption state even when their task is already in
+    // the index. Parent captions only need index metadata.
+    const failureIds = new Set((heartbeatRuns ?? []).map(readIssueIdFromRun)
+      .filter((id): id is string => Boolean(id)));
+    const parentIds = new Set(sourceIssues.map((issue) => issue.parentId)
+      .filter((id): id is string => Boolean(id))
+      .filter((id) => !loadedIds.has(id) && !failureIds.has(id)));
+    return {
+      parentContextIds: [...parentIds].sort(),
+      failureContextIds: [...failureIds].sort(),
+      contextIssueIds: new Set([...parentIds, ...failureIds]),
+    };
+  }, [tab, mineIssuesRaw, touchedIssuesRaw, heartbeatRuns]);
+  const needsIssueContext = !!selectedCompanyId && contextIssueIds.size > 0 && tab !== "blocked";
+  const {
+    data: issueContext,
+    isLoading: isContextIssuesLoading,
+    isPlaceholderData: isContextIssuesPlaceholder,
+    error: contextIssuesError,
+  } = useQuery<{
+    companyId: string | null;
+    issues: Issue[];
+    failureIssueIds: string[];
+  }>({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "row-context", "parent-index-with-failure-state", parentContextIds, failureContextIds],
+    placeholderData: (previous) => needsIssueContext && previous?.companyId === selectedCompanyId
+      ? { ...previous, issues: previous.issues.filter((issue) => contextIssueIds.has(issue.id)) }
+      : undefined,
     queryFn: async ({ signal }) => {
-      const result: Issue[] = [];
-      for (let offset = 0; offset < contextIssueIds.length; offset += 100) {
-        result.push(...await issuesApi.listCompact(selectedCompanyId!, {
-          ids: contextIssueIds.slice(offset, offset + 100), projection: "rows", limit: 100,
-          includeRoutineExecutions: true,
-        }, { signal }) as Issue[]);
-      }
-      return result;
+      const loadContext = async (ids: string[], projection: "index" | "rows") => {
+        const result: Issue[] = [];
+        for (let offset = 0; offset < ids.length; offset += 100) {
+          result.push(...await issuesApi.listCompact(selectedCompanyId!, {
+            ids: ids.slice(offset, offset + 100), projection, limit: 100,
+            includeRoutineExecutions: true,
+          }, { signal }) as Issue[]);
+        }
+        return result;
+      };
+      const [parents, failures] = await Promise.all([
+        loadContext(parentContextIds, "index"),
+        loadContext(failureContextIds, "rows"),
+      ]);
+      // A completed failure read also establishes absence for filtered/missing
+      // tasks. Parent-only placeholders cannot supply this coverage.
+      return { companyId: selectedCompanyId, issues: [...parents, ...failures], failureIssueIds: failureContextIds };
     },
-    enabled: !!selectedCompanyId && contextIssueIds.length > 0 && tab !== "blocked",
+    enabled: needsIssueContext,
   });
+  const contextIssues = issueContext?.issues ?? [];
+  const knownFailureContextIds = useMemo(() => new Set(issueContext?.failureIssueIds ?? []), [issueContext]);
   const issues = useMemo(() => [...mineIssuesRaw, ...touchedIssuesRaw, ...contextIssues], [mineIssuesRaw, touchedIssuesRaw, contextIssues]);
   const liveRunsQueryKey = queryKeys.liveRuns(selectedCompanyId!);
   const sharedLiveRuns = useSharedPollingQuery({
@@ -1379,11 +1414,13 @@ function StreamlinedInbox({
 
   const failedRuns = useMemo(
     () =>
-      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter(
-        (r) => !isInboxEntityDismissed(dismissedAtByKey, `run:${r.id}`, r.createdAt)
-          && issueById.get(readIssueIdFromRun(r) ?? "")?.interruption?.state !== "resolved",
-      ),
-    [heartbeatRuns, dismissedAtByKey, issueById],
+      getLatestFailedRunsByAgent(heartbeatRuns ?? []).filter((run) => {
+        const issueId = readIssueIdFromRun(run);
+        return !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt)
+          && (!issueId || knownFailureContextIds.has(issueId) || !!contextIssuesError)
+          && issueById.get(issueId ?? "")?.interruption?.state !== "resolved";
+      }),
+    [heartbeatRuns, dismissedAtByKey, issueById, knownFailureContextIds, contextIssuesError],
   );
   const approvalsToRender = useMemo(() => {
     let filtered = getApprovalsForTab(approvals ?? [], tab, allApprovalFilter, currentUserId);
@@ -2464,6 +2501,7 @@ function StreamlinedInbox({
     !isApprovalsLoading &&
     !isDashboardLoading &&
     !isContextIssuesLoading &&
+    !isContextIssuesPlaceholder &&
     !isMineIssuesLoading &&
     !isTouchedIssuesLoading &&
     !isRunsLoading
@@ -2922,7 +2960,7 @@ function StreamlinedInbox({
                     && blockerAttention?.state === "covered"
                   );
                   const rowStatusIcon = (
-                    <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                    <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
                   );
                   return (
                     <IssueRow
@@ -3022,7 +3060,7 @@ function StreamlinedInbox({
                             <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", isExpanded && "rotate-90")} />
                           </button>
                         ) : (
-                          <StatusIcon status={issue.status} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
+                          <StatusIcon status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState} blockerAttention={blockerAttention} size="md" />
                         )
                       ) : undefined}
                       unreadState={isUnread ? "visible" : isFading ? "fading" : "hidden"}

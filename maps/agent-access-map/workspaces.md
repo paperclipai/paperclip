@@ -74,6 +74,17 @@ without a controller checkout fallback. Current authorization and responsible-us
 checks still apply;
 read-only cross-project referenced folders and explicitly concurrent shared
 writers are rejected. Managed mutable same-project repositories are supported.
+Portable capture streams validated working files while staging self-contained
+Git metadata. The smaller temporary-space requirement grants no new agent access
+or execution authority. Changed sources still fail before a save receipt.
+An inherited isolated workspace or operator branch can be reserved through the
+task's current persisted binding. The original source task remains provenance.
+Reservation checks task/run, binding, trust, and retained source visibility before
+claiming the single writer; an unbound task cannot claim that workspace.
+The [reservation tests](../../server/src/services/remote-workspace-reservation.test.ts)
+exercise that service boundary with real PostgreSQL, including competing children,
+private sources, foreign companies, and closed records. This is automated evidence,
+not live agent qualification.
 Importing an existing local task folder is an operator source-checkout command,
 not an agent API or tool: see the
 [dry-run/apply runbook](../../doc/DEVELOPING.md#experimental-native-remote-workspace-storage).
@@ -248,7 +259,18 @@ API: `present` — representative operation IDs:
 - `GET /api/issues/{issueId}/file-resources/list`.
 
 Agent access: `partial` — Authorized workspace filesystem tools; Dot workspace bridge
-when enabled; board file-resource HTTP UI.
+when enabled; board file-resource HTTP UI. Native standard-mode `download_artifact`
+installs an authorized saved asset (up to 10 MiB) into the admitted workspace,
+requiring exact saved size/hash. Linux local and lease-owned remote command
+runners are supported; plugin task providers without an installer and Dot/Muse/Grok
+profiles do not expose it. The tool follows API rollout policy, current task/run,
+issue mutation and asset-content ACLs, including responsible-user capture ownership.
+Publication is create-only after staging/hash checks; conflicting files and symlink
+paths fail. Retry the identical identity after an unknown outcome. Audit records
+contain identity/outcome only; contents remain untrusted and screening still applies.
+The [authority regression](../../server/src/services/native-runtime/artifact-transfer.integration.test.ts)
+and [filesystem faults](../../server/src/services/native-runtime/artifact-transfer.test.ts)
+use disposable data and real files; provider transport qualification is separate.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
@@ -274,6 +296,11 @@ workspace metadata, and operation logs retain their app-data privacy.
 For enrolled remote workspaces the same board file-resource endpoints read the
 authorized live allocation or a verified committed saved version. Returned
 `source.kind` is `live` or `saved`, with `savedAt` for a saved copy. An unavailable
+clean allocation does not prevent reads of its current committed save once
+writer authority is clear; saved reads validate the exact company, workspace,
+and snapshot even while a remote location remains recorded. Cleanup may clear
+only that location during a saved read; logical-authority changes and foreign
+or reintroduced locations still reject it. Live reads retain their full fence. An unavailable
 dirty allocation cannot silently fall back to stale saved bytes. Remote paths
 never become controller filesystem authority. Confined path/symlink checks,
 bounded search/preview, download streaming, and cancellation remain enforced by
@@ -301,6 +328,11 @@ Policy: Company/project/workspace visibility and runtime authority; active run, 
 preset and task ownership where required.
 Workspace metadata reads do not perform storage inspection or certify delivery.
 The explicit close-readiness API and destructive cleanup retain live safety checks.
+Automatic GitHub delivery checks reuse explicit source-project GitHub consent,
+rechecking the stored repository, selected grant, project access and trust on each
+proof. Missing or revoked consent never falls back to another identity. The resolved destination and
+provider recovery hint cannot be supplied as an authorization override through
+workspace metadata. Ambiguous or inaccessible proof retains storage.
 
 Evidence: `source-only` —
 [implementation](../../server/src/routes/workspace-runtime-service-authz.ts#L76) at the

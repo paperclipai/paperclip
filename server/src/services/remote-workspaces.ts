@@ -165,7 +165,7 @@ export async function reserveRemoteWorkspace(input: {
     const authority = readRemoteWorkspaceAuthority(existing?.metadata);
     if (existing && !authority) throw conflict("Import this existing workspace before enabling remote storage.", { code: "remote_workspace_migration_required" });
     if (existing && authority) {
-      if ((existing.sourceIssueId !== input.issueId && existing.mode !== "shared_workspace") || ["archived", "cleanup_failed"].includes(existing.status)) throw conflict("Workspace ownership changed.");
+      if (["archived", "cleanup_failed"].includes(existing.status)) throw conflict("Workspace ownership changed.");
       if (existing.sourceIssueId !== input.issueId) {
         const actor = { type: "agent", source: "agent_jwt", companyId: input.companyId,
           agentId: input.agentId, runId: input.runId,

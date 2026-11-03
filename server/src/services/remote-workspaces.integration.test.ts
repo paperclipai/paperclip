@@ -33,6 +33,8 @@ import { legacyControllerClaim, renewLegacyControllerLease } from "./legacy-cont
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { issueService } from "./issues.js";
+import { instanceSettingsService } from "./instance-settings.js";
 
 const exec = promisify(execFile);
 const databaseUrl = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_DATABASE_URL;
@@ -86,7 +88,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     await db.delete(environments).where(eq(environments.id, ids.environment));
     await fs.rm(root, { recursive: true, force: true }); vi.unstubAllEnvs();
   });
-  async function target(name: string): Promise<AdapterExecutionTarget> {
+  async function target(name: string): Promise<Extract<AdapterExecutionTarget, { transport: "sandbox" }>> {
     const remoteCwd = path.join(root, name); await fs.mkdir(remoteCwd);
     const runner: CommandManagedRuntimeRunner = {
       execute: async input => {
@@ -100,7 +102,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       syncIn: async operations => transfer(operations), syncOut: async operations => transfer(operations),
     };
     return { kind: "remote", transport: "sandbox", remoteCwd, runner, provider: "daytona", leaseId: ids.lease,
-      sandboxId: `allocation-${ids.lease}`, timeoutMs: 300_000 } as AdapterExecutionTarget;
+      sandboxId: `allocation-${ids.lease}`, timeoutMs: 300_000 } as Extract<AdapterExecutionTarget, { transport: "sandbox" }>;
   }
   async function transfer(operations: Parameters<NonNullable<CommandManagedRuntimeRunner["syncIn"]>>[0]) {
     const results = [];
@@ -397,7 +399,13 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(upload).not.toHaveBeenCalled();
   }, 60_000);
 
-  it("reuses one saved shared workspace across separate tasks while fencing a second writer", async () => {
+  it.each([
+    { mode: "shared_workspace", inherited: false },
+    { mode: "shared_workspace", inherited: true },
+    { mode: "isolated_workspace", inherited: true },
+    { mode: "operator_branch", inherited: true },
+  ])("continues saved $mode files while fencing a second writer (inherited=$inherited)", async ({ mode, inherited }) => {
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     const projectId = randomUUID(), sourceId = randomUUID();
     await db.insert(projects).values({ id: projectId, companyId: ids.company, name: "Synthetic shared project" });
     await db.insert(projectWorkspaces).values({ id: sourceId, companyId: ids.company, projectId,
@@ -405,31 +413,43 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     await db.update(issues).set({ projectId, projectWorkspaceId: sourceId }).where(eq(issues.id, ids.issue));
     const input = { db, storage, companyId: ids.company, issueId: ids.issue, runId: ids.run,
       agentId: ids.agent, environmentId: ids.environment, projectId, projectWorkspaceId: sourceId,
-      existingWorkspaceId: null, source: { kind: "empty" as const }, mode: "shared_workspace" };
+      existingWorkspaceId: null, source: { kind: "empty" as const }, mode };
     const first = await target("shared-sandbox"), reserved = await reserveRemoteWorkspace(input);
     const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run,
       lease: await lease(), target: first });
     await fs.writeFile(path.join(prepared.remoteRoot, "shared-result.txt"), "from the first task\n");
-    const secondIssue = randomUUID(), secondRun = randomUUID(), secondLease = randomUUID();
-    await db.insert(issues).values({ id: secondIssue, companyId: ids.company, projectId, projectWorkspaceId: sourceId,
-      title: "Continue shared work", status: "in_progress", assigneeAgentId: ids.agent });
+    const childInput = { title: "Continue saved work", status: "in_progress" as const, assigneeAgentId: ids.agent };
+    const child = inherited ? await issueService(db).create(ids.company, { ...childInput, parentId: ids.issue })
+      : (await db.insert(issues).values({ ...childInput, companyId: ids.company, projectId, projectWorkspaceId: sourceId }).returning())[0]!;
+    if (inherited) expect(child.executionWorkspaceId).toBe(reserved.id);
+    const secondIssue = child.id, secondRun = randomUUID(), secondLease = randomUUID();
     await db.insert(heartbeatRuns).values({ id: secondRun, companyId: ids.company, agentId: ids.agent,
       nativeIssueId: secondIssue, runtimeMode: "native", status: "running" });
-    const next = { ...input, issueId: secondIssue, runId: secondRun };
+    const next = { ...input, issueId: secondIssue, runId: secondRun,
+      existingWorkspaceId: mode === "shared_workspace" ? null : child.executionWorkspaceId };
     await expect(reserveRemoteWorkspace(next)).rejects.toThrow("unfinished writer");
     await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
       lease: prepared.lease, target: first, assertOwned: async () => undefined });
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, ids.run));
+    if (inherited) await fs.rm(path.dirname(prepared.remoteRoot), { recursive: true, force: true });
     const reused = await reserveRemoteWorkspace(next);
     expect(reused.id).toBe(reserved.id);
     expect(readRemoteWorkspaceAuthority(reused.metadata)).toMatchObject({ epoch: 2, writerRunId: secondRun });
     await db.insert(environmentLeases).values({ id: secondLease, companyId: ids.company, environmentId: ids.environment,
-      heartbeatRunId: secondRun, issueId: secondIssue, provider: "daytona", providerLeaseId: `allocation-${ids.lease}`, status: "active" });
+      heartbeatRunId: secondRun, issueId: secondIssue, provider: "daytona",
+      providerLeaseId: `allocation-${inherited ? secondLease : ids.lease}`, status: "active" });
     const newLease = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, secondLease)))[0]! as EnvironmentLease;
-    const continued = await prepareRemoteWorkspace({ db, storage, workspace: reused, runId: secondRun, lease: newLease, target: first });
+    const nextTarget = inherited ? { ...await target("child-sandbox"), leaseId: secondLease,
+      sandboxId: newLease.providerLeaseId! } : first;
+    const continued = await prepareRemoteWorkspace({ db, storage, workspace: reused, runId: secondRun, lease: newLease, target: nextTarget });
     expect(await fs.readFile(path.join(continued.remoteRoot, "shared-result.txt"), "utf8")).toBe("from the first task\n");
-    await saveRemoteWorkspace({ db, storage, workspace: continued.workspace, runId: secondRun,
-      lease: continued.lease, target: first, assertOwned: async () => undefined });
+    await fs.appendFile(path.join(continued.remoteRoot, "shared-result.txt"), "from the child task\n");
+    const childSaved = await saveRemoteWorkspace({ db, storage, workspace: continued.workspace, runId: secondRun,
+      lease: continued.lease, target: nextTarget, assertOwned: async () => undefined });
+    const loaded = await createSavedWorkspaceLoader(db, storage)({ companyId: ids.company, workspaceId: reserved.id,
+      snapshotId: childSaved.snapshotId });
+    try { expect(await fs.readFile(path.join(loaded.root, "shared-result.txt"), "utf8")).toBe("from the first task\nfrom the child task\n"); }
+    finally { await loaded.cleanup(); }
     const [operation] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, secondRun),
       eq(workspaceOperations.phase, "remote_workspace_snapshot")));
     expect(operation?.issueId).toBe(secondIssue);

@@ -67,6 +67,13 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Seed
 
 Automated: [archive routes](../../server/src/__tests__/inbox-archive-routes.test.ts) cover server mutations. [Task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, and presentation constants; they do not render the combined Inbox/Tasks page. Reading, archiving, and navigating that page remain manual checks.
 
+The deployment-targeted [personal-triage journey](../../tests/runner-e2e/product-journeys/inbox-triage-flow.ts)
+drives Mark as read and Archive, reloads Unread and Mine, independently verifies
+unchanged task status, and observes a later Blocked transition resurface the item.
+It uses one owned self-assigned task and no agent work; its registration is
+separate from a measured Cloud pass. Other actors and company boundaries remain
+separate verification cases.
+
 Automated: [Issue service regressions](../../server/src/__tests__/issues-service.test.ts)
 cover exclusion of historical automatic read cleanup from user participation,
 unread counts, and activity timestamps while retaining explicit user decisions
@@ -91,7 +98,11 @@ Cold-open verification: load Mine with the task-index response delayed while
 approvals/runs resolve. Only the stable list placeholder should appear until the
 initial sources settle; a failed-run row must not jump when tasks arrive. Release
 visible-row details separately and compare row/title bounds. Mine reads its own
-100-row index, with parent/run context by ID; sidebar badges use the count endpoint.
+100-row index. Missing parents use the same index projection for their captions;
+parents already in the index are reused. Failed-run tasks still load rich row
+context by ID, including when they are also parents or already indexed, so resolved
+interruptions stay hidden. The initial reveal waits for both context sources.
+Sidebar badges use the count endpoint.
 Coordinator desktop and mobile navigation share `/attention/summary` for the
 outstanding count. Needs You owns its complete feed; Tasks → Needs attention
 owns a compact complete task-ID index. Navigation reuses either page response. Coordinator keeps the optimized Inbox even when
