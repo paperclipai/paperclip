@@ -383,6 +383,7 @@ describe("managed GitHub launcher environment", () => {
   it("uses target Git configuration without importing controller credentials", async () => {
     const fixture = await sandbox("usr/bin");
     vi.stubEnv("GH_TOKEN", "controller-secret");
+    vi.stubEnv("PAPERCLIP_RUNNER_EXTRA_ROOTS", '["/operator/shared"]');
     await mkdir(path.join(fixture.root, ".config/gh"), { recursive: true });
     await writeFile(path.join(fixture.root, ".config/gh/hosts.yml"), "host credential fixture");
     const execute = fixture.runner.execute.getMockImplementation()!;
@@ -395,6 +396,7 @@ describe("managed GitHub launcher environment", () => {
       target: fixture.target, cwd: fixture.root, env: {
         PAPERCLIP_GIT_METADATA_ROOTS: '["/injected"]',
         PAPERCLIP_RUNNER_NETWORK_ROOTS: '["/injected"]',
+        PAPERCLIP_RUNNER_EXTRA_ROOTS: '["/injected"]',
         PAPERCLIP_GITHUB_HOST_HOME: "/injected",
         PAPERCLIP_GITHUB_AUTH_MODE: "managed",
         PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled",
@@ -402,6 +404,7 @@ describe("managed GitHub launcher environment", () => {
     });
     expect(env.PAPERCLIP_GIT_METADATA_ROOTS).not.toContain("/injected");
     expect(env.PAPERCLIP_RUNNER_NETWORK_ROOTS).not.toContain("/injected");
+    expect(env.PAPERCLIP_RUNNER_EXTRA_ROOTS).toBe('["/operator/shared"]');
     expect(env.PAPERCLIP_GITHUB_AUTH_MODE).toBe("host");
     expect(env.PAPERCLIP_RUNNER_NETWORK_ACCESS).toBe("enabled");
     expect(env.PAPERCLIP_GITHUB_HOST_HOME).toBe(fixture.root);

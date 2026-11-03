@@ -3,6 +3,7 @@ import { configuredEnvironmentKeys } from "../../configured-environment.js";
 import { resolve, isAbsolute, join, dirname, delimiter, relative, sep } from "node:path";
 import { closeSync, constants, existsSync, fstatSync, openSync, realpathSync, readFileSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
 import { QUALIFIED_ACPX_PROFILES } from "../acpx/qualified-profiles.js";
 
 import {
@@ -178,19 +179,44 @@ function gitFilesystemRoots(source: NodeJS.ProcessEnv): { read: string[]; write:
   return { read: [...new Set(read)], write: [...new Set(write)] };
 }
 
-function extraFilesystemRoots(source: NodeJS.ProcessEnv): string[] {
+function isSameOrInside(path: string, parent: string): boolean {
+  const offset = relative(parent, path);
+  return offset === "" || (offset !== ".." && !offset.startsWith(`..${sep}`) && !isAbsolute(offset));
+}
+
+function pathVariants(path: string): string[] {
+  const lexical = resolve(path);
+  try { return [...new Set([lexical, realpathSync(lexical)])]; } catch { return [lexical]; }
+}
+
+function absoluteVariants(values: Array<string | undefined>): string[] {
+  return values
+    .filter((value): value is string => typeof value === "string" && isAbsolute(value.trim()))
+    .flatMap((value) => pathVariants(value.trim()));
+}
+
+function extraFilesystemRoots(source: NodeJS.ProcessEnv, protectedPaths: string[]): string[] {
+  const homes = absoluteVariants([source.HOME, source.PAPERCLIP_GITHUB_HOST_HOME, homedir()]);
+  const denied = absoluteVariants([source.CODEX_HOME, ...protectedPaths]);
+  let roots: unknown;
   try {
     const raw = (source.PAPERCLIP_RUNNER_EXTRA_ROOTS ?? "[]").trim();
-    const roots: unknown = raw.startsWith("[") ? JSON.parse(raw) : raw.split(delimiter).filter(Boolean);
-    if (!Array.isArray(roots)) return [];
-    const home = source.HOME ? resolve(source.HOME) : undefined;
-    return [...new Set(roots
-      .filter((root): root is string => typeof root === "string" && isAbsolute(root))
-      .map((root) => resolve(root))
-      .filter((root) => root !== "/" && root !== home))];
+    roots = raw.startsWith("[") ? JSON.parse(raw) : raw.split(delimiter).filter(Boolean);
   } catch {
+    roots = undefined;
+  }
+  if (!Array.isArray(roots)) {
+    console.warn("[paperclip-runner] ignoring PAPERCLIP_RUNNER_EXTRA_ROOTS: expected a JSON array or a path list");
     return [];
   }
+  const accepted = roots
+    .filter((root): root is string => typeof root === "string" && isAbsolute(root))
+    .map((root) => pathVariants(root))
+    .filter((variants) => !variants.some((root) =>
+      homes.some((home) => isSameOrInside(home, root))
+      || denied.some((path) => isSameOrInside(root, path) || isSameOrInside(path, root))))
+    .map((variants) => variants[variants.length - 1]!);
+  return [...new Set(accepted)];
 }
 
 function usesExternalRunnerSandbox(source: NodeJS.ProcessEnv): boolean {
@@ -274,7 +300,7 @@ export function createIsolatedCodexAppServerArgs(
   const explicitSource = source;
   source ??= process.env;
   const gitRoots = gitFilesystemRoots(source);
-  const extraRoots = extraFilesystemRoots(source);
+  const extraRoots = extraFilesystemRoots(source, protectedPaths);
   readOnlyRoots = [...new Set([...readOnlyRoots, ...codexNetworkReadOnlyRoots(source)])];
   const networkAccess = codexNetworkAccess(source);
   const externalRunnerSandbox = usesExternalRunnerSandbox(source);
