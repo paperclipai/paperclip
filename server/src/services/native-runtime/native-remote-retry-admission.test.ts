@@ -313,7 +313,7 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     const interception = vi.spyOn(f.db, "transaction").mockImplementation((async (callback, options) => transaction(async tx => {
       const update = tx.update.bind(tx);
       const updates = vi.spyOn(tx, "update").mockImplementation((table => {
-        if (table === nativeRunFinalizations) {
+        if (Object.is(table, nativeRunFinalizations)) {
           writes += 1;
           expect(databaseWorkPending(f.db, DELIVERY_QUEUES.nativeProcessSessions)).toBe(true);
         }
