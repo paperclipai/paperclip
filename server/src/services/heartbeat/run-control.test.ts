@@ -637,6 +637,7 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
       releasedAt: proof === "missing" ? null : new Date(), cleanupStatus: proof === "missing" ? null : "success",
       metadata: proof === "missing" ? {} : { remoteExecutionTermination: receipt } });
     const control = createHeartbeatRunControl(db, callbacks(db));
+    vi.mocked(publishLiveEvent).mockClear();
     await control.acknowledgeRemoteStop(run.id, company.id);
     await control.acknowledgeRemoteStop(run.id, company.id);
     const [stopped] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
@@ -644,6 +645,11 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     if (proof === "confirmed") expect(stopped.resultJson?.executionCancellation).toMatchObject({ proof: "provider_termination_receipt" });
     expect(stopped.resultJson?.workspaceRestoreFailure).toBe("restore_failed");
     expect(stopped.resultJson?.workspaceRestoreRecovery).toMatchObject({ leaseIds: [leaseId] });
+    expect(vi.mocked(publishLiveEvent).mock.calls).toEqual(proof === "confirmed" ? [[{
+      companyId: company.id,
+      type: "heartbeat.run.status",
+      payload: expect.objectContaining({ runId, agentId: agent.id, status: "cancelled" }),
+    }]] : []);
   });
 
   it.each(["confirmed", "missing_process_stop", "later_start", "missing_terminal", "unproven_terminal",
@@ -730,10 +736,12 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
       }
     }
     const control = createHeartbeatRunControl(db, callbacks(db));
+    vi.mocked(publishLiveEvent).mockClear();
     if (proof === "confirmed") {
       await control.acknowledgeRemoteStop(run.id, company.id);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]
         .resultJson?.executionCancellation).toMatchObject({ state: "requested" });
+      expect(publishLiveEvent).not.toHaveBeenCalled();
     }
     if (proof !== "missing_process_stop") await appendHeartbeatRunEvent(db, { companyId: company.id,
       agentId: agent.id, runId, eventType: "native.local_process_stopped", payload: { processPid: 424242, processGroupId: 424242 } });
@@ -769,6 +777,17 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
       "pre_stop_completed", "pre_stop_cancelled", "pre_stop_error", "pre_stop_expired", "pre_stop_interrupted"].includes(proof);
     expect(stopped.resultJson?.executionCancellation).toMatchObject({ state: acknowledged ? "acknowledged" : "requested" });
     if (acknowledged) expect(stopped.resultJson?.executionCancellation).toMatchObject({ proof: "provider_api_stop_receipt" });
+    expect(vi.mocked(publishLiveEvent).mock.calls).toEqual(acknowledged ? [[{
+      companyId: company.id,
+      type: "heartbeat.run.status",
+      payload: expect.objectContaining({ runId, agentId: agent.id, status: "cancelled" }),
+    }]] : []);
+    if (acknowledged) {
+      const payload = vi.mocked(publishLiveEvent).mock.calls[0]![0].payload;
+      expect(payload).not.toHaveProperty("resultJson");
+      expect(payload).not.toHaveProperty("executionCancellation");
+      expect(payload).not.toHaveProperty("runnerProfileJson");
+    }
   });
 
   it("keeps pre-Stop input pending until a later user message authorizes one continuation", async () => {

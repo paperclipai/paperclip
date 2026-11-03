@@ -38,6 +38,8 @@ import { buildNativeExecutionInput } from "../services/native-runtime/native-exe
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
 import * as nativeStopEvidence from "../services/acknowledged-native-stop.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import type { LiveEvent } from "@paperclipai/shared";
 import { logger } from "../middleware/logger.js";
 
 vi.setConfig({ testTimeout: 90_000 });
@@ -302,6 +304,11 @@ describe("residual recovery production matrix", () => {
   it.each(["confirmed", "already_retired", "missing_terminal", "unproven_terminal", "ack_failure", "late_terminal"] as const)(
     "settles an API-only Stop after deferred controller retirement without inventing proof: %s", async mode => {
       const f = await fixture(), runId = randomUUID(), sessionId = randomUUID(), runnerId = randomUUID();
+      const statusEvents: LiveEvent[] = [];
+      const unsubscribe = subscribeCompanyLiveEvents(f.companyId, event => {
+        if (event.type === "heartbeat.run.status" && event.payload.runId === runId) statusEvents.push(event);
+      });
+      extraStops.push(async () => unsubscribe());
       const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
       await once(child, "spawn");
       const stopChild = async () => {
@@ -347,6 +354,7 @@ describe("residual recovery production matrix", () => {
       expect(await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId, runId))).toEqual([]);
       expect(await settleNativeRunProcess(db, runId)).toBe("pending");
       expect((await getRun(runId)).resultJson?.executionCancellation).toMatchObject({ state: "requested" });
+      expect(statusEvents).toEqual([]);
       if (mode === "already_retired") { await stopChild(); expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released"); }
       await start();
       if (mode !== "already_retired") {
@@ -363,6 +371,7 @@ describe("residual recovery production matrix", () => {
         expect(errors).toHaveLength(1);
         expect(errors[0]).toBeInstanceOf(AggregateError);
         expect((errors[0] as AggregateError).errors).toEqual([failure]); errors.length = 0;
+        expect(statusEvents).toEqual([]);
         await advance(31_000);
       }
       const stopped = await getRun(runId);
@@ -370,12 +379,14 @@ describe("residual recovery production matrix", () => {
       expect(await readNativeLocalProcessStop(db, f.companyId, runId)).toMatchObject({ processPid: child.pid, processGroupId: child.pid });
       expect(stopped.resultJson?.executionCancellation).toMatchObject(["missing_terminal", "unproven_terminal", "late_terminal"].includes(mode)
         ? { state: "requested" } : { state: "acknowledged", proof: "provider_api_stop_receipt" });
+      expect(statusEvents).toHaveLength(["missing_terminal", "unproven_terminal", "late_terminal"].includes(mode) ? 0 : 1);
       await quiet();
       if (mode === "late_terminal") {
         const rollback = new Error("rollback the uncommitted terminal receipt");
         await expect(db.transaction(async tx => { await appendTerminal(tx as unknown as typeof db); throw rollback; })).rejects.toBe(rollback);
         await advance(1_000);
         expect((await getRun(runId)).resultJson?.executionCancellation).toMatchObject({ state: "requested" });
+        expect(statusEvents).toEqual([]);
         await quiet();
         let commit!: () => void, entered!: () => void;
         const gate = new Promise<void>(resolve => { commit = resolve; });
@@ -385,12 +396,17 @@ describe("residual recovery production matrix", () => {
         try {
           await vi.advanceTimersByTimeAsync(500); await immediate();
           expect((await getRun(runId)).resultJson?.executionCancellation).toMatchObject({ state: "requested" });
+          expect(statusEvents).toEqual([]);
           expect(await db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, runId),
             eq(heartbeatRunEvents.eventType, "turn.interrupted")))).toEqual([]);
         } finally { commit(); await transaction; }
         await vi.waitFor(async () => expect((await getRun(runId)).resultJson?.executionCancellation)
           .toMatchObject({ state: "acknowledged", proof: "provider_api_stop_receipt" }));
         await quiet();
+        expect(statusEvents).toHaveLength(1);
+        expect(statusEvents[0]).toMatchObject({ companyId: f.companyId, type: "heartbeat.run.status",
+          payload: { runId, agentId: f.agent.id, status: "cancelled" } });
+        expect(statusEvents[0]!.payload).not.toHaveProperty("resultJson");
       }
     },
   );

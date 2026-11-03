@@ -12,6 +12,8 @@ import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProc
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import { pendingCaseHandoffForRun, cancelCaseHandoffsForIssue, isCaseHandoffSourceReleased } from "./case-handoff-lifecycle.js";
 import { publishActivity, type ActivityPublication } from "../activity-log.js";
+import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
+import { publishLiveEvent } from "../live-events.js";
 import { DEFERRED_WAKE_CONTEXT_KEY } from "./queue.js";
 import { CANCELLABLE_HEARTBEAT_RUN_STATUSES } from "./recovery.js";
 import {
@@ -553,6 +555,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
             sql`not exists (select 1 from ${environmentLeases} where ${environmentLeases.companyId} = ${heartbeatRuns.companyId}
               and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id})`) : undefined,
           stopped.runtimeMode === "native" ? sql`${heartbeatRuns.resultJson}->'nativeCancellation' = ${JSON.stringify(stopped.resultJson?.nativeCancellation)}::jsonb` : undefined)).returning({ id: heartbeatRuns.id });
+        if (acknowledged.length > 0) {
+          publishLiveEvent({
+            companyId: stopped.companyId,
+            type: "heartbeat.run.status",
+            payload: buildHeartbeatRunStatusLiveEventPayload(stopped),
+          });
+        }
         if (!apiStopped || acknowledged.length > 0) return;
       } else return;
     }
