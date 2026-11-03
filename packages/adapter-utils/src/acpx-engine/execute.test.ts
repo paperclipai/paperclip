@@ -2933,6 +2933,133 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(written.permissions?.additionalDirectories).toContain(stateDir);
   });
 
+  it("seeds operator-configured managedHooks into a fresh workspace settings file", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "fresh-repo");
+    await fs.mkdir(cwd, { recursive: true });
+    const sessionStart = {
+      matcher: "*",
+      hooks: [{ type: "command", command: "node /opt/hooks/session-start.js", timeout: 30 }],
+    };
+    const logFile = path.join(root, "plugin.log");
+
+    const { meta } = await runExecutor(
+      {
+        agent: "claude",
+        stateDir,
+        cwd,
+        managedHooks: { hooks: { SessionStart: [sessionStart] }, env: { MEMORY_LOG_FILE: logFile } },
+      },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+
+    const written = JSON.parse(
+      await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8"),
+    ) as {
+      hooks?: unknown;
+      env?: Record<string, string>;
+      permissions?: { defaultMode?: string; allow?: string[] };
+    };
+    expect(written.hooks).toEqual({ SessionStart: [sessionStart] });
+    expect(written.env).toEqual({ MEMORY_LOG_FILE: logFile });
+    expect(written.permissions?.defaultMode).toBe("default");
+    expect(written.permissions?.allow).toContain("Bash(curl:*)");
+
+    const notes = (meta[0]?.commandNotes as string[] | undefined) ?? [];
+    const note = notes.find((entry) => entry.includes("+1 managed hook(s) on SessionStart"));
+    expect(note).toBeTruthy();
+    expect(note).not.toContain(logFile);
+  });
+
+  it("appends managed hooks to a workspace's own hooks without losing or duplicating them", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    const userStart = { hooks: [{ type: "command", command: "echo user-start" }] };
+    const userStop = { hooks: [{ type: "command", command: "echo user-stop" }] };
+    const managedStart = { hooks: [{ type: "command", command: "node /opt/hooks/session-start.js" }] };
+    await fs.mkdir(path.join(cwd, ".claude"), { recursive: true });
+    await fs.writeFile(
+      path.join(cwd, ".claude", "settings.local.json"),
+      JSON.stringify(
+        {
+          hooks: { SessionStart: [userStart], Stop: [userStop] },
+          env: { KEEP_ME: "1", MEMORY_LOG_FILE: "/user/choice.log" },
+        },
+        null,
+        2,
+      ),
+      "utf8",
+    );
+    const config = {
+      agent: "claude",
+      stateDir,
+      cwd,
+      managedHooks: {
+        hooks: { SessionStart: [managedStart] },
+        env: { MEMORY_LOG_FILE: "/managed/plugin.log" },
+      },
+    };
+
+    for (let run = 0; run < 2; run += 1) {
+      await runExecutor(config, { context: { paperclipWorkspace: { cwd } } });
+    }
+
+    const written = JSON.parse(
+      await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8"),
+    ) as { hooks?: Record<string, unknown[]>; env?: Record<string, string> };
+    expect(written.hooks?.SessionStart).toEqual([userStart, managedStart]);
+    expect(written.hooks?.Stop).toEqual([userStop]);
+    expect(written.env).toEqual({ KEEP_ME: "1", MEMORY_LOG_FILE: "/managed/plugin.log" });
+  });
+
+  it("ignores a malformed managedHooks value instead of writing it to the settings file", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    await runExecutor(
+      {
+        agent: "claude",
+        stateDir,
+        cwd,
+        managedHooks: { hooks: "not-an-object", env: { BROKEN: 42, "  ": "blank-key" } },
+      },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+
+    const written = JSON.parse(
+      await fs.readFile(path.join(cwd, ".claude", "settings.local.json"), "utf8"),
+    ) as { hooks?: unknown; env?: unknown; permissions?: { defaultMode?: string } };
+    expect(written.hooks).toBeUndefined();
+    expect(written.env).toBeUndefined();
+    expect(written.permissions?.defaultMode).toBe("default");
+  });
+
+  it("changes the ACPX session fingerprint when the managed hook block changes", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+    const base = { agent: "claude", stateDir, cwd };
+
+    const first = await runExecutor(
+      { ...base, managedHooks: { hooks: { SessionStart: [{ hooks: [{ type: "command", command: "node v1.js" }] }] } } },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+    const edited = await runExecutor(
+      { ...base, managedHooks: { hooks: { SessionStart: [{ hooks: [{ type: "command", command: "node v2.js" }] }] } } },
+      { context: { paperclipWorkspace: { cwd } } },
+    );
+    const none = await runExecutor(base, { context: { paperclipWorkspace: { cwd } } });
+
+    expect(first.result.sessionParams?.configFingerprint).toBeTypeOf("string");
+    expect(first.result.sessionParams?.configFingerprint).not.toBe(edited.result.sessionParams?.configFingerprint);
+    expect(first.result.sessionParams?.configFingerprint).not.toBe(none.result.sessionParams?.configFingerprint);
+  });
+
   it("overrides a user-supplied dontAsk defaultMode so ACPX can route Bash through canUseTool", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");

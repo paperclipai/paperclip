@@ -1639,6 +1639,32 @@ interface PaperclipClaudeSettingsResult {
   additionalDirectories: string[];
   defaultMode: string;
   overrodeDontAsk: boolean;
+  managedHookEvents: string[];
+  managedHookCount: number;
+  managedEnvKeys: string[];
+}
+
+interface PaperclipClaudeManagedHooks {
+  hooks: Record<string, unknown[]>;
+  env: Record<string, string>;
+}
+
+function normalizeManagedHooks(value: unknown): PaperclipClaudeManagedHooks {
+  const source = parseObject(value);
+  const hooks: Record<string, unknown[]> = {};
+  const env: Record<string, string> = {};
+  for (const [event, groups] of Object.entries(parseObject(source.hooks))) {
+    if (!Array.isArray(groups)) continue;
+    const entries = groups.filter(
+      (group): group is Record<string, unknown> =>
+        typeof group === "object" && group !== null && !Array.isArray(group),
+    );
+    if (entries.length > 0) hooks[event] = entries;
+  }
+  for (const [key, entry] of Object.entries(parseObject(source.env))) {
+    if (key.trim().length > 0 && typeof entry === "string") env[key] = entry;
+  }
+  return { hooks, env };
 }
 
 function uniqueSorted(values: Array<string | null | undefined>): string[] {
@@ -1657,6 +1683,7 @@ async function writePaperclipClaudeSettings(input: {
   stateDir: string;
   agentHome: string;
   companyId: string;
+  managedHooks?: unknown;
 }): Promise<PaperclipClaudeSettingsResult> {
   const filePath = path.join(input.cwd, ".claude", "settings.local.json");
   const instanceRoot = defaultPaperclipInstanceDir();
@@ -1711,7 +1738,23 @@ async function writePaperclipClaudeSettings(input: {
     additionalDirectories: mergedAdditionalDirectories,
     defaultMode,
   };
+  const managedHooks = normalizeManagedHooks(input.managedHooks);
+  const existingHooks = parseObject(existing.hooks);
+  const mergedHooks: Record<string, unknown> = { ...existingHooks };
+  for (const [event, groups] of Object.entries(managedHooks.hooks)) {
+    const current = Array.isArray(mergedHooks[event]) ? [...(mergedHooks[event] as unknown[])] : [];
+    for (const group of groups) {
+      if (current.some((entry) => stableJson(entry) === stableJson(group))) continue;
+      current.push(group);
+    }
+    mergedHooks[event] = current;
+  }
+  const managedHookEvents = Object.keys(managedHooks.hooks);
+  const managedHookCount = managedHookEvents.reduce((total, event) => total + managedHooks.hooks[event].length, 0);
+  const managedEnvKeys = Object.keys(managedHooks.env);
   const next: Record<string, unknown> = { ...existing, permissions: nextPermissions };
+  if (managedHookEvents.length > 0) next.hooks = mergedHooks;
+  if (managedEnvKeys.length > 0) next.env = { ...parseObject(existing.env), ...managedHooks.env };
   await writeFileAtomically({
     target: filePath,
     contents: `${JSON.stringify(next, null, 2)}\n`,
@@ -1723,6 +1766,9 @@ async function writePaperclipClaudeSettings(input: {
     additionalDirectories: mergedAdditionalDirectories,
     defaultMode,
     overrodeDontAsk,
+    managedHookEvents: managedHookEvents.sort(),
+    managedHookCount,
+    managedEnvKeys: managedEnvKeys.sort(),
   };
 }
 
@@ -2167,11 +2213,20 @@ async function buildRuntime(input: {
       // still receives this run's actual AGENT_HOME.
       agentHome: asString(workspaceContext.agentHomeForPermissions, agentHome),
       companyId: agent.companyId,
+      managedHooks: config.managedHooks,
     });
     skillCommandNotes.push(
       `Wrote Paperclip-managed Claude settings to ${paperclipClaudeSettings.filePath} (defaultMode=${paperclipClaudeSettings.defaultMode}${
         paperclipClaudeSettings.overrodeDontAsk ? "; overrode user dontAsk" : ""
-      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
+      }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)${
+        paperclipClaudeSettings.managedHookCount > 0
+          ? `, +${paperclipClaudeSettings.managedHookCount} managed hook(s) on ${paperclipClaudeSettings.managedHookEvents.join("/")}`
+          : ""
+      }${
+        paperclipClaudeSettings.managedEnvKeys.length > 0
+          ? `, +${paperclipClaudeSettings.managedEnvKeys.length} managed env key(s)`
+          : ""
+      }).`,
     );
   } else if (acpxAgent === "codex") {
     // Step 2 — codex-home.seed: the codex managed-home + skills preparation.
@@ -2285,7 +2340,7 @@ async function buildRuntime(input: {
       : acpxAgent === "gemini" && !executionTargetIsRemote
         ? await fs.realpath(cwd)
         : cwd;
-  // The 17 fields the session fingerprint hashes. Company, agent, and task
+  // The fields the session fingerprint hashes. Company, agent, and task
   // identifiers are NOT here; they scope the outer session key only (see
   // `keyIdentity`). The fingerprint builder accepts only this identity.
   const fingerprintIdentity: SessionFingerprintIdentity = {
@@ -2312,6 +2367,15 @@ async function buildRuntime(input: {
           allow: paperclipClaudeSettings.allow,
           additionalDirectories: paperclipClaudeSettings.additionalDirectories,
           defaultMode: paperclipClaudeSettings.defaultMode,
+          ...(paperclipClaudeSettings.managedHookCount > 0 || paperclipClaudeSettings.managedEnvKeys.length > 0
+            ? {
+                managedHooksIdentity: {
+                  events: paperclipClaudeSettings.managedHookEvents,
+                  envKeys: paperclipClaudeSettings.managedEnvKeys,
+                  hash: shortHash(config.managedHooks),
+                },
+              }
+            : {}),
         }
       : null,
     // Qualified built-in ACP harnesses reconnect to the supplied MCP servers
