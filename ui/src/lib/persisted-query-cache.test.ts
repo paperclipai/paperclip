@@ -23,7 +23,7 @@ class MemoryStorage {
 const session = (id = "alice") => ({ session: { id: `session-${id}`, userId: id, token: "never-store-session-token" },
   user: { id, name: id, email: `${id}@example.test`, image: null }, sentryDsn: "never-store-dsn", boardBootstrap: { private: "not-allowlisted" } });
 const handles: Array<() => void> = [];
-function setup(storage = new MemoryStorage(), now?: () => number, client = new QueryClient({ defaultOptions: { queries: { retry: false } } }), buildId = "build-one") {
+function setup(storage = new MemoryStorage(), now?: () => number, client = new QueryClient({ defaultOptions: { queries: { retry: false } } }), buildId: string | null = "build-one") {
   const handle = startPersistedQueryCache(client, { storage, now, buildId, eventTarget: null, debounceMs: 100_000 });
   handles.push(() => { handle.dispose(); client.clear(); });
   return { client, handle, storage };
@@ -38,6 +38,18 @@ function seed(client: QueryClient, userId = "alice", companyId = "company-one") 
 afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.clearAllMocks(); });
 
 describe("persisted read cache", () => {
+  it.each([null, "", "   "])("skips hydration and persistence without a build stamp (%s)", (buildId) => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    const saved = new Map(first.storage.values);
+    const restored = setup(first.storage, undefined, undefined, buildId);
+    expect(restored.client.getQueryData(queryKeys.auth.session)).toBeUndefined();
+    expect(restored.client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
+    seed(restored.client, "bob"); restored.handle.flush();
+    expect(first.storage.values).toEqual(saved);
+    restored.handle.clear();
+    expect([...first.storage.values.keys()].some(key => key.startsWith(QUERY_CACHE_PREFIX))).toBe(false);
+  });
+
   it("retains visible task run preferences while excluding private override options", () => {
     const first = setup(); seed(first.client);
     first.client.setQueryData([...queryKeys.issues.detail("task-one"), "core"], {

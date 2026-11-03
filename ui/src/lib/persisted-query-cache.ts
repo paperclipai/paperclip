@@ -123,13 +123,20 @@ function clearAccountData(client: QueryClient) {
 }
 
 export function startPersistedQueryCache(client: QueryClient, options: {
-  buildId: string;
+  buildId: string | null;
   storage?: CacheStorage | null;
   now?: () => number;
   eventTarget?: Window | null;
   debounceMs?: number;
 }): { flush: () => void; clear: () => void; dispose: () => void } {
   const storage = options.storage === undefined ? browserStorage() : options.storage;
+  const buildId = options.buildId;
+  // An unstamped bundle cannot distinguish its saved reads from another build.
+  if (!buildId?.trim()) return {
+    flush: () => {},
+    clear: () => { try { if (storage) removeRecords(storage); } catch {} },
+    dispose: () => {},
+  };
   const now = options.now ?? Date.now;
   const target = options.eventTarget === undefined ? (typeof window === "undefined" ? null : window) : options.eventTarget;
   let owner: string | null = null;
@@ -221,7 +228,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       if (!raw) return null;
       const entry = JSON.parse(raw) as Envelope;
       if (raw.length > MAX_RECORD_BYTES || entry.version !== 1 || entry.userId !== userId || entry.companyId !== companyId
-        || entry.buildId !== options.buildId || (entry.revision ?? null) !== revisionFor(userId) || !Number.isFinite(entry.savedAt) || now() - entry.savedAt < 0
+        || entry.buildId !== buildId || (entry.revision ?? null) !== revisionFor(userId) || !Number.isFinite(entry.savedAt) || now() - entry.savedAt < 0
         || now() - entry.savedAt > QUERY_CACHE_MAX_AGE || !Array.isArray(entry.state?.queries)) {
         storage.removeItem(key);
         return null;
@@ -300,7 +307,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
       for (const companyId of [null, ...companies]) {
         const key = recordKey(userId, companyId);
         expected.add(key);
-        const envelope: Envelope = { version: 1, userId, companyId, buildId: options.buildId, revision: ownerRevision, savedAt: now(),
+        const envelope: Envelope = { version: 1, userId, companyId, buildId, revision: ownerRevision, savedAt: now(),
           state: { mutations: [], queries: queries.filter(query => persistedQueryScope(query.queryKey, query.state.data, userId, companies) === companyId) } };
         const serialized = JSON.stringify(envelope);
         if (serialized.length <= MAX_RECORD_BYTES) storage.setItem(key, serialized);

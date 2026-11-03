@@ -7378,6 +7378,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             onSave={(title) => updateIssue.mutateAsync({ title })}
             onEditingChange={handleLoadingTitleEditingChange}
             draftKey={`issue:${issue.id}:title`}
+            readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store" })).title}
             as="h2"
             className="text-xl font-semibold leading-normal"
           />
@@ -7588,6 +7589,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               value={issue.title}
               onSave={(title) => updateIssue.mutateAsync({ title })}
               draftKey={`issue:${issue.id}:title`}
+              readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store" })).title}
               as="h2"
               className={cn(
                 "min-w-0 text-balance",
@@ -8010,6 +8012,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           value={issue.title}
           onSave={(title) => updateIssue.mutateAsync({ title })}
           draftKey={`issue:${issue.id}:title`}
+          readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store" })).title}
           as="h2"
           className={
             taskChatShellEnabled
@@ -8038,6 +8041,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           value={issue.description ?? ""}
           onSave={(description) => updateIssue.mutateAsync({ description })}
           draftKey={`issue:${issue.id}:description`}
+          readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store" })).description ?? ""}
           as="p"
           className="text-sm leading-7 text-foreground"
           placeholder="Add a description..."

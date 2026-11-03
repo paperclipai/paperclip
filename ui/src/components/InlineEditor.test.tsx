@@ -4,6 +4,8 @@ import { act, forwardRef, useImperativeHandle, useRef, type ReactNode } from "re
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { markCachedSession } from "../lib/cached-session";
+import { startPersistedQueryCache } from "../lib/persisted-query-cache";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockSession = vi.hoisted(() => ({ userId: "user-1", pending: null as Promise<{ user: { id: string } } | null> | null }));
@@ -215,6 +217,56 @@ describe("InlineEditor", () => {
     window.removeEventListener("unhandledrejection", unhandled);
     process.off("unhandledRejection", unhandled);
     act(() => root.unmount());
+  });
+
+  it.each([false, true])("checks a restored draft against a fresh field after session verification (multiline=%s)", async (multiline) => {
+    const key = "paperclip:inline-draft:v2:user-1:cached-field";
+    localStorage.setItem(key, JSON.stringify({ version: 1, draft: "My draft B", base: "Cached A" }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const cache = startPersistedQueryCache(client, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(client);
+    let releaseSession!: () => void;
+    mockSession.pending = new Promise(resolve => { releaseSession = () => resolve({ user: { id: "user-1" } }); });
+    let releaseRead!: (value: string) => void;
+    const readCurrentValue = vi.fn<() => Promise<string>>().mockImplementationOnce(() => new Promise(resolve => { releaseRead = resolve; })).mockResolvedValue("New server C");
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const render = (value: string) => root.render(<QueryClientProvider client={client}>
+      <InlineEditor value={value} multiline={multiline} draftKey="cached-field" onSave={onSave} readCurrentValue={readCurrentValue} />
+    </QueryClientProvider>);
+    try {
+      await act(async () => render("Cached A"));
+      expect(onSave).not.toHaveBeenCalled();
+      expect(readCurrentValue).not.toHaveBeenCalled();
+      await act(async () => releaseSession());
+      expect(readCurrentValue).toHaveBeenCalledOnce();
+      expect(onSave).not.toHaveBeenCalled();
+      await act(async () => releaseRead("New server C"));
+      await act(async () => render("New server C"));
+      expect(container.querySelector("textarea")?.value).toBe("My draft B");
+      expect(localStorage.getItem(key)).toContain("My draft B");
+      expect(onSave).not.toHaveBeenCalled();
+      if (!multiline) {
+        expect(container.querySelector("textarea")?.getAttribute("aria-invalid")).toBe("true");
+        expect(container.querySelector("textarea")?.getAttribute("aria-description")).toContain("This changed since you loaded it");
+        await act(async () => container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })));
+        expect(readCurrentValue).toHaveBeenCalledTimes(2);
+        expect(onSave).not.toHaveBeenCalled();
+      }
+    } finally { act(() => root.unmount()); cache.dispose(); client.clear(); mockSession.pending = null; }
+  });
+
+  it("replays a restored draft after a fresh field confirms its base", async () => {
+    localStorage.setItem("paperclip:inline-draft:v2:user-1:confirmed-field", JSON.stringify({ version: 1, draft: "Confirmed draft", base: "Original" }));
+    const readCurrentValue = vi.fn().mockResolvedValue("Original");
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(signedIn("user-1", <InlineEditor value="Original" draftKey="confirmed-field" onSave={onSave} readCurrentValue={readCurrentValue} />)));
+      expect(readCurrentValue).toHaveBeenCalledOnce();
+      expect(onSave).toHaveBeenCalledWith("Confirmed draft");
+    } finally { act(() => root.unmount()); }
   });
 
   it("restores an unsaved edit and saves it when the server value has not moved", async () => {

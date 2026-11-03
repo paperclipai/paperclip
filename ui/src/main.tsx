@@ -83,7 +83,7 @@ const queryClient = createAppQueryClient(
 // live queries refresh once when the server answers again.
 bindConnectivity(queryClient, connectivity);
 startPersistedQueryCache(queryClient, {
-  buildId: typeof __PAPERCLIP_BUILD_COMMIT__ === "string" ? __PAPERCLIP_BUILD_COMMIT__ : "development",
+  buildId: typeof __PAPERCLIP_BUILD_COMMIT__ === "string" ? __PAPERCLIP_BUILD_COMMIT__ : null,
 });
 window.addEventListener("load", () => {
   startServiceWorkerUpdates({

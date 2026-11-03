@@ -62,6 +62,8 @@ export interface DurableAutosaveOptions<T> {
 
 /** Per-save overrides: a caller can bind the request and the 409 check to one draft. */
 export interface DurableAutosaveJob<T> {
+  /** Revalidate a restored draft against fresh data before every write attempt. */
+  beforeSave?: (draft: T) => Promise<void>;
   save?: (draft: T) => Promise<unknown>;
   matchesServer?: (error: unknown, draft: T) => Promise<boolean> | boolean;
   /**
@@ -131,6 +133,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     if (dirty && dirty.version === version) { dirtyWrites.current.delete(target); dirty.release(); }
   };
   type Job = { token: symbol; dirtyVersion?: symbol; registryKey: string; resends: number; saving?: boolean; id: number; target: string; owner: string | undefined; account: ReturnType<typeof bindAccount> | null; draft: T;
+    beforeSave?: (draft: T) => Promise<void>;
     save: (draft: T) => Promise<unknown>; matchesServer?: DurableAutosaveOptions<T>["matchesServer"];
     onRetryFailed?: DurableAutosaveJob<T>["onRetryFailed"]; storageKey: string | null; action: string };
   const jobs = useRef(new Map<string, Job>());
@@ -276,6 +279,10 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
       }
       if (client && hasUnverifiedSession(client)) { if (visible()) clearTimers(); publish("waiting"); return { kind: "waiting" }; }
       if (!stillOwned()) { remove(); return { kind: "waiting" }; }
+      if (job.beforeSave) {
+        await job.beforeSave(job.draft);
+        if (!stillOwned()) { remove(); return { kind: "waiting" }; }
+      }
       await job.save(job.draft);
       return done();
     }
@@ -303,7 +310,7 @@ export function useDurableAutosave<T>(options: DurableAutosaveOptions<T>): Durab
     // save finishes before that job can adopt the account's registry key.
     if (admittedOwner !== undefined) registry.delete(JSON.stringify([undefined, target]));
     const job: Job = { token: Symbol(), dirtyVersion: dirtyWrites.current.get(target)?.version, registryKey: JSON.stringify([admittedOwner, target]), resends: 0, id: ++sequence.current, target, owner: admittedOwner, account: client ? bindAccount(client) : null, draft,
-      save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
+      beforeSave: overrides.beforeSave, save: overrides.save ?? current.save, matchesServer: overrides.matchesServer ?? current.matchesServer,
       onRetryFailed: overrides.onRetryFailed, storageKey: current.storageKey ?? null, action: current.action ?? "save" };
     const previous = jobs.current.get(target);
     if (previous) releaseJob(previous);
