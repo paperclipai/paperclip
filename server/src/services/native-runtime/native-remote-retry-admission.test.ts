@@ -212,8 +212,9 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       .toBe(superseded ? null : f.runId);
   });
 
-  it("exhausts the existing attempt budget after repeated remote snapshot failures", async () => {
+  it.each(["released", "retained"] as const)("exhausts the existing attempt budget after repeated remote snapshot failures with a %s task lock", async lock => {
     const f = await failedRemoteRun("remote");
+    if (lock === "retained") await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
     const [issue] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
     const [contract] = await f.db.select().from(completionContracts).where(eq(completionContracts.issueId, f.issueId));
     const execution: NativeExecutionInputV1 = {
@@ -247,7 +248,7 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
         failureCode: attempt === 3 ? "native_session_retry_exhausted" : "native_session_interrupted",
         recoveryState: attempt === 3 ? "blocked" : "resuming_session", leaseOwner: null });
       expect(owner.nextAttemptAt === null).toBe(attempt === 3);
-      await f.db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+      if (lock === "released") await f.db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
     }
     expect(provider.execute).toHaveBeenCalledTimes(2);
     expect(await claimNativeRestartRecoveries({ db: f.db, controller, restartKind: "hard", runIds: [f.runId] })).toEqual([]);
@@ -257,14 +258,27 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
         processPid: 1386, runnerProfileJson: { sessionCheckpoint: f.checkpoint } });
   });
 
-  it("does not admit another failed retry when the persisted provider budget is already exhausted", async () => {
+  it.each(["released", "retained"] as const)("does not admit another failed retry when the persisted provider budget is already exhausted with a %s task lock", async lock => {
     const f = await failedRemoteRun("remote");
+    if (lock === "retained") await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
     await f.db.update(nativeRunFinalizations).set({ attempt: 3 }).where(eq(nativeRunFinalizations.runId, f.runId));
     expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
       restartKind: "hard", runIds: [f.runId] })).toMatchObject([{ kind: "blocked", reason: "execution_recovery_budget_exhausted" }]);
-    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBeNull();
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBe(lock === "retained" ? f.runId : null);
     expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
       .toMatchObject({ phase: "retryable_failure", attempt: 3, leaseOwner: null });
+  });
+
+  it("preserves the charged attempt when replacing an active remote controller", async () => {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
+    await f.db.update(heartbeatRuns).set({ status: "running", nativePhase: "observed" }).where(eq(heartbeatRuns.id, f.runId));
+    await f.db.update(nativeRunFinalizations).set({ attempt: 2, phase: "observed", failureCode: null, failureDetail: null })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", runIds: [f.runId] })).toMatchObject([{ kind: "reattach_remote_runner", providerAttempt: 2 }]);
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "observed", attempt: 2, controllerGeneration: 2 });
   });
 
   it("ignores another company's newer input when reclaiming this company's execution", async () => {

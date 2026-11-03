@@ -636,10 +636,9 @@ export async function claimNativeRestartRecoveries(input: {
       const storedRemoteWorkspace = remoteWorkspaceRunReferenceSchema.safeParse(profile.remoteWorkspace);
       const remoteWorkspace = readNativeWorkspaceSyncReference(profile.nativeWorkspaceSync)
         ?? (storedRemoteWorkspace.success ? storedRemoteWorkspace.data : null);
-      const releasedRemoteRetry = row.issueExecutionRunId === null && row.run.status === "failed"
-        && row.coordinator.phase === "retryable_failure"
-        && row.coordinator.failureDetail?.recoveryMode === "exact_checkpoint_resume"
-        && remoteWorkspace !== null;
+      const failedRemoteRetry = row.run.status === "failed" && row.coordinator.phase === "retryable_failure"
+        && row.coordinator.failureDetail?.recoveryMode === "exact_checkpoint_resume" && remoteWorkspace !== null;
+      const releasedRemoteRetry = failedRemoteRetry && row.issueExecutionRunId === null;
       const resumptionAgent = releasedRemoteRetry
         ? await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })
         : null;
@@ -659,9 +658,9 @@ export async function claimNativeRestartRecoveries(input: {
               sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issue.id}`),
           )).limit(1);
         if (newer) return { kind: "blocked", runId: row.run.id, reason: "native_retry_source_superseded" } as const;
-        if (row.coordinator.attempt >= 3) {
-          return { kind: "blocked", runId: row.run.id, reason: "execution_recovery_budget_exhausted" } as const;
-        }
+      }
+      if (failedRemoteRetry && row.coordinator.attempt >= 3) {
+        return { kind: "blocked", runId: row.run.id, reason: "execution_recovery_budget_exhausted" } as const;
       }
       if (row.issueExecutionRunId !== row.run.id && !(stopCleanup && row.issueExecutionRunId === null) && !releasedRemoteRetry) {
         return {
@@ -1100,7 +1099,7 @@ export async function claimNativeRestartRecoveries(input: {
         return { kind: "blocked", runId: row.run.id, reason } as const;
       }
 
-      const providerAttempt = releasedRemoteRetry
+      const providerAttempt = failedRemoteRetry
         ? nextNativeProviderAttempt(row.coordinator.attempt)
         : row.coordinator.attempt;
       const generation = row.coordinator.controllerGeneration + 1;
