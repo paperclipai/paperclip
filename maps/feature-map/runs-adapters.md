@@ -102,6 +102,11 @@ The [remote continuity regression](../../doc/testing-native-remote-continuity.md
 uses a real Linux runner and deterministic provider. Live provider acceptance is
 a separate check.
 
+Repeat with a full prior-run controller projection that predates its committed
+database checkpoint under the same run ID. Admission must refresh that projection
+before reuse. A pending canonical command must still hold execution; current-run
+state and a retained warm owner must keep their existing authority.
+
 In a fresh sandbox workspace, fetch a different published branch with depth one,
 then save a local result and finish. Verify export imports the shallow history,
 retains host-only edits, and completes finalization without another provider turn.
