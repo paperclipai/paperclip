@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { installApiStub } from "./api-stub";
 import "./api-routes";
 import { kit } from "./directions/today";
-import { LANDING_ITEMS, CARD_ITEMS, PANEL_ITEMS } from "./fixtures";
+import { LANDING, CARD, PANEL } from "./fixtures";
 import { Slot } from "./frames/Slot";
 import { createLabQueryClient, LabProviders } from "./providers";
 
@@ -47,7 +47,7 @@ describe("the Today kit on the lab fixtures", () => {
       root.render(
         <LabProviders client={client}>
           <Slot kit={kit}>
-            <kit.LandingBody items={LANDING_ITEMS} />
+            <kit.LandingBody {...LANDING} />
           </Slot>
         </LabProviders>,
       );
@@ -66,7 +66,7 @@ describe("the Today kit on the lab fixtures", () => {
       root.render(
         <LabProviders client={client}>
           <Slot kit={kit}>
-            <kit.CardBody items={CARD_ITEMS} />
+            <kit.CardBody {...CARD} />
           </Slot>
         </LabProviders>,
       );
@@ -85,7 +85,7 @@ describe("the Today kit on the lab fixtures", () => {
       root.render(
         <LabProviders client={client}>
           <Slot kit={kit}>
-            <kit.PanelBody items={PANEL_ITEMS} />
+            <kit.PanelBody {...PANEL} />
           </Slot>
         </LabProviders>,
       );

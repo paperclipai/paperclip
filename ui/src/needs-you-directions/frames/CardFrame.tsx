@@ -1,5 +1,5 @@
 import { surfaceOf, type DirectionKit } from "../kit";
-import { CARD_ITEMS } from "../fixtures";
+import { CARD } from "../fixtures";
 import { AppShell, SupportButton } from "./AppShell";
 import { Slot } from "./Slot";
 
@@ -17,7 +17,7 @@ export function CardFrame({ kit }: { kit: DirectionKit }) {
       <main className="flex-1 bg-muted/30 p-4 md:p-8">
         <div className="mx-auto w-full" style={{ maxWidth: SURFACE.width }}>
           <Slot kit={kit}>
-            <kit.CardBody items={CARD_ITEMS} />
+            <kit.CardBody {...CARD} />
           </Slot>
         </div>
       </main>

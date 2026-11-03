@@ -1,5 +1,5 @@
 import { surfaceOf, type DirectionKit } from "../kit";
-import { LANDING_ITEMS } from "../fixtures";
+import { LANDING } from "../fixtures";
 import { AppShell, SupportButton } from "./AppShell";
 import { Slot } from "./Slot";
 
@@ -15,7 +15,7 @@ export function LandingFrame({ kit }: { kit: DirectionKit }) {
       <main className="flex-1 p-4 md:p-6">
         <div className="mx-auto w-full" style={{ maxWidth: SURFACE.width }}>
           <Slot kit={kit}>
-            <kit.LandingBody items={LANDING_ITEMS} />
+            <kit.LandingBody {...LANDING} />
           </Slot>
         </div>
       </main>

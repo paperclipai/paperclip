@@ -1,21 +1,40 @@
-import type { SurfaceData } from "../../kit";
+import { useState } from "react";
+import { AttentionQueueRow } from "@/components/AttentionQueueRow";
+import type { LabAttentionRecord, SurfaceData } from "../../kit";
+import { COMPANY } from "../../fixtures";
+import { toAttentionItem, USER_LABELS, VIEWER_ID } from "./adapters";
 
-export function CardBody({ items }: SurfaceData["card"]) {
+const noop = () => undefined;
+
+function Specimen({ label, record, expanded }: { label: string; record: LabAttentionRecord; expanded: boolean }) {
+  const item = toAttentionItem(record);
+  const [open, setOpen] = useState(expanded);
   return (
-    <div data-lab-stub="today-card" className="flex flex-col gap-2 rounded-md border border-dashed border-border p-3 text-sm">
-      <p className="font-mono text-(length:--text-micro) uppercase tracking-(--tracking-label) text-muted-foreground">
-        Today · Card · mount the shipped Needs You component here
-      </p>
-      <ul className="flex list-none flex-col gap-1 p-0">
-        {items.map((item) => (
-          <li key={item.id} className="flex items-baseline justify-between gap-3">
-            <span className="min-w-0 truncate text-foreground">{item.title}</span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {item.author} · {item.updatedLabel}
-            </span>
-          </li>
-        ))}
-      </ul>
+    <div className="space-y-2">
+      <p className="text-xs font-medium uppercase tracking-wider text-muted-foreground">{label}</p>
+      <AttentionQueueRow
+        item={item}
+        companyId={COMPANY.id}
+        expanded={open}
+        onToggleExpand={() => setOpen((value) => !value)}
+        onDismiss={noop}
+        onWithdraw={noop}
+        onSnooze={noop}
+        currentUserId={VIEWER_ID}
+        userLabelMap={USER_LABELS}
+      />
+    </div>
+  );
+}
+
+export function CardBody({ records }: SurfaceData["card"]) {
+  const byKind = (kind: LabAttentionRecord["kind"]) => records.find((record) => record.kind === kind) ?? records[0];
+  return (
+    <div className="space-y-6">
+      <Specimen label="Collapsed" record={byKind("plan")} expanded={false} />
+      <Specimen label="Expanded" record={byKind("approval")} expanded />
+      <Specimen label="Stale" record={records.find((record) => record.stale) ?? byKind("review")} expanded={false} />
+      <Specimen label="For @name" record={records.find((record) => record.forUser) ?? byKind("approval")} expanded={false} />
     </div>
   );
 }

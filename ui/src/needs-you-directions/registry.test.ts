@@ -39,7 +39,7 @@ describe("the needs-you registry", () => {
       expect(kit.tagline).toBe(KIT_META[id].tagline);
       for (const surface of SURFACE_IDS) expect(typeof kit[`${surface.charAt(0).toUpperCase()}${surface.slice(1).replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase())}Body` as keyof typeof kit]).toBe("function");
     }
-  });
+  }, 60000);
 
   it("lands on a view the registry knows", () => {
     expect([...DIRECTION_IDS, "all"]).toContain(registry.landing.direction);

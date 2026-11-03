@@ -1,21 +1,17 @@
+import { DecisionHistoryPanel } from "@/components/DecisionHistoryPanel";
 import type { SurfaceData } from "../../kit";
+import { COMPANY } from "../../fixtures";
+import { USER_LABELS } from "./adapters";
 
-export function PanelBody({ items }: SurfaceData["panel"]) {
+export function PanelBody(_: SurfaceData["panel"]) {
   return (
-    <div data-lab-stub="today-panel" className="flex flex-col gap-2 rounded-md border border-dashed border-border p-3 text-sm">
-      <p className="font-mono text-(length:--text-micro) uppercase tracking-(--tracking-label) text-muted-foreground">
-        Today · Review-panel · mount the shipped Needs You component here
-      </p>
-      <ul className="flex list-none flex-col gap-1 p-0">
-        {items.map((item) => (
-          <li key={item.id} className="flex items-baseline justify-between gap-3">
-            <span className="min-w-0 truncate text-foreground">{item.title}</span>
-            <span className="shrink-0 text-xs text-muted-foreground">
-              {item.author} · {item.updatedLabel}
-            </span>
-          </li>
-        ))}
-      </ul>
+    <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-(--sz-60px) shrink-0 items-center border-b border-border px-4">
+        <span className="text-sm font-semibold text-foreground">Decision history</span>
+      </div>
+      <div className="min-h-0 flex-1">
+        <DecisionHistoryPanel companyId={COMPANY.id} agents={[]} userLabelMap={USER_LABELS} />
+      </div>
     </div>
   );
 }

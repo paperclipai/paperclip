@@ -1,5 +1,5 @@
 import { surfaceOf, type DirectionKit } from "../kit";
-import { PANEL_ITEMS } from "../fixtures";
+import { PANEL } from "../fixtures";
 import { AppShell, SupportButton } from "./AppShell";
 import { Slot } from "./Slot";
 
@@ -41,7 +41,7 @@ export function PanelFrame({ kit }: { kit: DirectionKit }) {
         <TaskBackdrop />
         <aside className="shrink-0 border-l border-border bg-background" style={{ width: SURFACE.width }} aria-label="Review panel">
           <Slot kit={kit} className="h-full">
-            <kit.PanelBody items={PANEL_ITEMS} />
+            <kit.PanelBody {...PANEL} />
           </Slot>
         </aside>
       </div>
