@@ -612,7 +612,8 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
       const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
       const key = envKey ? parseObject(context.config.env)[envKey] : undefined;
       try {
-        await validateAiApiKey(binding.provider, apiKeyValue);
+        if (typeof key !== "string" || !key) throw unprocessable("The selected account's API key was not available to verify.");
+        await validateAiApiKey(binding.provider, key);
         result.checks.push({ code: "ai_connection_api_key_reverified", level: "info", message: "The provider verified this API key for adoption." });
       } catch (error) {
         result.status = "fail";

@@ -21,7 +21,7 @@ import { needsClaudeSetupQualification, qualifyClaudeSetup } from "@/lib/qualify
 import { useCloudInstance } from "@/hooks/useCloudInstance";
 import { isNewAgentAdapterAllowed } from "@/lib/new-agent-adapters";
 import { pendingAgentSetupChoice } from "@/lib/agent-setup-choice";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { hashKey, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AnimatePresence, motion, MotionConfig } from "motion/react";
 import { ArrowLeft, ArrowRight, Check, Settings2 } from "lucide-react";
@@ -1505,7 +1505,6 @@ function Setup({
                               mark={noopMark}
                               models={models.data ?? []}
                               hideModel
-                              omitSchemaKeys={["apiBaseUrl", "password"]}
                             />
                           </div>
                         )}

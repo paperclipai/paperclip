@@ -63,7 +63,7 @@ const providers = [
     advanced: true,
   },
 ] as const;
-type ProviderChoice = (typeof providers)[number]["id"] | "github";
+type ProviderChoice = (typeof providers)[number]["id"] | "github" | "deepseek";
 
 export function AiProviderSetup({
   companyId,
