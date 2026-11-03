@@ -875,6 +875,12 @@ export function transcriptToTaskChatItems(
         break;
       }
       case "provider_activity": {
+        // Use producer classification, including the legacy generic Codex
+        // categories, never message-text matching. The run transcript still
+        // retains these diagnostics.
+        if (entry.family === "provider_notice" && (entry.payload.userActionable !== true ||
+          ["error", "warning", "guardianWarning", "configWarning", "deprecationNotice", "windows_worldWritableWarning"]
+            .includes(String(entry.payload.category)))) break;
         const key = `provider:${providerActivityKey(entry)}`;
         const item = providerActivityItem(entry, runId, i);
         const existingIndex = protocolIndexByKey.get(key);
@@ -1694,8 +1700,8 @@ function phaseSummary(
  * Commentary starts a sticky phase. Consecutive diagnostic activity belongs
  * to that phase until the next commentary or runtime request. Request lifecycle
  * updates are coalesced to their latest state but emitted at the first request
- * slot; pending requests stay composer-only while still breaking activity
- * grouping at that slot.
+ * slot. Pending requests keep a compact feed entry so they remain reachable
+ * after their composer form is dismissed.
  */
 export function buildTurnTimelineRows(
   parsed: readonly TaskChatItem[],
@@ -1762,10 +1768,7 @@ export function buildTurnTimelineRows(
       seenRequests.add(key);
       current = null;
       const latest = latestRequestByKey.get(key);
-      if (
-        latest?.surface === "runtime_request" &&
-        latest.status !== "pending"
-      ) {
+      if (latest?.surface === "runtime_request") {
         rows.push(latest.id === item.id ? latest : { ...latest, id: item.id });
       }
     } else if (

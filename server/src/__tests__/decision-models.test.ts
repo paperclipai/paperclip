@@ -22,6 +22,7 @@ import express from "express";
 import request from "supertest";
 import { decisionModelRoutes } from "../routes/decision-models.js";
 import { errorHandler } from "../middleware/index.js";
+import { deliverBudgetEnforcement } from "../services/budgets.js";
 
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
 let db: ReturnType<typeof createDb>;
@@ -53,6 +54,36 @@ async function fixture() {
   return { companyId, agentId, binding, provider, service, context, config, connections };
 }
 describe("company decision service", () => {
+  it("returns answers and a committed charge before slow budget stop delivery", async () => {
+    const f = await fixture();
+    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      windowKind: "calendar_month_utc", amount: 1, notifyEnabled: false });
+    f.provider.mockResolvedValue({ ...structuredClone(outcome), receipt: { ...outcome.receipt, costCents: "2.0000000" } });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const cancelWorkForScope = vi.fn(() => gate);
+    const service = decisionModelService(db, { provider: f.provider, budgetHooks: { cancelWorkForScope } });
+    const pending = service.decide(f.context, DECISION_TEST_REQUEST);
+    let delivery: Promise<void> | undefined;
+    let finished = false;
+    void pending.then(() => { finished = true; }, () => { finished = true; });
+    try {
+      await vi.waitFor(() => expect(finished).toBe(true), { timeout: 3000 });
+      expect(await pending).toMatchObject({ status: "succeeded", answers: outcome.answers });
+      expect(f.provider).toHaveBeenCalledOnce();
+      expect(cancelWorkForScope).not.toHaveBeenCalled();
+      const events = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ usageKind: "decision", costCents: 2 });
+      const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, f.companyId));
+      expect(policy.enforcementVersion).toBeGreaterThan(policy.enforcementDeliveredVersion);
+      delivery = deliverBudgetEnforcement(db, { cancelWorkForScope }, f.companyId);
+      await vi.waitFor(() => expect(cancelWorkForScope).toHaveBeenCalledOnce());
+      expect((await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)))[0].enforcementDeliveredVersion).toBe(policy.enforcementDeliveredVersion);
+      release(); await delivery;
+      expect((await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)))[0].enforcementDeliveredVersion).toBe(policy.enforcementVersion);
+    } finally { release(); await pending.catch(() => undefined); await delivery?.catch(() => undefined); }
+  });
   it("starts unconfigured with background sponsorship on and makes availability free", async () => {
     const f = await fixture();
     await db.delete(companyDecisionModels).where(eq(companyDecisionModels.companyId, f.companyId));
@@ -269,10 +300,12 @@ describe("company decision service", () => {
     const url = `/api/companies/${f.companyId}/decision-model`;
     expect((await request(app).get(url)).body.canManage).toBe(true);
     expect((await request(app).get(`/api/companies/${other.companyId}/decision-model`)).status).toBe(403);
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "alice")));
     actor = { type: "board", userId: "alice", source: "session", companyIds: [f.companyId], memberships: [{ companyId: f.companyId, status: "active", membershipRole: "viewer" }] };
     expect((await request(app).get(url)).body).toEqual({ canManage: false, settings: null, choices: [] });
     expect((await request(app).put(url).send(f.config)).status).toBe(403);
     expect((await request(app).post(`${url}/test`).send({ actor: { type: "system" } })).status).toBe(403);
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "alice")));
     actor = f.context.actor;
     await f.service.configure(f.companyId, "alice", { ...f.config, enabled: false });
     expect((await request(app).post(`${url}/test`).send({ state: "untrusted", actor: { type: "system" }, model: "untrusted" })).body).toEqual({ status: "unavailable", reason: "disabled" });

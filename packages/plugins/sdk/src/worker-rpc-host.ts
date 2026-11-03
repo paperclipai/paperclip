@@ -1,7 +1,12 @@
+import { freshWorkspaceSchema } from "./workspace-provider.js";
+import { workspaceProviderBindingSchema } from "@paperclipai/shared";
+import { pluginWorkspaceParamsSchema, parseWorkspaceProviderResult } from "./workspace-provider.js";
+import { environmentTaskOperationSchema, parseEnvironmentTaskResult, type PluginEnvironmentTaskParams } from "./environment-tasks.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
 import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./environment-sync-error.js";
+import { createInvocationTracer } from "./invocation-tracer.js";
 import { createPluginIdleDrain } from "./idle-drain.js";
 /**
  * Worker-side RPC host — runs inside the child process spawned by the host.
@@ -39,6 +44,7 @@ import { createPluginIdleDrain } from "./idle-drain.js";
  * @see PLUGIN_SPEC.md §14 — SDK Surface
  */
 
+import type { ResourceLifecycleEvent } from "./types.js";
 import fs from "node:fs";
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
@@ -92,6 +98,7 @@ import type {
   RefreshExternalObjectsParams,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentDestroyLeaseParams,
+  PluginEnvironmentInspectLeaseParams,
   PluginEnvironmentExecuteParams,
   PluginEnvironmentRunnerIngressEndpointParams,
   PluginEnvironmentSyncInParams,
@@ -347,6 +354,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
   const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
+  const canRecordSpans = () => Boolean(invocationContextStorage.getStore()?.traceparent)
+    && (manifest?.capabilities.includes("environment.drivers.register") === true
+      || manifest?.capabilities.includes("workspaces.manage") === true);
+  const invocationTracer = createInvocationTracer(
+    canRecordSpans,
+    span => { void callHostRaw("span.record", span).catch(() => undefined); },
+  );
+  const { withSpan } = invocationTracer;
 
   // Plugin handler registrations (populated during setup())
   const eventHandlers: EventRegistration[] = [];
@@ -386,7 +401,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   /**
    * Send a typed JSON-RPC request to the host and await the response.
    */
-  function callHost<M extends WorkerToHostMethodName>(
+  function callHost<M extends WorkerToHostMethodName>(method: M, params: WorkerToHostMethods[M][0], timeoutMs?: number): Promise<WorkerToHostMethods[M][1]> {
+    const operation = method === "agents.getRuntimeIdentity" || method === "agents.getRuntime" ? "identity.read"
+      : method === "config.get" ? "config.read" : method === "entities.list" ? "progress.read"
+      : method === "entities.upsert" ? "progress.write" : undefined;
+    return operation ? withSpan(`plugin.host.${operation}`, () => callHostRaw(method, params, timeoutMs))
+      : callHostRaw(method, params, timeoutMs);
+  }
+
+  function callHostRaw<M extends WorkerToHostMethodName>(
     method: M,
     params: WorkerToHostMethods[M][0],
     timeoutMs?: number,
@@ -714,6 +737,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       projects: {
+        async resolveGitCredential(projectId, workspaceId, companyId) {
+          return callHost("projects.resolveGitCredential", { projectId, workspaceId, companyId });
+        },
         async list(input) {
           return callHost("projects.list", {
             companyId: input.companyId,
@@ -724,6 +750,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
         async get(projectId: string, companyId: string) {
           return callHost("projects.get", { projectId, companyId });
+        },
+        async getInstanceSecrets(projectId, companyId) {
+          return callHost("projects.getInstanceSecrets", { projectId, companyId });
         },
 
         async listWorkspaces(projectId: string, companyId: string) {
@@ -1154,6 +1183,12 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       agents: {
+        async getRuntimeIdentity(agentId, companyId) {
+          return callHost("agents.getRuntimeIdentity", { agentId, companyId });
+        },
+        async getRuntime(agentId, companyId, environmentId, installEnvironmentSkills) {
+          return callHost("agents.getRuntime", { agentId, companyId, ...(environmentId ? { environmentId } : {}), ...(installEnvironmentSkills ? { installEnvironmentSkills: true } : {}) });
+        },
         async list(input) {
           return callHost("agents.list", {
             companyId: input.companyId,
@@ -1510,21 +1545,27 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       tracer: {
+        withSpan,
+        now: invocationTracer.now,
+        isRecording: invocationTracer.isRecording,
+        recordSpan: invocationTracer.recordSpan,
         startSpan(
           name: string,
           options?: { attributes?: Record<string, string | number | boolean> },
         ) {
           // Read the active host trace context from the per-call invocation
-          // channel. A `traceparent` means a host span is active, so this span
-          // may record. No `traceparent` means tracing is off: the span is a
-          // no-op, so a lifecycle hook can always wrap work in a span.
-          const hasTraceContext = Boolean(invocationContextStorage.getStore()?.traceparent);
+          // channel. Only providers permitted to record receipts collect spans;
+          // other plugins and tracing-off invocations keep no-op behavior.
+          const recordSpan = invocationTracer.captureRecorder();
+          const spanInvocation = invocationContextStorage.getStore();
+          const hasTraceContext = canRecordSpans();
           const attributes: Record<string, string | number | boolean> = {
             ...(options?.attributes ?? {}),
           };
           // Capture the real start time once when the span opens. The host uses
           // it as the span start time, so the span shows its true native width.
-          const startTimeMs = Date.now();
+          const spanNow = invocationTracer.clock();
+          const startTimeMs = spanNow();
           let status: { code: number; message?: string } | undefined;
           let ended = false;
           return {
@@ -1537,21 +1578,22 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             end(): void {
               if (ended) return;
               ended = true;
-              if (!hasTraceContext) return;
+              if (!hasTraceContext || invocationContextStorage.getStore()?.id !== spanInvocation?.id) return;
               // Capture the real end time once at the first end call. The host
               // uses the pair to record the span with its true wall-clock width.
-              const endTimeMs = Date.now();
+              const endTimeMs = spanNow();
               // Send the finished span to the host once. The host re-clamps the
               // name and the attributes, mints the parentage from its own
               // invocation record, and records the span through the real tracer.
               // Fire-and-forget: a span must never block or fail plugin work.
-              void callHost("span.record", {
+              const receipt = {
                 name,
                 attributes,
                 ...(status ? { status } : {}),
                 startTimeMs,
                 endTimeMs,
-              }).catch(() => undefined);
+              };
+              if (!recordSpan(receipt)) void callHost("span.record", receipt).catch(() => undefined);
             },
           };
         },
@@ -1584,7 +1626,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       if (method !== "prepareIdleSleep" && method !== "releaseIdleSleep" && method !== "shutdown") {
         done = idleDrain.begin();
       }
-      const invoke = () => dispatchMethod(method, params);
+      const invoke = () => withSpan("plugin.worker", () => dispatchMethod(method, params));
       const result = request.paperclipInvocation
         ? await invocationContextStorage.run(request.paperclipInvocation, invoke)
         : await invoke();
@@ -1660,6 +1702,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         return handleExecuteTool(params as ExecuteToolParams);
       case "detectExternalObjects":
         return handleDetectExternalObjects(params as DetectExternalObjectsParams);
+      case "workspaceOperation": {
+        if (!plugin.definition.onWorkspaceOperation) throw methodNotImplemented("workspaceOperation");
+        const input = pluginWorkspaceParamsSchema.parse(params);
+        return parseWorkspaceProviderResult(input, await plugin.definition.onWorkspaceOperation(input));
+      }
+      case "resourceLifecycle":
+        if (!plugin.definition.onResourceLifecycle) throw methodNotImplemented("resourceLifecycle");
+        return plugin.definition.onResourceLifecycle(params as ResourceLifecycleEvent);
       case "agentLifecycle":
         if (!plugin.definition.onAgentLifecycle) throw methodNotImplemented("agentLifecycle");
         return plugin.definition.onAgentLifecycle(params as AgentLifecycleRequest);
@@ -1673,6 +1723,15 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "environmentValidateConfig":
         return handleEnvironmentValidateConfig(params as PluginEnvironmentValidateConfigParams);
+
+      case "environmentTask": {
+        if (!plugin.definition.onEnvironmentTask) throw methodNotImplemented("environmentTask");
+        const input = params as PluginEnvironmentTaskParams;
+        if (input.workspace !== undefined) workspaceProviderBindingSchema.parse(input.workspace);
+        if (input.fresh !== undefined) freshWorkspaceSchema.parse(input.fresh);
+        const operation = environmentTaskOperationSchema.parse(input.operation);
+        return parseEnvironmentTaskResult(operation, input.taskId, await plugin.definition.onEnvironmentTask({ ...input, operation }));
+      }
 
       case "environmentProbe":
         return handleEnvironmentProbe(params as PluginEnvironmentProbeParams);
@@ -1691,6 +1750,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
 
       case "environmentDestroyLease":
         return handleEnvironmentDestroyLease(params as PluginEnvironmentDestroyLeaseParams);
+
+      case "environmentInspectLease":
+        if (!plugin.definition.onEnvironmentInspectLease) throw methodNotImplemented("environmentInspectLease");
+        return plugin.definition.onEnvironmentInspectLease(params as PluginEnvironmentInspectLeaseParams);
 
       case "environmentRealizeWorkspace":
         return handleEnvironmentRealizeWorkspace(params as PluginEnvironmentRealizeWorkspaceParams);
@@ -1766,6 +1829,9 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     }
 
     manifest = params.manifest;
+    if (manifest.workspaceProvider && (!plugin.definition.onWorkspaceOperation || !plugin.definition.onResourceLifecycle)) {
+      throw new Error("Workspace provider requires workspace operations and project lifecycle handlers");
+    }
     currentConfig = params.config;
     databaseNamespace = params.databaseNamespace ?? null;
 
@@ -1783,17 +1849,21 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (plugin.definition.onIdleDrain) supportedMethods.push("prepareIdleSleep", "releaseIdleSleep");
     if (plugin.definition.onApiRequest) supportedMethods.push("handleApiRequest");
     if (plugin.definition.onDetectExternalObjects) supportedMethods.push("detectExternalObjects");
+    if (plugin.definition.onWorkspaceOperation) supportedMethods.push("workspaceOperation");
+    if (plugin.definition.onResourceLifecycle) supportedMethods.push("resourceLifecycle");
     if (plugin.definition.onAgentLifecycle) supportedMethods.push("agentLifecycle");
     if (plugin.definition.onRouteAiConnection) supportedMethods.push("routeAiConnection");
     if (plugin.definition.onResolveExternalObject) supportedMethods.push("resolveExternalObject");
     if (plugin.definition.onRefreshExternalObjects) supportedMethods.push("refreshExternalObjects");
     if (plugin.definition.onEnvironmentValidateConfig) supportedMethods.push("environmentValidateConfig");
+    if (plugin.definition.onEnvironmentTask) supportedMethods.push("environmentTask");
     if (plugin.definition.onEnvironmentProbe) supportedMethods.push("environmentProbe");
     if (plugin.definition.onEnvironmentAcquireLease) supportedMethods.push("environmentAcquireLease");
     if (plugin.definition.onEnvironmentResumeLease) supportedMethods.push("environmentResumeLease");
     if (plugin.definition.onEnvironmentReleaseLease) supportedMethods.push("environmentReleaseLease");
     if (plugin.definition.onEnvironmentStopLease) supportedMethods.push("environmentStopLease");
     if (plugin.definition.onEnvironmentDestroyLease) supportedMethods.push("environmentDestroyLease");
+    if (plugin.definition.onEnvironmentInspectLease) supportedMethods.push("environmentInspectLease");
     if (plugin.definition.onEnvironmentRealizeWorkspace) supportedMethods.push("environmentRealizeWorkspace");
     if (plugin.definition.onEnvironmentExecute) supportedMethods.push("environmentExecute");
     if (plugin.definition.onEnvironmentRunnerIngressEndpoint) {

@@ -34,6 +34,15 @@ async function fixture() {
 it("admits pinned published plugin and resolved SDK graph without claiming a full graph audit", async () => {
   const f = await fixture(); expect(await verifyInstalledDaytonaPlugin(f.env, [cell])).toMatchObject({ packageRoot: f.authority.plugin.root, sourceFallback: false, fullGraphVerified: false, completeGraphAuthorityRequired: true });
 });
+it("admits all ten Copilot Daytona cells only with the pinned normal plugin graph", async () => {
+  const f = await fixture();
+  const selected = runnerMatrix.filter(e => e.profile.id === "runner-acpx-copilot" && e.environment.id === "daytona");
+  expect(selected).toHaveLength(10);
+  for (const selectedCell of selected) {
+    expect(await verifyInstalledDaytonaPlugin(f.env, [selectedCell])).toMatchObject({ packageRoot: f.authority.plugin.root, sourceFallback: false, fullGraphVerified: false, completeGraphAuthorityRequired: true });
+    await expect(verifyInstalledDaytonaPlugin({ ...f.env, PAPERCLIP_RUNNER_E2E_INSTALLED_DAYTONA_PLUGIN_AUTHORITY_SHA256: "0".repeat(64) }, [selectedCell])).rejects.toThrow("reviewed pins");
+  }
+});
 it("fails closed for absent/partial installed Daytona pins but preserves ordinary source and local lanes", async () => {
   const f = await fixture();
   for (const key of installedDaytonaPluginKeys) await expect(verifyInstalledDaytonaPlugin({ ...f.env, [key]: undefined }, [cell])).rejects.toThrow("complete pins");

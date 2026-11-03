@@ -1,0 +1,3 @@
+ALTER TABLE "muse_agent_bindings" ADD COLUMN "grant_id" uuid;--> statement-breakpoint
+ALTER TABLE "muse_agent_bindings" ADD CONSTRAINT "muse_agent_bindings_grant_id_mcp_oauth_grants_id_fk" FOREIGN KEY ("grant_id") REFERENCES "public"."mcp_oauth_grants"("id") ON DELETE set null ON UPDATE no action;--> statement-breakpoint
+CREATE UNIQUE INDEX "muse_bindings_active_grant_uq" ON "muse_agent_bindings" USING btree ("grant_id") WHERE "muse_agent_bindings"."revoked_at" IS NULL AND "muse_agent_bindings"."grant_id" IS NOT NULL;

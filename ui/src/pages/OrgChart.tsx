@@ -182,7 +182,7 @@ function touchCenter(a: React.Touch, b: React.Touch, container: HTMLDivElement):
 
 // ── Status dot colors (raw hex for SVG) ─────────────────────────────────
 
-import { getAdapterLabel } from "../adapters/adapter-display-registry";
+import { agentDisplayAdapterType, getAdapterLabel } from "../adapters/adapter-display-registry";
 
 const statusDotColor: Record<string, string> = {
   running: "var(--hex-22d3ee)",
@@ -647,7 +647,7 @@ export function OrgChart({ orgTree: providedOrgTree, agents: providedAgents, emb
                     </span>
                     {agent && (
                       <span className="text-(length:--text-nano) text-muted-foreground/60 font-mono leading-tight mt-1">
-                        {getAdapterLabel(agent.adapterType)}
+                        {getAdapterLabel(agentDisplayAdapterType(agent))}
                       </span>
                     )}
                     {agent && agent.capabilities && (

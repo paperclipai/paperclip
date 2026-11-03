@@ -258,7 +258,12 @@ function nativeBootstrap(executable: string, executableDigest: string, args: str
     `if(require("node:crypto").createHash("sha256").update(fs.readFileSync(fd)).digest("hex")!==${JSON.stringify(executableDigest)})throw new Error("Native ACPX executable changed before spawn");`,
     'const stdio=guarded?[0,1,2,5,6,7,8]:[0,1,2]; const childExecutable=process.platform==="linux"?"/proc/self/fd/"+stdio.length:executable;stdio.push(fd);',
     `const child=spawn(childExecutable,${JSON.stringify(args)},{env,cwd:process.cwd(),shell:false,detached:false,stdio});fs.closeSync(fd);`,
-    'child.once("error",()=>process.exit(1)); child.once("exit",(code,signal)=>process.exit(signal?1:code??1));',
+    // A guarded Node launcher has a pending filesystem read on its guardian
+    // pipe. process.exit can wait for that read while the guardian waits for
+    // this launcher to exit. Retire the live owned group through the kernel;
+    // no saved PID/group identity or provider JavaScript cleanup is required.
+    'const retire=code=>{if(guarded){try{process.kill(0,"SIGKILL");}catch{process.kill(process.pid,"SIGKILL");}}else process.exit(code);};',
+    'child.once("error",()=>retire(1)); child.once("exit",(code,signal)=>retire(signal?1:code??1));',
     'for(const signal of ["SIGTERM","SIGINT","SIGHUP"])process.on(signal,()=>child.kill(signal));',
   ].join("\n");
 }

@@ -163,14 +163,14 @@ describe("chat run milestone projection", () => {
     ).toBe("Maya stopped at your request.");
   });
 
-  it("projects a successful run without an explicit reply as a generic completion", () => {
+  it("does not claim task completion when a successful run has no response", () => {
     expect(
       safeMilestoneText({
         agentName: "Maya",
         milestone: "completed",
         issueId: "issue-1",
       }),
-    ).toBe("Maya completed this turn.");
+    ).toBe("Maya has no final response to show yet. Open the task in Paperclip for details.");
   });
 });
 

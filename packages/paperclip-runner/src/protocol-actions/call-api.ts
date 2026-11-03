@@ -28,7 +28,7 @@ export const callApiAction = {
   },
   "documentation": {
     "title": "Call the Paperclip API",
-    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+    "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
     "note": "Production HTTP fallback; does not grant privileges or replace dedicated tools."
   },
   "examples": {
@@ -51,7 +51,7 @@ export const callApiAction = {
       "operationId": "call_api",
       "version": 1,
       "title": "Call the Paperclip API",
-      "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses your existing permissions. Prefer dedicated tools; never bypass a denial or runner lifecycle tool. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
+      "description": "Fallback only: call a discovered Paperclip API operation when dedicated tools lack the required operation or parameters. Uses the same route permissions as agent REST access. Prefer dedicated tools for common workflows; route denials still apply. For large text responses, read the returned artifact with GET /api/assets/{assetId}/content and responseText; follow nextOffsetBytes until null.",
       "exposure": "optional",
       "requiredClaims": [
         "api:call"

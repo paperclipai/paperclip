@@ -1,10 +1,17 @@
+import { skillPackageStore, skillVersionMetadataColumns } from "../skill-package-store.js";
+import { skillAccessService } from "../skill-access.js";
+import { buildReviewPathRecoveryDisposition } from "../recovery/review-path-recovery.js";
+import type { AuthorizationActor } from "../authorization.js";
 import { spekoToolsForSession } from "../voice/speko-agent-tools.js";
 import { githubConfiguredInstructionSources } from "../chat-github-review-policy.js";
+import { resolveGitHubReviewInstructions } from "../chat-channels/github/review-instructions.js";
 import { CONFIGURED_ENVIRONMENT_KEYS } from "../../vendor/paperclip-runner/index.js";
 import { ASSIGNED_MCP_SERVER_NAME } from "../mcp-tool-names.js";
 import { externalConversationStateSql } from "../slack-conversation-state.js";
 import { githubBotConnectionIdsForRun } from "../chat-github-tools.js";
+import { boundRunIssueIdSql } from "../run-task-binding.js";
 import { isBrowserUseConnection } from "../browser-use-client.js";
+import { restConnectorFor } from "../connectors/rest-registry.js";
 import { explicitOperatorRunIdentity } from "../run-identity.js";
 import {
   type DurableChatWakeupRequest,
@@ -220,10 +227,12 @@ const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
 // 3. Any other PAPERCLIP_*-named binding is user data and flows through to
 //    the run env like any non-prefixed binding.
 const FORBIDDEN_ENV_BINDING_KEYS = new Set([
+  "BASH_ENV", "ZDOTDIR", "GH_CONFIG_DIR",
   CONFIGURED_ENVIRONMENT_KEYS,
   "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
   "PAPERCLIP_RUNNER_NETWORK_ACCESS",
   "PAPERCLIP_RUNNER_NETWORK_ROOTS",
+  "PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME",
   "PAPERCLIP_API_KEY",
   "PAPERCLIP_GITHUB_AUTH_MODE",
   "PAPERCLIP_GITHUB_HOST_HOME",
@@ -385,76 +394,31 @@ export async function resolveExecutionRunAdapterConfig(input: {
   // no binding before resolving any secret value. Missing bindings short-circuit
   // to a configuration-incomplete blocker routed to a human owner instead of a
   // dispatched-then-failed run (which previously surfaced as opaque setup_failed).
-  if (typeof input.secretsSvc.collectMissingRuntimeBindings === "function") {
-    const missingBindings: MissingRuntimeBinding[] = [];
-    if (environmentEnv && input.environmentId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          environmentEnv,
-          {
-            consumerType: "environment",
-            consumerId: input.environmentId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
-    }
+  const collectMissing = input.secretsSvc.collectMissingRuntimeBindings;
+  if (typeof collectMissing === "function") {
+    const checks: Array<() => Promise<MissingRuntimeBinding[]>> = [];
+    const checkEnv = (env: unknown, consumerType: "environment" | "agent" | "project" | "routine", consumerId: string) => {
+      checks.push(() => collectMissing(input.companyId, env, {
+        consumerType, consumerId, responsibleUserId: input.responsibleUserId ?? null,
+      }));
+    };
+    if (environmentEnv && input.environmentId) checkEnv(environmentEnv, "environment", input.environmentId);
     if (input.agentId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          parseObject(executionRunConfig.env),
-          {
-            consumerType: "agent",
-            consumerId: input.agentId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
-      if (
-        typeof input.secretsSvc.collectMissingAdapterConfigRuntimeBindings ===
-        "function"
-      ) {
-        missingBindings.push(
-          ...(await input.secretsSvc.collectMissingAdapterConfigRuntimeBindings(
-            input.companyId,
-            executionRunConfig,
-            input.adapterType ?? null,
-            {
-              consumerType: "agent",
-              consumerId: input.agentId,
-              responsibleUserId: input.responsibleUserId ?? null,
-            },
-          )),
-        );
+      checkEnv(parseObject(executionRunConfig.env), "agent", input.agentId);
+      const collectAdapterMissing = input.secretsSvc.collectMissingAdapterConfigRuntimeBindings;
+      if (typeof collectAdapterMissing === "function") {
+        checks.push(() => collectAdapterMissing(input.companyId, executionRunConfig, input.adapterType ?? null, {
+          consumerType: "agent", consumerId: input.agentId!, responsibleUserId: input.responsibleUserId ?? null,
+        }));
       }
     }
-    if (projectEnv && input.projectId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          projectEnv,
-          {
-            consumerType: "project",
-            consumerId: input.projectId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
-    }
-    if (routineEnv && input.routineId) {
-      missingBindings.push(
-        ...(await input.secretsSvc.collectMissingRuntimeBindings(
-          input.companyId,
-          routineEnv,
-          {
-            consumerType: "routine",
-            consumerId: input.routineId,
-            responsibleUserId: input.responsibleUserId ?? null,
-          },
-        )),
-      );
+    if (projectEnv && input.projectId) checkEnv(projectEnv, "project", input.projectId);
+    if (routineEnv && input.routineId) checkEnv(routineEnv, "routine", input.routineId);
+    const results = await Promise.allSettled(checks.map(check => Promise.resolve().then(check)));
+    const missingBindings: MissingRuntimeBinding[] = [];
+    for (const result of results) {
+      if (result.status === "rejected") throw result.reason;
+      missingBindings.push(...result.value);
     }
     if (requiredScopedEnvBinding) {
       const requiredEnvKeys = new Set(requiredScopedEnvBinding.keys);
@@ -727,6 +691,7 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
   companyId: string;
   issueId: string | null;
   commentIds?: string[];
+  actor?: AuthorizationActor;
 }): Promise<string[]> {
   if (!input.issueId) return [];
 
@@ -801,6 +766,14 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
         inArray(companySkillsTable.id, mentionedSkillIds),
       ),
     );
+  for (const skillId of mentionedSkillIds) {
+    try { await skillAccessService(input.db, input.actor).assertSkill(input.companyId, skillId); }
+    catch {
+      throw new ConfigurationIncompleteFailure("A referenced skill is unavailable or you do not have project access. Update the task's skill reference or project access.", {
+        configurationIncomplete: { reason: "skill_unavailable", companyId: input.companyId, actionUrl: "/skills" },
+      });
+    }
+  }
   const skillKeyById = new Map(skillRows.map((row) => [row.id, row.key]));
   return mentionedSkillIds
     .map((skillId) => skillKeyById.get(skillId) ?? null)
@@ -809,12 +782,16 @@ export async function resolveRunScopedMentionedSkillKeys(input: {
 
 
 export interface WakeupOptions {
+  /** Internal durable case assignment receipt. Never accepted from public wake payloads. */
+  durableCaseHandoffRequest?: { handoffId: string; wakeupRequestId: string; issueId: string; expectedIssueStatusVersion: number };
   /** Set only by authenticated board wake routes; never copied from caller payloads. */
   manualUserWake?: boolean;
   /** Internal resume of a queue with persisted board interruption intent. */
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
   queuedCommentRequestId?: string;
+  /** Internal delivery of the authenticated task-level Retry receipt. */
+  taskRetryRequestId?: string;
   /** Exact failed run selected by an authenticated board Retry request. */
   failedRunId?: string | null;
   durableChatRequest?: DurableChatWakeupRequest;
@@ -827,6 +804,12 @@ export interface WakeupOptions {
     requestId: string;
     idempotencyKey: string;
     requestedAt: Date;
+  };
+  /** Server-owned Muse admission receipt; never accepted from API payloads. */
+  durableMuseRequest?: NonNullable<WakeupOptions["durableDotRequest"]> & {
+    bindingId: string;
+    bindingGeneration: number;
+    requestDigest: string;
   };
   source?: "timer" | "assignment" | "on_demand" | "automation";
   triggerDetail?: "manual" | "ping" | "callback" | "system";
@@ -842,6 +825,8 @@ export interface WakeupOptions {
     statusVersion?: number;
     monitorNextCheckAt?: string;
     monitorWakeRequestedAt?: string;
+    /** Internal diagnostic only; the callback cannot grant admission. */
+    onExecutionDeferred?: (blockerCause: string) => void;
   };
   /** Keep causally distinct external chat continuations out of an existing run. */
   allowRunCoalescing?: boolean;
@@ -912,13 +897,13 @@ export async function buildPaperclipRuntimeMcpServers(input: {
   expectedAssignmentDigest?: string | null;
 }): Promise<AdapterRuntimeMcpServer[]> {
   const access = toolAccessService(input.db);
-  const effective = await access.getEffectiveProfilesForAgent(
+  const effective = await access.getEffectiveToolAssignmentsForAgent(
     input.agent.companyId,
     input.agent.id,
   );
   const [runIdentity] = await input.db
     .select({
-      contextSnapshot: heartbeatRuns.contextSnapshot,
+      issueId: boundRunIssueIdSql(),
       responsibleUserId: heartbeatRuns.responsibleUserId,
       activeIdentityContextId: heartbeatRuns.activeIdentityContextId,
     })
@@ -970,7 +955,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
     .filter(
       (connection) =>
         (connection.transport === "mcp_remote" ||
-          connection.transport === "local_stdio" || isBrowserUseConnection(connection)) &&
+          connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection)) &&
         !allInstalledConnectionIds.has(connection.id),
     )
     .map(({ id, name }) => ({ id, name }))
@@ -981,7 +966,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         companyId: input.agent.companyId,
         agentId: input.agent.id,
         runId: input.runId,
-        issueId: readNonEmptyString(runIdentity?.contextSnapshot?.issueId ?? runIdentity?.contextSnapshot?.taskId),
+        issueId: runIdentity?.issueId ?? null,
         identityContextId: runIdentity?.activeIdentityContextId,
       })).map(tool => tool.connectionId))
     : new Set<string>();
@@ -996,7 +981,7 @@ export async function buildPaperclipRuntimeMcpServers(input: {
         connection.credentialPolicy === "per_user" ||
         !isToolConnectionAttentionHealth(connection.healthStatus)) &&
       (connection.transport === "mcp_remote" ||
-        connection.transport === "local_stdio" || isBrowserUseConnection(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
+        connection.transport === "local_stdio" || isBrowserUseConnection(connection) || restConnectorFor(connection) || githubBotConnectionIds.has(connection.id) || spekoConnectionIds.has(connection.id)),
   );
   const assignedConnectionIds = new Set(
     assignedConnections.map((connection) => connection.id),
@@ -2214,12 +2199,45 @@ export async function attestReviewedExternalChatRun(input: {
   throw new Error("reviewed_chat_execution_binding_not_ready");
 }
 
+export async function readHeartbeatWakeComments(db: Db, companyId: string, issueId: string | null, commentIds: string[]) {
+  if (commentIds.length === 0) return [];
+  return db
+    .select({
+      id: issueComments.id,
+      companyId: issueComments.companyId,
+      issueId: issueComments.issueId,
+      body: issueComments.body,
+      origin: issueComments.origin,
+      authorType: issueComments.authorType,
+      authorAgentId: issueComments.authorAgentId,
+      authorUserId: issueComments.authorUserId,
+      presentation: issueComments.presentation,
+      metadata: issueComments.metadata,
+      deletedAt: issueComments.deletedAt,
+      deletedByType: issueComments.deletedByType,
+      deletedByAgentId: issueComments.deletedByAgentId,
+      deletedByUserId: issueComments.deletedByUserId,
+      deletedByRunId: issueComments.deletedByRunId,
+      sourceTrust: issueComments.sourceTrust,
+      createdAt: issueComments.createdAt,
+    })
+    .from(issueComments)
+    .where(
+      and(
+        eq(issueComments.companyId, companyId),
+        issueId ? eq(issueComments.issueId, issueId) : undefined,
+        inArray(issueComments.id, commentIds),
+      ),
+    );
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
   agentId?: string | null;
   runId?: string | null;
   contextSnapshot: Record<string, unknown>;
+  wakeCommentRows?: Awaited<ReturnType<typeof readHeartbeatWakeComments>>;
   continuationSummary?: {
     key: string;
     title: string | null;
@@ -2236,6 +2254,7 @@ export async function buildPaperclipWakePayload(input: {
     priority: string;
     workMode: string;
     projectId?: string | null;
+    originKind?: string | null;
     executionPolicy?: unknown;
   } | null;
   exposeLowTrustRaw?: boolean;
@@ -2267,6 +2286,7 @@ export async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            originKind: issues.originKind,
           })
           .from(issues)
           .where(
@@ -2282,36 +2302,9 @@ export async function buildPaperclipWakePayload(input: {
   )
     return null;
 
-  const commentRows =
-    commentIds.length === 0
-      ? []
-      : await input.db
-          .select({
-            id: issueComments.id,
-            issueId: issueComments.issueId,
-            body: issueComments.body,
-            origin: issueComments.origin,
-            authorType: issueComments.authorType,
-            authorAgentId: issueComments.authorAgentId,
-            authorUserId: issueComments.authorUserId,
-            presentation: issueComments.presentation,
-            metadata: issueComments.metadata,
-            deletedAt: issueComments.deletedAt,
-            deletedByType: issueComments.deletedByType,
-            deletedByAgentId: issueComments.deletedByAgentId,
-            deletedByUserId: issueComments.deletedByUserId,
-            deletedByRunId: issueComments.deletedByRunId,
-            sourceTrust: issueComments.sourceTrust,
-            createdAt: issueComments.createdAt,
-          })
-          .from(issueComments)
-          .where(
-            and(
-              eq(issueComments.companyId, input.companyId),
-              issueId ? eq(issueComments.issueId, issueId) : undefined,
-              inArray(issueComments.id, commentIds),
-            ),
-          );
+  const commentRows = input.wakeCommentRows
+    ? input.wakeCommentRows.filter(row => row.companyId === input.companyId && (!issueId || row.issueId === issueId) && commentIds.includes(row.id))
+    : await readHeartbeatWakeComments(input.db, input.companyId, issueId, commentIds);
 
   const commentsById = new Map(
     commentRows.map((comment) => [comment.id, comment]),
@@ -2638,6 +2631,10 @@ export async function buildPaperclipWakePayload(input: {
     chatCompletionUpdates: input.contextSnapshot.chatCompletionUpdates ?? null,
     attachmentOmissions,
     externalChatProvider,
+    githubReviewConfigurations: (externalChatProvider === "github" || issueSummary?.originKind === "chat_channel") && issueId && input.agentId
+      ? await resolveGitHubReviewInstructions({ db: input.db, companyId: input.companyId, agentId: input.agentId, issueId,
+          commentIds: externalChatProvider === "github" ? commentIds : [] })
+      : [],
     recovery:
       recoveryStillActive
         ? {
@@ -2707,12 +2704,14 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     childIssueSummaryTruncated:
       input.contextSnapshot.childIssueSummaryTruncated === true,
-    dispositionRepair: input.contextSnapshot.legacyDispositionEpisode ? {
-      attempt: input.contextSnapshot.dispositionRepairAttempt,
-      maxAttempts: input.contextSnapshot.dispositionRepairMaxAttempts,
-      sourceRunId: input.contextSnapshot.retryOfRunId,
-      instruction: input.contextSnapshot.dispositionRepairInstruction,
-    } : null,
+    dispositionRepair:
+      buildReviewPathRecoveryDisposition(input.contextSnapshot) ??
+      (input.contextSnapshot.legacyDispositionEpisode ? {
+        attempt: input.contextSnapshot.dispositionRepairAttempt,
+        maxAttempts: input.contextSnapshot.dispositionRepairMaxAttempts,
+        sourceRunId: input.contextSnapshot.retryOfRunId,
+        instruction: input.contextSnapshot.dispositionRepairInstruction,
+      } : null),
     livenessContinuation:
       readNonEmptyString(input.contextSnapshot.livenessContinuationState) ||
       readNonEmptyString(
@@ -2921,10 +2920,11 @@ export function createHeartbeatRunPreparation(db: Db) {
       .select({
         testRunId: companySkillTestRuns.id,
         skillId: companySkillTestRuns.skillId,
+        skillKey: companySkillsTable.key,
         inputId: companySkillTestRuns.inputId,
         skillVersionId: companySkillTestRuns.skillVersionId,
         outputDocumentKey: companySkillTestRuns.outputDocumentKey,
-        fileInventory: companySkillVersions.fileInventory,
+        version: skillVersionMetadataColumns,
         revisionNumber: companySkillVersions.revisionNumber,
         label: companySkillVersions.label,
       })
@@ -2934,8 +2934,13 @@ export function createHeartbeatRunPreparation(db: Db) {
         and(
           eq(companySkillVersions.id, companySkillTestRuns.skillVersionId),
           eq(companySkillVersions.companyId, companySkillTestRuns.companyId),
+          eq(companySkillVersions.companySkillId, companySkillTestRuns.skillId),
         ),
       )
+      .innerJoin(companySkillsTable, and(
+        eq(companySkillsTable.id, companySkillTestRuns.skillId),
+        eq(companySkillsTable.companyId, companySkillTestRuns.companyId),
+      ))
       .where(
         and(
           eq(companySkillTestRuns.companyId, companyId),
@@ -2944,8 +2949,9 @@ export function createHeartbeatRunPreparation(db: Db) {
       )
       .then((rows) => rows[0] ?? null);
     if (!row) return null;
-    const fileInventory = Array.isArray(row.fileInventory)
-      ? row.fileInventory.flatMap((entry) => {
+    const savedFiles = await skillPackageStore(db).versionFiles(row.version);
+    const fileInventory = Array.isArray(savedFiles)
+      ? savedFiles.flatMap((entry) => {
           if (!entry || typeof entry !== "object" || Array.isArray(entry))
             return [];
           const record = entry as unknown as Record<string, unknown>;
@@ -2963,6 +2969,7 @@ export function createHeartbeatRunPreparation(db: Db) {
     return {
       testRunId: row.testRunId,
       skillId: row.skillId,
+      skillKey: row.skillKey,
       inputId: row.inputId ?? null,
       skillVersionId: row.skillVersionId,
       revisionNumber: row.revisionNumber,

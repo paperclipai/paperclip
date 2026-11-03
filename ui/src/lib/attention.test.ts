@@ -543,6 +543,21 @@ describe("filterAttentionItems", () => {
     expect(countActiveAttentionFilters(defaultAttentionFilterState)).toBe(0);
   });
 
+  it("searches visible decision context case-insensitively and combines it with filters", () => {
+    const decision = buildItem({
+      subject: { ...approval.subject, title: "Review connector recovery", identifier: "DES-3" },
+      whyNow: "Verification complete", originAgentName: "Connector engineer",
+      project: approval.project, workspace: { id: "ws", name: "Sandbox" },
+      detail: { kind: "generic", summaryExcerpt: "Reconnect safely", images: [] },
+    });
+    for (const query of ["  REVIEW   connector ", "des-3", "verification", "engineer", "ALPHA", "sandbox", "reconnect"]) {
+      expect(filterAttentionItems([decision, join], defaultAttentionFilterState, query)).toEqual([decision]);
+    }
+    expect(filterAttentionItems([decision], defaultAttentionFilterState, "review nonexistent")).toEqual([]);
+    expect(filterAttentionItems([decision], { ...defaultAttentionFilterState, severities: ["low"] }, "connector")).toEqual([]);
+    expect(filterAttentionItems(items, defaultAttentionFilterState, "   ")).toBe(items);
+  });
+
   it("filters by source kind", () => {
     const result = filterAttentionItems(items, { ...defaultAttentionFilterState, sourceKinds: ["approval"] });
     expect(result.map((i) => i.id)).toEqual(["ap"]);

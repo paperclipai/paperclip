@@ -2,8 +2,11 @@ import { authorizeSlackDocument } from "./slack-document.js";
 import { slackDelivery } from "./slack-delivery.js";
 import { slackMessage } from "./slack-message.js";
 import { executeSlackWrite } from "./slack-writes.js";
-import { syncSlackBotTools } from "./slack-catalog.js";
+import { slackBotCatalogIsCurrent, syncSlackBotTools } from "./slack-catalog.js";
 import { SLACK_TOOLS } from "@paperclipai/shared";
+import { measureRunPhase } from "../execution-preparation-timing.js";
+import { measureRunTransaction } from "../execution-transaction-timing.js";
+import { prepareSlackEndpoints } from "./slack-endpoint-preparation.js";
 import {
   toolProfiles,
   toolProfileBindings,
@@ -32,29 +35,25 @@ import {
 async function slackAssignedEndpoint(
   db: Db,
   binding: Partial<SlackTaskBinding> & { companyId: string; agentId: string },
+  endpoint: { id: string; connectionId: string },
 ) {
   if (!binding.runId || !binding.issueId) return [];
-  let authority: Awaited<ReturnType<typeof resolveSlackTaskAuthority>>;
-  try {
-    authority = await resolveSlackTaskAuthority(
-      db,
-      binding as SlackTaskBinding,
+  const authorize = async () => {
+    try {
+      return await measureRunPhase("connectors.slack.authority", () => resolveSlackTaskAuthority(db, binding as SlackTaskBinding));
+    } catch (error) {
+      if (error && typeof error === "object" && "status" in error && error.status === 403) return null;
+      throw error;
+    }
+  };
+  if (!await slackBotCatalogIsCurrent(db, { ...endpoint, companyId: binding.companyId })) {
+    const authority = await authorize();
+    if (!authority || authority.endpoint.connectionId !== endpoint.connectionId) return [];
+    await measureRunTransaction(db, "connectors.slack.catalog", (tx) =>
+      syncSlackBotTools(tx, authority.endpoint, authority.userId, true),
     );
-  } catch (error) {
-    if (
-      error &&
-      typeof error === "object" &&
-      "status" in error &&
-      error.status === 403
-    )
-      return [];
-    throw error;
   }
-  // Catalog updates are idempotent and preserve configured policies.
-  await db.transaction((tx) =>
-    syncSlackBotTools(tx, authority.endpoint, authority.userId, true),
-  );
-  const [enabledProfile] = await db
+  const [enabledProfile] = await measureRunPhase("connectors.slack.profile", () => db
     .select({ id: toolProfiles.id })
     .from(toolProfiles)
     .innerJoin(
@@ -70,20 +69,21 @@ async function slackAssignedEndpoint(
       toolProfileEntries,
       and(
         eq(toolProfileEntries.profileId, toolProfiles.id),
-        eq(toolProfileEntries.connectionId, authority.endpoint.connectionId),
+        eq(toolProfileEntries.connectionId, endpoint.connectionId),
         eq(toolProfileEntries.effect, "include"),
       ),
     )
     .where(
       and(
         eq(toolProfiles.companyId, binding.companyId),
-        eq(toolProfiles.profileKey, `slack-bot:${authority.endpoint.id}`),
+        eq(toolProfiles.profileKey, `slack-bot:${endpoint.id}`),
         eq(toolProfiles.status, "active"),
       ),
     )
-    .limit(1);
+    .limit(1));
   if (!enabledProfile) return [];
-  authority = await resolveSlackTaskAuthority(db, binding as SlackTaskBinding);
+  const authority = await authorize();
+  if (!authority || authority.endpoint.connectionId !== endpoint.connectionId) return [];
   return [
     {
       id: authority.endpoint.id,
@@ -105,16 +105,11 @@ export async function slackAssignedResource(
   db: Db,
   binding: Partial<SlackTaskBinding> & { companyId: string; agentId: string },
 ) {
-  const resources = [];
-  for (const endpoint of await slackEndpointCandidates(db, binding)) {
-    resources.push(
-      ...(await slackAssignedEndpoint(db, {
-        ...binding,
-        endpointId: endpoint.id,
-      })),
-    );
-  }
-  return resources;
+  const endpoints = await measureRunPhase("connectors.slack.candidates", () => slackEndpointCandidates(db, binding));
+  return prepareSlackEndpoints(endpoints, endpoint => slackAssignedEndpoint(db, {
+    ...binding,
+    endpointId: endpoint.id,
+  }, endpoint));
 }
 
 const messageView = (message: SlackObject, team: string, channel: string) => ({

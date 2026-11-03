@@ -7,6 +7,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "../../../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
 import { createQueuedCommentIssueLockWriter } from "./queued-comment-postgres.js";
 import type { QueuedCommentQueuePostgresAdapterDeps } from "./queued-comment-postgres.js";
 import { QueuedCommentMutationError } from "../application/queued-comment-use-cases.js";
@@ -19,7 +20,8 @@ import { QueuedCommentMutationError } from "../application/queued-comment-use-ca
 // leaving a partial write. The decision branching itself is proven against
 // plain facts in `domain/policy.test.ts`; the use-case orchestration is
 // proven against a mocked port in `application/queued-comment-use-cases.test.ts`.
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_QUEUED_COMMENT_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -39,8 +41,8 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
   };
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-queued-comment-postgres-adapter-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-queued-comment-postgres-adapter-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
   afterEach(async () => {
@@ -56,6 +58,7 @@ describeEmbeddedPostgres("queued-comment postgres adapter", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end();
     await tempDb?.cleanup();
   });
 

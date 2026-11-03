@@ -1,5 +1,6 @@
 import { resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 /** Call inside the transaction that creates the resource or approves the hire. */
 export async function recordResourceCreationEvent(
@@ -8,6 +9,7 @@ export async function recordResourceCreationEvent(
   resourceType: "agent" | "project",
   resourceId: string,
 ): Promise<void> {
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.pluginLifecycle);
   await db.insert(resourceLifecycleEvents).values({ companyId, resourceType, resourceId, action: "create" }).onConflictDoNothing({
     target: [resourceLifecycleEvents.companyId, resourceLifecycleEvents.resourceType, resourceLifecycleEvents.resourceId],
     where: sql`${resourceLifecycleEvents.action} = 'create'`,
@@ -21,10 +23,12 @@ export async function recordAgentStatusEvent(db: Db, companyId: string, agentId:
     : after === "paused" ? "pause"
       : before === "paused" && ["active", "idle", "running", "error"].includes(after) ? "resume" : null;
   if (!action) return;
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.pluginLifecycle);
   await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "agent", resourceId: agentId, action });
 }
 
 /** Call while holding the project row lock, in the mutation transaction. */
-export async function recordProjectLifecycleEvent(db: Db, companyId: string, projectId: string, action: "update" | "archive" = "update"): Promise<void> {
+export async function recordProjectLifecycleEvent(db: Db, companyId: string, projectId: string, action: "update" | "archive" | "delete" = "update"): Promise<void> {
+  await notifyDeliveryWork(db, DELIVERY_QUEUES.pluginLifecycle);
   await db.insert(resourceLifecycleEvents).values({ companyId, resourceType: "project", resourceId: projectId, action });
 }

@@ -42,7 +42,7 @@ use a separate clean operator workspace rather than bypassing that guard.
 pnpm --filter @paperclipai/paperclip-runner typecheck:typescript
 pnpm --filter @paperclipai/paperclip-runner exec vitest run \
   src/drivers/codex/app-server-transport.test.ts \
-  src/drivers/codex/codex-app-server-driver.test.ts
+  src/drivers/codex/codex-app-server-driver
 pnpm --filter @paperclipai/paperclip-runner check:forbidden-imports
 ```
 

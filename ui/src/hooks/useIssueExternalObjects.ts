@@ -1,5 +1,6 @@
 import { useCallback, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { queryViewKind } from "../components/QueryView";
 import type {
   ExternalObjectMention,
   ExternalObjectMentionGroup,
@@ -71,7 +72,6 @@ function useExternalObjectsFeature() {
   const query = useQuery({
     queryKey: queryKeys.instance.experimentalSettings,
     queryFn: () => instanceSettingsApi.getExperimental(),
-    retry: false,
   });
   return {
     isEnabled: query.data?.enableExternalObjects === true,
@@ -172,12 +172,15 @@ export function useIssueExternalObjects(issueId: string | null | undefined): Iss
     void query.refetch();
   }, [query.refetch]);
 
+  // Loaded objects stay on screen through an outage; only a real failure is
+  // reported as an error, and an outage before the first load counts as loading.
+  const viewKind = queryViewKind(query);
   return {
     isEnabled: externalObjectsFeature.isEnabled,
     groups,
     markdownReferences,
-    isLoading: enabled && query.isLoading,
-    isError: query.isError,
+    isLoading: enabled && (query.isLoading || viewKind === "reconnecting"),
+    isError: viewKind === "error",
     refetch,
   };
 }
@@ -207,6 +210,8 @@ export function useIssueExternalObjectSummaries(
   summaries: Map<string, ExternalObjectSummary>;
   isLoading: boolean;
   isReady: boolean;
+  error: Error | null;
+  refetch: () => void;
 } {
   const externalObjectsFeature = useExternalObjectsFeature();
   const normalizedIssueIds = useMemo(
@@ -228,6 +233,8 @@ export function useIssueExternalObjectSummaries(
     summaries,
     isLoading: enabled && query.isLoading,
     isReady: externalObjectsFeature.isLoaded && (!enabled || query.isSuccess),
+    error: query.error,
+    refetch: () => { void query.refetch(); },
   };
 }
 

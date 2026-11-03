@@ -11,6 +11,20 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 });
 vi.mock("./pi-installation.ts", () => ({ verifyPiInstallation: mocks.verify }));
 vi.mock("../../../scripts/materialize-pi-distribution.mjs", () => ({ materializePiDistribution: mocks.build }));
+async function withLinuxX64TestPlatform<T>(run: () => Promise<T>): Promise<T> {
+  const platformDescriptor = Object.getOwnPropertyDescriptor(process, "platform");
+  const archDescriptor = Object.getOwnPropertyDescriptor(process, "arch");
+  if (!platformDescriptor || !archDescriptor) throw new Error("Missing process platform descriptors");
+  try {
+    Object.defineProperty(process, "platform", { ...platformDescriptor, value: "linux" });
+    Object.defineProperty(process, "arch", { ...archDescriptor, value: "x64" });
+    return await run();
+  } finally {
+    try { Object.defineProperty(process, "platform", platformDescriptor); }
+    finally { Object.defineProperty(process, "arch", archDescriptor); }
+  }
+}
+
 const roots: string[] = [];
 afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 beforeEach(() => {
@@ -31,7 +45,7 @@ async function fixture(vendored = true) {
 it("recognizes both published layouts without resolving a private npm package", async () => {
   for (const vendored of [true, false]) { const f = await fixture(vendored); expect(await provisionPackageRoot(f.entry)).toMatchObject({ root: f.root, assetRoot: f.assetRoot }); }
 });
-it("rejects wrong package, linked entrypoint and escaping asset roots before materialization", async () => {
+it("rejects wrong package, linked entrypoint and escaping asset roots before materialization", () => withLinuxX64TestPlatform(async () => {
   const f = await fixture(); const other = await fixture();
   await writeFile(join(f.root, "package.json"), '{"name":"foreign"}');
   await expect(provisionPi(f.entry)).rejects.toThrow("identity");
@@ -41,50 +55,50 @@ it("rejects wrong package, linked entrypoint and escaping asset roots before mat
   await rm(f.entry); await writeFile(f.entry, "fixture"); await symlink(other.root, join(f.assetRoot, "provider-assets"));
   await expect(provisionPi(f.entry)).rejects.toThrow("escapes");
   expect(mocks.build).not.toHaveBeenCalled();
-});
-it("verifies an existing cache in full and never repairs a rejected cache automatically", async () => {
+}));
+it("verifies an existing cache in full and never repairs a rejected cache automatically", () => withLinuxX64TestPlatform(async () => {
   const f = await fixture(); await mkdir(f.output, { recursive: true }); await writeFile(join(f.output, "original"), "retain");
   expect(await provisionPi(f.entry)).toMatchObject({ status: "verified_existing" });
   mocks.verify.mockRejectedValueOnce(new Error("closure differs"));
   await expect(provisionPi(f.entry)).rejects.toThrow("closure differs");
   expect(await readFile(join(f.output, "original"), "utf8")).toBe("retain");
   expect(mocks.build).not.toHaveBeenCalled(); expect(await readdir(f.parent)).toEqual([`${process.platform}-${process.arch}`]);
-});
-it("publishes only after staging verification, then verifies the actual package authority", async () => {
+}));
+it("publishes only after staging verification, then verifies the actual package authority", () => withLinuxX64TestPlatform(async () => {
   const f = await fixture(); vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", "untrusted-ambient");
   expect(await provisionPi(f.entry)).toMatchObject({ status: "installed_verified" });
   expect(mocks.verify).toHaveBeenCalledTimes(2); expect(mocks.close).toHaveBeenCalledTimes(2);
   expect(process.env.PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT).toBe("untrusted-ambient");
   expect(await readdir(f.parent)).toEqual([`${process.platform}-${process.arch}`]);
-});
-it.each(["build", "staging", "published"])("cleans only its owned transaction after %s failure", async stage => {
+}));
+it.each(["build", "staging", "published"])("cleans only its owned transaction after %s failure", stage => withLinuxX64TestPlatform(async () => {
   const f = await fixture();
   if (stage === "build") mocks.build.mockRejectedValueOnce(new Error("failed"));
   if (stage === "staging") mocks.verify.mockRejectedValueOnce(new Error("failed"));
   if (stage === "published") mocks.verify.mockResolvedValueOnce({ openCommand: async () => ({ close: mocks.close }) }).mockRejectedValueOnce(new Error("failed"));
   await expect(provisionPi(f.entry)).rejects.toThrow("failed");
   expect(await readdir(f.parent)).toEqual([]);
-});
-it("refuses a concurrent setup without deleting its lock or launching work", async () => {
+}));
+it("refuses a concurrent setup without deleting its lock or launching work", () => withLinuxX64TestPlatform(async () => {
   const f = await fixture(); await mkdir(f.parent, { recursive: true });
   const name = `.setup-${process.platform}-${process.arch}.lock`; await writeFile(join(f.parent, name), "other");
   await expect(provisionPi(f.entry)).rejects.toThrow(); expect(mocks.build).not.toHaveBeenCalled();
   expect(await readFile(join(f.parent, name), "utf8")).toBe("other");
-});
-it("honors cancellation after owned materialization without publishing or leaving temporary files", async () => {
+}));
+it("honors cancellation after owned materialization without publishing or leaving temporary files", () => withLinuxX64TestPlatform(async () => {
   const f = await fixture(); let cancelled = false;
   mocks.build.mockImplementationOnce(async ({ outputRoot }: { outputRoot: string }) => { await mkdir(outputRoot, { recursive: true }); cancelled = true; });
   await expect(provisionPi(f.entry, () => { if (cancelled) throw new Error("cancelled"); })).rejects.toThrow("cancelled");
   expect(await readdir(f.parent)).toEqual([]);
-});
+}));
 
-it("does not replace an empty destination that appears during preparation", async () => {
+it("does not replace an empty destination that appears during preparation", () => withLinuxX64TestPlatform(async () => {
   const f = await fixture();
   mocks.verify.mockImplementationOnce(async () => { await mkdir(f.output); return { openCommand: async () => ({ close: mocks.close }) }; });
   await expect(provisionPi(f.entry)).rejects.toThrow("destination appeared");
   expect(await readdir(f.output)).toEqual([]);
-});
-it("retains a replaced staging root while still releasing its own lock", async () => {
+}));
+it("retains a replaced staging root while still releasing its own lock", () => withLinuxX64TestPlatform(async () => {
   const f = await fixture();
   let moved: string | undefined;
   mocks.build.mockImplementationOnce(async ({ outputRoot }: { outputRoot: string }) => {
@@ -99,9 +113,9 @@ it("retains a replaced staging root while still releasing its own lock", async (
   const replaced = names.find(name => !name.endsWith("-original"))!;
   expect(await readFile(join(f.parent, replaced, "foreign"), "utf8")).toBe("retain");
   expect(moved).toBeDefined(); // fixture teardown owns both test-created roots
-});
+}));
 
-it("uses exclusive publication when an empty target appears after the absence check", async () => {
+it("uses exclusive publication when an empty target appears after the absence check", () => withLinuxX64TestPlatform(async () => {
   const f = await fixture();
   const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
   mocks.beforeMkdir.mockImplementationOnce(() => undefined);
@@ -111,4 +125,4 @@ it("uses exclusive publication when an empty target appears after the absence ch
   await expect(provisionPi(f.entry)).rejects.toThrow(/EEXIST/);
   expect(await readdir(f.output)).toEqual([]);
   expect(await readdir(f.parent)).toEqual([`${process.platform}-${process.arch}`]);
-});
+}));

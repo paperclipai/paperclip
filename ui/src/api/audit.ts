@@ -16,6 +16,7 @@ import { api } from "./client";
 
 /** Render-ready entity snippets attached to each row at read time (no N+1). */
 export interface AuditEntitySnippet {
+  case?: { id: string; identifier: string; title: string } | null;
   issue: { id: string; identifier: string | null; title: string | null } | null;
   comment: { id: string; excerpt: string } | null;
   document: { id: string; key: string } | null;
@@ -53,6 +54,7 @@ export interface AuditActionFilters {
   responsibleUserId?: string | null;
   runId?: string | null;
   entityType?: string | null;
+  /** Exact entity ID; case filters also accept identifiers such as CAS-C1. */
   entityId?: string | null;
   /** Action-domain prefix, e.g. `issue.` or `issue.comment_added`. */
   action?: string | null;

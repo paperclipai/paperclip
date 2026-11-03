@@ -1,3 +1,5 @@
+import Ajv2020 from "ajv/dist/2020.js";
+import { usageSchema } from "./generated/schema-bundle.js";
 import { readFile } from "node:fs/promises";
 
 import { describe, expect, it } from "vitest";
@@ -6,6 +8,7 @@ import {
   negotiateProtocolVersion,
   parsePrpFixtureText,
   PRP_PROTOCOL_VERSION,
+  validatePrpEvent,
 } from "./replay-contract.js";
 import { reducePrpFixture } from "../reducer/session-reducer.js";
 
@@ -370,4 +373,25 @@ describe("PRP v1 JSON Schema contract", () => {
       negotiateProtocolVersion({ min: 2, max: 3 }, { min: 1, max: 1 }),
     ).toBeNull();
   });
+});
+
+it("accepts marked whole-run usage through the runtime standalone event validator", async () => {
+  const fixture = await readFixture();
+  const event = (fixture.events as Array<Record<string, unknown>>)[0];
+  const measurement = { inputTokens: 120, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0,
+    activeSeconds: 0, requests: 1, providerCostUsd: 0 };
+  const result = validatePrpEvent({ ...event, eventType: "usage.reported", priority: 0,
+    payload: { provider: "codex", model: "gpt-6.1-sol", cumulative: measurement, runDelta: measurement,
+      runDeltaAvailable: true, runDeltaBasis: "run" } });
+  expect(result).toMatchObject({ ok: true });
+});
+
+it("declares required incomplete reconciliation evidence in the strict usage contract", () => {
+  const validate = new Ajv2020({ strict: true, allErrors: true }).compile(usageSchema);
+  const measurement = { inputTokens: 120, outputTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 0, activeSeconds: 0, requests: 0, providerCostUsd: 0 };
+  const payload = { provider: "codex", model: null, cumulative: measurement, runDelta: { ...measurement, inputTokens: 0, outputTokens: 0 }, runDeltaAvailable: false, runDeltaBasis: "run",
+    reconciliation: { reason: "accounting_reconciliation_required", receivedTurnId: "provider-turn-1", cumulative: measurement,
+      priorOrigin: { runnerInstanceId: "runner-1", runId: "old-run", normalizedSessionId: "session", turnId: "turn", itemId: "item" } } };
+  expect(validate(payload), JSON.stringify(validate.errors)).toBe(true);
+  expect(validate({ ...payload, reconciliation: { ...payload.reconciliation, arbitraryProviderData: "excluded" } })).toBe(false);
 });

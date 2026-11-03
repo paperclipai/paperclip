@@ -117,6 +117,7 @@ export function browserUseClient(
     path: string,
     method = "GET",
     body?: unknown,
+    beforeDispatch?: () => Promise<void>,
   ): Promise<unknown> {
     const until = backoff.get(scope) ?? 0;
     if (until > Date.now())
@@ -126,6 +127,9 @@ export function browserUseClient(
         until - Date.now(),
         true,
       );
+    // The owning service commits its final admission fence immediately before
+    // this one paid POST. Gate failures never become uncertain provider work.
+    if (beforeDispatch) await beforeDispatch();
     let response: Response;
     try {
       const init: RequestInit = {
@@ -207,8 +211,8 @@ export function browserUseClient(
         allowResizing?: true;
       };
       maxCostUsd?: number;
-    }) {
-      return created.parse(await call("/runs", "POST", body));
+    }, beforeDispatch?: () => Promise<void>) {
+      return created.parse(await call("/runs", "POST", body, beforeDispatch));
     },
     async status(runId: string) {
       return z

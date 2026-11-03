@@ -4,7 +4,7 @@ import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
 /** A server-recorded run-only Stop must not manufacture a recovery incident. */
-function hasAcknowledgedNativeRunStopReceipt(run: {
+export function hasAcknowledgedNativeRunStopReceipt(run: {
   id: string; companyId: string; status: string; nativeIssueId: string | null;
   resultJson: Record<string, unknown> | null;
 }): boolean {
@@ -14,7 +14,8 @@ function hasAcknowledgedNativeRunStopReceipt(run: {
     intent.companyId === run.companyId && intent.issueId === run.nativeIssueId &&
     intent.scope === "run" && intent.reasonCode === "cancellation_run_only" &&
     intent.dispatchState === "acknowledged" && intent.dispatched === true &&
-    typeof intent.intentAuditId === "string" && typeof intent.acknowledgementAuditId === "string";
+    typeof intent.intentAuditId === "string" && Boolean(intent.intentAuditId) &&
+    typeof intent.acknowledgementAuditId === "string" && Boolean(intent.acknowledgementAuditId);
 }
 
 export function hasAcknowledgedNativeStopIntent(run: Parameters<typeof hasAcknowledgedNativeRunStopReceipt>[0]): boolean {
@@ -37,7 +38,8 @@ export function isAcknowledgedNativeStop(run: Parameters<typeof hasAcknowledgedN
 }
 
 /** A Stop acknowledgement alone does not prove provider cleanup completed. */
-export async function acknowledgedNativeStopExecutionHasStopped(db: Db, run: typeof heartbeatRuns.$inferSelect) {
+export async function acknowledgedNativeStopExecutionHasStopped(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect,
+  "id" | "companyId" | "nativeIssueId" | "status" | "resultJson" | "processPid" | "processGroupId">) {
   if (!isAcknowledgedNativeStop(run)) return false;
   const leases = await db.select().from(environmentLeases).where(and(
     eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),

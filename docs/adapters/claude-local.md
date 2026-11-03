@@ -37,6 +37,10 @@ subscription quota exhaustion merely because ACP labels them `limit`.
 | `maxTurnsPerRun` | number | No | Max agentic turns per heartbeat (defaults to `300`) |
 | `dangerouslySkipPermissions` | boolean | No | Skip permission prompts (default: `true`); required for headless runs where interactive approval is impossible |
 
+On the CLI engine, version and `--effort` capability probes have a bounded
+20-second budget when `timeoutSec` is zero or unset. A positive run timeout below
+20 seconds also limits these probes, with a minimum probe budget of one second.
+
 ## Default model
 
 An omitted, empty, or whitespace-only `model` uses Claude Opus 5

@@ -87,6 +87,24 @@ function Probe({ onSelectedCompanyId }: { onSelectedCompanyId: (companyId: strin
 }
 
 describe("resolveBootstrapCompanySelection", () => {
+  it("boots the addressed company before the remembered company", () => {
+    expect(resolveBootstrapCompanySelection({
+      companies: [activeCompany, secondActiveCompany], sidebarCompanies: [activeCompany, secondActiveCompany],
+      selectedCompanyId: null, storedCompanyId: activeCompany.id, routeCompanyId: secondActiveCompany.id,
+    })).toBe(secondActiveCompany.id);
+  });
+
+  it("retains a manual selection and does not bootstrap into an archived route", () => {
+    expect(resolveBootstrapCompanySelection({
+      companies: [activeCompany, secondActiveCompany], sidebarCompanies: [activeCompany, secondActiveCompany],
+      selectedCompanyId: activeCompany.id, storedCompanyId: activeCompany.id, routeCompanyId: secondActiveCompany.id,
+    })).toBe(activeCompany.id);
+    expect(resolveBootstrapCompanySelection({
+      companies: [activeCompany, archivedCompany], sidebarCompanies: [activeCompany],
+      selectedCompanyId: null, storedCompanyId: activeCompany.id, routeCompanyId: archivedCompany.id,
+    })).toBe(activeCompany.id);
+  });
+
   it("does not expose a stale stored company id before companies load", () => {
     expect(resolveBootstrapCompanySelection({
       companies: [],
@@ -216,6 +234,28 @@ describe("CompanyProvider", () => {
     queryClient.clear();
     container.remove();
     vi.clearAllMocks();
+  });
+
+  it("publishes the URL company without first exposing the remembered company", async () => {
+    const previousUrl = window.location.href;
+    window.history.replaceState(null, "", "/TWO/issues");
+    localStorage.setItem("paperclip.selectedCompanyId", "company-1");
+    queryClient.setQueryData(queryKeys.auth.session, null);
+    queryClient.setQueryData(queryKeys.companies.list(null), {
+      companies: [{ ...makeCompany("company-1"), issuePrefix: "ONE" }, { ...makeCompany("company-2"), issuePrefix: "TWO" }],
+      unauthorized: false,
+    });
+    mockCompaniesApi.list.mockImplementation(() => new Promise(() => {}));
+    const seen: Array<string | null> = [];
+    try {
+      await act(async () => root.render(<QueryClientProvider client={queryClient}><CompanyProvider>
+        <Probe onSelectedCompanyId={id => seen.push(id)} />
+      </CompanyProvider></QueryClientProvider>));
+      expect(seen.filter(Boolean)).toEqual(["company-2"]);
+      expect(localStorage.getItem("paperclip.selectedCompanyId")).toBe("company-2");
+    } finally {
+      window.history.replaceState(null, "", previousUrl);
+    }
   });
 
   it("keeps the stored company when the company request fails", async () => {

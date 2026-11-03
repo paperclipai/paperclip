@@ -7,6 +7,7 @@ import {
   companies,
   createDb,
   heartbeatRuns,
+  externalAgentHolds,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -228,6 +229,23 @@ describeEmbeddedPostgres("heartbeat queued-run claim isolation", () => {
     expect(await runStatus(deferredRunId)).toMatchObject({ status: "queued", errorCode: null });
     expect(mockAdapterExecute).toHaveBeenCalledOnce();
     expect(await runStatus(healthyRunId)).toMatchObject({ status: "succeeded" });
+  });
+
+  it.each(["worker", "native-effects"])("retains a %s barrier across provider changes and resumes only after reconciliation", async barrier => {
+    const { companyId, agentId } = await insertAgent();
+    const { runId } = await insertClaimableRun(companyId, agentId);
+    const [hold] = await db.insert(externalAgentHolds).values({ companyId, agentId, provider: "muse", assignmentId: randomUUID(), bindingId: randomUUID(),
+      bindingGeneration: 1, runId: randomUUID(), workerUnknown: barrier === "worker", nativeEffectsUnknown: barrier === "native-effects" }).returning();
+    // The agent now uses Codex; old external uncertainty still owns admission.
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await runStatus(runId)).toMatchObject({ status: "queued" });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+    await db.update(externalAgentHolds).set({ workerUnknown: false, nativeEffectsUnknown: false, releasedAt: new Date() }).where(sql`${externalAgentHolds.id} = ${hold.id}`);
+    await heartbeat.resumeQueuedRuns();
+    await heartbeat.drainActiveRunExecutions();
+    expect(await runStatus(runId)).toMatchObject({ status: "succeeded" });
+    expect(mockAdapterExecute).toHaveBeenCalledOnce();
   });
 
   it("keeps processing other agents' queued runs after one agent's run is rejected", async () => {

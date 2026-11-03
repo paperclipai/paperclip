@@ -3,9 +3,9 @@ export const PRP_COMPLETION_TOOL_NAME = "paperclip_finish" as const;
 export const PRP_BLOCK_TOOL_NAME = "paperclip_block" as const;
 /** Native Runner guidance; legacy adapters use their own skill/API completion paths. */
 export const PRP_COMPLETION_TOOL_DESCRIPTION =
-  "Report completed work (done), work requiring review (needs_review), or an explicit wait (yielded with response_wake for a response, or monitor after set_task_monitor confirms a schedule on this task). Use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome; do not claim completion while gated. Explain any required approval with its supplied link and action, then write the final response and end the turn without further tool calls.";
+  "Report completed work (done), work requiring review (needs_review), or an explicit wait (yielded with response_wake for a response, monitor after set_task_monitor confirms a schedule on this task, or omit continuation to use this run's authorized published-review wait or saved repository-preparation continuation). Use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome; do not claim completion while gated. Explain any required approval with its supplied link and action, then write the final response and end the turn without further tool calls.";
 export const PRP_BLOCK_TOOL_DESCRIPTION =
-  "Report work that cannot continue because of a concrete blocker. Identify the blocker, its owner, and the action needed to unblock it; use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome, explain the blocker and any required action in the final response, and end the turn without further tool calls.";
+  "Report work that cannot continue because of a concrete blocker. Routine repository preparation is not a blocker: use paperclip_finish with yielded and omit continuation to resume through the saved workspace continuation. Identify the blocker, its owner, and the action needed to unblock it; use the current completion contract and supporting evidence. If rejected, correct the report and retry. After acceptance, read the returned outcome, explain the blocker and any required action in the final response, and end the turn without further tool calls.";
 export const PRP_SEMANTIC_TOOL_NAMES = [
   PRP_COMPLETION_TOOL_NAME,
   PRP_BLOCK_TOOL_NAME,
@@ -151,7 +151,7 @@ const waitContinuationSchema = {
   additionalProperties: false,
   required: ["kind", "summary", "idempotencyKey"],
   properties: {
-    kind: { type: "string", enum: ["response_wake", "monitor"] },
+    kind: { type: "string", enum: ["response_wake", "monitor", "case_handoff"] },
     summary: {
       type: "string",
       minLength: 1,
@@ -159,7 +159,9 @@ const waitContinuationSchema = {
         "Internal control-plane reason to wait for the next response. Keep routine waiting and continuation bookkeeping here, not in the top-level user-facing summary. This field is not the answer to the user's request.",
     },
     idempotencyKey: { type: "string", minLength: 1 },
+    handoffId: { type: "string", minLength: 1, description: "Exact server-issued handoff ID; required for case_handoff." },
   },
+  allOf: [{ if: { properties: { kind: { const: "case_handoff" } }, required: ["kind"] }, then: { required: ["handoffId"] } }],
 } as const;
 
 const commonResultProperties = {
@@ -370,7 +372,7 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
       ...waitContinuationSchema,
       type: ["object", "null"],
       description:
-        "Use null or omit this field for done, completed, or needs_review. Only yielded requires a wait object with kind (response_wake or monitor), summary, and idempotencyKey.",
+        "For yielded, omit or use null to reuse this run's authorized published-review wait, eligible saved monitor, or repository-preparation continuation; the controller reads current task state. Otherwise provide a real response_wake or monitor with summary and idempotencyKey. Use null or omit for done, completed, or needs_review.",
     },
   },
   // Keep the provider-facing root a concrete object. Codex code-mode renders a
@@ -378,8 +380,22 @@ export const PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA = {
   // every required field from the model. This equivalent direct conditional
   // preserves validation without obscuring the object-shaped tool signature.
   if: { properties: { reportedWorkDisposition: { const: "yielded" } }, required: ["reportedWorkDisposition"] },
-  then: { required: ["continuation"], properties: { continuation: { type: "object" } } },
+  then: { properties: { continuation: { type: ["object", "null"] } } },
   else: { properties: { continuation: { type: "null" } } },
+} as const;
+
+export const PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA = {
+  ...PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA,
+  properties: {
+    ...PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.properties,
+    continuation: {
+      ...PRP_COMPLETION_RESULT_PROVIDER_INPUT_SCHEMA.properties.continuation,
+      properties: {
+        ...waitContinuationSchema.properties,
+        kind: { type: "string", enum: [...waitContinuationSchema.properties.kind.enum, "same_agent"] },
+      },
+    },
+  },
 } as const;
 
 export const PRP_BLOCK_RESULT_PROVIDER_INPUT_SCHEMA = {

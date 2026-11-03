@@ -1,6 +1,10 @@
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { registerCustomImageCleanupWork } from "../services/custom-image-cleanup-work.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { desc, eq } from "drizzle-orm";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { desc, eq, sql } from "drizzle-orm";
 import {
   activityLog,
   companies,
@@ -27,7 +31,8 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalTestDatabase = resolveExternalTestDatabaseUrl("PAPERCLIP_CUSTOM_IMAGE_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalTestDatabase ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -77,6 +82,7 @@ const ALL_CUSTOM_IMAGE_WORKER_METHODS = [
 function createWorkerManager(options?: { workerMethods?: readonly string[] }) {
   const supportedMethods = options?.workerMethods ?? ALL_CUSTOM_IMAGE_WORKER_METHODS;
   const call = vi.fn(async (_pluginId: string, method: string, params: Record<string, unknown>) => {
+    if (method === "environmentInspectLease") return { providerLeaseId: params.providerLeaseId, state: "destroyed" };
     if (method === "environmentStartInteractiveSetup") {
       return {
         providerLeaseId: `lease-${params.sessionId}`,
@@ -152,9 +158,10 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
   let db!: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
+    if (externalTestDatabase) { db = createDb(externalTestDatabase, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 }); return; }
     const started = await startEmbeddedPostgresTestDatabase("environment-custom-images");
-    stopDb = started.stop;
-    db = createDb(started.connectionString);
+    stopDb = started.cleanup;
+    db = createDb(started.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   });
 
   afterEach(async () => {
@@ -166,6 +173,7 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await stopDb?.();
   });
 
@@ -198,6 +206,198 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     });
     return { companyId, environmentId };
   }
+
+  describe("expiry scheduling", () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let service: ReturnType<typeof environmentCustomImageService>;
+    let provider: ReturnType<typeof createWorkerManager>;
+    let draining: boolean;
+    const errors: unknown[] = [];
+
+    beforeEach(async () => {
+      await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
+      draining = false;
+      errors.length = 0;
+      provider = createWorkerManager();
+      service = environmentCustomImageService(db, { pluginWorkerManager: provider });
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
+    });
+    afterEach(async () => {
+      await coordinator?.stop();
+      coordinator = undefined;
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+      expect(errors).toEqual([]);
+    });
+    async function start() {
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
+        canReconcile: () => true, onError: error => errors.push(error) });
+      await registerCustomImageCleanupWork(coordinator, service, () => !draining).ready;
+    }
+    async function settle(ms = 60_000) {
+      await vi.advanceTimersByTimeAsync(ms);
+      if (!draining) await vi.waitFor(() => expect(idleWorkSnapshot().active === 0 || coordinator!.nextWakeAt() !== null).toBe(true), { timeout: 5000 });
+    }
+    async function quiet() {
+      await settle();
+      expect(coordinator!.nextWakeAt()).toBeNull();
+      const reads = vi.spyOn(db, "select"), calls = provider.call.mock.calls.length;
+      await settle(30 * 60_000);
+      expect(reads).not.toHaveBeenCalled();
+      expect(provider.call).toHaveBeenCalledTimes(calls);
+      reads.mockRestore();
+    }
+    async function create() {
+      const fixture = await seed();
+      return service.startSetupSession({ environmentId: fixture.environmentId,
+        actor: { userId: "fixture-user" }, ttlSeconds: 3600 });
+    }
+    const cancellations = () => provider.call.mock.calls.filter(([, method]) => method === "environmentCancelInteractiveSetup");
+
+    it("is quiet when empty, wakes from the real producer, expires once, and keeps terminal history quiet", async () => {
+      await start(); await quiet();
+      const created = await create();
+      await settle();
+      expect(coordinator!.nextWakeAt()).toBe(new Date(created.session.expiresAt!).getTime());
+      const reads = vi.spyOn(db, "select");
+      await settle(30 * 60_000);
+      expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+      expect(cancellations()).toHaveLength(0);
+      await settle(30 * 60_000);
+      expect(cancellations()).toHaveLength(1);
+      expect(await service.getSessionById(created.session.id)).toMatchObject({ status: "timed_out" });
+      await quiet();
+    });
+
+    it("honors a committed expiry inside the retry window", async () => {
+      await start();
+      const created = await create();
+      await settle();
+      const earlier = new Date(Date.now() + 5_000);
+      provider.call.mockResolvedValueOnce({ providerLeaseId: created.session.providerLeaseId,
+        status: "waiting_for_user", expiresAt: earlier.toISOString() } as never);
+      await service.refreshSetupSession({ sessionId: created.session.id });
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(earlier.getTime()));
+      expect(cancellations()).toHaveLength(0);
+      await settle(Math.max(0, earlier.getTime() - Date.now()));
+      await vi.waitFor(() => expect(cancellations()).toHaveLength(1));
+      expect(await service.getSessionById(created.session.id)).toMatchObject({ status: "timed_out" });
+      await quiet();
+    });
+
+    it("replaces an expiry when the provider moves it earlier and disarms on user cancellation", async () => {
+      await start();
+      const created = await create(); await settle();
+      const earlier = new Date(Date.now() + 5 * 60_000);
+      provider.call.mockResolvedValueOnce({ providerLeaseId: created.session.providerLeaseId,
+        status: "waiting_for_user", expiresAt: earlier.toISOString() } as never);
+      await service.refreshSetupSession({ sessionId: created.session.id });
+      await settle();
+      expect(coordinator!.nextWakeAt()).toBe(earlier.getTime());
+      await service.cancelSetupSession({ sessionId: created.session.id });
+      await quiet();
+      expect(cancellations()).toHaveLength(1);
+    });
+
+    it.each([false, true])("waits for the producer's outer transaction (rollback %s)", async rollback => {
+      const fixture = await seed(); await start(); await quiet();
+      let release!: () => void, written!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const staged = new Promise<void>(resolve => { written = resolve; });
+      const writing = db.transaction(async tx => {
+        const scoped = environmentCustomImageService(tx as unknown as typeof db, { pluginWorkerManager: provider });
+        await scoped.startSetupSession({ environmentId: fixture.environmentId, actor: { userId: "fixture-user" }, ttlSeconds: 1 });
+        written(); await gate;
+        if (rollback) throw new Error("rollback fixture");
+      }).catch(error => { if (!rollback) throw error; });
+      await staged;
+      try {
+        await vi.advanceTimersByTimeAsync(60_000);
+        expect(cancellations()).toHaveLength(0);
+      } finally { release(); }
+      await writing; await settle();
+      expect(cancellations()).toHaveLength(rollback ? 0 : 1);
+      await quiet();
+    });
+
+    it("retains a producer commit that arrives during the deadline read", async () => {
+      await start(); const created = await create(); await settle();
+      await coordinator!.stop();
+      let release!: () => void, reading!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      const entered = new Promise<void>(resolve => { reading = resolve; });
+      const readDeadline = service.nextSetupCleanupAt;
+      vi.spyOn(service, "nextSetupCleanupAt").mockImplementationOnce(async () => {
+        const stale = await readDeadline();
+        reading(); await gate;
+        return stale;
+      });
+      const starting = start();
+      await entered;
+      const earlier = new Date(Date.now() + 5 * 60_000);
+      try {
+        provider.call.mockResolvedValueOnce({ providerLeaseId: created.session.providerLeaseId,
+          status: "waiting_for_user", expiresAt: earlier.toISOString() } as never);
+        await service.refreshSetupSession({ sessionId: created.session.id });
+      } finally { release(); }
+      await starting; await settle();
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(earlier.getTime()));
+      await settle(5 * 60_000);
+      await vi.waitFor(() => expect(cancellations()).toHaveLength(1));
+      await quiet();
+    });
+
+    it("reconstructs a saved expiry after restart", async () => {
+      await start(); const created = await create(); await settle();
+      await coordinator!.stop();
+      await start();
+      expect(coordinator!.nextWakeAt()).toBe(new Date(created.session.expiresAt!).getTime());
+      await settle(60 * 60_000);
+      expect(cancellations()).toHaveLength(1); await quiet();
+    });
+
+    it.each(["startup", "first_write", "failed_pass"])("retains %s work through drain without passive SQL", async mode => {
+      if (mode === "startup") draining = true;
+      await start();
+      if (mode === "first_write") { await quiet(); draining = true; }
+      await create();
+      if (mode === "failed_pass") {
+        vi.spyOn(service, "nextSetupCleanupAt").mockRejectedValueOnce(new Error("database unavailable"));
+        await settle(30_000);
+        await vi.waitFor(() => expect(errors).toHaveLength(1)); errors.length = 0;
+        draining = true;
+      }
+      await settle();
+      const reads = vi.spyOn(db, "select");
+      await settle(2 * 60 * 60_000);
+      expect(reads).not.toHaveBeenCalled(); reads.mockRestore();
+      expect(cancellations()).toHaveLength(0);
+      draining = false; await settle();
+      expect(cancellations()).toHaveLength(1); await quiet();
+    });
+  });
+
+  it.each(["supported", "old_worker", "changed_config"])("inspects historical setup read-only with exact config and capability gates: %s", async mode => {
+    const fixture = await seed();
+    const worker = createWorkerManager({ workerMethods: [...ALL_CUSTOM_IMAGE_WORKER_METHODS,
+      ...(mode === "old_worker" ? [] : ["environmentInspectLease"])] });
+    const service = environmentCustomImageService(db, { pluginWorkerManager: worker });
+    const created = await service.startSetupSession({ environmentId: fixture.environmentId,
+      actor: { userId: "fixture-user" }, now: new Date("2099-01-01T00:00:00Z") });
+    await service.cancelSetupSession({ sessionId: created.session.id });
+    const [session] = await db.select().from(environmentCustomImageSetupSessions).where(eq(environmentCustomImageSetupSessions.id, created.session.id));
+    expect(session!.metadata).toMatchObject({ setupRpcCompanyId: created.session.metadata!.setupRpcCompanyId,
+      sourceEnvironmentConfigFingerprint: created.session.metadata!.sourceEnvironmentConfigFingerprint });
+    if (mode === "changed_config") await db.update(environments).set({ config: { provider: "fake-plugin", image: "replacement:base" } }).where(eq(environments.id, fixture.environmentId));
+    worker.call.mockClear();
+    const observed = await service.inspectSetupResource(session!);
+    if (mode === "supported") {
+      expect(observed).toEqual({ providerLeaseId: session!.providerLeaseId, state: "destroyed" });
+      expect(worker.call).toHaveBeenCalledExactlyOnceWith(expect.any(String), "environmentInspectLease", expect.objectContaining({
+        companyId: session!.metadata!.setupRpcCompanyId, providerLeaseId: session!.providerLeaseId,
+      }), 15_000);
+    } else { expect(observed).toBeUndefined(); expect(worker.call).not.toHaveBeenCalled(); }
+  });
 
   it("starts, refreshes, finishes, refreshes again, and rolls back setup sessions", async () => {
     const { environmentId } = await seed();
@@ -385,6 +585,8 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
       reason: "user_cancelled",
     });
     expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.metadata).toMatchObject({ setupRpcCompanyId: started.session.metadata!.setupRpcCompanyId,
+      sourceEnvironmentConfigFingerprint: started.session.metadata!.sourceEnvironmentConfigFingerprint });
     expect(await service.getActiveTemplate({ environmentId })).toBeNull();
 
     const expired = await service.startSetupSession({
@@ -399,6 +601,8 @@ describeEmbeddedPostgres("environmentCustomImageService", () => {
     expect(cleanup).toMatchObject({ scanned: 1, timedOut: 1, failed: 0 });
     const timedOut = await service.getSessionById(expired.session.id);
     expect(timedOut?.status).toBe("timed_out");
+    expect(timedOut?.metadata).toMatchObject({ setupRpcCompanyId: expired.session.metadata!.setupRpcCompanyId,
+      sourceEnvironmentConfigFingerprint: expired.session.metadata!.sourceEnvironmentConfigFingerprint });
   });
 
   it("rejects interactive setup when the provider declares it but the worker omits a setup method", async () => {
@@ -811,9 +1015,10 @@ describeEmbeddedPostgres("environmentCustomImageService reconciliation", () => {
   let db!: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
+    if (externalTestDatabase) { db = createDb(externalTestDatabase, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 }); return; }
     const started = await startEmbeddedPostgresTestDatabase("environment-custom-images-reconcile");
-    stopDb = started.stop;
-    db = createDb(started.connectionString);
+    stopDb = started.cleanup;
+    db = createDb(started.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   });
 
   afterEach(async () => {
@@ -825,6 +1030,7 @@ describeEmbeddedPostgres("environmentCustomImageService reconciliation", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await stopDb?.();
   });
 
@@ -1118,9 +1324,10 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
   let db!: ReturnType<typeof createDb>;
 
   beforeAll(async () => {
+    if (externalTestDatabase) { db = createDb(externalTestDatabase, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 }); return; }
     const started = await startEmbeddedPostgresTestDatabase("environment-custom-images-relink");
-    stopDb = started.stop;
-    db = createDb(started.connectionString);
+    stopDb = started.cleanup;
+    db = createDb(started.connectionString, { maxConnections: 6, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   });
 
   afterEach(async () => {
@@ -1133,6 +1340,7 @@ describeEmbeddedPostgres("environmentCustomImageService relink", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await stopDb?.();
   });
 

@@ -1,5 +1,8 @@
+import type { ConnectionManagementContext } from "./connection-management.js";
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNull, ne, sql } from "drizzle-orm";
+import { boundRunIssueIdSql } from "./run-task-binding.js";
+import type { ToolApprovalClaim } from "./tool-approval-execution.js";
+import { and, asc, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -16,6 +19,7 @@ import {
   toolCallEvents,
   toolInvocations,
   toolMcpGateways,
+  toolMcpGatewayTokens,
   toolPolicies,
   toolProfileBindings,
   toolProfileEntries,
@@ -48,6 +52,13 @@ import {
   profileIdsInBindingOrder,
 } from "./tool-profile-binding-precedence.js";
 import { recordToolRuntimeAuditWriteFailure } from "./tool-runtime-metrics.js";
+import { canonicalToolArguments, readSignedToolArgumentsPayload, toolRequestIdentityHash } from "./tool-content-guards.js";
+
+class RejectedInvocationAdmission extends Error {
+  constructor(readonly decision: ToolAccessDecision) {
+    super(decision.explanation);
+  }
+}
 
 type ToolAccessContext = {
   companyId: string;
@@ -187,6 +198,11 @@ function sha256(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
 }
 
+type ConsumedRateAdmission = { policyId: string; versionHash: string; bucketKey?: string };
+function ratePolicyVersionHash(policy: typeof toolPolicies.$inferSelect): string {
+  return sha256({ ...policy, createdAt: policy.createdAt.toISOString(), updatedAt: policy.updatedAt.toISOString() });
+}
+
 function isoDateOrNull(value: unknown): string | null {
   if (!value) return null;
   if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value.toISOString();
@@ -287,8 +303,9 @@ function trustRuleIsActive(policy: typeof toolPolicies.$inferSelect, now = new D
   return true;
 }
 
-function sideEffectIdempotencyKey(ctx: ToolAccessContext, argumentsHash: string): string {
-  return `side_effect:${sha256({
+function sideEffectIdempotencyKey(ctx: ToolAccessContext, argumentsHash: string, version: 1 | 2 = 2): string {
+  return `side_effect:${version === 2 ? "v2:" : ""}${sha256({
+    ...(version === 2 ? { actorType: ctx.actorType, actorId: ctx.actorId, agentId: ctx.agentId } : {}),
     companyId: ctx.companyId,
     runId: ctx.heartbeatRunId,
     issueId: ctx.issueId,
@@ -307,7 +324,7 @@ function auditOutcome(accessDecision: ToolAccessDecision): "pending" | "success"
   return "denied";
 }
 
-function summarizeAndRedact(value: unknown): RedactionResult {
+function summarizeAndRedact(value: unknown, normalizeSensitiveKeys = true): RedactionResult {
   const redactedFields: string[] = [];
   const visit = (current: unknown, path: string): unknown => {
     if (typeof current === "string") {
@@ -322,7 +339,7 @@ function summarizeAndRedact(value: unknown): RedactionResult {
     const out: Record<string, unknown> = {};
     for (const [key, nested] of Object.entries(current)) {
       const nestedPath = path ? `${path}.${key}` : key;
-      if (SENSITIVE_KEY_RE.test(key)) {
+      if (SENSITIVE_KEY_RE.test(normalizeSensitiveKeys ? key.replace(/([a-z0-9])([A-Z])/g, "$1_$2") : key)) {
         redactedFields.push(nestedPath);
         out[key] = "[REDACTED]";
       } else {
@@ -345,6 +362,21 @@ function summarizeAndRedact(value: unknown): RedactionResult {
       redactedFields,
     },
   };
+}
+
+function completeLegacyArguments(invocation: typeof toolInvocations.$inferSelect): { arguments: unknown } | null {
+  const summary = invocation.argumentsSummary;
+  if (!summary || summary.redactedFields?.length) return null;
+  let parsed: unknown;
+  try { parsed = JSON.parse(summary.summary); } catch { return null; }
+  // Historical previews did not record array truncation separately. At the
+  // preview cap, even valid JSON cannot prove that no entries were omitted.
+  const mayBeTruncated = (value: unknown): boolean => typeof value === "string"
+    ? value.includes("...[truncated]")
+    : Array.isArray(value) ? value.length >= 50 || value.some(mayBeTruncated)
+      : isRecord(value) && Object.values(value).some(mayBeTruncated);
+  return !mayBeTruncated(parsed) && sha256(parsed) === invocation.argumentsHash
+    ? { arguments: parsed } : null;
 }
 
 function decision(
@@ -591,14 +623,14 @@ function evaluatePolicyConditions(
 }
 
 function profileEntryMatches(entry: typeof toolProfileEntries.$inferSelect, ctx: ToolAccessContext): boolean {
+  const selected = entry.selectorType === "application" ? entry.applicationId === ctx.applicationId
+    : entry.selectorType === "connection" ? entry.connectionId === ctx.connectionId
+    : entry.selectorType === "catalog_entry" ? entry.catalogEntryId === ctx.catalogEntryId
+    : entry.selectorType === "tool_name" ? entry.toolName === ctx.toolName
+    : entry.selectorType === "risk_level" ? entry.riskLevel === ctx.riskLevel : false;
+  if (!selected) return false;
   const conditions = isRecord(entry.conditions) ? entry.conditions as ToolPolicyConditions : null;
-  if (!evaluatePolicyConditions(conditions, ctx).matched) return false;
-  if (entry.selectorType === "application") return entry.applicationId === ctx.applicationId;
-  if (entry.selectorType === "connection") return entry.connectionId === ctx.connectionId;
-  if (entry.selectorType === "catalog_entry") return entry.catalogEntryId === ctx.catalogEntryId;
-  if (entry.selectorType === "tool_name") return entry.toolName === ctx.toolName;
-  if (entry.selectorType === "risk_level") return entry.riskLevel === ctx.riskLevel;
-  return false;
+  return evaluatePolicyConditions(conditions, ctx).matched;
 }
 
 function targetMatches(binding: typeof toolProfileBindings.$inferSelect, ctx: ToolAccessContext): boolean {
@@ -692,7 +724,7 @@ function assertSupportedGenericPolicyShape(
   }
 }
 
-async function getGenericPolicyRow(db: Db, companyId: string, policyId: string) {
+async function getGenericPolicyRow(db: Pick<Db, "select">, companyId: string, policyId: string) {
   const [policy] = await db
     .select()
     .from(toolPolicies)
@@ -760,7 +792,9 @@ function scopeAllowsTool(scope: Record<string, unknown> | null, ctx: ToolAccessC
   return selectorMatches(selectors, ctx);
 }
 
-export function toolAccessPolicyService(db: Db) {
+export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "update" | "delete" | "transaction">, options: { toolActionSigningSecret?: string } = {}) {
+  // Policy administration includes authorized self-targeted changes. It cannot
+  // resolve governed action requests or modify principal permission grants.
   async function listPolicies(companyId: string) {
     return db
       .select()
@@ -769,21 +803,23 @@ export function toolAccessPolicyService(db: Db) {
       .orderBy(asc(toolPolicies.priority), desc(toolPolicies.updatedAt));
   }
 
-  async function reorderPolicies(companyId: string, body: ReorderToolPolicies) {
+  async function reorderPolicies(companyId: string, body: ReorderToolPolicies, managementContext?: ConnectionManagementContext) {
     const uniquePolicyIds = [...new Set(body.policyIds)];
     if (uniquePolicyIds.length !== body.policyIds.length) {
       throw badRequest("policyIds must not contain duplicates");
     }
 
+    await managementContext?.reauthorize();
     return db.transaction(async (tx) => {
       const rows = await tx
-        .update(toolPolicies)
-        .set({ updatedAt: sql`${toolPolicies.updatedAt}` })
+        .select()
+        .from(toolPolicies)
         .where(and(
           eq(toolPolicies.companyId, companyId),
           ne(toolPolicies.policyType, "trust_rule"),
         ))
-        .returning();
+        .orderBy(toolPolicies.id)
+        .for("no key update");
       const byId = new Map(rows.map((row) => [row.id, row]));
       const missingIds = uniquePolicyIds.filter((id) => !byId.has(id));
       if (missingIds.length > 0) {
@@ -797,12 +833,11 @@ export function toolAccessPolicyService(db: Db) {
       }
 
       const now = new Date();
-      for (const [index, policyId] of uniquePolicyIds.entries()) {
-        await tx
-          .update(toolPolicies)
-          .set({ priority: (index + 1) * 100, updatedAt: now })
-          .where(eq(toolPolicies.id, policyId));
-      }
+      await tx.execute(sql`UPDATE tool_policies
+        SET priority = (requested.ordinality * 100)::integer, updated_at = ${now.toISOString()}
+        FROM jsonb_array_elements_text(${JSON.stringify(uniquePolicyIds)}::jsonb)
+          WITH ORDINALITY AS requested(id, ordinality)
+        WHERE tool_policies.company_id = ${companyId} AND tool_policies.id = requested.id::uuid`);
       return tx
         .select()
         .from(toolPolicies)
@@ -816,6 +851,7 @@ export function toolAccessPolicyService(db: Db) {
     policyId: string;
     body: DuplicateToolPolicy;
     actor?: { agentId?: string | null; userId?: string | null };
+    managementContext?: ConnectionManagementContext;
   }) {
     const existing = await getGenericPolicyRow(db, input.companyId, input.policyId);
     assertSupportedGenericPolicyShape(existing.policyType, existing.conditions ?? null, existing.config ?? null);
@@ -831,6 +867,7 @@ export function toolAccessPolicyService(db: Db) {
       while (names.has(`${baseName} ${suffix}`)) suffix += 1;
       name = `${baseName} ${suffix}`;
     }
+    await input.managementContext?.reauthorize();
     const now = new Date();
     const [policy] = await db
       .insert(toolPolicies)
@@ -857,8 +894,10 @@ export function toolAccessPolicyService(db: Db) {
     companyId: string,
     body: CreateToolPolicy,
     actor?: { agentId?: string | null; userId?: string | null },
+    managementContext?: ConnectionManagementContext,
   ) {
     assertSupportedGenericPolicyShape(body.policyType, body.conditions ?? null, body.config ?? null);
+    await managementContext?.reauthorize();
     const now = new Date();
     const [policy] = await db
       .insert(toolPolicies)
@@ -885,12 +924,14 @@ export function toolAccessPolicyService(db: Db) {
     companyId: string;
     policyId: string;
     body: UpdateToolPolicy;
+    managementContext?: ConnectionManagementContext;
   }) {
     const existing = await getGenericPolicyRow(db, input.companyId, input.policyId);
     const nextPolicyType = input.body.policyType ?? existing.policyType;
     const nextConditions = input.body.conditions !== undefined ? input.body.conditions ?? null : existing.conditions ?? null;
     const nextConfig = input.body.config !== undefined ? input.body.config ?? null : existing.config ?? null;
     assertSupportedGenericPolicyShape(nextPolicyType, nextConditions, nextConfig);
+    await input.managementContext?.reauthorize();
     const now = new Date();
     const [policy] = await db
       .update(toolPolicies)
@@ -910,8 +951,9 @@ export function toolAccessPolicyService(db: Db) {
     return policy;
   }
 
-  async function deletePolicy(input: { companyId: string; policyId: string }) {
+  async function deletePolicy(input: { companyId: string; policyId: string; managementContext?: ConnectionManagementContext }) {
     const existing = await getGenericPolicyRow(db, input.companyId, input.policyId);
+    await input.managementContext?.reauthorize();
     const [deleted] = await db
       .delete(toolPolicies)
       .where(eq(toolPolicies.id, existing.id))
@@ -969,6 +1011,10 @@ export function toolAccessPolicyService(db: Db) {
       agentId = agent.id;
     }
 
+    const originatingAgentId = input.runContext?.originatingAgentId;
+    if (originatingAgentId && (input.actor.actorType !== "agent" || input.actor.actorId !== originatingAgentId)) {
+      return { ok: false, redaction, decision: decision("deny", "deny_run_context_mismatch", "Run origin does not match the authenticated actor.", [], [], { redactionPlan: redaction.redactionPlan }) };
+    }
     if (heartbeatRunId) {
       const runId = heartbeatRunId;
       const [run] = await cachedRead(cache, `run:${runId}`, async () =>
@@ -976,16 +1022,16 @@ export function toolAccessPolicyService(db: Db) {
           .select({
             companyId: heartbeatRuns.companyId,
             agentId: heartbeatRuns.agentId,
-            issueId: runContextSnapshotString("issueId"),
+            issueId: boundRunIssueIdSql(),
             projectId: runContextSnapshotString("projectId"),
             routineId: runContextSnapshotString("routineId"),
           })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, runId)));
-      if (!run || run.companyId !== input.companyId || (input.actor.actorType === "agent" && run.agentId !== agentId)) {
+      if (!run || run.companyId !== input.companyId || (input.actor.actorType === "agent" && run.agentId !== (originatingAgentId ?? agentId))) {
         return { ok: false, redaction, decision: decision("deny", "deny_run_context_mismatch", "Supplied run context does not match the authenticated actor.", [], [], { redactionPlan: redaction.redactionPlan }) };
       }
-      agentId = run.agentId;
+      agentId = originatingAgentId ? agentId : run.agentId;
       const runIssueId = nonBlankString(run.issueId);
       const runProjectId = nonBlankString(run.projectId);
       const runRoutineId = nonBlankString(run.routineId);
@@ -1148,7 +1194,9 @@ export function toolAccessPolicyService(db: Db) {
         upstreamToolName,
         toolName: input.request.toolName,
         riskLevel,
-        argumentsHash: redaction.summary.sha256 ?? sha256(input.request.arguments ?? {}),
+        argumentsHash: input.request.sideEffecting
+          ? toolRequestIdentityHash(input.request.arguments, options.toolActionSigningSecret)
+          : redaction.summary.sha256 ?? sha256(input.request.arguments ?? {}),
         arguments: input.request.arguments ?? {},
       },
     };
@@ -1260,11 +1308,12 @@ export function toolAccessPolicyService(db: Db) {
         ],
         set: {
           limit: rule.limit,
-          remaining: sql`greatest(0, least(${toolRateLimitCounters.remaining}, ${rule.limit}) - 1)`,
+          // Preserve the number already spent when an operator changes the limit.
+          remaining: sql`greatest(0, ${rule.limit} - (${toolRateLimitCounters.limit} - ${toolRateLimitCounters.remaining}) - 1)`,
           resetAt,
           updatedAt: now,
         },
-        setWhere: gt(toolRateLimitCounters.remaining, 0),
+        setWhere: sql`${toolRateLimitCounters.limit} - ${toolRateLimitCounters.remaining} < ${rule.limit}`,
       })
       .returning({ remaining: toolRateLimitCounters.remaining });
     if (!counter) {
@@ -1335,6 +1384,109 @@ export function toolAccessPolicyService(db: Db) {
     });
   }
 
+  async function admittedRateLimitAdmissions(ctx: ToolAccessContext, invocationId: string, previewHash?: string): Promise<ConsumedRateAdmission[] | null> {
+    const [invocation] = await db.select({
+      actorType: toolInvocations.actorType, actorId: toolInvocations.actorId, agentId: toolInvocations.agentId,
+      runId: toolInvocations.runId, issueId: toolInvocations.issueId, gatewayId: toolInvocations.gatewayId,
+      applicationId: toolInvocations.applicationId, connectionId: toolInvocations.connectionId,
+      catalogEntryId: toolInvocations.catalogEntryId, toolName: toolInvocations.toolName,
+      providerType: toolInvocations.providerType, applicationKey: toolInvocations.applicationKey,
+      upstreamToolName: toolInvocations.upstreamToolName, argumentsHash: toolInvocations.argumentsHash,
+      status: toolInvocations.status, policyDecision: toolInvocations.policyDecision, approvalState: toolInvocations.approvalState,
+      policyExplanation: toolInvocations.policyExplanation,
+    }).from(toolInvocations).where(and(eq(toolInvocations.companyId, ctx.companyId), eq(toolInvocations.id, invocationId)));
+    // A parked request already spent its slot before asking for review. Reusing
+    // that admission only skips the same rate rule; current policy and the
+    // gateway's approval/claim owners still decide whether it may execute.
+    const delegated = invocation?.policyExplanation?.delegatedConnectionTest as { agentId?: string } | undefined;
+    const gatewayIssuer = invocation?.gatewayId ? invocation.policyExplanation?.delegatedGatewayIssuer : undefined;
+    const isDelegatedCaller = invocation?.actorType === "agent" && invocation.actorId === ctx.agentId
+      && (delegated?.agentId === ctx.agentId || gatewayIssuer === ctx.agentId) && invocation.agentId !== ctx.agentId;
+    const authorized = invocation && (
+      (invocation.status === "executing" && (invocation.policyDecision === "allow" || (invocation.policyDecision === "require_approval" && invocation.approvalState === "approved")))
+      || (invocation.status === "awaiting_approval" && invocation.policyDecision === "require_approval" && ["pending", "approved"].includes(invocation.approvalState))
+    )
+      && invocation.actorType === ctx.actorType && invocation.actorId === ctx.actorId && (invocation.agentId === ctx.agentId || isDelegatedCaller)
+      && invocation.runId === ctx.heartbeatRunId && invocation.issueId === ctx.issueId && invocation.gatewayId === ctx.gatewayId
+      && invocation.applicationId === ctx.applicationId && invocation.connectionId === ctx.connectionId
+      && invocation.catalogEntryId === ctx.catalogEntryId && invocation.toolName === ctx.toolName
+      && invocation.providerType === ctx.providerType && invocation.applicationKey === ctx.applicationKey
+      && invocation.upstreamToolName === ctx.upstreamToolName
+      && (invocation.argumentsHash === ctx.argumentsHash || invocation.argumentsHash === previewHash);
+    if (!authorized) return null;
+    const stored = invocation.policyExplanation?.[isDelegatedCaller ? "delegatedCallerConsumedRateAdmissions" : "consumedRateAdmissions"];
+    return Array.isArray(stored) ? stored.filter((item): item is ConsumedRateAdmission => isRecord(item)
+      && typeof item.policyId === "string" && CANONICAL_UUID_RE.test(item.policyId)
+      && typeof item.versionHash === "string" && /^[a-f0-9]{64}$/.test(item.versionHash)) : [];
+  }
+
+  /** Revalidate claimed work and persist new rate charges before provider dispatch. */
+  async function admitInvocation(
+    input: ToolAccessDecisionInput,
+    invocationId: string,
+    claim?: ToolApprovalClaim,
+    evaluate?: (
+      policy: Pick<ReturnType<typeof toolAccessPolicyService>, "decide" | "writeAudit">,
+      input: ToolAccessDecisionInput,
+      transaction: Db,
+    ) => Promise<ToolAccessDecision>,
+  ): Promise<ToolAccessDecision> {
+    try {
+      return await db.transaction(async tx => {
+        const [invocation] = await tx.select().from(toolInvocations)
+          .where(and(eq(toolInvocations.companyId, input.companyId), eq(toolInvocations.id, invocationId)))
+          .for("update");
+        // Historical reviewed requests can still have a pending invocation.
+        // Accept that state only with the exact executing claim owned by the
+        // gateway, locked in the same invocation-then-request order as dispatch.
+        let ownsClaim = false;
+        if (claim && claim.invocationId === invocationId) {
+          const [request] = await tx.select().from(toolActionRequests).where(and(
+            eq(toolActionRequests.id, claim.actionRequestId),
+            eq(toolActionRequests.invocationId, invocationId),
+            eq(toolActionRequests.companyId, input.companyId),
+          )).for("update");
+          ownsClaim = request?.status === "executing" && request.updatedAt.getTime() === claim.claimedAt.getTime();
+        }
+        if (!invocation || (claim && !ownsClaim)
+          || !(invocation.status === "executing" && invocation.policyDecision === "allow"
+            || ["awaiting_approval", "executing"].includes(invocation.status)
+              && invocation.policyDecision === "require_approval" && invocation.approvalState === "approved"
+            || invocation.status === "awaiting_approval" && invocation.policyDecision === "require_approval"
+              && invocation.approvalState === "pending" && ownsClaim)) {
+          return decision("deny", "deny_policy_block", "Tool invocation admission is unavailable.", [], []);
+        }
+        const admissionPolicy = toolAccessPolicyService(tx, options);
+        const admissionInput = { ...input, consumeRateLimit: true };
+        // Composed caller/target policy must share this claim transaction so
+        // either all new charges and receipts commit or all roll back.
+        const result = evaluate
+          ? await evaluate(admissionPolicy, admissionInput, tx as unknown as Db)
+          : await admissionPolicy.decide(admissionInput, { admittedInvocationId: invocationId });
+        if (!result.allowed && result.decision !== "require_approval") {
+          // A later policy can reject after an earlier rate rule spent a slot.
+          // Roll back both the new charges and their receipt on any rejection.
+          throw new RejectedInvocationAdmission(result);
+        }
+        const admissions = result.policyExplanation?.consumedRateAdmissions;
+        const delegatedAdmissions = result.policyExplanation?.delegatedCallerConsumedRateAdmissions;
+        if (Array.isArray(admissions) || Array.isArray(delegatedAdmissions)) {
+          await tx.update(toolInvocations).set({
+            policyExplanation: {
+              ...invocation.policyExplanation,
+              ...(Array.isArray(admissions) ? { consumedRateAdmissions: admissions } : {}),
+              ...(Array.isArray(delegatedAdmissions) ? { delegatedCallerConsumedRateAdmissions: delegatedAdmissions } : {}),
+            },
+          }).where(and(eq(toolInvocations.companyId, input.companyId), eq(toolInvocations.id, invocationId)));
+        }
+        return result;
+      });
+    } catch (error) {
+      if (error instanceof RejectedInvocationAdmission) return error.decision;
+      throw error;
+    }
+  }
+
   /**
    * Decides one tool access request. Pass the same `cache` to every call of a
    * batch that shares one actor and run context (for example, one tools/list
@@ -1342,14 +1494,37 @@ export function toolAccessPolicyService(db: Db) {
    */
   async function decide(
     input: ToolAccessDecisionInput,
-    options: { cache?: ToolAccessDecisionCache } = {},
+    options: { cache?: ToolAccessDecisionCache; admittedInvocationId?: string; admittedPreviewHash?: string; sharedRateDecision?: ToolAccessDecision } = {},
+  ): Promise<ToolAccessDecision> {
+    const consumedRateAdmissions: ConsumedRateAdmission[] = [];
+    const result = await decideInternal(input, options, consumedRateAdmissions);
+    return consumedRateAdmissions.length ? { ...result,
+      policyExplanation: { ...result.policyExplanation, consumedRateAdmissions },
+    } : result;
+  }
+
+  async function decideInternal(
+    input: ToolAccessDecisionInput,
+    options: { cache?: ToolAccessDecisionCache; admittedInvocationId?: string; admittedPreviewHash?: string; sharedRateDecision?: ToolAccessDecision },
+    consumedRateAdmissions: ConsumedRateAdmission[],
   ): Promise<ToolAccessDecision> {
     // A decision that consumes a rate limit can also record a trust-rule hit
     // from the policy row, so it always reads fresh rows.
-    const cache = input.consumeRateLimit === true ? undefined : options.cache;
+    const cache = input.consumeRateLimit === true || options.admittedInvocationId ? undefined : options.cache;
     const loaded = await loadContext(input, cache);
     if (!loaded.ok) return loaded.decision;
     const { ctx, redaction } = loaded;
+    // A final handoff rechecks current permissions for work already admitted by
+    // the gateway. Its own last consumed slot cannot reject that same work.
+    // Only durable consumption of an unchanged rule retains that slot; new or
+    // edited rules still apply. admitInvocation owns atomic consuming rechecks;
+    // ordinary preflight and browser handoff callers remain read-only.
+    const admittedRates = options.admittedInvocationId
+      ? await admittedRateLimitAdmissions(ctx, options.admittedInvocationId, input.consumeRateLimit === true ? undefined : options.admittedPreviewHash) : [];
+    if (options.admittedInvocationId && input.consumeRateLimit === true && admittedRates === null) {
+      return decision("deny", "deny_policy_block", "Tool invocation no longer matches this admission.", [], []);
+    }
+    if (input.consumeRateLimit === true) consumedRateAdmissions.push(...(admittedRates ?? []));
     const profileState = await effectiveProfiles(ctx, cache);
     const effectiveProfileIds = profileState.profiles.map((profile) => profile.id);
     const permittedByProfile = profileState.profiles.some((profile) => {
@@ -1421,10 +1596,22 @@ export function toolAccessPolicyService(db: Db) {
             { redactionPlan: redaction.redactionPlan, policyExplanation },
           );
         }
+        const versionHash = ratePolicyVersionHash(policy);
+        if (admittedRates?.some(admission => admission.policyId === policy.id && admission.versionHash === versionHash)) continue;
+        // Paired caller/target checks for one delegated test share a slot only
+        // when the exact policy version and counter bucket are identical.
+        const shared = options.sharedRateDecision?.policyExplanation?.consumedRateAdmissions;
+        const bucketKey = `${policy.id}:${rateBucket(rateLimitRule(policy)!, ctx)}`;
+        if (input.consumeRateLimit === true && Array.isArray(shared) && shared.some(item => isRecord(item)
+          && item.policyId === policy.id && item.versionHash === versionHash && item.bucketKey === bucketKey)) {
+          consumedRateAdmissions.push({ policyId: policy.id, versionHash, bucketKey });
+          continue;
+        }
         const state = await enforceRateLimit(policy, ctx, input.consumeRateLimit === true);
         if (state?.limited) {
           return decision("rate_limited", "rate_limited", "Tool access rate limit exceeded.", effectiveProfileIds, [policy.id], { rateLimitState: state, redactionPlan: redaction.redactionPlan, policyExplanation });
         }
+        if (state && input.consumeRateLimit === true) consumedRateAdmissions.push({ policyId: policy.id, versionHash, bucketKey: state.bucketKey });
         continue;
       }
       if (policy.policyType === "trust_rule") {
@@ -1445,7 +1632,7 @@ export function toolAccessPolicyService(db: Db) {
             { redactionPlan: redaction.redactionPlan, policyExplanation },
           );
         }
-        if (input.consumeRateLimit === true) {
+        if (input.consumeRateLimit === true && !options.admittedInvocationId) {
           await recordTrustRuleHit(policy, ctx, redaction);
         }
         return decision("allow", "allow_trust_rule", policy.description ?? "Tool access allowed by trust rule.", effectiveProfileIds, [policy.id], { redactionPlan: redaction.redactionPlan, policyExplanation });
@@ -1582,15 +1769,58 @@ export function toolAccessPolicyService(db: Db) {
     const loaded = await loadContext(input);
     if (!loaded.ok) throw new Error("Cannot record invocation for invalid tool access context");
     const { ctx, redaction } = loaded;
-    const argumentsHash = redaction.summary.sha256 ?? sha256(input.request.arguments ?? {});
+    const requestIdentityHash = input.request.sideEffecting || accessDecision.decision === "require_approval"
+      ? toolRequestIdentityHash(input.request.arguments, options.toolActionSigningSecret)
+      : null;
+    const argumentsHash = input.request.sideEffecting ? requestIdentityHash! : ctx.argumentsHash;
     const idempotencyKey = input.request.idempotencyKey
-      ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, argumentsHash) : null);
+      ?? (input.request.sideEffecting ? sideEffectIdempotencyKey(ctx, requestIdentityHash!) : null);
     if (idempotencyKey) {
       const [existing] = await db.select().from(toolInvocations).where(and(
         eq(toolInvocations.companyId, input.companyId),
         eq(toolInvocations.idempotencyKey, idempotencyKey),
       ));
       if (existing) return { invocation: existing, replayed: true, actionRequest: null };
+    }
+    if (input.request.sideEffecting && input.request.idempotencyKey == null) {
+      // Before complete request identities, default keys used shortened and
+      // redacted preview hashes. Check both historical key-redaction variants
+      // so upgrading cannot silently repeat a completed or uncertain write.
+      const legacyKeys = [...new Set([
+        requestIdentityHash!,
+        redaction.summary.sha256!,
+        summarizeAndRedact(input.request.arguments, false).summary.sha256!,
+      ].map(hash => sideEffectIdempotencyKey(ctx, hash, 1)))];
+      const legacyInvocations = legacyKeys.length ? await db.select().from(toolInvocations).where(and(
+        eq(toolInvocations.companyId, input.companyId),
+        inArray(toolInvocations.idempotencyKey, legacyKeys),
+      )) : [];
+      for (const legacy of legacyInvocations) {
+        if (legacy.actorType !== ctx.actorType || legacy.actorId !== ctx.actorId || legacy.agentId !== ctx.agentId) {
+          throw conflict("An earlier operation belongs to another actor. Reconcile it before retrying; use a new explicit idempotency key only for an intentional new operation.",
+            { reasonCode: "legacy_tool_idempotency_unverifiable" });
+        }
+        // An interim complete-identity row may still have the old key prefix.
+        // Its digest covers the full request when it differs from its preview.
+        if (legacy.argumentsSummary?.sha256 && legacy.argumentsHash === requestIdentityHash
+            && legacy.argumentsHash !== legacy.argumentsSummary.sha256) {
+          return { invocation: legacy, replayed: true, actionRequest: null };
+        }
+        const [actionRequest] = await db.select({ signedArguments: toolActionRequests.signedArguments })
+          .from(toolActionRequests).where(and(eq(toolActionRequests.companyId, input.companyId),
+            eq(toolActionRequests.invocationId, legacy.id))).limit(1);
+        const original = actionRequest?.signedArguments
+          ? readSignedToolArgumentsPayload({ signedArguments: actionRequest.signedArguments,
+            invocationId: legacy.id, toolName: legacy.toolName, signingSecret: options.toolActionSigningSecret })
+          : completeLegacyArguments(legacy);
+        if (!original) throw conflict(
+          "An earlier operation has incomplete saved arguments. Reconcile its result before retrying; use a new explicit idempotency key only for an intentional new operation.",
+          { reasonCode: "legacy_tool_idempotency_unverifiable", invocationId: legacy.id },
+        );
+        if (canonicalToolArguments(original.arguments) === canonicalToolArguments(input.request.arguments)) {
+          return { invocation: legacy, replayed: true, actionRequest: null };
+        }
+      }
     }
     const status = accessDecision.decision === "allow"
       ? "authorized"
@@ -1607,6 +1837,10 @@ export function toolAccessPolicyService(db: Db) {
       agentId: ctx.agentId,
       issueId: ctx.issueId,
       runId: ctx.heartbeatRunId,
+      gatewayId: ctx.gatewayId,
+      ...(input.runContext?.gatewayTokenId ? { gatewayTokenId: sql`(select ${toolMcpGatewayTokens.id} from ${toolMcpGatewayTokens}
+        where ${toolMcpGatewayTokens.id} = ${input.runContext.gatewayTokenId} and ${toolMcpGatewayTokens.companyId} = ${ctx.companyId}
+          and ${toolMcpGatewayTokens.gatewayId} = ${ctx.gatewayId})` } : {}),
       applicationId: ctx.applicationId,
       connectionId: ctx.connectionId,
       catalogEntryId: ctx.catalogEntryId,
@@ -1620,6 +1854,7 @@ export function toolAccessPolicyService(db: Db) {
       argumentsHash,
       argumentsSummary: redaction.summary,
       policyDecision: accessDecision.decision,
+      policyExplanation: accessDecision.policyExplanation ?? null,
       matchedPolicyIds: accessDecision.matchedPolicyIds,
       approvalState: accessDecision.decision === "require_approval" ? "pending" : "not_required",
       status,
@@ -1634,9 +1869,9 @@ export function toolAccessPolicyService(db: Db) {
         invocationId: invocation.id,
         issueId: ctx.issueId,
         status: "pending",
-        canonicalArgumentsHash: invocation.argumentsHash ?? argumentsHash,
+        canonicalArgumentsHash: requestIdentityHash!,
         canonicalArgumentsSummary: redaction.summary,
-        requestedByAgentId: ctx.actorType === "agent" ? ctx.agentId : null,
+        requestedByAgentId: ctx.actorType === "agent" ? ctx.actorId : null,
         requestedByUserId: ctx.actorType === "user" ? ctx.actorId : null,
       }).returning();
     }
@@ -2027,6 +2262,7 @@ export function toolAccessPolicyService(db: Db) {
 
   return {
     decide,
+    admitInvocation,
     writeAudit,
     recordInvocation,
     summarizeAndRedact,

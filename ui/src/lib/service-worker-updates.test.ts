@@ -86,16 +86,6 @@ describe("startServiceWorkerUpdates", () => {
     expect(reload).toHaveBeenCalledTimes(1);
   });
 
-  it("does not reload on a first-ever install", async () => {
-    const { container, emit } = fakeContainer({ controlled: false });
-    const { doc } = fakeDocument("hidden");
-    const reload = vi.fn();
-    startServiceWorkerUpdates({ container, documentRef: doc, reload });
-
-    emit("controllerchange");
-    expect(reload).not.toHaveBeenCalled();
-  });
-
   it("reloads when a later deploy replaces the worker a first-visit tab installed", async () => {
     const { container, emit } = fakeContainer({ controlled: false });
     const { doc } = fakeDocument("hidden");

@@ -97,7 +97,7 @@ export function RadioCardGroup({
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
     if (disabled) return;
     const idx = options.findIndex((option) => option.value === value);
-    if (idx === -1) return;
+
     let step: number | null = null;
     if (event.key === "ArrowDown" || event.key === "ArrowRight") {
       step = 1;
@@ -110,9 +110,11 @@ export function RadioCardGroup({
     // choice the viewer cannot make would select it.
     const len = options.length;
     for (let hop = 1; hop <= len; hop++) {
-      const candidate = options[(((idx + step * hop) % len) + len) % len];
+      const next = idx === -1 ? (step === 1 ? hop - 1 : len - hop) : (((idx + step * hop) % len) + len) % len;
+      const candidate = options[next];
       if (!candidate.disabled) {
         onValueChange(candidate.value);
+        event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
         return;
       }
     }
@@ -135,7 +137,7 @@ export function RadioCardGroup({
           tooltip={option.tooltip}
           aria-label={option.accessibleLabel}
           disabled={disabled || option.disabled}
-          tabIndex={option.value === value ? 0 : -1}
+          tabIndex={option.value === value || (!options.some(item => item.value === value && !item.disabled) && option === options.find(item => !item.disabled)) ? 0 : -1}
           onClick={() => onValueChange(option.value)}
         />
       ))}

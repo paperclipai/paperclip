@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { nativeSystemInstructions } from "./backends/runtime-context.js";
 
 import type {
   CheckpointControlPlaneSessionOptions,
@@ -8,6 +9,7 @@ import type {
   NativeExecutionInput,
   NativeSessionExecutionResult,
 } from "./contracts/native-execution.js";
+import { readProviderFailure } from "./contracts/provider-failure.generated.js";
 import {
   buildNativeModelEnvelope,
   parseNativeExecutionInput,
@@ -211,6 +213,7 @@ export interface ExecuteNativeSessionOptions {
   turnTimeoutMs?: number;
   /** Abort admission while waiting for prior cleanup in the same domain. */
   signal?: AbortSignal;
+  startup?: { deadlineAtMs: number; signal: AbortSignal };
   /** Internal test seam; production bounds checkpoint persistence to 30 seconds. */
   checkpointTimeoutMs?: number;
   /** Internal test seam; production uses the fixed 120-second platform policy. */
@@ -391,12 +394,29 @@ async function runAbortableOperationWithin<T>(input: {
   timeoutError?: () => Error;
   operation: (signal: AbortSignal) => Promise<T>;
   onLateResolution?: (value: T) => Promise<void> | void;
+  signal?: AbortSignal;
 }): Promise<T> {
+  input.signal?.throwIfAborted();
+  if (input.timeoutMs <= 0) throw input.timeoutError?.() ?? new Error(input.timeoutMessage);
   const operationAbort = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   let timeoutError: Error | undefined;
-  const operation = input.operation(operationAbort.signal);
+  let removeAbort = () => {};
+  const cancelled = input.signal ? new Promise<never>((_resolve, reject) => {
+    const abort = () => {
+      timedOut = true;
+      timeoutError = input.signal!.reason instanceof Error ? input.signal!.reason : new Error("native session startup cancelled");
+      reject(timeoutError);
+      operationAbort.abort(timeoutError);
+    };
+    input.signal!.addEventListener("abort", abort, { once: true });
+    removeAbort = () => input.signal!.removeEventListener("abort", abort);
+  }) : undefined;
+  const operation = Promise.resolve().then(() => {
+    input.signal?.throwIfAborted();
+    return input.operation(operationAbort.signal);
+  });
   // The timeout path deliberately stops awaiting an uncooperative adapter.
   // Keep its eventual settlement observed after mutation authority is revoked.
   void operation.catch(() => undefined);
@@ -414,6 +434,7 @@ async function runAbortableOperationWithin<T>(input: {
   try {
     const value = await Promise.race([
       operation,
+      ...(cancelled ? [cancelled] : []),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
           const error =
@@ -433,6 +454,7 @@ async function runAbortableOperationWithin<T>(input: {
     return value;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    removeAbort();
   }
 }
 
@@ -1090,6 +1112,7 @@ async function consumeTurn(
           typeof failure.code === "string" ? failure.code : "provider_session_failed",
           failure.recoverable === true || payload.recoverable === true,
           typeof failure.message === "string" ? failure.message : undefined,
+          readProviderFailure(failure.providerFailure),
         );
       }
       const request =
@@ -1197,11 +1220,15 @@ async function consumeTurn(
         );
       }
       if (sessionGoalObserved) {
+        if (isTurnTerminal(event) && providerFailure && !providerFailure.recoverable) {
+          throw providerFailure;
+        }
         if (sessionGoal && payload.requestId === sessionGoal.requestId) {
           goalControlObserved = true;
         }
         if (
           goalControlObserved &&
+          (providerFailure === null || providerFailure.recoverable) &&
           eventGoal !== undefined &&
           goalStatus(eventGoal) !== "active" &&
           payload.workingNow !== true
@@ -1565,7 +1592,7 @@ function checkpointCursor(cursor: string | null | undefined): number {
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : 0;
 }
 
-async function reconcileRecoveryCursor(input: {
+async function reconcileRecoveryCheckpoint(input: {
   controlPlane: ControlPlanePort;
   checkpoint: PersistedNativeSession;
   runId: string;
@@ -1575,6 +1602,8 @@ async function reconcileRecoveryCursor(input: {
   const checkpointHighWater = checkpointCursor(input.checkpoint.cursor);
   let afterSourceSeq = checkpointHighWater;
   let persistedHighWater = checkpointHighWater;
+  let proposalTurnId = input.checkpoint.activeTurnId ?? null;
+  let recoveredResult: PrpStructuredRunResult | null = null;
   while (true) {
     const replay = await input.controlPlane.replayEvents(
       {
@@ -1587,6 +1616,34 @@ async function reconcileRecoveryCursor(input: {
     );
     input.signal.throwIfAborted();
     if (replay.events.length === 0) break;
+    for (const event of replay.events) {
+      if (event.eventType === "turn.started" && event.turnId !== proposalTurnId) {
+        proposalTurnId = null;
+        recoveredResult = null;
+      }
+      if (
+        proposalTurnId &&
+        event.turnId === proposalTurnId &&
+        event.eventType === "run.result.proposed"
+      ) {
+        const validation = validatePrpStructuredRunResult(event.payload);
+        if (
+          !validation.ok ||
+          event.runId !== input.runId ||
+          event.normalizedSessionId !== input.checkpoint.identity.sessionId ||
+          event.sourceInstanceId !== input.sourceInstanceId
+        ) {
+          throw new NativeSessionProtocolIntegrityError("source_event_replay_conflict");
+        }
+        const previous = recoveredResult ?? input.checkpoint.semanticResult;
+        const normalize = (result: PrpStructuredRunResult) =>
+          canonicalJson(input.controlPlane.normalizeReplayPayload?.(result) ?? result);
+        if (previous && normalize(previous) !== normalize(validation.result)) {
+          throw new NativeSessionProtocolIntegrityError("source_event_replay_conflict");
+        }
+        recoveredResult = validation.result;
+      }
+    }
     const pageHighWater = replay.events.reduce(
       (highest, event) => Math.max(highest, event.sourceSeq),
       afterSourceSeq,
@@ -1599,11 +1656,16 @@ async function reconcileRecoveryCursor(input: {
   }
   if (
     persistedHighWater === checkpointHighWater &&
-    input.checkpoint.cursor === String(checkpointHighWater)
+    input.checkpoint.cursor === String(checkpointHighWater) &&
+    recoveredResult === null
   ) {
     return input.checkpoint;
   }
-  return { ...input.checkpoint, cursor: String(persistedHighWater) };
+  return {
+    ...input.checkpoint,
+    cursor: String(persistedHighWater),
+    ...(recoveredResult === null ? {} : { semanticResult: recoveredResult }),
+  };
 }
 
 async function replayCheckpointedTurnTerminal(input: {
@@ -2004,7 +2066,23 @@ export async function executeNativeSession(
     // state). Prove the provider attachment before opening durable
     // control-plane state because ControlPlanePort has no rollback operation.
     try {
-      await options.existingSession.attachRun({ identity });
+      const attach = async (signal?: AbortSignal) => {
+        signal?.throwIfAborted();
+        await options.existingSession!.attachRun!({ identity,
+        ...(input.provider.kind === "acpx" && input.provider.agent === "copilot"
+          ? { currentRunGrant: { runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
+              instructions: nativeSystemInstructions(input) } }
+          : {}),
+        });
+        signal?.throwIfAborted();
+      };
+      if (options.startup) await runAbortableOperationWithin({
+        timeoutMs: Math.max(0, options.startup.deadlineAtMs - Date.now()),
+        timeoutMessage: "native_execution_startup_expired",
+        signal: options.startup.signal,
+        operation: attach,
+      });
+      else await attach();
     } catch (error) {
       // attachRun has no transactional guarantee: a provider may bind the new
       // run before reporting a later failure. Conservatively quarantine the
@@ -2030,7 +2108,7 @@ export async function executeNativeSession(
       timeoutMs: recoveryTimeoutMs,
       timeoutMessage: `native session recovery replay timed out after ${recoveryTimeoutMs}ms`,
       operation: (signal) =>
-        reconcileRecoveryCursor({
+        reconcileRecoveryCheckpoint({
           controlPlane: options.controlPlane,
           checkpoint: recoveryCheckpoint,
           runId: input.binding.runId,
@@ -2042,6 +2120,7 @@ export async function executeNativeSession(
     const providerRecoveryCheckpoint = persistedSession;
 
     const replacementAllowed =
+      !("homeMode" in input && input.homeMode === "preconfigured") &&
       providerRecoveryCheckpoint.providerRecoveryPolicy ===
       "allow_replacement_after_resume_failure";
     const failedProviderSession =
@@ -2062,6 +2141,7 @@ export async function executeNativeSession(
             operation: (signal) =>
               options.backend.recoverSession!(providerRecoveryCheckpoint, {
                 signal,
+                normalizeReplayPayload: options.controlPlane.normalizeReplayPayload?.bind(options.controlPlane),
               }),
             onLateResolution: async (lateRecovery) => {
               if (lateRecovery.session) {
@@ -2121,7 +2201,7 @@ export async function executeNativeSession(
     // A fresh provider session is part of admission. Prove that it exists
     // before opening durable run state because ControlPlanePort intentionally
     // exposes no rollback for an admitted run.
-    const bootstrapTimeoutMs = options.timeoutMs ?? 900_000;
+    const bootstrapTimeoutMs = options.startup ? Math.max(0, options.startup.deadlineAtMs - Date.now()) : options.timeoutMs ?? 900_000;
     const bootstrapInput = {
       identity,
       workingDirectory: input.workspace.cwd ?? undefined,
@@ -2129,6 +2209,7 @@ export async function executeNativeSession(
     session = await runAbortableOperationWithin({
       timeoutMs: bootstrapTimeoutMs,
       timeoutMessage: `native session bootstrap timed out after ${bootstrapTimeoutMs}ms`,
+      signal: options.startup?.signal,
       operation: (signal) =>
         options.backend.openSession({
           ...bootstrapInput,
@@ -2558,6 +2639,9 @@ export async function executeNativeSession(
           if (!(dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) && "requestedSkills" in modelEnvelope && options.backend.preparedTaskConstraints) {
             modelEnvelope.constraints = [...options.backend.preparedTaskConstraints];
           }
+          if ("workspace" in modelEnvelope && modelEnvelope.workspace && recoveredSnapshot.workingDirectory) {
+            modelEnvelope.workspace.cwd = recoveredSnapshot.workingDirectory;
+          }
           await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
@@ -2650,6 +2734,7 @@ export async function executeNativeSession(
               modelRejected
                 ? `native_provider_model_rejected: ${message}`
                 : message,
+              readProviderFailure(failure.providerFailure),
             );
           }
           if (settledCompletion === null && options.resolveMissingResult) {
@@ -2761,7 +2846,8 @@ export async function executeNativeSession(
           if (
             expected === undefined ||
             existing.eventType !== expected.eventType ||
-            canonicalJson(existing.payload) !== canonicalJson(expected.payload)
+            canonicalJson(options.controlPlane.normalizeReplayPayload?.(existing.payload) ?? existing.payload)
+              !== canonicalJson(options.controlPlane.normalizeReplayPayload?.(expected.payload) ?? expected.payload)
           ) {
             throw new Error(
               `native_control_event_replay_conflict:${existing.sourceSeq}`,

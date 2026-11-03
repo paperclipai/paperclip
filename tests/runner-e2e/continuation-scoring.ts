@@ -14,6 +14,8 @@ export interface ContinuationCheckpoint {
   documents: Array<{ key: string; body: string; latestRevisionId?: string }>;
   attachments: unknown[];
   comments: unknown[];
+  questionPresentation?: { interactionId: string; promptVisible: boolean; contextVisible: boolean };
+  outputDocument?: { issueId: string; key: string; revisionId: string; href: string; visibleBody: string };
   interactions: unknown[];
   runs: Array<{ id: string; status: string; runtimeMode?: string }>;
 }
@@ -50,7 +52,7 @@ export function gradeContinuation(input: {
   const before = input.checkpoints.filter((c) => c.phase !== "final");
   check(
     "recorded-continuation",
-    before.length > 0 && !!final && final.runs.length >= (["provider-question-bridge", "question-answer-resume"].includes(input.id) ? 1 : 2),
+    before.length > 0 && !!final && final.runs.length >= (["provider-question-bridge", "question-answer-resume", "necessary-free-text"].includes(input.id) ? 1 : 2),
     "Initial and final turns must both be recorded.",
   );
   for (const c of before) {

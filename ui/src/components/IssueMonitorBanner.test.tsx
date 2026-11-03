@@ -3,7 +3,7 @@
 import { act } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import type { Issue, IssueWorkProduct } from "@paperclipai/shared";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME, type Issue, type IssueWorkProduct } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -257,6 +257,49 @@ describe("IssueMonitorBanner / IssueMonitorComposerStrip rendering", () => {
     flushSync(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
     expect(onCheckNow).toHaveBeenCalledTimes(1);
 
+    flushSync(() => root.unmount());
+  });
+
+  it("offers a manual check on a blocked task without promising an automatic wake", () => {
+    const onCheckNow = vi.fn();
+    const issue = { ...issueWithMonitor(new Date(NOW.getTime() - 12 * 60_000).toISOString()), status: "blocked" as const };
+    const root = createRoot(container);
+    flushSync(() => root.render(<>
+      <IssueMonitorBanner issue={issue} onCheckNow={onCheckNow} />
+      <IssueMonitorComposerStrip issue={issue} onCheckNow={onCheckNow} />
+    </>));
+    expect(container.textContent).toContain("Automatic checks paused");
+    expect(container.textContent).not.toMatch(/overdue|next tick|scheduled check/i);
+    const buttons = Array.from(container.querySelectorAll("button"));
+    expect(buttons.map(button => button.textContent)).toEqual(["Check now", "Check now"]);
+    flushSync(() => buttons[1]!.click());
+    expect(onCheckNow).toHaveBeenCalledTimes(1);
+    flushSync(() => root.unmount());
+  });
+
+  it.each(["backlog", "todo"] as const)("does not offer a monitor check on a %s task", (status) => {
+    const issue = { ...issueWithMonitor(NOW.toISOString()), status };
+    const root = createRoot(container);
+    flushSync(() => root.render(<>
+      <IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} />
+      <IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} />
+    </>));
+    expect(container.textContent).toContain("Resume this task to continue checking.");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.textContent).not.toMatch(/next tick|momentarily|reply wakes/i);
+    flushSync(() => root.unmount());
+  });
+
+  it("keeps blocked quota recovery paused until the task resumes", () => {
+    const issue = { ...issueWithMonitor(NOW.toISOString()), status: "blocked" as const };
+    issue.executionState!.monitor!.serviceName = PROVIDER_QUOTA_MONITOR_SERVICE_NAME;
+    const root = createRoot(container);
+    flushSync(() => root.render(<>
+      <IssueMonitorBanner issue={issue} onCheckNow={vi.fn()} />
+      <IssueMonitorComposerStrip issue={issue} onCheckNow={vi.fn()} />
+    </>));
+    expect(container.textContent).toContain("Resume this task to continue checking.");
+    expect(container.querySelector("button")).toBeNull();
     flushSync(() => root.unmount());
   });
 

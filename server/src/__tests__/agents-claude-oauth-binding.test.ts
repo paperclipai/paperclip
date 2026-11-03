@@ -48,6 +48,16 @@ const withEnv = (env: Record<string, unknown>) => ({ env });
 // --- The pure server-enforced binding invariant (no database) ----------------
 
 describe("assertClaudeOAuthBindingInvariant", () => {
+  it.each([undefined, "claude"])("enforces the fixed binding for native Claude (agent: %s)", acpxAgent => {
+    const nextConfig = { provider: "acpx", ...(acpxAgent && { acpxAgent }), ...withEnv({ CLAUDE_CODE_OAUTH_TOKEN: FIXED_BINDING }) };
+    expect(assertClaudeOAuthBindingInvariant({ adapterType: "paperclip_runner", nextConfig }))
+      .toEqual({ introducesBinding: true, keepsBinding: false });
+    expect(() => assertClaudeOAuthBindingInvariant({ adapterType: "paperclip_runner", nextConfig: {
+      ...nextConfig, env: { ...nextConfig.env, ANTHROPIC_API_KEY: "fixture-api-key" },
+    } })).toThrow(CLAUDE_OAUTH_CREDENTIAL_CONFLICT);
+    expect(assertClaudeOAuthBindingInvariant({ adapterType: "paperclip_runner", nextConfig: { ...nextConfig, acpxAgent: "codex" } }))
+      .toEqual({ introducesBinding: false, keepsBinding: false });
+  });
   it("reports that a create introduces the fixed binding", () => {
     const decision = assertClaudeOAuthBindingInvariant({
       adapterType: "claude_local",
@@ -312,6 +322,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
       role: "engineer",
       status: "idle" as const,
       adapterType: "claude_local",
+      runner: "legacy" as const,
       defaultEnvironmentId: scope.environmentId,
       adapterConfig: { env: { CLAUDE_CODE_OAUTH_TOKEN: { ...FIXED_BINDING }, ...extraEnv } },
       runtimeConfig: {},
@@ -359,11 +370,13 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
     return rows.length;
   }
 
-  it("inserts the fixed binding and consumes a valid claim exactly once", async () => {
+  it.each([false, true])("inserts the fixed binding and consumes a valid claim exactly once (native: %s)", async native => {
     const scope = await seedScope();
     const sessionId = await seedStoredClaim(scope, Date.now() + 60_000);
+    const legacyInput = createInput(scope);
+    const input = native ? { ...legacyInput, runner: undefined, adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", ...legacyInput.adapterConfig } } : legacyInput;
 
-    const created = await createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+    const created = await createAgentLifecycle(db).requestHire(scope.companyId, input, {
       claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
     });
 
@@ -377,7 +390,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
 
     // A replay of the same claim inserts no second agent.
     await expect(
-      createAgentLifecycle(db).requestHire(scope.companyId, createInput(scope), {
+      createAgentLifecycle(db).requestHire(scope.companyId, input, {
         claudeLogin: { storedSessionId: sessionId, ownerUserId: scope.ownerUserId },
       }),
     ).rejects.toMatchObject({ message: CLAUDE_OAUTH_CLAIM_REJECTED });
@@ -616,6 +629,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
       role: "engineer",
       status: "idle",
       adapterType: "claude_local",
+      runner: "legacy",
       defaultEnvironmentId: scope.environmentId,
       adapterConfig: { env: {} },
       runtimeConfig: {},
@@ -680,6 +694,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
       role: "engineer",
       status: "idle",
       adapterType: "claude_local",
+      runner: "legacy",
       defaultEnvironmentId: scope.environmentId,
       adapterConfig: { env: {} },
       runtimeConfig: {},
@@ -755,6 +770,7 @@ describeEmbeddedPostgres("agent service Claude OAuth binding claim", () => {
         role: "engineer",
         status: "idle",
         adapterType: "claude_local",
+        runner: "legacy",
         defaultEnvironmentId: scope.environmentId,
         adapterConfig: { env: {} },
         runtimeConfig: {},

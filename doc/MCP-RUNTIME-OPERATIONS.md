@@ -4,7 +4,7 @@ This runbook covers Paperclip Tools & Access runtime slots for MCP connections. 
 
 Do not print raw bearer tokens, gateway session tokens, credential headers, environment variables, or secret values while following this runbook. The APIs below return redacted state and audit metadata; keep shell tracing disabled when exporting credentials.
 
-Tool action approvals require `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` to be set independently from auth/JWT secrets. `paperclipai onboard` generates it for local instances, and worktree setup propagates or generates an independent value in the worktree `.env`; operator-managed deployments must set it explicitly. Rotate it deliberately: changing it invalidates outstanding signed tool-action approvals, so drain or reject pending approvals before rotation.
+Tool action approvals and sensitive request identities use a durable key independent from auth/JWT secrets. `PAPERCLIP_TOOL_ACTION_SIGNING_SECRET` takes precedence when configured. `paperclipai onboard` generates it for local instances, and worktree setup propagates or generates an independent value in the worktree `.env`. When unset, the server derives a separate key from the persisted secrets master key, using its configured environment value or durable key file. Processes serving the same instance must share that signing key or master key, and operators must back it up with the database. Rotation can invalidate outstanding approvals and retry matching; drain or reject pending approvals and reconcile completed writes before rotating.
 
 ## Support Matrix
 
@@ -35,6 +35,18 @@ Native assignments enter the run configuration once through the runtime MCP
 delivery path. Managed gateway discovery excludes historical native assignments.
 Their stored rows remain available for existing runs. Explicit company gateways
 continue to use their configured scopes.
+
+## Client-side tool-call deadline
+
+The gateway bounds each provider call, but the agent's MCP client also needs a
+bound. Without one, a gateway request that never answers holds the agent turn
+until the adapter execution timeout ends the run. Claude's default MCP tool
+timeout is far longer than a run, and ACP `mcpServers` entries have no
+per-server timeout field. So when an ACP Claude run receives runtime MCP
+servers, the ACPX engine sets `MCP_TOOL_TIMEOUT` to 15 minutes. A call that
+passes this deadline returns an MCP error to the model, and the turn
+continues. An `MCP_TOOL_TIMEOUT` value in the adapter `env` configuration
+takes priority.
 
 ## Metrics
 
@@ -133,6 +145,18 @@ curl -fsS -X PATCH \
 
 ## Verify Recovery
 
+An individual remote MCP tool-call failure stays on its invocation. A network
+failure, timeout, non-authentication HTTP error, or JSON-RPC error does not change
+the connection's shared health or hide its other tools. HTTP 401/403 responses,
+missing credentials, and explicit insufficient-scope errors retain their access
+gates. Health checks and catalog refreshes still assess connection health.
+
+After a network failure or timeout, the next explicit call can start a fresh MCP
+session. The gateway never automatically replays the failed action: the provider
+may already have performed it. Check the outcome before retrying a write. If a
+connection was already marked unhealthy before upgrading, use the health check
+below to restore access after verifying the endpoint.
+
 1. Run the connection health check:
 
    ```sh
@@ -163,6 +187,19 @@ curl -fsS -X PATCH \
 
 Recovery is complete when stuck-slot alerts clear, timeout/error rates return below threshold, the connection is healthy or intentionally disabled, and audit events show no new restart suppression or capacity deferrals.
 
+### Catalog publication
+
+Discovery keeps the last descriptor when pages repeat a tool name. Catalog rows
+are written in transactions of at most 500 tools. Refresh preserves existing row
+IDs, first-seen timestamps, operator-disabled actions, and unchanged pending
+reviews. Publication locks the application before the connection, as setup
+finalization and removal do. Provider discovery runs before these locks.
+
+Each completed chunk remains committed if a later chunk fails. Default-profile
+synchronization runs in a separate transaction after catalog publication. A
+failure there rolls back the profile changes without removing discovered tools.
+Retry the catalog refresh after correcting the failure.
+
 ## Verification Coverage
 
 Automated coverage includes:
@@ -170,3 +207,4 @@ Automated coverage includes:
 - A synthetic degraded runtime-health scenario in `server/src/__tests__/tool-access-service.test.ts` that creates a stale running slot, degraded connection, timeout event, capacity deferral, and restart suppression.
 - A durable audit-write failure scenario in `server/src/__tests__/tool-access-service.test.ts` that verifies `mcp_runtime_audit_write_failures` fires from the counter path.
 - A gateway runtime recovery scenario in `server/src/__tests__/tool-gateway.test.ts` that recovers a stuck local stdio slot before reuse.
+- PostgreSQL catalog publication tests in `server/src/__tests__/tool-catalog-publication.test.ts` cover 250 and 2,500 tools, overlapping pages, preserved choices, partial failure, and publication lock contention.

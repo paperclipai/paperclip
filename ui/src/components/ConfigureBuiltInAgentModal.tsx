@@ -1,4 +1,7 @@
 import { useMemo, useState } from "react";
+import { agentHarnessType, agentRunner, type AgentRunnerChoice } from "@paperclipai/shared";
+import { adaptersApi } from "@/api/adapters";
+import { AgentRunnerSelect } from "./AgentRunnerSelect";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import {
@@ -65,8 +68,12 @@ export function ConfigureBuiltInAgentModal({
   const { definition } = state;
 
   const [adapterType, setAdapterType] = useState<string>(
-    () => state.agent?.adapterType ?? defaultAdapterType(state),
+    () => state.agent && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(agentHarnessType(state.agent.adapterType, state.agent.adapterConfig)) ? agentHarnessType(state.agent.adapterType, state.agent.adapterConfig) : state.agent?.adapterType ?? defaultAdapterType(state),
   );
+  const [runner, setRunner] = useState<AgentRunnerChoice | undefined>();
+  const environmentId = state.agent?.defaultEnvironmentId ?? null;
+  const adapters = useQuery({ queryKey: queryKeys.adapters.availability(companyId, environmentId), queryFn: () => adaptersApi.list({ companyId, environmentId }), enabled: open });
+  const runnerAvailability = adapters.data?.find(item => item.type === adapterType);
   const [model, setModel] = useState<string>(() => {
     const config = state.agent?.adapterConfig;
     const configuredModel = typeof config === "object" && config !== null
@@ -127,9 +134,16 @@ export function ConfigureBuiltInAgentModal({
     mutationFn: async () => {
       const adapterConfig: Record<string, unknown> = {};
       if (model.trim()) adapterConfig.model = model.trim();
+      const existing = state.agent;
+      const sameHarness = existing && agentHarnessType(existing.adapterType, existing.adapterConfig) === adapterType;
+      const savedModel = typeof existing?.adapterConfig.model === "string" ? existing.adapterConfig.model.trim() : "";
+      const alreadyConfigured = state.status === "ready" || state.status === "paused";
+      const adapterInput = alreadyConfigured && sameHarness && normalizedModel === savedModel ? {}
+        : sameHarness ? { adapterType: existing.adapterType, adapterConfig: { ...existing.adapterConfig, ...adapterConfig } }
+        : { adapterType, adapterConfig };
       const result = await builtInAgentsApi.provision(companyId, definition.key, {
-        adapterType,
-        adapterConfig,
+        ...adapterInput,
+        ...(["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && runner !== undefined ? { runner } : {}),
         ...(budgetMonthlyCents !== undefined ? { budgetMonthlyCents } : {}),
       });
       return result;
@@ -163,16 +177,25 @@ export function ConfigureBuiltInAgentModal({
             board.
           </InlineBanner>
 
-          <Field label="Adapter type">
+          <Field label="Harness">
             <AdapterTypeDropdown
               value={adapterType}
               onChange={(next) => {
                 setAdapterType(next);
                 setModel("");
+                setRunner(undefined);
               }}
               disabledTypes={disabledTypes}
             />
           </Field>
+
+          {["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && <details className="space-y-3">
+            <summary className="cursor-pointer text-sm text-muted-foreground">Advanced</summary>
+            <AgentRunnerSelect value={runner ?? (state.agent ? agentRunner(state.agent.adapterType) : "auto")}
+              pending={adapters.isFetching} error={adapters.error?.message} onRetry={() => { void adapters.refetch(); }}
+              defaultRunner={runnerAvailability?.defaultRunner} supportedRunners={runnerAvailability?.supportedRunners}
+              onChange={setRunner} />
+          </details>}
 
           {modelRequired && (
             // ModelDropdown supplies its own "Model" Field label + hint.

@@ -5,6 +5,10 @@ export class AgentLifecycleConflict extends Error {
   constructor(message: string) { super(message); this.name = "AgentLifecycleConflict"; }
 }
 
+export function isAgentSetupDraft(agent: { lifecycleState?: string; pauseReason?: string | null }) {
+  return agent.pauseReason === "setup" && ["paused", "preparing", "verifying", "pausing"].includes(agent.lifecycleState ?? "");
+}
+
 export function canConfigureAgentConnection(agent: { lifecycleState: string; status: string }): boolean {
   return agent.lifecycleState === "preparing" || agent.lifecycleState === "verifying"
     || (agent.lifecycleState === "ready" && !["paused", "terminated", "pending_approval"].includes(agent.status));

@@ -18,6 +18,9 @@ interface TaskChatComposerTakeoverActions {
 export const TaskChatComposerTakeoverActionsContext =
   createContext<TaskChatComposerTakeoverActions | null>(null);
 
+/** Scope runtime history to its task and share drafts with the composer form. */
+export const TaskChatRequestHistoryContext = createContext<string | null>(null);
+
 export function useTaskChatComposerTakeoverActions(): TaskChatComposerTakeoverActions | null {
   return useContext(TaskChatComposerTakeoverActionsContext);
 }

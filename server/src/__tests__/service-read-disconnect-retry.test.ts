@@ -41,6 +41,7 @@ function fixture(options: {
       const query = {
         where(value: SQL) { condition = value; return query; },
         innerJoin() { return query; },
+        leftJoin() { return query; },
         orderBy(...values: SQL[]) { order = values; return query; },
         limit(value: number) { limit = value; return query; },
         then(resolve: (value: unknown[]) => unknown, reject: (error: unknown) => unknown) {
@@ -91,7 +92,7 @@ describe("heartbeat list connection recovery", () => {
     expect(test.attempts).toHaveLength(3);
     for (const attempt of test.attempts) {
       expect(attempt.params).toEqual(options.agent ? [companyId, agentId] : [companyId]);
-      expect(attempt.limit).toBe(options.limit);
+      expect(attempt.limit).toBe(options.limit ?? 200);
       expect(attempt.order).toEqual(['"heartbeat_runs"."created_at" desc']);
       expect("resultSummary" in attempt.fields).toBe(!options.summary && options.encoding === "UTF8");
       expect(attempt.fields).toEqual(test.attempts[0].fields);

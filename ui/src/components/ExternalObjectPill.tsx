@@ -65,7 +65,11 @@ function externalObjectPillTone(object: ExternalObjectPillData, statusLabel: str
   if (isMergedExternalObject(object, statusLabel)) {
     return "text-violet-600 border-violet-600 dark:text-violet-400 dark:border-violet-400";
   }
-  return externalObjectStatusIcon[object.statusCategory] ?? externalObjectStatusIconDefault;
+  // A liveness problem (auth required, rate limited, unreachable) overrides the last
+  // known status tone so a warning is visible even when the status looks healthy.
+  return externalObjectStatusIcon[object.liveness]
+    ?? externalObjectStatusIcon[object.statusCategory]
+    ?? externalObjectStatusIconDefault;
 }
 
 function externalObjectStatusIconKey(

@@ -4,8 +4,8 @@
 // shape; this file holds only the small pieces that are specific to
 // building the release half's promoted-run snapshot.
 
-import { extractWakeCommentIds, WAKE_COMMENT_IDS_KEY } from "../../run-dispatch/index.js";
-import { readNonEmptyString } from "./values.js";
+import { extractWakeCommentIds, WAKE_COMMENT_IDS_KEY, wakeChatConversationsConflict } from "../../run-dispatch/index.js";
+import { parseObject, readNonEmptyString } from "./values.js";
 
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_WAKE_COMMENT_KEY = "paperclipWakeComment";
@@ -67,6 +67,22 @@ function mergeWakeCommentIds(...values: Array<unknown>): string[] {
 
 export function hasInteractionContinuationWakeContext(contextSnapshot: Record<string, unknown>): boolean {
   return INTERACTION_CONTINUATION_CONTEXT_KEYS.some((key) => readNonEmptyString(contextSnapshot[key]));
+}
+
+/**
+ * Whether a wake must stay out of the active issue run. Each resolved card has
+ * its own immutable decision and continuation, so it never merges with
+ * comments or another card, in either arrival order. A reviewed chat run
+ * attests exactly one conversation, so a reply from another conversation on
+ * the same issue queues as its own wake.
+ */
+export function wakeMustNotJoinActiveRun(
+  activeRunContext: unknown,
+  wakeContext: Record<string, unknown>,
+  interactionReceipt: boolean,
+): boolean {
+  return interactionReceipt || Boolean(parseObject(activeRunContext).interactionId) ||
+    wakeChatConversationsConflict(activeRunContext, wakeContext);
 }
 
 function isInteractionResolutionWakePayload(payload: Record<string, unknown> | null | undefined): boolean {

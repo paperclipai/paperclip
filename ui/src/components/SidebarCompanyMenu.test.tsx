@@ -248,47 +248,6 @@ describe("SidebarCompanyMenu", () => {
     });
   });
 
-  it("uses company-centric create copy without the chat flag", async () => {
-    const root = createRoot(container);
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-
-    act(() => {
-      root.render(
-        <QueryClientProvider client={queryClient}>
-          <SidebarCompanyMenu />
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-    await flushReact();
-
-    const trigger = container.querySelector('button[aria-label="Open Acme Labs organization switcher"]');
-    expect(trigger).not.toBeNull();
-    expect(trigger?.classList).toContain("px-4");
-    expect(trigger?.classList).toContain("has-[>svg]:px-4");
-    expect(trigger?.classList).toContain("hover:bg-sidebar-accent");
-    expect(trigger?.classList).toContain("hover:text-sidebar-accent-foreground");
-    expect(trigger?.classList).toContain("dark:hover:bg-sidebar-accent");
-    expect(trigger?.classList).toContain("dark:hover:text-sidebar-accent-foreground");
-    expect(trigger?.classList).not.toContain("hover:bg-background");
-    expect(trigger?.classList).not.toContain("dark:hover:bg-background");
-    expect(trigger?.classList).not.toContain("dark:hover:bg-accent/50");
-    act(() => {
-      trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
-      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushReact();
-
-    expect(document.body.textContent).toContain("Create organization");
-    expect(document.body.textContent).not.toContain("Add company...");
-
-    act(() => {
-      root.unmount();
-    });
-  });
-
   it("shows the requested company actions and signs out through the dropdown", async () => {
     const root = createRoot(container);
     const queryClient = new QueryClient({
@@ -467,11 +426,24 @@ describe("SidebarCompanyMenu", () => {
     const trigger = container.querySelector('button[aria-label="Open Acme Labs organization switcher"]');
     expect(trigger).not.toBeNull();
 
+    expect(trigger?.classList).toContain("px-4");
+    expect(trigger?.classList).toContain("has-[>svg]:px-4");
+    expect(trigger?.classList).toContain("hover:bg-sidebar-accent");
+    expect(trigger?.classList).toContain("hover:text-sidebar-accent-foreground");
+    expect(trigger?.classList).toContain("dark:hover:bg-sidebar-accent");
+    expect(trigger?.classList).toContain("dark:hover:text-sidebar-accent-foreground");
+    expect(trigger?.classList).not.toContain("hover:bg-background");
+    expect(trigger?.classList).not.toContain("dark:hover:bg-background");
+    expect(trigger?.classList).not.toContain("dark:hover:bg-accent/50");
+
     act(() => {
       trigger?.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
       trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
     await flushReact();
+
+    expect(document.body.textContent).toContain("Create organization");
+    expect(document.body.textContent).not.toContain("Add company...");
 
     const editButton = Array.from(document.body.querySelectorAll("button"))
       .find((element) => element.textContent === "Edit");

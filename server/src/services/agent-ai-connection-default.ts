@@ -10,6 +10,7 @@ import {
 // Only keys read by the child's provider express a child auth override.
 // A config copied from another provider can retain unrelated keys.
 const PROVIDER_AUTH_ENV_KEYS: Record<AiProvider, readonly string[]> = {
+  github: ["COPILOT_GITHUB_TOKEN"],
   google: ["GEMINI_API_KEY", "GOOGLE_API_KEY", "GOOGLE_GEMINI_BASE_URL"],
   anthropic: ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CONFIG_DIR", "ANTHROPIC_BASE_URL", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"],
   openai: ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_HOME", "OPENAI_BASE_URL"],

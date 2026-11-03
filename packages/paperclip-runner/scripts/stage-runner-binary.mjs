@@ -28,11 +28,14 @@ export async function stageRunnerBinary(source, destination) {
   }
 }
 
+export async function stageBuiltRunnerBinary(packageRoot) {
+  const executable = process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd";
+  const source = path.join(packageRoot, "runner", "target", "release", executable);
+  const binaryRoot = path.join(packageRoot, "dist", "bin");
+  await stageRunnerBinary(source, path.join(binaryRoot, executable));
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-  const executable = process.platform === "win32" ? "paperclip-runnerd.exe" : "paperclip-runnerd";
-  await stageRunnerBinary(
-    path.join(packageRoot, "runner", "target", "release", executable),
-    path.join(packageRoot, "dist", "bin", executable),
-  );
+  await stageBuiltRunnerBinary(packageRoot);
 }

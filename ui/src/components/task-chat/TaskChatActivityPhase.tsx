@@ -83,6 +83,7 @@ export function TaskChatActivityPhase({
         <div
           className="min-w-0 px-1 text-sm text-foreground/90"
           data-testid="task-chat-phase-interstitial"
+          data-conversation-text={item.interstitial.channel === "final" ? "final" : "progress"}
         >
           <MarkdownBody softBreaks linkIssueReferences>
             {item.interstitial.text}

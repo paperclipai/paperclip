@@ -55,7 +55,7 @@ test("missing credentials reject before resolving a pack or launching anything",
 });
 
 test("full credential-free protocol fixture preserves numeric-zero denial and reaps its process", async () => {
-  const { mkdtemp, mkdir, writeFile, readFile, rm } = await import("node:fs/promises");
+  const { mkdtemp, mkdir, writeFile, readFile, rm, access } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { runProbe } = await import("./qualify-copilot-acp.mjs");
@@ -69,23 +69,30 @@ test("full credential-free protocol fixture preserves numeric-zero denial and re
     await writeFile(join(moduleRoot, "copilot-events.js"), 'export const COPILOT_ACP_CLIENT_CAPABILITIES = {};');
     const childScript = join(root, "child.mjs");
     await writeFile(childScript, `import { createInterface } from 'node:readline';
-const send = m => process.stdout.write(JSON.stringify({jsonrpc:'2.0', ...m})+'\\n');
+const send = m => {
+ const wire=Buffer.from(JSON.stringify({jsonrpc:'2.0', ...m})+'\\n');
+ const unicode=wire.indexOf(Buffer.from('🚀'));
+ if(unicode<0){process.stdout.write(wire);return;}
+ process.stdout.write(wire.subarray(0,unicode+2));
+ setTimeout(()=>process.stdout.write(wire.subarray(unicode+2)),50);
+};
 let promptId;
 createInterface({input:process.stdin}).on('line', line => {
  const m=JSON.parse(line);
  if(!m.method){if(m.id!==0 || m.result?.outcome?.optionId!=='native-deny-0') process.exit(8); send({id:promptId,result:{stopReason:'end_turn'}});return;}
  let result={};
- if(m.method==='initialize')result={agentInfo:{version:'1.0.88'},agentCapabilities:{}};
+ if(m.method==='initialize')result={agentInfo:{version:'1.0.88'},agentCapabilities:{label:'東京 🚀 café'}};
  if(m.method==='session/new')result={sessionId:'fixture-session',models:{availableModels:[{modelId:'gpt-5.6-luna'}]}};
  if(m.method==='session/set_config_option')result={configOptions:[{id:'model',currentValue:'gpt-5.6-luna'}]};
  if(m.method==='session/prompt'){promptId=m.id;send({id:0,method:'session/request_permission',params:{sessionId:'fixture-session',toolCall:{kind:'edit',rawInput:{fileName:process.cwd()+'/qualification-marker.txt'}},options:${JSON.stringify(options)}}});return;}
  send({id:m.id,result});
 }).on('close',()=>process.exit(0));`);
-    await writeFile(join(moduleRoot, "profile-installation.js"), `import { spawn } from 'node:child_process'; export const assertAcpxProfileEnvironment=()=>{}; export const verifyAcpxProfileInstallation=async()=>({commandDigest:'fixture-only',openCommand:async()=>({spawn:(_args,options)=>spawn(options.env.COPILOT_GITHUB_TOKEN === "fixture-spawn-failure" ? "/paperclip-fixture-missing-executable" : ${JSON.stringify(process.execPath)},[${JSON.stringify(childScript)}],options),close:async()=>{}})});`);
+    await writeFile(join(moduleRoot, "profile-installation.js"), `import { spawn } from 'node:child_process'; import { writeFileSync } from 'node:fs'; let token; export const assertAcpxProfileEnvironment=()=>{}; export const verifyAcpxProfileInstallation=async()=>({commandDigest:'fixture-only',openCommand:async()=>({spawn:(_args,options)=>{token=options.env.COPILOT_GITHUB_TOKEN;writeFileSync(${JSON.stringify(join(root, "last-probe-root"))},options.cwd);return spawn(token === "fixture-spawn-failure" ? "/paperclip-fixture-missing-executable" : ${JSON.stringify(process.execPath)},[${JSON.stringify(childScript)}],options);},close:async()=>{if(token==="fixture-close-failure")throw new Error("fixture lease cleanup failed");}})});`);
     const output = join(root, "output.json");
     const result = await runProbe(root, output, "deny-write", "fixture-token-never-used-for-network");
     const evidence = JSON.parse(await readFile(output, "utf8"));
     assert.equal(result.passed, true);
+    assert.deepEqual(evidence.agentCapabilities, { label: "東京 🚀 café" });
     assert.equal(evidence.permissions[0].requestId, 0);
     assert.deepEqual(evidence.permissions[0].outcome, { outcome: "selected", optionId: "native-deny-0" });
     assert.equal(evidence.cleanupComplete, true);
@@ -98,5 +105,11 @@ createInterface({input:process.stdin}).on('line', line => {
     assert.equal(failedEvidence.promptRequestsSent, 0);
     assert.equal(failedEvidence.cleanupComplete, true);
     assert.match(failedEvidence.failureCode, /provider_(spawn|stdin)_failure/);
+    const lastRoot = async () => await readFile(join(root, "last-probe-root"), "utf8");
+    await assert.rejects(access(await lastRoot()), { code: "ENOENT" });
+    await assert.rejects(runProbe(root, join(root, "missing/report.json"), "deny-write", "fixture-token-never-used-for-network"), { code: "ENOENT" });
+    await assert.rejects(access(await lastRoot()), { code: "ENOENT" });
+    await assert.rejects(runProbe(root, join(root, "close-failure.json"), "deny-write", "fixture-close-failure"), /fixture lease cleanup failed/);
+    await assert.rejects(access(await lastRoot()), { code: "ENOENT" });
   } finally { await rm(root, { recursive: true, force: true }); }
 });

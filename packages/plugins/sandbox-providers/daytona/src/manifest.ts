@@ -15,7 +15,7 @@ export const DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS = 300_000;
 // 0.1.6 adds private authenticated WebSocket ingress for paperclip_runner.
 // 0.1.7 exposes host-owned warm/cold runner lifecycle controls.
 // 0.1.8 declares the default provider acquisition budget to the host.
-const PLUGIN_VERSION = "0.1.8";
+const PLUGIN_VERSION = "0.1.10";
 
 const manifest: PaperclipPluginManifestV1 = {
   id: PLUGIN_ID,
@@ -39,6 +39,7 @@ const manifest: PaperclipPluginManifestV1 = {
       description:
         "Provisions Daytona sandboxes with configurable image or snapshot selection, startup timeouts, and lease reuse.",
       supportsReusableLeases: true,
+      creationOperationVersion: 1,
       // Daytona keeps a persistent session and tails its callback log form, so it
       // emits incremental session output while the command runs. Declare the
       // opt-in capability so the host selects the session-output streaming path.
@@ -150,6 +151,11 @@ const manifest: PaperclipPluginManifestV1 = {
             description:
               "Per-call timeout in milliseconds for the sandbox liveness read (refreshData). A silently unresponsive sandbox connection surfaces as a fast error instead of stalling until the outer RPC ceiling. The start and recovery calls derive their own deadline from timeoutMs, not this bound. `0` or less disables the bound. Defaults to 30000 when unset.",
             default: 30000,
+          },
+          ttlMinutes: {
+            type: "integer",
+            minimum: 1,
+            description: "Optional wall-clock lifetime in minutes from creation. Daytona destroys the sandbox and its files at expiry in any state, even while active. Omit to leave the lifetime unchanged.",
           },
           autoStopInterval: {
             type: "number",

@@ -19,6 +19,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Link } from "@/lib/router";
+import { CoordinatorWorkspaceSetting } from "@/components/CoordinatorWorkspaceSetting";
 
 type WorktreeRunExecutionDisplayState =
   | { kind: "off" }
@@ -95,7 +96,7 @@ function ExperimentalToggleCard({
   const isManaged = managed?.managed === true;
   if (hiddenSettings.has(experimentalSettingKey(settingKey))) return null;
   return (
-    <Card className="block bg-transparent p-5">
+    <Card id={`experimental-${settingKey}`} className="block scroll-mt-4 bg-transparent p-5">
       <div className="flex items-start justify-between gap-4">
         <div className="space-y-1.5">
           <div className="flex flex-wrap items-center gap-2">
@@ -178,15 +179,23 @@ export function InstanceExperimentalSettings() {
   });
 
   if (experimentalQuery.isLoading) {
-    return <div className="text-sm text-muted-foreground">Loading experimental settings...</div>;
+    return (
+      <div className="max-w-6xl space-y-6">
+        <CoordinatorWorkspaceSetting key="personal-workspace" />
+        <div className="text-sm text-muted-foreground">Loading experimental settings...</div>
+      </div>
+    );
   }
 
   if (experimentalQuery.error) {
     return (
-      <div className="text-sm text-destructive">
-        {experimentalQuery.error instanceof Error
-          ? experimentalQuery.error.message
-          : "Failed to load experimental settings."}
+      <div className="max-w-6xl space-y-6">
+        <CoordinatorWorkspaceSetting key="personal-workspace" />
+        <div className="text-sm text-destructive">
+          {experimentalQuery.error instanceof Error
+            ? experimentalQuery.error.message
+            : "Failed to load experimental settings."}
+        </div>
       </div>
     );
   }
@@ -262,6 +271,8 @@ export function InstanceExperimentalSettings() {
         </p>
       </div>
 
+      <CoordinatorWorkspaceSetting key="personal-workspace" />
+
       <div
         role="alert"
         className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-4 py-3"
@@ -304,6 +315,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableAgentChat"
           managed={managedKeys.enableAgentChat}
           ariaLabel="Toggle agent chat experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Artifacts V1"
+          description="Show artifacts the way the artifact directions lab settled: paper stacks and tiles on the Artifacts page, compact rows in the panel's Artifacts tab, and grouped rows in the task thread."
+          footnote="Presentation only. Turning this off restores the current cards; no data changes."
+          checked={experimentalQuery.data?.enableArtifactsV1 ?? false}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableArtifactsV1: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableArtifactsV1"
+          managed={managedKeys.enableArtifactsV1}
+          ariaLabel="Toggle artifacts V1 experimental setting"
         />
 
         <ExperimentalToggleCard
@@ -435,7 +458,7 @@ export function InstanceExperimentalSettings() {
 
         <ExperimentalToggleCard
           title="Experimental fast responses"
-          description="Show Connections in company settings and allow short acknowledgements while agents begin work."
+          description="Allow short acknowledgements while agents begin work. Configure them in Settings → Connections."
           checked={experimentalQuery.data?.enableFastResponses ?? false}
           onCheckedChange={(checked) => toggleMutation.mutate({ enableFastResponses: checked })}
           disabled={toggleMutation.isPending}
@@ -481,6 +504,18 @@ export function InstanceExperimentalSettings() {
         />
 
         <ExperimentalToggleCard
+          title="Grok Bot"
+          description="Connect an existing Grok Bot as an agent. Verify routine delivery and an authenticated reply before assigning work."
+          footnote="Requires Assistant connections (MCP), Paperclip Runner, and authenticated public HTTPS. Usage is not reported. Turning this off blocks Grok calls and new dispatch."
+          checked={experimentalQuery.data?.enableGrokBot === true}
+          onCheckedChange={checked => toggleMutation.mutate({ enableGrokBot: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableGrokBot" managed={managedKeys.enableGrokBot}
+          ariaLabel="Toggle Grok Bot experimental setting"
+        />
+
+
+        <ExperimentalToggleCard
           title="Memory connectors"
           description="Connect Mem0, Zep, Supermemory, Cognee, and Honcho for long-term memory and context."
           footnote="Turning this off hides setup for these connectors. Existing connections keep running."
@@ -490,6 +525,18 @@ export function InstanceExperimentalSettings() {
           settingKey="enableMemoryConnectors"
           managed={managedKeys.enableMemoryConnectors}
           ariaLabel="Toggle memory connectors experimental setting"
+        />
+
+        <ExperimentalToggleCard
+          title="Muse — Personal agent"
+          description="Connect your personal Meta Muse. Pair it, detect its receiver, and verify an independent background reply before assigning tasks."
+          footnote="Requires Paperclip Runner and an authenticated instance with a public HTTPS URL. Turning this off blocks new work; cleanup and stop evidence remain available. Provider usage and cost are unavailable."
+          checked={experimentalQuery.data?.enableMuse === true}
+          onCheckedChange={(checked) => toggleMutation.mutate({ enableMuse: checked })}
+          disabled={toggleMutation.isPending}
+          settingKey="enableMuse"
+          managed={managedKeys.enableMuse}
+          ariaLabel="Toggle Muse experimental setting"
         />
 
         <ExperimentalToggleCard
@@ -504,9 +551,10 @@ export function InstanceExperimentalSettings() {
           ariaLabel="Toggle OpenAI Dot experimental setting"
         />
 
+
         <ExperimentalToggleCard
           title="Paperclip Runner"
-          description="Allow new Codex agents to select the experimental Rust Paperclip Runner, including authenticated runner ingress when a sandbox requires it. Onboarding continues to use legacy adapters. Turning this off hides the choice without affecting existing native runs."
+          description="Allow agents to select Paperclip Runner, including authenticated runner ingress when a sandbox requires it. First-run setup offers qualified GitHub Copilot. Turning this off hides the choice without affecting existing native runs."
           checked={enableNativeRunner}
           onCheckedChange={(checked) =>
             toggleMutation.mutate({ enableNativeRunner: checked })

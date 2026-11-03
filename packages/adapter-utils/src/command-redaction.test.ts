@@ -11,9 +11,40 @@ describe("explicit diagnostic credential forms", () => {
 });
 import {
   REDACTED_COMMAND_TEXT_VALUE,
+  looksLikeCredentialJwt,
   redactDiagnosticText,
   redactCommandText,
 } from "./command-redaction.js";
+
+describe("looksLikeCredentialJwt", () => {
+  it("recognizes encoded headers even with short payloads and signatures", () => {
+    const header = Buffer.from('{"alg":"HS256"}').toString("base64url");
+    expect(looksLikeCredentialJwt(`${header}.e30.c2ln`)).toBe(true);
+  });
+
+  it("recognizes direct-encryption JWTs with an empty encrypted-key segment", () => {
+    const header = Buffer.from('{"alg":"dir","enc":"A256GCM"}').toString("base64url");
+    expect(looksLikeCredentialJwt(`${header}..abcdefghijk.abcdefghijkl.abcdefghijk`)).toBe(true);
+  });
+
+  it.each([
+    "eyJ..signature",
+    "eyJ.key..ciphertext.tag",
+    "eyJ.key.iv..tag",
+    "eyJ.key.iv.ciphertext.",
+  ])("rejects empty segments outside the JWE encrypted key: %s", (input) => {
+    expect(looksLikeCredentialJwt(input)).toBe(false);
+  });
+
+  it.each([
+    "api.openai.com",
+    "agents.staging.example.com",
+    "deployment.credentials.example.md",
+    "paperclip.native-model-envelope.v3",
+  ])("rejects public dotted identifiers: %s", (input) => {
+    expect(looksLikeCredentialJwt(input)).toBe(false);
+  });
+});
 
 describe("redactDiagnosticText", () => {
   it("preserves credential metadata and dotted identifiers", () => {
@@ -112,5 +143,44 @@ second-line\" status=401`;
     const output = redactDiagnosticText(input);
     expect(output).not.toContain("MARKERBACKSLASH_B");
     expect(output).toContain(REDACTED_COMMAND_TEXT_VALUE);
+  });
+});
+
+describe("redactCommandText on long runs", () => {
+  const jwt =
+    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+
+  function redactWithinTimeBudget(input: string) {
+    const startedAt = performance.now();
+    const output = redactCommandText(input);
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    return output;
+  }
+
+  it("keeps redacting options, assignments, and tokens inside dash-separated runs", () => {
+    const cases = [
+      ["x--token flag-secret", `x--token ${REDACTED_COMMAND_TEXT_VALUE}`],
+      ["--x--token flag-secret", `--x--token ${REDACTED_COMMAND_TEXT_VALUE}`],
+      [
+        "a-b--api-key=assigned-secret --password 'quoted-secret'",
+        `a-b--api-key=${REDACTED_COMMAND_TEXT_VALUE} --password '${REDACTED_COMMAND_TEXT_VALUE}'`,
+      ],
+      ["prefix-MY_API_KEY=env-secret", `prefix-MY_API_KEY=${REDACTED_COMMAND_TEXT_VALUE}`],
+      [`--${jwt}`, `--${REDACTED_COMMAND_TEXT_VALUE}`],
+      [`session=${jwt}`, `session=${REDACTED_COMMAND_TEXT_VALUE}`],
+      ["my-token is here", "my-token is here"],
+    ];
+
+    for (const [input, expected] of cases) {
+      expect(redactCommandText(input)).toBe(expected);
+    }
+  });
+
+  it("scans long letter/digit and dash-separated runs in linear time", () => {
+    const base64Url = Buffer.from(Array.from({ length: 90_000 }, (_, index) => (index * 7919) % 256)).toString("base64url");
+    for (const run of ["a".repeat(120_000), "a-".repeat(60_000), "a--".repeat(40_000), base64Url]) {
+      expect(redactWithinTimeBudget(`${run} --token run-secret`)).toBe(`${run} --token ${REDACTED_COMMAND_TEXT_VALUE}`);
+      expect(redactWithinTimeBudget(`${run}--token run-secret`)).toBe(`${run}--token ${REDACTED_COMMAND_TEXT_VALUE}`);
+    }
   });
 });

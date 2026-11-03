@@ -96,6 +96,17 @@ function assertCanManageInstanceSettings(req: Request) {
   throw forbidden("Instance admin access required");
 }
 
+function assertCanManageExperimentalSettings(req: Request) {
+  if (
+    req.actor.type === "board"
+    && req.actor.source === "cloud_tenant"
+    && req.actor.canManageExperimentalSettings
+  ) {
+    return;
+  }
+  assertCanManageInstanceSettings(req);
+}
+
 // A task-drain start or stop reads the live drain state, writes an audit
 // transaction, and only then mutates the process-local drain state. The
 // audit write is an async gap: two overlapping requests can commit their
@@ -125,7 +136,7 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, { pluginWorkerManager: pluginWorkers });
 
   router.get("/instance/settings", async (req, res) => {
     assertBoardOrgAccess(req);
@@ -252,9 +263,6 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
   );
 
   router.get("/instance/settings/experimental", async (req, res) => {
-    // Experimental settings are readable by any authenticated org member
-    // or instance admin. Updating them remains instance-admin only because
-    // this payload includes instance-wide operational controls.
     assertBoardOrgAccess(req);
     res.json(await svc.getExperimental());
   });
@@ -263,7 +271,7 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
     "/instance/settings/experimental",
     validate(patchInstanceExperimentalSettingsSchema),
     async (req, res) => {
-      assertCanManageInstanceSettings(req);
+      assertCanManageExperimentalSettings(req);
       // Hiding the whole Experimental page floors every toggle; otherwise
       // only individually hidden keys are floored.
       const hidden = getHiddenSettings();
@@ -301,10 +309,21 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
 
   router.get("/instance/task-drain", async (req, res) => {
     assertBoardOrgAccess(req);
+    if (req.query.upgradeReadiness === "1") {
+      // This covers all companies and must not expose instance-wide work to a member.
+      assertCanManageInstanceSettings(req);
+      res.json({ ...heartbeat.getTaskDrainStatus(), upgradeReadiness: await heartbeat.readUpgradeReadiness() });
+      return;
+    }
     if (req.query.idleSleepSafety === "1") {
       // The report covers every company in this process. Ordinary company
       // members may read process counters, but not instance-wide work state.
       assertCanManageInstanceSettings(req);
+      const scheduledIssueMonitors = req.query.scheduledWake === "2";
+      const scheduledRoutines = req.query.scheduledWake === "1" || scheduledIssueMonitors;
+      if (scheduledRoutines && req.actor.source !== "cloud_control") {
+        throw forbidden("Scheduled wake reports require Cloud control authority");
+      }
       // A checkpoint performs platform-owned backup work. Tenant owners can
       // have instance-admin elevation, but that must not grant the manual
       // backup authority which managed instances deliberately withhold.
@@ -316,7 +335,7 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus(), Date.now,
         typeof req.query.ownerId === "string" ? req.query.ownerId : undefined,
         () => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup) }),
-        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup);
+        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors);
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;
     }
@@ -439,6 +458,11 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.stopped");
       return wasActive;
     });
+    if (wasActive) {
+      void heartbeat.resumeQueuedRunsAfterDrain().catch(err => {
+        logger.error({ err }, "failed to resume queued work after task drain; durable work remains queued");
+      });
+    }
     res.json({ wasActive });
   });
 

@@ -68,9 +68,9 @@ export async function registerAdapterExecutionControl(
   adapterExecutionControls.set(runId, control);
 }
 
-export async function waitForAdapterStop(
+function adapterStopTimeoutError(
   settled: Promise<void>,
-  timeoutMs = 60_000,
+  timeoutMs: number,
   diagnostics?: AdapterStopContext,
   owner?: ReturnType<typeof createAdapterExecutionControl>,
 ) {
@@ -83,21 +83,27 @@ export async function waitForAdapterStop(
       return null;
     }
   };
+  return new AdapterStopTimeoutError(timeoutMs, {
+    ...diagnostics,
+    phase: undefined,
+    phaseElapsedMs: undefined,
+    ...currentPhase(),
+  });
+}
+
+export async function waitForAdapterStop(
+  settled: Promise<void>,
+  timeoutMs = 60_000,
+  diagnostics?: AdapterStopContext,
+  owner?: ReturnType<typeof createAdapterExecutionControl>,
+) {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
       settled,
       new Promise<never>((_, reject) => {
         timer = setTimeout(
-          () =>
-            reject(
-              new AdapterStopTimeoutError(timeoutMs, {
-                ...diagnostics,
-                phase: undefined,
-                phaseElapsedMs: undefined,
-                ...currentPhase(),
-              }),
-            ),
+          () => reject(adapterStopTimeoutError(settled, timeoutMs, diagnostics, owner)),
           timeoutMs,
         );
       }),
@@ -105,4 +111,43 @@ export async function waitForAdapterStop(
   } finally {
     clearTimeout(timer);
   }
+}
+
+// A Stop request's wait is a response budget, not the adapter's settlement
+// bound: workspace sync-back and cooperative provider cancellation routinely
+// settle a few minutes after it. Only a Stop still unsettled this long after
+// it was requested is an operational failure worth reporting.
+export const UNSETTLED_ADAPTER_STOP_REPORT_MS = 10 * 60_000;
+const watchedAdapterStops = new WeakSet<Promise<void>>();
+
+/** Reports at most once per execution, and only if it never settles in time. */
+export function reportAdapterStopIfUnsettled(
+  settled: Promise<void>,
+  report: (error: AdapterStopTimeoutError) => void,
+  diagnostics?: AdapterStopContext,
+  owner?: ReturnType<typeof createAdapterExecutionControl>,
+  {
+    stopRequestedAt = Date.now(),
+    reportAfterMs = UNSETTLED_ADAPTER_STOP_REPORT_MS,
+  }: { stopRequestedAt?: number; reportAfterMs?: number } = {},
+) {
+  if (watchedAdapterStops.has(settled)) return;
+  watchedAdapterStops.add(settled);
+  let done = false;
+  // The bound runs from the Stop request, which already spent its response wait.
+  const remainingMs = Math.max(0, stopRequestedAt + reportAfterMs - Date.now());
+  const timer = setTimeout(() => {
+    if (done) return;
+    try {
+      report(adapterStopTimeoutError(settled, reportAfterMs, diagnostics, owner));
+    } catch {
+      // Reporting is diagnostic only.
+    }
+  }, remainingMs);
+  // Never hold process shutdown open for a diagnostic.
+  timer.unref?.();
+  void settled.then(() => {
+    done = true;
+    clearTimeout(timer);
+  });
 }

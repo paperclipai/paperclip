@@ -281,7 +281,7 @@ export function endpointFixture(provider: ProviderCase, seed: Seed) {
       proactiveDirectMessages: false,
     },
     setup: {
-      slackSetupMethod: undefined as "automatic" | "manual" | "existing" | undefined,
+      slackSetupMethod: undefined as "managed" | "automatic" | "manual" | "existing" | undefined,
       slackRegistration: undefined as SlackRegistrationState | undefined,
       slackApp: undefined as SlackAppConfiguration | undefined,
       slackOAuthCallbackUri: "https://paperclip.example.test/api/chat-slack/oauth/callback",
@@ -353,10 +353,11 @@ export async function installChatControlPlaneMock(
     resourceCount = 2,
     photonShared = false,
     automaticSlack = false,
-  }: { enableChatConnectors: boolean; enableGitHubReviewBots?: boolean; resourceCount?: number; photonShared?: boolean; automaticSlack?: boolean },
+    managedSlack = false,
+  }: { enableChatConnectors: boolean; enableGitHubReviewBots?: boolean; resourceCount?: number; photonShared?: boolean; automaticSlack?: boolean; managedSlack?: boolean },
 ): Promise<ChatMock> {
   const endpoint = endpointFixture(provider, seed);
-  if (automaticSlack) endpoint.setup.slackSetupMethod = "automatic";
+  if (automaticSlack || managedSlack) endpoint.setup.slackSetupMethod = managedSlack ? "managed" : "automatic";
   let slackIdentityLinked = false;
   let githubAppConnected = false;
   let githubConfiguration = { revision: 0, configuration: {
@@ -510,6 +511,7 @@ export async function installChatControlPlaneMock(
           assignedAgentId: seed.agentId,
         });
         state.createdWithAgentId = String(body.assignedAgentId);
+        if (body.slackSetupMethod) endpoint.setup.slackSetupMethod = body.slackSetupMethod as "managed" | "automatic" | "manual" | "existing";
         if (provider.provider === "slack" && body.slackApp) {
           endpoint.setup.slackApp = body.slackApp as SlackAppConfiguration;
           endpoint.setup.command = endpoint.setup.slackApp.command;
@@ -536,7 +538,7 @@ export async function installChatControlPlaneMock(
       if (method === "PATCH") {
         const body = bodyOf(route);
         if (body.slackApp) endpoint.setup.slackApp = body.slackApp as SlackAppConfiguration;
-        if (body.slackSetupMethod) endpoint.setup.slackSetupMethod = body.slackSetupMethod as "automatic" | "manual" | "existing";
+        if (body.slackSetupMethod) endpoint.setup.slackSetupMethod = body.slackSetupMethod as "managed" | "automatic" | "manual" | "existing";
         if (typeof body.allowDirectMessages === "boolean")
           state.allowDirectMessages = body.allowDirectMessages;
         if (typeof body.allowGroupChats === "boolean")
@@ -563,6 +565,16 @@ export async function installChatControlPlaneMock(
       return;
     }
 
+    if (pathname === `/api/companies/${seed.companyId}/chat-slack/setup-options`) {
+      await fulfill(route, { managedAvailable: managedSlack, defaultMethod: managedSlack ? "managed" : "automatic", workspaces: managedSlack ? [{ grantId: "11111111-1111-4111-8111-111111111111", workspaceId: "TE2E", workspaceName: "Paperclip", userId: "UINSTALLER" }] : [] }); return;
+    }
+    if (pathname === `/api/chat-endpoints/${endpoint.id}/slack/managed/provision`) {
+      const body = bodyOf(route);
+      expect(body.grantId).toBe("11111111-1111-4111-8111-111111111111");
+      expect(body).not.toHaveProperty("credentials");
+      state.slackCreations++; state.slackInstallations++;
+      state.setSlackInstalled(); await fulfill(route, {}); return;
+    }
     if (pathname === `/api/chat-endpoints/${endpoint.id}/slack/registration`) {
       const body = bodyOf(route);
       expect(body.credentials).toEqual({ configurationToken: "fixture-config-token" });

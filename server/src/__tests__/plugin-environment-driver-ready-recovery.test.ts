@@ -439,7 +439,7 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
         clearPlugin: vi.fn(),
         subscriptionCount: vi.fn(() => 0),
       };
-      const jobScheduler = { unregisterPlugin: vi.fn().mockResolvedValue(undefined) };
+      const jobScheduler = { registerPlugin: vi.fn().mockResolvedValue(undefined), unregisterPlugin: vi.fn().mockResolvedValue(undefined) };
       const toolDispatcher = { unregisterPluginTools: vi.fn(), registerPluginTools: vi.fn() };
 
       const loader = pluginLoader(
@@ -454,7 +454,7 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
           workerManager,
           eventBus,
           jobScheduler,
-          jobStore: {},
+          jobStore: { syncJobDeclarations: vi.fn().mockResolvedValue(undefined) },
           toolDispatcher,
           buildHostHandlers: vi.fn(() => ({})),
           instanceInfo: {

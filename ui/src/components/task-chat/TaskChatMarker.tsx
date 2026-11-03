@@ -15,8 +15,8 @@ const VARIANT_ICON = {
 
 /**
  * Lifecycle divider — renders a state boundary (session start, interruption,
- * turn boundary) as a recessed rule, never a bubble. Interruptions use a dashed
- * destructive rule to read as a distinct state.
+ * turn boundary) as a recessed rule. Interruptions use a compact row without
+ * divider rules, including older items that did not set `collapsible`.
  */
 export function TaskChatMarker({
   item,
@@ -84,7 +84,7 @@ export function TaskChatMarker({
             <Icon className="h-3.5 w-3.5 shrink-0" aria-hidden />
             <span className="truncate font-medium">{item.label}</span>
             {relative ? (
-              <span className="shrink-0 text-muted-foreground/70">
+              <span className="shrink-0 text-muted-foreground">
                 · {relative}
               </span>
             ) : null}
@@ -154,20 +154,13 @@ export function TaskChatMarker({
   return (
     <div
       className="tc-enter-marker flex items-center gap-2 py-1 text-xs text-muted-foreground"
-      role={streamlined ? "separator" : undefined}
-      aria-label={streamlined ? item.label : undefined}
+      role={streamlined && item.variant !== "interrupted" ? "separator" : undefined}
+      aria-label={streamlined && item.variant !== "interrupted" ? item.label : undefined}
     >
+      {item.variant !== "interrupted" ? <span className="h-px flex-1 bg-border" /> : null}
       <span
         className={cn(
-          "h-px flex-1",
-          interrupted
-            ? "border-t border-dashed border-destructive/50"
-            : "bg-border",
-        )}
-      />
-      <span
-        className={cn(
-          "flex items-center gap-1.5",
+          "flex min-w-0 flex-wrap items-center gap-1.5",
           interrupted && "text-destructive",
         )}
       >
@@ -181,6 +174,7 @@ export function TaskChatMarker({
             type="button"
             variant="outline"
             size="xs"
+            className="text-foreground"
             onClick={handleTryAgain}
             disabled={tryAgainPending}
             data-testid="task-chat-run-failed-try-again"
@@ -189,14 +183,7 @@ export function TaskChatMarker({
           </Button>
         ) : null}
       </span>
-      <span
-        className={cn(
-          "h-px flex-1",
-          interrupted
-            ? "border-t border-dashed border-destructive/50"
-            : "bg-border",
-        )}
-      />
+      {item.variant !== "interrupted" ? <span className="h-px flex-1 bg-border" /> : null}
     </div>
   );
 }

@@ -36,7 +36,14 @@ vi.mock("./AuditFeed", () => ({
       data-run={props.lockedRunId}
       data-entity={JSON.stringify(props.lockedEntity ?? null)}
       data-action={props.actionDomain}
-    />
+      data-entity-type={props.entityType}
+    ><button onClick={props.onClearFilters as () => void}>Clear filters</button></div>
+  ),
+}));
+
+vi.mock("./AgentCommentary", () => ({
+  AgentCommentary: ({ companyId }: { companyId: string }) => (
+    <div data-testid="agent-commentary" data-company={companyId} />
   ),
 }));
 
@@ -88,7 +95,7 @@ describe("AuditHub", () => {
     vi.clearAllMocks();
   });
 
-  function render(section: "activity" | "runs" | "costs" | "budgets" | "timeline") {
+  function render(section: "activity" | "runs" | "costs" | "budgets" | "timeline" | "commentary") {
     root = createRoot(container);
     flushSync(() => root.render(<AuditHub section={section} />));
   }
@@ -97,9 +104,10 @@ describe("AuditHub", () => {
     currentSearch = "mode=agents&agentId=agent-1&runId=run-1&action=tool_";
     render("activity");
 
-    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(5);
+    expect(container.querySelectorAll('[role="tab"]')).toHaveLength(6);
     expect(container.textContent).toContain("Activity");
     expect(container.textContent).toContain("Runs");
+    expect(container.textContent).toContain("Commentary");
     expect(container.textContent).toContain("Costs");
     expect(container.textContent).toContain("Budgets");
     expect(container.textContent).toContain("Timeline");
@@ -112,6 +120,17 @@ describe("AuditHub", () => {
     expect(setBreadcrumbsMock).toHaveBeenCalledWith([{ label: "Audit" }]);
   });
 
+  it("renders Commentary for the selected company without an experimental gate", () => {
+    render("commentary");
+    expect(container.querySelector<HTMLElement>('[data-testid="agent-commentary"]')?.dataset.company).toBe("company-1");
+    const tab = Array.from(container.querySelectorAll<HTMLElement>('[role="tab"]'))
+      .find((item) => item.textContent?.trim() === "Commentary");
+    expect(tab?.getAttribute("aria-selected")).toBe("true");
+    expect(setBreadcrumbsMock).toHaveBeenCalledWith([
+      { label: "Audit", href: "/activity" }, { label: "Commentary" },
+    ]);
+  });
+
   it("uses routine-scoped activity instead of the privileged organization feed", () => {
     currentSearch = "entityType=routine&entityId=routine-1";
     render("activity");
@@ -120,6 +139,40 @@ describe("AuditHub", () => {
     const activity = container.querySelector<HTMLElement>('[data-testid="routine-audit-activity"]');
     expect(activity?.dataset.company).toBe("company-1");
     expect(activity?.dataset.routine).toBe("routine-1");
+  });
+
+  it("preserves case scope and the Cases action filter from shareable links", () => {
+    currentSearch = "entityType=case&entityId=case-1&action=case.";
+    render("activity");
+    const feed = container.querySelector<HTMLElement>('[data-testid="audit-feed"]');
+    expect(feed?.dataset.entity).toBe(JSON.stringify({ type: "case", id: "case-1" }));
+    expect(feed?.dataset.action).toBe("case.");
+    expect(feed?.dataset.entityType).toBe("case");
+  });
+
+  it("applies an entity-type-only filter from the URL", () => {
+    currentSearch = "entityType=case";
+    render("activity");
+    const feed = container.querySelector<HTMLElement>('[data-testid="audit-feed"]');
+    expect(feed?.dataset.entity).toBe(JSON.stringify(null));
+    expect(feed?.dataset.entityType).toBe("case");
+  });
+
+  it("clears every case URL filter in one navigation while preserving locked run scope", () => {
+    currentSearch = "action=case.&entityType=case&entityId=case-1&mode=agents&agentId=agent-1&runId=run-1";
+    render("activity");
+    const clear = container.querySelector<HTMLButtonElement>('[data-testid="audit-feed"] button');
+    flushSync(() => clear!.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(setSearchParamsMock).toHaveBeenCalledTimes(1);
+    const [update, options] = setSearchParamsMock.mock.calls[0];
+    const next = update(new URLSearchParams(currentSearch)) as URLSearchParams;
+    expect(next.has("action")).toBe(false);
+    expect(next.has("entityType")).toBe(false);
+    expect(next.has("entityId")).toBe(false);
+    expect(next.get("mode")).toBe("agents");
+    expect(next.get("agentId")).toBe("agent-1");
+    expect(next.get("runId")).toBe("run-1");
+    expect(options).toEqual({ replace: true });
   });
 
   it("passes routine scope to the Runs section", () => {
@@ -136,7 +189,7 @@ describe("AuditHub", () => {
 
     const labels = Array.from(container.querySelectorAll<HTMLElement>('[role="tab"]'))
       .map((tab) => tab.textContent?.trim());
-    expect(labels).toEqual(["Activity", "Runs", "Costs", "Budgets", "Timeline"]);
+    expect(labels).toEqual(["Activity", "Runs", "Commentary", "Costs", "Budgets", "Timeline"]);
     expect(container.querySelector<HTMLElement>('[data-testid="audit-timeline"]')?.dataset.embedded)
       .toBe("true");
   });

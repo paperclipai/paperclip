@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, approvals, companies, companyMemberships, companySecrets, connectionGrants, createDb, heartbeatRuns, issues, toolCatalogEntries, toolActionRequests, toolConnections, toolPolicies, toolProfileBindings, toolProfiles, toolAccessAuditEvents } from "@paperclipai/db";
 import { toolAccessService } from "../services/tool-access.js";
@@ -131,6 +131,44 @@ const initialTools = [
     expect(retired).toHaveLength(names.length);
     expect(retired.every((entry) => entry.status === "disabled")).toBe(true);
   });
+
+  it("orders concurrent Railway reconnect and SSH setup without any company agents", async () => {
+    const f = await fixture();
+    const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, f.connectionId));
+    const start = await f.service.startOAuth(f.company.id, f.connectionId, { redirectUri, actor });
+    let locked!: () => void; let resume!: () => void; let started!: (pid: number) => void;
+    const held = new Promise<void>(resolve => { locked = resolve; });
+    const mayReconnect = new Promise<void>(resolve => { resume = resolve; });
+    const sshStarted = new Promise<number>(resolve => { started = resolve; });
+    const service = (database: typeof db) => toolAccessService(database, { remoteHttpRequest: f.request, remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }] });
+    const callback = db.transaction(async tx => {
+      await tx.execute(sql`SET LOCAL lock_timeout = '8s'`);
+      await tx.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)).for("update");
+      locked(); await mayReconnect;
+      return service(tx as unknown as typeof db).completeOAuthCallback({ state: new URL(start.authorizationUrl).searchParams.get("state")!, code: "concurrent-reconnect", iss: railwayAuthorizationMetadata.issuer, redirectUri, actor });
+    });
+    await held;
+    const ssh = db.transaction(async tx => {
+      await tx.execute(sql`SET LOCAL lock_timeout = '8s'`);
+      const [row] = await tx.execute(sql`SELECT pg_backend_pid() AS pid`);
+      started(Number(row.pid));
+      return service(tx as unknown as typeof db).configureRailwaySsh(f.connectionId, f.company.id, { action: "prepare", grantId: grant.id }, actor);
+    });
+    const completed = Promise.allSettled([callback, ssh]);
+    try {
+      const pid = await sshStarted;
+      await vi.waitFor(async () => {
+        const [row] = await db.execute(sql`SELECT wait_event_type FROM pg_stat_activity WHERE pid = ${pid}`);
+        expect(row.wait_event_type).toBe("Lock");
+      }, { timeout: 5000 });
+    } finally { resume(); }
+    const results = await completed;
+    for (const result of results) if (result.status === "rejected") throw result.reason;
+    expect(results.map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect((await f.service.getConnection(f.connectionId)).config.railwaySsh).toMatchObject({ grantId: grant.id, publicKey: expect.stringMatching(/^ssh-ed25519 /), enabled: false });
+    const [updated] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+    expect(updated.credentialSecretRefs.map(ref => ref.configPath)).toEqual(expect.arrayContaining(["oauth.access_token", "oauth.refresh_token", "railway.ssh_private_key"]));
+  }, 20000);
 
   it("preserves the dedicated SSH grant key on reconnect and removes it while disconnected", async () => {
     const f = await fixture();
