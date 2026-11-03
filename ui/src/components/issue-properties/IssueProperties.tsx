@@ -1,3 +1,4 @@
+import { ResponsibleOwnerRow } from "./ResponsibleOwnerRow";
 import { isLockedIssueStub } from "@/components/LockedIssueChip";
 import { IssuePullRequestLinks } from "../IssuePullRequestLinks";
 import { useIssueWorkProducts } from "../../hooks/useIssueWorkProducts";
@@ -2913,6 +2914,7 @@ export function IssueProperties({
       ) : null}
 
       <PropertySection title="About" streamlined={streamlinedPropertiesEnabled}>
+        <ResponsibleOwnerRow key={issue.id} issue={issue} />
         {originatingActor ? (
           <PropertyRow label="Originating">
             {originatingActor.kind === "agent" ? (
