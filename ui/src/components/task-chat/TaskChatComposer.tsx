@@ -1332,10 +1332,12 @@ export function TaskChatComposer({
         onKeyDownCapture={(e) => {
         // Capture mode shortcuts on the wrapper so they work while the rich
         // editor is focused and win over Lexical/browser bindings. Match the
-        // period by key and code because hardware keyboards on iOS can omit
-        // `code` for Cmd+Period.
+        // period by key. Use the physical code only when key is not a single
+        // character (iOS hardware keyboards can report "Unidentified" for
+        // Cmd+Period). A layout can put another letter on the Period position,
+        // for example "v" on Dvorak, and that must stay a normal Cmd+V paste.
         if (disabled || queuedEdit) return;
-        const isPeriod = e.key === "." || e.code === "Period";
+        const isPeriod = e.key === "." || (e.code === "Period" && [...e.key].length !== 1);
         const isModeShortcut =
           (isPeriod && (e.metaKey || e.ctrlKey)) ||
           (e.key === "Tab" && e.shiftKey);

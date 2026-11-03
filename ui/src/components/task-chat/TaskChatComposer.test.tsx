@@ -1266,6 +1266,30 @@ describe("TaskChatComposer", () => {
     expect(onWorkModeChange).not.toHaveBeenCalled();
   });
 
+  it("matches Cmd+Period by key, so Cmd+V on a layout with V on the Period position still pastes", () => {
+    renderComposer({ onAdd: vi.fn(), workMode: "standard", onWorkModeChange: vi.fn() });
+    editable().focus();
+
+    const press = (init: KeyboardEventInit) => {
+      const event = new KeyboardEvent("keydown", { metaKey: true, bubbles: true, cancelable: true, ...init });
+      flushSync(() => editable().dispatchEvent(event));
+      return event.defaultPrevented;
+    };
+    const modeChip = () => container.querySelector<HTMLElement>('[data-testid="task-chat-composer-mode"]');
+
+    // Dvorak: the V key reports code "Period". It is a paste, not a mode change.
+    expect(press({ key: "v", code: "Period" })).toBe(false);
+    expect(modeChip()).toBeNull();
+
+    // Dvorak: the period key reports code "KeyE". It still cycles the mode.
+    expect(press({ key: ".", code: "KeyE" })).toBe(true);
+    expect(modeChip()?.getAttribute("data-pending-work-mode")).toBe("planning");
+
+    // iOS hardware keyboards can report an unidentified key. The code still counts.
+    expect(press({ key: "Unidentified", code: "Period" })).toBe(true);
+    expect(modeChip()?.getAttribute("data-pending-work-mode")).toBe("ask");
+  });
+
   it("selects exclusive modes from the add menu and removes the active chip", () => {
     render(<TaskChatComposer onAdd={vi.fn()} workMode="standard" onWorkModeChange={vi.fn()} />);
     openComposerAddMenu();
