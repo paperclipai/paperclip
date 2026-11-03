@@ -14,6 +14,7 @@ export function cloudBundledPackageDigest(packageRoot: string, options: { catalo
     imageNodeModules = path.resolve(catalogRoot, "../../node_modules");
     roots.push(
       { key: "plugin-sdk", directory: path.join(catalogRoot, "sdk") },
+      { key: "runner-sdk", directory: path.resolve(catalogRoot, "../runner-sdk") },
       { key: "shared", directory: path.resolve(catalogRoot, "../shared") },
       { key: "image-node-modules", directory: imageNodeModules },
     );
