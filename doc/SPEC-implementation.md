@@ -2218,6 +2218,11 @@ Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
 
+AI connections support concurrent runs and account tests. Admission does not
+take an account execution lock or wait for another runtime's credential cleanup.
+Private runtime homes remain independent. Credential writeback still checks the
+active grant and saved generation before an atomic update.
+
 Missing personal AI credentials detected before adapter dispatch also produce
 the inline connection card. Every missing binding must belong to the same
 compatible AI provider. The responsible user connects their own account and

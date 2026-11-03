@@ -407,7 +407,8 @@ export async function bootstrapTestDrive(input: {
 }
 
 function dashboardUrl(server: StartedServer): string {
-  return server.apiUrl.replace(/\/api\/?$/, "");
+  const host = server.host.includes(":") && !server.host.startsWith("[") ? `[${server.host}]` : server.host;
+  return `http://${host}:${server.listenPort}`;
 }
 
 export async function testDriveCommand(
@@ -451,7 +452,8 @@ export async function testDriveCommand(
       skipServiceManagerCheck: !options.dataDir?.trim(),
       introLabel: "paperclipai test-drive",
       afterStart: async (server) => {
-        const api = dependencies.createApi(server.apiUrl);
+        const url = dashboardUrl(server);
+        const api = dependencies.createApi(url);
         const result = await bootstrapTestDrive({
           api,
           options,
@@ -472,7 +474,6 @@ export async function testDriveCommand(
           p.log.success("Run tasks in this worktree is enabled for this instance.");
         }
 
-        const url = dashboardUrl(server);
         if (options.browser === false) {
           p.log.success(`Paperclip is ready at ${pc.cyan(url)}.`);
           return;
