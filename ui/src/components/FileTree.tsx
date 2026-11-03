@@ -386,7 +386,7 @@ export function FileTree({
             >
               error
             </Badge>
-            <span className="min-w-0 text-destructive">{describeError(error).body}</span>
+            <span className="min-w-0 text-destructive">{describeError(new Error(error.message)).body}</span>
           </div>
           {error.retry && (
             <Button type="button" size="xs" variant="outline" onClick={error.retry}>
