@@ -645,6 +645,29 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function preserveNativeExecutionObligationsSql(incoming: Record<string, unknown> | null, setupFailure = false) {
+  const projected = incoming === null ? sql`null::jsonb` : sql`${JSON.stringify(incoming)}::jsonb`;
+  const result = setupFailure ? sql`case when ${heartbeatRuns.runtimeMode} = 'native'
+    and jsonb_typeof(${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput') = 'object'
+    and ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput' <> '{}'::jsonb
+    and ${projected}->'executionRecovery'->>'kind' = 'bootstrap'
+    and ${projected}->'executionRecovery'->>'providerWorkStarted' = 'false'
+    then ${projected} - 'executionRecovery' else ${projected} end` : projected;
+  return sql`case when ${heartbeatRuns.runtimeMode} = 'native'
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'schema' = 'paperclip.native-cancellation.v1'
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'scope' = 'run'
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'reasonCode' = 'cancellation_run_only'
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'runId' = ${heartbeatRuns.id}::text
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'companyId' = ${heartbeatRuns.companyId}::text
+    and ${heartbeatRuns.resultJson}->'nativeCancellation'->>'issueId' = ${heartbeatRuns.nativeIssueId}::text
+    then coalesce(${result}, '{}'::jsonb) || (
+      select coalesce(jsonb_object_agg(stop_field.key, stop_field.value), '{}'::jsonb)
+      from jsonb_each(${heartbeatRuns.resultJson}) as stop_field(key, value)
+      where stop_field.key in ('nativeCancellation', 'executionCancellation', 'startupCancellation',
+        'cancellation', 'cancelledByActorType', 'cancelledByUserId')
+    ) else ${result} end`;
+}
+
 /** Run lifecycle binds status, progress, liveness, and completion operations. */
 export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycleDependencies) {
   const {
@@ -1109,6 +1132,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .set({
               status,
               ...patch,
+              ...(patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
             })
@@ -1134,8 +1158,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     status: string,
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
     failureReport?: RunFailureReportOptions,
+    options?: { setupFailure: true },
   ) {
-    return setRunStatusFromLive(runId, status, ["running"], patch, failureReport);
+    return setRunStatusFromLive(runId, status, ["running"], patch, failureReport, undefined, options);
   }
 
   // Move a run to a new status only when its current status is one of
@@ -1150,6 +1175,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     patch?: Partial<typeof heartbeatRuns.$inferInsert>,
     failureReport?: RunFailureReportOptions,
     cancellationCondition?: ReturnType<typeof nativeRetryCancellationCommitCondition>,
+    options?: { setupFailure: true },
   ) {
     // fromStatuses can name a terminal status as its own source (for example,
     // an idempotent "still failed" patch), so the write below is not always a
@@ -1210,6 +1236,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .set({
               status,
               ...patch,
+              ...(patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson, options?.setupFailure) } : {}),
               ...(patch?.usageJson ? { usageJson: preserveAcceptedRunUsageProjectionSql(patch.usageJson) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
