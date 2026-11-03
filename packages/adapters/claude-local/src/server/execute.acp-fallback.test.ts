@@ -122,6 +122,24 @@ describe("claude_local ACP startup fallback", () => {
     );
   });
 
+  it("disables background tasks for CLI print runs", async () => {
+    const ctx = buildContext({ engine: "cli" });
+
+    await execute(ctx as never);
+
+    expect(runAdapterExecutionTargetProcess).toHaveBeenCalledWith(
+      expect.any(String),
+      null,
+      expect.any(String),
+      expect.arrayContaining(["--print"]),
+      expect.objectContaining({
+        env: expect.objectContaining({
+          CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1",
+        }),
+      }),
+    );
+  });
+
   it("keeps explicit ACP strict when startup fails", async () => {
     const ctx = buildContext({ engine: "acp" });
 
