@@ -56,6 +56,9 @@ describe("one card for each obligation (PAP-749 task 2d)", () => {
     expect(attentionEvidenceLabel(run, blocked)).toBe("Blocked by this run");
     expect(attentionEvidenceLabel(blockedOwner, blocked)).toBe("Blocked work");
     expect(attentionEvidenceLabel(run, item("failed_run:run:r2", { sourceKind: "failed_run" }))).toBe("Also failed");
+    // PAP-768: a hard stop's Raise limit / Keep paused answer its override approval.
+    const stop = item("budget_alert:budget:p1", { sourceKind: "budget_alert" });
+    expect(attentionEvidenceLabel(stop, item("approval:approval:b1"))).toBe("Approval this answers");
     expect(attentionEvidenceText(review)).toEqual({
       title: "PAP-7 Ship the page",
       detail: "Issue is in review with a linked pending approval.",

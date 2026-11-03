@@ -77,7 +77,9 @@ gone; archived and snoozed cards live in the **Archived** view.
 One obligation is one card: a pending approval leads, with the in-review task
 that waits on it as a line under it, and a failed run leads (with **Retry**),
 with the task it blocks under it; the run then shows where the blocked task
-does. The feed still returns every card, the evidence hides and returns with
+does. A budget hard stop leads its override approval ("Approval this answers"):
+Raise limit or Keep paused answers both, and the approval is no longer an
+ownerless card in Unassigned. The feed still returns every card, the evidence hides and returns with
 its lead, and each view count and the badge count the obligation once. A task
 with a configured human review stage keeps its review card next to the approval.
 Search, filter by agent/project, sort, and group by task/agent/project apply to
@@ -186,7 +188,7 @@ receipt; the [project](../../server/src/__tests__/project-decision-owner-route.t
 and [company](../../server/src/__tests__/company-default-decision-owner-route.test.ts)
 route tests cover the active-member 422 and board-only writes.
 [Obligation tests](../../server/src/__tests__/attention-obligations.test.ts)
-cover the approval/review and blocked-task/failed-run joins, the separate human
+cover the approval/review, budget-stop/override-approval and blocked-task/failed-run joins, the separate human
 review gate, placement with the blocked task's person, one count per obligation,
 evidence that hides and restores with its lead, and the split after an answer. The
 [Needs You component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)

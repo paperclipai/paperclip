@@ -359,6 +359,9 @@ export function decisionHistoryService(db: Db) {
       eq(approvals.decidedByUserId, userId),
       eq(approvals.requestedByUserId, userId),
       and(isNull(approvals.requestedByUserId), isNotNull(issues.id), issueAudienceIsUserCondition(companyId, userId)),
+      // A hard stop's override approval is folded into the budget owner's card.
+      and(eq(approvals.type, "budget_override_required"),
+        sql`exists (select 1 from ${companies} where ${companies.id} = ${companyId} and ${companies.budgetOwnerUserId} = ${userId})`),
       handledByOrForUserSourceCondition(companyId, userId, "approval", approvals.id),
     ) : undefined;
     const conditions = (time: SQL, key: SQL, title: SQL | typeof decisions.title | typeof issueThreadInteractions.title) => [

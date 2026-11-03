@@ -229,6 +229,87 @@ describeEmbeddedPostgres("attention escalation owners (PAP-749 task 1d)", () => 
     expect(find(scottMine.items, hardStop)).toBeNull();
   });
 
+  // PAP-768: the override approval is part of the hard stop's card.
+  async function insertOverrideApproval(companyId: string, hardStop: string) {
+    const [approval] = await db.insert(approvals).values({
+      companyId, type: "budget_override_required", status: "pending", payload: { scopeName: "Budget Co" },
+    }).returning({ id: approvals.id });
+    await db.update(budgetIncidents).set({ approvalId: approval!.id }).where(eq(budgetIncidents.id, hardStop));
+    return approval!.id;
+  }
+
+  it("folds a hard stop's override approval into the stop's card, out of Unassigned (PAP-768)", async () => {
+    const { companyId } = await seedCompany("BGF");
+    await db.update(companies).set({ budgetOwnerUserId: SCOTT }).where(eq(companies.id, companyId));
+    const hardStop = await insertBudgetIncident(companyId, "hard");
+    const approvalId = await insertOverrideApproval(companyId, hardStop);
+
+    const scottMine = await list(companyId, SCOTT, "mine");
+    const stopCard = find(scottMine.items, hardStop)!;
+    const approvalCard = find(scottMine.items, approvalId)!;
+    expect(stopCard.obligationLeadId).toBe(stopCard.id);
+    expect(approvalCard).toMatchObject({ obligationKey: `approval:${approvalId}`, obligationLeadId: stopCard.id, audience: stopCard.audience });
+    // Evidence comes right after its lead, and the obligation counts once.
+    expect(scottMine.items.indexOf(approvalCard)).toBe(scottMine.items.indexOf(stopCard) + 1);
+    expect(scottMine.viewCounts.mine).toBe(1);
+    expect(scottMine.deskBadgeCount).toBe(1);
+
+    for (const userId of [SCOTT, DOTTA]) {
+      const unassigned = await list(companyId, userId, "unassigned");
+      expect(find(unassigned.items, approvalId)).toBeNull();
+      expect(unassigned.viewCounts.unassigned).toBe(0);
+      const company = await list(companyId, userId, "company");
+      expect(find(company.items, approvalId)?.obligationLeadId).toBe(stopCard.id);
+      expect(company.viewCounts.company).toBe(1);
+    }
+
+    // Keep paused by Dotta rejects the approval, for Scott.
+    const handledFor = await attentionHandledFor(db, companyId, { sourceKind: "budget_alert", sourceId: hardStop }, DOTTA);
+    await budgetService(db).resolveIncident(companyId, hardStop, { action: "keep_paused" }, DOTTA, {
+      activityDetails: attentionHandledDetails(handledFor, "kept_paused"),
+    });
+    const [approval] = await db.select({ status: approvals.status, decidedByUserId: approvals.decidedByUserId }).from(approvals).where(eq(approvals.id, approvalId));
+    expect(approval).toEqual({ status: "rejected", decidedByUserId: DOTTA });
+    const afterKeep = await list(companyId, SCOTT, "mine");
+    expect(find(afterKeep.items, hardStop)).toBeNull();
+    expect(find(afterKeep.items, approvalId)).toBeNull();
+    const history = async (userId: string) => (await decisionHistoryService(db).list(companyId, {
+      actor: { type: "board", userId, isInstanceAdmin: true, companyIds: [companyId] }, userId, scope: "mine",
+    })).items.filter((item) => item.sourceId === approvalId);
+    // "Kept paused by @Dotta · for @Scott" in both of their histories.
+    for (const userId of [SCOTT, DOTTA]) {
+      expect(await history(userId)).toEqual([expect.objectContaining({ sourceKind: "approval", action: { outcome: "kept_paused", detail: null },
+        resolvedByUserId: DOTTA, handledForUserId: SCOTT })]);
+    }
+    expect(await history(RILEY)).toEqual([]);
+  });
+
+  it("raises the limit through the folded card and approves its approval (PAP-768)", async () => {
+    const { companyId } = await seedCompany("BGL");
+    // No budget owner: the stop and its approval are one Company card, not a
+    // default decision owner's card.
+    await db.update(companies).set({ defaultDecisionOwnerUserId: DOTTA }).where(eq(companies.id, companyId));
+    const hardStop = await insertBudgetIncident(companyId, "hard");
+    const approvalId = await insertOverrideApproval(companyId, hardStop);
+    const company = await list(companyId, SCOTT, "company");
+    const stopCard = find(company.items, hardStop)!;
+    expect(stopCard.audience).toEqual({ kind: "company", userId: null, reason: "none" });
+    expect(find(company.items, approvalId)).toMatchObject({ obligationLeadId: stopCard.id, audience: stopCard.audience });
+    expect(find((await list(companyId, DOTTA, "mine")).items, approvalId)).toBeNull();
+    expect(company.viewCounts.company).toBe(1);
+
+    await budgetService(db).resolveIncident(companyId, hardStop, { action: "raise_budget_and_resume", amount: 500 }, SCOTT);
+    const [approval] = await db.select({ status: approvals.status, decidedByUserId: approvals.decidedByUserId }).from(approvals).where(eq(approvals.id, approvalId));
+    expect(approval).toEqual({ status: "approved", decidedByUserId: SCOTT });
+    const after = await list(companyId, SCOTT, "company");
+    expect(find(after.items, hardStop)).toBeNull();
+    expect(find(after.items, approvalId)).toBeNull();
+    const scottHistory = await decisionHistoryService(db).list(companyId, {
+      actor: { type: "board", userId: SCOTT, isInstanceAdmin: true, companyIds: [companyId] }, userId: SCOTT, scope: "mine",
+    });
+    expect(scottHistory.items.find((item) => item.sourceId === approvalId)).toMatchObject({ action: { outcome: "limit_raised", detail: null }, resolvedByUserId: SCOTT });
+  });
+
   it("gives the budget owner a receipt when someone else keeps their hard stop paused", async () => {
     const { companyId } = await seedCompany("BGR");
     await db.update(companies).set({ budgetOwnerUserId: SCOTT }).where(eq(companies.id, companyId));

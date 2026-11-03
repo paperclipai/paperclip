@@ -129,6 +129,22 @@ async function main() {
     "not in Dotta's or Riley's For you");
   const warning = companyViews.scott.items.find((item) => item.sourceKind === "budget_alert" && item.subject.metadata?.thresholdType === "soft");
   check("1d budget warning stays Company only", warning?.audience.kind === "company", `"${titleOf(warning)}" audience ${warning?.audience.kind}`);
+  // PAP-768 part 3: the hard stop and its override approval are one card. The
+  // stop leads; the approval is its evidence and is no longer an ownerless
+  // card in Unassigned.
+  const overrideApprovalId = (hardStop?.subject.metadata as { approvalId?: string | null } | null)?.approvalId ?? null;
+  const overrideEvidence = mine.scott.items.find((item) => item.sourceKind === "approval" && item.subject.id === overrideApprovalId);
+  check("P3 one card for the budget stop", Boolean(hardStop && overrideEvidence) && overrideEvidence!.obligationLeadId === hardStop!.id
+    && has(leads(mine.scott.items), hardStop!.id) && !has(leads(mine.scott.items), overrideEvidence!.id),
+  `Scott For you: "${titleOf(hardStop)}" leads; "${titleOf(overrideEvidence)}" folded in (lead ${overrideEvidence?.obligationLeadId === hardStop?.id ? "the stop" : overrideEvidence?.obligationLeadId ?? "none"})`);
+  const pools = { scott: await feed(scott, "unassigned"), dotta: await feed(dotta, "unassigned"), riley: await feed(riley, "unassigned") };
+  check("P3 override approval not in Unassigned", Boolean(overrideApprovalId)
+    && Object.values(pools).every((data) => !data.items.some((item) => item.subject.id === overrideApprovalId)),
+  `not in Scott's, Dotta's or Riley's Unassigned (${Object.values(pools).map((data) => data.viewCounts.unassigned).join("/")} cards)`);
+  check("P3 the stop counts once", Object.values(companyViews).every((data) => data.items.filter((item) => item.subject.id === overrideApprovalId)
+    .every((item) => item.obligationLeadId === hardStop?.id)) && mine.scott.viewCounts.mine === leads(mine.scott.items).length,
+  "in Company the approval is evidence of the stop; For you counts the stop once");
+
   const projectCard = mine.dotta.items.find((item) => item.audience.reason === "project_owner");
   check("1d project decision owner", Boolean(projectCard), `Dotta For you: "${titleOf(projectCard)}" (project_owner)`);
 
@@ -281,12 +297,21 @@ async function main() {
     `Keep paused by Dotta -> ${resolve.status}; Scott receipt: ${budgetReceipt ? `${budgetReceipt.outcome} by ${name(budgetReceipt.actorUserId)} -> ${budgetReceipt.href}` : "none"}`);
     // PAP-767: the same action is in Scott's "Handled for me" history as the
     // hard stop's approval, kept paused by Dotta for Scott.
-    const approvalId = (hardStop.subject.metadata as { approvalId?: string | null } | null)?.approvalId ?? null;
+    const approvalId = overrideApprovalId;
+    const overrideAfter = approvalId ? await http<{ status?: string; decidedByUserId?: string | null }>(scott, "GET", `/api/approvals/${approvalId}`) : null;
+    check("P3 Keep paused rejects the folded approval", overrideAfter?.json?.status === "rejected" && overrideAfter.json.decidedByUserId === dotta.userId,
+      `approval ${overrideAfter?.json?.status ?? "missing"} by ${name(overrideAfter?.json?.decidedByUserId)}`);
     const scottHandled = await history(scott, "handledForMe=true");
     const keptPaused = scottHandled.find((item) => item.sourceKind === "approval" && item.sourceId === approvalId);
     check("1d history: kept paused by Dotta for Scott", Boolean(approvalId) && keptPaused?.action?.outcome === "kept_paused"
       && keptPaused.resolvedByUserId === dotta.userId && keptPaused.handledForUserId === scott.userId,
     keptPaused ? `${keptPaused.action?.outcome} by ${name(keptPaused.resolvedByUserId)} for ${name(keptPaused.handledForUserId)}` : `not in Scott's Handled for me (${scottHandled.length} entries)`);
+    // The same row in both people's own history (PAP-768 parts 2 and 3).
+    const inOwnHistory = async (session: Session) => (await history(session, "scope=mine")).find((item) => item.sourceId === approvalId);
+    const [scottOwn, dottaOwn, rileyOwn] = [await inOwnHistory(scott), await inOwnHistory(dotta), await inOwnHistory(riley)];
+    check("P3 history: Kept paused by @Dotta · for @Scott in both histories", scottOwn?.action?.outcome === "kept_paused" && dottaOwn?.handledForUserId === scott.userId
+      && !rileyOwn,
+    `Scott ${scottOwn ? "yes" : "no"}, Dotta ${dottaOwn ? "yes" : "no"}, Riley ${rileyOwn ? "yes" : "no"}`);
   }
 
   const failed = results.filter((result) => !result.ok);

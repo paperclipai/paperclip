@@ -208,20 +208,32 @@ const OBLIGATIONS: AttentionItem[] = [
 
 // Escalation owners (PAP-749 task 1d): the budget owner's hard stop, which
 // Company still shows to everyone, and a card that reached Scott as the
-// project's decision owner.
+// project's decision owner. The stop's override approval is folded into it
+// (PAP-768): Raise limit approves it and Keep paused rejects it.
+const BUDGET_OWNER = { kind: "user", userId: SCOTT, reason: "budget_owner", alsoInCompany: true } satisfies AttentionAudience;
 const BUDGET_OWNER_STOP = card("budget-owned", "budget_alert", "Research team budget hard stop", "Budget hard stop was reached.",
-  { kind: "user", userId: SCOTT, reason: "budget_owner", alsoInCompany: true }, {
+  BUDGET_OWNER, {
     severity: "high",
     inlineResolvable: true,
     relatedIssue: null,
+    obligationKey: "approval:budget-override", obligationLeadId: "budget-owned",
     decisionVerbs: [{ id: "raise_budget_and_resume", label: "Raise limit", description: null }, { id: "keep_paused", label: "Keep paused", description: null }],
     subject: {
       kind: "budget_incident", id: "budget-incident-owned", companyId, title: "Research team budget hard stop", identifier: null, status: "open", href: "/PAP/costs",
       metadata: { thresholdType: "hard", amountObserved: 50_000, amountLimit: 50_000 },
     },
   });
+const BUDGET_OVERRIDE_APPROVAL = card("budget-override", "approval", "budget override required", "Approval is pending a board decision.", BUDGET_OWNER, {
+  relatedIssue: null,
+  obligationKey: "approval:budget-override", obligationLeadId: "budget-owned",
+  subject: {
+    kind: "approval", id: "budget-override", companyId, title: "budget override required", identifier: null, status: "pending", href: "/PAP/approvals/budget-override",
+    metadata: { type: "budget_override_required" },
+  },
+});
 const ESCALATION_OWNER_CARDS: AttentionItem[] = [
   BUDGET_OWNER_STOP,
+  BUDGET_OVERRIDE_APPROVAL,
   card("project-owned", "issue_thread_interaction", "Confirm the Platform migration plan", "No person on the task; you own the Platform project's decisions.", forScott("project_owner"), WITHDRAWABLE),
 ];
 
@@ -389,8 +401,9 @@ export const OneObligation: Story = {
 /**
  * Escalation owners (PAP-749 task 1d): Scott owns budget escalation, so the
  * budget hard stop is in his For you ("You own budget escalation") with Raise
- * limit and Keep paused; a card on the Platform project reached him as the
- * project's decision owner.
+ * limit and Keep paused, and its override approval is one line under it
+ * ("Approval this answers"), not a card in Unassigned (PAP-768); a card on the
+ * Platform project reached him as the project's decision owner.
  */
 export const EscalationOwners: Story = {
   args: { items: { ...ITEMS, mine: ESCALATION_OWNER_CARDS }, counts: { ...COUNTS, mine: 2 }, expandedId: "budget-owned" },
@@ -405,7 +418,7 @@ export const BudgetOwnerCardInCompany: Story = {
   args: {
     viewerId: DOTTA,
     initialView: "company",
-    items: { ...ITEMS, company: [BUDGET_OWNER_STOP, ...COMPANY_CARDS] },
+    items: { ...ITEMS, company: [BUDGET_OWNER_STOP, BUDGET_OVERRIDE_APPROVAL, ...COMPANY_CARDS] },
     counts: { ...COUNTS, company: COMPANY_CARDS.length + 1 },
     expandedId: "budget-owned",
   },

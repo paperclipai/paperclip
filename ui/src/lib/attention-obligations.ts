@@ -53,6 +53,8 @@ export function attentionEvidenceLabel(lead: AttentionItem, evidence: AttentionI
   if (evidence.sourceKind === "review") return lead.sourceKind === "approval" ? "Task waiting on this approval" : "Task in review";
   if (evidence.sourceKind === "blocker_attention") return lead.sourceKind === "failed_run" ? "Blocked by this run" : "Blocked work";
   if (evidence.sourceKind === "failed_run") return "Also failed";
+  // Raise limit approves the override approval and Keep paused rejects it (PAP-768).
+  if (evidence.sourceKind === "approval" && lead.sourceKind === "budget_alert") return "Approval this answers";
   return sourceMeta(evidence.sourceKind).label;
 }
 

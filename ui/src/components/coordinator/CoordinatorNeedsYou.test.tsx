@@ -8,7 +8,7 @@ import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], byView: {} as Record<string, AttentionItem[]>, viewCounts: undefined as undefined | Record<string, number>, listCalls: [] as unknown[], claim: vi.fn(async () => ({})), close: vi.fn(async (..._args: unknown[]) => ({ until: null })), retryTask: vi.fn(async (..._args: unknown[]) => ({ accepted: true, requestId: "r", stale: false, presentation: null })), history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn(), boardAccess: null as null | Record<string, unknown>, historyByScope: {} as Record<string, DecisionHistoryItem[]>, historyCalls: [] as Array<Record<string, unknown>> }));
+const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], byView: {} as Record<string, AttentionItem[]>, viewCounts: undefined as undefined | Record<string, number>, listCalls: [] as unknown[], claim: vi.fn(async () => ({})), close: vi.fn(async (..._args: unknown[]) => ({ until: null })), retryTask: vi.fn(async (..._args: unknown[]) => ({ accepted: true, requestId: "r", stale: false, presentation: null })), history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn(), boardAccess: null as null | Record<string, unknown>, historyByScope: {} as Record<string, DecisionHistoryItem[]>, historyCalls: [] as Array<Record<string, unknown>>, resolveIncident: vi.fn(async (..._args: unknown[]) => ({})) }));
 const dismissals = vi.hoisted(() => ({ restore: vi.fn(async (..._args: unknown[]) => ({})) }));
 vi.mock("@/api/inboxDismissals", () => ({ inboxDismissalsApi: { restore: dismissals.restore, dismiss: vi.fn() } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
@@ -24,6 +24,7 @@ vi.mock("@/api/access", () => ({ accessApi: {
   getCurrentBoardAccess: async () => { if (!fixture.boardAccess) throw new Error("No board access"); return fixture.boardAccess; },
 } }));
 vi.mock("@/api/issues", () => ({ issuesApi: { retryTask: fixture.retryTask } }));
+vi.mock("@/api/budgets", () => ({ budgetsApi: { resolveIncident: fixture.resolveIncident } }));
 vi.mock("@/api/attention", () => ({ attentionApi: {
   claim: fixture.claim,
   close: fixture.close,
@@ -590,6 +591,36 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     expect(tab("mine").getAttribute("aria-selected")).toBe("true");
     expect(container.querySelector('[data-attention-view="all"]')).toBeNull();
     expect(fixture.listCalls.some((call) => (call as { view?: string }).view === "all")).toBe(false);
+    client.clear();
+  });
+
+  it("shows a budget hard stop and its override approval as one card with Raise limit and Keep paused (PAP-768)", async () => {
+    const now = new Date().toISOString();
+    const owner = { kind: "user", userId: "reviewer", reason: "budget_owner", alsoInCompany: true };
+    const stop = { id: "stop", sourceKind: "budget_alert", inlineResolvable: true, whyNow: "Budget hard stop was reached.",
+      decisionVerbs: [{ id: "raise_budget_and_resume", label: "Raise limit" }, { id: "keep_paused", label: "Keep paused" }],
+      subject: { id: "incident-1", kind: "budget_incident", title: "Spendy Agent budget hard stop", href: "/PAP/costs", metadata: { thresholdType: "hard", amountObserved: 10_000, amountLimit: 10_000, approvalId: "appr-b" } },
+      detail: { kind: "budget", observedPercent: 100, amountObserved: 10_000, amountLimit: 10_000, images: [] },
+      relatedIssue: null, closeModes: ["archive", "snooze"], obligationKey: "approval:appr-b", obligationLeadId: "stop", activityAt: now, audience: owner } as unknown as AttentionItem;
+    const approval = { id: "approval-b", sourceKind: "approval", inlineResolvable: true, whyNow: "Approval is pending a board decision.",
+      decisionVerbs: [{ id: "approve", label: "Approve" }, { id: "reject", label: "Reject" }],
+      subject: { id: "appr-b", kind: "approval", title: "budget override required", href: "/PAP/approvals/appr-b", metadata: { type: "budget_override_required" } }, relatedIssue: null,
+      closeModes: ["withdraw", "archive", "snooze"], obligationKey: "approval:appr-b", obligationLeadId: "stop", activityAt: now, audience: owner } as unknown as AttentionItem;
+    fixture.byView = { mine: [stop, approval] };
+    fixture.viewCounts = { mine: 1, unassigned: 0, company: 1, archived: 0, all: 1 };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await render(client);
+    expect([...container.querySelectorAll("[data-attention-card]")].map((card) => card.getAttribute("data-attention-card"))).toEqual(["stop"]);
+    const card = container.querySelector<HTMLElement>('[data-attention-card="stop"]')!;
+    expect(card.querySelector('[data-attention-evidence="approval-b"]')?.textContent).toBe("Approval this answers: budget override required — Approval is pending a board decision.");
+    const buttons = [...card.querySelectorAll("button")].map((button) => button.textContent);
+    expect(buttons).toEqual(expect.arrayContaining(["Raise limit & resume", "Keep paused"]));
+    // The approval's own Approve / Reject would skip the budget; they are not offered.
+    expect(buttons).not.toContain("Approve");
+    expect(buttons).not.toContain("Reject");
+    // Keep paused answers the stop, which rejects its approval on the server.
+    await click("Keep paused");
+    expect(fixture.resolveIncident).toHaveBeenCalledWith("company", "incident-1", { action: "keep_paused" });
     client.clear();
   });
 

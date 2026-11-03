@@ -522,8 +522,9 @@ export interface AttentionItem {
   /**
    * One card for each obligation (PAP-749 plan §2, Rule 11). Cards with the
    * same key are one obligation: a pending approval with the in-review state of
-   * its task (`approval:<approvalId>`), or a blocked task with the failed run
-   * that caused it (`blocked:<issueId>`). The UI shows the lead card and folds
+   * its task (`approval:<approvalId>`), a budget hard stop with its override
+   * approval (`approval:<approvalId>`, the stop leads; PAP-768), or a blocked
+   * task with the failed run that caused it (`blocked:<issueId>`). The UI shows the lead card and folds
    * the others into it as evidence; the feed still returns every card, keeps
    * the evidence right after its lead, and shows or hides it with the lead.
    * `null` when the card is its own obligation. A configured human review

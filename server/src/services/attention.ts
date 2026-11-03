@@ -1524,25 +1524,31 @@ export type AttentionObligationHint = { key: string; anchor: boolean };
 /** Lower leads: the card that carries the one action for its obligation. */
 function obligationLeadRank(item: AttentionItem) {
   switch (item.sourceKind) {
-    case "approval":
+    // A budget hard stop answers its override approval: Raise limit approves
+    // it and Keep paused rejects it (`budgets.resolveIncident`; PAP-768).
+    case "budget_alert":
       return 0;
+    case "approval":
+      return 1;
     // The failed run carries the working action (Retry) for the task it blocks.
     case "failed_run":
-      return 1;
+      return 2;
     case "blocker_attention":
-      return item.dedupKey.startsWith("blocked-owner:") ? 2 : 3;
+      return item.dedupKey.startsWith("blocked-owner:") ? 3 : 4;
     default:
-      return 4;
+      return 5;
   }
 }
 
 /**
  * Join the cards that are one obligation (PAP-749 plan §2, Rule 11) and pick
- * the lead: the approval, else the failed run that caused the block, else the
- * blocked task. Every member keeps its own record (the server keeps all the
- * evidence); the members share one placement, so the obligation shows in one
- * view and counts once. A company alert that is not a required gate (a failed
- * run) goes with the work it blocks, to that person. Mutates `items`.
+ * the lead: a budget hard stop over its override approval (PAP-768), else the
+ * approval, else the failed run that caused the block, else the blocked task.
+ * Every member keeps its own record (the server keeps all the evidence); the
+ * members share one placement, so the obligation shows in one view and counts
+ * once. A failed run, a company alert that is not a required gate, goes with
+ * the work it blocks, to that person. A hard stop keeps its own placement: the
+ * budget owner, else Company. Mutates `items`.
  */
 export function assignAttentionObligations(
   items: AttentionItem[],
@@ -1561,7 +1567,7 @@ export function assignAttentionObligations(
     if (!group.anchored || group.members.length < 2) continue;
     const [lead, ...evidence] = [...group.members].sort((left, right) =>
       obligationLeadRank(left) - obligationLeadRank(right) || compareAttentionItems(left, right));
-    const audience = lead!.audience.kind === "company" && !lead!.required
+    const audience = lead!.audience.kind === "company" && !lead!.required && lead!.sourceKind !== "budget_alert"
       ? evidence.find((member) => member.audience.kind === "user")?.audience ?? lead!.audience
       : lead!.audience;
     for (const member of group.members) {
@@ -2538,7 +2544,12 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           // Spend creeping upward inside one incident is not a new choice.
           content: { status: incident.status },
           since: incident.createdAt,
-        });
+          // Rule 11 (PAP-768): the hard stop and its override approval are one
+          // card. The stop leads; the approval, which has no owner of its own,
+          // is its evidence and leaves Unassigned.
+        }, incident.thresholdType === "hard" && incident.approvalId
+          ? { key: `approval:${incident.approvalId}`, anchor: true }
+          : null);
       }
 
       const erroredAgents = await db

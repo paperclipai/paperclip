@@ -108,6 +108,35 @@ describe("one card for each obligation (PAP-749 task 2d)", () => {
     expect(review.audience).toEqual(COMPANY);
   });
 
+  it("leads a budget hard stop over its override approval and keeps the stop's placement (PAP-768)", () => {
+    const owned = { kind: "user", userId: SCOTT, reason: "budget_owner", alsoInCompany: true } as AttentionAudience;
+    const stop = card("budget_alert", "budget:p1:2026-11-01:hard", { audience: owned });
+    const approval = card("approval", "approval:b1", { audience: POOL, required: true });
+    assignAttentionObligations([approval, stop], hints([
+      [approval, { key: "approval:b1", anchor: true }],
+      [stop, { key: "approval:b1", anchor: true }],
+    ]));
+    for (const member of [stop, approval]) {
+      expect(member.obligationKey).toBe("approval:b1");
+      // Raise limit and Keep paused answer the approval, so the stop leads.
+      expect(member.obligationLeadId).toBe(stop.id);
+      // The approval leaves Unassigned and goes with the stop to its owner.
+      expect(member.audience).toEqual(owned);
+    }
+
+    // Without a budget owner the stop stays in Company, even when the
+    // approval alone would have gone to the default decision owner.
+    const companyStop = card("budget_alert", "budget:p2:2026-11-01:hard", { audience: COMPANY });
+    const ownersApproval = card("approval", "approval:b2", { audience: forUser(DOTTA, "escalation_owner"), required: true });
+    assignAttentionObligations([companyStop, ownersApproval], hints([
+      [companyStop, { key: "approval:b2", anchor: true }],
+      [ownersApproval, { key: "approval:b2", anchor: true }],
+    ]));
+    expect(ownersApproval.obligationLeadId).toBe(companyStop.id);
+    expect(ownersApproval.audience).toEqual(COMPANY);
+    expect(companyStop.audience).toEqual(COMPANY);
+  });
+
   it("forms no obligation without an anchor card, or for a card on its own", () => {
     const runA = card("failed_run", "run:ra", { audience: COMPANY });
     const runB = card("failed_run", "run:rb", { audience: COMPANY });
