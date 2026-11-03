@@ -18,28 +18,40 @@ Both profiles use the exact model and limits in the reviewed pricecard.
 
 These associations identify partial coverage. They do not qualify every run
 lifecycle, the Commentary browser page, continuation, or remote execution.
-The October 21 local pilot measured one successful sample per selected cell:
-$0.427624800 and 72.757 summed attempt seconds for the daily selection,
-$0.791539400 and 127.069 seconds for the weekly selection. These are historical
-gateway estimates from the Linux ARM64 container. They include model setup
-requests and attempt setup/teardown, but omit queue/build time and non-model
-charges. Earlier failed and interrupted attempts remain in campaign spending.
+The October 27 qualifications measured one successful attempt per selected cell:
+$0.428650100 and 107.286 summed attempt seconds for the daily selection,
+$0.793676500 and 158.093 seconds for the weekly selection. Claude ran on
+GitHub-hosted Ubuntu; Codex ran in a local Linux ARM64 container. These are
+historical gateway estimates from 19 final model request receipts. They include
+setup, background and disconnected-client requests with terminal usage. Attempt
+time includes setup and teardown, but omits workflow queue/build time and
+non-model charges. Provider exports match usage and charges (Claude at one-cent
+export precision); final monthly invoices remain pending. The hosted workflow
+failed during report dependency setup after both cases passed. Its original
+failure, and all earlier failed or interrupted attempts, remain retained.
 
-`scheduled-measurements.json` retains the exact attempt, source revision,
-definition, model, price version, result hash and journal hashes for each sample.
-`forecast.json` includes this evidence and a snapshot hash. It separates the
-historical successful selection from samples matching the current definition,
-model, environment, runtime, route and pricing. A missing matching cell makes
-the compatible selection total unknown. The feedback definition changed after
-these four samples; its earlier results are not current qualification.
+`scheduled-measurements.json` retains each attempt, source revision, definition,
+model, price version, measurement host, final request count, result hash and
+journal hashes. `forecast.json` includes that evidence and a snapshot hash.
+Historical totals remain separate from samples matching the current definition,
+model, environment, runtime, route and pricing. Hosts form separate cohorts;
+measurements from different hosts are not pooled into one cell distribution.
+The feedback definition's source fingerprint changed after these samples, so
+current compatible selection totals remain unknown. No historical hash is
+rewritten to match the new definition.
+
+`historicalHostedSelection` records the measured hosted subset only when every
+selected cell has hosted evidence. Current `hostedModelUsd` and
+`hostedAttemptMs` additionally require matching definitions. The four-case
+weekly selection has no complete hosted measurement yet. Summed attempt time
+is neither campaign wall time nor billed infrastructure time.
 
 Per-cell mean and median are descriptive. P95 stays unknown below 20 samples
 and then uses nearest rank; this is not a statistical confidence guarantee.
-Do not sum per-cell percentiles into a campaign percentile. Hosted cost/time
-and the selection's P95 remain unknown until separately measured. A passing
-sample does not predict failure frequency or account for infrastructure,
-storage, observability or subscriptions. Forecasts never reduce reservations
-or the approved budget limits.
+Do not sum per-cell percentiles into a campaign percentile. A passing sample
+does not predict failure frequency or account for infrastructure, storage,
+observability or subscriptions. Forecasts never reduce reservations, approved
+budget limits, or qualification gates.
 
 At the October 21, 2026 catalog audit, 47 suites declared 738 cells. `--all`
 included 179; the other 559 required explicit selection. The bounded weekly
@@ -48,6 +60,11 @@ not live acceptance results or an enduring catalog-size contract. Inspect the
 current `pnpm test:e2e:runner -- --list` before choosing work. In particular,
 Everyday Workflows, provider connections, feedback persistence, interruption,
 and case handoffs must not be inferred from a passing `--all` campaign.
+
+The explicit feedback suite also registers native Claude/Codex cells on Daytona.
+Their model usage, duration, feedback persistence and cleanup remain unqualified
+until retained live attempts prove them. These cells do not enter the daily or
+weekly selections, and `--all` continues to exclude the suite.
 
 Keep the broader rotating lane disabled until its exact cells have a metered
 route, complete retained attempts, a measured cost/time distribution, and a

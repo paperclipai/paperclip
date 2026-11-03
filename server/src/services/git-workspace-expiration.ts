@@ -3,11 +3,12 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { acquireGitExpirationLocks } from "./git-workspace-expiration-locks.js";
-import { and, eq, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, issues, heartbeatRuns, nativeRunFinalizations, environmentLeases,
   workspaceRuntimeServices, issueRecoveryActions, projectWorkspaces, withDedicatedDbConnection, type Db } from "@paperclipai/db";
-import { createGitRemoteAuthProvider } from "./git-credentials.js";
+import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
 import type { StorageService } from "../storage/types.js";
+import { TASK_DIRECTORY_RETENTION_KEY } from "./isolated-task-directory-snapshot.js";
 import { currentRestorePointSnapshot, RestorePointSkip, type RestorePointLimits } from "./git-restore-point.js";
 import { abandonGitRestorePoint, abandonGitRestorePointsByKey, activateGitRestorePoints, restorePointHistoryUnchanged, restorePointSnapshotMatches, storeGitRestorePoint } from "./git-restore-point-storage.js";
 import { withIsolatedRepositorySourceLock, verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
@@ -17,7 +18,7 @@ import type { GitRemoteAuthProvider } from "./git-credentials.js";
 import { assertReproducibleGitFiles, assertReproducibleBaseGitStorage, assertReproducibleManagedCheckout, provenManagedCheckoutHistory, inspectGitCacheRecipe, inspectGitCacheRecipeForRestorePoint, readGitCacheRestoration, GIT_CACHE_RESTORATION_SCHEMA_V2,
   verifyRemoteGitCommit, gitCacheExpirationLockLocations, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, type ManagedCheckoutProver, gitCacheCommand, readGitCacheExpiration, finishGitCacheTrash, type GitCacheExpiration, type GitCacheRestoration, GIT_CACHE_RESTORATION_KEY, GIT_CACHE_EXPIRATION_REASON } from "./git-workspace-restoration.js";
 
-async function allocatedBytes(target: string, shouldContinue: () => boolean): Promise<number> {
+export async function allocatedBytes(target: string, shouldContinue: () => boolean): Promise<number> {
   if (!shouldContinue()) throw new Error("scan_stopped");
   const entry = await fs.lstat(target);
   if (!entry.isDirectory() && !entry.isFile() && !entry.isSymbolicLink()) throw new Error("unsupported_filesystem_entry");
@@ -36,7 +37,7 @@ export function withAnonymousGitFallback(provider: GitRemoteAuthProvider): GitRe
 }
 
 function expirationGitAuth(db: Db, workspace: Workspace) {
-  return withAnonymousGitFallback(createGitRemoteAuthProvider(db, workspace.companyId, { issueId: workspace.sourceIssueId! }));
+  return withAnonymousGitFallback(createIssueGitRemoteAuthProvider(db, workspace.companyId, workspace.sourceIssueId!));
 }
 
 const EXPIRATION_KEY = "gitCacheExpiration";
@@ -100,7 +101,10 @@ async function restorePointBoundary(cwd: string, repoUrl: string, headOnRemote: 
 }
 
 /** Re-read the whole tree and every runtime/recovery consumer immediately before deletion. */
-function expirationScope(workspace: Workspace) {
+export function expirationScope(workspace: Workspace) {
+  // Decode the three legacy keys together only after cheap native/pointer
+  // matches fail. Strict JSONPath leaves non-object inputs unmatched, as ->>
+  // did, while those inputs can still match an independent native binding.
   return sql`
     WITH RECURSIVE tree AS (
       SELECT id, status, completed_at, cancelled_at, updated_at FROM ${issues}
@@ -109,19 +113,41 @@ function expirationScope(workspace: Workspace) {
       SELECT c.id, c.status, c.completed_at, c.cancelled_at, c.updated_at FROM ${issues} c
       JOIN tree p ON c.parent_id = p.id WHERE c.company_id = ${workspace.companyId}
     ), bound AS (
-      SELECT id, updated_at FROM ${issues}
+      SELECT id, updated_at, checkout_run_id, execution_run_id FROM ${issues}
       WHERE company_id = ${workspace.companyId} AND execution_workspace_id = ${workspace.id}
+    ), legacy_issue_ids AS MATERIALIZED (
+      SELECT unnest(array_agg(id::text)) AS id FROM tree
     ), relevant_runs AS (
-      SELECT r.* FROM ${heartbeatRuns} r WHERE r.company_id = ${workspace.companyId} AND (
+      SELECT r.id, r.status, r.created_at, r.started_at, r.finished_at, r.controller_lease_expires_at
+      FROM ${heartbeatRuns} r WHERE r.company_id = ${workspace.companyId} AND (
         r.issue_id IN (SELECT id FROM tree) OR r.native_issue_id IN (SELECT id FROM tree)
         OR r.issue_id IN (SELECT id FROM bound) OR r.native_issue_id IN (SELECT id FROM bound)
-        OR r.context_snapshot->>'issueId' IN (SELECT id::text FROM tree)
-        OR r.context_snapshot->>'taskId' IN (SELECT id::text FROM tree)
-        OR r.context_snapshot->>'executionWorkspaceId' = ${workspace.id}
-        OR r.id IN (SELECT unnest(ARRAY[checkout_run_id, execution_run_id]) FROM ${issues}
-          WHERE company_id = ${workspace.companyId} AND execution_workspace_id = ${workspace.id})
+        OR r.id IN (SELECT unnest(ARRAY[checkout_run_id, execution_run_id]) FROM bound)
+        OR EXISTS (
+          SELECT 1 FROM jsonb_to_record(
+            jsonb_path_query_first(r.context_snapshot, 'strict $ ? (@.type() == "object")')
+          ) context("issueId" text, "taskId" text, "executionWorkspaceId" text)
+          WHERE context."issueId" IN (SELECT id FROM legacy_issue_ids)
+            OR context."taskId" IN (SELECT id FROM legacy_issue_ids)
+            OR context."executionWorkspaceId" = ${workspace.id}
+        )
       )
     )`;
+}
+
+function issueUsesWorkspace(workspace: Pick<Workspace, "id" | "sourceIssueId">) {
+  return sql`(${issues.id} = ${workspace.sourceIssueId} OR ${issues.executionWorkspaceId} = ${workspace.id}
+    OR (${issues.workspaceSelection}->'selection'->>'kind' = 'existing'
+      AND ${issues.workspaceSelection}->'selection'->>'workspaceId' = ${workspace.id})
+    OR (${issues.workspacePendingSelection}->'intent'->'selection'->>'kind' = 'existing'
+      AND ${issues.workspacePendingSelection}->'intent'->'selection'->>'workspaceId' = ${workspace.id}))`;
+}
+
+export async function listIssuesUsingGitWorkspace(db: Db | Tx, workspace: Pick<Workspace, "id" | "companyId" | "sourceIssueId">, issueIds: string[]) {
+  if (issueIds.length === 0) return new Set<string>();
+  const rows = await db.select({ id: issues.id }).from(issues)
+    .where(and(eq(issues.companyId, workspace.companyId), inArray(issues.id, issueIds), issueUsesWorkspace(workspace)));
+  return new Set(rows.map(row => row.id));
 }
 
 export async function gitWorkspaceLastActivityAt(db: Db | Tx, workspace: Workspace): Promise<Date | null> {
@@ -136,14 +162,21 @@ export async function gitWorkspaceLastActivityAt(db: Db | Tx, workspace: Workspa
   return at ? new Date(at) : null;
 }
 
-export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Workspace, now: Date, idleCutoff?: Date) {
+export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Workspace, now: Date, idleCutoff?: Date,
+  options: { closedSiblingsAllowed?: boolean } = {}) {
   if (workspace.metadata?.reopenPendingConsumption === true) return false;
+  const siblingBlocks = options.closedSiblingsAllowed
+    ? sql`AND (other.status NOT IN ('archived', 'cleanup_failed') OR other.closed_at IS NULL
+        OR other.metadata->${TASK_DIRECTORY_RETENTION_KEY}->>'removed' = 'false')`
+    : sql``;
   const closedTree = idleCutoff ? sql`
       NOT EXISTS (SELECT 1 FROM tree WHERE updated_at > ${idleCutoff.toISOString()}::timestamptz)
       AND NOT EXISTS (SELECT 1 FROM bound WHERE updated_at > ${idleCutoff.toISOString()}::timestamptz)
       AND NOT EXISTS (SELECT 1 FROM relevant_runs WHERE greatest(created_at, started_at, finished_at) > ${idleCutoff.toISOString()}::timestamptz)` : sql`
-      NOT EXISTS (SELECT 1 FROM tree WHERE status NOT IN ('done', 'cancelled')
-        OR coalesce(CASE WHEN status = 'done' THEN completed_at ELSE cancelled_at END, updated_at) > ${new Date(now.getTime() - DAY_MS).toISOString()}::timestamptz)
+      NOT EXISTS (SELECT 1 FROM ${issues} WHERE ${issues.companyId} = ${workspace.companyId}
+        AND ${issues.id} IN (SELECT id FROM tree) AND ${issueUsesWorkspace(workspace)}
+        AND (${issues.status} NOT IN ('done', 'cancelled')
+          OR coalesce(CASE WHEN ${issues.status} = 'done' THEN ${issues.completedAt} ELSE ${issues.cancelledAt} END, ${issues.updatedAt}) > ${new Date(now.getTime() - DAY_MS).toISOString()}::timestamptz))
       AND NOT EXISTS (SELECT 1 FROM ${issues} WHERE company_id = ${workspace.companyId}
         AND execution_workspace_id = ${workspace.id} AND status NOT IN ('done', 'cancelled'))`;
   const recoveryActionBlocks = idleCutoff ? sql`true` : sql`(cause = 'native_workspace_finalization_owner_unverified'
@@ -155,7 +188,7 @@ export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Worksp
     SELECT CASE WHEN
       EXISTS (SELECT 1 FROM ${executionWorkspaces} other WHERE other.id <> ${workspace.id}
         AND (other.cwd = ${workspace.cwd} OR other.provider_ref = ${workspace.cwd}
-          OR left(other.cwd, length(${workspace.cwd}) + 1) = ${workspace.cwd} || '/'))
+          OR left(other.cwd, length(${workspace.cwd}) + 1) = ${workspace.cwd} || '/') ${siblingBlocks})
       OR EXISTS (SELECT 1 FROM ${projectWorkspaces} WHERE cwd = ${workspace.cwd}
         OR left(cwd, length(${workspace.cwd}) + 1) = ${workspace.cwd} || '/')
     THEN false ELSE (

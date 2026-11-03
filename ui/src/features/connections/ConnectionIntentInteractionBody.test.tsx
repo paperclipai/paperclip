@@ -237,6 +237,21 @@ afterEach(async () => {
 });
 
 describe("ConnectionIntentInteractionBody states and audience", () => {
+  it("opens the saved chat authentication step without another setup form", async () => {
+    const interaction = { ...pendingConnectionIntentInteraction, payload: { ...pendingConnectionIntentInteraction.payload,
+      purpose: "channel" as const, serviceSlug: "slack", serviceName: "Slack", phase: "authorizing" as const,
+      savedSetup: { endpointId: "endpoint", connectionId: "connection" } } };
+    setupOptionsMock.mockResolvedValue({ version: 1, interaction, requestedAgentId: interaction.payload.requestingAgentId,
+      existingConnections: [], service: { service: "slack", name: "Slack", methods: [], state: "needs_user_action" },
+      chatSetup: { endpointId: "endpoint", connectionId: "connection", path: "/ACME/apps/chat/connect?provider=slack&resume=endpoint" } });
+    renderBody(interaction);
+    await waitForAssertion(() =>
+      expect(document.querySelector('a')?.getAttribute("href")).toBe("/ACME/apps/chat/connect?provider=slack&resume=endpoint"),
+    );
+    expect(document.querySelector('[data-testid="shared-connection-setup"]')).toBeNull();
+    expect(completeMock).not.toHaveBeenCalled();
+  });
+
   it.each([
     [pendingConnectionIntentInteraction, "Connect"],
     [

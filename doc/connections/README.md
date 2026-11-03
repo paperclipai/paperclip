@@ -8,6 +8,10 @@ agent tutorial from provider research and protocol classification through
 manifest generation, branding, secrets, deterministic tests, real-account
 proof, and PR submission.
 
+Chat and email channels: [conversation-channel contract](./CONNECTOR-PLAYBOOK.md#chat-channel-connectors),
+[question inventory and quality bar](./CONNECTOR-PLAYBOOK.md#question-experience-inventory),
+and [per-provider question coverage index](./CHAT-QUESTION-COVERAGE.md).
+
 Runtime authentication: [AI Connections](./AI-CONNECTIONS.md).
 
 Long-term memory: [Experimental memory connectors](./MEMORY.md).

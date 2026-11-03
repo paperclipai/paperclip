@@ -7,6 +7,7 @@ import { environmentDisplayLabel, filterManagedSandboxSelectableEnvironments } f
 import { Link } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Project, SharedWorkspaceConcurrency } from "@paperclipai/shared";
+import { ProjectGitAuthorization } from "./ProjectGitAuthorization";
 import { ProjectRepositories } from "./ProjectRepositories";
 import { cn, formatDate } from "../lib/utils";
 import { environmentsApi } from "../api/environments";
@@ -510,6 +511,7 @@ export function ProjectProperties({ project, repositories, onUpdate, onFieldUpda
           </div>
         </PropertyRow>
         {repositories ?? <ProjectRepositories key={project.id} project={project} />}
+        <ProjectGitAuthorization key={`git-${project.id}`} project={project} />
         <PropertyRow
           label={<FieldLabel label="Env" state={fieldState("env")} />}
           alignStart

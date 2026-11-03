@@ -10,12 +10,14 @@ const models = prices.models as EvalOperationsManifest["models"];
 const selected = (cadence: "daily" | "weekly") => runnerMatrix.filter(cell => scheduledSelection(cadence).includes(cell.id));
 
 it.each([
-  ["daily", "0.427624800", 72757], ["weekly", "0.791539400", 127069],
-] as const)("retains exact historical %s measurements without inventing hosted or tail estimates", (cadence, modelUsd, summedAttemptMs) => {
+  ["daily", "0.428650100", 107286], ["weekly", "0.793676500", 158093],
+] as const)("retains exact historical %s measurements without inventing tail estimates", (cadence, modelUsd, summedAttemptMs) => {
   const forecast = scheduledForecast(selected(cadence), models);
   expect(forecast.historicalSuccessfulSelection).toEqual({ modelUsd, summedAttemptMs });
   expect(forecast.measurementSnapshotSha256).toMatch(/^[0-9a-f]{64}$/);
   expect(forecast).toMatchObject({ hostedModelUsd: null, hostedAttemptMs: null, selectionP95: null, costStatus: "estimated" });
+  expect(forecast.historicalHostedSelection).toEqual(cadence === "daily" ? { modelUsd, summedAttemptMs } : { modelUsd: null, summedAttemptMs: null });
+  expect(forecast.compatibleSuccessfulSelection).toEqual({ modelUsd: null, summedAttemptMs: null });
   for (const cell of forecast.cells) {
     expect(cell.historicalSuccessful.samples).toBe(1);
     expect(cell.historicalSuccessful.modelUsd.p95).toBeNull();
@@ -88,4 +90,34 @@ it("preserves nanodollar costs and genuine measured zero", () => {
     .toEqual({ modelUsd: "0.000000001", summedAttemptMs: 0 });
   snapshot.samples[0]!.knownModelUsd = "0";
   expect(scheduledForecast([cell], models, snapshot).compatibleSuccessfulSelection.modelUsd).toBe("0.000000000");
+});
+
+it("keeps hosts separate and requires hosted evidence for the whole selection", () => {
+  const snapshot = structuredClone(measurements);
+  const cell = selected("daily").find(cell => cell.id.startsWith("core-"))!;
+  const sample = snapshot.samples.find(sample => sample.executionId === cell.id)!;
+  snapshot.samples = [sample, { ...sample, attemptId: "different-host", measurementHost: "local-docker-linux-arm64" }];
+  const forecast = scheduledForecast([cell], models, snapshot);
+  expect(forecast.cells[0]!.historicalCohorts).toHaveLength(2);
+  expect(forecast.cells[0]!.compatibleSuccessful.samples).toBe(0);
+  expect(forecast.cells[0]!.samples).toHaveLength(2);
+  expect(forecast.hostedModelUsd).toBe(sample.knownModelUsd);
+  expect(scheduledForecast(selected("weekly"), models).hostedModelUsd).toBeNull();
+});
+
+it("uses current hosted totals only when every selected definition matches", () => {
+  const snapshot = structuredClone(measurements);
+  for (const cell of selected("daily")) snapshot.samples.find(sample => sample.executionId === cell.id)!.definitionHash = cell.suiteDefinitionHash;
+  const forecast = scheduledForecast(selected("daily"), models, snapshot);
+  expect(forecast.hostedModelUsd).toBe("0.428650100");
+  expect(forecast.hostedAttemptMs).toBe(107286);
+});
+
+it.each([
+  { measurementHost: undefined }, { measurementHost: "" },
+  { finalModelRequests: 0 }, { finalModelRequests: 1.5 },
+])("rejects invalid host or final-receipt provenance %j", patch => {
+  const snapshot = structuredClone(measurements);
+  Object.assign(snapshot.samples[0]!, patch);
+  expect(() => scheduledForecast(selected("daily"), models, snapshot)).toThrow("provenance");
 });

@@ -68,7 +68,7 @@ describe.skipIf(!support.supported)("heartbeat resume of an idle-expired workspa
     await fs.rm(root, { recursive: true, force: true });
   }, 60_000);
 
-  async function seed() {
+  async function seed(options: { closedParent?: boolean } = {}) {
     const home = path.join(root, randomUUID());
     vi.stubEnv("PAPERCLIP_HOME", home);
     vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
@@ -108,24 +108,31 @@ describe.skipIf(!support.supported)("heartbeat resume of an idle-expired workspa
         isolatedRemoteSource: { schema: "paperclip.isolated-remote-source.v1", companyId, issueId, repoUrl } } });
     await db.update(issues).set({ executionWorkspaceId: workspaceId, executionWorkspacePreference: "reuse_existing", updatedAt: idleSince })
       .where(eq(issues.id, issueId));
+    const childId = randomUUID();
+    if (options.closedParent) {
+      await db.update(issues).set({ status: "done", completedAt: new Date(Date.now() - 4 * DAY_MS) }).where(eq(issues.id, issueId));
+      await db.insert(issues).values({ id: childId, companyId, projectId, parentId: issueId, title: "Open follow-up", status: "in_progress",
+        workMode: "standard", assigneeAgentId: agentId, responsibleUserId: "responsible-user", issueNumber: 2, identifier: `${issuePrefix}-2`,
+        executionWorkspaceSettings: { mode: "isolated_workspace" } });
+    }
     await fs.writeFile(path.join(realized.cwd, "marker.txt"), "commit B (unpushed)\n");
     git(realized.cwd, "commit", "-qam", "B");
     const unpushed = git(realized.cwd, "rev-parse", "HEAD");
     await fs.writeFile(path.join(realized.cwd, "notes.md"), "uncommitted notes\n");
     const workspace = () => db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)).then(rows => rows[0]!);
     const expiration = await expireReconstructableGitWorkspace(db, await workspace(), {
-      dryRun: false, expireBase: false, now: new Date(), idleCutoff: new Date(Date.now() - 7 * DAY_MS),
+      dryRun: false, expireBase: false, now: new Date(), idleCutoff: options.closedParent ? undefined : new Date(Date.now() - 7 * DAY_MS),
       restorePoint: { storage: getStorageService(), notBefore: new Date(Date.now() - DAY_MS), keyDurable: true },
     });
-    const queueRun = async () => {
+    const queueRun = async (target = issueId) => {
       await db.insert(agentWakeupRequests).values({ id: wakeupId, companyId, agentId, source: "assignment", triggerDetail: "system",
-        reason: "issue_assigned", payload: { issueId }, status: "queued", runId });
+        reason: "issue_assigned", payload: { issueId: target }, status: "queued", runId });
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "assignment", triggerDetail: "system", status: "queued",
-        wakeupRequestId: wakeupId, responsibleUserId: "responsible-user", contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" } });
+        wakeupRequestId: wakeupId, responsibleUserId: "responsible-user", contextSnapshot: { issueId: target, taskId: target, wakeReason: "issue_assigned" } });
       await db.update(issues).set({ checkoutRunId: runId, executionRunId: runId, executionAgentNameKey: "resumer", executionLockedAt: new Date() })
-        .where(eq(issues.id, issueId));
+        .where(eq(issues.id, target));
     };
-    return { issueId, workspaceId, runId, cwd: realized.cwd, unpushed, expiration, workspace, queueRun };
+    return { issueId, childId, workspaceId, runId, cwd: realized.cwd, unpushed, expiration, workspace, queueRun };
   }
 
   async function waitForRun(heartbeat: ReturnType<typeof heartbeatService>, runId: string) {
@@ -158,5 +165,24 @@ describe.skipIf(!support.supported)("heartbeat resume of an idle-expired workspa
     expect(workspace.metadata?.reopenPendingConsumption).toBeUndefined();
     const [issue] = await db.select().from(issues).where(eq(issues.id, seeded.issueId));
     expect(issue.executionWorkspaceId).toBe(seeded.workspaceId);
+  });
+
+  it("restores a closed parent's expired workspace when an open child binds to it", async () => {
+    const seeded = await seed({ closedParent: true });
+    expect(seeded.expiration).toMatchObject({ expired: true, restorePoint: true });
+    await expect(fs.access(seeded.cwd)).rejects.toMatchObject({ code: "ENOENT" });
+    await db.update(issues).set({ executionWorkspaceId: seeded.workspaceId, executionWorkspacePreference: "reuse_existing" })
+      .where(eq(issues.id, seeded.childId));
+    await seeded.queueRun(seeded.childId);
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    const run = await waitForRun(heartbeat, seeded.runId);
+    await heartbeat.waitForRunExecutionDrain(seeded.runId);
+    expect(run).toMatchObject({ status: "succeeded" });
+    expect(adapterExecute.mock.calls[0]?.[0]).toMatchObject({ context: { executionWorkspaceId: seeded.workspaceId,
+      paperclipWorkspace: { cwd: seeded.cwd } } });
+    expect(git(seeded.cwd, "rev-parse", "HEAD")).toBe(seeded.unpushed);
+    expect(await fs.readFile(path.join(seeded.cwd, "notes.md"), "utf8")).toBe("uncommitted notes\n");
+    expect((await seeded.workspace()).status).not.toBe("archived");
   });
 });

@@ -55,13 +55,26 @@ describe("feedback persistence oracle", () => {
       expect(gradeFeedbackPersistence({ ...fixture(), evidence }).some(check => !check.passed)).toBe(true);
     }
   });
-  it("registers only two explicit local native cases with no automatic retry", () => {
+  it("registers explicit local and Daytona native cases with no automatic retry", () => {
     const selected = selectRunnerExecutions(parseRunnerSelectors(["--suite", "feedback-persistence"]));
     expect(selected.map(execution => execution.id)).toEqual([
       "feedback-persistence.runner-codex.local.complaint-and-suggestion",
+      "feedback-persistence.runner-codex.daytona.complaint-and-suggestion",
       "feedback-persistence.runner-acpx-claude.local.complaint-and-suggestion",
+      "feedback-persistence.runner-acpx-claude.daytona.complaint-and-suggestion",
     ]);
     expect(selected.every(execution => execution.task.automaticRetryPolicy === "single_attempt")).toBe(true);
+    expect(selected.every(execution => execution.task.attemptTimeoutMs.local === 5 * 60_000)).toBe(true);
+    for (const execution of selected.filter(entry => entry.environment.id === "daytona")) {
+      expect(execution.requiredCredentials).toEqual(expect.arrayContaining([execution.profile.credential, "DAYTONA_API_KEY"]));
+      expect(execution.requiredCredentials).toHaveLength(2);
+      expect(execution.task.expectedRunCount).toBe(1);
+      expect(execution.task.attemptTimeoutMs.daytona).toBe(15 * 60_000);
+      const secretRefs = { DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const } };
+      expect(() => execution.environment.buildEnvironment({ executionId: execution.id, secretRefs, daytonaImage: "runner:latest" })).toThrow("immutable");
+      const payload = execution.environment.buildEnvironment({ executionId: execution.id, secretRefs, daytonaImage: `runner@sha256:${"a".repeat(64)}` });
+      expect(payload).toMatchObject({ driver: "sandbox", config: { provider: "daytona", reuseLease: false, ttlMinutes: 60 } });
+    }
     expect(runnerMatrix).toEqual(expect.arrayContaining(selected));
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "feedback-persistence")).toBe(false);
   });

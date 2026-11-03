@@ -68,6 +68,26 @@ afterEach(async () => {
 const begin = { companyId: "co1", agentId: "ag1", runId: "run1" };
 
 describe("createDurableRunLogStore", () => {
+  it.each([false, true])("reads a complete long final record from a compact tail (S3 fallback: %s)", async (remote) => {
+    const { provider, objects, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "older tool output ".repeat(100_000), ts: "t1" });
+    const answer = "Complete report 中文🧪\n".repeat(8_000);
+    await store.append(handle, { stream: "stdout", chunk: answer, ts: "t2" });
+    await store.finalize(handle);
+    const bytes = objects.get(handle.logRef)!;
+    // Cut inside a multibyte character to exercise byte alignment, not just
+    // ASCII JSON reconstruction. The earlier large record must stay omitted.
+    const offset = bytes.lastIndexOf(Buffer.from("🧪"), bytes.length - 32_000) + 1;
+    if (remote) await fs.rm(baseDir, { recursive: true, force: true });
+    const result = await store.read(handle, { offset, limitBytes: bytes.length - offset, alignStartToRecord: true });
+    expect(result.content.trim().split("\n").map((line) => JSON.parse(line).chunk)).toEqual([answer]);
+    expect(result.nextOffset).toBe(bytes.length);
+    expect(await store.read(handle, { offset: result.nextOffset })).toMatchObject({ content: "" });
+    expect(calls.get).toBeLessThan(12);
+  });
+
   it("keeps store id 'local_file' so downstream coupling (feedback, casts) is unchanged", async () => {
     const { provider } = createMemoryProvider();
     const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });

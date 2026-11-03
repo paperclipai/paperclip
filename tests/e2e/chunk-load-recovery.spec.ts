@@ -6,9 +6,9 @@ async function json(response: Awaited<ReturnType<APIRequestContext["get"]>>) {
   return response.json();
 }
 
-async function failFirstTaskCss(page: Page) {
+async function failFirstLazyCss(page: Page) {
   const counts = { failed: 0, served: 0, documents: 0 };
-  await page.route(/\/assets\/issue-detail-[^/]+\.css$/, async (route) => {
+  await page.route(/\/assets\/CompanyEnvironments-[^/]+\.css$/, async (route) => {
     if (counts.failed === 0) {
       counts.failed += 1;
       await route.abort("failed");
@@ -25,57 +25,45 @@ async function failFirstTaskCss(page: Page) {
 
 test.use({ serviceWorkers: "block" });
 
-for (const entry of ["task", "agents"] as const) {
-  test(`a failed task-page CSS preload recovers with one reload (${entry} page)`, async ({ page, request }) => {
-    const company = await json(await request.post("/api/companies", {
-      data: { name: `Chunk recovery ${randomUUID()}` },
-    }));
-    const issue = await json(await request.post(`/api/companies/${company.id}/issues`, {
-      data: { title: "Open after a failed stylesheet", status: "backlog" },
-    }));
-    const counts = await failFirstTaskCss(page);
+// Task-page styles now live in the initial CSS bundle. Exercise an emitted
+// lazy stylesheet so this remains a real network/preload recovery test.
+const environmentsPath = "/company/settings/instance/environments";
 
-    if (entry === "task") {
-      await page.goto(`/${company.issuePrefix}/issues/${issue.identifier}`);
-      await expect(page.getByRole("heading", { name: issue.title, exact: true })).toBeVisible();
-    } else {
-      await page.goto(`/${company.issuePrefix}/agents`);
-      await expect(page.getByRole("heading", { name: "Agents", exact: true }).first()).toBeVisible();
-    }
+test("a failed lazy CSS preload recovers with one reload", async ({ page, request }) => {
+  const company = await json(await request.post("/api/companies", {
+    data: { name: `Chunk recovery ${randomUUID()}` },
+  }));
+  const counts = await failFirstLazyCss(page);
 
-    await expect(page.getByText("This page hit an error")).toHaveCount(0);
-    expect(counts.failed).toBe(1);
-    expect(counts.served).toBeGreaterThan(0);
-    expect(counts.documents).toBe(2);
+  await page.goto(`/${company.issuePrefix}${environmentsPath}`);
+  await expect(page.getByText("Enable Environments in instance experimental settings to manage shared execution targets.")
+    .or(page.getByTestId("instance-settings-environments-section"))).toBeVisible();
+
+  await expect(page.getByText("This page hit an error")).toHaveCount(0);
+  expect(counts.failed).toBe(1);
+  expect(counts.served).toBeGreaterThan(0);
+  expect(counts.documents).toBe(2);
+});
+
+test("a lazy CSS asset that stays broken reloads once, then shows the error", async ({ page, request }) => {
+  const company = await json(await request.post("/api/companies", {
+    data: { name: `Chunk recovery ${randomUUID()}` },
+  }));
+  let failed = 0;
+  let documents = 0;
+  await page.route(/\/assets\/CompanyEnvironments-[^/]+\.css$/, async (route) => {
+    failed += 1;
+    await route.abort("failed");
   });
-}
-
-for (const entry of ["task", "agents"] as const) {
-  test(`a task-page CSS asset that stays broken reloads once, then shows the error (${entry} page)`, async ({ page, request }) => {
-    const company = await json(await request.post("/api/companies", {
-      data: { name: `Chunk recovery ${randomUUID()}` },
-    }));
-    const issue = await json(await request.post(`/api/companies/${company.id}/issues`, {
-      data: { title: "Open with a broken stylesheet", status: "backlog" },
-    }));
-    let failed = 0;
-    let documents = 0;
-    await page.route(/\/assets\/issue-detail-[^/]+\.css$/, async (route) => {
-      failed += 1;
-      await route.abort("failed");
-    });
-    page.on("request", (request) => {
-      if (request.resourceType() === "document" && request.frame() === page.mainFrame()) documents += 1;
-    });
-
-    await page.goto(entry === "task"
-      ? `/${company.issuePrefix}/issues/${issue.identifier}`
-      : `/${company.issuePrefix}/agents`);
-
-    await expect(page.getByText("This page hit an error")).toBeVisible();
-    await expect(page.getByText(/Unable to preload CSS for .*issue-detail-/)).toBeVisible();
-    await page.waitForTimeout(1_000);
-    expect(documents).toBe(2);
-    expect(failed).toBe(2);
+  page.on("request", (request) => {
+    if (request.resourceType() === "document" && request.frame() === page.mainFrame()) documents += 1;
   });
-}
+
+  await page.goto(`/${company.issuePrefix}${environmentsPath}`);
+
+  await expect(page.getByText("This page hit an error")).toBeVisible();
+  await expect(page.getByText(/Unable to preload CSS for .*CompanyEnvironments-/)).toBeVisible();
+  await page.waitForTimeout(1_000);
+  expect(documents).toBe(2);
+  expect(failed).toBe(2);
+});

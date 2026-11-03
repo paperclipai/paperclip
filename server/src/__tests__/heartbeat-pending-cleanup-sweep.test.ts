@@ -6,6 +6,7 @@ import {
   activityLog,
   agents,
   heartbeatRuns,
+  heartbeatRunEvents,
   companies,
   createDb,
   environmentLeases,
@@ -74,6 +75,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(costEvents);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(environments);
     await db.delete(agents);
@@ -1163,6 +1165,14 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       updatedAt: new Date(Date.now() - 60 * 60 * 1000),
     });
 
+    // Inline pending cleanup now runs only after actual orphan recovery. Seed
+    // an abandoned run so this test still reaches the isolated error boundary.
+    const agentId = randomUUID(), runId = randomUUID();
+    await db.insert(agents).values({ id: agentId, companyId, name: "Abandoned worker",
+      adapterType: "process", status: "idle" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId,
+      status: "running", invocationSource: "manual", startedAt: new Date(Date.now() - 3_600_000) });
+
     // Make the sweep itself throw. The lease query rejects with an error that
     // carries a credential-shaped sentinel in both the name and the message. The
     // reaper's own queries pass through, so only the sweep fails.
@@ -1194,7 +1204,7 @@ describeEmbeddedPostgres("heartbeat sweepPendingCleanupLeases", () => {
       });
 
       // The reaper isolates the sweep, so the reaper itself resolves.
-      await expect(heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 })).resolves.toBeDefined();
+      await expect(heartbeat.reapOrphanedRuns({ staleThresholdMs: 0 })).resolves.toEqual({ reaped: 1, runIds: [runId] });
 
       const sweepCall = vi
         .mocked(logger.error)

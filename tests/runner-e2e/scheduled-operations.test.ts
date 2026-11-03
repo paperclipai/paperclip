@@ -19,7 +19,7 @@ it.each(["daily", "weekly"] as const)("runs the exact %s selection through one s
   const manifest = scheduledManifest({ ...input, cadence });
   const selected = selectRunnerExecutions(parseRunnerSelectors(manifest.executionIds.flatMap(id => ["--id", id])), runnerMatrix);
   expect(selected.map(row => row.id).sort()).toEqual([...scheduledSelection(cadence)].sort());
-  expect(manifest.limits).toMatchObject({ maxUsd: cadence === "daily" ? "20" : "100", maxConcurrent: 1, maxAttemptsPerExecution: 1 });
+  expect(manifest.limits).toMatchObject({ maxUsd: cadence === "daily" ? "20" : "100", maxRequests: cadence === "daily" ? 30 : 60, maxConcurrent: 1, maxAttemptsPerExecution: 1 });
   expect(Date.parse(manifest.limits.deadlineAt) - input.now).toBe(30 * 60_000);
   expect(scheduledMatrix(cadence).include).toHaveLength(1);
   expect(manifest.executionIds).toHaveLength(cadence === "daily" ? 2 : 4);
@@ -62,7 +62,8 @@ it("fails closed before paid work if disabled, missing project identity, or pref
     const prepared = await prepareScheduledCampaign(env, input.now);
     expect(prepared.manifest.limits.campaignId).toBe(prepared.campaignId);
     const forecast = JSON.parse(await readFile(path.join(path.dirname(prepared.manifestPath), "forecast.json"), "utf8"));
-    expect(forecast.measurements.historicalSuccessfulSelection).toEqual({ modelUsd: "0.427624800", summedAttemptMs: 72757 });
+    expect(forecast.measurements.historicalSuccessfulSelection).toEqual({ modelUsd: "0.428650100", summedAttemptMs: 107286 });
+    expect(forecast.measurements.historicalHostedSelection).toEqual({ modelUsd: "0.428650100", summedAttemptMs: 107286 });
     expect(forecast.measurements.hostedAttemptMs).toBeNull();
     expect(forecast.maxUsd).toBe("20");
     await expect(prepareScheduledCampaign(env, input.now)).rejects.toThrow("EEXIST");

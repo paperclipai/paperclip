@@ -175,6 +175,7 @@ describe("runner E2E local binary resolution", () => {
         runnerBinary,
         undefined,
         "linux",
+        "x64",
       ),
     ).toBe(runnerBinary);
     expect(
@@ -183,6 +184,7 @@ describe("runner E2E local binary resolution", () => {
         runnerBinary,
         undefined,
         "linux",
+        "x64",
       ),
     ).toBeUndefined();
     expect(
@@ -201,7 +203,14 @@ describe("runner E2E local binary resolution", () => {
         "darwin",
       ),
     ).toBe("/cross-compiled/paperclip-runnerd");
+    expect(resolvePaperclipRemoteRunnerBinaryForHarness(
+      [remoteNativeExecution], runnerBinary, undefined, "linux", "arm64",
+    )).toBeUndefined();
+    expect(resolvePaperclipRemoteRunnerBinaryForHarness(
+      [remoteNativeExecution], runnerBinary, "/cross-compiled/linux-x64-runnerd", "linux", "arm64",
+    )).toBe("/cross-compiled/linux-x64-runnerd");
   });
+
 });
 
 describe("runner E2E provider environment", () => {

@@ -115,6 +115,7 @@ describe("durable, authorized connection routing", () => {
     expect((await db.select().from(toolConnections).where(eq(toolConnections.id, members[0]!.binding.connectionId)))[0]?.status).toBe("active");
   });
   it("requires company connection management authority on pool configuration routes", async () => {
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
     const app = express(); app.use(express.json());
     let actor = { type: "board", userId: "alice", source: "session", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "owner" }] };
     app.use((req, _res, next) => { req.actor = actor as typeof req.actor; next(); }); app.use("/api", aiConnectionRoutes(db)); app.use(errorHandler);
@@ -122,6 +123,7 @@ describe("durable, authorized connection routing", () => {
     expect((await request(app).get(url)).status).toBe(200);
     expect((await request(app).get(`/api/companies/${otherCompanyId}/ai-connection-pools`)).status).toBe(403);
     expect((await request(app).delete(`/api/companies/${otherCompanyId}/ai-connection-pools/${pool.id}`).send({ expectedRevision: pool.revision })).status).toBe(403);
+    await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
     actor = { ...actor, memberships: [{ companyId, status: "active", membershipRole: "viewer" }] };
     expect((await request(app).get(url)).status).toBe(403);
     expect((await request(app).post(url).send({ pluginKey, config: pool })).status).toBe(403);
@@ -130,10 +132,12 @@ describe("durable, authorized connection routing", () => {
     actor = { type: "agent", agentId, companyId, source: "agent_jwt" } as unknown as typeof actor;
     expect((await request(app).get(url)).status).toBe(403);
     expect((await request(app).delete(`${url}/${pool.id}`).send({ expectedRevision: pool.revision })).status).toBe(403);
+    await db.update(companyMemberships).set({ membershipRole: "owner" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
     actor = { type: "board", userId: "alice", source: "session", companyIds: [companyId], memberships: [{ companyId, status: "active", membershipRole: "owner" }] };
     expect((await request(app).delete(`${url}/${pool.id}`).send({ expectedRevision: pool.revision + 1 })).status).toBe(409);
     expect((await request(app).delete(`${url}/${pool.id}`).send({ expectedRevision: pool.revision })).status).toBe(200);
     expect((await request(app).get(url)).body.some((entry: { id: string }) => entry.id === pool.id)).toBe(false);
+    await db.update(companyMemberships).set({ membershipRole: "member" }).where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, "alice")));
   });
   it("deletes pools without erasing pins, cursors, or admitted recovery evidence", async () => {
     const pool = await makePool(); const selected = await resolve(pool.id, "retained");

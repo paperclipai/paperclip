@@ -113,7 +113,8 @@ describe("Capability semantic catalog and authorization", () => {
   it("publishes a stable narrow catalog without credentials or control-plane-owned tools", () => {
     const names = CAPABILITY_SEMANTIC_TOOL_CATALOG.map((tool) => tool.operationId);
     expect(new Set(names).size).toBe(names.length);
-    expect(names).toHaveLength(57);
+    expect(names).toHaveLength(58);
+    expect(names).toContain("send_chat_message");
     expect(names).toEqual(expect.arrayContaining(["list_workflows", "read_workflow", "create_workflow", "update_workflow"]));
     expect(names).toContain("set_task_monitor");
     expect(names).toEqual(expect.arrayContaining(["submit_complaint", "submit_suggestion"]));

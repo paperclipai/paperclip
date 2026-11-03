@@ -258,6 +258,54 @@ For local HTTPS testing, proxy an isolated test instance through Tailscale Serve
 use Funnel only if the sender is outside the tailnet. Existing routine and agent
 execution controls still apply, including the isolated-worktree execution gate.
 
+### Sentry run-failure intake
+
+```
+POST /api/routine-triggers/public/{publicId}/sentry-run-failures
+```
+
+Use this endpoint for a routine that repairs failed Paperclip tasks. Create a
+`bearer` webhook trigger and replace `/fire` in its URL with
+`/sentry-run-failures`. Configure a Sentry custom integration to send the
+trigger's `Authorization: Bearer <webhookSecret>` header. Keep that credential
+private. This endpoint requires bearer authentication even if another signing
+mode is set on the trigger.
+
+In Sentry, select **An event is captured**, filter the `event_kind` tag to
+`run_failure`, and send notifications through the custom integration. Add
+environment, company, and instance URL filters to select the intended instance.
+Select notification delivery on every trigger to include repeated events in an
+existing Sentry issue. Issue-created or regression conditions do not cover every
+failed run.
+
+The receiver accepts Sentry event-alert payloads with `action: "triggered"` and
+`data.event.tags`. Tags can be pairs, key/value objects, or a dictionary. It
+validates the `task_id` and `run_id` against the receiving company's database and
+requires a terminal failed, timed-out, or cancelled run for that task. A supplied
+`company_id` must match. Unrelated or unavailable sources return `202` with
+`status: "ignored"` and create no work.
+
+Before dispatch, the server follows task parents and creation-run provenance.
+It ignores tasks created by the receiving repair routine, their descendants,
+and tasks from another Sentry run-failure repair routine. Missing or excessive
+provenance also stops dispatch. This check runs before a repair task or agent
+wakeup is created. Prompts alone do not provide this loop protection.
+
+Routine history is company-readable. Private tasks, tasks in private projects,
+and tasks the assigned repair agent cannot read are ignored to preserve source
+privacy. Accepted payloads contain only validated source identifiers, a bounded
+error code, and an optional Sentry event ID. Arbitrary webhook instructions and
+variables are discarded. The routine receives `task_identifier`, `task_id`, and
+`run_id` variables from the validated source.
+
+Retries and multiple Sentry events for one failed run share one routine receipt,
+including deliveries through different triggers on the same routine. A distinct
+failed run can create another task. Source-run variables form part of the
+execution fingerprint, so different failed runs do not coalesce into an active
+repair. Retry deduplication applies regardless of the concurrency policy.
+Setup-pending triggers accept authenticated connection checks without creating
+work.
+
 ## List Runs
 
 ```

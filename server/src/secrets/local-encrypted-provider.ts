@@ -50,6 +50,11 @@ function decodeMasterKey(raw: string): Buffer | null {
   return null;
 }
 
+/** Check the configured key without reading, creating, or changing key files. */
+export function isValidLocalEncryptedMasterKey(raw: string): boolean {
+  return decodeMasterKey(raw) !== null;
+}
+
 function loadOrCreateMasterKey(allowCreate = true, env: LocalEncryptedKeyEnv = process.env): Buffer {
   const envKeyRaw = env.PAPERCLIP_SECRETS_MASTER_KEY;
   if (envKeyRaw && envKeyRaw.trim().length > 0) {
@@ -94,8 +99,8 @@ function loadOrCreateMasterKey(allowCreate = true, env: LocalEncryptedKeyEnv = p
 }
 
 /** Derive a purpose-specific instance secret without exposing or reusing the vault key. */
-export function deriveLocalEncryptedInstanceSecret(purpose: string, env: LocalEncryptedKeyEnv = process.env): string {
-  return Buffer.from(hkdfSync("sha256", loadOrCreateMasterKey(true, env), Buffer.alloc(0),
+export function deriveLocalEncryptedInstanceSecret(purpose: string, env: LocalEncryptedKeyEnv = process.env, options: { allowCreate?: boolean } = {}): string {
+  return Buffer.from(hkdfSync("sha256", loadOrCreateMasterKey(options.allowCreate ?? true, env), Buffer.alloc(0),
     `paperclip:instance-secret:v1\0${purpose}`, 32)).toString("base64url");
 }
 
@@ -257,6 +262,34 @@ function asLocalEncryptedMaterial(value: StoredSecretVersionMaterial): LocalEncr
   throw badRequest("Invalid local_encrypted secret material");
 }
 
+function resolveLocalEncryptedValue<T>(operation: () => T): T {
+  try {
+    return operation();
+  } catch (cause) {
+    // This boundary contains only local key I/O and decryption, never database work.
+    throw new SecretProviderClientError({
+      code: "provider_unavailable", provider: "local_encrypted", operation: "resolveVersion",
+      message: cause instanceof Error ? cause.message : "Local encrypted secret could not be resolved",
+      cause,
+    });
+  }
+}
+
+/** Reuse one resolved key within a single batch; reload it for the next operation. */
+export function createLocalEncryptedCipher(mode: "read" | "write") {
+  const masterKey = mode === "write"
+    ? loadOrCreateMasterKey()
+    : resolveLocalEncryptedValue(() => loadOrCreateMasterKey(false));
+  return {
+    encrypt(value: string): StoredSecretVersionMaterial {
+      return encryptValue(masterKey, value);
+    },
+    decrypt(material: StoredSecretVersionMaterial): string {
+      return resolveLocalEncryptedValue(() => decryptValue(masterKey, asLocalEncryptedMaterial(material)));
+    },
+  };
+}
+
 export const localEncryptedProvider: SecretProviderModule = {
   id: "local_encrypted",
   descriptor() {
@@ -291,18 +324,7 @@ export const localEncryptedProvider: SecretProviderModule = {
     throw badRequest("local_encrypted does not support external reference secrets");
   },
   async resolveVersion(input) {
-    try {
-      const masterKey = loadOrCreateMasterKey(false);
-      return decryptValue(masterKey, asLocalEncryptedMaterial(input.material));
-    } catch (cause) {
-      // This boundary contains only local key I/O and decryption, never database
-      // work. Consumers can handle a vault outage without swallowing DB errors.
-      throw new SecretProviderClientError({
-        code: "provider_unavailable", provider: "local_encrypted", operation: "resolveVersion",
-        message: cause instanceof Error ? cause.message : "Local encrypted secret could not be resolved",
-        cause,
-      });
-    }
+    return createLocalEncryptedCipher("read").decrypt(input.material);
   },
   async deleteOrArchive() {
     // Secret metadata deletion is handled in Paperclip DB; the local key is shared and must remain.

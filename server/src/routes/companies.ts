@@ -886,6 +886,7 @@ export function companyRoutes(db: Db, storage?: StorageService, options?: Compan
       if (digest !== declared.sha256) {
         throw unprocessable(`Part ${partIndex} content does not match its declared sha256`);
       }
+      await companyTransferRunService.notePartUploadActivity(db, run.id);
       await writeImportTransferPart(importTransferSpoolRoot, run.id, partIndex, bytes);
       const recorded = await companyTransferRunService.completePart(db, run.id, partName);
       if (!recorded) {

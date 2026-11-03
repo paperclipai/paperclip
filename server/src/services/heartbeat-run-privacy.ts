@@ -1,7 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { issues, heartbeatRuns } from "@paperclipai/db";
-import { and, eq } from "drizzle-orm";
-import { canActorReadExecutionWorkspace, type AuthorizationActor, type AuthorizationDecision } from "./authorization.js";
+import { and, eq, inArray } from "drizzle-orm";
+import { canActorReadExecutionWorkspace, type AuthorizationActor, type AuthorizationDecision, type authorizationService } from "./authorization.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 
 type RunIssueBinding = {
@@ -13,6 +13,7 @@ type RunIssueBinding = {
 export async function canActorReadHeartbeatRun(
   db: Db,
   access: {
+    decideReads?: ReturnType<typeof authorizationService>["decideReads"];
     decide(input: {
       actor: AuthorizationActor;
       action: "issue:read";
@@ -66,6 +67,44 @@ export async function getHeartbeatRunReadDecisions(
   actor: AuthorizationActor,
   runs: readonly RunIssueBinding[],
 ): Promise<boolean[]> {
+  const decideReads = access.decideReads;
+  if (decideReads) {
+    const bindings = runs.map(run => ({ companyId: run.companyId, scopeKind: run.scopeKind, issueId: run.issueId }));
+    const key = (companyId: string, issueId: string) => JSON.stringify([companyId, issueId]);
+    const issuesByCompany = new Map<string, Set<string>>();
+    for (const run of bindings) {
+      if (run.scopeKind === "company" || !run.issueId) continue;
+      let ids = issuesByCompany.get(run.companyId);
+      if (!ids) { ids = new Set(); issuesByCompany.set(run.companyId, ids); }
+      ids.add(run.issueId);
+    }
+    const resources: Parameters<typeof decideReads>[1] = [];
+    for (const [companyId, issueIds] of issuesByCompany) {
+      const ids = [...issueIds];
+      for (let offset = 0; offset < ids.length; offset += 500) {
+        const chunk = ids.slice(offset, offset + 500);
+        const existing = await retryIdempotentDatabaseOperation(() => db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(eq(issues.companyId, companyId), inArray(issues.id, chunk))));
+        for (const { id: issueId } of existing) resources.push({
+          type: "issue", companyId, issueId, projectId: null, parentIssueId: null,
+          assigneeAgentId: null, assigneeUserId: null,
+        });
+      }
+    }
+    const allowed = new Map<string, boolean>();
+    if (resources.length) {
+      const decisions = await retryIdempotentDatabaseOperation(() => decideReads(actor, resources));
+      for (let index = 0; index < resources.length; index++) {
+        const resource = resources[index];
+        if (resource.type === "issue" && resource.issueId) {
+          allowed.set(key(resource.companyId, resource.issueId), decisions[index]?.allowed === true);
+        }
+      }
+    }
+    return bindings.map(run => run.scopeKind === "company" || Boolean(run.issueId && allowed.get(key(run.companyId, run.issueId))));
+  }
   const decisions = new Map<string, Promise<boolean>>();
   return Promise.all(runs.map(run => {
     const binding = { companyId: run.companyId, scopeKind: run.scopeKind, issueId: run.issueId };

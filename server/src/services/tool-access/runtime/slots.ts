@@ -114,6 +114,7 @@ export function createToolRuntimeSlots(db: Db, runtimeSupervisor: Pick<ReturnTyp
     action: "stop" | "restart";
     actor?: ActorInfo;
   }): Promise<ToolRuntimeSlot> {
+    await input.actor?.managementContext?.reauthorize();
     try {
       if (input.action === "stop") {
         await runtimeSupervisor.stopSlot({
@@ -132,6 +133,7 @@ export function createToolRuntimeSlots(db: Db, runtimeSupervisor: Pick<ReturnTyp
         companyId: input.companyId,
         actorType: input.actor?.actorType ?? "system",
         actorId: input.actor?.actorId ?? "tool-access-service",
+        ...input.actor?.managementContext?.audit,
         action:
           input.action === "stop"
             ? "tool_runtime_slot.operator_stopped"

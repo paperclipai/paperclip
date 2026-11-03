@@ -242,6 +242,7 @@ export class RunnerPrpRuntimeRequestResolutionError extends Error {
  * the same request fails closed instead of answering the provider twice.
  */
 export function queueRunnerPrpRuntimeRequestResolution(input: {
+  readonly commandId?: string;
   readonly companyId: string;
   readonly runId: string;
   readonly pendingRequest: PendingNativeRuntimeRequest;
@@ -299,7 +300,7 @@ export function queueRunnerPrpRuntimeRequestResolution(input: {
       resolution: input.resolution,
       resolutionActor: input.actor,
     },
-    undefined,
+    input.commandId,
     true,
   );
   registration.runtimeRequestResolutions.set(pending.requestId, {

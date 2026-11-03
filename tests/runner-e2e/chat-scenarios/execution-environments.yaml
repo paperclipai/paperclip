@@ -1,0 +1,73 @@
+# yaml-language-server: $schema=./catalog.schema.json
+# Planning scenarios; not registered executions or evidence of a pass.
+schema_version: 1
+feature: execution-environments
+status: planned
+scenarios:
+  - id: execution-environments.add-computer
+    capabilities:
+      - execution-environments/configuration
+    context: >-
+      No SSH computer is configured; the person is an authorized instance operator, but the chat
+      agent has no operator identity.
+    query: >-
+      Add my development server as a computer agents can use.
+    expected_outcome: >-
+      The agent points to the supported environment setup and explains the small set of
+      connection details the operator must provide securely. It does not execute host
+      provisioning under ordinary company-agent authority. Completion requires a saved target
+      and successful qualification, not just a friendly name in chat.
+  - id: execution-environments.choose-capable-target
+    capabilities:
+      - execution-environments/capabilities
+      - runs-adapters/availability
+    context: >-
+      One target supports the requested coding harness and another does not; detailed
+      environment inventory is board-only.
+    query: >-
+      Which computer can run Morgan with Claude Code?
+    expected_outcome: >-
+      The answer uses available admitted runtime context or directs the person to the
+      environment capability view when agent reads are restricted. It distinguishes advertised
+      capability from runtime health and avoids selecting an incompatible target or claiming
+      hidden inventory was inspected.
+  - id: execution-environments.test-computer
+    capabilities:
+      - execution-environments/probe
+      - runs-adapters/validation
+    context: >-
+      An SSH environment exists but may lack the selected runtime; environment probes require an
+      operator.
+    query: >-
+      Check whether that computer is ready to run Morgan.
+    expected_outcome: >-
+      The agent routes the person to the actual-target probe and explains its result after an
+      authorized run. A failed login or missing runtime is reported as the concrete
+      prerequisite. A successful local probe or reachable host alone is not represented as
+      qualification of the remote execution environment.
+  - id: execution-environments.assign-computer
+    capabilities:
+      - execution-environments/assignment
+      - agents/hire
+    context: >-
+      Morgan and a qualified cloud computer belong to the same company; the CEO may save this
+      configuration and no protected change remains.
+    query: >-
+      Have Morgan use our cloud computer for future work.
+    expected_outcome: >-
+      The permitted agent configuration binds Morgan to the intended qualified target and
+      persists after reload. Chat explains that future admission uses the new target while an
+      active run remains subject to lifecycle rules. Unsupported or protected changes receive
+      their own required human step rather than a silent fallback.
+  - id: execution-environments.prepare-image
+    capabilities:
+      - execution-environments/images
+    context: >-
+      A sandbox provider supports custom images; preparing one requires operator administration.
+    query: >-
+      Make a reusable cloud image with the tools our website agents need.
+    expected_outcome: >-
+      The agent helps specify the tool requirements and points the authorized operator to the
+      supported image preparation path. The resulting journey must inspect preparation status
+      and a usable pinned image before claiming readiness. Ordinary chat cannot manufacture
+      provider provisioning rights or treat an image name as a qualified runtime.

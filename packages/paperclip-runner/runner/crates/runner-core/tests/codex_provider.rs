@@ -21,6 +21,8 @@ use serde_json::{json, Value};
 
 #[path = "support/codex_assigned_tool_validation.rs"]
 mod assigned_tool_validation;
+#[path = "support/codex_human_input_validation.rs"]
+mod human_input_validation;
 
 static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(1);
 static RECEIPT_LIMIT_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -3601,62 +3603,102 @@ fn durable_backend_replays_pending_tool_calls_without_mutating_the_event_queue()
 }
 
 #[test]
-fn restart_lost_turn_retains_a_recoverable_cause_without_inventing_a_result() {
-    let directory = temporary_directory("restart-lost-turn");
-    let config = provider_config(
-        &directory,
-        &["--durable-turn-ids", "--linger-after-turn-start"],
-    );
-    let mut first = CodexCommandExecutor::new(&directory);
-    first
-        .execute(&command(
-            "prepare",
-            1,
-            "run.prepare",
-            json!({"provider": config}),
-        ))
+fn restart_lost_turn_preserves_rejected_completion_without_changing_ordinary_recovery() {
+    for rejected in [false, true] {
+        let directory = temporary_directory("restart-lost-turn");
+        let config = provider_config(
+            &directory,
+            &["--durable-turn-ids", "--linger-after-turn-start"],
+        );
+        let operation = AuthorizedTool {
+            operation_id: "paperclip_finish".to_owned(),
+            version: 1,
+            description: "Report completed work.".to_owned(),
+            input_schema: json!({"type": "object"}),
+            response_schema: json!({"type": "object"}),
+        };
+        let authorized = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                .unwrap(),
+            operations: vec![operation],
+        };
+        let mut first = CodexCommandExecutor::new(&directory);
+        first.execute(&command("prepare", 1, "run.prepare", json!({"provider": config,
+            "authorizedTools": authorized, "completionContract": {"revision": "restore-contract", "criterionIds": ["output"]}}))).unwrap();
+        first
+            .execute(&command("open", 2, "session.open", json!({})))
+            .unwrap();
+        first
+            .execute(&command(
+                "start",
+                3,
+                "turn.start",
+                json!({"text": "Watch the existing check run."}),
+            ))
+            .unwrap();
+        drop(first);
+        if rejected {
+            let state_path = directory.join("codex-provider-state.json");
+            let mut saved: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+            saved["activeTerminalToolRejected"] = json!(true);
+            fs::write(state_path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        }
+        fs::write(
+            directory.join("fake-state.json"),
+            serde_json::to_vec(&json!({
+                "threadId": "codex-thread-1", "activeTurnId": null, "nextTurn": 1,
+            }))
+            .unwrap(),
+        )
         .unwrap();
-    first
-        .execute(&command("open", 2, "session.open", json!({})))
-        .unwrap();
-    first
-        .execute(&command(
-            "start",
-            3,
-            "turn.start",
-            json!({"text": "Watch the existing check run."}),
-        ))
-        .unwrap();
-    // The process disappeared while its command was in flight. Codex restores
-    // the conversation, but cannot restore the running turn.
-    drop(first);
-    fs::write(
-        directory.join("fake-state.json"),
-        serde_json::to_vec(&json!({
-            "threadId": "codex-thread-1", "activeTurnId": null, "nextTurn": 1,
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let mut restored = CodexCommandExecutor::new(&directory);
-    restored
-        .execute(&command("snapshot", 4, "session.snapshot", json!({})))
-        .unwrap();
-    let events = poll_and_ack(&mut restored).unwrap();
-    let interrupted = events
-        .iter()
-        .find(|event| event.event_type == "turn.failed")
-        .unwrap();
-    assert_eq!(
-        interrupted.payload["error"]["code"],
-        "provider_turn_lost_on_restore"
-    );
-    assert_eq!(interrupted.payload["error"]["recoverable"], true);
-    assert!(!events
-        .iter()
-        .any(|event| event.event_type == "run.result.proposed"));
-    restored.shutdown().unwrap();
-    fs::remove_dir_all(directory).unwrap();
+        let mut restored = CodexCommandExecutor::new(&directory);
+        restored
+            .execute(&command("snapshot", 4, "session.snapshot", json!({})))
+            .unwrap();
+        let events = poll_and_ack(&mut restored).unwrap();
+        let turn = events
+            .iter()
+            .position(|event| event.event_type == "turn.failed")
+            .unwrap();
+        assert_eq!(
+            events[turn].payload["error"]["code"],
+            "provider_turn_lost_on_restore"
+        );
+        assert!(!events
+            .iter()
+            .any(|event| event.event_type == "run.result.proposed"));
+        if rejected {
+            let failure = events
+                .iter()
+                .position(|event| event.event_type == "session.failed")
+                .unwrap();
+            assert!(failure < turn);
+            assert_eq!(
+                events[failure].payload["code"],
+                "semantic_completion_rejected"
+            );
+            assert_eq!(events[failure].payload["recoverable"], false);
+            assert_eq!(
+                events
+                    .iter()
+                    .find(|event| event.event_type == "run.terminal")
+                    .unwrap()
+                    .payload["runTerminalState"],
+                "failed"
+            );
+        } else {
+            assert_eq!(events[turn].payload["error"]["recoverable"], true);
+            assert!(!events
+                .iter()
+                .any(|event| event.event_type == "session.failed"
+                    || event.event_type == "run.terminal"));
+        }
+        assert_eq!(call_count(&directory, "turn/start"), 1);
+        restored.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
 }
 
 #[test]
@@ -3922,6 +3964,7 @@ fn durable_backend_drains_completed_turn_usage_and_passive_tail_during_warm_atta
             "--durable-turn-ids",
             "--emit-post-completion-warning",
             "--emit-post-completion-passive-statuses",
+            "--warm-tail-accounting",
         ],
     );
     let runner_config = durable_config(&directory);
@@ -3949,6 +3992,7 @@ fn durable_backend_drains_completed_turn_usage_and_passive_tail_during_warm_atta
         ))
         .expect("start the first turn");
 
+    let mut old_usage = Vec::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {
         assert!(
@@ -3956,6 +4000,12 @@ fn durable_backend_drains_completed_turn_usage_and_passive_tail_during_warm_atta
             "the first turn must settle before attachment"
         );
         let events = poll_and_ack(&mut executor).expect("poll the first turn terminal");
+        old_usage.extend(
+            events
+                .iter()
+                .filter(|event| event.event_type == "usage.reported")
+                .cloned(),
+        );
         if events
             .iter()
             .any(|event| event.event_type == "turn.completed")
@@ -3968,6 +4018,11 @@ fn durable_backend_drains_completed_turn_usage_and_passive_tail_during_warm_atta
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
+    assert_eq!(
+        old_usage.last().unwrap().payload["runDelta"]["inputTokens"],
+        120
+    );
+    assert_eq!(old_usage.last().unwrap().payload["runDeltaAvailable"], true);
     let readiness = executor
         .execute(&command(
             "readiness",
@@ -3992,6 +4047,23 @@ fn durable_backend_drains_completed_turn_usage_and_passive_tail_during_warm_atta
         .iter()
         .any(|(event_type, _, _)| event_type == "run.attached"));
 
+    executor
+        .execute(&command(
+            "next-turn",
+            6,
+            "turn.start",
+            json!({"text":"Complete the next paid turn."}),
+        ))
+        .unwrap();
+    let next_events = wait_for_executor_event_batch(&mut executor, "turn.completed");
+    let next_usage = next_events
+        .iter()
+        .filter(|event| event.event_type == "usage.reported")
+        .last()
+        .unwrap();
+    assert_eq!(next_usage.payload["runDelta"]["inputTokens"], 30);
+    assert_eq!(next_usage.payload["runDelta"]["outputTokens"], 3);
+    assert_eq!(next_usage.payload["runDeltaAvailable"], true);
     executor.shutdown().expect("stop the warm provider");
     fs::remove_dir_all(directory).expect("remove Codex integration-test directory");
 }
@@ -6173,6 +6245,159 @@ fn codex_completion_emits_the_bound_result_before_the_terminal_event() {
 }
 
 #[test]
+fn rejected_declared_completion_stays_failed_when_the_provider_completes() {
+    let schemas = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../protocol/schemas");
+    let result_schema: Value =
+        serde_json::from_slice(&fs::read(schemas.join("result.schema.json")).unwrap()).unwrap();
+    let terminal_schema: Value =
+        serde_json::from_slice(&fs::read(schemas.join("terminal.schema.json")).unwrap()).unwrap();
+    let stop_reason_schema: Value =
+        serde_json::from_slice(&fs::read(schemas.join("stop-reason.schema.json")).unwrap())
+            .unwrap();
+    let registry = jsonschema::Registry::new()
+        .add(
+            "https://paperclip.dev/schemas/prp/v1/stop-reason.schema.json",
+            stop_reason_schema,
+        )
+        .unwrap()
+        .prepare()
+        .unwrap();
+    let terminal_validator = jsonschema::options()
+        .with_registry(&registry)
+        .build(&terminal_schema)
+        .unwrap();
+    for scenario in ["schema", "summary", "controller", "controller-goal"] {
+        let directory = temporary_directory(&format!("rejected-completion-{scenario}"));
+        let input = if scenario == "schema" {
+            json!({})
+        } else {
+            json!({
+                "schema": "paperclip.run_result.v1",
+                "reportedWorkDisposition": "done",
+                "summary": if scenario == "summary" { "x".repeat(12_001) } else { "Requested work is ready.".to_owned() },
+                "completionClaim": { "contractRevision": "contract-1", "objectiveSatisfied": true,
+                    "criteria": [{"criterionId": "output", "status": "satisfied", "evidenceRefs": []}],
+                    "remainingWork": [] },
+                "evidence": [], "verification": [], "attentionRequests": [], "artifacts": [],
+            })
+        };
+        let input_path = directory.join("finish-input.json");
+        fs::write(&input_path, serde_json::to_vec(&input).unwrap()).unwrap();
+        let mut config = provider_config(&directory, &["--complete-after-tool-call"]);
+        if scenario == "controller-goal" {
+            config.args.push("--agent-created-goal-on-open".to_owned());
+            config
+                .args
+                .push("--accounting-tail-after-terminal".to_owned());
+        }
+        config.args.extend([
+            "--terminal-result-file".to_owned(),
+            input_path.to_string_lossy().into_owned(),
+        ]);
+        let operation = AuthorizedTool {
+            operation_id: "paperclip_finish".to_owned(),
+            version: 1,
+            description: "Report completed work.".to_owned(),
+            input_schema: result_schema.clone(),
+            response_schema: json!({"type": "object"}),
+        };
+        let authorized = AuthorizedToolSet {
+            schema: TOOL_SET_SCHEMA.to_owned(),
+            schema_version: 1,
+            catalog_digest: authorized_tool_catalog_digest(std::slice::from_ref(&operation))
+                .unwrap(),
+            operations: vec![operation],
+        };
+        let mut executor =
+            CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+        executor.execute(&command("prepare", 1, "run.prepare", json!({"provider": config,
+            "authorizedTools": authorized, "completionContract": {"revision": "contract-1", "criterionIds": ["output"]}}))).unwrap();
+        executor
+            .execute(&command("open", 2, "session.open", json!({})))
+            .unwrap();
+        executor
+            .execute(&command(
+                "turn",
+                3,
+                "turn.start",
+                json!({"text": "Report the local fixture result."}),
+            ))
+            .unwrap();
+        let mut emitted = Vec::new();
+        let mut input_calls = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let events = poll_and_ack(&mut executor).unwrap();
+            for event in &events {
+                if event.event_type == "semantic_tool.input" {
+                    input_calls += 1;
+                    assert!(scenario.starts_with("controller"));
+                    executor.execute(&command("reject", 4, "semantic_tool.result", json!({
+                        "callId": "terminal-result-call", "operationId": "paperclip_finish", "isError": true,
+                        "result": {"error": {"code": "deliverable_missing"}} }))).unwrap();
+                }
+            }
+            emitted.extend(events);
+            if emitted
+                .iter()
+                .any(|event| event.event_type == "run.terminal")
+            {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        let failure = emitted
+            .iter()
+            .position(|event| event.event_type == "session.failed")
+            .unwrap();
+        let turn = emitted
+            .iter()
+            .position(|event| event.event_type == "turn.completed")
+            .unwrap();
+        let terminal = emitted
+            .iter()
+            .position(|event| event.event_type == "run.terminal")
+            .unwrap();
+        assert!(failure < turn && turn < terminal);
+        if scenario == "controller-goal" {
+            let final_usage = emitted
+                .iter()
+                .rposition(|event| event.event_type == "usage.reported")
+                .unwrap();
+            assert!(final_usage < failure && final_usage < turn && final_usage < terminal);
+            assert_eq!(emitted[final_usage].payload["runDelta"]["inputTokens"], 120);
+            assert_eq!(emitted[final_usage].payload["runDeltaAvailable"], true);
+            let settled_goal = emitted
+                .iter()
+                .rposition(|event| {
+                    matches!(
+                        event.event_type.as_str(),
+                        "session.goal.updated" | "session.goal.snapshot"
+                    ) && event.payload["workingNow"] == false
+                })
+                .unwrap();
+            assert!(failure < settled_goal && settled_goal < turn);
+        }
+        assert_eq!(
+            emitted[failure].payload["code"],
+            "semantic_completion_rejected"
+        );
+        assert_eq!(emitted[failure].payload["recoverable"], false);
+        assert_eq!(emitted[terminal].payload["runTerminalState"], "failed");
+        terminal_validator
+            .validate(&emitted[terminal].payload)
+            .unwrap();
+        assert!(!emitted
+            .iter()
+            .any(|event| event.event_type == "run.result.proposed"));
+        assert_eq!(input_calls, usize::from(scenario.starts_with("controller")));
+        assert_eq!(call_count(&directory, "terminal-result:rejected"), 1);
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
 fn idle_integrity_failure_persists_reconciliation_and_retires_provider() {
     assert_idle_failure_reconciled(false);
 }
@@ -6502,7 +6727,11 @@ fn resume_usage_is_a_historical_diagnostic_not_a_warning_or_charge() {
     let directory = temporary_directory("resume-usage-snapshot");
     let config = provider_config(
         &directory,
-        &["--durable-turn-ids", "--resume-usage-snapshot"],
+        &[
+            "--durable-turn-ids",
+            "--resume-usage-snapshot",
+            "--cumulative-accounting-usage",
+        ],
     );
     let runner_config = durable_config(&directory);
     let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
@@ -6571,7 +6800,7 @@ fn resume_usage_is_a_historical_diagnostic_not_a_warning_or_charge() {
         .collect();
     assert_eq!(snapshots.len(), 2);
     assert_eq!(snapshots[0].payload["receivedTurnId"], "provider-turn-1");
-    assert_eq!(snapshots[0].payload["cumulative"]["inputTokens"], 100);
+    assert_eq!(snapshots[0].payload["cumulative"]["inputTokens"], 200);
     assert!(!events.iter().any(|event| matches!(
         event.event_type.as_str(),
         "provider.notice.recorded" | "usage.reported"
@@ -6741,7 +6970,12 @@ fn explicit_skill_input_survives_durable_turn_and_cold_restore() {
     executor.shutdown().unwrap();
     drop(executor);
     let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-    let skill = json!({"type":"skill", "name":"first-task", "path":"/materialized/skills/first-task/SKILL.md"});
+    let skill_path = if cfg!(windows) {
+        r"C:\materialized\skills\first-task\SKILL.md"
+    } else {
+        "/materialized/skills/first-task/SKILL.md"
+    };
+    let skill = json!({"type":"skill", "name":"first-task", "path":skill_path});
     restored
         .execute(&command(
             "turn",
@@ -6802,4 +7036,362 @@ fn skill_flag_can_be_added_to_an_old_checkpoint_at_settled_run_attach() {
         true
     );
     fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn durable_codex_usage_keeps_run_baselines_through_requests_recovery_and_attachment() {
+    let directory = temporary_directory("accounting-run-baseline");
+    fs::write(
+        directory.join("fake-state.json"),
+        serde_json::to_vec(&json!({"threadId":"thread-1","activeTurnId":null,"nextTurn":1}))
+            .unwrap(),
+    )
+    .unwrap();
+    let mut config = provider_config(
+        &directory,
+        &[
+            "--durable-turn-ids",
+            "--resume-usage-snapshot",
+            "--cumulative-accounting-usage",
+        ],
+    );
+    config.provider_session_id = Some("thread-1".to_owned());
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider":config,"authorizedTools":task_context_tool_set()}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    for _ in 0..20 {
+        if poll_and_ack(&mut executor)
+            .unwrap()
+            .iter()
+            .any(|event| event.payload["code"] == "codex_resume_usage_snapshot")
+        {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    fn run(
+        executor: &mut CodexCommandExecutor,
+        sequence: u64,
+        expected_input: u64,
+        expected_output: u64,
+    ) {
+        executor
+            .execute(&command(
+                &format!("turn-{sequence}"),
+                sequence,
+                "turn.start",
+                json!({"text":"Complete the accounting turn."}),
+            ))
+            .unwrap();
+        let events = wait_for_executor_event_batch(executor, "turn.completed");
+        let usage = events
+            .iter()
+            .filter(|event| event.event_type == "usage.reported")
+            .last()
+            .expect("provider emitted usage");
+        assert_eq!(usage.payload["runDeltaBasis"], "run");
+        assert_eq!(usage.payload["runDeltaAvailable"], true);
+        assert_eq!(usage.payload["runDelta"]["inputTokens"], expected_input);
+        assert_eq!(usage.payload["runDelta"]["outputTokens"], expected_output);
+        for _ in 0..20 {
+            if poll_and_ack(executor).unwrap().is_empty() {
+                break;
+            }
+        }
+    }
+    run(&mut executor, 3, 100, 10);
+    run(&mut executor, 4, 200, 20);
+    executor.shutdown().unwrap();
+    drop(executor);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    run(&mut executor, 5, 300, 30);
+    executor
+        .execute(&command(
+            "attach",
+            6,
+            "run.attach",
+            json!({"authorizedTools":task_context_tool_set()}),
+        ))
+        .unwrap();
+    run(&mut executor, 7, 100, 10);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn late_codex_usage_requires_durable_reconciliation_before_or_after_handoff() {
+    for mode in ["before", "after", "after-paid", "unsafe"] {
+        let handoff_first = mode.starts_with("after");
+        let directory = temporary_directory("late-accounting-reconciliation");
+        let gate = directory.join("release-late-usage");
+        let gate_arg = gate.to_string_lossy().into_owned();
+        let config = provider_config(
+            &directory,
+            &[
+                "--durable-turn-ids",
+                "--warm-tail-accounting",
+                "--late-accounting-tail-gate",
+                &gate_arg,
+                if mode == "after-paid" {
+                    "--hold-second-accounting-terminal"
+                } else {
+                    "--ordinary-terminal"
+                },
+                if mode == "after-paid" {
+                    "--late-accounting-duplicate-burst"
+                } else {
+                    "--ordinary-tail-count"
+                },
+                if mode == "unsafe" {
+                    "--unsafe-after-late-usage"
+                } else {
+                    "--ordinary-late-usage"
+                },
+            ],
+        );
+        let runner_config = durable_config(&directory);
+        let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+        executor
+            .execute(&command(
+                "prepare",
+                1,
+                "run.prepare",
+                json!({"provider":config,"authorizedTools":task_context_tool_set()}),
+            ))
+            .unwrap();
+        executor
+            .execute(&command("open", 2, "session.open", json!({})))
+            .unwrap();
+        executor
+            .execute(&command(
+                "turn",
+                3,
+                "turn.start",
+                json!({"text":"Finish before the delayed accounting report."}),
+            ))
+            .unwrap();
+        let events = wait_for_executor_event_batch(&mut executor, "turn.completed");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "usage.reported")
+                .last()
+                .unwrap()
+                .payload["runDelta"]["inputTokens"],
+            100
+        );
+        if handoff_first {
+            executor
+                .execute(&command(
+                    "attach",
+                    4,
+                    "run.attach",
+                    json!({"authorizedTools":task_context_tool_set()}),
+                ))
+                .unwrap();
+            let mut next = runner_config.clone();
+            next.run_id = "run-2".to_owned();
+            executor.rotate_authority(&next);
+        }
+        if mode == "after-paid" {
+            executor
+                .execute(&command(
+                    "successor-turn",
+                    5,
+                    "turn.start",
+                    json!({"text":"Start successor paid work."}),
+                ))
+                .unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                assert!(std::time::Instant::now() < deadline);
+                let events = poll_and_ack(&mut executor).unwrap();
+                assert!(!events
+                    .iter()
+                    .any(|event| event.event_type == "turn.completed"));
+                if let Some(usage) = events
+                    .iter()
+                    .find(|event| event.event_type == "usage.reported")
+                {
+                    assert_eq!(usage.payload["runDelta"]["inputTokens"], 50);
+                    break;
+                }
+            }
+        }
+        fs::write(&gate, "release").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let retained = loop {
+            assert!(std::time::Instant::now() < deadline);
+            let events = if mode == "unsafe" {
+                match executor.execute(&command(
+                    "quiesce",
+                    4,
+                    "session.snapshot",
+                    json!({"quiesceForWarmAttach":true}),
+                )) {
+                    Ok(_) => {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                        continue;
+                    }
+                    Err(error) => {
+                        assert!(error
+                            .to_string()
+                            .contains("failed to retain completed Codex accounting"));
+                        executor.retained_events().unwrap()
+                    }
+                }
+            } else {
+                executor.poll_events().unwrap()
+            };
+            if events.iter().any(|event| {
+                event.event_type == "usage.reported"
+                    || event.payload["code"] == "codex_usage_accounting_integrity"
+            }) {
+                break events;
+            }
+            executor.acknowledge_events(events.len()).unwrap();
+        };
+        if handoff_first {
+            assert!(retained
+                .iter()
+                .filter(|event| event.event_type == "usage.reported")
+                .all(|event| event.payload["runDeltaAvailable"] == false));
+            assert!(retained
+                .iter()
+                .any(|event| event.event_type == "usage.reported"
+                    && event.payload["runDeltaAvailable"] == false));
+            assert!(retained
+                .iter()
+                .any(|event| event.event_type == "run.terminal"
+                    && event.payload["runTerminalState"] == "failed"));
+            let required = retained
+                .iter()
+                .find(|event| event.event_type == "usage.reported")
+                .unwrap();
+            assert_eq!(
+                required.payload["reconciliation"]["cumulative"]["inputTokens"],
+                120
+            );
+            assert_eq!(
+                required.payload["reconciliation"]["priorOrigin"]["runId"],
+                "run-1"
+            );
+            let evidence = retained
+                .iter()
+                .find(|event| event.payload["code"] == "codex_usage_accounting_integrity")
+                .unwrap();
+            assert_eq!(evidence.payload["priorOrigin"]["runId"], "run-1");
+            assert_eq!(evidence.payload["receivedTurnId"], "provider-turn-1");
+            assert_eq!(evidence.payload["cumulative"]["inputTokens"], 120);
+        } else {
+            assert_eq!(
+                retained
+                    .iter()
+                    .find(|event| event.event_type == "usage.reported")
+                    .unwrap()
+                    .payload["runDelta"]["inputTokens"],
+                120
+            );
+        }
+        let saved: Value =
+            serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+                .unwrap();
+        assert_eq!(saved["lifecycle"], "reconciliation_required");
+        assert!(!saved["pendingEvents"].as_array().unwrap().is_empty());
+        let error = executor
+            .execute(&command(
+                "blocked-attach",
+                5,
+                "run.attach",
+                json!({"authorizedTools":task_context_tool_set()}),
+            ))
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("requires explicit reconciliation"));
+        executor.shutdown().unwrap();
+        drop(executor);
+        let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+        let error = restored
+            .execute(&command(
+                "blocked-after-restart",
+                6,
+                "run.attach",
+                json!({"authorizedTools":task_context_tool_set()}),
+            ))
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("requires explicit reconciliation"));
+        restored.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
+}
+
+#[test]
+fn durable_codex_usage_keeps_completed_turn_through_reconciled_provider_exit() {
+    for exit_flag in [
+        "--exit-after-turn-completion",
+        "--fail-after-turn-completion",
+    ] {
+        let directory = temporary_directory("accounting-reconciled-exit");
+        let config = provider_config(
+            &directory,
+            &[
+                "--durable-turn-ids",
+                "--warm-tail-accounting",
+                "--emit-post-completion-passive-statuses",
+                exit_flag,
+            ],
+        );
+        let mut executor =
+            CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+        executor
+            .execute(&command(
+                "prepare",
+                1,
+                "run.prepare",
+                json!({"provider":config,"authorizedTools":task_context_tool_set()}),
+            ))
+            .unwrap();
+        executor
+            .execute(&command("open", 2, "session.open", json!({})))
+            .unwrap();
+        executor
+            .execute(&command(
+                "turn",
+                3,
+                "turn.start",
+                json!({"text":"Complete accounting before exiting."}),
+            ))
+            .unwrap();
+        let events = wait_for_executor_event_batch(&mut executor, "turn.completed");
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.event_type == "usage.reported")
+                .last()
+                .unwrap()
+                .payload["runDelta"]["inputTokens"],
+            120
+        );
+        assert!(!events.iter().any(|event| event.event_type == "turn.failed"));
+        let saved: Value =
+            serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+                .unwrap();
+        assert_ne!(saved["lifecycle"], "reconciliation_required");
+        assert_eq!(saved["completedTurnAuthoritative"], true);
+        executor.shutdown().unwrap();
+        fs::remove_dir_all(directory).unwrap();
+    }
 }

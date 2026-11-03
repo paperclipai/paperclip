@@ -1,14 +1,17 @@
+import { hashPassword } from "better-auth/crypto";
+import { createBetterAuthInstance, createBetterAuthHandler, resolveBetterAuthSession } from "../../auth/better-auth.js";
+import type { Config } from "../../config.js";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq, sql } from "drizzle-orm";
-import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issues, projects, projectWorkspaces, activityLog, issueComments, assets, goals, approvals, documents, documentRevisions, issueDocuments, issueRelations, issueThreadInteractions, connectionIntentDeliveries, toolApplications, toolConnections, toolConnectionInstalls, connectionGrants, toolCatalogEntries, toolProfiles, toolProfileBindings } from "@paperclipai/db";
+import { agents, authUsers, authAccounts, companies, companyMemberships, createDb, applyPendingMigrations, closeRegisteredClients, heartbeatRuns, issues, projects, projectWorkspaces, activityLog, issueComments, assets, goals, approvals, documents, documentRevisions, issueDocuments, issueRelations, issueThreadInteractions, connectionIntentDeliveries, toolApplications, toolConnections, toolConnectionInstalls, connectionGrants, toolCatalogEntries, toolProfiles, toolProfileBindings } from "@paperclipai/db";
 import { documentService } from "../../services/documents.js";
 import { connectionIntentService } from "../../services/connection-intents.js";
 import { initializeRunIdentity } from "../../services/run-identity.js";
-import { startEmbeddedPostgresTestDatabase } from "./embedded-postgres.js";
+import { startRecoveryPostgres } from "./recovery-postgres.js";
 import { createApp } from "../../app.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
@@ -21,15 +24,29 @@ const CONNECTION_SCENARIOS: readonly RunnerConnectionScenario[] = ["fresh", "pen
 /** Disposable real routes, database and storage. A fresh company isolates each attempt. */
 export async function startRunnerApiTestServer(options: {
   deploymentMode?: "authenticated" | "local_trusted";
+  authPublicBaseUrl?: string;
+  humanSessions?: boolean;
+  databaseUrl?: string;
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), "paperclip-api-eval-"));
-  const temporary = await startEmbeddedPostgresTestDatabase("paperclip-api-eval-db-");
+  const temporary = options.databaseUrl
+    ? { connectionString: options.databaseUrl, cleanup: () => closeRegisteredClients(options.databaseUrl!, { scope: "database" }) }
+    : await startRecoveryPostgres("paperclip-api-eval-db-");
+  if (options.databaseUrl) await applyPendingMigrations(options.databaseUrl);
   const db = createDb(temporary.connectionString);
   const storage = createStorageService(createLocalDiskStorageProvider(join(root, "storage")));
+  const origin = options.authPublicBaseUrl ?? "http://127.0.0.1";
+  const auth = options.humanSessions ? createBetterAuthInstance(db, {
+    deploymentMode: "authenticated", deploymentExposure: "private", authBaseUrlMode: "explicit",
+    authPublicBaseUrl: origin, authDisableSignUp: true,
+  } as Config, [origin]) : undefined;
+  const humanCookies = new Map<string, string>();
   const app = await createApp(db, {
     uiMode: "none", serverPort: 0, storageService: storage,
     deploymentMode: options.deploymentMode ?? "authenticated", deploymentExposure: "private",
     allowedHostnames: ["127.0.0.1"], bindHost: "127.0.0.1", authReady: true,
+    authPublicBaseUrl: options.authPublicBaseUrl, chatWebhookPublicBaseUrl: options.authPublicBaseUrl,
+    ...(auth ? { betterAuthHandler: createBetterAuthHandler(auth), resolveSession: (req: import("express").Request) => resolveBetterAuthSession(auth, req) } : {}),
     companyDeletionEnabled: false, instanceId: `eval-${randomUUID()}`,
     localPluginDir: join(root, "plugins"), managedPluginAutoInstall: [],
     decisionServiceOptions: { wakeOriginAgent: async () => undefined },
@@ -43,7 +60,23 @@ export async function startRunnerApiTestServer(options: {
   const apiUrl = `http://127.0.0.1:${address.port}`;
   setupRunnerPrpWebSocketServer(http, { apiUrl });
   return {
+    databaseUrl: temporary.connectionString,
     db, root, apiUrl, storage,
+    async humanSession(userId: string) {
+      if (!auth) throw new Error("Enable humanSessions for this fixture");
+      if (humanCookies.has(userId)) return humanCookies.get(userId)!;
+      const [user] = await db.select().from(authUsers).where(eq(authUsers.id, userId));
+      const password = `fixture-${randomUUID()}`;
+      await db.insert(authAccounts).values({ id: randomUUID(), issuer: "local:credential", accountId: userId,
+        providerId: "credential", userId, password: await hashPassword(password), createdAt: new Date(), updatedAt: new Date() });
+      const response = await auth.handler(new Request(`${origin}/api/auth/sign-in/email`, {
+        method: "POST", headers: { "Content-Type": "application/json", origin }, body: JSON.stringify({ email: user.email, password }),
+      }));
+      if (!response.ok) throw new Error(`Fixture sign-in failed (${response.status})`);
+      const cookie = response.headers.getSetCookie().map(cookie => cookie.split(";")[0]).join("; ");
+      humanCookies.set(userId, cookie);
+      return cookie;
+    },
     async fixture(options: { mode?: "standard" | "ask" | "planning"; apiToolsEnabled?: boolean; reset?: boolean; conversation?: boolean; connectionScenario?: RunnerConnectionScenario; contextSnapshot?: Record<string, unknown>; disableWakeOnDemand?: boolean } = {}) {
       if (options.connectionScenario !== undefined && !CONNECTION_SCENARIOS.includes(options.connectionScenario)) throw new Error(`Unknown connection eval scenario: ${String(options.connectionScenario)}`);
       // This DB is created inside this helper, never supplied by a caller. Paid

@@ -1,3 +1,4 @@
+import { connectionActorUserId } from "../actor.js";
 import type { ActorInfo } from "../types.js";
 import { isRemoteMcpConnectorMethod } from "@paperclipai/shared";
 import { and, eq } from "drizzle-orm";
@@ -138,9 +139,7 @@ export function createOAuthCatalogCompletion(db: Db, finishGalleryAppConnection:
                   ? (input.actor.actorId ?? null)
                   : null,
               createdByUserId:
-                input.actor?.actorType === "user"
-                  ? (input.actor.actorId ?? null)
-                  : null,
+                connectionActorUserId(input.actor),
             })),
           )
           .onConflictDoNothing();

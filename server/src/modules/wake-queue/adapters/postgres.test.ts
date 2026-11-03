@@ -1,5 +1,7 @@
+import { resolveExternalTestDatabaseUrl } from "../../../__tests__/helpers/external-test-database.js";
+import { DELIVERY_QUEUES } from "../../../services/delivery-work-notifications.js";
 import { instanceSettingsService } from "../../../services/instance-settings.js";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Db } from "@paperclipai/db";
@@ -16,6 +18,7 @@ import {
   issueRecoveryActions,
   issues,
   nativeRunFinalizations,
+  subscribeDatabaseWork,
 } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
@@ -35,7 +38,8 @@ import type { TransactionScope } from "../application/ports.js";
 // a foreign-company row is invisible to a read, and a deferred-status
 // compare-and-set that affects no row leaves no other trace. The decision
 // branching itself is proven against plain facts in `domain/policy.test.ts`.
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_WAKE_QUEUE_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -55,8 +59,8 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   };
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-wake-queue-postgres-adapter-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-wake-queue-postgres-adapter-");
+    db = createDb(external ?? tempDb!.connectionString, { maxConnections: 6 });
   }, 20_000);
 
   afterEach(async () => {
@@ -76,6 +80,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -176,6 +181,85 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     });
     return id;
   }
+
+  function recordReleaseRunReads() {
+    const rows: unknown[][] = [];
+    function recordSelects<T extends Pick<Db, "select">>(executor: T): T {
+      return new Proxy(executor, { get(target, key) {
+        if (key !== "select") return Reflect.get(target, key);
+        return (...fields: Parameters<Db["select"]>) => {
+          const builder = target.select(...fields), from = builder.from.bind(builder);
+          builder.from = ((...args: Parameters<typeof from>) => {
+            const query = from(...args);
+            if (args[0] === heartbeatRuns) {
+              const execute = query.execute.bind(query);
+              query.execute = async (...executeArgs: Parameters<typeof execute>) => {
+                const result = await execute(...executeArgs); rows.push(result); return result;
+              };
+            }
+            return query;
+          }) as typeof builder.from;
+          return builder;
+        };
+      }});
+    }
+    const transaction: Db["transaction"] = (callback, config) =>
+      db.transaction(tx => callback(recordSelects(tx)), config);
+    const recorded = new Proxy(db, { get(target, key) {
+      return key === "transaction" ? transaction : Reflect.get(target, key);
+    }});
+    return { recorded, rows };
+  }
+
+  it.each(["legacy", "native"])("keeps %s in-flight work and every recovery receipt while omitting output from release reads", async runtimeMode => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent({ companyId });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+    const runId = await seedRun({ companyId, agentId, status: "running", contextSnapshot: { issueId } });
+    const wakeId = await seedDeferredWake({ companyId, agentId, issueId });
+    const payload = randomBytes(512 * 1024).toString("base64");
+    const evidence = { cancellation: { source: "queued_message", expected: true, initiator: { type: "system" }, reason: "Fixture", recordedAt: "2020-01-01T00:00:00Z" },
+      workspaceRestoreFailure: "restore_unsafe_archive", workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [randomUUID()] },
+      nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId, companyId, issueId },
+      executionCancellation: { state: "acknowledged" }, executionRecovery: { kind: "interrupted", providerStopped: true },
+      configurationIncomplete: { reason: "workspace_unavailable" }, unknownFutureReceipt: { retained: true } };
+    await db.update(heartbeatRuns).set({ runtimeMode,
+      ...(runtimeMode === "native" ? { runnerProfileJson: { savedInput: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
+        contextSnapshot: { issueId, paperclipWake: { savedTask: payload }, paperclipTaskMarkdown: payload } } : {}),
+      resultJson: { ...evidence, stdout: payload.repeat(3), stderr: payload } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId }).where(eq(issues.id, issueId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId));
+    const { recorded, rows } = recordReleaseRunReads();
+    const result = await createPostgresWakeQueueAdapter(recorded, stubDeps).withIssueExecutionLock(
+      { companyId, runId, now: new Date(), resumeStrandedQueue: true },
+      async () => { throw new Error("in-flight work must not drain"); },
+    );
+    expect(result.outcome.kind).toBe("released");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toEqual([{ ...run, resultJson: evidence,
+      ...(runtimeMode === "native" ? { runnerProfileJson: null, stdoutExcerpt: null, stderrExcerpt: null,
+        contextSnapshot: { issueId } } : {}) }]);
+    expect(result.run.contextSnapshot).toEqual({ issueId });
+    expect(Buffer.byteLength(JSON.stringify(rows))).toBeLessThan(8 * 1024);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toEqual(run);
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]).toEqual(issue);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wakeId)))[0]).toEqual(wake);
+  });
+
+  it.each([null, ["stdout", { stderr: "array evidence" }], "scalar", 42].map(result => ({ result })))("preserves non-object result evidence $result during release", async ({ result }) => {
+    const companyId = await seedCompany(), agentId = await seedAgent({ companyId });
+    const runId = await seedRun({ companyId, agentId, status: "running" });
+    await db.update(heartbeatRuns).set({ resultJson: result as Record<string, unknown> | null }).where(eq(heartbeatRuns.id, runId));
+    const { recorded, rows } = recordReleaseRunReads();
+    await createPostgresWakeQueueAdapter(recorded, stubDeps).withIssueExecutionLock(
+      { companyId, runId, now: new Date(), resumeStrandedQueue: true },
+      async () => { throw new Error("in-flight work must not drain"); },
+    );
+    expect(rows).toHaveLength(1);
+    expect((rows[0][0] as typeof heartbeatRuns.$inferSelect).resultJson).toEqual(result);
+  });
 
   it.each(["assignee", "mentioned"])("preserves a paused recipient's accepted message until resume (%s)", async kind => {
     const companyId = await seedCompany();
@@ -787,7 +871,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(candidate?.id).toBe(wakeId);
       const agent = await ports.transaction.findInvokableAgent({ companyId, agentId: foreignAgentId });
       expect(agent).toBeNull();
-      const failed = await ports.transaction.failDeferredWake({ companyId, wakeId: candidate!.id, now: new Date() });
+      const failed = await ports.transaction.failDeferredWake({ companyId, wakeId: candidate!.id, agentId: candidate!.agentId, now: new Date() });
       expect(failed).toBe(true);
       return { outcome: { kind: "released" as const }, postCommitEffects: [] };
     });
@@ -819,6 +903,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       async (_locked, ports) => {
         const cancelledUnderWrongCompany = await ports.transaction.cancelDeferredWake({
           companyId: otherCompanyId,
+          agentId,
           wakeId,
           reason: "cross-company cancel attempt",
           now: new Date(),
@@ -827,6 +912,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
 
         const failedUnderWrongCompany = await ports.transaction.failDeferredWake({
           companyId: otherCompanyId,
+          agentId,
           wakeId,
           now: new Date(),
         });
@@ -1141,6 +1227,31 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       expect(wakeRow?.status).toBe("deferred_issue_execution");
       expect(wakeRow?.coalescedCount).not.toBe(5);
       expect(wakeRow?.payload).not.toHaveProperty("foo");
+    });
+
+    it.each([DELIVERY_QUEUES.nativeResponsePresentation, DELIVERY_QUEUES.nativeReviewResponse, DELIVERY_QUEUES.nativeStatusReassessment])(
+      "scopes a real coalesced-input %s response wake to its active run after commit", async queue => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      const runId = await seedRun({ companyId, agentId, status: "running" });
+      const hints: Array<Record<string, unknown>> = [];
+      const unsubscribe = subscribeDatabaseWork(db, queue, (event, values) => {
+        if (event === "settled") for (const value of values ?? []) hints.push(JSON.parse(value));
+      });
+      try {
+        await db.transaction(async tx => {
+          await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(createAdmissionTransactionScope(companyId, tx as unknown as Db), {
+            companyId, activeExecutionRunId: runId, mergedContextSnapshot: { commentId: "fresh-input" },
+            agentId, source: "on_demand", triggerDetail: null, payload: null,
+            requestedByActorType: "user", requestedByActorId: null, idempotencyKey: null,
+          });
+          expect(hints).toEqual([]);
+        });
+        expect(hints).toEqual([{ companyId, runId }]);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0].contextSnapshot)
+          .toMatchObject({ commentId: "fresh-input" });
+        expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.runId, runId))).toHaveLength(1);
+      } finally { unsubscribe(); }
     });
 
     // Review test (b), the coalesce write: a foreign company affects no row

@@ -4,7 +4,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { once } from "node:events";
 import { braintrustGatewayRequestParent } from "./braintrust-gateway-context.js";
 import { usdToUnits } from "../../packages/shared/src/money.js";
-import { estimateProviderCost, ProviderUsageAccumulator, type EvalModelPrice, type ProviderUsageReceipt } from "./provider-usage.js";
+import { estimateProviderCost, matchesPriceResponseModel, ProviderUsageAccumulator, validatePriceResponseModels, type EvalModelPrice, type ProviderUsageReceipt } from "./provider-usage.js";
 import { EvalAdmissionError, validEvalLedgerId, type EvalChargeIdentity, type openEvalCostLedger } from "./cost-ledger.js";
 
 type Ledger = Awaited<ReturnType<typeof openEvalCostLedger>>;
@@ -34,6 +34,7 @@ const row = (value: unknown): Record<string, unknown> => value && typeof value =
 class EvalRequestError extends Error {}
 
 export function evalRequestReservation(route: EvalGatewayRoute): string {
+  validatePriceResponseModels(route.price);
   if (route.provisionalBound !== undefined) validateCostBoundEvidence(route.provisionalBound);
   if (![route.maximumInputTokens, route.maximumOutputTokens, route.timeoutMs].every(n => Number.isSafeInteger(n) && n > 0)
       || route.timeoutMs > 300_000 || route.provider !== route.price.provider || !validEvalLedgerId(route.price.version) || !validEvalLedgerId(route.price.model)) throw new Error("Invalid eval gateway limits or price identity");
@@ -65,15 +66,34 @@ function modelReservationBound(route: EvalGatewayRoute, reservation: string) {
   }) : undefined;
 }
 
-function boundedPayload(value: unknown, route: EvalGatewayRoute) {
+function qualifiedOpenAiTools(tools: unknown): boolean {
+  if (!Array.isArray(tools)) return false;
+  let remaining = 1024;
+  const leaf = (tool: unknown): boolean => {
+    const definition = row(tool);
+    return --remaining >= 0 && (definition.type === "function" || definition.type === "custom")
+      && typeof definition.name === "string" && Boolean(definition.name.trim()) && !Object.hasOwn(definition, "tools");
+  };
+  return tools.every(tool => {
+    const definition = row(tool);
+    if (definition.type !== "namespace") return leaf(tool);
+    return --remaining >= 0 && typeof definition.name === "string" && Boolean(definition.name.trim())
+      && (definition.description === undefined || typeof definition.description === "string")
+      && Object.keys(definition).every(key => ["type", "name", "description", "tools"].includes(key))
+      && Array.isArray(definition.tools) && definition.tools.length > 0 && definition.tools.every(leaf);
+  });
+}
+
+export function boundedEvalPayload(value: unknown, route: Pick<EvalGatewayRoute, "provider" | "price" | "maximumOutputTokens">): Record<string, unknown> {
   const body = row(value);
   if (body.model !== route.price.model) throw new EvalRequestError("unqualified_model");
   if (body.background === true || body.mcp_servers !== undefined || body.service_tier !== undefined && !["auto", "default", "standard_only"].includes(String(body.service_tier))) throw new EvalRequestError("unqualified_billing_mode");
   if (body.speed !== undefined && body.speed !== "standard" || body.inference_geo !== undefined) throw new EvalRequestError("unqualified_billing_mode");
-  if (body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.some(tool => {
-    const type = row(tool).type;
-    return route.provider === "openai" ? !["function", "custom"].includes(String(type)) : type !== undefined && type !== "custom";
-  }))) throw new EvalRequestError("unqualified_hosted_tool");
+  if (body.tools !== undefined && (route.provider === "openai" ? !qualifiedOpenAiTools(body.tools)
+    : !Array.isArray(body.tools) || body.tools.some(tool => {
+      const definition = row(tool), type = definition.type;
+      return type !== undefined && type !== "custom" || Object.hasOwn(definition, "tools");
+    }))) throw new EvalRequestError("unqualified_hosted_tool");
   const inspect = (item: unknown): void => {
     if (Array.isArray(item)) { item.forEach(inspect); return; }
     if (!item || typeof item !== "object") return;
@@ -115,8 +135,8 @@ export async function forwardEvalRequest(input: {
   transport?: typeof fetch;
 }): Promise<EvalGatewayReceipt> {
   const { route, ledger } = input;
-  let body: ReturnType<typeof boundedPayload>;
-  try { body = boundedPayload(input.payload, route); }
+  let body: ReturnType<typeof boundedEvalPayload>;
+  try { body = boundedEvalPayload(input.payload, route); }
   catch (error) { throw error instanceof EvalRequestError ? error : new EvalRequestError("invalid_request_payload"); }
   const reservation = evalRequestReservation(route);
   if (!route.apiKey || /[\r\n]/.test(route.apiKey)) throw new Error("missing_gateway_credential");
@@ -131,7 +151,7 @@ export async function forwardEvalRequest(input: {
     receipt.clientDisconnected = true; receipt.outcome = "cancelled"; receipt.errorCode ??= "client_disconnected";
     return true;
   };
-  const usage = new ProviderUsageAccumulator(route.provider, body);
+  const usage = new ProviderUsageAccumulator(route.provider, body, route.price);
   const bound = modelReservationBound(route, reservation);
   await ledger.reserve(requestId, input.identity, reservation, bound);
   const abort = new AbortController();
@@ -203,7 +223,7 @@ export async function forwardEvalRequest(input: {
       receipt.errorCode ??= "invalid_usage";
     }
     const observedInput = observed.tokenBounds?.input ?? 0;
-    if (bound && (observed.tokenBounds?.valid === false || receipt.errorCode === "invalid_usage" || observed.model !== undefined && observed.model !== route.price.model
+    if (bound && (observed.tokenBounds?.valid === false || receipt.errorCode === "invalid_usage" || observed.model !== undefined && !matchesPriceResponseModel(route.price, observed.model)
         || !Number.isSafeInteger(observedInput) || observedInput > route.maximumInputTokens
         || (observed.tokenBounds?.output ?? 0) > route.maximumOutputTokens
         || route.mode === "braintrust" && (!response || receipt.endpoint !== route.endpointName

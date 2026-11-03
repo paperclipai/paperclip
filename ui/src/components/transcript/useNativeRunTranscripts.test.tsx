@@ -7,9 +7,10 @@ import { useNativeRunTranscripts } from "./useNativeRunTranscripts";
 import { TRANSCRIPT_REQUEST_TIMEOUT_MS } from "./read-transcript-request";
 
 const eventsMock = vi.hoisted(() => vi.fn());
+const conversationEventsMock = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/heartbeats", () => ({
-  heartbeatsApi: { events: eventsMock },
+  heartbeatsApi: { events: eventsMock, conversationEvents: conversationEventsMock },
 }));
 
 function Probe() {
@@ -47,6 +48,29 @@ describe("useNativeRunTranscripts", () => {
     act(() => root.unmount());
     container.remove();
     vi.useRealTimers();
+  });
+
+  it("expands from sequence zero without duplicating the preview or withholding new runs", async () => {
+    let state: ReturnType<typeof useNativeRunTranscripts>;
+    const event = (seq: number, text: string) => ({
+      id: `event-${seq}`, runId: "old", companyId: "company", seq, eventType: "item.completed", createdAt: new Date().toISOString(),
+      payload: { prpEvent: { schema: "paperclip.prp.event.v1", eventType: "item.completed", runId: "old", schemaVersion: 1, emittedAt: new Date().toISOString(), itemId: `item-${seq}`, payload: { kind: "agentMessage", text } } },
+    });
+    conversationEventsMock.mockResolvedValue([event(3, "Latest answer")]);
+    eventsMock.mockImplementation((id) => Promise.resolve(id === "old" ? [event(1, "Earlier answer"), event(3, "Latest answer")] : []));
+    function Window({ compact }: { compact: boolean }) {
+      state = useNativeRunTranscripts([
+        { id: "old", runtimeMode: "native", status: "succeeded", conversationOnly: compact },
+        { id: "new", runtimeMode: "native", status: "succeeded" },
+      ]);
+      return null;
+    }
+    await act(async () => { root.render(<Window compact />); });
+    expect(conversationEventsMock).toHaveBeenCalledWith("old", 0, 1000, expect.any(Object));
+    expect(eventsMock).toHaveBeenCalledWith("new", 0, 1000, expect.any(Object));
+    await act(async () => { root.render(<Window compact={false} />); });
+    expect(eventsMock).toHaveBeenCalledWith("old", 0, 1000, expect.any(Object));
+    expect(state!.transcriptByRun.get("old")?.filter((entry) => entry.kind === "assistant").map((entry) => entry.text)).toEqual(["Earlier answer", "Latest answer"]);
   });
 
   it("exposes event transport failures and retries terminal runs until recovery", async () => {
@@ -94,8 +118,8 @@ describe("native history readiness and stable projection", () => {
   let container: HTMLDivElement;
   let root: Root;
   let latest: ReturnType<typeof useNativeRunTranscripts>;
-  function StateProbe({ runs = [{ id: "one", status: "running", runtimeMode: "native" as const }] }) {
-    latest = useNativeRunTranscripts(runs);
+  function StateProbe({ runs = [{ id: "one", status: "running", runtimeMode: "native" as const }], enabled = true }) {
+    latest = useNativeRunTranscripts(runs, { enabled });
     return null;
   }
   beforeEach(() => {
@@ -124,6 +148,38 @@ describe("native history readiness and stable projection", () => {
     eventsMock.mockResolvedValue([]);
     await act(async () => { latest.retry(); });
     expect(latest.errorsByRun.size).toBe(0);
+  });
+
+  it("loads newly revealed terminal runs without rereading settled siblings, and still refreshes on retry", async () => {
+    eventsMock.mockResolvedValue([]);
+    const one = { id: "one", status: "succeeded", runtimeMode: "native" as const };
+    const two = { ...one, id: "two" };
+    await act(async () => { root.render(<StateProbe runs={[one]} />); });
+    await act(async () => { root.render(<StateProbe runs={[one, two]} />); });
+    expect(eventsMock.mock.calls.map(([id]) => id)).toEqual(["one", "two"]);
+    await act(async () => { latest.retry(); });
+    expect(eventsMock.mock.calls.map(([id]) => id)).toEqual(["one", "two", "one", "two"]);
+  });
+
+  it("restarts an interrupted explicit refresh when history membership changes", async () => {
+    eventsMock.mockResolvedValueOnce([]).mockImplementationOnce(() => new Promise(() => {})).mockResolvedValue([]);
+    const one = { id: "one", status: "succeeded", runtimeMode: "native" as const };
+    await act(async () => { root.render(<StateProbe runs={[one]} />); });
+    await act(async () => { latest.retry(); });
+    const interruptedSignal = eventsMock.mock.calls[1][3].signal;
+    await act(async () => { root.render(<StateProbe runs={[one, { ...one, id: "two" }]} />); });
+    expect(interruptedSignal.aborted).toBe(true);
+    expect(eventsMock.mock.calls.map(([id]) => id)).toEqual(["one", "one", "one", "two"]);
+  });
+
+  it("revalidates settled history after a disabled view resumes", async () => {
+    eventsMock.mockResolvedValue([]);
+    const runs = [{ id: "one", status: "succeeded", runtimeMode: "native" as const }];
+    await act(async () => { root.render(<StateProbe runs={runs} />); });
+    await act(async () => { root.render(<StateProbe runs={runs} enabled={false} />); });
+    expect(eventsMock).toHaveBeenCalledTimes(1);
+    await act(async () => { root.render(<StateProbe runs={runs} />); });
+    expect(eventsMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not rebuild unchanged history on empty polls", async () => {
@@ -195,6 +251,8 @@ describe("native history readiness and stable projection", () => {
     expect(latest.hydratedRunIds.has("slow")).toBe(false);
     expect(latest.transcriptByRun.has("one")).toBe(true);
     await act(async () => { root.render(<StateProbe runs={[one]} />); });
+    expect(eventsMock.mock.calls.filter(([id]) => id === "one").map(([, cursor]) => cursor)).toEqual([0]);
+    await act(async () => { latest.retry(); });
     expect(eventsMock.mock.calls.filter(([id]) => id === "one").map(([, cursor]) => cursor)).toEqual([0, 7]);
     expect(latest.isInitialHydrating).toBe(false);
   });

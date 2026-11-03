@@ -1,3 +1,6 @@
+import { classifyNativeWorkspaceFailure } from "./native-workspace-failure.js";
+import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
+import { recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { inspectPluginWorkspaceForFinalization } from "./native-plugin-workspace-finalization.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
 import { restoreNativeWorkspaceBestEffort } from "./native-workspace-best-effort.js";
@@ -17,6 +20,7 @@ import { inspectManagedGitWorktreeBranch } from "../workspace-runtime.js";
 import { environmentService } from "../environments.js";
 import type { EnvironmentRuntimeService } from "../environment-runtime.js";
 import { resolveEnvironmentExecutionTarget } from "../environment-execution-target.js";
+import { measureWorkspaceSyncPhase } from "../execution-preparation-timing.js";
 import {
   readNativeWorkspaceSyncReference,
   resumeNativeWorkspaceSync,
@@ -49,7 +53,7 @@ function workspaceSyncFailure(
  * older runs retain the local workspace validation path. The caller owns the
  * durable retry and failure policy.
  */
-export async function resumeNativeWorkspaceFinalization(input: {
+export async function attemptNativeWorkspaceFinalization(input: {
   db: Db;
   runId: string;
   environmentRuntime?: EnvironmentRuntimeService;
@@ -95,8 +99,10 @@ export async function resumeNativeWorkspaceFinalization(input: {
   if (!admission || admission.resultId !== bound.resultId) {
     throw new Error("native_workspace_finalization_binding_missing");
   }
-  if (admission.phase === "terminal_failure"
-    || (admission.nextAttemptAt && admission.nextAttemptAt > new Date())) return null;
+  if (admission.phase === "terminal_failure") return { kind: "inactive" } as const;
+  if (admission.nextAttemptAt && admission.nextAttemptAt > new Date()) {
+    return { kind: "retry", retryAt: admission.nextAttemptAt } as const;
+  }
   const successful = await input.db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, bound.companyId),
     eq(workspaceOperations.heartbeatRunId, input.runId),
@@ -105,7 +111,7 @@ export async function resumeNativeWorkspaceFinalization(input: {
     eq(workspaceOperations.status, "succeeded"),
   )).orderBy(desc(workspaceOperations.createdAt)).limit(1).then((rows) => rows[0] ?? null);
   // A stale failure from a pre-fencing controller cannot invalidate exported work.
-  if (successful) return successful;
+  if (successful) return { kind: "completed", operation: successful } as const;
   const previous = await input.db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, bound.companyId),
     eq(workspaceOperations.heartbeatRunId, input.runId),
@@ -140,7 +146,7 @@ export async function resumeNativeWorkspaceFinalization(input: {
     executionWorkspaceId: workspace?.id ?? null,
     issueId: bound.issueId,
   });
-  return recorder.recordOperation({
+  const operation = await recorder.recordOperation({
     phase: "workspace_finalize",
     cwd,
     metadata: {
@@ -152,6 +158,42 @@ export async function resumeNativeWorkspaceFinalization(input: {
     },
     run: async () => {
       await ownership.assertHeld();
+      const remoteAuthority = readRemoteWorkspaceAuthority(workspace?.metadata);
+      if (remoteAuthority && workspace) {
+        if (!input.environmentRuntime || !remoteAuthority.location) {
+          return workspaceSyncFailure("workspace_sync_out_unrecoverable");
+        }
+        const location = remoteAuthority.location;
+        const environmentsSvc = environmentService(input.db);
+        const lease = await environmentsSvc.getLeaseById(location.leaseId);
+        const environment = lease?.environmentId ? await environmentsSvc.getById(lease.environmentId) : null;
+        if (!lease || !environment || lease.companyId !== bound.companyId
+          || lease.heartbeatRunId !== input.runId || lease.executionWorkspaceId !== workspace.id
+          || lease.providerLeaseId !== location.providerLeaseId || environment.id !== location.environmentId
+          || ["expired", "failed", "pending_cleanup"].includes(lease.status)) {
+          return workspaceSyncFailure("workspace_sync_out_unrecoverable");
+        }
+        const target = await resolveEnvironmentExecutionTarget({
+          db: input.db, companyId: bound.companyId, adapterType: "paperclip_runner",
+          environment, leaseId: lease.id, leaseMetadata: lease.metadata, lease,
+          environmentRuntime: input.environmentRuntime,
+        });
+        if (!target) return workspaceSyncFailure("workspace_sync_out_unrecoverable");
+        try {
+          const saved = await saveRemoteWorkspace({
+            db: input.db, workspace, runId: input.runId, lease, target,
+            assertOwned: ownership.assertHeld,
+          });
+          await ownership.assertHeld();
+          return { status: "succeeded", exitCode: 0,
+            system: "Native workspace files were saved to durable storage.\n",
+            metadata: { remoteWorkspace: saved } };
+        } catch (error) {
+          await ownership.assertHeld();
+          return workspaceSyncFailure(classifyNativeWorkspaceFailure(error).code === "workspace_sync_out_unrecoverable"
+            ? "workspace_sync_out_unrecoverable" : "workspace_sync_out_failed");
+        }
+      }
       if (nativeWorkspaceSync) {
         if (!input.environmentRuntime) {
           return {
@@ -209,6 +251,7 @@ export async function resumeNativeWorkspaceFinalization(input: {
             assertOwnership: ownership.assertHeld,
             restore: () => resumeNativeWorkspaceSync({
               db: input.db, runId: input.runId, target, assertOwnership: ownership.assertHeld,
+              onPhase: measureWorkspaceSyncPhase,
             }),
           });
           await ownership.assertHeld();
@@ -232,12 +275,8 @@ export async function resumeNativeWorkspaceFinalization(input: {
           };
         } catch (error) {
           await ownership.assertHeld();
-          const code =
-            error instanceof Error &&
-            (error.message === "workspace_sync_out_unrecoverable" ||
-              error.message.includes("daytona_sandbox_not_found"))
-              ? "workspace_sync_out_unrecoverable"
-              : "workspace_sync_out_failed";
+          const code = classifyNativeWorkspaceFailure(error).code === "workspace_sync_out_unrecoverable"
+            ? "workspace_sync_out_unrecoverable" : "workspace_sync_out_failed";
           return workspaceSyncFailure(code);
         }
       }
@@ -301,6 +340,26 @@ export async function resumeNativeWorkspaceFinalization(input: {
       };
     },
   });
+  return { kind: "completed", operation } as const;
   });
-  return owned.acquired ? owned.value : null;
+  return owned.acquired ? owned.value : { kind: "waiting", reason: owned.reason } as const;
+}
+
+
+
+export async function resumeNativeWorkspaceFinalization(input: Parameters<typeof attemptNativeWorkspaceFinalization>[0]) {
+  const result = await attemptNativeWorkspaceFinalization(input);
+  return result.kind === "completed" ? result.operation : null;
+}
+
+export function recordNativeWorkspaceFinalizationFailure(db: Db, runId: string, operation: { stderrExcerpt: string | null }) {
+  const unrecoverable = operation.stderrExcerpt?.includes("workspace_sync_out_unrecoverable");
+  const pluginFailure = operation.stderrExcerpt?.trim();
+  const pluginRepair = pluginFailure === "plugin_workspace_branch_mismatch" || pluginFailure === "plugin_workspace_owner_mismatch";
+  return recordNativeFinalizationFailure({
+    db, runId,
+    error: new Error(pluginRepair ? `native_${pluginFailure}` : unrecoverable
+      ? "native_workspace_sync_out_unrecoverable" : "native_workspace_sync_out_failed"),
+    projectRunStatus: true, failureScope: "workspace", permanent: unrecoverable,
+  });
 }

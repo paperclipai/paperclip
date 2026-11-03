@@ -620,4 +620,21 @@ Evidence: `source-only` — [answer delivery](../../server/src/services/question
 
 Verification: `not-run` — Answer in actual configured channel -> one persisted result/useful originating reply; wrong/unlinked/expired sender denied. Overlap two conversations and verify no cross-delivery/replay.
 
+Slack presentation uses opaque native response tokens for text, choices,
+multiple selections, custom answers, validated text, ordinary confirmations,
+checklists, item verdicts, suggested tasks, and connection decline. Permission
+grants, governed approvals, and forms that exceed native limits retain authenticated
+Paperclip review. Link clicks are passive and confer no decision authority.
+Current company, audience, identity, connection, and governed-action checks apply.
+Selections map back to the canonical response through the existing transaction
+and callback receipt. Terminal cards retain the submitted answer only in the
+original authorized conversation. Native multi-choice continuation validates the
+exact saved selection mapping; a native answer token cannot be substituted by a
+Board receipt. Later review replies follow the
+[existing wake and connection-delivery receipts](../../server/src/services/chat-interaction-continuation.ts).
+For automation-origin connection requests, validated receipts can recover the
+conversation from the published prompt. Local Slack proof covers eleven formats
+with a deterministic protocol fixture; production agent authority and other
+provider paths retain their independent verification requirements.
+
 Gaps: Slack/Discord/Telegram/email/iMessage and runtime paths independently not-run until driven.

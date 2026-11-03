@@ -1,3 +1,4 @@
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { insertIssueComment } from "./issue-comment-writes.js";
 import { randomUUID } from "node:crypto";
 import { sanitizeQuarantinedCommentForHigherTrust } from "./source-trust.js";
@@ -195,6 +196,7 @@ export async function enqueueFastResponse(tx: Db, source: FastResponseSource) {
   if (source.acceptedAt.getTime() + FAST_RESPONSE_DEADLINE_MS <= Date.now())
     return;
   await notifyDeliveryWork(tx, DELIVERY_QUEUES.fastResponse);
+  if (source.endpointId && source.deliveryId) await notifyChatResponseAvailability(tx, { companyId: source.companyId, deliveryId: source.deliveryId });
   await tx
     .insert(fastResponseRequests)
     .values({
@@ -549,20 +551,23 @@ export function fastResponseService(
     }
   }
   async function skip(request: Request, reason: string) {
-    await db
-      .update(fastResponseRequests)
-      .set({
-        status: "skipped",
-        publicationStatus: "suppressed",
-        errorCode: reason,
-        finishedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(fastResponseRequests.id, request.id),
-          eq(fastResponseRequests.status, "pending"),
-        ),
-      );
+    await db.transaction(async tx => {
+      if (request.deliveryId) await notifyChatResponseAvailability(tx, { companyId: request.companyId, deliveryId: request.deliveryId });
+      await tx
+        .update(fastResponseRequests)
+        .set({
+          status: "skipped",
+          publicationStatus: "suppressed",
+          errorCode: reason,
+          finishedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(fastResponseRequests.id, request.id),
+            eq(fastResponseRequests.status, "pending"),
+          ),
+        );
+    });
   }
   async function settle(request: Request, outcome: FastResponseOutcome) {
     await withBudgetSpan("budget.accounting.settlement", () => withAccountingTransaction(
@@ -625,6 +630,7 @@ export function fastResponseService(
           },
         );
         const finishedAt = new Date();
+        if (request.deliveryId) await notifyChatResponseAvailability(tx, { companyId: request.companyId, deliveryId: request.deliveryId });
         await tx
           .update(fastResponseRequests)
           .set({
@@ -993,6 +999,7 @@ export function fastResponseService(
               idempotencyKey: `fast-response:${request.id}`,
               payload: safe,
             });
+          if (request.deliveryId) await notifyChatResponseAvailability(tx, { companyId: request.companyId, deliveryId: request.deliveryId });
           await tx
             .update(fastResponseRequests)
             .set({

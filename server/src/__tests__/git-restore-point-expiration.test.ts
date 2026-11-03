@@ -14,7 +14,8 @@ import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt } from "../services/git-workspace-expiration.js";
 import { getStorageService } from "../storage/index.js";
 import { markGitRestorePointExpired } from "../services/git-restore-point-storage.js";
-import { GIT_RESTORE_POINT_EXPIRED_WARNING } from "../services/execution-workspaces.js";
+import { GIT_RESTORE_POINT_EXPIRED_WARNING, setMetadataReopenPendingConsumption } from "../services/execution-workspaces.js";
+import { issueService } from "../services/issues.js";
 
 const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.test",
   GIT_COMMITTER_NAME: "Fixture", GIT_COMMITTER_EMAIL: "fixture@example.test", GIT_TERMINAL_PROMPT: "0" };
@@ -353,6 +354,181 @@ describeEmbeddedPostgres("git restore point expiration", () => {
       expect(await gitWorkspaceLastActivityAt(db, await f.row())).toEqual(expect.any(Date));
       expect(await f.expire(idle())).toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" });
       expect(await exists(f.cwd)).toBe(true);
+    });
+  });
+
+  describe("closed source issue with open descendants", () => {
+    async function child(f: Awaited<ReturnType<typeof fixture>>, values: Partial<typeof issues.$inferInsert> = {}) {
+      const id = randomUUID();
+      await db.insert(issues).values({ id, companyId: f.companyId, parentId: f.issueId, title: "Follow-up", status: "blocked", ...values });
+      return id;
+    }
+    async function ownWorkspace(f: Awaited<ReturnType<typeof fixture>>, sourceIssueId: string) {
+      const id = randomUUID();
+      await db.insert(executionWorkspaces).values({ id, companyId: f.companyId, sourceIssueId, mode: "isolated_workspace", strategyType: "git_worktree",
+        name: "Child workspace", status: "active", providerType: "local_fs", cwd: path.join(root, "child-workspaces", id), providerRef: path.join(root, "child-workspaces", id) });
+      await db.update(issues).set({ executionWorkspaceId: id, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, sourceIssueId));
+      return id;
+    }
+    const worker = (now = Date.now()) => executionWorkspaceService(db, { gitCacheExpirationEnabled: true, now: () => new Date(now),
+      gitRestorePoints: { storage: getStorageService(), terminalDelayMs: 3 * DAY_MS, keyDurable: true, idleMs: 7 * DAY_MS } });
+
+    it("expires the closed issue's worktree while open children work in their own workspaces", async () => {
+      const f = await fixture();
+      const unpushed = await makeUnsavedWork(f.cwd);
+      const blocked = await child(f, { status: "blocked" });
+      await ownWorkspace(f, blocked);
+      const reviewing = await child(f, { status: "in_review" });
+      await ownWorkspace(f, reviewing);
+      const grandchild = await child(f, { parentId: reviewing, status: "in_progress" });
+      await ownWorkspace(f, grandchild);
+      await child(f, { status: "todo" });
+      expect(await f.expire()).toMatchObject({ candidate: true, expired: true, restorePoint: true, skipReason: null });
+      expect(await exists(f.cwd)).toBe(false);
+      expect(await f.ledger()).toMatchObject([{ status: "active" }]);
+      expect(await f.reopen()).toMatchObject({ ok: true, reopened: true });
+      expect(git(f.cwd, "rev-parse", "HEAD")).toBe(unpushed);
+      expect(await fs.readFile(path.join(f.cwd, "notes", "todo.md"), "utf8")).toBe("untracked work\n");
+    });
+
+    it("lets the workspace reaper expire it, timed from the issues that use the workspace", async () => {
+      const f = await fixture();
+      await makeUnsavedWork(f.cwd);
+      const open = await child(f, { status: "in_progress", updatedAt: new Date() });
+      await ownWorkspace(f, open);
+      const closed = await child(f, { status: "done", completedAt: new Date(Date.now() - 60_000) });
+      await ownWorkspace(f, closed);
+      expect(await worker().sweepTerminalWorkspaces()).toMatchObject({ archived: 1 });
+      expect(await exists(f.cwd)).toBe(false);
+      expect((await f.row()).status).toBe("archived");
+      expect(await f.ledger()).toMatchObject([{ status: "active" }]);
+    });
+
+    it("times the restore point from the issues that use the workspace once every child is closed", async () => {
+      const f = await fixture();
+      await makeUnsavedWork(f.cwd);
+      const closed = await child(f, { status: "done", completedAt: new Date(Date.now() - 60_000) });
+      await ownWorkspace(f, closed);
+      expect(await worker().sweepTerminalWorkspaces()).toMatchObject({ archived: 1 });
+      expect(await exists(f.cwd)).toBe(false);
+      expect(await f.ledger()).toMatchObject([{ status: "active" }]);
+    });
+
+    it("waits for the terminal delay of a recently closed child that used the workspace", async () => {
+      const f = await fixture();
+      await makeUnsavedWork(f.cwd);
+      await child(f, { status: "in_progress" }).then(id => ownWorkspace(f, id));
+      const closedAt = new Date(Date.now() - DAY_MS);
+      await child(f, { status: "done", completedAt: closedAt, executionWorkspaceId: f.workspaceId });
+      const early = worker();
+      expect(await early.sweepTerminalWorkspaces()).toMatchObject({ archived: 0 });
+      expect(await exists(f.cwd)).toBe(true);
+      expect(await worker(closedAt.getTime() + 3 * DAY_MS + 60_000).sweepTerminalWorkspaces()).toMatchObject({ archived: 1 });
+      expect(await exists(f.cwd)).toBe(false);
+    });
+
+    it("never compacts a closed issue's worktree while children are open", async () => {
+      const f = await fixture();
+      await makeUnsavedWork(f.cwd);
+      await db.update(executionWorkspaces).set({ providerType: "git_worktree" }).where(eq(executionWorkspaces.id, f.workspaceId));
+      await db.update(issues).set({ completedAt: new Date(Date.now() - 2 * DAY_MS) }).where(eq(issues.id, f.issueId));
+      await fs.mkdir(path.join(f.cwd, "node_modules", "pkg"), { recursive: true });
+      await fs.writeFile(path.join(f.cwd, "node_modules", "pkg", "index.js"), "module.exports = 1;\n");
+      await child(f, { status: "in_progress" }).then(id => ownWorkspace(f, id));
+      for (const reaper of [executionWorkspaceService(db, { workspaceCompactionDelayMs: 0 }),
+        executionWorkspaceService(db, { workspaceCompactionDelayMs: 0, gitCacheExpirationEnabled: true,
+          gitRestorePoints: { storage: getStorageService(), terminalDelayMs: 3 * DAY_MS, keyDurable: true } })]) {
+        expect(await reaper.sweepTerminalWorkspaces()).toMatchObject({ archived: 0, compacted: 0 });
+        expect(await exists(path.join(f.cwd, "node_modules", "pkg", "index.js"))).toBe(true);
+      }
+    });
+
+    it("keeps today's reopen fence handling while a reopen is pending", async () => {
+      const f = await fixture();
+      await makeUnsavedWork(f.cwd);
+      await child(f, { status: "in_progress" }).then(id => ownWorkspace(f, id));
+      await db.update(executionWorkspaces).set({ metadata: setMetadataReopenPendingConsumption((await f.row()).metadata, new Date()) })
+        .where(eq(executionWorkspaces.id, f.workspaceId));
+      expect(await worker().sweepTerminalWorkspaces()).toMatchObject({ archived: 0 });
+      expect(await exists(f.cwd)).toBe(true);
+      expect((await f.row()).metadata?.reopenPendingConsumption).toBeUndefined();
+    });
+
+    it("keeps the worktree while an open child is bound to it", async () => {
+      const f = await fixture();
+      await makeUnsavedWork(f.cwd);
+      await child(f, { status: "blocked", executionWorkspaceId: f.workspaceId, executionWorkspacePreference: "reuse_existing" });
+      expect(await f.expire()).toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" });
+      expect(await worker().sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedNonTerminalTree: 1 });
+      expect(await exists(f.cwd)).toBe(true);
+    });
+
+    it("keeps the worktree while an open grandchild is bound to it under a child with its own workspace", async () => {
+      const f = await fixture();
+      const middle = await child(f, { status: "in_review" });
+      await ownWorkspace(f, middle);
+      await child(f, { parentId: middle, status: "todo", executionWorkspaceId: f.workspaceId });
+      expect(await f.expire()).toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" });
+      expect(await exists(f.cwd)).toBe(true);
+    });
+
+    it("keeps the worktree for a child created later that inherits it with reuse_existing", async () => {
+      const f = await fixture();
+      const created = await issueService(db).create(f.companyId, { parentId: f.issueId, title: "Inherited follow-up", status: "todo" });
+      expect(created).toMatchObject({ executionWorkspaceId: f.workspaceId, executionWorkspacePreference: "reuse_existing" });
+      expect(await f.expire()).toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" });
+      expect(await worker().sweepTerminalWorkspaces()).toMatchObject({ archived: 0, skippedNonTerminalTree: 1 });
+      expect(await exists(f.cwd)).toBe(true);
+    });
+
+    it("keeps the worktree while an open child selects it as its existing workspace", async () => {
+      const f = await fixture();
+      const selection = { kind: "existing" as const, workspaceId: f.workspaceId };
+      const selecting = await child(f, { status: "todo", workspaceSelection: { version: 1, selection, source: "explicit" } });
+      expect(await f.expire()).toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" });
+      await db.update(issues).set({ workspaceSelection: null, workspacePendingSelection: { version: 1, requestKey: "fixture",
+        expectedBindingRevision: 0, intent: { version: 1, selection, source: "explicit" } } }).where(eq(issues.id, selecting));
+      expect(await f.expire()).toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" });
+      await db.update(issues).set({ workspacePendingSelection: null }).where(eq(issues.id, selecting));
+      expect(await f.expire()).toMatchObject({ expired: true });
+    });
+
+    it("keeps the worktree while a child run referencing it is live", async () => {
+      const f = await fixture();
+      const running = await child(f, { status: "in_progress" });
+      await ownWorkspace(f, running);
+      const agentId = randomUUID();
+      await db.insert(agents).values({ id: agentId, companyId: f.companyId, name: "Worker", adapterType: "process" });
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId, status: "running", startedAt: new Date(),
+        contextSnapshot: { issueId: running, executionWorkspaceId: f.workspaceId } }).returning();
+      expect(await f.expire()).toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" });
+      expect(await exists(f.cwd)).toBe(true);
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
+      expect(await f.expire()).toMatchObject({ expired: true });
+    });
+
+    it("keeps the worktree while the closed issue was closed inside the terminal delay", async () => {
+      const f = await fixture();
+      await db.update(issues).set({ completedAt: new Date(Date.now() - 60_000) }).where(eq(issues.id, f.issueId));
+      await child(f, { status: "in_progress" }).then(id => ownWorkspace(f, id));
+      expect(await f.expire()).toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" });
+      expect(await exists(f.cwd)).toBe(true);
+    });
+
+    it("restores the saved state when an open child later binds to the expired workspace", async () => {
+      const f = await fixture();
+      const unpushed = await makeUnsavedWork(f.cwd);
+      const follower = await child(f, { status: "in_progress" });
+      expect(await f.expire()).toMatchObject({ expired: true, restorePoint: true });
+      await db.update(issues).set({ executionWorkspaceId: f.workspaceId, executionWorkspacePreference: "reuse_existing" }).where(eq(issues.id, follower));
+      const reopened = await executionWorkspaceService(db).reopenClosedIsolatedExecutionWorkspaceForIssue({ workspaceId: f.workspaceId,
+        issue: { id: follower, companyId: f.companyId, projectId: null }, actor: { actorType: "user", agentId: null },
+        authorizationActor: { type: "board", source: "local_implicit", isInstanceAdmin: true } });
+      expect(reopened).toMatchObject({ ok: true, reopened: true });
+      expect(git(f.cwd, "rev-parse", "HEAD")).toBe(unpushed);
+      expect(await fs.readFile(path.join(f.cwd, "marker.txt"), "utf8")).toBe("unstaged edit\n");
+      expect(git(f.cwd, "show", ":marker.txt")).toBe("staged edit");
+      expect(await fs.readFile(path.join(f.cwd, "notes", "todo.md"), "utf8")).toBe("untracked work\n");
     });
   });
 

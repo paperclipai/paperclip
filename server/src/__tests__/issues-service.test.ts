@@ -48,6 +48,7 @@ import {
   readIssueCommentRunLogText,
 } from "../services/issues.ts";
 import { getRunLogStore } from "../services/run-log-store.js";
+import * as nativeRunLogRecovery from "../services/native-runtime/native-run-log-recovery.js";
 import { terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import {
@@ -56,6 +57,8 @@ import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
 } from "../services/execution-workspace-policy.ts";
 import { buildAgentMentionHref, buildProjectMentionHref, MAX_ISSUE_REQUEST_DEPTH, type IssueWorkMode } from "@paperclipai/shared";
+
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -190,6 +193,35 @@ describeEmbeddedPostgres("issueService run attachment artifacts", () => {
 });
 
 describe("readIssueCommentRunLogText", () => {
+  it("does not read after a timed-out native repair", async () => {
+    const repair = vi.spyOn(nativeRunLogRecovery, "recoverSettledNativeRunLog").mockImplementationOnce((_db, _store, _ref, _redaction, signal) => new Promise((_resolve, reject) => {
+      signal!.addEventListener("abort", () => reject(signal!.reason), { once: true });
+    }));
+    const read = vi.spyOn(getRunLogStore(), "read").mockResolvedValue({ content: "too late" });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pending = readIssueCommentRunLogText({ logStore: "s3_segments", logRef: "company/agent/run", logBytes: null }, {} as ReturnType<typeof createDb>);
+    try {
+      await vi.advanceTimersByTimeAsync(3_000);
+      await expect(pending).resolves.toBe("");
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      await pending;
+      vi.useRealTimers();
+      repair.mockRestore();
+      read.mockRestore();
+    }
+  });
+  it("keeps published evidence when a concurrent native repair wins ownership", async () => {
+    const repair = vi.spyOn(nativeRunLogRecovery, "recoverSettledNativeRunLog").mockRejectedValueOnce(new Error("The output journal is owned by another writer"));
+    const read = vi.spyOn(getRunLogStore(), "read").mockResolvedValueOnce({ content: "published evidence" });
+    try {
+      await expect(readIssueCommentRunLogText({ logStore: "s3_segments", logRef: "company/agent/run", logBytes: null }, {} as ReturnType<typeof createDb>)).resolves.toBe("published evidence");
+      expect(read).toHaveBeenCalledOnce();
+    } finally {
+      repair.mockRestore();
+      read.mockRestore();
+    }
+  });
   it("cancels timed-out storage reads so later listings can recover", async () => {
     let active = 0;
     const cleanups: Array<() => void> = [];
@@ -4111,14 +4143,15 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
   });
 });
 
-describeEmbeddedPostgres("issueService blockers and dependency wake readiness", () => {
+const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSUE_DEPENDENCIES_TEST_DATABASE_URL");
+(dependencyTestDatabaseUrl ? describe : describeEmbeddedPostgres)("issueService blockers and dependency wake readiness", () => {
   let db!: ReturnType<typeof createDb>;
   let svc!: ReturnType<typeof issueService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-blockers-");
-    db = createDb(tempDb.connectionString);
+    if (!dependencyTestDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-blockers-");
+    db = createDb(dependencyTestDatabaseUrl ?? tempDb!.connectionString, { maxConnections: 6 });
     svc = issueService(db);
     await ensureIssueRelationsTable(db);
   }, 20_000);
@@ -4133,12 +4166,14 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
   });
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 5 });
     await tempDb?.cleanup();
   });
 
@@ -4685,6 +4720,42 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       pendingFinalizeBlockerIssueIds: [],
     });
   });
+
+  it.each(["covered", "foreign-run", "unfinished", "failed-finalize", "late-finish", "later-operation"])(
+    "requires a successful owning finalize to cover a nested snapshot: %s", async kind => {
+      const f = await seedSharedWorkspaceDependency();
+      const runId = randomUUID(), foreignRunId = randomUUID();
+      await db.insert(heartbeatRuns).values([runId, foreignRunId].map(id => ({
+        id, companyId: f.companyId, agentId: f.assigneeAgentId, status: "succeeded",
+      })));
+      const started = new Date("2026-05-23T22:00:00.000Z");
+      const finished = new Date("2026-05-23T22:00:02.000Z");
+      await db.insert(workspaceOperations).values([
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          heartbeatRunId: runId, phase: "workspace_finalize",
+          status: kind === "failed-finalize" ? "failed" : "succeeded", startedAt: started, finishedAt: finished },
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          heartbeatRunId: kind === "foreign-run" ? foreignRunId : runId, phase: "remote_workspace_snapshot",
+          status: kind === "unfinished" ? "running" : "succeeded",
+          startedAt: new Date(started.getTime() + 100),
+          finishedAt: kind === "unfinished" ? null : new Date(finished.getTime() + (kind === "late-finish" ? 100 : -100)) },
+        ...(kind === "later-operation" ? [{
+          companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          heartbeatRunId: runId, phase: "worktree_prepare", status: "succeeded",
+          startedAt: new Date(finished.getTime() + 100), finishedAt: new Date(finished.getTime() + 200),
+        }] : []),
+      ]);
+      const ready = kind === "covered";
+      expect((await svc.listWakeableBlockedDependents(f.blockerId)).map(issue => issue.id))
+        .toEqual(ready ? [f.dependentId] : []);
+      await expect(svc.getDependencyReadiness(f.dependentId)).resolves.toMatchObject({
+        isDependencyReady: ready,
+        pendingFinalizeBlockerIssueIds: ready ? [] : [f.blockerId],
+      });
+      const listed = (await svc.list(f.companyId, { status: "blocked" })).find(issue => issue.id === f.dependentId);
+      expect(listed?.blockerAttention?.pendingFinalizeBlockerIssueIds ?? []).toEqual(ready ? [] : [f.blockerId]);
+    },
+  );
 
   it("reports dependency readiness for blocked issue chains", async () => {
     const companyId = randomUUID();

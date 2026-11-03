@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -61,10 +62,9 @@ describe("native runner file handoff", () => {
   const runId = "00000000-0000-4000-8000-000000009104";
 
   beforeAll(async () => {
-    temporary = await startEmbeddedPostgresTestDatabase(
-      "native-runner-file-handoff-",
-    );
-    db = createDb(temporary.connectionString);
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_HANDOFF_TEST_DATABASE_URL");
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("native-runner-file-handoff-");
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 6 });
     temporaryRoot = await mkdtemp(
       path.join(tmpdir(), "paperclip-native-file-handoff-"),
     );
@@ -325,9 +325,14 @@ describe("native runner file handoff", () => {
       await db.update(issueWorkProducts).set({ status: "failed" }).where(eq(issueWorkProducts.id, product.id));
       await expect(nativeCompletionFeedback(db, runId, doneReport([`work_product:${product.id}`])))
         .rejects.toThrow("requested file has no accessible delivery evidence");
-      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective: "Do not create a file. Explain the result inline." } } }).where(eq(heartbeatRuns.id, runId));
-      await expect(nativeCompletionFeedback(db, runId, doneReport([])))
-        .resolves.toContain("Completion report accepted");
+      for (const objective of [
+        "Do not create a file. Explain the result inline.",
+        "Run hostname, id, and pwd. Report the output in a completion comment. Do not modify repository files or create attachments.",
+      ]) {
+        await db.update(heartbeatRuns).set({ contextSnapshot: { issueId, executionContinuation: { objective } } }).where(eq(heartbeatRuns.id, runId));
+        await expect(nativeCompletionFeedback(db, runId, doneReport([])))
+          .resolves.toContain("Completion report accepted");
+      }
     } finally {
       await db.delete(issueWorkProducts).where(eq(issueWorkProducts.id, product.id));
       await db.update(heartbeatRuns).set({ contextSnapshot: { issueId } }).where(eq(heartbeatRuns.id, runId));

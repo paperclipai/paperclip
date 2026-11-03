@@ -31,6 +31,117 @@ function result(overrides: Partial<RunnerE2EResult> = {}): RunnerE2EResult {
 }
 
 describe("runner E2E billing summaries", () => {
+  it("preserves captured token totals when a retained result has only a billing summary", () => {
+    const billing = summarizeExecutionBilling(result({ usage: {
+      inputTokens: 59_989, outputTokens: 4_974, cachedInputTokens: 488_798, costStatus: "unpriced",
+    } }));
+    const retained = result({ billing });
+    expect(summarizeExecutionBilling(retained)).toEqual(billing);
+    expect(aggregateCampaignBilling([retained])).toMatchObject({ llm: {
+      inputTokens: 59_989, outputTokens: 4_974, cachedInputTokens: 488_798,
+      runsWithTokenUsage: 1, runsWithReportedCost: 0,
+    }, testsWithCompleteBilling: 0 });
+  });
+
+  it("uses newly captured usage instead of a stale retained billing summary", () => {
+    const billing = summarizeExecutionBilling(result({ usage: { inputTokens: 100, outputTokens: 10, costStatus: "unpriced" } }));
+    const fresh = summarizeExecutionBilling(result({ billing, usage: { inputTokens: 200, outputTokens: 20, costStatus: "unpriced" } }));
+    expect(fresh.llm).toMatchObject({ inputTokens: 200, outputTokens: 20, runsWithReportedCost: 0 });
+    expect(fresh.complete).toBe(false);
+  });
+
+  it("counts a captured browser-only receipt without private journey metadata as zero runs", () => {
+    const browser = result({
+      suiteId: "qa-basics",
+      executionId: "qa-basics.browser.daytona.task-document-persistence",
+      environmentId: "daytona",
+      provider: null,
+      model: null,
+      runtimeMode: "none",
+      runIds: [],
+      usage: { runs: [] },
+    });
+    const billing = summarizeExecutionBilling(browser);
+    expect(billing).toMatchObject({
+      llm: { runCount: 0, runsWithTokenUsage: 0, runsWithReportedCost: 0, costStatus: "unavailable" },
+      runtime: { agentRunDurationMs: 0, costStatus: "unavailable" },
+      complete: false,
+    });
+    expect(aggregateCampaignBilling([browser])).toMatchObject({
+      llm: { runCount: 0, costStatus: "unavailable" },
+      agentRunDurationMs: 0,
+      testsWithCompleteBilling: 0,
+    });
+  });
+
+  it.each([
+    { runIds: undefined, usage: { runs: [] } },
+    { runIds: [], usage: undefined },
+    { runIds: [], usage: null },
+    { runIds: [], usage: {} },
+    { runIds: [], usage: { runs: [], collection: "unavailable" } },
+  ])("does not infer zero work from a missing browser-only receipt: %j", receipt => {
+    const billing = summarizeExecutionBilling(result({ runtimeMode: "none", ...receipt }));
+    expect(billing).toMatchObject({
+      llm: { runCount: 1, runsWithTokenUsage: 0, runsWithReportedCost: 0, costStatus: "unavailable" },
+      runtime: { agentRunDurationMs: null },
+      complete: false,
+    });
+  });
+
+  it.each([
+    { inputTokens: 100, outputTokens: 20, costUsd: 0.01 },
+    { runs: [{ runId: "run-1", usage: { inputTokens: 100, outputTokens: 20, costUsd: 0.01 } }] },
+  ])("retains usage that contradicts browser-only journey metadata: %j", usage => {
+    const billing = summarizeExecutionBilling(result({
+      runtimeMode: "none",
+      runIds: [],
+      usage,
+      productJourney: {
+        outcome: "passed", startingState: "recipe", phases: [], checks: [],
+        resourceDisposition: "released", privacy: "private",
+      },
+    }));
+    expect(billing).toMatchObject({
+      llm: { runCount: 1, inputTokens: 100, outputTokens: 20, reportedCostUsd: 0.01 },
+      runtime: { agentRunDurationMs: null },
+    });
+  });
+
+  it.each([false, true])("does not accept conflicting aggregate usage as zero-work proof (private journey: %s)", privateJourney => {
+    const browser = result({
+      runtimeMode: "none",
+      runIds: [],
+      usage: { runs: [], inputTokens: 100, outputTokens: 20, costUsd: 0.01 },
+      ...(privateJourney ? { productJourney: {
+        outcome: "passed" as const, startingState: "recipe" as const, phases: [], checks: [],
+        resourceDisposition: "released" as const, privacy: "private" as const,
+      } } : {}),
+    });
+    expect(summarizeExecutionBilling(browser)).toMatchObject({
+      llm: { runCount: 1, costStatus: "unavailable" },
+      runtime: { agentRunDurationMs: null },
+      complete: false,
+    });
+  });
+
+  it.each(["native", "legacy"] as const)("keeps %s run accounting separate from a captured empty browser receipt", runtimeMode => {
+    const empty = result({ runtimeMode, runIds: [], usage: { runs: [] } });
+    expect(summarizeExecutionBilling(empty).llm.runCount).toBe(1);
+    const measured = result({
+      runtimeMode,
+      runIds: ["run-1", "run-2"],
+      usage: { runs: [
+        { runId: "run-1", usage: { inputTokens: 10, outputTokens: 2, costUsd: 0.01 } },
+        { runId: "run-2", usage: { inputTokens: 20, outputTokens: 4, costUsd: 0.02 } },
+      ] },
+    });
+    expect(summarizeExecutionBilling(measured).llm).toMatchObject({
+      runCount: 2, runsWithTokenUsage: 2, runsWithReportedCost: 2,
+      inputTokens: 30, outputTokens: 6, reportedCostUsd: 0.03,
+    });
+  });
+
   it("keeps missing agent time separate from attempt duration and measured zero", () => {
     const interrupted = result({ status: "failed", durationMs: 108_850 });
     expect(summarizeExecutionBilling(interrupted).runtime.agentRunDurationMs).toBeNull();

@@ -2800,6 +2800,7 @@ function buildSessionConfigCategoryValues(input: {
   // the timestamp here makes every comment invalidate an otherwise reusable
   // task session.
   delete workspaceConfig.issueConfigRevisionAt;
+  delete workspaceConfig.projectConfigRevisionAt;
   // This row is runtime state, not requested configuration. It is absent
   // before the first reusable run is realized and present on the next turn;
   // fingerprinting that transition would rotate the native session exactly
@@ -2837,6 +2838,7 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   adapterType: string;
   effectiveAdapterConfig: Record<string, unknown>;
   managedAiHome?: string;
+  managedInstructions?: { entryFile: string; contentHash: string | null } | null;
   agentRuntimeConfig: unknown;
   issueOverrides: unknown;
   workspaceConfig: unknown;
@@ -2850,12 +2852,30 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   agentIdentityKeyId?: string;
 }): Promise<EffectiveRunSessionConfigMetadata> {
   const secretManifest = input.secretManifest ?? [];
-  const instructions = await resolveInstructionsConfigFingerprintMetadata(
-    input.effectiveAdapterConfig,
-  );
+  const instructions = input.managedInstructions ? {
+    configured: true, bundleMode: "managed", entryFile: input.managedInstructions.entryFile,
+    pathKind: "absolute", readPolicy: "root_bound", readable: input.managedInstructions.contentHash !== null,
+    ...(input.managedInstructions.contentHash !== null ? { contentHash: input.managedInstructions.contentHash } : {}),
+  } : await resolveInstructionsConfigFingerprintMetadata(input.effectiveAdapterConfig);
+  const effectiveAdapterConfig = { ...managedAiSessionFingerprintConfig(input.effectiveAdapterConfig, input.managedAiHome) };
+  if (input.managedInstructions) {
+    delete effectiveAdapterConfig.instructionsRootPath;
+    delete effectiveAdapterConfig.instructionsFilePath;
+  }
+  // A selected immutable skill version is its identity; source is merely its
+  // disposable projection. Unversioned/local skills retain their path boundary.
+  const versionedSkills = (value: unknown) => Array.isArray(value) ? value.map(entry => {
+    const skill = parseObject(entry);
+    return readNonEmptyString(skill.versionId)
+      ? { key: skill.key, runtimeName: skill.runtimeName, versionId: skill.versionId }
+      : entry;
+  }) : value;
+  if (effectiveAdapterConfig.paperclipRuntimeSkills !== undefined) {
+    effectiveAdapterConfig.paperclipRuntimeSkills = versionedSkills(effectiveAdapterConfig.paperclipRuntimeSkills);
+  }
   const categoryValues = buildSessionConfigCategoryValues({
     adapterType: input.adapterType,
-    effectiveAdapterConfig: managedAiSessionFingerprintConfig(input.effectiveAdapterConfig, input.managedAiHome),
+    effectiveAdapterConfig,
     agentRuntimeConfig: input.agentRuntimeConfig,
     instructions,
     issueOverrides: input.issueOverrides,
@@ -2865,7 +2885,7 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     projectEnv: input.projectEnv,
     routineEnv: input.routineEnv,
     secretManifest,
-    runtimeSkills: input.runtimeSkills,
+    runtimeSkills: versionedSkills(input.runtimeSkills),
     agentConfigRevision: input.agentConfigRevision ?? null,
     agentIdentityKeyId: input.agentIdentityKeyId,
   });

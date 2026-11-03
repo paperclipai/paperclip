@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { RefreshCw } from "lucide-react";
 import { Navigate, Outlet, useLocation } from "@/lib/router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -7,15 +7,19 @@ import { ApiError } from "@/api/client";
 import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { isTemporaryApiError } from "@/api/response";
+import { useConnectivityStore } from "@/lib/connectivity";
+import { reconnectDelayFor, retryWhileTransient } from "@/lib/query-client";
 import { queryKeys } from "@/lib/queryKeys";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
 import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CloudSignIn } from "@/components/CloudSignIn";
+import { useSuppressConnectionBanner } from "@/components/ConnectionStatusBanner";
 import { clearCloudSignInAttempt } from "@/lib/cloud-sign-in";
 
-const RECONNECT_INTERVAL_MS = 5_000;
+/** Poll while the server reports `starting`; outages are polled by `lib/connectivity`. */
+const SERVER_STARTING_POLL_MS = 5_000;
 
 export function CloudAccessError({
   temporary,
@@ -26,6 +30,7 @@ export function CloudAccessError({
   retrying: boolean;
   onRetry: () => void;
 }) {
+  useSuppressConnectionBanner(temporary);
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4 px-4 py-16">
       <RefreshCw className="size-6 text-muted-foreground" aria-hidden="true" />
@@ -68,15 +73,19 @@ function NoBoardAccessPage() {
 export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembershipRequest?: boolean } = {}) {
   const location = useLocation();
   const queryClient = useQueryClient();
+  const connectivity = useConnectivityStore();
   const [hasOpenedBoard, setHasOpenedBoard] = useState(false);
+  // The board cannot open without these checks, so transient failures retry
+  // until they succeed (never a 401/403). During an outage the retries pause
+  // and the connectivity store's single probe loop decides when to resume.
   const healthQuery = useQuery({
     queryKey: queryKeys.health,
     queryFn: () => healthApi.get(),
-    retry: false,
+    retry: retryWhileTransient,
+    retryDelay: reconnectDelayFor,
     refetchInterval: (query) => {
-      if (query.state.error) return isTemporaryApiError(query.state.error) ? RECONNECT_INTERVAL_MS : false;
       const data = query.state.data;
-      if (data?.status === "starting") return RECONNECT_INTERVAL_MS;
+      if (data?.status === "starting") return SERVER_STARTING_POLL_MS;
       return data?.deploymentMode === "authenticated" && data.bootstrapStatus === "bootstrap_pending"
         ? 2000
         : false;
@@ -90,9 +99,8 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
     enabled: isAuthenticatedMode,
-    retry: false,
-    refetchInterval: (query) => isTemporaryApiError(query.state.error) ? RECONNECT_INTERVAL_MS : false,
-    refetchIntervalInBackground: true,
+    retry: retryWhileTransient,
+    retryDelay: reconnectDelayFor,
   });
 
   useEffect(() => {
@@ -103,9 +111,8 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     queryKey: queryKeys.access.currentBoardAccess,
     queryFn: () => accessApi.getCurrentBoardAccess(),
     enabled: isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data,
-    retry: false,
-    refetchInterval: (query) => isTemporaryApiError(query.state.error) ? RECONNECT_INTERVAL_MS : false,
-    refetchIntervalInBackground: true,
+    retry: retryWhileTransient,
+    retryDelay: reconnectDelayFor,
   });
   const claimMutation = useMutation({
     mutationFn: () => accessApi.claimBootstrapAdmin(),
@@ -124,11 +131,13 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     ...(isAuthenticatedMode && !isBootstrapPending && sessionQuery.data ? [boardAccessQuery] : []),
   ];
   const isServerStarting = healthQuery.data?.status === "starting";
-  const isReconnecting = isServerStarting || activeQueries.some((query) => isTemporaryApiError(query.error));
   // A background outage must not unmount editors and discard drafts. Cached
   // access is only retained for transport failures; 401/403 still fail closed.
-  const blockingError = activeQueries.find((query) => query.error
-    && !(query.data !== undefined && isTemporaryApiError(query.error)))?.error;
+  const blockingError = activeQueries.find((query) => query.error && !isTemporaryApiError(query.error))?.error;
+  // Nothing cached yet and the check is retrying a transient failure, or is
+  // paused because the connectivity store has confirmed an outage.
+  const isWaitingForConnection = activeQueries.some((query) => query.data === undefined
+    && (query.fetchStatus === "paused" || isTemporaryApiError(query.error ?? query.failureReason)));
   const isLoading =
     healthQuery.isLoading ||
     (isAuthenticatedMode && sessionQuery.isLoading) ||
@@ -141,27 +150,26 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     if (!canAccessBoard) setHasOpenedBoard(false);
     else if (healthQuery.data?.status === "ok") setHasOpenedBoard(true);
   }, [canAccessBoard, healthQuery.data?.status]);
-  const wasReconnecting = useRef(false);
+  // A restarting server answers health with `starting`. Hand that to the
+  // connectivity store so the app-level banner shows and its probe loop
+  // refreshes everything once health reports `ok`.
   useEffect(() => {
-    if (isReconnecting) {
-      wasReconnecting.current = true;
-    } else if (wasReconnecting.current && !isLoading && !blockingError) {
-      wasReconnecting.current = false;
-      // Other reads (including the company list) may have failed during boot.
-      // Refresh those too so recovery does not strand the user on a second error.
-      void queryClient.invalidateQueries({ predicate: (query) => isTemporaryApiError(query.state.error) });
-    }
-  }, [isReconnecting, isLoading, blockingError, queryClient]);
+    if (isServerStarting) connectivity.reportServerStarting();
+  }, [isServerStarting, connectivity]);
 
-  if (blockingError || (isServerStarting && !hasOpenedBoard)) {
+  if (blockingError || isWaitingForConnection || (isServerStarting && !hasOpenedBoard)) {
     return (
       <CloudAccessError
-        temporary={blockingError ? isTemporaryApiError(blockingError) : true}
-        retrying={activeQueries.some((query) => query.isFetching)}
+        temporary={!blockingError}
+        // A query sleeping between retries is still "fetching"; only an attempt
+        // the user is waiting on counts.
+        retrying={activeQueries.some((query) => query.isFetching && query.failureCount === 0)}
         onRetry={() => {
+          connectivity.probeNow();
           for (const query of activeQueries) {
-            if (query.error || (query === healthQuery && isServerStarting)) {
-              void query.refetch({ cancelRefetch: false });
+            if (query.error || query.data === undefined || (query === healthQuery && isServerStarting)) {
+              // Skip the rest of the current backoff step: the user asked now.
+              void query.refetch({ cancelRefetch: true });
             }
           }
         }}
@@ -210,14 +218,7 @@ export function CloudAccessGate({ allowMembershipRequest = false }: { allowMembe
     return <NoBoardAccessPage />;
   }
 
-  return (
-    <>
-      {isReconnecting && (
-        <div role="status" className="bg-muted px-4 py-2 text-center text-sm text-muted-foreground">
-          Connection interrupted. Reconnecting automatically…
-        </div>
-      )}
-      <Outlet />
-    </>
-  );
+  // Outages after the board opened are shown by the app-level
+  // `ConnectionStatusBanner`, not here.
+  return <Outlet />;
 }

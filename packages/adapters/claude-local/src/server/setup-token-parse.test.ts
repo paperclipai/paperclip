@@ -337,6 +337,14 @@ describe("parseSetupTokenPrompt", () => {
     expect(parseSetupTokenPrompt(completeOutput(withKey))).toBeNull();
   });
 
+  it("skips the 2.1.291 copy hint between the URL and the prompt", () => {
+    const hint = chaSpaced("Hold Shift while selecting to use your terminal's native copy".split(" "));
+    const text = [PREAMBLE_LINE, hardWrap(CLAUDE_COM_URL, 130), "", hint, "", "", PROMPT_LINE].join("\n");
+    const result = parseSetupTokenPrompt(text);
+    expect(result?.url).toBe(CLAUDE_COM_URL);
+    expect(result?.prompt).toBe(SETUP_TOKEN_PROMPT);
+  });
+
   it("returns null when a code-like value sits on the line after the URL", () => {
     // The line right after the URL must hold the browser-code prompt. A code-like
     // value on that line cannot bind, so the parser returns null.

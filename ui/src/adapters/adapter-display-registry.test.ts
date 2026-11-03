@@ -3,6 +3,19 @@ import { describe, expect, it } from "vitest";
 import { agentDisplayAdapterType, getAdapterDisplay, getAdapterLabel, getAdapterLabels } from "./adapter-display-registry";
 
 describe("adapter display registry", () => {
+  it("shows a pending setup choice without changing the saved execution adapter", () => {
+    const agent = { adapterType: "process", adapterConfig: {}, pauseReason: "setup", metadata: {
+      setupAdapterPending: true,
+      setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" },
+    } };
+    expect(getAdapterLabel(agentDisplayAdapterType(agent))).toBe("Google Antigravity");
+    expect(agent.adapterType).toBe("process");
+    expect(agentDisplayAdapterType({ ...agent, pauseReason: "manual" })).toBe("process");
+  });
+  it("keeps a configured Antigravity runner branded as Google Antigravity", () => {
+    const type = agentDisplayAdapterType({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity" } });
+    expect(getAdapterLabel(type)).toBe("Google Antigravity");
+  });
   it.each([
     ["openai_dot", "OpenAI Dot"],
     ["grok_bot", "Grok Bot"],

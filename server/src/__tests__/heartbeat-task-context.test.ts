@@ -1,10 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { FAST_RESPONSE_AGENT_GUIDANCE } from "@paperclipai/shared";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { prepareHeartbeatTaskContext } from "../services/heartbeat/task-context.js";
 import { documentService } from "../services/documents.js";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "../services/issue-continuation-summary.js";
 import { createRunSecretRedactionRegistry } from "../services/run-secret-redaction.js";
@@ -19,6 +20,7 @@ if (!support.supported) console.warn(`Skipping heartbeat task context tests: ${s
 describePostgres("heartbeat task context delivered to an adapter", () => {
   const adapterType = "task_context_test";
   const captured = new Map<string, AdapterExecutionContext>();
+  const inspectPreparation = new Map<string, () => void>();
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   let heartbeat: ReturnType<typeof heartbeatService>;
@@ -33,6 +35,7 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
       type: adapterType,
       supportsLocalAgentJwt: false,
       execute: async (input) => {
+        inspectPreparation.get(input.agent.id)?.();
         captured.set(input.runId, input);
         return { exitCode: 0, signal: null, timedOut: false, sessionId: "context-session", resultJson: {} };
       },
@@ -116,6 +119,101 @@ describePostgres("heartbeat task context delivered to an adapter", () => {
       assignment: { owner: "task_markdown", description: { id: f.issueId, revision: digest(`Assignment description canary ${REDACTED_EVENT_VALUE}`) } },
       events: { owner: "wake_prompt", comments: [{ id: commentId, revision: digest(`Wake comment canary ${REDACTED_EVENT_VALUE}`) }] },
     });
+  });
+
+  it("reads selected comments once for both wake projections", async () => {
+    const f = await seed();
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({
+      id: commentId, companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: "context-user",
+      body: "selected wake canary",
+    });
+    const select = vi.spyOn(db, "select");
+    inspectPreparation.set(f.agentId, () => {
+      const commentReads = select.mock.calls.filter(([projection]) => projection
+        && projection.body === issueComments.body && projection.id === issueComments.id && projection.deletedAt === issueComments.deletedAt);
+      expect(commentReads).toHaveLength(1);
+    });
+    try {
+      const { context } = await execute(f, { wakeCommentId: commentId, wakeCommentIds: [commentId] });
+      expect(context.paperclipWakeComment).toMatchObject({ id: commentId, body: "selected wake canary" });
+      expect(context.paperclipWake).toMatchObject({ comments: [{ id: commentId, body: "selected wake canary" }] });
+    } finally {
+      inspectPreparation.delete(f.agentId);
+      select.mockRestore();
+    }
+  });
+
+  it("cancels deleted-only queued comments before adapter dispatch", async () => {
+    const f = await seed(), commentId = randomUUID();
+    await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "context-user", body: "discarded wake", deletedAt: new Date() });
+    const run = await heartbeat.wakeup(f.agentId, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+      payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId, wakeCommentId: commentId, wakeCommentIds: [commentId] } });
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    const finished = await heartbeat.getRun(run!.id);
+    expect(finished).toMatchObject({ status: "cancelled", error: "Queued messages were discarded before dispatch" });
+    expect(captured.has(run!.id)).toBe(false);
+  });
+
+  it("preserves deleted comment metadata without delivering its body", async () => {
+    const f = await seed();
+    const commentId = randomUUID();
+    await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: "context-user", body: "deleted wake canary", deletedAt: new Date(),
+      presentation: { fixture: "deleted" }, metadata: { fixture: "deleted" } });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "running", issueId: f.issueId }).returning();
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const [issueRef] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const context: Record<string, unknown> = { issueId: f.issueId, wakeCommentId: commentId, wakeCommentIds: [commentId] };
+    await prepareHeartbeatTaskContext(db, {
+      run, agent, task: { issueRef, issueContext: null, context, taskSession: null },
+      policy: { trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
+      services: { issuesSvc: { getAncestors: async () => [] }, getPinnedSkillTestContext: async () => null },
+    });
+    expect(context.paperclipWakeComment).toMatchObject({ id: commentId, body: "", presentation: null, metadata: null });
+    expect(context.paperclipWake).toMatchObject({ comments: [{ id: commentId, body: "", presentation: null, metadata: null }] });
+    expect(context.paperclipTaskMarkdown).not.toContain("deleted wake canary");
+  });
+
+  it.each([false, true])("uses admitted skill-test scope when recovery is %s", async (recovering) => {
+    const f = await seed();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "running", issueId: f.issueId }).returning();
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const [issueRef] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const context: Record<string, unknown> = { issueId: f.issueId, paperclipAgentJwtScope: { kind: "skill_test", issueId: f.issueId } };
+    const pinned = vi.fn(async () => null);
+    const preparing = prepareHeartbeatTaskContext(db, {
+      run, agent, task: { issueRef, issueContext: null, context, taskSession: null },
+      policy: { recovering, trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
+      services: { issuesSvc: { getAncestors: async () => [] }, getPinnedSkillTestContext: pinned },
+    });
+    if (recovering) await expect(preparing).rejects.toThrow("skill test's saved version is unavailable");
+    else await preparing;
+    expect(pinned).toHaveBeenCalledTimes(recovering ? 1 : 0);
+    expect(context.paperclipAgentJwtScope).toEqual({ kind: recovering ? "skill_test" : "standard", ...(recovering ? { issueId: f.issueId } : {}) });
+  });
+
+  it("retains the context issue scope when no issue reference is available", async () => {
+    const f = await seed();
+    const otherIssueId = randomUUID(), commentId = randomUUID();
+    await db.insert(issues).values({ id: otherIssueId, companyId: f.companyId, title: "Other issue", issueNumber: 2 });
+    await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: otherIssueId,
+      authorType: "user", authorUserId: "context-user", body: "other issue canary" });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      status: "running", issueId: f.issueId }).returning();
+    const [agent] = await db.select().from(agents).where(eq(agents.id, f.agentId));
+    const context: Record<string, unknown> = { issueId: f.issueId, wakeCommentId: commentId, wakeCommentIds: [commentId] };
+    await prepareHeartbeatTaskContext(db, {
+      run, agent, task: { issueRef: null, issueContext: null, context, taskSession: null },
+      policy: { trustPreset: { kind: "standard" }, experimentalInstanceSettings: {} },
+      services: { issuesSvc: { getAncestors: async () => [] }, getPinnedSkillTestContext: async () => null },
+    });
+    expect(JSON.stringify(context.paperclipWake)).not.toContain("other issue canary");
+    expect(context.paperclipWakeComment).toBeUndefined();
   });
 
   it("quarantines low-trust summaries and comments before preparing higher-trust prompts", async () => {

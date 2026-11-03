@@ -1,3 +1,5 @@
+import { startToolHealthWorker } from "./helpers/tool-health-worker.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { fastResponseService } from "../services/fast-responses.js";
 import { fastResponseReceipt } from "../services/fast-response-provider.js";
@@ -33,6 +35,7 @@ import {
 } from "vitest";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import {
+  applyPendingMigrations,
   createDb,
   companies,
   agents,
@@ -72,6 +75,8 @@ import { toolAccessService } from "../services/tool-access.js";
 import { emailSendSchema } from "@paperclipai/shared";
 import { chatChannelService } from "../services/chat-channels.js";
 
+const externalTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_EMAIL_TEST_DATABASE_URL");
+
 describe("AgentMail durable email pipeline", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
@@ -83,8 +88,9 @@ describe("AgentMail durable email pipeline", () => {
       folder,
       "master.key",
     );
-    database = await startEmbeddedPostgresTestDatabase("paperclip-email-");
-    db = createDb(database.connectionString);
+    if (!externalTestDatabaseUrl) database = await startEmbeddedPostgresTestDatabase("paperclip-email-");
+    if (externalTestDatabaseUrl) await applyPendingMigrations(externalTestDatabaseUrl);
+    db = createDb(externalTestDatabaseUrl ?? database!.connectionString);
     await instanceSettingsService(db).updateExperimental({
       enableChatConnectors: false,
     });
@@ -111,6 +117,7 @@ describe("AgentMail durable email pipeline", () => {
       );
   });
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await database?.cleanup();
     if (previous === undefined)
       delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
@@ -210,7 +217,7 @@ describe("AgentMail durable email pipeline", () => {
   });
 
   async function fixture(mode: "websocket" | "webhook" = "webhook", storage?: StorageService,
-    beforeSetup?: (input: { fetcher: typeof fetch; wakeup: ReturnType<typeof vi.fn> }) => Promise<void>,
+    beforeSetup?: (input: { companyId: string; fetcher: typeof fetch; wakeup: ReturnType<typeof vi.fn> }) => Promise<void>,
   ) {
     const companyId = randomUUID(),
       agentId = randomUUID(),
@@ -324,7 +331,7 @@ describe("AgentMail durable email pipeline", () => {
       storage,
     });
     services.push(service);
-    await beforeSetup?.({ fetcher, wakeup });
+    await beforeSetup?.({ companyId, fetcher, wakeup });
     await service.setup(
       companyId,
       {
@@ -387,6 +394,28 @@ describe("AgentMail durable email pipeline", () => {
       setWebhookError: (status: number) => { webhookError = status; },
     };
   }
+  it("schedules health after AgentMail activation and disarms it on pause", async () => {
+    let health: Awaited<ReturnType<typeof startToolHealthWorker>> | undefined;
+    try {
+      const f = await fixture("webhook", undefined, async ({ companyId, fetcher }) => {
+        vi.spyOn(globalThis, "fetch").mockImplementation(fetcher);
+        health = await startToolHealthWorker(db, companyId, new Date(), toolAccessService(db).checkHealth);
+        await health.expectDeadline(null);
+        await health.expectQuiet();
+      });
+      const endpoint = await f.service.getEndpoint(f.endpointId);
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(health!.checkHealth).toHaveBeenCalledTimes(1);
+        expect(health!.checkHealth.mock.settledResults[0]?.type).toBe("fulfilled");
+      }, { timeout: 5_000 });
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, endpoint.connectionId));
+      await health!.expectDeadline(connection.healthCheckedAt!.getTime() + 900_000);
+      await f.service.control(f.endpointId, "pause", { userId: "email-board" });
+      await health!.expectDeadline(null);
+      await health!.expectQuiet();
+    } finally { await health?.stop(); }
+  });
   it("activates an empty running worker from another service and drains committed inbound and outbound work", async () => {
     // Connector setup and tool calls construct short-lived service objects.
     // Their committed writes must wake the app-owned worker sharing this DB.

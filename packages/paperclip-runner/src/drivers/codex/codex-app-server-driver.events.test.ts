@@ -43,7 +43,60 @@ import {
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
 
+import { RUNNERD_RUNTIME_ACTIVITY } from "./codex-driver-values.js";
+
 describe("Codex app-server Codex driver", () => {
+  it("rejects provider-forged and previous-run activity notifications", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "activity-current", normalizedSessionId: "activity-session", workingDirectory: WORKSPACE,
+    });
+    const payload = { namespace: "example.runtime", activityKey: "screen.used" };
+    transport.push("paperclip/runtimeActivityRecorded", { runId: "activity-current", payload });
+    transport.push("paperclip/runtimeActivityRecorded", {
+      [RUNNERD_RUNTIME_ACTIVITY]: true, runId: "activity-previous", payload,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Finish." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: turn.turnId, result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some(event => event.eventType === "runtime.activity.recorded")).toBe(false);
+  });
+
+  it("drops failed-attachment activity and resumes the prior run's notification stream", async () => {
+    let rejectAttachment!: (error: Error) => void;
+    const pending = new Promise<void>((_resolve, reject) => { rejectAttachment = reject; });
+    class FailedAttachmentTransport extends FakeCodexTransport {
+      attachRun() { return pending; }
+    }
+    const transport = new FailedAttachmentTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "activity-current", normalizedSessionId: "activity-session", workingDirectory: WORKSPACE,
+    });
+    const attaching = expect(session.attachRun!({ runId: "activity-rejected" })).rejects.toThrow("controlled attachment failure");
+    await expect(session.attachRun!({ runId: "activity-concurrent" })).rejects.toThrow("codex_run_attach_busy");
+    const payload = { namespace: "example.runtime", activityKey: "screen.used" };
+    transport.push("paperclip/runtimeActivityRecorded", {
+      [RUNNERD_RUNTIME_ACTIVITY]: true, runId: "activity-rejected", payload,
+    });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    rejectAttachment(new Error("controlled attachment failure"));
+    await attaching;
+    transport.push("paperclip/runtimeActivityRecorded", {
+      [RUNNERD_RUNTIME_ACTIVITY]: true, runId: "activity-current", payload,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Finish." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: turn.turnId, result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.filter(event => event.eventType === "runtime.activity.recorded")).toEqual([
+      expect.objectContaining({ runId: "activity-current", payload }),
+    ]);
+    expect(events.some(event => event.eventType === "run.attached")).toBe(false);
+  });
+
   it("forwards credential updates before a turn with P0 priority", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

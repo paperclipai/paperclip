@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, expect, it } from "vitest";
@@ -68,4 +68,60 @@ it("preserves the original provider failure as sanitized scan provenance", () =>
   expect(evidence.finding.matchCategory).toBe("CODEX_AUTH_JSON.tokens.account_id");
   expect(findSecretLeak(JSON.stringify(evidence), secrets)).toBeNull();
   for (const value of secrets) expect(JSON.stringify(evidence)).not.toContain(value);
+});
+
+it("permits only account identity in private Codex diagnostic databases, never artifact scans or tokens", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "codex-private-log-")); directories.push(temporary);
+  const root = path.join(temporary, "paperclip-home");
+  const home = path.join(root, "instances/runner-e2e-test/runtime/paperclip-runner/durable-sessions/session/codex-home");
+  await mkdir(home, { recursive: true });
+  const file = path.join(home, "logs_2.sqlite-wal");
+  const options = { sources, includeShapes: false, privateCodexRuntimeIdentityRoot: root };
+  await writeFile(file, tokens.account_id);
+  expect(await findSecretLeakInDirectory(root, secrets, options)).toBeNull();
+  expect(await findSecretLeakInDirectory(root, secrets, { sources, includeShapes: false })).toMatchObject({ file, matchCategory: "CODEX_AUTH_JSON.tokens.account_id" });
+  for (const key of ["access_token", "refresh_token", "id_token"] as const) {
+    await writeFile(file, `${tokens.account_id}\n${tokens[key]}`);
+    expect(await findSecretLeakInDirectory(root, secrets, options)).toMatchObject({ file, matchCategory: `CODEX_AUTH_JSON.tokens.${key}` });
+  }
+  await writeFile(file, tokens.account_id);
+  const reused = { ...sources, OPENAI_API_KEY: tokens.account_id };
+  expect(await findSecretLeakInDirectory(root, secrets, { ...options, sources: reused })).toMatchObject({ file });
+  for (const name of ["state_5.sqlite", "state_5.sqlite-wal", "state_5.sqlite-shm"]) {
+    const state = path.join(home, name); await writeFile(state, tokens.account_id);
+    expect(await findSecretLeakInDirectory(root, secrets, options)).toBeNull();
+    await writeFile(state, `${tokens.account_id}\n${tokens.refresh_token}`);
+    expect(await findSecretLeakInDirectory(root, secrets, options)).toMatchObject({ file: state, matchCategory: "CODEX_AUTH_JSON.tokens.refresh_token" });
+    await rm(state);
+  }
+  for (const name of ["config.toml", "rollout.jsonl", "unrelated.sqlite", "logs_2.sqlite.backup"]) {
+    const other = path.join(home, name); await writeFile(other, tokens.account_id);
+    expect(await findSecretLeakInDirectory(root, secrets, options)).toMatchObject({ file: other });
+    await rm(other);
+  }
+  await chmod(temporary, 0o755);
+  await expect(findSecretLeakInDirectory(root, secrets, options)).rejects.toThrow("owner-only");
+});
+
+it("allows the exact upstream rollout ownership field while scanning all conversation content", async () => {
+  const temporary = await mkdtemp(path.join(tmpdir(), "codex-private-rollout-")); directories.push(temporary);
+  const root = path.join(temporary, "paperclip-home");
+  const file = path.join(root, "instances/test/runtime/paperclip-runner/durable-sessions/session/codex-home/sessions/2026/10/26/rollout-test.jsonl");
+  await mkdir(path.dirname(file), { recursive: true });
+  const options = { sources, includeShapes: false, privateCodexRuntimeIdentityRoot: root };
+  const metadata = { type: "session_meta", payload: { creator_account_id: tokens.account_id, base_instructions: { text: "Ordinary instructions" } } };
+  await writeFile(file, JSON.stringify(metadata));
+  expect(await findSecretLeakInDirectory(root, secrets, options)).toBeNull();
+  expect(await findSecretLeakInDirectory(root, secrets, { sources })).toMatchObject({ file });
+  for (const record of [
+    { ...metadata, payload: { ...metadata.payload, base_instructions: { text: tokens.account_id } } },
+    { ...metadata, payload: { ...metadata.payload, token: tokens.access_token } },
+    { type: "response_item", payload: { creator_account_id: tokens.account_id } },
+    { type: "session_meta", payload: { unexpected_account_id: tokens.account_id } },
+  ]) {
+    await writeFile(file, JSON.stringify(record));
+    expect(await findSecretLeakInDirectory(root, secrets, options)).toMatchObject({ file });
+  }
+  await writeFile(file, JSON.stringify(metadata) + '\n' + JSON.stringify({ type: "response_item", payload: { text: tokens.account_id } }));
+  expect(await findSecretLeakInDirectory(root, secrets, options)).toMatchObject({ file });
 });

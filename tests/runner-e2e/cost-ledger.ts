@@ -222,7 +222,10 @@ export class EvalSpendState {
 }
 
 export async function readEvalCostLedger(file: string) {
-  const raw = await readFile(file, "utf8");
+  return parseEvalCostLedger(await readFile(file, "utf8"));
+}
+
+export function parseEvalCostLedger(raw: string) {
   if (!raw.endsWith("\n")) throw new Error("Eval ledger has an incomplete durable record");
   const lines = raw.trimEnd().split("\n").map(value => JSON.parse(value) as Line);
   let previous = "", state: EvalSpendState | undefined;

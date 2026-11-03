@@ -4,7 +4,7 @@ FROM ${BASE_IMAGE}
 ARG SOURCE_REVISION
 USER root
 RUN rm -rf /opt/paperclip-runner/provider-pack
-ADD provider-pack.tar.gz /opt/paperclip-runner/provider-pack/
+ADD --chown=0:0 provider-pack.tar.gz /opt/paperclip-runner/provider-pack/
 COPY --chmod=0755 paperclip-runnerd /usr/local/bin/paperclip-runnerd
 RUN chmod -R a+rX /opt/paperclip-runner/provider-pack
 USER daytona

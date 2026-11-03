@@ -139,7 +139,9 @@ the environment configuration cannot redirect cleanup to a new provider.
 Before preparation or submission, Core checks the active lease, run, issue, and every project
 in the company. It checks the submitting run ID separately from a retained PRP
 identity. Session reuse requires the same agent, environment, workspace, and
-provider. It also requires a retained source task and proof of termination.
+provider. Checkpoint resumption also requires a retained source task and proof of termination.
+Opt-in Codex warm reuse instead hands off the same retained process through an
+atomic lease transition and an exact, authorized `priorIdentity` preparation.
 
 An internal setup probe can use a private, time-limited lease without a run row.
 Core checks the saved probe identity, rejects project mounts, and limits the

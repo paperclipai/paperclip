@@ -1,13 +1,11 @@
 import path from "node:path";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { runnerMatrix } from "./catalog.js";
-import { renderRunnerE2EDashboard } from "./dashboard.js";
+import { mkdir, open, readFile, readdir, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { isSeq, parseDocument } from "yaml";
+import { parseCatalogOverview, type CatalogScenarioDescription } from "./catalog-overview.js";
+import { stageDashboardBrandAssets } from "./report-assets.js";
+import { renderRunnerE2EDashboard, type RunnerDashboardInput } from "./dashboard.js";
 import { campaignFeedbackReviewText } from "./feedback-dispositions.js";
-import {
-  buildRunnerCampaign,
-  canonicalExecutionId,
-  upgradeRunnerResult,
-} from "./history.js";
 import type {
   RunnerE2ECampaign,
   RunnerE2EHistoryIndex,
@@ -30,6 +28,25 @@ interface PublishedCampaign {
   operations?: RunnerE2ECampaign["operations"];
   feedbackReview?: RunnerE2ECampaign["feedbackReview"];
   braintrustExperiment?: RunnerE2ECampaign["braintrustExperiment"];
+  presentation?: RunnerDashboardInput["presentation"];
+}
+
+function validatePresentation(value: unknown) {
+  if (value === undefined) return;
+  const invalid = () => {
+    throw new Error("Published bundle has invalid presentation metadata in normalized-results.json");
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) invalid();
+  const presentation = value as Record<string, unknown>;
+  for (const field of ["title", "description"]) {
+    if (presentation[field] !== undefined && typeof presentation[field] !== "string") invalid();
+  }
+  if (presentation.notes !== undefined &&
+      (!Array.isArray(presentation.notes) || presentation.notes.some(note => typeof note !== "string"))) invalid();
+  if (presentation.links !== undefined &&
+      (!Array.isArray(presentation.links) || presentation.links.some(link =>
+        !link || typeof link !== "object" || Array.isArray(link) ||
+        typeof link.label !== "string" || typeof link.href !== "string"))) invalid();
 }
 
 async function relativeFiles(root: string, current = root): Promise<string[]> {
@@ -57,6 +74,41 @@ async function readOptionalHistory(file: string) {
     .catch(() => undefined);
 }
 
+export async function regenerateCatalogOverview(input: { metadataFile: string; outputDirectory: string }) {
+  const file = await open(input.metadataFile, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let metadata: unknown;
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.size > 256 * 1024) throw new Error("Catalog overview input must be a bounded regular JSON file");
+    metadata = JSON.parse(await file.readFile("utf8"));
+  } finally {
+    await file.close();
+  }
+  const overview = parseCatalogOverview(metadata);
+  const catalogDirectory = new URL("./chat-scenarios/", import.meta.url);
+  const catalogIds = new Set<string>();
+  const descriptions = new Map<string, CatalogScenarioDescription>();
+  for (const name of (await readdir(catalogDirectory)).filter(name => name.endsWith(".yaml") && name !== "defaults.yaml")) {
+    const document = parseDocument(await readFile(new URL(name, catalogDirectory), "utf8"), { uniqueKeys: true });
+    if (document.errors.length) throw new Error("Invalid static chat catalog");
+    const sequence = document.get("scenarios", true);
+    if (!isSeq(sequence)) throw new Error("Invalid static chat catalog");
+    const scenarios: unknown = sequence.toJSON();
+    if (!Array.isArray(scenarios)) throw new Error("Invalid static chat catalog");
+    for (const row of scenarios) {
+      if (!row || typeof row.id !== "string" || catalogIds.has(row.id)) throw new Error("Invalid static chat catalog identity");
+      catalogIds.add(row.id);
+      if (typeof row.query !== "string" || typeof row.expected_outcome !== "string") throw new Error("Missing public catalog description");
+      descriptions.set(row.id, { query: row.query, expectedOutcome: row.expected_outcome });
+    }
+  }
+  if (catalogIds.size !== 244 || overview.rows.some(row => !catalogIds.has(row.scenarioId))) throw new Error("Catalog overview must match the frozen scenario IDs");
+  const dashboard = renderRunnerE2EDashboard({ title: "Chat feature catalog", generatedAt: overview.asOf, expected: [], catalog: [], entries: [], catalogOverview: overview, catalogOverviewDescriptions: descriptions });
+  await mkdir(input.outputDirectory, { mode: 0o700 });
+  await writeFile(path.join(input.outputDirectory, "index.html"), dashboard, { mode: 0o600, flag: "wx" });
+  await stageDashboardBrandAssets(input.outputDirectory);
+}
+
 export async function regenerateRunnerDashboard(input: {
   bundle: string;
   historyFile?: string | null;
@@ -64,6 +116,8 @@ export async function regenerateRunnerDashboard(input: {
   evidenceHrefPrefix?: string;
   feedbackReviewFile?: string;
 }) {
+  const { runnerMatrix } = await import("./catalog.js");
+  const { buildRunnerCampaign, canonicalExecutionId, upgradeRunnerResult } = await import("./history.js");
   const bundle = path.resolve(input.bundle);
   const outputDirectory = path.resolve(input.outputDirectory ?? bundle);
   const evidenceHrefPrefix = input.evidenceHrefPrefix?.replace(
@@ -89,6 +143,7 @@ export async function regenerateRunnerDashboard(input: {
   ) {
     throw new Error("Published bundle has an invalid normalized-results.json");
   }
+  validatePresentation(normalized.presentation);
 
   const results = normalized.results.map(upgradeRunnerResult);
   const expected = normalized.expected.map(canonicalExecutionId);
@@ -162,16 +217,18 @@ export async function regenerateRunnerDashboard(input: {
     }),
   );
   const dashboard = renderRunnerE2EDashboard({
-    title: "Runner Full-Stack E2E",
+    title: normalized.presentation?.title ?? "E2E tests",
     generatedAt: normalized.generatedAt,
     expected,
     catalog: runnerMatrix,
     entries,
     campaign,
     history,
+    presentation: normalized.presentation,
   });
   const upgraded = {
     ...campaign,
+    ...(normalized.presentation ? { presentation: normalized.presentation } : {}),
     results: campaign.results.map((result, index) => ({
       ...result,
       evidenceValid:
@@ -210,6 +267,13 @@ async function main() {
   const arguments_ = process.argv
     .slice(2)
     .filter((argument) => argument !== "--");
+  if (arguments_.includes("--catalog-overview")) {
+    const index = arguments_.indexOf("--catalog-overview");
+    const output = arguments_.indexOf("--output");
+    if (index !== 0 || output !== 2 || arguments_.length !== 4 || !arguments_[1] || !arguments_[3]) throw new Error("Usage: dashboard --catalog-overview <display-metadata.json> --output <new-private-directory>");
+    await regenerateCatalogOverview({ metadataFile: arguments_[1], outputDirectory: arguments_[3] });
+    return;
+  }
   const bundleArgument = arguments_.find(
     (argument) => !argument.startsWith("--"),
   );

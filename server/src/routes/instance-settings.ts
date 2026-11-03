@@ -136,7 +136,7 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
   const router = Router();
   const svc = instanceSettingsService(db);
   const environments = environmentService(db);
-  const heartbeat = heartbeatService(db);
+  const heartbeat = heartbeatService(db, { pluginWorkerManager: pluginWorkers });
 
   router.get("/instance/settings", async (req, res) => {
     assertBoardOrgAccess(req);
@@ -309,6 +309,12 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
 
   router.get("/instance/task-drain", async (req, res) => {
     assertBoardOrgAccess(req);
+    if (req.query.upgradeReadiness === "1") {
+      // This covers all companies and must not expose instance-wide work to a member.
+      assertCanManageInstanceSettings(req);
+      res.json({ ...heartbeat.getTaskDrainStatus(), upgradeReadiness: await heartbeat.readUpgradeReadiness() });
+      return;
+    }
     if (req.query.idleSleepSafety === "1") {
       // The report covers every company in this process. Ordinary company
       // members may read process counters, but not instance-wide work state.
@@ -452,6 +458,11 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       publishActivitiesBestEffort(postCommitActivityPublications, "instance.task_drain.stopped");
       return wasActive;
     });
+    if (wasActive) {
+      void heartbeat.resumeQueuedRunsAfterDrain().catch(err => {
+        logger.error({ err }, "failed to resume queued work after task drain; durable work remains queued");
+      });
+    }
     res.json({ wasActive });
   });
 

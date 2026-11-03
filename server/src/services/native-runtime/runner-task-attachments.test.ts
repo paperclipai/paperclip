@@ -1,3 +1,4 @@
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -11,10 +12,14 @@ import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.
 
 const sha = (body: Buffer) => createHash("sha256").update(body).digest("hex");
 describe("Dot assigned-task attachment reading", () => {
-  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
-  beforeAll(async () => { temporary = await startEmbeddedPostgresTestDatabase("dot-task-files-"); db = createDb(temporary.connectionString); });
-  afterAll(async () => { await temporary?.cleanup(); });
+  beforeAll(async () => {
+    const external = resolveExternalTestDatabaseUrl("PAPERCLIP_RUNNER_ATTACHMENTS_TEST_DATABASE_URL");
+    if (!external) temporary = await startEmbeddedPostgresTestDatabase("dot-task-files-");
+    db = createDb(external ?? temporary!.connectionString);
+  });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
   afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
   async function fixture(body = Buffer.from("only in the file 🌍"), enabled = true) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -45,7 +50,7 @@ describe("Dot assigned-task attachment reading", () => {
   });
   it("reads verified file contents without paths or storage keys and audits metadata only", async () => {
     const f = await fixture();
-    expect(await f.call("list_task_attachments")).toMatchObject({ attachments: [{ attachmentId: f.attachment.id, filename: "proof.txt", readable: true }] });
+    expect(await f.call("list_task_attachments")).toMatchObject({ attachments: [{ attachmentId: f.attachment.id, assetId: f.asset.id, sha256: sha(f.body), filename: "proof.txt", readable: true }] });
     const result = await f.call("read_task_attachment", { attachmentId: f.attachment.id });
     expect(result).toMatchObject({ content: f.body.toString(), sha256: sha(f.body), byteSize: f.body.length, nextOffset: null, contentTrust: "untrusted_attachment" });
     expect(JSON.stringify(result)).not.toContain("private-file");

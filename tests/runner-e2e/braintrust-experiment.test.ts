@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { buildBraintrustExperiment, importBraintrustExperiment, renderBraintrustExperiment, type BraintrustExperimentReceipt } from "./braintrust-experiment.js";
+import { buildBraintrustExperiment, experimentEvidenceHash, importBraintrustExperiment, renderBraintrustExperiment, type BraintrustExperimentReceipt } from "./braintrust-experiment.js";
 import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
 import { buildRunnerCampaign } from "./history.js";
 import { runnerMatrix } from "./catalog.js";
@@ -325,4 +325,31 @@ it.each(["public", "wrong-project", "wrong-hash", "partial-insert", "receiver-er
   expect(receipts.some(receipt => receipt.status === "accepted")).toBe(false);
   expect(JSON.stringify(receipts)).not.toMatch(/private-key|private-upstream/);
   if (["partial-insert", "receiver-error"].includes(kind)) expect(receipts[0]).toMatchObject({ status: "created", acceptedRows: 0 });
+});
+
+
+it("preserves retained experiment identity when adding journal-derived token presentation", async () => {
+  const { openEvalCostLedger } = await import("./cost-ledger.js");
+  const { readEvalOperationsReport } = await import("./operations-report.js");
+  const { campaign, originals } = fixture();
+  const root = await mkdtemp(path.join(tmpdir(), "experiment-token-presentation-")), file = path.join(root, "ledger.jsonl");
+  const ledger = await openEvalCostLedger(file, { campaignId: campaign.campaignId, maxUsd: "1", deadlineAt: "2099-01-01T00:00:00Z", maxRequests: 2, maxConcurrent: 1 });
+  try {
+    await ledger.reserve("setup", { executionId: originals[0]!.executionId, attemptId: "first", phase: "setup" }, "0.2");
+    await ledger.observe({ observationId: "usage", requestId: "setup", provider: "fixture", source: "gateway", currency: "USD", route: "direct", classification: "reported", costUsd: "0.05", final: true,
+      tokens: { input: 1, cachedRead: 2, cachedWrite: 3, output: 4 } });
+    await ledger.finish("setup", "cancelled");
+    const enriched = await readEvalOperationsReport(file);
+    if (enriched.status === "unavailable") throw new Error("Expected token report");
+    campaign.operations = structuredClone(enriched);
+    delete campaign.operations.modelAccounting!.tokenUsage;
+    const legacyHash = experimentEvidenceHash(campaign);
+    const receipt = await importBraintrustExperiment({ projectId, apiKey: "key" }, campaign, originals, async () => {}, receiver(campaign, originals));
+    campaign.braintrustExperiment = receipt;
+    campaign.operations = enriched;
+    expect(experimentEvidenceHash(campaign)).toBe(legacyHash);
+    expect(renderBraintrustExperiment(campaign)).toContain("2/2 rows accepted");
+    campaign.operations.journalHash = "f".repeat(64);
+    expect(() => renderBraintrustExperiment(campaign)).toThrow("Invalid retained");
+  } finally { await ledger.close(); await rm(root, { recursive: true, force: true }); }
 });
