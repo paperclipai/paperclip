@@ -198,6 +198,28 @@ describe("openclaw_gateway execute dispatch boundary", () => {
     expect(ctx.onProviderStopped).not.toHaveBeenCalled();
   });
 
+  it("acknowledges a confirmed cancel when the run log fails to record it", async () => {
+    websocketState.acceptOnly = true;
+    const controller = new AbortController();
+    const ctx = createContext({
+      onLog: async (_stream, chunk) => {
+        if (chunk.includes("sessions.abort")) throw new Error("run log unavailable");
+      },
+    });
+    ctx.signal = controller.signal;
+    ctx.onCancellationReady = vi.fn(async () => {});
+    ctx.onProviderStopped = vi.fn(async () => {});
+
+    const run = execute(ctx);
+    await vi.waitFor(() => expect(websocketState.events).toContain("send:agent.wait"));
+    controller.abort(new Error("Cancelled by a board operator"));
+    const result = await run;
+
+    expect(websocketState.abortParams).toHaveLength(1);
+    expect(result.resultJson?.executionCancellation).toMatchObject({ state: "acknowledged", forced: false });
+    expect(ctx.onProviderStopped).toHaveBeenCalledTimes(1);
+  });
+
   it("aborts the gateway session when the cancel arrives before the agent reply", async () => {
     websocketState.holdAgent = true;
     const controller = new AbortController();

@@ -1377,6 +1377,15 @@ async function executeGatewayRun(
       // request: a cancel can arrive while that request is still pending.
       // Until the gateway answers, its run id is our own (idempotencyKey).
       let gatewayRunId = ctx.runId;
+      // The abort result comes only from the gateway. A failed log write must
+      // not change it or keep the connection open.
+      const logAbortOutcome = async (stream: "stdout" | "stderr", chunk: string) => {
+        try {
+          await ctx.onLog(stream, chunk);
+        } catch {
+          // Ignore run-log failures here.
+        }
+      };
       const abortGatewaySession = () => {
         cancellation.abortConfirmed = client
           .request(
@@ -1389,17 +1398,19 @@ async function executeGatewayRun(
             },
             { timeoutMs: connectTimeoutMs },
           )
-          .then(async () => {
-            await ctx.onLog("stdout", `[openclaw-gateway] run cancelled: sessions.abort sent for ${sessionKey}\n`);
-            return true;
-          })
-          .catch(async (err: unknown) => {
-            await ctx.onLog(
-              "stderr",
-              `[openclaw-gateway] sessions.abort failed: ${err instanceof Error ? err.message : String(err)}\n`,
-            );
-            return false;
-          });
+          .then(
+            async () => {
+              await logAbortOutcome("stdout", `[openclaw-gateway] run cancelled: sessions.abort sent for ${sessionKey}\n`);
+              return true;
+            },
+            async (err: unknown) => {
+              await logAbortOutcome(
+                "stderr",
+                `[openclaw-gateway] sessions.abort failed: ${err instanceof Error ? err.message : String(err)}\n`,
+              );
+              return false;
+            },
+          );
       };
       ctx.signal?.addEventListener("abort", abortGatewaySession, { once: true });
       removeAbortListener = () => ctx.signal?.removeEventListener("abort", abortGatewaySession);
@@ -1611,9 +1622,12 @@ async function executeGatewayRun(
     } finally {
       removeAbortListener?.();
       // Let a pending sessions.abort answer before the connection closes; the
-      // promise never rejects and the request has its own timeout.
-      if (cancellation.abortConfirmed) await cancellation.abortConfirmed;
-      client.close();
+      // request has its own timeout. Close the connection in any case.
+      try {
+        if (cancellation.abortConfirmed) await cancellation.abortConfirmed;
+      } finally {
+        client.close();
+      }
     }
   }
 }
