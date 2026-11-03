@@ -24,6 +24,10 @@ Creation, installation, message waiting, and success use the same production
 components and server evidence as the own-app flow. A click or OAuth return does
 not constitute successful configuration.
 
+Reopening a completed Slack setup retains its Slack handoff. **Done** opens the
+saved connection settings without repeating activation or reactivating a paused
+bot. Unfinished setups still complete their normal server verification first.
+
 ## Cloud deployment prerequisites
 
 Managed setup is disabled by default. Qualification requires all of:

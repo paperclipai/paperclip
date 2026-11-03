@@ -20,6 +20,22 @@ import {
   GITHUB_PRIVATE_KEY_PASTE_FIXTURE,
 } from "./chat-adapters-ui.shared";
 
+async function expectCompletedSlackSetupCloses(page: Page, seed: Seed) {
+  let finishRequests = 0;
+  await page.route("**/api/chat-endpoints/endpoint-slack/finish", async route => {
+    finishRequests++;
+    await route.fulfill({ status: 409, json: { error: "This connection is not waiting for a setup test" } });
+  });
+  await page.goto(`/${seed.prefix}/apps/chat/connect?provider=slack&toolHref=%2Fapps%2Fconnect%3Fsource%3Dslack&resume=endpoint-slack`);
+  await expect(page.getByRole("heading", { name: "Success", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open Slack", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Done", exact: true }).click();
+  await expect(page).toHaveURL(/\/apps\/chat\/endpoint-slack\/settings$/);
+  await page.reload();
+  await expect(page.getByRole("link", { name: "Open Slack", exact: true })).toBeVisible();
+  expect(finishRequests).toBe(0);
+}
+
 async function findConnectorBySearch(page: Page, query: string, slug: string) {
   const search = page.getByRole("searchbox", { name: "Search connectors" });
   await expect(search).toBeVisible();
@@ -187,6 +203,8 @@ test.describe.serial("native chat adapter UI", () => {
     await expect(page.getByRole("navigation", { name: "Connection setup progress" }).getByRole("button")).toHaveCount(2);
     await page.getByRole("button", { name: "Done", exact: true }).click();
     await expect(page).toHaveURL(/\/apps\/chat\/endpoint-slack\/settings$/);
+    await expectCompletedSlackSetupCloses(page, seed);
+    expect(mock.slackCreations).toBe(1); expect(mock.slackInstallations).toBe(1);
   });
   test("Slack: a failed manager refresh reloads workspace authorization before retry", async ({ page }) => {
     const slack = PROVIDERS.find(provider => provider.provider === "slack")!;
@@ -379,6 +397,8 @@ test.describe.serial("native chat adapter UI", () => {
     await page.screenshot({ path: test.info().outputPath("automatic-slack-success.png"), fullPage: true });
     await page.getByRole("button", { name: "Done", exact: true }).click();
     await expect(page).toHaveURL(/\/apps\/chat\/endpoint-slack\/settings$/);
+    await expectCompletedSlackSetupCloses(page, seed);
+    expect(mock.slackCreations).toBe(1); expect(mock.slackInstallations).toBe(2);
     const stored = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
     expect(stored).not.toContain("fixture-config-token");
   });
