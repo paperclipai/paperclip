@@ -61,6 +61,17 @@ Puntos que importan (los tres están probados en producción):
    `$XDG_CONFIG_HOME/opencode/AGENTS.md`; declararlo además en `instructions`
    inyecta la regla dos veces (~2k tokens por run).
 
+## 2.b. Directorios de la instancia (los crea el operador, NO el servicio)
+
+```sh
+mkdir -p /home/<user>/egm-artifacts          # el entregable durable, por issue
+chown -R <user>:<user> /home/<user>/egm-artifacts
+```
+
+Si el directorio es del root, el agente recibe `Permission denied` al copiar el
+artefacto y el revisor tampoco lo puede leer (queda fuera de su alcance de
+lectura). Es el mismo bug que hizo fracasar los primeros E2E.
+
 ## 3. La regla (metodología + gate + anti-loop)
 
 `/home/<user>/.config/opencode/AGENTS.md` — tres niveles, perilla por proyecto,
