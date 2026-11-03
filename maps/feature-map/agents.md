@@ -132,6 +132,11 @@ Use the roster’s organization view; `/org` redirects to the roster in the stre
 
 ### `personal-primary-agent`
 
+Native API discovery explains this human-only profile/crown control and the
+replacement confirmation. The Chat agent picker opens a conversation; it does
+not set the person's primary preference. This guidance grants no agent write
+authority.
+
 Open an agent profile and choose **Set as my primary**. Inspect its crown on the
 profile/roster and its position in the Agents sidebar, then open a new task or Chat.
 
