@@ -147,19 +147,26 @@ New workflow versions merged into master then receive runner access without a
 separate SHA allowlist update. Dependabot leaves this first-party reference on
 master.
 
-Runner selection calls `ci-routing.yml@master` on a GitHub-hosted runner. It
-verifies authorization before allocating any AWS capacity and never checks out
-or executes PR code. The author, event sender and rerun actor must each be both
+Runner selection calls `ci-routing.yml@master`. Allowlisted maintainers use the
+reserved `paperclip-ci-routing-x64` AWS fleet for this bounded metadata job;
+other callers use GitHub-hosted capacity. The gate never checks out or executes
+PR code. The author, event sender and rerun actor must each be both
 in `AWS_CI_TRUSTED_USER_IDS` and a current owner of `.github/**` in CODEOWNERS.
 The resolver and CODEOWNERS are read from the same protected master revision;
 PR edits cannot change the trusted owner list. Documentation-only owners,
 unsupported owner rules and failed identity lookups do not authorize AWS.
-Repository, head and merge validation also apply. Missing or malformed settings
+Repository, head and merge validation also apply. The gate validates this run's
+immutable event merge, including its PR head and a base snapshot between the
+event's base and the current branch tip. Normal base advancement and regeneration
+of GitHub's live merge ref do not move an authorized run to GitHub-hosted CI.
+Stacked synthetic bases must contain a validated base snapshot. Rewritten base
+history, changed PR heads and unverifiable ancestry still deny AWS execution.
+Missing or malformed settings
 and unverifiable authorization use GitHub-hosted runners. A maintainer rerunning
 an outside contributor's PR does not grant it AWS access.
 Authorized test jobs and the final `verify` and `e2e` aggregates use the selected
-AWS fleet. The metadata authorization job remains hosted even for maintainers,
-so stale admission snapshots cannot allocate an AWS runner before verification.
+AWS fleet. A stale admission roster can allocate only the short metadata gate;
+the fresh CODEOWNERS check still denies PR execution for a removed owner.
 
 The routing workflow also selects the CI scope. Middle PRs in a stack and PRs
 whose diff changes only release notes (`releases/v*.md` or
@@ -339,10 +346,16 @@ explicit. When changing shard layout, update `.github/ci-task-matrix.json` and
 the full fallback matrices in `pr-trusted.yml`; the contract tests require them
 to agree. Add new cache-affecting environment settings to `globalEnv`.
 
-The former reserved routing Fleet is no longer selected by this workflow.
-Keep its existing authorization until older assigned jobs finish. A manual
-dispatch of `ci-routing.yml` on master exercises the hosted metadata job without
-launching the test matrix; its non-PR event returns the hosted test-runner output.
+The `paperclip-ci-routing` runner group must allow
+`paperclipai/paperclip/.github/workflows/ci-routing.yml@refs/heads/master`.
+Keep `AWS_CI_ROUTING_USER_IDS_SOURCE` equal to the exact JSON value of
+`AWS_CI_TRUSTED_USER_IDS` and `AWS_CI_ROUTING_USER_IDS` as its delimiter-wrapped
+numeric IDs (for example, `|34892728|139239|`). Missing or mismatched admission
+settings use GitHub-hosted capacity for the gate. Current CODEOWNERS remain
+authoritative for PR execution regardless of these admission settings.
+A maintainer's manual dispatch of `ci-routing.yml` on master exercises the AWS
+metadata gate without launching the test matrix; its non-PR event returns the
+hosted test-runner output.
 
 Keep the `.github/**` rule in `.github/CODEOWNERS` and the active master ruleset's
 code-owner review requirement enabled. This covers the caller, the trusted
