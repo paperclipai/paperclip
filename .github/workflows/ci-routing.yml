@@ -86,8 +86,8 @@ jobs:
           [[ "$EVENT_BASE_REPOSITORY_ID" == '1170821064' ]] || fail_closed 'unexpected base repository ID'
           [[ -n "$EVENT_BASE_REF" ]] || fail_closed 'missing base branch'
           [[ "$EVENT_ACTION" =~ ^(opened|reopened|synchronize|labeled)$ ]] || fail_closed 'unsupported pull_request action'
-          if [[ "$EVENT_ACTION" == 'labeled' && "${EVENT_LABEL_NAME:-}" != 'profile-ci' ]]; then
-            fail_closed 'only the profile-ci label can request a profiling run'
+          if [[ "$EVENT_ACTION" == 'labeled' && ! "${EVENT_LABEL_NAME:-}" =~ ^(profile-ci|full-ci)$ ]]; then
+            fail_closed 'only the profile-ci or full-ci labels can request CI'
           fi
 
           jq -e '

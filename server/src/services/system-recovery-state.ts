@@ -9,6 +9,8 @@ export const SYSTEM_RECOVERY_WINDOW_MS = 30 * 60_000;
 export function infrastructureRetryDelayMs(retryNumber: number, sample: number) {
   return Math.round(30_000 * 2 ** (retryNumber - 1) * (0.8 + Math.min(1, Math.max(0, sample)) * 0.4));
 }
+/** Assumed provider limit cooldown when the provider reports no reset time. */
+export const PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS = 60 * 60_000;
 
 export const recoveryFailureCodes = [
   "historical_source_missing", "source_binding_invalid", "allocation_ownership_ambiguous",
