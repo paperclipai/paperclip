@@ -4,6 +4,7 @@ import { act, forwardRef, useImperativeHandle, useState, type ForwardedRef } fro
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { IssueDocument } from "@paperclipai/shared";
 import type {
   IssueThreadInteraction,
@@ -411,6 +412,56 @@ describe("TaskChatInteractionCard", () => {
     ).toBeNull();
   });
 
+  it.each([
+    ["confirmation", "pending"],
+    ["confirmation", "accepted"],
+    ["checkbox", "pending"],
+    ["checkbox", "accepted"],
+  ] as const)("renders Markdown in %s prompts when %s", (kind, status) => {
+    const interaction = structuredClone(kind === "confirmation"
+      ? createRequestConfirmation()
+      : pendingRequestCheckboxConfirmationInteraction);
+    interaction.status = status;
+    interaction.payload.prompt = "Review the [two screenshots](/PAP/issues/PAP-42#document-preview).\n\nSelect **Accept** to keep this design.\n\n- Check `preview.png`\n- Keep the layout\n\n![Review image](https://provider.invalid/review.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```";
+    if (status === "accepted") interaction.result = { version: 1, outcome: "accepted" };
+    const accept = vi.fn();
+    const reject = vi.fn();
+
+    flushSync(() => root.render(
+      <QueryClientProvider client={new QueryClient()}><TooltipProvider><ThemeProvider>
+        <TaskChatInteractionCard item={interactionItem(interaction)}
+          presentation={status === "pending" ? "takeover" : "timeline"}
+          onAcceptInteraction={accept} onRejectInteraction={reject} />
+      </ThemeProvider></TooltipProvider></QueryClientProvider>,
+    ));
+
+    const link = container.querySelector('a[href="/issues/PAP-42#document-preview"]');
+    expect(link?.textContent).toBe("two screenshots");
+    const prompt = link?.closest(".paperclip-markdown");
+    expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");
+    expect(prompt?.querySelector("code")?.textContent).toBe("preview.png");
+    expect(prompt?.querySelector("img")).toBeNull();
+    expect(prompt?.querySelectorAll("p")).toHaveLength(3);
+    expect(prompt?.querySelector("[data-markdown-image-reference]")?.textContent)
+      .toContain("Image: Review image (https://provider.invalid/review.png)");
+    expect(prompt?.querySelector("pre code.language-mermaid")?.textContent)
+      .toContain("flowchart LR");
+    expect(prompt?.querySelector(".paperclip-mermaid")).toBeNull();
+    expect(prompt?.querySelectorAll("li")).toHaveLength(2);
+    expect(prompt?.textContent).not.toContain("[two screenshots]");
+    expect(accept).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+    if (kind === "checkbox" && status === "pending") {
+      const group = container.querySelector('[role="group"]');
+      const label = document.getElementById(group?.getAttribute("aria-labelledby") ?? "");
+      expect(label?.contains(prompt ?? null)).toBe(true);
+      expect(label?.textContent).toContain("two screenshots");
+      expect(label?.textContent).not.toContain("[two screenshots]");
+      expect(label?.textContent).not.toContain("**Accept**");
+      expect(group?.getAttribute("aria-label")).toBeNull();
+    }
+  });
+
   it("stacks the confirmation prompt full-width and hides unlabeled custom target keys", () => {
     const render = (target: RequestConfirmationInteraction["payload"]["target"]) =>
       flushSync(() => {
@@ -440,7 +491,7 @@ describe("TaskChatInteractionCard", () => {
       node.textContent?.startsWith("The change is open"),
     );
     expect(prompt?.className).not.toContain("flex-1");
-    expect(prompt?.className).toContain("whitespace-pre-line");
+    expect(prompt?.closest(".paperclip-markdown")?.querySelectorAll("p")).toHaveLength(2);
     expect(prompt?.parentElement?.className).not.toContain("justify-between");
 
     render({
@@ -484,7 +535,7 @@ describe("TaskChatInteractionCard", () => {
       node.textContent?.startsWith("Pick the drafts"),
     );
     expect(prompt?.className).not.toContain("flex-1");
-    expect(prompt?.className).toContain("whitespace-pre-line");
+    expect(prompt?.closest(".paperclip-markdown")?.querySelectorAll("p")).toHaveLength(2);
     expect(prompt?.parentElement?.className).not.toContain("justify-between");
 
     render({
