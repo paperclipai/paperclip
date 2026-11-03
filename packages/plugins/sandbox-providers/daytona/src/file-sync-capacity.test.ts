@@ -133,7 +133,7 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
 }, 40_000);
 
 it.skipIf(Object.values(requiredTools).some(tool => !tool)).each([
-  "saved", "read failure", "replaced source", "stream budget", "copy permission", "timeout",
+  "saved", "read failure", "second stream fails", "replaced source", "stream budget", "copy permission", "timeout",
 ])("exports an already captured file without room for a second sandbox copy: %s", async scenario => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-file-capacity-"));
   roots.push(root);
@@ -141,13 +141,20 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each([
   await fs.mkdir(remote); await fs.mkdir(bin);
   for (const name of ["base64", "bash"] as const) await fs.symlink(requiredTools[name]!, path.join(bin, name));
   const dd = path.join(bin, "dd");
-  const ddFailure = `#!/bin/sh\n'${requiredTools.dd}' "$@"\nstatus=$?\ncase " $* " in *" if="*) exit 23 ;; esac\nexit "$status"\n`;
-  await fs.writeFile(dd, scenario === "read failure" ? ddFailure : `#!/bin/sh\nexec '${requiredTools.dd}' "$@"\n`, { mode: 0o755 });
+  const batch = scenario === "second stream fails";
+  const ddFailure = `#!/bin/sh\n'${requiredTools.dd}' "$@"\nstatus=$?\ncase " $* " in ${batch ? "*/second.pcws*" : '*" if="*'}) exit 23 ;; esac\nexit "$status"\n`;
+  await fs.writeFile(dd, scenario === "read failure" || batch ? ddFailure : `#!/bin/sh\nexec '${requiredTools.dd}' "$@"\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
   const source = path.join(remote, "captured.pcws"), output = path.join(root, "saved.pcws");
   const bytes = Buffer.alloc(5 * 1024 * 1024, "captured workspace\n");
   await fs.writeFile(source, bytes, { mode: 0o600 });
   await fs.writeFile(output, "newer host work");
+  const files = [{ sourcePath: source, targetPath: output, kind: "file" as const, mode: 0o600 }];
+  if (batch) {
+    const sourcePath = path.join(remote, "second.pcws"), targetPath = path.join(root, "second.pcws");
+    await fs.writeFile(sourcePath, bytes); await fs.writeFile(targetPath, "newer host work");
+    files.push({ sourcePath, targetPath, kind: "file", mode: 0o600 });
+  }
   const outside = path.join(root, "outside.txt");
   await fs.writeFile(outside, "not in the admitted workspace");
   const failures: string[] = [];
@@ -190,16 +197,19 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each([
     },
   };
   const sync = () => performSyncOut({ sandbox: sandbox as never, remoteDir: remote, timeoutSeconds: fault && scenario === "timeout" ? 0.5 : 30,
-    operations: [{ operationId: "save", files: [{ sourcePath: source, targetPath: output, kind: "file", mode: 0o600 }] }],
+    operations: [{ operationId: "save", files }],
   });
   if (fault) {
     await expect(sync()).rejects.toThrow(scenario === "copy permission" ? "Permission denied"
       : scenario === "stream budget" ? "sandbox disk budget" : scenario === "timeout" ? "timed out" : "without a successful archive receipt");
-    expect(await fs.readFile(output, "utf8")).toBe("newer host work");
+    for (const file of files) {
+      expect((await fs.readFile(file.targetPath)).equals(Buffer.from("newer host work"))).toBe(true);
+      if (scenario !== "replaced source") expect((await fs.readFile(file.sourcePath)).equals(bytes)).toBe(true);
+    }
     expect(await fs.readFile(outside, "utf8")).toBe("not in the admitted workspace");
     expect((await fs.readdir(remote)).filter(name => name.startsWith(".paperclip-upload"))).toEqual([]);
     expect((await fs.readdir(root)).filter(name => name.startsWith(".paperclip-upload"))).toEqual([]);
-    expect(sessions).toBe(scenario === "copy permission" ? 0 : 1);
+    expect(sessions).toBe(scenario === "copy permission" ? 0 : files.length);
     expect(closed).toBe(sessions);
     fault = false;
     sandbox.disk = 1;
@@ -208,12 +218,14 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each([
   }
   const result = await sync();
   expect(failures.join("\n")).toMatch(/File\s?size limit exceeded/i);
-  expect((await fs.readFile(output)).equals(bytes)).toBe(true);
-  expect((await fs.readFile(source)).equals(bytes)).toBe(true);
-  expect((await fs.stat(output)).mode & 0o777).toBe(0o600);
-  expect(result.operations).toEqual([{ operationId: "save", filesTransferred: 1, bytesTransferred: bytes.length }]);
+  for (const file of files) {
+    expect((await fs.readFile(file.targetPath)).equals(bytes)).toBe(true);
+    expect((await fs.readFile(file.sourcePath)).equals(bytes)).toBe(true);
+    expect((await fs.stat(file.targetPath)).mode & 0o777).toBe(0o600);
+  }
+  expect(result.operations).toEqual([{ operationId: "save", filesTransferred: files.length, bytesTransferred: bytes.length * files.length }]);
   expect(downloads).toBe(0);
-  expect(sessions).toBe(scenario === "saved" || scenario === "copy permission" ? 1 : 2);
+  expect(sessions).toBe((scenario === "saved" || scenario === "copy permission" ? 1 : 2) * files.length);
   expect(closed).toBe(sessions);
   expect((await fs.readdir(remote)).filter(name => name.startsWith(".paperclip-upload"))).toEqual([]);
 }, 40_000);
