@@ -136,13 +136,15 @@ test("checkpoints and launch profiles accept ordinary UNC paths and reject devic
     model: "selected-model", config: {}, providerState: {}, processGroup: null };
   const launch = { schema: "paperclip.harness-launch.v1", identity,
     command: { path: "/runtime/node", sha256: `sha256:${"c".repeat(64)}` }, args: [], environmentKeys: [] };
-  for (const directory of [String.raw`\\server\share`, String.raw`\\server\share\task`, "//server/share/task"]) {
+  for (const directory of [String.raw`\\server\share`, String.raw`\\server\share\task`, "//server/share/task",
+    String.raw`\\aux\share\project`, String.raw`\\server\con\project`, String.raw`\\aux\con`, "//con/aux/project"]) {
     assert.equal(parseRunnerHarnessCheckpoint({ ...checkpoint, cwd: directory }).cwd, directory);
     assert.equal(parseRunnerHarnessLaunchProfile({ ...launch, command: { ...launch.command, path: directory } }).command.path, directory);
     assert.throws(() => parseRunnerHarnessLaunchProfile({ ...launch, args: [directory] }));
   }
   for (const directory of [String.raw`\\server`, String.raw`\\server\share\..\other`, String.raw`\\?\C:\task`,
-    String.raw`\\.\pipe\native`, "//?/C:/task", "//server/share/task:stream", "//server/./task", "//server/share/task."]) {
+    String.raw`\\.\pipe\native`, "//?/C:/task", "//server/share/task:stream", "//server/./task", "//server/share/task.",
+    "//aux/con/../task", "//aux?/con/task", "//aux/con./task", "//../share/project"]) {
     assert.throws(() => parseRunnerHarnessCheckpoint({ ...checkpoint, cwd: directory }), undefined, directory);
     assert.throws(() => parseRunnerHarnessLaunchProfile({ ...launch, command: { ...launch.command, path: directory } }), undefined, directory);
   }
@@ -157,7 +159,7 @@ test("Windows resource paths reject reserved DOS device names and aliases", () =
   const names = ["NUL", "nul", "CON", "con.txt", "CON .txt", "PRN.tar.gz", "AUX", "COM1", "COM9.log", "LPT1",
     "LPT9.backup", "COM¹", "COM².txt", "LPT³", "CONIN$", "CONOUT$.log"];
   const invalid = [String.raw`C:\NUL`, String.raw`C:\foo\CON`, String.raw`C:\COM1\bar`, String.raw`\\server\share\NUL`,
-    ...names.flatMap(name => [`C:/workspace/${name}`, `C:/workspace/${name}/child`, `//server/share/${name}`])];
+    ...names.flatMap(name => [`C:/workspace/${name}`, `C:/workspace/${name}/child`, `//server/share/${name}`, `//aux/con/${name}`])];
   for (const directory of invalid) {
     assert.throws(() => parseRunnerHarnessCheckpoint({ ...checkpoint, cwd: directory }), undefined, directory);
     assert.throws(() => parseRunnerHarnessLaunchProfile({ ...launch, command: { ...launch.command, path: directory } }), undefined, directory);
