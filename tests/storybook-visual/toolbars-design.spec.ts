@@ -150,8 +150,8 @@ test("Projects toolbar searches, sorts and reports creation locally", async ({ p
   await page.getByRole("button", { name: "Updated", exact: true }).click();
   await page.keyboard.press("Escape");
   await expect(preview.getByRole("status")).toContainText("Search: design · Sort: updated · Direction: desc");
-  await preview.getByRole("button", { name: "Add Project", exact: true }).click();
-  await expect(preview.getByRole("status")).toContainText("Add Project requested · local preview only");
+  await preview.getByRole("button", { name: "Create project", exact: true }).click();
+  await expect(preview.getByRole("status")).toContainText("Create project requested · local preview only");
 });
 
 
