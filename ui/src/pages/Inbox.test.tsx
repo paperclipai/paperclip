@@ -1176,7 +1176,7 @@ describe("Inbox toolbar", () => {
     const pendingParent = createDeferred<Issue[]>();
     const pendingBundle = createDeferred<InboxMineSnapshot>();
     let switched = false;
-    apiMocks.inboxMine.mockRejectedValueOnce(new Error("Aggregate temporarily unavailable")).mockReturnValueOnce(pendingBundle.promise);
+    apiMocks.inboxMine.mockRejectedValueOnce(new ApiError("tenant_app_unavailable", 503, null)).mockReturnValueOnce(pendingBundle.promise);
     apiMocks.issuesList.mockImplementation((_company, filters) => {
       if (filters.ids?.includes(parent.id)) return switched ? pendingParent.promise : Promise.resolve([parent]);
       return Promise.resolve([child]);
@@ -1195,7 +1195,7 @@ describe("Inbox toolbar", () => {
       await vi.waitFor(() => expect(apiMocks.inboxMine).toHaveBeenCalledTimes(2));
       expect(apiMocks.issuesList.mock.calls.filter(([, filters]) => filters.ids?.includes(parent.id))).toHaveLength(1);
       expect(container.querySelector(`[title="${parent.title}"]`)).toBeNull();
-      await act(() => pendingBundle.reject(new Error("New account aggregate temporarily unavailable")));
+      await act(() => pendingBundle.reject(new ApiError("tenant_app_unavailable", 503, null)));
       await vi.waitFor(() => expect(apiMocks.issuesList.mock.calls.filter(([, filters]) => filters.ids?.includes(parent.id))).toHaveLength(2));
       expect(container.querySelector(`[title="${parent.title}"]`)).toBeNull();
       expect(container.textContent).not.toContain(parent.identifier);
@@ -1525,7 +1525,25 @@ describe("Inbox toolbar", () => {
     },
   );
 
-  it.each(["failureError", "contextError"] as const)("keeps loaded tasks quiet during a transient %s", async source => {
+  it.each([429, 503])("offers retry after an initial %s when the server remains reachable", async status => {
+    routerMock.location.pathname = "/inbox/mine";
+    apiMocks.inboxMine.mockRejectedValue(new ApiError("temporarily_unavailable", status, null));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.querySelector('[role="alert"]')).not.toBeNull());
+      expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+      expect(container.textContent).not.toContain("temporarily_unavailable");
+      apiMocks.inboxMine.mockResolvedValue(createMineSnapshot({ issues: [createIssue({ title: "Recovered task" })] }));
+      await act(() => Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Retry")!.click());
+      await vi.waitFor(() => expect(container.textContent).toContain("Recovered task"));
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
+
+  it.each(["failureError", "contextError"] as const)("automatically recovers a transient %s without hiding loaded tasks", async source => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     routerMock.location.pathname = "/inbox/mine";
     setIssueRows([createIssue({ title: "Available task" })]);
     mineFixture = { ...mineFixture, [source]: { status: 503, message: "tenant_app_unavailable" } };
@@ -1538,10 +1556,14 @@ describe("Inbox toolbar", () => {
       expect(document.body.textContent).not.toContain("tenant_app_unavailable");
       const row = container.querySelector("[data-inbox-item]");
       apiMocks.inboxMine.mockResolvedValue(createMineSnapshot({ issues: mineFixture.issues }));
-      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe("company-1") }); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      await vi.waitFor(() => expect(apiMocks.inboxMine).toHaveBeenCalledTimes(2));
+      expect(client.getQueryData<InboxMineSnapshot>([...queryKeys.issues.list("company-1"), "mine-context", "local-board"])?.[source]).toBeUndefined();
       expect(container.querySelector("[data-inbox-item]")).toBe(row);
       expect(container.textContent).toContain("Available task");
-    } finally { await act(() => root.unmount()); client.clear(); }
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(apiMocks.inboxMine).toHaveBeenCalledTimes(2);
+    } finally { await act(() => root.unmount()); client.clear(); vi.useRealTimers(); }
   });
 
   it("shows an error and retry instead of an endless skeleton when a required external status filter fails", async () => {
