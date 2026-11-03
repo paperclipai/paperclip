@@ -754,6 +754,49 @@ describe("AgentConfigForm environment selector", () => {
     }
   });
 
+  it("tests an installed harness before saving without restoring the previous AI account", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    mockAdaptersApi.runnerHarnesses.mockResolvedValue([{
+      harnessId: "example.harness/synthetic", pluginKey: "example.harness", packageName: "@example/plugin-harness",
+      version: "1.0.0", displayName: "Synthetic Harness", protocolVersion: 1, platforms: ["linux-x64"], capabilities: {},
+      configSchema: { type: "object" }, credentials: [],
+    }]);
+    const accountList = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({
+      currentUserId: "you", canManageConnections: true, connections: [],
+    });
+    try {
+      const result = await renderForm([], {
+        adapterConfig: { model: "gpt-5.4" },
+        runtimeConfig: { aiConnection: { mode: "responsible_user", provider: "openai", method: "api_key" } },
+      }, { showAdapterTypeField: true, showAdapterTestEnvironmentButton: true });
+      roots.push(result.root);
+      await vi.waitFor(() => expect(mockAdaptersApi.runnerHarnesses).toHaveBeenCalled());
+      await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+      const harness = document.querySelector('[role="option"][data-value="example.harness/synthetic"]');
+      expect(harness).not.toBeNull();
+      await clickElement(harness);
+      await clickElement(result.container.querySelector('[aria-label="Model"]'));
+      const search = document.querySelector<HTMLInputElement>('[placeholder="Search models... (type to create)"]');
+      expect(search).not.toBeNull();
+      await act(() => setInputValue(search!, "selected-model"));
+      await flushReact();
+      const model = Array.from(document.querySelectorAll('[role="option"]')).find(option => option.textContent?.includes("Use manual model"));
+      expect(model).toBeTruthy();
+      await clickElement(model);
+      await runTest(result.container);
+      await vi.waitFor(() => expect(mockAgentsApi.testEnvironment).toHaveBeenCalled());
+      expect(mockAgentsApi.testEnvironment).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+        agentId: "agent-1",
+        adapterConfig: expect.objectContaining({ provider: "extension", harnessId: "example.harness/synthetic", model: "selected-model" }),
+      }));
+      expect(mockAgentsApi.testEnvironment.mock.lastCall?.[2].aiConnection).toBeUndefined();
+      expect(result.onSave).not.toHaveBeenCalled();
+    } finally {
+      accountList.mockRestore();
+      mockAdaptersApi.runnerHarnesses.mockResolvedValue([]);
+    }
+  });
+
   it.each([
     { harness: "claude_local", label: "Claude", profile: { provider: "acpx", acpxAgent: "claude" } },
     { harness: "pi_local", label: "Pi", profile: { provider: "acpx", acpxAgent: "pi" } },

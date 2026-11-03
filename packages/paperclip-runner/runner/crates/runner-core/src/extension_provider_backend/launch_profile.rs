@@ -156,11 +156,43 @@ fn valid_environment_key(key: &str) -> bool {
         && key
             .bytes()
             .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-        && !["PAPERCLIP_", "NODE_", "NPM_", "LD_", "DYLD_"]
+        && !["PAPERCLIP_", "NODE_", "NPM_", "LD_", "DYLD_", "GIT_CONFIG"]
             .iter()
             .any(|prefix| key.starts_with(prefix))
         && !matches!(
             key,
-            "PATH" | "HOME" | "SHELL" | "BASH_ENV" | "ENV" | "PYTHONPATH" | "PYTHONHOME"
+            "PATH"
+                | "HOME"
+                | "SHELL"
+                | "ENV"
+                | "BASH_ENV"
+                | "IFS"
+                | "NODEPATH"
+                | "PYTHONPATH"
+                | "PYTHONHOME"
+                | "RUBYOPT"
+                | "PERL5OPT"
+                | "GIT_SSH"
+                | "GIT_SSH_COMMAND"
+                | "GIT_ASKPASS"
+                | "SSH_ASKPASS"
+                | "SSH_AUTH_SOCK"
+                | "PROMPT_COMMAND"
+                | "PS4"
+                | "SHELLOPTS"
+                | "BASHOPTS"
+                | "CDPATH"
+                | "GLOBIGNORE"
+                | "OPENSSL_CONF"
+                | "OPENSSL_MODULES"
+                | "GIT_EXEC_PATH"
+                | "GIT_PROXY_COMMAND"
+                | "BASH_LOADABLES_PATH"
+                | "ZDOTDIR"
+                | "COMSPEC"
+                | "PATHEXT"
+                | "GCONV_PATH"
+                | "GLIBC_TUNABLES"
+                | "OPENSSL_ENGINES"
         )
 }

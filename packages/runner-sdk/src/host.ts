@@ -41,6 +41,7 @@ const INTERRUPTING_COMMANDS = new Set([
   "runner.shutdown", "runner.suspend",
 ]);
 const CALLBACK_COMMANDS = new Set(["request.resolve", "interaction.receipt", "semantic_tool.result"]);
+const EXTERNAL_CALLBACK_ACTIONS = new Set(["tool", "finish", "request_user_input", "consume_input"]);
 const MAX_PENDING_REQUESTS = 128;
 
 /**
@@ -72,6 +73,11 @@ export async function serveHarness(handlers: HarnessHostHandlers, options: Harne
   let initialization: Promise<void> = Promise.resolve();
   let closeTask: Promise<JsonObject> | undefined;
   let fatal: Error | undefined;
+  const fail = (error: unknown) => {
+    fatal ??= asError(error);
+    if (!input.destroyed) input.destroy(fatal);
+  };
+  output.on("error", fail);
   const pending = new Set<Promise<void>>();
   const lifetime = new AbortController();
   // Acknowledged commands can retain their context for ongoing native work.
@@ -104,7 +110,7 @@ export async function serveHarness(handlers: HarnessHostHandlers, options: Harne
       });
     });
     // Retain the failure for every subsequent write without an unhandled rejection.
-    outputQueue = task.catch(error => { fatal ??= asError(error); });
+    outputQueue = task.catch(fail);
     return task;
   };
   const revokeOutput = (error: Error, destroy: boolean) => {
@@ -173,7 +179,7 @@ export async function serveHarness(handlers: HarnessHostHandlers, options: Harne
           result: { ...jsonObject(result, "initialize result"), identity: identity as unknown as JsonObject, capabilities } }));
       });
       task = initialization.catch(async error => {
-        fatal ??= asError(error);
+        fail(error);
         await reply(request.id, async () => { throw error; });
       });
     } else if (request.method === "close") {
@@ -181,7 +187,9 @@ export async function serveHarness(handlers: HarnessHostHandlers, options: Harne
     } else {
       const command = request.method === "execute" ? parseHarnessCommand(request.params.command) : undefined;
       const interrupting = command !== undefined && INTERRUPTING_COMMANDS.has(command.type);
-      const bypassQueue = interrupting || (command !== undefined && CALLBACK_COMMANDS.has(command.type));
+      const externalCallback = command?.type === "external_provider.operation"
+        && typeof command.payload.action === "string" && EXTERNAL_CALLBACK_ACTIONS.has(command.payload.action);
+      const bypassQueue = interrupting || externalCallback || (command !== undefined && CALLBACK_COMMANDS.has(command.type));
       if (interrupting) {
         workGeneration += 1;
         workLifetime.abort(new Error(`harness ${command.type}`));
@@ -203,7 +211,7 @@ export async function serveHarness(handlers: HarnessHostHandlers, options: Harne
       if (!bypassQueue) workQueue = task;
     }
     pending.add(task);
-    void task.catch(error => { fatal ??= asError(error); }).finally(() => pending.delete(task));
+    void task.catch(fail).finally(() => pending.delete(task));
   };
 
   let remainder = Buffer.alloc(0);
@@ -245,6 +253,7 @@ export async function serveHarness(handlers: HarnessHostHandlers, options: Harne
     finally {
       state = "closed";
       revokeOutput(fatal ?? new HarnessProtocolError("harness output is closed", "harness_not_active"), !drained);
+      output.removeListener("error", fail);
     }
   }
   if (fatal) throw fatal;

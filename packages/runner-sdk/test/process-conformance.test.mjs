@@ -19,7 +19,7 @@ async function fixture(body, action) {
 }
 
 test("public test kit exercises an independent process through real stdio and successful cleanup", async () => {
-  await fixture(`await serveHarness({ identity, capabilities: { typedEvents: true, interruption: true },
+  await fixture(`await serveHarness({ identity, capabilities: { typedEvents: true, interruption: true, resume: true },
     async execute(command, context) {
       await context.emit({ eventType: 'turn.started', priority: 'p0', payload: { commandId: command.commandId } });
       await context.emit({ eventType: 'turn.completed', priority: 'p0', payload: {} });
@@ -87,4 +87,28 @@ test("test kit admits events immediately following initialize success in the sam
     const report = await runHarnessProcessConformance({ ...input, requiredEventTypes: ["turn.started"] });
     assert.equal(report.events.length, 1);
   });
+});
+
+
+for (const resume of [undefined, false]) {
+  test(`one-shot harness conformance does not require snapshots (resume=${resume})`, async () => {
+    await fixture(`await serveHarness({ identity, capabilities: ${JSON.stringify(resume === undefined ? {} : { resume })},
+      execute() { return {}; }, close() { return {}; } });`, async input => {
+      const report = await runHarnessProcessConformance(input);
+      assert.equal(Object.hasOwn(report, "snapshot"), false);
+    });
+  });
+}
+
+test("resumable conformance requires the advertised snapshot handler", async () => {
+  await fixture(`await serveHarness({ identity, capabilities: { resume: true }, execute() { return {}; }, close() { return {}; } });`, input =>
+    assert.rejects(runHarnessProcessConformance({ ...input, requireSnapshot: false }), /snapshot/));
+});
+
+test("caller can require snapshot conformance independently of resume capability", async () => {
+  await fixture(`await serveHarness({ identity, capabilities: {}, execute() { return {}; },
+    snapshot() { return { nativeSessionId: 'one_shot' }; }, close() { return {}; } });`, async input => {
+      const report = await runHarnessProcessConformance({ ...input, requireSnapshot: true });
+      assert.equal(report.snapshot.nativeSessionId, "one_shot");
+    });
 });

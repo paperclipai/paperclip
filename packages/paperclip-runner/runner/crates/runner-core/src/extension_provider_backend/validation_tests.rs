@@ -43,7 +43,16 @@ fn frames_require_supported_schema_and_bounded_json() {
 #[test]
 fn launch_profile_cannot_grant_ambient_execution_authority() {
     let valid = launch_profile();
-    valid.validate().unwrap();
+    for key in [
+        "PROVIDER_API_KEY",
+        "GIT_TOKEN",
+        "GITHUB_TOKEN",
+        "EXAMPLE_API_KEY",
+    ] {
+        let mut profile = valid.clone();
+        profile.environment_keys = vec![key.to_owned()];
+        profile.validate().unwrap();
+    }
     for key in [
         "NODE_OPTIONS",
         "NPM_CONFIG_PREFIX",
@@ -52,9 +61,39 @@ fn launch_profile_cannot_grant_ambient_execution_authority() {
         "PAPERCLIP_RUNNER_EXTENSION_PROFILE",
         "PATH",
         "HOME",
+        "SHELL",
         "BASH_ENV",
         "ENV",
         "PYTHONPATH",
+        "PYTHONHOME",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_SSH_COMMAND",
+        "GIT_SSH",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "SSH_AUTH_SOCK",
+        "PROMPT_COMMAND",
+        "PS4",
+        "SHELLOPTS",
+        "BASHOPTS",
+        "CDPATH",
+        "GLOBIGNORE",
+        "OPENSSL_CONF",
+        "OPENSSL_MODULES",
+        "OPENSSL_ENGINES",
+        "GIT_EXEC_PATH",
+        "GIT_PROXY_COMMAND",
+        "BASH_LOADABLES_PATH",
+        "ZDOTDIR",
+        "COMSPEC",
+        "PATHEXT",
+        "GCONV_PATH",
+        "GLIBC_TUNABLES",
+        "IFS",
+        "NODEPATH",
+        "RUBYOPT",
+        "PERL5OPT",
         "invalid_key",
     ] {
         let mut profile = valid.clone();
