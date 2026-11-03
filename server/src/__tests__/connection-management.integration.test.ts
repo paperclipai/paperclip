@@ -7,7 +7,7 @@ import { createServer } from "node:http";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
 import { createDb, authUsers, activityLog, agentApiKeys, companies, companySecrets, companySecretVersions, chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolPolicies, toolRateLimitCounters, connectionGrants, connectionGrantMembers, connectionGrantDelegations, toolAccessAuditEvents, toolOauthStates, issueThreadInteractions, connectionIntentDeliveries, agents, companyMemberships, heartbeatRuns, issues, principalPermissionGrants, projects, toolApplications, toolConnections, toolConnectionInstalls, aiConnectionPools, toolMcpGateways, toolMcpGatewayTokens, toolActionRequests, toolCatalogEntries, toolInvocations, toolCallEvents, toolProfileEntries, toolProfiles, toolProfileBindings, plugins, adapterAuthSessions, environments, routines, chatGitHubReviews } from "@paperclipai/db";
-import { findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
+import { findSatisfiedConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { redactRunnerApiPayloads } from "../services/native-runtime/runner-api-log-redaction.js";
@@ -1012,7 +1012,7 @@ describe("connection management with production default agents", () => {
       const [task] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
       const entryProof = (credentialIntent.payload as { savedSetup: { credentialEntry: { previousGenerations: Record<string, string>; requireAll: boolean } } }).savedSetup.credentialEntry;
       expect(entryProof).toEqual({ previousGenerations: { signingSecret: expect.any(String) }, requireAll: true });
-      expect(await findSatisfiedToolConnection(server.db, task, credentialIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, task, credentialIntent)).toBeNull();
       await satisfiedConnectionIntentService(server.db).sweepPending();
       expect((await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, credentialIntentId!)))[0].status).toBe("pending");
       // Ordinary write-only bot-token repair remains delegated under current authority.
@@ -1022,7 +1022,7 @@ describe("connection management with production default agents", () => {
         await server.db.update(toolConnections).set({ status: "active", enabled: true, healthStatus: "healthy" }).where(eq(toolConnections.id, created.body.connectionId));
       };
       await healthy();
-      expect(await findSatisfiedToolConnection(server.db, task, credentialIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, task, credentialIntent)).toBeNull();
       const humanReconnect = async (signingSecret: string) => {
         const response = await fetch(server.apiUrl + "/api" + setupPath, { method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" },
           body: JSON.stringify({ action: "reconnect", credentials: { signingSecret, botToken: "xoxb-fixture-token" } }) });
@@ -1030,21 +1030,21 @@ describe("connection management with production default agents", () => {
       };
       await humanReconnect("fixture-signing-secret");
       await healthy();
-      expect(await findSatisfiedToolConnection(server.db, task, credentialIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, task, credentialIntent)).toBeNull();
       await humanReconnect("human-replacement-signing-secret");
-      expect(await findSatisfiedToolConnection(server.db, task, credentialIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, task, credentialIntent)).toBeNull();
       const resumedRequest = await f.request("POST", setupPath, { action: "reconnect", credentials: { signingSecret: "agent-chosen-webhook-key" } }, f.jwt);
       expect(resumedRequest.body.interactionId).toBe(credentialIntentId);
       expect((await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, credentialIntentId!)))[0].payload)
         .toMatchObject({ savedSetup: { credentialEntry: entryProof } });
       await healthy();
-      expect(await findSatisfiedToolConnection(server.db, task, credentialIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, task, credentialIntent)).toBeNull();
       const [repaired] = await server.db.select().from(chatEndpoints).where(eq(chatEndpoints.id, created.body.id));
       await server.db.update(chatEndpoints).set({ setup: { ...repaired.setup, webhookVerifiedAt: new Date().toISOString() } }).where(eq(chatEndpoints.id, created.body.id));
-      expect((await findSatisfiedToolConnection(server.db, task, credentialIntent))?.id).toBe(created.body.connectionId);
-      expect(await findSatisfiedToolConnection(server.db, { ...task, status: "cancelled" }, credentialIntent)).toBeNull();
+      expect((await findSatisfiedConnection(server.db, task, credentialIntent))?.id).toBe(created.body.connectionId);
+      expect(await findSatisfiedConnection(server.db, { ...task, status: "cancelled" }, credentialIntent)).toBeNull();
       await accessService(server.db).ensureMembership(f.companyId, "user", f.userId, "operator", "suspended");
-      expect(await findSatisfiedToolConnection(server.db, task, credentialIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, task, credentialIntent)).toBeNull();
       await accessService(server.db).ensureMembership(f.companyId, "user", f.userId, "operator", "active");
       await satisfiedConnectionIntentService(server.db).sweepPending();
       expect((await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, credentialIntentId!)))[0].status).toBe("expired");
@@ -1230,7 +1230,7 @@ describe("connection management with production default agents", () => {
       expect(identityHandoff).toMatchObject({ status: 200, body: { requiredUserAction: { kind: "confirm_identity" } } });
       const [identityIntent] = await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, identityHandoff.body.interactionId));
       const [identityTask] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
-      expect(await findSatisfiedToolConnection(server.db, identityTask, identityIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, identityTask, identityIntent)).toBeNull();
       const start = await humanRequest(`/api/chat-endpoints/${created.body.id}/github/identity/start`, "POST", {});
       const started = await start.json();
       expect(started, JSON.stringify(started)).toHaveProperty("authorizationUrl");
@@ -1241,13 +1241,13 @@ describe("connection management with production default agents", () => {
       expect((await humanRequest(callback, "GET", undefined, otherCookie)).status).toBe(403);
       expect((await humanRequest(callback)).status).toBe(303);
       expect((await humanRequest(callback)).status).toBe(403);
-      expect(await findSatisfiedToolConnection(server.db, identityTask, identityIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, identityTask, identityIntent)).toBeNull();
       const confirmed = await humanRequest(`/api/chat-endpoints/${created.body.id}/github/identity/confirm`, "POST", { githubUserId: "1357" });
       expect(confirmed.status, JSON.stringify(await confirmed.json())).toBe(200);
       const [endpoint] = await server.db.select().from(chatEndpoints).where(eq(chatEndpoints.id, created.body.id));
       await server.db.update(chatEndpoints).set({ status: "active", setup: { ...endpoint.setup, webhookVerifiedAt: new Date().toISOString() } }).where(eq(chatEndpoints.id, endpoint.id));
       await server.db.update(toolConnections).set({ status: "active", enabled: true, healthStatus: "healthy" }).where(eq(toolConnections.id, created.body.connectionId));
-      expect((await findSatisfiedToolConnection(server.db, identityTask, identityIntent))?.id).toBe(created.body.connectionId);
+      expect((await findSatisfiedConnection(server.db, identityTask, identityIntent))?.id).toBe(created.body.connectionId);
       const credentialHandoff = await f.request("POST", `/chat-endpoints/${created.body.id}/setup`, { action: "reconnect", credentials: { webhookSecret: "agent-chosen-key" } }, f.jwt);
       expect(credentialHandoff).toMatchObject({ status: 200, body: { requiredUserAction: { kind: "enter_credentials" } } });
       const entryLink = new URL(credentialHandoff.body.requiredUserAction.setupPath, server.apiUrl);
@@ -1259,7 +1259,7 @@ describe("connection management with production default agents", () => {
       expect.soft(entryOptions.chatSetup.path).toBe(credentialHandoff.body.requiredUserAction.setupPath);
       const [entryIntent] = await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, credentialHandoff.body.interactionId));
       const [entryTask] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
-      expect(await findSatisfiedToolConnection(server.db, entryTask, entryIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, entryTask, entryIntent)).toBeNull();
       const repairedResponse = await humanRequest(`/api/chat-endpoints/${created.body.id}/setup`, "POST", { action: "reconnect", credentials: { webhookSecret: "human-replacement-webhook" } });
       expect(repairedResponse.status).toBe(200);
       const [repairedConnection] = await server.db.select().from(toolConnections).where(eq(toolConnections.id, created.body.connectionId));
@@ -1269,14 +1269,14 @@ describe("connection management with production default agents", () => {
           accessContext: { consumerType: "system", consumerId: "integration-fixture", actorType: "system" },
         })).toBe(value);
       }
-      expect(await findSatisfiedToolConnection(server.db, entryTask, entryIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, entryTask, entryIntent)).toBeNull();
       const [repairedEndpoint] = await server.db.select().from(chatEndpoints).where(eq(chatEndpoints.id, created.body.id));
       expect(repairedEndpoint.setup.webhookVerifiedAt).toBeNull();
       await server.db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, created.body.id));
       await server.db.update(toolConnections).set({ status: "active", enabled: true, healthStatus: "healthy" }).where(eq(toolConnections.id, created.body.connectionId));
-      expect(await findSatisfiedToolConnection(server.db, entryTask, entryIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, entryTask, entryIntent)).toBeNull();
       await server.db.update(chatEndpoints).set({ setup: { ...repairedEndpoint.setup, webhookVerifiedAt: new Date().toISOString() } }).where(eq(chatEndpoints.id, created.body.id));
-      expect((await findSatisfiedToolConnection(server.db, entryTask, entryIntent))?.id).toBe(created.body.connectionId);
+      expect((await findSatisfiedConnection(server.db, entryTask, entryIntent))?.id).toBe(created.body.connectionId);
       const [beforeRotation] = await server.db.select().from(toolConnections).where(eq(toolConnections.id, created.body.connectionId));
       let rotationIntentId = "";
       for (const token of [f.key.token, f.jwt, f.jwt]) {
@@ -1298,7 +1298,7 @@ describe("connection management with production default agents", () => {
       const setupOptions = await humanRequest(`/api/connection-intents/${rotationIntentId}/setup-options`);
       expect(setupOptions.status).toBe(200);
       expect((await setupOptions.json()).chatSetup.path).toContain("stage=credentials&reconnect=1&rotateSecret=1");
-      expect(await findSatisfiedToolConnection(server.db, task, rotationIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, task, rotationIntent)).toBeNull();
       await satisfiedConnectionIntentService(server.db).sweepPending();
       expect((await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, rotationIntentId)))[0].status).toBe("pending");
       const humanRotation = await humanRequest(`/api/chat-endpoints/${created.body.id}/setup-secret`, "POST", {});
@@ -1312,14 +1312,14 @@ describe("connection management with production default agents", () => {
       expect(rotationState.body.setup.credentialRotationId).toBe(generatedRotation.credentialRotationId);
       const nextRotation = await f.request("POST", `/chat-endpoints/${endpoint.id}/setup-secret`, {});
       expect(nextRotation.body.requiredUserAction.setupPath).toContain(`afterRotationId=${rotationState.body.setup.credentialRotationId}`);
-      expect(await findSatisfiedToolConnection(server.db, task, rotationIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, task, rotationIntent)).toBeNull();
       // Provider-fixture states separate restored health from new webhook verification.
       const [rotatedEndpoint] = await server.db.select().from(chatEndpoints).where(eq(chatEndpoints.id, endpoint.id));
       await server.db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, endpoint.id));
       await server.db.update(toolConnections).set({ status: "active", enabled: true, healthStatus: "healthy" }).where(eq(toolConnections.id, created.body.connectionId));
-      expect(await findSatisfiedToolConnection(server.db, task, rotationIntent)).toBeNull();
+      expect(await findSatisfiedConnection(server.db, task, rotationIntent)).toBeNull();
       await server.db.update(chatEndpoints).set({ setup: { ...rotatedEndpoint.setup, webhookVerifiedAt: new Date().toISOString() } }).where(eq(chatEndpoints.id, endpoint.id));
-      expect((await findSatisfiedToolConnection(server.db, task, rotationIntent))?.id).toBe(created.body.connectionId);
+      expect((await findSatisfiedConnection(server.db, task, rotationIntent))?.id).toBe(created.body.connectionId);
     } finally { provider = null; }
   });
 
@@ -1834,12 +1834,12 @@ describe("connection management with production default agents", () => {
     const [intent] = await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, first.body.interactionId));
     const [task] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
     expect(intent).toMatchObject({ addresseeUserId: f.userId, payload: { savedSetup: { endpointId: created.body.id, connectionId: created.body.connectionId } } });
-    expect(await findSatisfiedToolConnection(server.db, task, intent)).toBeNull();
+    expect(await findSatisfiedConnection(server.db, task, intent)).toBeNull();
     // Healthy App credentials alone do not prove the addressee's identity.
     await server.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
     await server.db.update(chatEndpoints).set({ status: "active", providerAccountId: "identity-fixture" }).where(eq(chatEndpoints.id, created.body.id));
     await server.db.update(toolConnections).set({ status: "active", enabled: true, healthStatus: "healthy" }).where(eq(toolConnections.id, created.body.connectionId));
-    expect(await findSatisfiedToolConnection(server.db, task, intent)).toBeNull();
+    expect(await findSatisfiedConnection(server.db, task, intent)).toBeNull();
     await satisfiedConnectionIntentService(server.db).sweepPending();
     expect((await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, intent.id)))[0].status).toBe("pending");
     expect(await server.db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, intent.id))).toEqual([]);
@@ -1847,19 +1847,19 @@ describe("connection management with production default agents", () => {
     const [link] = await server.db.insert(chatIdentityLinks).values({ companyId: f.companyId, endpointId: created.body.id, principalId: principal.id, paperclipUserId: f.userId, status: "pending" }).returning();
     for (const status of ["pending", "revoked", "expired"] as const) {
       await server.db.update(chatIdentityLinks).set({ status }).where(eq(chatIdentityLinks.id, link.id));
-      expect(await findSatisfiedToolConnection(server.db, task, intent), status).toBeNull();
+      expect(await findSatisfiedConnection(server.db, task, intent), status).toBeNull();
     }
     await server.db.update(chatIdentityLinks).set({ status: "linked", confirmedAt: new Date() }).where(eq(chatIdentityLinks.id, link.id));
     await server.db.update(chatIdentityLinks).set({ paperclipUserId: randomUUID() }).where(eq(chatIdentityLinks.id, link.id));
-    expect(await findSatisfiedToolConnection(server.db, task, intent)).toBeNull();
+    expect(await findSatisfiedConnection(server.db, task, intent)).toBeNull();
     await server.db.update(chatIdentityLinks).set({ paperclipUserId: f.userId }).where(eq(chatIdentityLinks.id, link.id));
     await server.db.update(chatExternalPrincipals).set({ providerAccountId: "different-installation" }).where(eq(chatExternalPrincipals.id, principal.id));
-    expect(await findSatisfiedToolConnection(server.db, task, intent)).toBeNull();
+    expect(await findSatisfiedConnection(server.db, task, intent)).toBeNull();
     await server.db.update(chatExternalPrincipals).set({ providerAccountId: "identity-fixture" }).where(eq(chatExternalPrincipals.id, principal.id));
-    expect((await findSatisfiedToolConnection(server.db, task, intent))?.id).toBe(created.body.connectionId);
-    expect(await findSatisfiedToolConnection(server.db, { ...task, status: "cancelled" }, intent)).toBeNull();
+    expect((await findSatisfiedConnection(server.db, task, intent))?.id).toBe(created.body.connectionId);
+    expect(await findSatisfiedConnection(server.db, { ...task, status: "cancelled" }, intent)).toBeNull();
     await accessService(server.db).ensureMembership(f.companyId, "user", f.userId, "operator", "suspended");
-    expect(await findSatisfiedToolConnection(server.db, task, intent)).toBeNull();
+    expect(await findSatisfiedConnection(server.db, task, intent)).toBeNull();
     await accessService(server.db).ensureMembership(f.companyId, "user", f.userId, "operator", "active");
     await satisfiedConnectionIntentService(server.db).sweepPending();
     const [delivery] = await server.db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, intent.id));

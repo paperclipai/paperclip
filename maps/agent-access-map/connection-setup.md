@@ -350,6 +350,14 @@ Gaps: This individual operation has source review but no recorded HTTP verificat
 
 Capability ID: `connection-setup/task-request`.
 
+AI account repairs also notify the existing connection worker. It can expire an
+obsolete request only if the agent's saved selection passes normal account
+selection, human-audience, membership and installation checks. This system
+observation grants no permission and does not adopt credentials. A fresh-session
+continuation retains independent questions and approval gates. Manual blocks and
+reassignment remain protected. [Database regression tests](../../server/src/__tests__/satisfied-connection-intents.test.ts)
+cover this path; they do not prove live provider login or deployed recovery.
+
 Review: `operation-reviewed`.
 
 ### `post-runtime-tools-connections-request`

@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
@@ -183,6 +184,7 @@ export function aiConnectionService(db: Db) {
     grantId: string,
   ) {
     return db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection, companyId);
       const [row] = await tx
         .select({ connection: toolConnections, grant: connectionGrants })
         .from(connectionGrants)
@@ -636,6 +638,7 @@ export function aiConnectionService(db: Db) {
     const id = reconnect?.connection.id ?? randomUUID();
     const grantId = reconnect?.grant.id ?? randomUUID();
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection, companyId);
       await managementContext?.reauthorize();
       const secrets = secretService(tx);
       if (loginSession) {

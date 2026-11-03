@@ -89,6 +89,9 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
       existing.adapterConfig,
     );
   }
+  if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.adapterConfig !== undefined || normalizedPatch.adapterType !== undefined) {
+    await notifyDeliveryWork(db, DELIVERY_QUEUES.connection, existing.companyId);
+  }
   await notifyStrandedAgentStatus(db, { companyId: existing.companyId, agentId: existing.id });
   await notifyRunDispatch(db, { companyId: existing.companyId });
   await notifyDeferredExecutionEligibility(db, { companyId: existing.companyId });

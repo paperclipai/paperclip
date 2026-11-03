@@ -17,6 +17,26 @@ picker and provider setup. Execution environment selection lives in Configure.
 
 Storybook's simulated controllers and page annotations do not run in the app.
 
+## Task recovery after account repair
+
+A pending AI connection request is rechecked against the agent's saved account
+selection. Reconnecting an account, changing the personal default, changing the
+agent's account or harness, and changing account eligibility or the human audience
+notify the existing connection continuation worker after the write commits.
+
+For tasks in progress or in review, the worker expires an obsolete request when
+the selected account is healthy and both the responsible user and agent have
+access. This is a system observation, not a human approval. It changes no
+credential, grant, default or agent binding. A resumed run uses a fresh provider
+session and normal task admission. Separate questions and approvals still block
+continuation. Manual blocks, closed tasks, and reassignment remain protected.
+Accounts that still need explicit adoption retain their setup request.
+
+Database fixture coverage is in `satisfied-connection-intents.test.ts`. It covers
+repair, permission failures, separate review gates, duplicate delivery and
+transaction commit/rollback notifications. It does not establish live provider
+login or deployed recovery.
+
 ## Compatibility and selection
 
 The shared `AI_CONNECTION_CAPABILITIES` contract defines these combinations:

@@ -1,5 +1,5 @@
 import { connectionIntentService } from "./connection-intents.js";
-import { connectionContinuationPendingResponse, findSatisfiedToolConnection, satisfiedConnectionIntentService } from "./satisfied-connection-intents.js";
+import { connectionContinuationPendingResponse, findSatisfiedConnection, satisfiedConnectionIntentService } from "./satisfied-connection-intents.js";
 import { isAiConnectionConfigurationFailure } from "./ai-auth-failure.js";
 import { and, eq, isNull, lte, asc, inArray, notInArray, desc, sql } from "drizzle-orm";
 import { connectionIntentDeliveries, issueThreadInteractions, issues, agentWakeupRequests, companyMemberships, heartbeatRuns, chatConversations, chatEndpoints, type Db } from "@paperclipai/db";
@@ -165,7 +165,7 @@ export function connectionIntentDeliveryService(db: Db, heartbeat: Pick<Heartbea
           eq(issueThreadInteractions.id, interactionId), eq(issueThreadInteractions.companyId, claimed.companyId),
           eq(issueThreadInteractions.issueId, loaded.issue.id))).for("update");
         if (!task || !card || card.status !== "expired" || card.result?.outcome !== "expired") return null;
-        const ready = await findSatisfiedToolConnection(tx as unknown as Db, task, { ...card, status: "pending" });
+        const ready = await findSatisfiedConnection(tx as unknown as Db, task, { ...card, status: "pending" });
         if (!ready) return null;
         if (ready.id !== (card.result as { connectionId: string }).connectionId) {
           const previousConnectionId = (card.result as { connectionId: string }).connectionId;

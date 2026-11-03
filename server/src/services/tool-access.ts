@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
 import { notifyVoiceChange } from "./voice/voice-recovery-notifications.js";
 import { notifyToolConnectionHealth, writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
@@ -4680,6 +4681,7 @@ export function toolAccessService(
             return rows;
           })
         : await writeToolConnectionHealthChange(db, existing, async tx => {
+            if (existing.connectionPurpose === "ai") await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection, existing.companyId);
             if (input.enabled !== undefined || input.status !== undefined || input.config !== undefined || input.transportConfig !== undefined || input.credentialSecretRefs !== undefined || input.credentialRefs !== undefined) {
               await notifyGitHubCredentialChange(tx, existing);
               await notifyGitHubCredentialChange(tx, { companyId: existing.companyId, config });
