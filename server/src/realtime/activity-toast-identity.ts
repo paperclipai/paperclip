@@ -3,7 +3,7 @@ import { agents, authUsers, companyMemberships, issues, type Db } from "@papercl
 
 const TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
 
-/** Called only after the viewer can read the activity's task. Never copy arbitrary details. */
+/** Called only after the viewer can read the activity's task. Never copy details. */
 export async function activityToastIdentity(
   db: Db,
   companyId: string,
