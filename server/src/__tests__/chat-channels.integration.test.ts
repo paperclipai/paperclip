@@ -9777,7 +9777,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
       it("creates and installs once, uploads the avatar and links only the manager grant owner", async () => {
         const f = await managedFixture();
-        await Promise.all([f.provision(), f.provision()]);
+        await Promise.all([1, 2].map(() => request(f.app)
+          .post(`/api/chat-endpoints/${f.endpoint.id}/slack/managed/provision`)
+          .send(f.input).expect(200)));
         const saved = await f.service.get(f.endpoint.id);
         expect(saved.setup).toMatchObject({ slackSetupMethod: "managed", slackRegistration: { status: "configured", appId: f.appId }, slackAvatar: { status: "uploaded" }, slackAccount: { status: "linked", paperclipUserId: actor.userId, externalUserId: f.installerId } });
         expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
@@ -9785,6 +9787,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const activities = await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId));
         for (const secret of [f.credentials.accessToken, f.credentials.refreshToken!, f.token, clientSecret, signingSecret, "claim-canary"]) expect(JSON.stringify({ saved, activities, choices: await f.grants.choices(f.companyId, actor) })).not.toContain(secret);
         await expect(f.service.update(f.endpoint.id, { slackSetupMethod: "automatic" }, actor.userId)).rejects.toThrow();
+      });
+      it("rejects missing, malformed, foreign and other-user manager grants before provisioning", async () => {
+        const f = await managedFixture();
+        const foreign = await seedCompany();
+        const grants = await db.insert(chatSlackManagerGrants).values([
+          { companyId: foreign.companyId, userId: actor.userId, slackUserId: "UFOREIGN", workspaceId: "TFOREIGN", workspaceName: "Foreign", managerAppId: "AMANAGER" },
+          { companyId: f.companyId, userId: "another-user", slackUserId: "UOTHER", workspaceId: "TOTHER", workspaceName: "Other", managerAppId: "AMANAGER" },
+        ]).returning();
+        f.provider.mockClear();
+        for (const [grantId, status] of [[randomUUID(), 404], ["invalid", 400], [grants[0]!.id, 404], [grants[1]!.id, 403]] as const) {
+          await request(f.app).post(`/api/chat-endpoints/${f.endpoint.id}/slack/managed/provision`)
+            .send({ ...f.input, grantId }).expect(status);
+        }
+        expect(f.provider).not.toHaveBeenCalled();
+        expect(await db.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id))).toEqual([]);
       });
       it("reuses the same personal workspace grant for another draft without another authorization", async () => {
         const f = await managedFixture();

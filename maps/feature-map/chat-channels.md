@@ -49,6 +49,13 @@ AgentMail bypasses the chat-connectors UI gate, GitHub uses
 `enableGitHubReviewBots`, and other chat providers use `enableChatConnectors`.
 Setup is covered in [connection setup](./connection-setup.md).
 
+For managed Slack setup, resume a saved draft with an authorized workspace and
+choose Continue. Verify it creates and installs the bot once. The HTTP route
+must resolve the selected Slack manager grant, reject malformed or missing IDs,
+and deny another company's or person's grant before provider calls. The channel
+integration suite exercises this route with a board fixture and provider fixtures;
+live Slack setup remains a separate acceptance check.
+
 ### `external-thread`
 
 Automated: [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts) uses provider fixtures; it does not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
