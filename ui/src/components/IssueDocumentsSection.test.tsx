@@ -62,6 +62,8 @@ vi.mock("../api/auth", () => ({
 }));
 
 const mockLocation = vi.hoisted(() => ({ hash: "" }));
+const mockCaptureBrowserException = vi.hoisted(() => vi.fn());
+vi.mock("../lib/sentry", () => ({ captureBrowserException: mockCaptureBrowserException }));
 vi.mock("@/lib/router", () => ({ useLocation: () => mockLocation }));
 vi.mock("./DocumentMarkdownBody", async () => ({
   DocumentMarkdownBody: (await import("./MarkdownBody")).MarkdownBody,
@@ -357,6 +359,34 @@ describe("IssueDocumentsSection", () => {
     expect(container.textContent).not.toContain("Body typed before its key");
     await act(async () => root.unmount());
     client.clear();
+  it("does not flag a blank new general document key as reserved", async () => {
+    mockIssuesApi.listDocuments.mockResolvedValue([]);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    await act(async () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection issue={createIssue()} canDeleteDocuments={false} generalDocumentsOnly /></QueryClientProvider>));
+    await flush();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(element => element.textContent?.includes("New document"))!.click());
+    await flush();
+    expect(container.querySelector('input[placeholder="Document key"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("reserved for task state");
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
+  it("drops listed documents without a key instead of crashing", async () => {
+    mockIssuesApi.listDocuments.mockResolvedValue([{ id: "doc-without-key" }] as never);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const issue = createIssue();
+    await act(async () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection issue={issue} canDeleteDocuments={false} generalDocumentsOnly /></QueryClientProvider>));
+    await flush();
+    expect(client.getQueryData(queryKeys.issues.documents(issue.id))).toEqual([]);
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
   });
 
   it("keeps new document drafts within their task and signed-in account", async () => {
@@ -689,6 +719,47 @@ describe("IssueDocumentsSection", () => {
     await flush();
     expect(container.textContent).toContain("Create and revise Plans in the task conversation.");
     expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
+  it("does not show a reserved-key warning for a blank new general document", async () => {
+    mockIssuesApi.listDocuments.mockResolvedValue([]);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection
+      issue={createIssue()} canDeleteDocuments={false} generalDocumentsOnly
+    /></QueryClientProvider>));
+    await flush();
+    await act(async () => Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("New document"))!.click());
+    expect(container.textContent).not.toContain("This document key is reserved for task state.");
+    const create = Array.from(container.querySelectorAll("button")).find(button => button.textContent?.includes("Create document"))!;
+    await act(async () => create.click());
+    await flush();
+    expect(container.textContent).not.toContain("This document key is reserved for task state.");
+    expect(mockIssuesApi.upsertDocument).not.toHaveBeenCalled();
+    await act(async () => root.unmount());
+    client.clear();
+  });
+
+  it("drops a document without a key and reports it once", async () => {
+    mockIssuesApi.listDocuments.mockResolvedValue([
+      createIssueDocument({ id: "note", key: "notes", title: "Task note", body: "General document content" }),
+      { ...createIssueDocument({ id: "keyless", body: "Keyless content" }), key: undefined } as unknown as IssueDocument,
+    ]);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const show = () => root.render(<QueryClientProvider client={client}><IssueDocumentsSection
+      issue={createIssue()} canDeleteDocuments={false} generalDocumentsOnly
+    /></QueryClientProvider>);
+    await act(async () => show());
+    await flush();
+    await act(async () => show());
+    await flush();
+    expect(container.textContent).toContain("General document content");
+    expect(container.textContent).not.toContain("Keyless content");
+    expect(mockCaptureBrowserException).toHaveBeenCalledTimes(1);
+    expect(String(mockCaptureBrowserException.mock.calls[0]?.[0])).toContain("document keyless");
     await act(async () => root.unmount());
     client.clear();
   });

@@ -291,8 +291,8 @@ function reportKeylessDocument(subjectId: string, document: unknown, source: str
   ));
 }
 
-/** Drop rows without a key from a documents list, reporting each one. */
-function selectKeyedDocuments(subjectId: string, documents: IssueDocument[] | undefined): IssueDocument[] | undefined {
+/** Drop rows without a key from a fetched documents list, reporting each one. Call once per response. */
+function selectKeyedDocuments(subjectId: string, documents: IssueDocument[]): IssueDocument[] {
   if (!Array.isArray(documents)) return documents;
   const keyed = documents.filter((document) => {
     if (hasDocumentKey(document)) return true;
@@ -447,8 +447,9 @@ function AccountIssueDocumentsSection({
 
   const { data: documents } = useQuery({
     queryKey: documentSubject.documentsQueryKey,
-    queryFn: documentSubject.listDocuments,
-    select: (data) => selectKeyedDocuments(documentSubject.id, data),
+    // Filter (and report) once per fetched response, so the cache never holds
+    // keyless rows and re-renders don't re-report unchanged data.
+    queryFn: async () => selectKeyedDocuments(documentSubject.id, await documentSubject.listDocuments()),
   });
 
   const { data: activeDocumentRevisions, isFetching: isFetchingDocumentRevisions, isError: revisionsQueryFailed } = useQuery({
