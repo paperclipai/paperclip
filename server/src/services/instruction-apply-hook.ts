@@ -129,17 +129,34 @@ function contentSha256(content: string): string {
   return createHash("sha256").update(Buffer.from(content, "utf8")).digest("hex");
 }
 
+function longestBacktickRun(content: string): number {
+  return content.match(/`+/g)?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
+}
+
 /** Fence longer than any backtick run inside the content, so the content cannot close it early. */
 function codeFence(content: string): string {
-  const longestBacktickRun = content
-    .match(/`+/g)
-    ?.reduce((max, run) => Math.max(max, run.length), 0) ?? 0;
-  return "`".repeat(Math.max(4, longestBacktickRun + 1));
+  return "`".repeat(Math.max(4, longestBacktickRun(content) + 1));
 }
 
 function fenced(content: string, info: string): string {
   const fence = codeFence(content);
   return fence + info + "\n" + content + (content.endsWith("\n") ? "" : "\n") + fence;
+}
+
+/** Collapses control characters (including newlines) so free text stays on one line. */
+function singleLine(text: string): string {
+  return text.replace(/[\u0000-\u001f\u007f\u2028\u2029]+/g, " ").trim();
+}
+
+/**
+ * Agent names are free text that the approval does not cover: render them as an inline
+ * code span on one line so a name cannot add headings or other task structure.
+ */
+function inlineCode(text: string): string {
+  const flat = singleLine(text);
+  const fence = "`".repeat(longestBacktickRun(flat) + 1);
+  const pad = flat.startsWith("`") || flat.endsWith("`") ? " " : "";
+  return fence + pad + flat + pad + fence;
 }
 
 function buildApplyTaskDescription(input: {
@@ -162,7 +179,7 @@ function buildApplyTaskDescription(input: {
     .join("\n\n");
 
   return [
-    `Board-authenticated apply task auto-created from instruction-generation approval \`${approvalId}\` for agent **${agentName}** (\`${agentId}\`).`,
+    `Board-authenticated apply task auto-created from instruction-generation approval \`${approvalId}\` for agent \`${agentId}\` (name: ${inlineCode(agentName)}). The agent id is authoritative: every write below targets it.`,
     // The note is approval-payload text: fence it so it reads as data, not task instructions
     note ? `Approval note (as submitted):\n\n${fenced(note, "text")}` : null,
     "## How to execute (board-authenticated callers only)",
@@ -275,7 +292,7 @@ export async function createInstructionApplyTask(
       const issue = await issueService(db).create(
         companyId,
         {
-          title: `Apply approved instruction bundle — ${agent.name}`,
+          title: `Apply approved instruction bundle — ${singleLine(agent.name)}`,
           description: buildApplyTaskDescription({
             agentId,
             agentName: agent.name,
