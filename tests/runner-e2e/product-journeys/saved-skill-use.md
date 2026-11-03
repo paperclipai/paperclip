@@ -53,9 +53,17 @@ Both the saved assignment entry and the admitted native execution input must
 bind that runtime name to the same canonical key and immutable created version.
 The native read must remain read-only, successful, paired by call/turn/runner,
 untruncated and byte-complete, and its content must contain the full procedure.
-A targetless read without this bound file wrapper cannot qualify. Discovery,
+A targetless filesystem read without this bound file wrapper cannot qualify. Discovery,
 shell output, model prose, failed or truncated reads, foreign run receipts and
 marker-only output cannot pass.
+
+The first-party `paperclip_read_assigned_skill` tool can also supply the read.
+Its complete `inputText` result must contain the exact canonical skill key,
+immutable created version, `SKILL.md` path, original Markdown, byte size and
+SHA-256 checksum. `nextOffset` must be null. The same dual assignment and
+admitted runtime binding is required. A semantic read failure can have a
+completed tool status; it does not qualify. A partial page, copied tool result,
+foreign version, missing start or unbound native event also fails closed.
 
 The existing campaign deadline bounds observations. Only failed read transport
 operations can be retried; task input, skill creation and execution are not

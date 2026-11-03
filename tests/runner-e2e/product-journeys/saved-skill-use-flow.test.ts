@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -19,7 +20,8 @@ vi.mock("@playwright/test", () => ({ expect: (locator: { textContent(): Promise<
 const directories: string[] = [];
 afterEach(async () => { vi.clearAllMocks(); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
-async function setup(change: (kind: string, row: any) => any = (_kind, row) => row, campaignId = "campaign", betaSkillsEnabled = false, wrappedRead = false) {
+async function setup(change: (kind: string, row: any) => any = (_kind, row) => row, campaignId = "campaign", betaSkillsEnabled = false,
+  wrappedRead: boolean | "assigned" = false) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "saved-skill-flow-")); directories.push(directory);
   let fixture: SavedSkillFixture;
   let skill: Row, assigned = false, issueCreated = false, reloaded = false;
@@ -75,11 +77,18 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
           const p = canonicalProviderEventsFromOpenCodePart({ id: "load", type: "tool", tool: "skill", state: {
             status, output: `<skill_content name="${fixture.slug}">\n${fixture.procedure}\n</skill_content>`,
           } })[0]!;
-          if (wrappedRead) {
+          if (wrappedRead === true) {
             const output = `<path>/workspace/.claude/skills/${fixture.slug}--0123456789/SKILL.md</path>\n<type>file</type>\n<content>\n`
               + fixture.markdown.trimEnd().split("\n").map((line, index) => `${index + 1}: ${line}`).join("\n")
               + "\n(End of file - total 12 lines)\n</content>";
             Object.assign(p.payload, { name: "read", operation: "unknown", readOnly: true, target: null,
+              output: status === "completed" ? output : "", outputBytes: status === "completed" ? Buffer.byteLength(output) : 0 });
+          }
+          if (wrappedRead === "assigned") {
+            const result = { skill: skill.key, versionId: skill.currentVersionId, path: "SKILL.md", text: fixture.markdown,
+              sha256: createHash("sha256").update(fixture.markdown).digest("hex"), byteSize: Buffer.byteLength(fixture.markdown), nextOffset: null };
+            const output = JSON.stringify({ type: "inputText", text: JSON.stringify(change("assigned-read", result)) });
+            Object.assign(p.payload, { name: "paperclip_read_assigned_skill", operation: "unknown", readOnly: true, target: null,
               output: status === "completed" ? output : "", outputBytes: status === "completed" ? Buffer.byteLength(output) : 0 });
           }
           return change("event", { runId: "run", companyId: "company", agentId: "agent", seq: i + 1, eventType: p.eventType,
@@ -114,6 +123,33 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
 }
 
 describe("saved skill journey orchestration", () => {
+  it("verifies the ordinary semantic assigned-skill read through all seven checks with Beta skills off", async () => {
+    const f = await setup(undefined, "campaign", false, "assigned"); await f.run();
+    expect(f.evidence.checks).toHaveLength(7);
+    expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+    expect(f.page.reload).toHaveBeenCalledOnce();
+    expect(f.api.post).toHaveBeenCalledTimes(2);
+    expect(createTaskThroughUi).toHaveBeenCalledOnce();
+    expect(f.api.get.mock.calls.some(([route]) => route.includes("/settings/"))).toBe(false);
+    const receipt = JSON.parse(await readFile(path.join(f.directory, "saved-skill-use-checks.json"), "utf8"));
+    expect(receipt.receipts).toEqual([{ runId: "run", executionId: "load", seq: 2 }]);
+    expect(receipt.reopened).toEqual(receipt.document);
+    expect(receipt.retainedSkill).toEqual(receipt.skill);
+  });
+  it.each([
+    ["wrong receipt key", "assigned-read", (r: Row) => { r.skill = "foreign"; }],
+    ["wrong receipt version", "assigned-read", (r: Row) => { r.versionId = "stale"; }],
+    ["partial source page", "assigned-read", (r: Row) => { r.nextOffset = r.text.length; }],
+    ["semantic failure", "assigned-read", (r: Row) => { r.outcome = "failed"; }],
+    ["wrong assigned version", "assignment", (r: Row) => { r.entries[0].versionId = "stale"; }],
+    ["missing admitted skill", "run", (r: Row) => { r.runnerProfileJson.nativeExecutionInput.runtimeContext.skills = []; }],
+    ["wrong admitted version", "run", (r: Row) => { r.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0].versionId = "stale"; }],
+  ] as const)("rejects a semantic assigned-skill read with %s before reading its document", async (_label, target, mutate) => {
+    const f = await setup((kind, row) => { if (kind === target) mutate(row); return row; }, "campaign", false, "assigned");
+    await expect(f.run()).rejects.toMatchObject({ outcome: "failed", code: "saved_skill_native_read_attributed" });
+    expect(f.api.get.mock.calls.some(([route]) => route.includes("/documents"))).toBe(false);
+    expect(f.page.reload).not.toHaveBeenCalled();
+  });
   it("assigns the input before browser dispatch and verifies native use, saved result and reload without setup supplying output", async () => {
     const f = await setup(); await f.run();
     expect(f.own.mock.calls.map(call => call[0])).toEqual([

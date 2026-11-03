@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { canonicalProviderEventsFromOpenCodePart } from "../../../packages/paperclip-runner/src/provider-events.js";
 import { savedSkillDocumentAttributed, savedSkillFixture, savedSkillReadReceipts, savedSkillReadRuntimeName, savedSkillResultMatches, savedSkillSourceMatches } from "./saved-skill-use-evidence.js";
@@ -25,6 +26,21 @@ function wrappedReadEvents(): Row[] {
   for (const row of events) Object.assign(row.payload.prpEvent.payload, { operation: "unknown", target: null });
   Object.assign(events[1]!.payload.prpEvent.payload, { output, outputBytes: Buffer.byteLength(output) });
   return events;
+}
+function assignedReadEvents(): Row[] {
+  const result = { skill: `company/${binding.companyId}/${fixture.slug}`, versionId: "version", path: "SKILL.md",
+    text: fixture.markdown, sha256: createHash("sha256").update(fixture.markdown).digest("hex"),
+    byteSize: Buffer.byteLength(fixture.markdown), nextOffset: null };
+  const output = JSON.stringify({ type: "inputText", text: JSON.stringify(result) });
+  const events = readEvents();
+  for (const row of events) Object.assign(row.payload.prpEvent.payload,
+    { name: "paperclip_read_assigned_skill", operation: "unknown", target: null });
+  Object.assign(events[1]!.payload.prpEvent.payload, { output, outputBytes: Buffer.byteLength(output) });
+  return events;
+}
+function changeAssignedResult(events: Row[], change: (value: Row) => void) {
+  const payload = events[1]!.payload.prpEvent.payload, wrapper = JSON.parse(payload.output), result = JSON.parse(wrapper.text);
+  change(result); wrapper.text = JSON.stringify(result); payload.output = JSON.stringify(wrapper);
 }
 function source() {
   const skill: Row = { id: "skill", companyId: binding.companyId, key: `company/${binding.companyId}/${fixture.slug}`, sourceType: "managed", name: fixture.name, slug: fixture.slug,
@@ -110,6 +126,46 @@ describe("saved skill use evidence", () => {
   it("accepts the deployed OpenCode read wrapper for its exact version-bound runtime skill directory", () => {
     expect(savedSkillReadReceipts(wrappedReadEvents(), binding, fixture, runtimeName)).toHaveLength(1);
     expect(savedSkillReadReceipts(wrappedReadEvents(), binding, fixture)).toEqual([]);
+  });
+  it("accepts the complete first-party assigned-skill receipt with exact immutable source identity and bytes", () => {
+    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, runtimeName, "version"))
+      .toEqual([{ runId: "run", executionId: "read-skill", seq: 2 }]);
+    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, undefined, "version")).toEqual([]);
+    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, runtimeName)).toEqual([]);
+    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, runtimeName, "foreign")).toEqual([]);
+  });
+  it.each([
+    ["foreign canonical key", (e: Row[]) => changeAssignedResult(e, r => { r.skill = "company/foreign/skill"; })],
+    ["foreign immutable version", (e: Row[]) => changeAssignedResult(e, r => { r.versionId = "foreign"; })],
+    ["wrong file", (e: Row[]) => changeAssignedResult(e, r => { r.path = "other/SKILL.md"; })],
+    ["incomplete page", (e: Row[]) => changeAssignedResult(e, r => { r.nextOffset = r.text.length; })],
+    ["missing pagination receipt", (e: Row[]) => changeAssignedResult(e, r => { delete r.nextOffset; })],
+    ["wrong checksum", (e: Row[]) => changeAssignedResult(e, r => { r.sha256 = "0".repeat(64); })],
+    ["wrong source byte count", (e: Row[]) => changeAssignedResult(e, r => { r.byteSize++; })],
+    ["partial procedure", (e: Row[]) => changeAssignedResult(e, r => { r.text = fixture.expected.reference; })],
+    ["changed full source", (e: Row[]) => changeAssignedResult(e, r => { r.text += "extra source"; })],
+    ["semantic failure with copied source", (e: Row[]) => changeAssignedResult(e, r => { r.outcome = "failed"; r.code = "runner_skill_not_assigned"; })],
+    ["shell copied receipt", (e: Row[]) => { for (const row of e) row.payload.prpEvent.payload.name = "bash"; }],
+    ["another first-party tool", (e: Row[]) => { for (const row of e) row.payload.prpEvent.payload.name = "paperclip_read_document"; }],
+    ["non-builtin transport", (e: Row[]) => { for (const row of e) row.payload.prpEvent.payload.transport = "process"; }],
+    ["mutating operation", (e: Row[]) => { for (const row of e) row.payload.prpEvent.payload.operation = "edit"; }],
+    ["not read only", (e: Row[]) => { e[1]!.payload.prpEvent.payload.readOnly = false; }],
+    ["start not read only", (e: Row[]) => { e[0]!.payload.prpEvent.payload.readOnly = false; }],
+    ["failed completion", (e: Row[]) => { e[1]!.payload.prpEvent.payload.status = "failed"; }],
+    ["truncated completion", (e: Row[]) => { e[1]!.payload.prpEvent.payload.outputTruncated = true; }],
+    ["missing start", (e: Row[]) => { e.splice(0, 1); }],
+    ["call mismatch", (e: Row[]) => { e[0]!.payload.prpEvent.payload.executionId = "another-call"; }],
+    ["foreign runner", (e: Row[]) => { e[0]!.sourceInstanceId = e[0]!.payload.prpEvent.sourceInstanceId = "another-runner"; }],
+    ["foreign run", (e: Row[]) => { e[1]!.runId = e[1]!.payload.prpEvent.runId = "another-run"; }],
+    ["foreign company", (e: Row[]) => { e[1]!.companyId = "another-company"; }],
+    ["foreign turn", (e: Row[]) => { e[1]!.payload.prpEvent.turnId = "another-turn"; }],
+    ["invalid wrapper", (e: Row[]) => { e[1]!.payload.prpEvent.payload.output = fixture.markdown; }],
+    ["wrong wrapper type", (e: Row[]) => { const p = e[1]!.payload.prpEvent.payload; p.output = p.output.replace("inputText", "outputText"); }],
+  ] as const)("rejects a first-party assigned-skill receipt with %s", (_label, mutate) => {
+    const events = assignedReadEvents(); mutate(events);
+    const completed = events.find(row => row.eventType === "tool.execution.completed")!;
+    completed.payload.prpEvent.payload.outputBytes = Buffer.byteLength(completed.payload.prpEvent.payload.output);
+    expect(savedSkillReadReceipts(events, binding, fixture, runtimeName, "version")).toEqual([]);
   });
   it.each([
     ["foreign path", (e: Row[]) => { e[1]!.payload.prpEvent.payload.output = e[1]!.payload.prpEvent.payload.output.replace(runtimeName, "foreign"); }],

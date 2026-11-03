@@ -68,9 +68,26 @@ export function savedSkillReadRuntimeName(skill: Row, assignments: Row, run: Row
   return native[0].runtimeName;
 }
 
+/** Core's assigned-skill read verifies the pinned manifest and returns one UTF-8 page. */
+function assignedSkillReadText(output: string, binding: NativePrpRunBinding, fixture: SavedSkillFixture, versionId: string): string | undefined {
+  try {
+    const wrapper = JSON.parse(output);
+    if (wrapper?.type !== "inputText" || typeof wrapper.text !== "string"
+      || Object.keys(wrapper).sort().join(",") !== "text,type") return undefined;
+    const result = JSON.parse(wrapper.text);
+    if (Object.keys(result).sort().join(",") !== "byteSize,nextOffset,path,sha256,skill,text,versionId"
+      || result.skill !== `company/${binding.companyId}/${fixture.slug}` || result.versionId !== versionId
+      || result.path !== "SKILL.md" || result.nextOffset !== null || result.text !== fixture.markdown
+      || result.byteSize !== Buffer.byteLength(fixture.markdown)
+      || result.sha256 !== createHash("sha256").update(fixture.markdown).digest("hex")) return undefined;
+    return result.text;
+  } catch { return undefined; }
+}
+
 /** Successful built-in reads and native skill loads expose the actual skill text.
  * A model claim, discovered name, shell echo, failed read or foreign run cannot qualify. */
-export function savedSkillReadReceipts(events: Row[], binding: NativePrpRunBinding, fixture: SavedSkillFixture, runtimeName?: string) {
+export function savedSkillReadReceipts(events: Row[], binding: NativePrpRunBinding, fixture: SavedSkillFixture,
+  runtimeName?: string, immutableVersionId?: string) {
   const bound = events.filter(row => isBoundNativePrpEventRow(row, binding));
   return bound.filter(row => {
     const event = row.payload.prpEvent, payload = event.payload;
@@ -97,9 +114,16 @@ export function savedSkillReadReceipts(events: Row[], binding: NativePrpRunBindi
       && wrappedPath?.startsWith("/") && !wrappedPath.includes("\\") && !wrappedPath.includes("\0")
       && !wrappedPath.split("/").some(part => part === "." || part === "..")
       && wrappedPath.endsWith(`/.claude/skills/${runtimeName}/SKILL.md`);
-    if (!reading && !loading && !wrappedRead) return false;
+    // The ordinary semantic tool is another native read path, not a filesystem wrapper.
+    // Its version must also have the dual assignment/admitted runtime binding above.
+    const assignedText = name === "paperclip_read_assigned_skill" && payload.readOnly === true && payload.target === null
+      && (payload.operation === "unknown" || payload.operation === "read")
+      && typeof runtimeName === "string" && /^[a-z0-9][a-z0-9_-]*$/i.test(runtimeName)
+      && typeof immutableVersionId === "string" && immutableVersionId.trim()
+      ? assignedSkillReadText(payload.output, binding, fixture, immutableVersionId) : undefined;
+    if (!reading && !loading && !wrappedRead && assignedText === undefined) return false;
     // File readers may prefix each source line with its line number.
-    const output = (wrappedRead ? wrapped![2]! : payload.output).split("\n").map((line: string) => line.replace(/^\s*\d+(?:[:|]|→)\s?/, "")).join("\n");
+    const output = (assignedText ?? (wrappedRead ? wrapped![2]! : payload.output)).split("\n").map((line: string) => line.replace(/^\s*\d+(?:[:|]|→)\s?/, "")).join("\n");
     if (!output.includes(fixture.procedure.trim())) return false;
     return bound.some(start => {
       const initial = start.payload.prpEvent, p = initial.payload;
@@ -107,7 +131,7 @@ export function savedSkillReadReceipts(events: Row[], binding: NativePrpRunBindi
         && initial.sourceInstanceId === event.sourceInstanceId && initial.turnId === event.turnId
         && p?.schema === payload.schema && p.executionId === payload.executionId && p.name === payload.name
         && p.transport === payload.transport && p.operation === payload.operation && p.status === "running"
-        && (!wrappedRead || p.readOnly === true);
+        && (!(wrappedRead || assignedText !== undefined) || p.readOnly === true);
     });
   }).map(row => ({ runId: binding.runId, executionId: String(row.payload.prpEvent.payload.executionId), seq: Number(row.seq) }));
 }
