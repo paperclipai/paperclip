@@ -1892,8 +1892,28 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
   it("retains one safe report per call and rejects history after access revocation", async () => {
     const f = await nativeServiceFixture(), first = await f.service.start(f.input);
+    const foreign = await nativeServiceFixture();
+    const [foreignSession] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, foreign.sessionId));
+    await db.insert(chatVoiceReports).values({ companyId: foreign.companyId, sessionId: foreign.sessionId, nextCheckAt: new Date(0) });
+    const foreignReports = await db.select().from(chatVoiceReports).where(eq(chatVoiceReports.companyId, foreign.companyId));
+    const reportProviderIds: string[] = [];
+    const fetchReport = f.transport.callReport as (providerSessionId: string) => ReturnType<typeof f.transport.callReport>;
+    const reports = voiceCallReports(db, session => {
+      reportProviderIds.push(session.providerSessionId!);
+      return fetchReport(session.providerSessionId!);
+    });
+    expect(await reports.load({ kind: "company", id: foreign.companyId })).toEqual([
+      expect.objectContaining({ id: foreign.sessionId, companyId: foreign.companyId, dueAt: 0 }),
+    ]);
+    // This case owns report/history behavior for its company. Global recovery
+    // also visits every predecessor fixture's live calls, replies and reports.
+    const reconcileReports = async () => {
+      const due = (await reports.load({ kind: "company", id: f.companyId }))
+        .filter(row => row.dueAt <= Date.now()).sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
+      for (const row of due) await reports.check(row.id);
+    };
     await f.service.end(f.companyId, first.session.id, f.input.caller);
-    await f.service.reconcile(1000);
+    await reconcileReports();
     const detail = await f.service.callDetail(f.companyId, first.session.id, f.input.caller);
     expect(detail.report).toMatchObject({ status: "available", costMicroUsd: "120000", transcript: [{ id: "turn1", text: "A test request" }] });
     expect(await f.service.history(f.companyId, f.endpointId, f.input.caller)).toEqual(expect.arrayContaining([detail]));
@@ -1908,12 +1928,12 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const baseline = await f.transport.callReport(), latest = new Date(Date.now() + 10000);
     let response = { ...baseline, costMicroUsd: "240000", providerUpdatedAt: latest };
     f.transport.callReport.mockImplementation(async (providerSessionId?: string) => providerSessionId === stored.providerSessionId ? response : baseline);
-    await f.service.reconcile(1000);
+    await reconcileReports();
     expect((await f.service.callDetail(f.companyId, first.session.id, f.input.caller)).report.costMicroUsd).toBe("240000");
     expect((await f.service.callDetail(f.companyId, other.session.id, f.input.caller)).report.costMicroUsd).toBe("120000");
     await db.update(chatVoiceReports).set({ nextCheckAt: new Date(0) }).where(eq(chatVoiceReports.sessionId, first.session.id));
     response = { ...baseline, costMicroUsd: "1", providerUpdatedAt: new Date(0) };
-    await f.service.reconcile(1000);
+    await reconcileReports();
     expect((await f.service.callDetail(f.companyId, first.session.id, f.input.caller)).report.costMicroUsd).toBe("240000");
     expect(await db.select().from(chatVoiceReports).where(eq(chatVoiceReports.sessionId, first.session.id))).toHaveLength(1);
     await expect(f.service.callDetail(f.companyId, first.session.id, { id: randomUUID(), authority: "member" })).rejects.toMatchObject({ status: 403 });
@@ -1922,6 +1942,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await expect(f.service.history(f.companyId, f.endpointId, f.input.caller)).rejects.toMatchObject({ status: 403 });
     await expect(f.service.callDetail(f.companyId, first.session.id, f.input.caller)).rejects.toMatchObject({ status: 403 });
     expect(f.transport.createPhoneSession).not.toHaveBeenCalled();
+    expect(await db.select().from(chatVoiceReports).where(eq(chatVoiceReports.companyId, foreign.companyId))).toEqual(foreignReports);
+    expect(reportProviderIds).toContain(stored.providerSessionId);
+    expect(reportProviderIds).not.toContain(foreignSession.providerSessionId);
   });
   it("does not create provider media when membership is revoked during credential resolution", async () => {
     const f = await nativeServiceFixture();
