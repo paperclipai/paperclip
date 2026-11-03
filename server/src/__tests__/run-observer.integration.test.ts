@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { heartbeatRuns, instanceUserRoles } from "@paperclipai/db";
+import { heartbeatRuns, instanceUserRoles, issueComments, runIdentityContexts } from "@paperclipai/db";
+import { reserveSteeredIdentity } from "../services/run-identity.js";
 import { agentService } from "../services/agents.js";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
@@ -35,13 +36,29 @@ describe("run observer capability", () => {
     expect((await fetch(`${server.apiUrl}/api/heartbeat-runs/${f.runId}/observer-status`, { method: "HEAD", headers })).status).toBe(403);
     const agentToken = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId);
     expect((await fetch(`${server.apiUrl}/api/heartbeat-runs/${f.runId}/observer-token`, { method: "POST", headers: { authorization: `Bearer ${agentToken}` } })).status).toBe(403);
+    const messageId = randomUUID();
+    await server.db.insert(issueComments).values({ id: messageId, companyId: f.companyId, issueId: f.issueId,
+      authorUserId: f.responsibleUserId!, body: "Fictional pending steering" });
+    const pending = await reserveSteeredIdentity(server.db, { companyId: f.companyId, agentId: f.agentId,
+      runId: f.runId, issueId: f.issueId, messageId });
+    expect(pending).toBeTruthy();
+    expect((await status()).status).toBe(200);
+    const [steering] = await server.db.select().from(runIdentityContexts).where(eq(runIdentityContexts.id, pending!.id));
+    expect(steering.status).toBe("pending");
     vi.stubEnv("PAPERCLIP_AGENT_JWT_TTL_SECONDS", "1");
     const shortToken = createLocalAgentJwt(f.agentId, f.companyId, "run_observer", f.runId, null, { kind: "run_status_observer" });
     vi.stubEnv("PAPERCLIP_AGENT_JWT_TTL_SECONDS", "172800");
     await new Promise(resolve => setTimeout(resolve, 2100));
     expect((await fetch(`${server.apiUrl}/api/heartbeat-runs/${f.runId}/observer-status`, { headers: { authorization: `Bearer ${shortToken}` } })).status).toBe(401);
-    const persistent = await agentService(server.db).createApiKey(f.agentId, "fictitious", { kind: "run_status_observer" });
-    expect((await fetch(`${server.apiUrl}/api/heartbeat-runs/${f.runId}/observer-status`, { headers: { authorization: `Bearer ${persistent.token}` } })).status).toBe(403);
+    const rejectedCreation = await fetch(`${server.apiUrl}/api/agents/${f.agentId}/keys`, { method: "POST",
+      headers: { cookie, origin: server.apiUrl, "content-type": "application/json" },
+      body: JSON.stringify({ name: "fictitious", scope: { kind: "run_status_observer" } }) });
+    expect(rejectedCreation.status).toBe(400);
+    // Existing malformed persistent keys must also be denied on ordinary routes.
+    const persistent = await agentService(server.db).createApiKey(f.agentId, "fictitious", { kind: "run_status_observer" }, { responsibleUserId: f.responsibleUserId });
+    const forbidden = await fetch(`${server.apiUrl}/api/agents/me`, { headers: { authorization: `Bearer ${persistent.token}` } });
+    expect(forbidden.status).toBe(403);
+    expect(await forbidden.json()).toMatchObject({ error: "Run observer capabilities require a run-scoped token" });
     await server.db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } }).where(eq(heartbeatRuns.id, f.runId));
     expect((await status()).status).toBe(403);
     await server.db.update(heartbeatRuns).set({ status: "cancelled", resultJson: null }).where(eq(heartbeatRuns.id, f.runId));
