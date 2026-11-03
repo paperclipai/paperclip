@@ -58,9 +58,10 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
         description: change("description", vi.mocked(createTaskThroughUi).mock.calls.at(-1)![0].prompt) };
       if (route === "/api/issues/issue/runs") return change("runs", [{ runId: "run" }]);
       if (route === "/api/issues/issue/comments?order=asc" || route === "/api/issues/issue/interactions") return [];
-      if (route === "/api/heartbeat-runs/run") return { id: "run", companyId: "company", agentId: "agent", issueId: "issue",
-        status: "succeeded", runtimeMode: "native", contextSnapshot: { paperclipEnvironment: { id: "environment" } },
-        runnerProfileJson: { nativeExecutionInput: { provider: { kind: "opencode", model: "model" } } } };
+      if (route === "/api/heartbeat-runs/run") return change("run", { id: "run", companyId: "company", agentId: "agent", issueId: "issue",
+        status: "succeeded", runtimeMode: "native", nativePhase: "committed", resultJson: null,
+        contextSnapshot: { paperclipEnvironment: { id: "environment" } },
+        runnerProfileJson: { nativeExecutionInput: { provider: { kind: "opencode", model: "model" } } } });
       if (route.startsWith("/api/heartbeat-runs/run/events?")) {
         return ["pending", "completed"].map((status, i) => {
           const p = canonicalProviderEventsFromOpenCodePart({ id: "load", type: "tool", tool: "skill", state: {
@@ -93,7 +94,8 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
     environmentId: "environment", capabilities: ["company", "board-user", "task-write", "agent", "skill-write"],
     agent: { id: "agent", name: "Owned agent", provider: "opencode", model: "model", runtimeMode: "native" } } as unknown as JourneyContext;
   return { context, api, page, own, evidence, directory, savedSkills,
-    run: () => runSavedSkillUse(context, { own } as unknown as TargetSession, campaignId, evidence, { deadlineAt: Date.now() + 5000, directory }) };
+    run: (timeoutMs = 5000) => runSavedSkillUse(context, { own } as unknown as TargetSession, campaignId, evidence,
+      { deadlineAt: Date.now() + timeoutMs, directory }) };
 }
 
 describe("saved skill journey orchestration", () => {
@@ -112,6 +114,39 @@ describe("saved skill journey orchestration", () => {
     expect(f.evidence.checks.every(check => check.passed)).toBe(true);
     const receipt = JSON.parse(await readFile(path.join(f.directory, "saved-skill-use-checks.json"), "utf8"));
     expect(receipt.receipts).toEqual([{ runId: "run", executionId: "load", seq: 2 }]);
+  });
+  it.each([null, { presentationDecision: { commentAction: "none" } }])(
+    "qualifies authoritative committed finalization with optional resultJson %j", async resultJson => {
+      const f = await setup((kind, row) => kind === "run" ? { ...row, resultJson } : row);
+      await f.run();
+      expect(f.evidence.checks).toHaveLength(7);
+      expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+    });
+  it.each([
+    [null, null],
+    [undefined, { presentationDecision: { commentAction: "none" } }],
+    ["workspace_finalizing", null],
+    ["retryable_failure", { finalizationPhase: "committed" }],
+  ])("does not qualify Done and succeeded before native phase %s is committed", async (nativePhase, resultJson) => {
+    const f = await setup((kind, row) => kind === "run" ? { ...row, nativePhase, resultJson } : row);
+    await expect(f.run(250)).rejects.toMatchObject({ outcome: "failed", code: "saved_skill_task_not_completed" });
+    expect(f.api.get.mock.calls.some(([route]) => route === "/api/heartbeat-runs/run")).toBe(true);
+    expect(f.api.get.mock.calls.some(([route]) => route.includes("/events?") || route.includes("/documents"))).toBe(false);
+    expect(f.page.reload).not.toHaveBeenCalled();
+    const receipt = JSON.parse(await readFile(path.join(f.directory, "saved-skill-use-checks.json"), "utf8"));
+    expect(receipt.state.taskRuns[0].nativePhase).toBe(nativePhase);
+  });
+  it("waits for native commit before qualifying the already saved current-run result", async () => {
+    let runReads = 0;
+    const f = await setup((kind, row) => {
+      if (kind === "run") return { ...row, nativePhase: ++runReads === 1 ? "workspace_finalizing" : "committed",
+        resultJson: { finalizationPhase: "committed" } };
+      if (kind === "documents") expect(runReads).toBe(2);
+      return row;
+    });
+    await f.run();
+    expect(runReads).toBe(2);
+    expect(f.evidence.checks.every(check => check.passed)).toBe(true);
   });
   it.each([
     ["assignment", "saved_skill_version_pinned", (row: Row) => ({ ...row, desiredSkillEntries: [{ key: "local:skill", versionId: "stale" }] })],

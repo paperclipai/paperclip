@@ -26,7 +26,8 @@ A pass requires all seven closed checks:
   run, turn and runner. The output must contain the complete saved procedure.
 - `saved-skill-result-authored-by-run`: exactly one saved task document contains
   the reference and independently calculated sum. Its revision belongs to the
-  successful native run and agent, without human authorship.
+  successful native run and agent, without human authorship. The run's
+  authoritative `nativePhase` must be `committed` before the result qualifies.
 - `saved-skill-result-reopened`: the browser reload shows that document, and its
   independently read content and revision are unchanged.
 - `saved-skill-source-preserved`: the original skill version, source bytes and
@@ -43,7 +44,11 @@ foreign run receipts and marker-only output cannot pass.
 
 The existing campaign deadline bounds observations. Only failed read transport
 operations can be retried; task input, skill creation and execution are not
-replayed. The provider journals skill and task ownership before creation, then
+replayed. Done status and a successful run alone cannot qualify incomplete native
+finalization. The optional `resultJson.finalizationPhase` presentation field is
+not required or accepted in place of `nativePhase`; compact or null result data
+can qualify when the authoritative phase is committed.
+The provider journals skill and task ownership before creation, then
 collects evidence and stops/cleans only campaign-owned resources. The fixed skill
 source, native events and saved document receipts stay in the private bundle.
 The public report uses the existing closed checks and authenticated task capture.

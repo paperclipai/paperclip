@@ -70,6 +70,7 @@ export async function runSavedSkillUse(context: JourneyContext, session: TargetS
       checkpoint = { ...checkpoint, state: value };
       return value;
     }, value => value.currentIssue.status === "done" && value.taskRuns.length === 1 && value.taskRuns[0]!.status === "succeeded"
+      && value.taskRuns[0]!.nativePhase === "committed"
       && value.interactions.every(row => row.status !== "pending"), "saved_skill_task_not_completed");
     const binding = { companyId: context.company.id, agentId: agent.id, runId: state.taskRuns[0]!.id, issueId: created.issueId };
     const request = String(state.currentIssue.description ?? "");
