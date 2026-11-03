@@ -1,0 +1,280 @@
+import { randomUUID } from "node:crypto";
+import { resolve } from "node:path";
+import { and, eq, sql } from "drizzle-orm";
+import { agents, companies, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, issueRelations,
+  issueTreeHolds, issueTreeHoldMembers, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { expect, it, vi } from "vitest";
+import type { NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
+
+const provider = vi.hoisted(() => ({ execute: vi.fn() }));
+vi.mock("../../vendor/paperclip-runner/index.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../../vendor/paperclip-runner/index.js")>(),
+  executeNativeSession: provider.execute,
+}));
+import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { describeEmbeddedPostgres, nativeRestartFixture, remotePreparedWorkspace } from "../../__tests__/helpers/native-restart.js";
+import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
+import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
+import { executePaperclipNativeSession } from "./native-session-executor.js";
+import { buildNativeCompletionContract } from "./completion-contracts.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "./native-restart-recovery.js";
+
+describeEmbeddedPostgres("remote native retry execution admission", () => {
+  const environment = nativeRestartFixture();
+
+  async function failedRemoteRun(storage: "classic" | "remote") {
+    const { companyId, agentId, runtimeRoot } = environment.current;
+    const fixture = await environment.seedRun(`REMOTE-RETRY-${storage}-${randomUUID()}`);
+    await fixture.db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
+    const controller = { bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    await fixture.db.update(nativeRunFinalizations).set({
+      controllerBootId: controller.bootId, controllerGeneration: controller.generation,
+      leaseOwner: controller.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000),
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    const authority = new DurablePrpControlPlane({
+      stateDirectory: resolve(runtimeRoot, fixture.runId),
+      identity: { runId: fixture.runId, normalizedSessionId: fixture.native.normalizedSessionId,
+        runnerInstanceId: fixture.native.runnerInstanceId, environmentLeaseId: fixture.native.environmentLeaseId,
+        turnId: fixture.native.turnId, itemId: fixture.native.itemId },
+      expectedRunnerVersion: "retry-admission-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}`,
+    });
+    authority.setCheckpointPersistence(nativeRunnerCheckpointWriter(fixture.db, {
+      companyId, issueId: fixture.issueId, runId: fixture.runId, authorityRunId: fixture.runId,
+      ...controller,
+    }));
+    await authority.flushCheckpoint();
+    await authority.stop();
+    const classic = remotePreparedWorkspace();
+    const remote = { schema: "paperclip.remote-workspace-run.v1", workspaceId: classic.workspaceId,
+      leaseId: classic.leaseId, providerLeaseId: classic.providerLeaseId, remoteCwd: classic.remoteCwd,
+      epoch: 1, state: "prepared", snapshotId: null };
+    const checkpoint = { backendKind: "acpx", driverKind: "acpx_runtime", sessionId: "provider-session",
+      providerSessionId: "provider-session", activeTurnId: "retained-turn", semanticResult: null,
+      pendingRuntimeRequests: [], terminalTurns: [], identity: { companyId, agentId,
+        issueId: fixture.issueId, runId: fixture.runId, sessionId: fixture.native.normalizedSessionId } };
+    await fixture.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+      processPid: 1386, processStartedAt: new Date("2026-11-01T12:00:00Z"),
+      nativePhase: "retryable_failure", errorCode: "native_session_interrupted",
+      runnerProfileJson: { ...fixture.preparedProfile, nativeExecutionInput: { binding: {
+        companyId, agentId, issueId: fixture.issueId, runId: fixture.runId } }, sessionCheckpoint: checkpoint,
+        ...(storage === "classic" ? { nativeWorkspaceSync: classic } : { remoteWorkspace: remote }) },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    await fixture.db.update(nativeRunFinalizations).set({ phase: "retryable_failure", attempt: 1,
+      leaseOwner: null, leaseExpiresAt: null, recoveryState: "resuming_session",
+      failureCode: "native_session_interrupted", nextAttemptAt: new Date(0),
+      failureDetail: { recoveryMode: "exact_checkpoint_resume", providerSessionEstablished: true,
+        checkpointExists: true, providerEventsExist: true },
+    }).where(eq(nativeRunFinalizations.runId, fixture.runId));
+    await fixture.db.update(issues).set({ executionRunId: null, checkoutRunId: null })
+      .where(eq(issues.id, fixture.issueId));
+    return { ...fixture, companyId, agentId, checkpoint };
+  }
+
+  it.each(["classic", "remote"] as const)("reclaims the exact failed %s execution before remote inspection", async storage => {
+    const fixture = await failedRemoteRun(storage);
+    expect(await claimNativeSessionResumptions({ db: fixture.db, runnerInstanceId: "ordinary-resumer",
+      runIds: [fixture.runId] })).toEqual([]);
+    const [claim] = await claimNativeRestartRecoveries({ db: fixture.db,
+      controller: environment.current.successor, restartKind: "hard", runIds: [fixture.runId] });
+    expect(claim).toMatchObject({ kind: "reattach_remote_runner", runId: fixture.runId, providerAttempt: 2 });
+    expect((await fixture.db.select().from(issues).where(eq(issues.id, fixture.issueId)))[0])
+      .toMatchObject({ executionRunId: fixture.runId, status: "in_progress", assigneeAgentId: fixture.agentId });
+    expect((await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId)))[0])
+      .toMatchObject({ status: "running", processPid: 1386,
+        runnerProfileJson: { sessionCheckpoint: fixture.checkpoint } });
+    expect((await fixture.db.select().from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, fixture.runId)))[0])
+      .toMatchObject({ attempt: 2, phase: "observed", recoveryState: "awaiting_runner_reattach" });
+  });
+
+  it.each(["done", "cancelled", "blocked", "paused-agent", "pending-agent-approval", "reassigned",
+    "dependency", "tree-pause", "native-stop", "operator-stop", "execution-owner", "checkout-owner",
+    "queued-input", "newer-completed-input", "wrong-checkpoint", "missing-authority"] as const)
+  ("preserves a remote retry held by %s", async gate => {
+    const f = await failedRemoteRun("remote");
+    const { db } = f;
+    if (["done", "cancelled", "blocked"].includes(gate)) {
+      await db.update(issues).set({ status: gate }).where(eq(issues.id, f.issueId));
+    } else if (gate === "paused-agent" || gate === "pending-agent-approval") {
+      await db.update(agents).set({ status: gate === "paused-agent" ? "paused" : "pending_approval" }).where(eq(agents.id, f.agentId));
+    } else if (gate === "reassigned") {
+      const nextAgent = randomUUID();
+      await db.insert(agents).values({ id: nextAgent, companyId: f.companyId, name: "Next owner", status: "active" });
+      await db.update(issues).set({ assigneeAgentId: nextAgent }).where(eq(issues.id, f.issueId));
+    } else if (gate === "dependency") {
+      const dependency = randomUUID();
+      await db.insert(issues).values({ id: dependency, companyId: f.companyId, title: "Required input", status: "todo" });
+      await db.insert(issueRelations).values({ companyId: f.companyId, issueId: dependency, relatedIssueId: f.issueId, type: "blocks" });
+    } else if (gate === "tree-pause") {
+      const holdId = randomUUID();
+      await db.insert(issueTreeHolds).values({ id: holdId, companyId: f.companyId, rootIssueId: f.issueId, mode: "pause" });
+      await db.insert(issueTreeHoldMembers).values({ holdId, companyId: f.companyId, issueId: f.issueId,
+        issueTitle: "Paused work", issueStatus: "in_progress" });
+    } else if (gate === "native-stop" || gate === "operator-stop") {
+      await db.update(heartbeatRuns).set({ resultJson: gate === "native-stop"
+        ? { nativeCancellation: { scope: "run", dispatchState: "pending" } }
+        : { cancellation: { source: "operator", expected: true, initiator: { type: "user" },
+          reason: "Stop", recordedAt: new Date().toISOString() } } }).where(eq(heartbeatRuns.id, f.runId));
+    } else if (["execution-owner", "checkout-owner", "queued-input", "newer-completed-input"].includes(gate)) {
+      const nextRun = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: nextRun, companyId: f.companyId, agentId: f.agentId,
+        issueId: f.issueId, contextSnapshot: { issueId: f.issueId, wakeReason: "issue_comment" },
+        invocationSource: "manual", createdAt: new Date(Date.now() + 1_000),
+        status: gate === "queued-input" ? "queued" : gate === "newer-completed-input" ? "succeeded" : "failed" });
+      if (gate === "execution-owner" || gate === "checkout-owner") await db.update(issues)
+        .set(gate === "execution-owner" ? { executionRunId: nextRun } : { checkoutRunId: nextRun }).where(eq(issues.id, f.issueId));
+    } else if (gate === "wrong-checkpoint") {
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run.runnerProfileJson,
+        sessionCheckpoint: { ...f.checkpoint, identity: { ...f.checkpoint.identity, runId: randomUUID() } },
+      } }).where(eq(heartbeatRuns.id, f.runId));
+    } else if (gate === "missing-authority") {
+      await db.delete(nativeRunnerCheckpoints).where(and(eq(nativeRunnerCheckpoints.companyId, f.companyId),
+        eq(nativeRunnerCheckpoints.runId, f.runId)));
+    }
+    const beforeTask = (await db.select().from(issues).where(eq(issues.id, f.issueId)))[0];
+    const beforeRun = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0];
+    const beforeOwner = (await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0];
+    const dispositions = await claimNativeRestartRecoveries({ db,
+      controller: environment.current.successor, restartKind: "hard", runIds: [f.runId] });
+    expect(dispositions.every(value => value.kind === "blocked")).toBe(true);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(beforeTask);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(beforeRun);
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(beforeOwner);
+  });
+
+  it("waits for the exact old controller lease and keeps future retries quiet", async () => {
+    const f = await failedRemoteRun("remote");
+    const now = new Date(), deadline = new Date(now.getTime() + 60_000);
+    await f.db.update(nativeRunFinalizations).set({ nextAttemptAt: deadline })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", now, runIds: [f.runId] })).toEqual([]);
+    await f.db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(0), leaseOwner: "old-owner", leaseExpiresAt: deadline })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", now, runIds: [f.runId] })).toMatchObject([{ kind: "awaiting_evidence", reason: "remote_controller_lease_live" }]);
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBeNull();
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("failed");
+  });
+
+  it("grants two competing controllers only one original remote execution", async () => {
+    const f = await failedRemoteRun("remote");
+    const claims = (await Promise.all([environment.current.successor,
+      { ...environment.current.successor, bootId: randomUUID() }].map(controller =>
+      claimNativeRestartRecoveries({ db: f.db, controller, restartKind: "hard", runIds: [f.runId] })))).flat();
+    expect(claims.filter(claim => claim.kind === "reattach_remote_runner")).toHaveLength(1);
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ controllerGeneration: 2, attempt: 2 });
+    expect(await f.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.runId),
+      eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")))).toHaveLength(1);
+  });
+
+  it("rolls back the task, owner, run, and recovery event together", async () => {
+    const f = await failedRemoteRun("remote");
+    await expect(f.db.transaction(async tx => {
+      const claims = await claimNativeRestartRecoveries({ db: tx as unknown as typeof f.db,
+        controller: environment.current.successor, restartKind: "hard", runIds: [f.runId] });
+      expect(claims).toMatchObject([{ kind: "reattach_remote_runner" }]);
+      throw new Error("rollback admission");
+    })).rejects.toThrow("rollback admission");
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBeNull();
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("failed");
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "retryable_failure", controllerGeneration: 1, leaseOwner: null, attempt: 1 });
+    expect(await f.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, f.runId),
+      eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")))).toEqual([]);
+  });
+
+  it.each([
+    ["succeeded", "2026-11-01T12:00:00.000600Z", 1, true],
+    ["succeeded", "2026-11-01T12:00:00.000000Z", 1, true],
+    ["failed", "2026-11-01T12:00:00.000000Z", 1, true],
+    ["failed", "2026-11-01T12:00:00.000600Z", 1, true],
+    ["succeeded", "2026-11-01T12:00:00.000599Z", 1, false],
+    ["failed", "2026-11-01T12:00:00.000601Z", -1, true],
+    ["failed", "2026-11-01T12:00:00.000600Z", -1, false],
+  ] as const)("uses canonical source order for %s input at %s with ID offset %s", async (status, timestamp, offset, superseded) => {
+    const f = await failedRemoteRun("remote");
+    const idHex = (BigInt(`0x${f.runId.replaceAll("-", "")}`) + BigInt(offset)).toString(16).padStart(32, "0");
+    const nextId = `${idHex.slice(0, 8)}-${idHex.slice(8, 12)}-${idHex.slice(12, 16)}-${idHex.slice(16, 20)}-${idHex.slice(20)}`;
+    const sourceTimestamp = timestamp.endsWith(".000000Z") ? timestamp : "2026-11-01T12:00:00.000600Z";
+    await f.db.update(heartbeatRuns).set({ createdAt: sql`${sourceTimestamp}::timestamptz` })
+      .where(eq(heartbeatRuns.id, f.runId));
+    await f.db.insert(heartbeatRuns).values({ id: nextId, companyId: f.companyId, agentId: f.agentId,
+      issueId: f.issueId, invocationSource: "manual", status, createdAt: sql`${timestamp}::timestamptz` });
+    const [disposition] = await claimNativeRestartRecoveries({ db: f.db,
+      controller: environment.current.successor, restartKind: "hard", runIds: [f.runId] });
+    expect(disposition).toMatchObject(superseded
+      ? { kind: "blocked", reason: "native_retry_source_superseded" }
+      : { kind: "reattach_remote_runner", providerAttempt: 2 });
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId)
+      .toBe(superseded ? null : f.runId);
+  });
+
+  it("exhausts the existing attempt budget after repeated remote snapshot failures", async () => {
+    const f = await failedRemoteRun("remote");
+    const [issue] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+    const [contract] = await f.db.select().from(completionContracts).where(eq(completionContracts.issueId, f.issueId));
+    const execution: NativeExecutionInputV1 = {
+      schema: "paperclip.native-execution-input.v1",
+      binding: { companyId: f.companyId, runId: f.runId, issueId: f.issueId, agentId: f.agentId, executionWorkspaceId: f.runId },
+      provider: { kind: "codex", model: "gpt-5.6-luna" },
+      task: { identifier: issue.identifier!, title: issue.title, description: null, prompt: "Continue retained work.", workMode: "standard" },
+      workspace: { cwd: environment.current.runtimeRoot, repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: f.native.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+      completionContract: { id: contract.id, sha256: contract.canonicalSha256, schemaVersion: "paperclip.completion-contract.v1",
+        contract: buildNativeCompletionContract(issue, { revision: contract.revision }) },
+      interactionResponses: [], credentialBindings: [],
+    };
+    await f.db.update(heartbeatRuns).set({ runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb)
+      || ${JSON.stringify({ nativeExecutionInput: execution })}::jsonb` }).where(eq(heartbeatRuns.id, f.runId));
+    provider.execute.mockReset().mockRejectedValue(new Error("PRP command session.snapshot failed: original provider unavailable"));
+    const controller = await currentNativeControllerIdentity();
+    for (const attempt of [2, 3]) {
+      await f.db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, f.runId));
+      const [claim] = await claimNativeRestartRecoveries({ db: f.db, controller, restartKind: "hard", runIds: [f.runId] });
+      expect(claim).toMatchObject({ kind: "reattach_remote_runner", providerAttempt: attempt });
+      if (claim.kind !== "reattach_remote_runner") throw new Error("Expected exact remote recovery claim");
+      await expect(executePaperclipNativeSession({ db: f.db, execution, runnerInstanceId: f.native.runnerInstanceId,
+        leaseOwner: claim.leaseOwner, restartRecovery: claim,
+        backend: { descriptor: async () => { throw new Error("Unexpected descriptor call"); },
+          openSession: async () => { throw new Error("Unexpected session launch"); } },
+      })).rejects.toThrow("PRP command session.snapshot failed");
+      const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      expect(owner).toMatchObject({ attempt, phase: attempt === 3 ? "terminal_failure" : "retryable_failure",
+        failureCode: attempt === 3 ? "native_session_retry_exhausted" : "native_session_interrupted",
+        recoveryState: attempt === 3 ? "blocked" : "resuming_session", leaseOwner: null });
+      expect(owner.nextAttemptAt === null).toBe(attempt === 3);
+      await f.db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+    }
+    expect(provider.execute).toHaveBeenCalledTimes(2);
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller, restartKind: "hard", runIds: [f.runId] })).toEqual([]);
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ status: "blocked", executionRunId: null });
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+      .toMatchObject({ status: "failed", nativePhase: "terminal_failure", errorCode: "native_session_interrupted",
+        processPid: 1386, runnerProfileJson: { sessionCheckpoint: f.checkpoint } });
+  });
+
+  it("does not admit another failed retry when the persisted provider budget is already exhausted", async () => {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(nativeRunFinalizations).set({ attempt: 3 }).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", runIds: [f.runId] })).toMatchObject([{ kind: "blocked", reason: "execution_recovery_budget_exhausted" }]);
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0].executionRunId).toBeNull();
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "retryable_failure", attempt: 3, leaseOwner: null });
+  });
+
+  it("ignores another company's newer input when reclaiming this company's execution", async () => {
+    const f = await failedRemoteRun("remote");
+    const foreignCompany = randomUUID(), foreignAgent = randomUUID();
+    await f.db.insert(companies).values({ id: foreignCompany, name: "Other company", issuePrefix: "FOREIGN" });
+    await f.db.insert(agents).values({ id: foreignAgent, companyId: foreignCompany, name: "Other agent", status: "active" });
+    await f.db.insert(heartbeatRuns).values({ companyId: foreignCompany, agentId: foreignAgent,
+      status: "queued", contextSnapshot: { issueId: f.issueId }, createdAt: new Date(Date.now() + 1_000) });
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", runIds: [f.runId] })).toMatchObject([{ kind: "reattach_remote_runner" }]);
+  });
+});

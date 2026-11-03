@@ -1862,7 +1862,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
   }
 
   async function nativeProcessIsLocal(run: HeartbeatRun) {
-    if (parseObject(run.runnerProfileJson).nativeWorkspaceSync != null) return false;
+    const profile = parseObject(run.runnerProfileJson);
+    if (profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null) return false;
     const [identity] = await db.select({
       eventType: heartbeatRunEvents.eventType,
       agentId: heartbeatRunEvents.agentId,
@@ -2068,7 +2069,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       if (!await nativeProcessIsLocal(run)) {
         if (nextAttemptAt && nextAttemptAt > now) continue;
         if (activeRunExecutions.has(run.id) || runningProcesses.has(run.id)) continue;
-        if (parseObject(run.runnerProfileJson).nativeWorkspaceSync != null) {
+        const profile = parseObject(run.runnerProfileJson);
+        if (profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null) {
           remoteRetryRunIds.push(run.id);
         } else {
           const [taskLease] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
