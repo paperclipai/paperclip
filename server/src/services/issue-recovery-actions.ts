@@ -116,19 +116,27 @@ function toReadModel(row: IssueRecoveryActionRow): IssueRecoveryAction {
 }
 
 function isUniqueRecoveryActionConflict(error: unknown) {
-  const maybe = error as { code?: string; constraint?: string; message?: string } | null;
-  return Boolean(
-    maybe &&
-      maybe.code === "23505" &&
-      (
+  const seen = new Set<unknown>();
+  let candidate = error;
+  // Drizzle wraps the driver error in cause. Only this specific uniqueness
+  // conflict can reuse the existing bounded source-scoped upsert retry.
+  for (let depth = 0; depth < 8 && candidate && typeof candidate === "object"; depth++) {
+    if (seen.has(candidate)) break;
+    seen.add(candidate);
+    const maybe = candidate as { code?: string; constraint?: string; constraint_name?: string; message?: string; cause?: unknown };
+    if (maybe.code === "23505" && (
         maybe.constraint === "issue_recovery_actions_active_source_uq" ||
         maybe.constraint === "issue_recovery_actions_active_fingerprint_uq" ||
+        maybe.constraint_name === "issue_recovery_actions_active_source_uq" ||
+        maybe.constraint_name === "issue_recovery_actions_active_fingerprint_uq" ||
         typeof maybe.message === "string" && (
           maybe.message.includes("issue_recovery_actions_active_source_uq") ||
           maybe.message.includes("issue_recovery_actions_active_fingerprint_uq")
         )
-      ),
-  );
+      )) return true;
+    candidate = maybe.cause;
+  }
+  return false;
 }
 
 export function issueRecoveryActionService(db: DbOrTransaction) {
