@@ -3030,7 +3030,12 @@ resumption path. This does not consume a provider attempt or stop the retained
 sandbox. A locked run/coordinator check rejects Stop, changed ownership or any
 provider progress. Startup restores even an overdue wait to the same scheduler;
 ordinary resumption rechecks current permissions and task authority. No idle
-scan is added. Per-turn continuation reconstructs a missing suspended-state
+scan is added. The same wait applies when a compatible successful predecessor
+still has a live finalization lease, even with full local controller projections.
+An expired or undated owner, incomplete canonical commands and incompatible
+execution bindings retain their existing reconciliation holds. Once the owner
+releases its lease, the existing resumption claim admits the same run once.
+Per-turn continuation reconstructs a missing suspended-state
 receipt from the admitted sandbox or prepared-task owner, including after a
 previous read failed with only a PRP projection written.
 

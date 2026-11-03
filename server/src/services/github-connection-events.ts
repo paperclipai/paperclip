@@ -146,7 +146,7 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
   return compact(base);
 }
 
-function bindingRows(rows: Array<{
+export function githubConnectionEventBindings(rows: Array<{
   grant: typeof connectionGrants.$inferSelect;
   connection: typeof toolConnections.$inferSelect;
 }>): GitHubBinding[] {
@@ -259,7 +259,7 @@ export function githubConnectionEventService(
         eq(toolConnections.enabled, true),
         sql`exists (select 1 from companies where id = ${connectionGrants.companyId} and status <> 'archived')`,
       ));
-    return bindingRows(rows);
+    return githubConnectionEventBindings(rows);
   }
 
   async function applyPullRequestEvent(database: Db, companyId: string, event: LeasedEvent, effects: Array<(committedDb: Db) => Promise<void>>) {

@@ -23,8 +23,10 @@ encrypted task-directory restoration, Git restoration recipes, and legacy
 branch-deletion receipts. PostgreSQL and real-file tests prove cold restoration
 of saved bytes, index state, and unpushed commits, including after pruning the
 old Git object store. Invalid or unavailable retained data still blocks import.
-Shared-root migration and recovery-obligation reconciliation remain separate
-gaps; this slice does not make a whole tenant eligible for enrollment.
+The next slice adds leaf-first offline migration of overlapping folders, verified
+nested snapshot dependencies, interruption recovery, and dependency retention.
+Recovery-obligation reconciliation remains a separate gap; these slices do not
+yet make the whole tenant eligible for enrollment.
 
 - Import existing files or a verified retained source. A missing folder alone is
   not permission to publish an empty workspace or choose a newer Git branch.

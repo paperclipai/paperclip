@@ -8,6 +8,7 @@ import { describe, expect, it, vi } from "vitest";
 import { setupLiveEventsWebSocketServer } from "../realtime/live-events-ws.js";
 import { publishLiveEvent } from "../services/live-events.js";
 import { taskToastEligible } from "../realtime/task-toast-eligibility.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 
 vi.mock("../realtime/task-toast-eligibility.js", () => ({ taskToastEligible: vi.fn(async () => false) }));
 
@@ -39,6 +40,48 @@ function database(onPredicate: (kind: "where" | "join", condition: SQL) => void 
   } };
 }
 describe("authenticated activity notifications", () => {
+  it("retains live delivery idle work until the identifier read settles after the last socket closes", async () => {
+    const baseline = idleWorkSnapshot().active;
+    let release!: () => void, entered!: () => void;
+    const pending = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const db = database(), select = db.select;
+    db.select = fields => {
+      const query = select(fields);
+      if (fields.identifier) {
+        const limit = query.limit;
+        query.limit = async () => { entered(); await pending; return limit(); };
+      }
+      return query;
+    };
+    const server = createServer();
+    const wss = setupLiveEventsWebSocketServer(server, db as never, { deploymentMode: "local_trusted" });
+    const closed = new Promise<void>(resolve => wss.on("connection", socket => socket.on("close", resolve)));
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/api/companies/company/events/ws`);
+    try {
+      await once(socket, "open");
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(baseline));
+      // System activity has no actor lookup: this gate is the new identifier SQL.
+      publishLiveEvent({ companyId: "company", type: "activity.logged", payload: {
+        action: "issue.updated", entityType: "issue", entityId: "visible", actorType: "system",
+      } });
+      await started;
+      socket.terminate();
+      await closed;
+      expect(wss.clients.size).toBe(0);
+      expect(idleWorkSnapshot().active).toBe(baseline + 1);
+      release();
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(baseline));
+    } finally {
+      release();
+      socket.terminate();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+      await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(baseline));
+    }
+  });
+
   it.each(["local_trusted", "authenticated"] as const)("keeps authorized notifications when optional identifier reads fail (%s)", async deploymentMode => {
     const db = database();
     const select = db.select;
