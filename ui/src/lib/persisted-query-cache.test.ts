@@ -5,6 +5,7 @@ import { ApiError } from "@/api/client";
 import { bindAccount } from "./account-scope";
 import { hasUnverifiedSession } from "./cached-session";
 import { queryKeys } from "./queryKeys";
+import { readComposerRunSettings } from "../components/task-chat/composer-run-settings";
 import { agentConnection, agentDefaultModel } from "./bulk-agent-settings";
 import { clearPersistedQueryCache, persistedQueryScope, QUERY_CACHE_ACTIVE, QUERY_CACHE_CLEARED, QUERY_CACHE_MAX_AGE, QUERY_CACHE_PREFIX, startPersistedQueryCache } from "./persisted-query-cache";
 
@@ -37,6 +38,24 @@ function seed(client: QueryClient, userId = "alice", companyId = "company-one") 
 afterEach(() => { for (const dispose of handles.splice(0)) dispose(); vi.clearAllMocks(); });
 
 describe("persisted read cache", () => {
+  it("retains visible task run preferences while excluding private override options", () => {
+    const first = setup(); seed(first.client);
+    first.client.setQueryData([...queryKeys.issues.detail("task-one"), "core"], {
+      id: "task-one", companyId: "company-one", title: "Saved task",
+      assigneeAdapterOverrides: { useProjectWorkspace: true, adapterConfig: {
+        model: "display-model", modelReasoningEffort: "high", fastMode: true,
+        chrome: true, command: "excluded-command", env: { PRIVATE_VALUE: "excluded-env" },
+      } },
+    });
+    first.handle.flush();
+    expect([...first.storage.values.values()].join(" ")).not.toMatch(/excluded-|chrome/);
+    const restored = setup(first.storage);
+    const task = restored.client.getQueryData<{ assigneeAdapterOverrides: { adapterConfig: Record<string, unknown> } }>([...queryKeys.issues.detail("task-one"), "core"])!;
+    expect(readComposerRunSettings(task.assigneeAdapterOverrides, "codex_local")).toEqual({ model: "display-model", effort: "high", fast: true });
+    expect(task.assigneeAdapterOverrides.adapterConfig).not.toHaveProperty("command");
+    expect(task.assigneeAdapterOverrides.adapterConfig).not.toHaveProperty("env");
+  });
+
   it("preserves another account published while this tab is flushing", () => {
     const first = setup(); seed(first.client); first.handle.flush();
     const write = first.storage.setItem.bind(first.storage);

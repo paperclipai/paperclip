@@ -33,8 +33,8 @@ function displayData(value: unknown, denied: ReadonlySet<string>): unknown {
       if (key === "runtimeConfig") return [key, {}];
       if (key === "adapterConfig") {
         const config = object(item);
-        return [key, Object.fromEntries(["provider", "model", "agent", "acpxAgent", "effort"]
-          .filter(field => typeof config?.[field] === "string").map(field => [field, config![field]]))];
+        return [key, Object.fromEntries(["provider", "model", "agent", "acpxAgent", "effort", "modelReasoningEffort", "reasoningEffort", "thinking", "variant"]
+          .filter(field => typeof config?.[field] === "string").map(field => [field, config![field]]).concat(typeof config?.fastMode === "boolean" ? [["fastMode", config.fastMode]] : []))];
       }
       return [key, displayData(item, denied)];
     }));
