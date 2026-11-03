@@ -86,6 +86,58 @@ export function describeAttentionAudience(
   return { kind: "company", text: ATTENTION_COMPANY_AUDIENCE_TEXT, claimable: attentionItemClaimable(item) };
 }
 
+/**
+ * Who may answer an interaction card, worded to agree with its audience line
+ * so the two read as one statement (PAP-767): "Why me? You own this project's
+ * decisions. Anyone else can answer it too." and "No owner yet. Napping Agent
+ * or any board member can answer it." It reads the server-evaluated resolver
+ * facts, in the precedence of `describeResolverAudience`. `null` when the
+ * card carries no resolver facts: then the plain audience line stands alone.
+ */
+export function attentionResponderText(
+  item: Pick<AttentionItem, "sourceKind" | "resolverAudience">,
+  description: AttentionAudienceDescription,
+  userLabelMap?: ReadonlyMap<string, string> | null,
+): string | null {
+  const facts = item.sourceKind === "issue_thread_interaction" ? item.resolverAudience : null;
+  if (!facts) return null;
+  const mine = description.kind === "mine";
+  const too = mine ? " too" : "";
+  if (facts.addresseeUserId) {
+    if (mine) return "Only you can answer it.";
+    return `Only @${userLabelMap?.get(facts.addresseeUserId) ?? "the addressed person"} can answer it.`;
+  }
+  if (facts.effectiveResolverPolicy === "human_only") return `Any board member can answer it${too}.`;
+  if (facts.addresseeAgentId) return `${facts.addresseeName?.trim() || "The addressed agent"} or any board member can answer it${too}.`;
+  if (facts.effectiveResolverPolicy === "not_creator") {
+    return `Anyone except ${facts.createdByAgentName?.trim() || "the agent that asked"} can answer it${too}.`;
+  }
+  return mine ? "Anyone else can answer it too." : "Anyone can answer it.";
+}
+
+/**
+ * The text of an ownerless or company card's audience line, with who may
+ * answer it when the card says (PAP-767).
+ */
+export function attentionUnownedAudienceText(
+  item: Pick<AttentionItem, "sourceKind" | "resolverAudience">,
+  description: Extract<AttentionAudienceDescription, { kind: "pool" | "company" }>,
+  userLabelMap?: ReadonlyMap<string, string> | null,
+) {
+  const responders = attentionResponderText(item, description, userLabelMap);
+  if (!responders) return description.text;
+  return description.kind === "pool" ? `No owner yet. ${responders}` : `${description.text}. ${responders}`;
+}
+
+/**
+ * Whether the card's audience line already says who may answer it, so a row
+ * leaves out the separate "Anyone can respond" clause (PAP-767).
+ */
+export function attentionAudienceLineNamesResponders(item: AttentionItem, currentUserId: string | null | undefined) {
+  const description = currentUserId ? describeAttentionAudience(item, currentUserId) : null;
+  return Boolean(description && attentionResponderText(item, description));
+}
+
 /** Display name for a person on a receipt; never an ID. */
 function receiptUserLabel(userId: string | null | undefined, userLabelMap?: ReadonlyMap<string, string> | null) {
   return (userId ? userLabelMap?.get(userId) : null) ?? "someone";

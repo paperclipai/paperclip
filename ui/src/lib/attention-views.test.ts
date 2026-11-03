@@ -3,8 +3,11 @@ import type { AttentionAudience, AttentionItem, AttentionReceipt, AttentionSourc
 import {
   ATTENTION_COMPANY_AUDIENCE_TEXT,
   ATTENTION_POOL_AUDIENCE_TEXT,
+  attentionAudienceLineNamesResponders,
   attentionItemClaimable,
   attentionReceiptLine,
+  attentionResponderText,
+  attentionUnownedAudienceText,
   describeAttentionAudience,
   parseAttentionView,
   unassignedBannerText,
@@ -81,6 +84,39 @@ describe("attention views (PAP-749 task 1b)", () => {
     expect(attentionReceiptLine(receipt("withdrawn"), labels)).toBe("Withdrawn by @Scott");
     expect(attentionReceiptLine(receipt("transferred", "riley"), labels)).toBe("Transferred to @Riley by @Scott");
     expect(attentionReceiptLine(receipt("approved"), null)).toBe("Approved by @someone");
+  });
+
+  it("says who may answer in the same statement as why the card is here (PAP-767)", () => {
+    const resolver = (overrides: Partial<NonNullable<AttentionItem["resolverAudience"]>> = {}) => ({
+      requestedResolverPolicy: "anyone", effectiveResolverPolicy: "anyone", effectiveResolverPolicySource: "requested",
+      resolverPolicyProvenance: "inherited", addresseeAgentId: null, addresseeUserId: null, addresseeName: null,
+      createdByAgentId: "agent-1", createdByAgentName: "Watchdog", ...overrides,
+    }) as NonNullable<AttentionItem["resolverAudience"]>;
+    const card = (audience: AttentionAudience, resolverAudience: AttentionItem["resolverAudience"]) =>
+      ({ ...item(audience), resolverAudience }) as AttentionItem;
+    const describe_ = (entry: AttentionItem, viewer: string) => describeAttentionAudience(entry, viewer)!;
+
+    // NEE-15: the project owner's card is open to anyone, so others may answer it too.
+    const owned = card({ kind: "user", userId: "dotta", reason: "project_owner" }, resolver());
+    expect(attentionResponderText(owned, describe_(owned, "dotta"))).toBe("Anyone else can answer it too.");
+    const sent = card({ kind: "user", userId: "dotta", reason: "addressee" }, resolver({ addresseeUserId: "dotta" }));
+    expect(attentionResponderText(sent, describe_(sent, "dotta"))).toBe("Only you can answer it.");
+    expect(attentionResponderText(sent, describe_(sent, "scott"), new Map([["dotta", "Dotta"]]))).toBe("Only @Dotta can answer it.");
+
+    // An ownerless card addressed to a napping agent names the agent and the board, once.
+    const napping = card({ kind: "pool", userId: null, reason: "none" }, resolver({ addresseeAgentId: "agent-2", addresseeName: "Napping Agent" }));
+    const pool = describe_(napping, "scott") as Extract<ReturnType<typeof describeAttentionAudience>, { kind: "pool" }>;
+    expect(attentionUnownedAudienceText(napping, pool)).toBe("No owner yet. Napping Agent or any board member can answer it.");
+    const boardOnly = card({ kind: "pool", userId: null, reason: "none" }, resolver({ effectiveResolverPolicy: "human_only" }));
+    expect(attentionUnownedAudienceText(boardOnly, pool)).toBe("No owner yet. Any board member can answer it.");
+    const notCreator = card({ kind: "pool", userId: null, reason: "none" }, resolver({ effectiveResolverPolicy: "not_creator" }));
+    expect(attentionUnownedAudienceText(notCreator, pool)).toBe("No owner yet. Anyone except Watchdog can answer it.");
+    // A card with no resolver facts (an approval, a recovery) keeps the plain line.
+    const approval = { ...item({ kind: "pool", userId: null, reason: "none" }, "approval"), resolverAudience: null } as AttentionItem;
+    expect(attentionUnownedAudienceText(approval, pool)).toBe(ATTENTION_POOL_AUDIENCE_TEXT);
+    expect(attentionAudienceLineNamesResponders(napping, "scott")).toBe(true);
+    expect(attentionAudienceLineNamesResponders(napping, null)).toBe(false);
+    expect(attentionAudienceLineNamesResponders(approval, "scott")).toBe(false);
   });
 
   it("phrases the Unassigned banner", () => {

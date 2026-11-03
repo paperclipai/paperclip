@@ -30,6 +30,7 @@ import { cn, relativeTime } from "../lib/utils";
 import { DecisionTriageStrip } from "./DecisionTriageStrip";
 import { InteractionAudienceLine } from "./InteractionAudienceLine";
 import { AttentionAudienceLine } from "./AttentionViews";
+import { attentionAudienceLineNamesResponders } from "../lib/attention-views";
 import { AttentionObligationEvidence } from "./AttentionObligationEvidence";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
@@ -161,6 +162,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // travels with the feed item; null for every non-interaction source and for a
   // feed built before the metadata existed (PAP-17287).
   const audience = describeAttentionResolverAudience(item);
+  const audienceLineNamesResponders = attentionAudienceLineNamesResponders(item, currentUserId);
   const showOpen = !inline && !!href;
   // An expanded inline row hands its footer to the resolver, which owns the
   // decision verbs — so the toggle rides alongside them on one row rather than
@@ -358,7 +360,10 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               {/* The audience reads *before* the verbs it qualifies: a compact
                   Accept sitting alone asks for a decision without saying whose
                   it is (PAP-17287). */}
-              {audience && <InteractionAudienceLine audience={audience} variant="compact" />}
+              {/* The audience line above already names who may answer when
+                  it knows the viewer; a second clause would contradict it
+                  (PAP-767). */}
+              {audience && !audienceLineNamesResponders && <InteractionAudienceLine audience={audience} variant="compact" />}
               {inline && renderFooter({ compact: true })}
             </div>
           </CollapsibleContent>

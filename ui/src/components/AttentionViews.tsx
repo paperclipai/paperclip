@@ -12,6 +12,8 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ATTENTION_VIEW_LABELS,
   attentionReceiptLine,
+  attentionResponderText,
+  attentionUnownedAudienceText,
   describeAttentionAudience,
   unassignedBannerText,
 } from "@/lib/attention-views";
@@ -96,6 +98,8 @@ export function AttentionAudienceLine({
   const description = currentUserId ? describeAttentionAudience(item, currentUserId) : null;
   if (!description) return null;
   const base = cn("flex flex-wrap items-center gap-2 text-xs leading-5 text-muted-foreground", className);
+  // Who may answer, in the same statement as why the card is here (PAP-767).
+  const responders = attentionResponderText(item, description, userLabelMap);
   if (description.kind === "mine") {
     return (
       <p className={base} data-attention-audience="mine">
@@ -104,6 +108,7 @@ export function AttentionAudienceLine({
           {description.transferredByUserId
             ? `${description.text} @${userLabelMap?.get(description.transferredByUserId) ?? "someone"}`
             : description.text}
+          {responders ? <span data-attention-responders>. {responders}</span> : null}
         </span>
       </p>
     );
@@ -116,12 +121,13 @@ export function AttentionAudienceLine({
           <UserRound aria-hidden="true" />
           For @{name}
         </Badge>
+        {responders ? <span data-attention-responders>{responders}</span> : null}
       </div>
     );
   }
   return (
     <div className={base} data-attention-audience={description.kind}>
-      <span>{description.text}</span>
+      <span>{attentionUnownedAudienceText(item, description, userLabelMap)}</span>
       {description.claimable && onClaim ? (
         <Button
           type="button"

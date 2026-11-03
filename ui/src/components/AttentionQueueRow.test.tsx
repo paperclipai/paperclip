@@ -962,6 +962,28 @@ describe("AttentionQueueRow", () => {
     expect(summary?.parentElement?.className).toContain("break-words");
   });
 
+  it("says who may answer once, in the audience line, when it knows the viewer (PAP-767)", () => {
+    render(
+      <AttentionQueueRow
+        item={{
+          ...interactionItem({ ...openAudience, addresseeAgentId: "agent-nap", addresseeName: "Napping Agent" }),
+          audience: { kind: "pool", userId: null, reason: "none" },
+        }}
+        companyId="c1"
+        currentUserId="scott"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const line = container?.querySelector('[data-attention-audience="pool"]');
+    expect(line?.textContent).toContain("No owner yet. Napping Agent or any board member can answer it.");
+    expect(container?.textContent).not.toContain("Any board member can answer it.");
+    // No second, contradicting clause beside the buttons.
+    expect(container?.querySelector('[data-testid="interaction-audience"]')).toBeNull();
+  });
+
   it("renders no audience line when the feed carries no resolver metadata", () => {
     render(
       <AttentionQueueRow
