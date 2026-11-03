@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 if (process.argv.includes('--version')) { console.log('codex-cli 0.115.0 (in-feed fixture)'); process.exit(0); }
@@ -14,6 +15,7 @@ const recoveryFixture = process.env.PAPERCLIP_RECOVERY_FIXTURE === "1";
 const ingestionFixture = process.argv.includes('--ingestion-stream-fixture');
 let ingestionPlan = null;
 let ingestionGeneration = 0;
+let ingestionClock = null;
 let currentObjective = "";
 let emitCeoLineage = false;
 let completionContract = { revision: "1", criterionIds: ["objective"] };
@@ -42,13 +44,54 @@ function ingestionFixturePlan(value) {
     // The real Markdown composer escapes punctuation, and the native brief
     // also carries a shortened title. Accept a complete fixture plan only.
     for (let pass = 0; pass < 4; pass++) text = text.replace(/\\([\\_=:./-])/g, '$1');
-    const match = text.match(/INGESTION_PERF nonce=([a-z0-9]+) events=(\d+) intervalMs=(\d+) prelude=(\d+) gate=(http:\/\/(?:127\.0\.0\.1|localhost):\d+\/native-ingestion-gate\/[a-f0-9]{32})/);
+    const match = text.match(/INGESTION_PERF nonce=([a-z0-9]+) events=(\d+) intervalMs=(\d+) prelude=(\d+) markerCode=([a-z0-9]{2}) gate=(http:\/\/(?:127\.0\.0\.1|localhost):\d+\/native-ingestion-gate\/[a-f0-9]{32})/);
     if (!match) continue;
-    const plan = { nonce: match[1], events: Number(match[2]), intervalMs: Number(match[3]), prelude: Number(match[4]), gate: match[5] };
+    const plan = { nonce: match[1], events: Number(match[2]), intervalMs: Number(match[3]), prelude: Number(match[4]), markerCode: match[5], gate: match[6] };
     if (plan.events < 1 || plan.events > 4096 || plan.intervalMs > 1000 || plan.prelude > 10_000) throw new Error('Ingestion fixture exceeds its bounded workload');
     return plan;
   }
   throw new Error('Missing complete INGESTION_PERF fixture plan');
+}
+
+function openIngestionClock(plan, gate) {
+  const endpoint = new URL(gate);
+  endpoint.pathname += '/clock';
+  endpoint.searchParams.set('participant', plan.nonce);
+  let closed = false, failure = null, settle;
+  const done = new Promise(resolve => { settle = resolve; });
+  const fail = (error) => {
+    if (failure) return;
+    failure = new Error(`Ingestion fixture clock ${plan.nonce}: ${error.message}`);
+    process.stderr.write(`${failure.message}\n`);
+    process.exitCode = 1;
+    settle(false);
+  };
+  const request = httpRequest(endpoint, { method: 'POST', agent: false,
+    headers: { 'Content-Type': 'application/x-ndjson' } }, response => {
+    response.resume();
+    response.on('error', fail);
+    response.on('aborted', () => fail(new Error('Response aborted')));
+    response.on('end', () => {
+      if (response.statusCode < 200 || response.statusCode >= 300) fail(new Error(`HTTP ${response.statusCode}`));
+      else settle(true);
+    });
+  });
+  request.on('error', fail);
+  request.setTimeout(300_000, () => request.destroy(new Error('Upload timed out')));
+  const write = record => {
+    if (failure) throw failure;
+    if (closed) throw new Error('Ingestion fixture clock is closed');
+    // One buffered stream, with no per-token request or clock-drain wait.
+    request.write(`${JSON.stringify(record)}\n`);
+  };
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    try { request.end(); } catch (error) { fail(error); }
+  };
+  write({ type: 'hello', nonce: plan.nonce, markerCode: plan.markerCode,
+    events: plan.events, intervalMs: plan.intervalMs });
+  return { write, close, done };
 }
 
 async function streamIngestion() {
@@ -71,32 +114,47 @@ async function streamIngestion() {
       item: { id: preludeId, type: 'agentMessage', phase: 'commentary',
         text: `${'.'.repeat(Math.max(0, plan.prelude - 1))} PRELUDE_${plan.nonce}_READY ` } } });
   }
-  gate.searchParams.set('participant', plan.nonce);
-  const response = await fetch(gate, { signal: AbortSignal.timeout(300_000) });
-  if (!response.ok) throw new Error(`Ingestion gate returned ${response.status}`);
-  const { epochMs } = await response.json();
-  if (!Number.isSafeInteger(epochMs)) throw new Error('Invalid ingestion schedule');
-  const itemId = `ingestion-${turnId}`;
-  await sendIngestion({ method: 'item/started', params: { threadId, turnId,
-    item: { id: itemId, type: 'agentMessage', phase: 'final_answer', text: '' } } });
-  let text = '';
-  for (let index = 0; index < plan.events; index++) {
-    const intended = epochMs + index * plan.intervalMs;
-    const wait = intended - Date.now();
-    if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+  const clock = openIngestionClock(plan, gate);
+  ingestionClock = clock;
+  try {
+    gate.searchParams.set('participant', plan.nonce);
+    const response = await fetch(gate, { signal: AbortSignal.timeout(300_000) });
+    if (!response.ok) throw new Error(`Ingestion gate returned ${response.status}`);
+    const { epochMs } = await response.json();
+    if (!Number.isSafeInteger(epochMs)) throw new Error('Invalid ingestion schedule');
     if (generation !== ingestionGeneration) return;
-    const delta = `INGEST_${plan.nonce}_${index}_${intended}_${Date.now()} `;
-    text += delta;
-    await sendIngestion({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId, delta } });
+    const itemId = `ingestion-${turnId}`;
+    await sendIngestion({ method: 'item/started', params: { threadId, turnId,
+      item: { id: itemId, type: 'agentMessage', phase: 'final_answer', text: '' } } });
+    let text = '';
+    for (let index = 0; index < plan.events; index++) {
+      const intendedMs = epochMs + index * plan.intervalMs;
+      const wait = intendedMs - Date.now();
+      if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+      if (generation !== ingestionGeneration) return;
+      const emittedMs = Date.now();
+      clock.write({ type: 'emission', nonce: plan.nonce, markerCode: plan.markerCode, index, intendedMs, emittedMs });
+      const delta = `[${plan.markerCode}${index.toString(36)}] `;
+      text += delta;
+      await sendIngestion({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId, delta } });
+    }
+    clock.close();
+    if (generation !== ingestionGeneration) return;
+    await sendIngestion({ method: 'item/completed', params: { threadId, turnId,
+      item: { id: itemId, type: 'agentMessage', phase: 'final_answer', text } } });
+    await call('report_progress', { idempotencyKey: `ingestion-${plan.nonce}`, body: `Ingestion fixture emitted ${plan.events} measured chunks.` });
+    if (generation !== ingestionGeneration) return;
+    await finish(`Ingestion fixture ${plan.nonce} completed.`, `fixture:ingestion-${plan.nonce}`);
+    if (generation !== ingestionGeneration) return;
+    await sendIngestion({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
+    // Upload completion cannot delay output, tools, result or protocol terminal.
+    // Errors are already explicit on stderr and set a nonzero process exit;
+    // do not produce a second terminal notification after a completed turn.
+    await clock.done;
+  } finally {
+    clock.close();
+    if (ingestionClock === clock) ingestionClock = null;
   }
-  if (generation !== ingestionGeneration) return;
-  await call('report_progress', { idempotencyKey: `ingestion-${plan.nonce}`, body: `Ingestion fixture emitted ${plan.events} measured chunks.` });
-  if (generation !== ingestionGeneration) return;
-  await finish(`Ingestion fixture ${plan.nonce} completed.`, `fixture:ingestion-${plan.nonce}`);
-  if (generation !== ingestionGeneration) return;
-  await sendIngestion({ method: 'item/completed', params: { threadId, turnId,
-    item: { id: itemId, type: 'agentMessage', phase: 'final_answer', text } } });
-  await sendIngestion({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
 }
 function unwrap(result) {
   const texts = result?.contentItems ?? result?.content ?? [];
@@ -268,6 +326,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     }), 50);
   } else if (ingestionFixture && method === 'turn/interrupt') {
     ingestionGeneration += 1;
+    ingestionClock?.close();
     send({ id, result: {} });
     send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'interrupted' } } });
   } else if (id != null) send({ id, result: {} });

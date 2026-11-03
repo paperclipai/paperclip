@@ -267,3 +267,85 @@ the combined change still requires the loaded improvement. Comparison rejects
 smoke, source-server evidence, mismatched artifacts/protocols, missing background
 delta proof and incomplete runs. Live-provider walkthroughs remain a separate
 integration gate.
+
+### Browser protocol v2, registered before fresh A/A
+
+The first full v1 baseline qualification failed in the paced 1×128 case. Its
+paint observer accumulated 127 markers and missed index 127. Independent,
+read-only PostgreSQL inspection found all 128 deltas with unique source
+identities and no gaps. The run succeeded. The normalized completed item and
+final comment were each exactly 4,000 characters with a truncation marker and
+only complete marker indices 0–55. Raw Playwright DOM snapshots confirmed the
+same 4,000-character terminal text, after streamed DOM text reached 9,033
+characters. This is not an accessibility-snapshot truncation assumption.
+
+The existing Rust provider normalizer bounds completed text at 4,000 Unicode
+characters. UI projection treats a completed item as authoritative and replaces
+its streamed deltas. Long in-band diagnostic clocks made the fixture's completed
+answer exceed that preexisting bound. No application or normalizer policy is
+changed to make the experiment pass. V1 failed artifacts, trace, decoded paint
+observations and SELECT-only database receipts remain evidence of an unqualified
+experiment; none establishes a speedup.
+
+V2 changes the browser measurement protocol for every arm before any fresh A/A:
+
+- A visible chunk is `[rrII] `: a unique two-base36-character run code followed by
+  its base36 index. A full 512-chunk answer is 3,548 ASCII characters and bytes.
+  The existing-history fixture keeps its 1,000 actual single-character prelude
+  deltas and sentinel; that prelude plus 128 compact chunks totals 1,907 characters.
+  Explicit checks keep these completed payloads below the unchanged 4,000 bound.
+  Before releasing measured emission, an independent normal event-API read verifies
+  all 1,000 prelude deltas and source identities; the report records that pre-gate proof.
+- Full nonce, index, original intended emission time and original provider-process
+  emission time travel on one streamed HTTP clock channel per provider. The
+  channel opens and sends its hello before the common gate releases. There is no
+  per-token HTTP request or wait for clock drain/response before writing text.
+- The browser still captures a DOM snapshot in one animation frame and assigns
+  that snapshot's paint-opportunity timestamp in the next. It records that time
+  immediately, even when the clock channel has not arrived. It joins original
+  clocks afterward, preserving the original browser timestamp.
+- Every visible marker and every independently read durable delta must match its
+  original full nonce/code/index clock. Missing, duplicated or conflicting clocks
+  fail. Stop may terminate the clock stream with a partial unacknowledged raw
+  tail, but no observed or database-acknowledged prefix receives a synthetic clock.
+- The provider completes its assistant item before invoking semantic progress
+  and Finish tools. Tool/result/terminal output does not wait for the clock upload
+  response. Standalone qualification deliberately withholds that response through
+  terminal settlement and Stop acknowledgement.
+- All 16/128/512 event counts, 1/10/100 run counts, emission schedules, history
+  counts, payload-identity checks, drainage checks, timeouts and performance gates
+  remain fixed. Removing diagnostic clocks makes the browser text payload smaller;
+  this is explicit and matched across all v2 arms. The owner-path workload retains
+  its original 128-byte text payload and unchanged source/gate hashes.
+- Timed A/A and comparison runs disable Playwright trace, video and screencast.
+  Their metadata records the actual configured capture modes; the comparator
+  rejects recording, legacy v1, smoke, profile and incomplete evidence. The two
+  animation-frame observer remains declared measurement overhead. Manual
+  screenshots occur after timed terminal drainage. Separate diagnostics may
+  capture browser traces and app-only Node CPU profiles and stay ineligible.
+- A failure attachment retains the active case, requested and ready participants,
+  observed marker timestamps, raw rendered text, DOM marker inventory, received
+  source clocks, stream errors and the latest independent durable read.
+
+The separate browser harness H is based on application ref
+`7922802f069ab3b39e9f79368c46615ba2201ba9` with only the v2 fixture, observer,
+recording metadata, comparator, tests and this record changed. H uses explicitly
+identified driver-only tooling dependencies. Each measured application retains
+its own independent locked dependencies, clean source checkout and matching
+compiled build stamp: B0 `83b5f7d486e70e484acd9a41bc957054f4e10175`, B1
+`7922802f069ab3b39e9f79368c46615ba2201ba9`, B2
+`6afeba4edafd47120e8117f736641d5424b27d4a`. Reports retain H's own revision,
+source status, individual protocol hashes and lockfile hash. No application
+build stamp is rewritten for a test-only change. Exact H commit and combined
+protocol hash are frozen with the qualification receipts before new A/A starts.
+
+Qualification must pass the source-clock protocol smoke and the full B0 browser
+matrix, including actual 100-participant readiness and independent background
+persistence. Fresh A/A still precedes any candidate comparison. The owner-path
+20% maximum paired variance / 10% median drift limits and the requirement that
+four individual candidate pairs exceed observed noise are unchanged. Failed v1
+samples are never reused as v2 evidence.
+
+Registered v2 browser protocol SHA256: `5498ed8dfc7139285aeda582c540eb572f07a1ad3e73de6e0f12c5af4c45e0ba`.
+Comparator SHA256: `d8cf6f55339ad811ca1743f4bc73b74afa3a321b93e17ef913fc0339b47b4d7d`. Individual source hashes and
+H's exact committed revision are retained with each qualification/execution receipt.
