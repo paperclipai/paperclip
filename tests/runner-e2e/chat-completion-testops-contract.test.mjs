@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -146,6 +148,14 @@ test('target checkout cannot populate or overwrite the trusted helper path', asy
 
 
 test('full catalog evidence authority binds every singleton to the reviewed candidate launcher', () => {
+  const manifest = JSON.parse(readFileSync(new URL('./chat-full-catalog-testops-manifest.json', import.meta.url)));
+  const snapshot = manifest.source.repairMetadata.candidateLauncherSnapshot;
+  assert.equal(snapshot.targetSha, catalogTargetSha);
+  assert.equal(snapshot.sourcePath, 'tests/runner-e2e/launch.ts');
+  const bytes = readFileSync(new URL(snapshot.path, import.meta.url));
+  const actualDigest = createHash('sha256').update(bytes).digest('hex');
+  assert.equal(createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${bytes.length}\0`), bytes])).digest('hex'), snapshot.gitBlobOid);
+  assert.equal(verifyFullCatalogLauncherSource({ targetSha: snapshot.targetSha, launcherSha256: actualDigest }), true);
   const f = fixture();
   f.env.GITHUB_WORKFLOW_REF = f.env.GITHUB_WORKFLOW_REF.replace('chat-completion-testops.yml', 'chat-catalog-testops.yml');
   const context = admitDispatch(f.env, f.event, 42);
@@ -153,7 +163,7 @@ test('full catalog evidence authority binds every singleton to the reviewed cand
   for (const row of selection.cases) {
     const policy = evidencePolicy({ ...selection, cases: [row] }, context, '77');
     assert.equal(policy.approvals[0].targetSha, catalogTargetSha);
-    assert.equal(policy.approvals[0].launchSha256, '2f6f1a3c5f646020424477c10ca44ce95b1fa9d46dfc28998698580d09c4fadf');
+    assert.equal(policy.approvals[0].launchSha256, actualDigest);
   }
   const pilot = evidencePolicy(f.selection, f.context, '77');
   assert.equal(pilot.approvals[0].launchSha256, 'f2e69957c350b220b06edca49194a4bd07d70bc882f80838eeb7203184c0bd0d');

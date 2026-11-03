@@ -1171,6 +1171,12 @@
           "actual115DetectorUnknown": true,
           "plugin558StillHeld": true
         }
+      },
+      "candidateLauncherSnapshot": {
+        "path": "fixtures/chat-repair-candidate-launcher.txt",
+        "targetSha": "43c44ccc823a8c972b247fa7159281887e6f5255",
+        "sourcePath": "tests/runner-e2e/launch.ts",
+        "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
       }
     }
   },
