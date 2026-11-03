@@ -67,6 +67,42 @@ describe("run observer capability", () => {
     }
   });
 
+  it("renews the same run capability after the sink restarts without replaying work", async () => {
+    const f = await server.fixture({ connectionScenario: "fresh" });
+    const directory = await mkdtemp(path.join(await realpath(tmpdir()), "observer-restart-"));
+    await chmod(directory, 0o700);
+    const socketPath = path.join(directory, "sink.sock");
+    const received: Array<{ runId: string; token: string }> = [];
+    async function listen() {
+      const sink = createServer(socket => { let data = ""; socket.on("data", chunk => {
+        data += chunk.toString(); if (data.includes("\n")) { received.push(JSON.parse(data)); socket.end("ok\n"); }
+      }); });
+      await new Promise<void>((resolve, reject) => sink.once("error", reject).listen(socketPath, resolve));
+      await chmod(socketPath, 0o600);
+      return sink;
+    }
+    let sink = await listen();
+    let delivery: Awaited<ReturnType<typeof startRunObserverDelivery>> = null;
+    try {
+      delivery = await startRunObserverDelivery(server.db, { id: f.runId, companyId: f.companyId, agentId: f.agentId },
+        { socketPath, companyId: f.companyId, agentId: f.agentId }, { refreshMs: 100 });
+      expect(received).toHaveLength(1);
+      await new Promise<void>(resolve => sink.close(() => resolve()));
+      await new Promise(resolve => setTimeout(resolve, 200));
+      sink = await listen();
+      const until = Date.now() + 3000;
+      while (received.length < 2 && Date.now() < until) await new Promise(resolve => setTimeout(resolve, 25));
+      expect(received.length).toBeGreaterThan(1);
+      expect(received.every(message => message.runId === f.runId)).toBe(true);
+      const headers = { authorization: `Bearer ${received.at(-1)!.token}` };
+      expect((await fetch(`${server.apiUrl}/api/heartbeat-runs/${f.runId}/observer-status`, { headers })).status).toBe(200);
+    } finally {
+      await delivery?.close();
+      await new Promise<void>(resolve => sink.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("stops a separate fictional process after observer renewal is lost", async () => {
     const f = await server.fixture({ connectionScenario: "fresh" });
     const directory = await mkdtemp(path.join(await realpath(tmpdir()), "observer-process-"));
