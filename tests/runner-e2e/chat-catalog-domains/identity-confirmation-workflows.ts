@@ -10,23 +10,45 @@ import { identityDefinition, identityObservation, identityWorker, observeIdentit
 interface SourceComment extends Entity { authorType?: string }
 const tabs = new WeakMap<ChatCatalogContext, Page>();
 const sources = ["chat-catalog-domains/identity-confirmation-workflows.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/questions-and-approvals.yaml"];
+function savedProductAnswerMatches(o: IdentityObservation): boolean {
+  const original = o.state.original as Interaction | undefined;
+  const current = o.interactions.find(row => row.id === original?.id), answers = current?.result?.answers;
+  return !!original && original.status === "pending" && !original.result
+    && original.kind === "ask_user_questions" && current?.kind === original.kind
+    && typeof o.state.humanId === "string" && !!o.state.humanId
+    && original.companyId === o.companyId && current.companyId === o.companyId
+    && original.issueId === o.state.sourceIssueId && current.issueId === o.state.sourceIssueId
+    && current.status === "answered" && current.resolvedByUserId === o.state.humanId && !current.resolvedByAgentId
+    && answers?.length === 1 && answers[0]?.questionId === "product" && answers[0].otherText === "Acorn"
+    && JSON.stringify(current.payload) === JSON.stringify(original.payload);
+}
 export function answerContinuationCompleted(o: IdentityObservation): boolean {
   const original = o.state.original as Interaction | undefined;
   const current = o.interactions.find(row => row.id === original?.id);
   const resolvedAt = Date.parse(current?.resolvedAt ?? "");
   const continuations = o.runs.filter(run => run.contextSnapshot?.interactionId === original?.id);
   const continuation = continuations[0];
-  return !!original && typeof o.state.sourceIssueId === "string" && typeof o.state.canonicalCommentId === "string" && o.state.sourceConversationState === "waiting"
-    && continuations.length === 1 && !!continuation && continuation.companyId === o.companyId && continuation.agentId === o.leadId
-    && continuation.contextSnapshot?.issueId === o.state.sourceIssueId && continuation.status === "succeeded"
-    && Number.isFinite(resolvedAt) && Number.isFinite(Date.parse(continuation.startedAt ?? ""))
-    && Date.parse(continuation.startedAt!) >= resolvedAt
-    && o.runs.some(run => run.id !== continuation.id && run.companyId === o.companyId && run.agentId === o.leadId
-      && run.status === "succeeded" && !!run.startedAt && run.contextSnapshot?.issueId === o.state.sourceIssueId
-      && run.contextSnapshot?.commentId === o.state.canonicalCommentId)
-    && o.activity.some(row => row.action === "issue.question_response_delivered" && row.entityId === o.state.sourceIssueId
-      && row.actorType === "system" && row.actorId === "question-response-delivery" && row.details?.interactionId === original.id
-      && row.details.targetRunId === continuation.id && ["delivered", "fallback_queued"].includes(String(row.details.deliveryStatus)));
+  if (!original || !savedProductAnswerMatches(o) || typeof o.state.sourceIssueId !== "string"
+    || !o.state.sourceIssueId || typeof o.state.canonicalCommentId !== "string" || !o.state.canonicalCommentId || o.state.sourceConversationState !== "waiting"
+    || continuations.length !== 1 || !continuation || continuation.companyId !== o.companyId || continuation.agentId !== o.leadId
+    || continuation.contextSnapshot?.issueId !== o.state.sourceIssueId || continuation.status !== "succeeded"
+    || !Number.isFinite(resolvedAt) || !Number.isFinite(Date.parse(continuation.startedAt ?? ""))
+    || Date.parse(continuation.startedAt!) < resolvedAt
+    || !o.runs.some(run => run.id !== continuation.id && run.companyId === o.companyId && run.agentId === o.leadId
+      && run.status === "succeeded" && Number.isFinite(Date.parse(run.startedAt ?? "")) && Date.parse(run.startedAt!) <= resolvedAt
+      && run.contextSnapshot?.issueId === o.state.sourceIssueId && run.contextSnapshot?.commentId === o.state.canonicalCommentId)) return false;
+  const deliveries = o.activity.filter(row => row.action === "issue.question_response_delivered" && row.entityId === o.state.sourceIssueId
+    && row.actorType === "system" && row.actorId === "question-response-delivery" && row.details?.interactionId === original.id);
+  if (deliveries.length !== 1) return false;
+  const details = deliveries[0]!.details!;
+  if (!["delivered", "fallback_queued"].includes(String(details.deliveryStatus))) return false;
+  if (details.targetRunId === continuation.id) return true;
+  // A durable wake may be recorded before its run exists. Require the real,
+  // unique completed successor's server-produced answer context, never a queued receipt alone.
+  return details.deliveryStatus === "fallback_queued" && details.deliveryMode === "wake_fallback" && details.targetRunId === null
+    && continuation.contextSnapshot?.source === "issue.interaction.respond"
+    && continuation.contextSnapshot?.interactionKind === "ask_user_questions" && continuation.contextSnapshot?.interactionStatus === "answered"
+    && continuation.contextSnapshot?.sourceRunId === (original.sourceRunId ?? null);
 }
 export function gradeConfirmationWorkflow(value: unknown) {
   const c = checks(); const o = identityObservation(value);
@@ -47,10 +69,7 @@ export function gradeConfirmationWorkflow(value: unknown) {
     c.add("repeat-did-not-replace-decision", o.state.afterRepeatResolvedCommentId === o.state.canonicalCommentId && o.humanQueries.length === 2
       && o.humanQueries.every(query => query.trim() === "Yes, go ahead with that."), "Repeating the actual human reply does not replace the saved decision or create a duplicate instruction side effect.");
   } else if (o.scenarioId === "questions-and-approvals.duplicate-answer") {
-    const answers = current?.result?.answers;
-    c.add("one-real-human-answer", current?.status === "answered" && current.resolvedByUserId === o.state.humanId && !current.resolvedByAgentId
-      && answers?.length === 1 && answers[0]?.questionId === "product" && answers[0].otherText === "Acorn"
-      && JSON.stringify(current.payload) === JSON.stringify(original?.payload), "Both real browser tabs target the same original question and only one saved human answer exists.");
+    c.add("one-real-human-answer", savedProductAnswerMatches(o), "Both real browser tabs target the same original company/task question and only one saved human answer exists.");
     c.add("real-simultaneous-conflict", o.state.actualSubmitRequests === 2 && Array.isArray(o.state.submitStatuses) && [...o.state.submitStatuses].sort().join(",") === "200,409"
       && o.state.noTaskBeforeAnswers === true && o.state.bothTabsResolved === true,
       "Both actual visible submit controls race, yielding one accepted response and one real conflict; both views converge on the same saved receipt.");
@@ -144,7 +163,7 @@ export const confirmationWorkflowIdentityCases: readonly ChatCatalogCase[] = [
     await expect(other.getByTestId("task-chat-composer-takeover")).toBeVisible();
     return { original, humanId: session.user.id, worker };
   }, gradeConfirmationWorkflow, {
-    authentication: "human-session", sourceFiles: sources, expectedRunCount: 4, minimumRunCount: 2, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 }, attemptTimeoutMs: 600_000,
+    authentication: "human-session", sourceFiles: sources, oracleVersion: "paperclip.chat-catalog.answer-delivery.v2", expectedRunCount: 4, minimumRunCount: 2, runPolicy: { kind: "source-settled-with-active-work", maximumActiveWorkerRuns: 1 }, attemptTimeoutMs: 600_000,
     observe: observeWorkflow,
     async act(ctx, state) {
       const other = tabs.get(ctx); if (!other) throw new Error("The second real browser tab is missing");

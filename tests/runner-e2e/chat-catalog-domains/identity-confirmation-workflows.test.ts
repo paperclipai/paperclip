@@ -3,9 +3,10 @@ import { answerContinuationCompleted, confirmationWorkflowIdentityCases, gradeCo
 import * as api from "../api.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { IdentityObservation, Interaction } from "./identity-support.js";
+vi.mock("../chat-flow.js", () => ({ sendChatMessage: vi.fn() }));
 function valid(id: string): IdentityObservation {
   const task = { id: "draft", companyId: "acorn", title: "Acorn launch checklist n42", description: "Draft checklist for later", status: "backlog" };
-  const original: Interaction = { id: "request", kind: "request_confirmation", status: "pending", payload: { prompt: "Create the named checklist?" } };
+  const original: Interaction = { id: "request", companyId: "acorn", issueId: "source", kind: "request_confirmation", status: "pending", payload: { prompt: "Create the named checklist?" } };
   const o: IdentityObservation = { scenarioId: id, origin: "http://fixture.test", companyId: "acorn", leadId: "ceo", company: { id: "acorn" }, companies: [], agents: [], interactions: [],
     tasks: [task], projects: [], goals: [], comments: [], documents: [], revisions: [], activity: [], links: ["/ACO/issues/draft"], runs: [], reply: "Created the linked draft.", humanQueries: [], state: { original } };
   if (id === "questions-and-approvals.accept-one-proposal") {
@@ -117,4 +118,37 @@ describe("answer continuation and ordinary deliverable custody", () => {
       expect(poll).toHaveBeenCalledTimes(1);
     } finally { clock.mockRestore(); poll.mockRestore(); }
   });
+});
+
+function deferredFallback() {
+  const o = valid("questions-and-approvals.duplicate-answer");
+  const delivery = o.activity.find(row => row.id === "delivery")!;
+  Object.assign(delivery.details!, { targetRunId: null, deliveryStatus: "fallback_queued", deliveryMode: "wake_fallback" });
+  Object.assign(o.runs[1]!.contextSnapshot!, { source: "issue.interaction.respond", interactionKind: "ask_user_questions", interactionStatus: "answered", sourceRunId: null });
+  return o;
+}
+it("accepts a durable fallback recorded before its unique actual answer-bound successor existed", () => {
+  const o = deferredFallback();
+  expect(answerContinuationCompleted(o)).toBe(true);
+  expect(gradeConfirmationWorkflow(o).passed).toBe(true);
+});
+it.each(["wrong source", "wrong status", "wrong kind", "missing target field", "missing delivery", "duplicate delivery", "extra continuation", "wrong human", "missing human", "wrong answer", "cancelled continuation", "cancelled canonical", "wrong source run", "unfinished successor", "delivered null target"])("does not infer a completed fallback from %s", invalid => {
+  const o = deferredFallback(), delivery = o.activity.find(row => row.id === "delivery")!, continuation = o.runs[1]!;
+  if (invalid === "wrong source") continuation.contextSnapshot!.source = "other.event";
+  if (invalid === "wrong status") continuation.contextSnapshot!.interactionStatus = "pending";
+  if (invalid === "wrong kind") continuation.contextSnapshot!.interactionKind = "request_confirmation";
+  if (invalid === "missing target field") delete delivery.details!.targetRunId;
+  if (invalid === "missing delivery") o.activity = o.activity.filter(row => row.id !== "delivery");
+  if (invalid === "duplicate delivery") o.activity.push({ ...structuredClone(delivery), id: "ambiguous-delivery" });
+  if (invalid === "extra continuation") o.runs.push({ ...structuredClone(continuation), id: "duplicate-continuation" });
+  if (invalid === "wrong human") o.interactions[0]!.resolvedByUserId = "other-human";
+  if (invalid === "missing human") { delete o.state.humanId; delete o.interactions[0]!.resolvedByUserId; }
+  if (invalid === "wrong answer") o.interactions[0]!.result!.answers![0]!.otherText = "Different product";
+  if (invalid === "cancelled continuation") continuation.status = "cancelled";
+  if (invalid === "cancelled canonical") o.runs[0]!.status = "cancelled";
+  if (invalid === "wrong source run") continuation.contextSnapshot!.sourceRunId = "unrelated-source";
+  if (invalid === "unfinished successor") continuation.status = "running";
+  if (invalid === "delivered null target") delivery.details!.deliveryStatus = "delivered";
+  expect(answerContinuationCompleted(o)).toBe(false);
+  expect(gradeConfirmationWorkflow(o).passed).toBe(false);
 });
