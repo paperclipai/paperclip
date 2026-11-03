@@ -99,6 +99,7 @@ test('foreign identity, duplicated case and changed run-bound metadata are rejec
 test('repair source metadata preserves original definitions and declares scoped observer and oracle changes', () => {
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
+  assert.equal(manifest.targetSha, '9ab0f951a5b5990c266ef4456610e0a0775aa334');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.deepEqual(repair.changedFields.map(value => [value.key, value.field]), [
     ['companies.agent-observability', 'sourceFiles'], ['companies.configure-decision-model', 'sourceFiles'],
