@@ -13,7 +13,17 @@ export function createObservedReader(api: Pick<ConnectionApi, "get">, deadlineAt
     failures,
     async get<T = any>(route: string): Promise<T> {
       while (Date.now() < deadline()) {
-        try { return await api.get<T>(route); }
+        const remaining = deadline() - Date.now();
+        if (remaining < 1) break;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const expired = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new JourneyError("failed", "observation_read_deadline")), remaining);
+          });
+          const value = await Promise.race([api.get<T>(route, { timeoutMs: Math.min(30_000, remaining) }), expired]);
+          if (Date.now() >= deadline()) throw new JourneyError("failed", "observation_read_deadline");
+          return value;
+        }
         catch (error) {
           if (!(error instanceof ConnectionFailure)) throw error;
           const code = error.message;
@@ -22,6 +32,7 @@ export function createObservedReader(api: Pick<ConnectionApi, "get">, deadlineAt
           const remaining = deadline() - Date.now();
           if (remaining > 0) await new Promise(resolve => setTimeout(resolve, Math.min(1000, remaining)));
         }
+        finally { clearTimeout(timer); }
       }
       throw new JourneyError("failed", "observation_read_deadline");
     },

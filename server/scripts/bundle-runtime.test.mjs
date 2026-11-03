@@ -130,6 +130,42 @@ describe("bundleRuntime", () => {
     }
   });
 
+  it("attributes asynchronous database operations in a plain runtime bundle", async () => {
+    const captureModule = fileURLToPath(new URL("../../packages/db/src/response-capture.ts", import.meta.url));
+    write(path.join(root, "server", "dist", "services", "database-owner.js"), [
+      `import { withDatabaseOperation } from ${JSON.stringify(captureModule)};`,
+      'export const run = (owner, db) => withDatabaseOperation(owner, async () => {',
+      '  await Promise.resolve();',
+      '  return await db.$client.unsafe("select $1", ["private-parameter"]);',
+      '});',
+    ].join("\n"));
+    write(path.join(root, "server", "dist", "index.js"), [
+      `import { createDatabaseResponseCapture, installDatabaseResponseCapture } from ${JSON.stringify(captureModule)};`,
+      'import { run } from "./services/database-owner.js";',
+      'const events = [];',
+      'const now = Date.now();',
+      'const capture = createDatabaseResponseCapture({ start: now, end: now + 60000 }, event => events.push(event));',
+      'const db = { $client: { unsafe: () => ({ then(resolve, reject) { return Promise.resolve(Object.assign([["private-result"]], { columns: [{ name: "value" }] })).then(resolve, reject); } }) } };',
+      'installDatabaseResponseCapture(db, {}, capture);',
+      'await Promise.all([run("fixture.first", db), run("fixture.second", db)]);',
+      'capture.flush();',
+      'console.log(JSON.stringify(events));',
+    ].join("\n"));
+    const summary = await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir: path.join(root, "server", "dist-runtime") });
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS;
+    delete env.PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW;
+    const { stdout } = await execFileAsync(process.execPath, [summary.outfile], { cwd: path.join(root, "server"), env, timeout: 30_000 });
+    const events = JSON.parse(stdout);
+    const entries = events.filter(event => event.event === "paperclip.db_response_capture.entry.v2");
+    expect(entries.map(entry => entry.owner).sort()).toEqual(["fixture.first", "fixture.second"]);
+    for (const entry of entries) expect(entry).toMatchObject({ calls: 1, rows: 1, callers: [] });
+    expect(events.at(-1)).toMatchObject({ event: "paperclip.db_response_capture.summary.v2", completedQueries: 2 });
+    expect(stdout).not.toContain("private-parameter");
+    expect(stdout).not.toContain("private-result");
+    expect(stdout).not.toContain(root);
+  });
+
   it("emits a server module that loads without starting the server", async () => {
     const outdir = path.join(root, "server", "dist-runtime");
     const summary = await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir });

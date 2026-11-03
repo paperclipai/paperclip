@@ -39,7 +39,7 @@ import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { stageReceiptReactionRemovals } from "../services/chat-receipt-reactions.js";
 import type { Db } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import { githubResponseAuthorityFields } from "../services/chat-channels/github/response-authority-read.js";
 import * as activityLogModule from "../services/activity-log.js";
 import * as connectionCredentialBindings from "../services/connection-credential-bindings.js";
@@ -2890,7 +2890,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const normalizedEvent = { ...delivery.normalizedEvent, unusedContent: bulk };
       await db.update(chatDeliveries).set({ normalizedEvent }).where(eq(chatDeliveries.id, delivery.id));
       const events: Array<Record<string, unknown>> = [], now = Date.now();
-      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(db, { chatMessageLinks, chatDeliveries, chatEndpoints, chatConversations,
         chatEndpointResources, chatGitHubConfigurations, chatExternalPrincipals, chatIdentityLinks,
         companyMemberships, chatActions, heartbeatRuns }, capture);
@@ -2919,7 +2919,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       } };
       await db.update(chatDeliveries).set({ normalizedEvent }).where(eq(chatDeliveries.id, delivery.id));
       const events: Array<Record<string, unknown>> = [], now = Date.now();
-      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(db, { chatDeliveries }, capture);
       let projected: { event: Record<string, unknown> };
       try {
@@ -9777,7 +9777,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       });
       it("creates and installs once, uploads the avatar and links only the manager grant owner", async () => {
         const f = await managedFixture();
-        await Promise.all([f.provision(), f.provision()]);
+        await Promise.all([1, 2].map(() => request(f.app)
+          .post(`/api/chat-endpoints/${f.endpoint.id}/slack/managed/provision`)
+          .send(f.input).expect(200)));
         const saved = await f.service.get(f.endpoint.id);
         expect(saved.setup).toMatchObject({ slackSetupMethod: "managed", slackRegistration: { status: "configured", appId: f.appId }, slackAvatar: { status: "uploaded" }, slackAccount: { status: "linked", paperclipUserId: actor.userId, externalUserId: f.installerId } });
         expect(f.provider.mock.calls.filter(([url]) => String(url).endsWith("apps.manifest.create"))).toHaveLength(1);
@@ -9785,6 +9787,21 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const activities = await db.select().from(activityLog).where(eq(activityLog.companyId, f.companyId));
         for (const secret of [f.credentials.accessToken, f.credentials.refreshToken!, f.token, clientSecret, signingSecret, "claim-canary"]) expect(JSON.stringify({ saved, activities, choices: await f.grants.choices(f.companyId, actor) })).not.toContain(secret);
         await expect(f.service.update(f.endpoint.id, { slackSetupMethod: "automatic" }, actor.userId)).rejects.toThrow();
+      });
+      it("rejects missing, malformed, foreign and other-user manager grants before provisioning", async () => {
+        const f = await managedFixture();
+        const foreign = await seedCompany();
+        const grants = await db.insert(chatSlackManagerGrants).values([
+          { companyId: foreign.companyId, userId: actor.userId, slackUserId: "UFOREIGN", workspaceId: "TFOREIGN", workspaceName: "Foreign", managerAppId: "AMANAGER" },
+          { companyId: f.companyId, userId: "another-user", slackUserId: "UOTHER", workspaceId: "TOTHER", workspaceName: "Other", managerAppId: "AMANAGER" },
+        ]).returning();
+        f.provider.mockClear();
+        for (const [grantId, status] of [[randomUUID(), 404], ["invalid", 400], [grants[0]!.id, 404], [grants[1]!.id, 403]] as const) {
+          await request(f.app).post(`/api/chat-endpoints/${f.endpoint.id}/slack/managed/provision`)
+            .send({ ...f.input, grantId }).expect(status);
+        }
+        expect(f.provider).not.toHaveBeenCalled();
+        expect(await db.select().from(chatSlackRegistrations).where(eq(chatSlackRegistrations.endpointId, f.endpoint.id))).toEqual([]);
       });
       it("reuses the same personal workspace grant for another draft without another authorization", async () => {
         const f = await managedFixture();
@@ -64493,7 +64510,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             status: "active", membershipRole: "operator" });
         }
         const queryEvents: Record<string, unknown>[] = [];
-        const capture = mode === "backlog_51" ? createDatabaseResponseCapture({ start: Date.now() - 1,
+        const capture = mode === "backlog_51" ? createFullDatabaseResponseCapture({ start: Date.now() - 1,
           end: Date.now() + 59_000 }, event => queryEvents.push(event)) : undefined;
         if (capture) installDatabaseResponseCapture(db, { chatActions, chatDeliveries, chatMessageLinks, issueComments,
           agentWakeupRequests, chatEndpoints, chatConversations }, capture);
@@ -64513,7 +64530,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           idempotencyKey: mode === "concurrent_clicks" ? randomUUID() : input.idempotencyKey })]);
         if (capture) {
           capture.flush();
-          expect(Number(queryEvents.find(event => event.event === "paperclip.db_response_capture.summary.v1")?.startedQueries))
+          expect(Number(queryEvents.find(event => event.event === "paperclip.test_db_response_capture.summary.v1")?.startedQueries))
             .toBeLessThan(180);
         }
         expect(two.requestId).toBe(one.requestId);
@@ -67713,7 +67730,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       })));
       const scope = { companyId: context.fixture.companyId, issueId: context.issue.id };
       const events: Array<Record<string, unknown>> = [], now = Date.now();
-      const capture = createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+      const capture = createFullDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(db, { chatActions, agentWakeupRequests }, capture);
       let scopes: Array<{ companyId: string; issueId: string }>;
       try {
@@ -67730,7 +67747,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       expect(events.at(-1)).toMatchObject({ startedQueries: mode === "task" ? 0 : 1,
         completedQueries: mode === "task" ? 0 : 1, inFlightAtEnd: 0 });
-      expect(events.filter(event => event.event === "paperclip.db_response_capture.entry.v1")
+      expect(events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1")
         .reduce((count, event) => count + Number(event.rows), 0)).toBe(mode === "task" ? 0 : scopes.length);
     } finally {
       await context.service.shutdown(); await other.service.shutdown();
@@ -77438,7 +77455,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       })));
       const scope = { companyId: context.fixture.companyId, issueId: context.conversation.issueId };
       const events: Array<Record<string, unknown>> = [], now = Date.now();
-      const capture = createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
+      const capture = createFullDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event));
       installDatabaseResponseCapture(db, { chatActions, agentWakeupRequests }, capture);
       let scopes: Array<{ companyId: string; issueId: string }>;
       try {
@@ -77455,7 +77472,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }
       expect(events.at(-1)).toMatchObject({ startedQueries: mode === "task" ? 0 : 1,
         completedQueries: mode === "task" ? 0 : 1, inFlightAtEnd: 0 });
-      expect(events.filter(event => event.event === "paperclip.db_response_capture.entry.v1")
+      expect(events.filter(event => event.event === "paperclip.test_db_response_capture.entry.v1")
         .reduce((count, event) => count + Number(event.rows), 0)).toBe(mode === "task" ? 0 : scopes.length);
     } finally {
       await context.service.shutdown(); await other.service.shutdown();

@@ -53,6 +53,14 @@ the personal workspace preference. Verify explicit history expansion afterward.
 ### `new-task`
 
 Use New task from the global launcher, task list, or project task view.
+Images selected, pasted, or dropped into either the new-task or thread composer
+appear as equal-size rounded thumbnails above the text. Check mixed image/file
+selections, removal, thread upload failure/retry, and restored thread drafts.
+New-task files persist in account- and company-scoped browser storage across
+reloads and are cleared after creation. Verify that restored image bytes reach
+the task and that older inline-image drafts keep the rich editor.
+The Storybook new-task and add-menu suites have desktop and mobile image examples;
+their upload and submit boundaries are fixtures.
 
 ### `task-list`
 
@@ -64,7 +72,9 @@ terminal states. Inspect due/overdue copy separately; no runner is implied.
 
 Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
 Filters → **Routine tasks** selects tasks created by routine runs. The
-`/issues?view=all&originKind=routine_execution` link opens that selection.
+`/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` link opens that selection with newest-created tasks first. Sort controls update
+`sortField` and `sortDir` in the URL. Reloads and task return links keep that order.
+Shared sort links also retain their order when opened in another task interface.
 
 ### `task-detail`
 
@@ -82,6 +92,8 @@ loading contract, Classic preference loading and typography, stable mobile chrom
 and a bounded wait for stalled fonts.
 
 Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. Completed runs with saved replies defer their transcripts until the reader opens history. Live runs, failures, yielded runs and runs without a saved reply still hydrate; an already shown transcript stays available after completion. No URL fragment expands history; older-comment anchors fetch only their target, and document anchors open the pane. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single run with deferred output or a truncated legacy log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
+
+For an ordinary native task, deferred workspace finalization must preserve the final reply for both completed work and work awaiting review. Reload must show that saved reply once. The pending review stays pending; publishing the reply does not approve it or start another run. The [database recovery suite](../../server/src/services/native-runtime/agent-chat-response-recovery.test.ts) covers deferred review publication, exact final-message selection and review preservation. Live acceptance is recorded in the pull request.
 
 ### `task-sharing`
 

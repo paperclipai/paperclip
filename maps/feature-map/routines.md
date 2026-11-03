@@ -30,7 +30,7 @@ Open `/routines`, create one, and inspect `/routines/:routineId` and its edit se
 
 Use the routine's trigger controls and Runs/Recent Runs/Audit links; lists also
 offer Run now. **View all tasks** opens the Tasks list with **Routine tasks**
-selected, using `/issues?view=all&originKind=routine_execution`. Uncheck the
+selected, using `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc`. Uncheck the
 filter to return to other tasks. **History** records configuration versions, not executions.
 
 ## Driving it with Playwright and the Paperclip CLI
@@ -53,6 +53,16 @@ complete the generated task or establish a useful task output.
 Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWizard.test.tsx) is component coverage; [routine integration](../../server/src/__tests__/routines-e2e.test.ts) is server integration rather than a provider-wide browser proof.
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
+
+Sentry run-failure alerts can use the bearer-authenticated
+`/api/routine-triggers/public/:publicId/sentry-run-failures` receiver. It validates
+the source run against this company's task, admits one repair per failed run,
+and ignores tasks originating from the repair routine, including children and
+standalone creation descendants. Private or unreadable sources are ignored rather
+than copied into company-readable routine history. The routine's instructions
+should reuse existing repair cases/PRs for the same root cause. Service and HTTP
+regressions in the routine suites cover recursion, concurrent delivery, and access;
+these checks do not prove a live Sentry integration is configured.
 
 ## Gotchas
 

@@ -32,8 +32,8 @@ const invocations = [];
 const send = (id, result) => process.stdout.write(JSON.stringify({jsonrpc:"2.0",id,result})+"\\n");
 readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line", line => {
   const message = JSON.parse(line);
-  if (message.method === "initialize") send(message.id, {ok:true,supportedMethods:["environmentTask","configChanged","health"]});
-  else if (message.method === "environmentTask" || message.method === "environmentDestroyLease") {
+  if (message.method === "initialize") send(message.id, {ok:true,supportedMethods:["environmentTask","environmentAcquireLease","configChanged","health"]});
+  else if (message.method === "environmentTask" || message.method === "environmentDestroyLease" || message.method === "environmentAcquireLease") {
     held.push(message.id);
     invocations.push(message.paperclipInvocation?.id);
     if (message.params.config.hostWrite) process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:"host-"+message.id,method:"companies.get",params:{companyId:"company"},paperclipInvocationId:message.paperclipInvocation.id})+"\\n");
@@ -43,7 +43,7 @@ readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line", li
   else if (message.method === "configChanged") {
     if (message.params.config.exit) process.exit(1);
     if (message.params.config.hostAfter) process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:"late-host",method:"companies.get",params:{companyId:"company"},paperclipInvocationId:invocations.at(-1)})+"\\n");
-    if (message.params.config.release) for (const id of held.splice(0)) send(id, {kind:"description",taskId:"task"});
+    if (message.params.config.release) for (const id of held.splice(0)) { send(id, {providerLeaseId:"late-task",kind:"description",taskId:"task"}); if (message.params.config.duplicate) send(id, {providerLeaseId:"late-task",kind:"description",taskId:"task"}); }
     send(message.id, {});
   } else if (message.method === "shutdown") {send(message.id, {});setImmediate(()=>process.exit(0));}
 });
@@ -59,6 +59,128 @@ async function startWorker(hostHandlers: Record<string, unknown> = {}) {
 }
 
 describe("Core startup responsibility across real worker IPC", () => {
+  it.each([false, true])("reconstructs only a missing acquire reply while draining actual work (late reply=%s)", async lateReply => {
+    let releaseWrite!: () => void, writing!: () => void, releaseObservation!: () => void, observing!: () => void;
+    const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; }), entered = new Promise<void>(resolve => { writing = resolve; });
+    const observationGate = new Promise<void>(resolve => { releaseObservation = resolve; }), observed = new Promise<void>(resolve => { observing = resolve; });
+    const manager = await startWorker({ "companies.get": async () => { writing(); await writeGate; return {}; } });
+    const settled = vi.fn(), unrelatedSettled = vi.fn();
+    const observe = vi.fn(async () => { observing(); await observationGate; });
+    const recover = (operationId: string) => manager.recoverStartupAcquisition?.("reconstructed-acquire", operationId);
+    let draining: Promise<void> | undefined;
+    try {
+      const acquire = manager.call(manifest.id, "environmentAcquireLease", { companyId: "company", environmentId: "environment",
+        driverKey: "tasks", config: { hostWrite: true }, runId: "run", agentId: "agent", adapterType: "paperclip_runner",
+        creationOperationId: "recovered-operation" }, 10, undefined, settled, "reconstructed-acquire", observe);
+      const rejected = expect(acquire).rejects.toThrow("timed out");
+      await entered; await rejected;
+      await expect(manager.call(manifest.id, "environmentAcquireLease", { companyId: "company", environmentId: "environment",
+        driverKey: "tasks", config: {}, runId: "run", agentId: "agent", adapterType: "paperclip_runner",
+        creationOperationId: "unrelated-operation" }, 10, undefined, unrelatedSettled, "unrelated-acquire", async () => {})).rejects.toThrow("timed out");
+      recover("unrelated-operation");
+      vi.useFakeTimers();
+      const unmatched = manager.drainStartup!("reconstructed-acquire").catch(error => error.message);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await unmatched).toBe("Task cleanup is still pending");
+      vi.useRealTimers();
+      recover("recovered-operation");
+      let drained = false;
+      draining = manager.drainStartup!("reconstructed-acquire").then(() => { drained = true; });
+      void draining.catch(() => undefined);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(drained).toBe(false);
+      expect(settled).not.toHaveBeenCalled();
+      expect(unrelatedSettled).not.toHaveBeenCalled();
+      expect(await manager.call(manifest.id, "health", {})).toMatchObject({ status: "ok" });
+      let retired = false;
+      const retiring = manager.retireStartup!("reconstructed-acquire").then(() => { retired = true; });
+      if (lateReply) {
+        await manager.call(manifest.id, "configChanged", { config: { release: true, duplicate: true } });
+        await observed;
+      }
+      releaseWrite();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      if (lateReply) { expect(retired).toBe(false); expect(drained).toBe(false); releaseObservation(); }
+      expect(await Promise.race([draining.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 200))])).toBe(true);
+      await retiring;
+      expect(settled).toHaveBeenCalledOnce();
+      expect(observe).toHaveBeenCalledTimes(lateReply ? 1 : 0);
+      if (!lateReply) {
+        expect(unrelatedSettled).not.toHaveBeenCalled();
+        releaseObservation();
+        await manager.call(manifest.id, "configChanged", { config: { release: true, duplicate: true } });
+      }
+      await manager.drainStartup!("reconstructed-acquire");
+      await manager.drainStartup!("unrelated-acquire");
+      expect(observe).toHaveBeenCalledOnce();
+      expect(unrelatedSettled).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); releaseWrite(); releaseObservation(); await manager.stopAll(); await draining?.catch(() => undefined); }
+  });
+
+  it("drops only a dead acquisition reply placeholder while retaining real writes until verified retirement", async () => {
+    let release!: () => void, writing!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), entered = new Promise<void>(resolve => { writing = resolve; });
+    const manager = await startWorker({ "companies.get": async () => { writing(); await gate; return {}; } });
+    const settled = vi.fn(), observe = vi.fn(async () => {});
+    try {
+      const acquisition = manager.call(manifest.id, "environmentAcquireLease", { companyId: "company", environmentId: "environment",
+        driverKey: "tasks", config: { hostWrite: true }, runId: "run", agentId: "agent", adapterType: "paperclip_runner" },
+        10, undefined, settled, "dead-acquire", observe);
+      const rejected = expect(acquisition).rejects.toThrow("timed out");
+      await entered; await rejected;
+      await manager.stopWorker(manifest.id);
+      let drained = false;
+      const draining = manager.drainStartup!("dead-acquire").then(() => { drained = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(drained).toBe(false);
+      expect(settled).not.toHaveBeenCalled();
+      release(); await draining;
+      expect(observe).not.toHaveBeenCalled();
+      expect(settled).not.toHaveBeenCalled();
+      await manager.retireStartup!("dead-acquire");
+      expect(settled).toHaveBeenCalledOnce();
+    } finally { release(); await manager.stopAll(); }
+  }, 25_000);
+
+  it.each([false, true])("retains a received acquisition reply through failed recording and retirement (worker exits=%s)", async workerExits => {
+    const manager = await startWorker(), settled = vi.fn();
+    let release!: () => void, recording!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { recording = resolve; });
+    let unavailable = true;
+    const observe = vi.fn(async (result: unknown) => {
+      expect(result).toMatchObject({ providerLeaseId: "late-task" });
+      if (unavailable) throw new Error("Database unavailable");
+      recording(); await gate;
+    });
+    try {
+      const acquire = manager.call(manifest.id, "environmentAcquireLease", { companyId: "company", environmentId: "environment",
+        driverKey: "tasks", config: {}, runId: "run", agentId: "agent", adapterType: "paperclip_runner" }, 10, undefined, settled, "late-acquire", observe);
+      await expect(acquire).rejects.toThrow("timed out");
+      await manager.call(manifest.id, "configChanged", { config: { release: true, duplicate: true } });
+      await vi.waitFor(() => expect(observe).toHaveBeenCalledOnce());
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).not.toHaveBeenCalled();
+      if (workerExits) await manager.stopWorker(manifest.id);
+      unavailable = false;
+      vi.useFakeTimers();
+      const failed = manager.retireStartup!("late-acquire").catch(error => error.message);
+      await started;
+      expect(observe).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await failed).toBe("Task cleanup is still pending");
+      expect(settled).not.toHaveBeenCalled();
+      vi.useRealTimers();
+      let retired = false;
+      const retiring = manager.retireStartup!("late-acquire").then(() => { retired = true; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(retired).toBe(false);
+      release(); await retiring;
+      expect(settled).toHaveBeenCalledOnce();
+      await manager.retireStartup!("late-acquire");
+      expect(observe).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); release(); await manager.stopAll(); }
+  });
+
   it.each(["stop", "replace", "stopAll"])("keeps stopped startup work reachable through %s until verified retirement", async mode => {
     let release!: () => void, entered!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; }), started = new Promise<void>(resolve => { entered = resolve; });

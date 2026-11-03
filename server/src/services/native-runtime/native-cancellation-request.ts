@@ -1,6 +1,6 @@
 import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
-import { heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { activityLog, budgetReservations, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { badRequest, conflict } from "../../errors.js";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -11,6 +11,57 @@ export function cancellationRequestId(value: unknown): string | undefined {
   return value.toLowerCase();
 }
 export const cancellationIntentId = (requestId: string) => `native-cancellation:${requestId}`;
+
+type StopRun = Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "agentId" | "nativeIssueId" | "runtimeMode" | "status" | "resultJson">;
+type StopRecoveryOwner = Pick<typeof nativeRunFinalizations.$inferSelect,
+  "runId" | "companyId" | "issueId" | "phase" | "resultId" | "leaseOwner" | "leaseExpiresAt" | "controllerGeneration" | "attempt" | "recoveryState" | "recoveryHistory">;
+
+export function hasPendingNativeRunStop(run: StopRun): boolean {
+  const intent = record(record(run.resultJson).nativeCancellation);
+  return run.runtimeMode === "native" && !!run.nativeIssueId
+    && intent.schema === "paperclip.native-cancellation.v1" && intent.scope === "run" && intent.reasonCode === "cancellation_run_only"
+    && intent.runId === run.id && intent.companyId === run.companyId && intent.issueId === run.nativeIssueId
+    && typeof intent.intentId === "string" && intent.intentId.startsWith("native-cancellation:")
+    && UUID.test(intent.intentId.slice("native-cancellation:".length))
+    && typeof intent.intentAuditId === "string" && UUID.test(intent.intentAuditId)
+    && intent.dispatchState === "pending" && intent.dispatched === false
+    && Array.isArray(intent.effects) && intent.effects.length === 1 && intent.effects[0] === "release_run_resources";
+}
+
+export function isClaimedNativeStopRecovery(run: StopRun, owner: StopRecoveryOwner | undefined, leaseOwner: string | undefined, now = Date.now()): boolean {
+  if (!leaseOwner || !hasPendingNativeRunStop(run) || run.status !== "running" || !owner
+    || owner.runId !== run.id || owner.companyId !== run.companyId || owner.issueId !== run.nativeIssueId
+    || owner.phase !== "observed" || owner.resultId || owner.leaseOwner !== leaseOwner
+    || !owner.leaseExpiresAt || owner.leaseExpiresAt.getTime() <= now || owner.recoveryState !== "awaiting_runner_reattach") return false;
+  const latest = record(Array.isArray(owner.recoveryHistory) ? owner.recoveryHistory.at(-1) : null);
+  return latest.disposition === "reattach_remote_runner" && latest.controllerGeneration === owner.controllerGeneration
+    && latest.providerAttempt === owner.attempt;
+}
+
+export async function readPendingNativeRunStop(db: Db, run: StopRun): Promise<boolean> {
+  if (!hasPendingNativeRunStop(run)) return false;
+  const intent = record(record(run.resultJson).nativeCancellation);
+  const [audit] = await db.select({ id: activityLog.id }).from(activityLog).where(and(
+    eq(activityLog.id, intent.intentAuditId as string), eq(activityLog.companyId, run.companyId),
+    eq(activityLog.runId, run.id), eq(activityLog.entityId, run.id), eq(activityLog.entityType, "heartbeat_run"),
+    eq(activityLog.action, "native.cancellation_intent_recorded"),
+  )).limit(1);
+  return !!audit;
+}
+
+export async function readClaimedNativeStopRecovery(db: Db, run: StopRun, leaseOwner?: string): Promise<boolean> {
+  if (!leaseOwner || !await readPendingNativeRunStop(db, run)) return false;
+  const [owner] = await db.select().from(nativeRunFinalizations).where(and(
+    eq(nativeRunFinalizations.runId, run.id), eq(nativeRunFinalizations.companyId, run.companyId),
+    eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
+  )).limit(1);
+  if (!isClaimedNativeStopRecovery(run, owner, leaseOwner)) return false;
+  const [hold] = await db.select({ id: budgetReservations.id }).from(budgetReservations).where(and(
+    eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id),
+    eq(budgetReservations.agentId, run.agentId), eq(budgetReservations.state, "held"),
+  )).limit(1);
+  return !!hold;
+}
 
 /** Run only while holding this company's run row lock. An earlier uncorrelated
  * startup fence is also a conflicting Stop, even before native intent exists. */

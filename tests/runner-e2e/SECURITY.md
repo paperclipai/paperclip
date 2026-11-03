@@ -8,15 +8,6 @@ exports only the existing closed checks and authenticated task screenshot.
 The `inbox-triage` journey creates and changes only its owned self-assigned task.
 It uses no model, no foreign user records, and no direct database writes.
 
-The deployment-targeted completion-delivery journey uses only an owned lead,
-worker, source conversation, project and delegated task. A target provider must
-record creation intent and reconcile native child creation against the lead's
-actual run and activity event. The target splits the total case budget and run
-cap between both agents and must stop their owned work before finalizing evidence.
-The request and saved brief are synthetic. Raw conversation, callback context,
-creation receipts and run evidence remain private; normal screenshot and closed
-check sanitizers govern publication.
-
 The explicit `remote-workspace-storage` cell snapshots only its synthetic
 projectless task folder in an owned disposable sandbox. Its prompt creates a
 small Python project, local Git history without a remote, and an untracked random

@@ -1,8 +1,10 @@
 import { createObservedReader } from "./observation-read.js";
+import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, type Page } from "@playwright/test";
-import { withBrowserEvent } from "../user-actions.js";
+import { ConnectionFailure } from "../connection-config.js";
+import { fillTaskPrompt, withBrowserEvent } from "../user-actions.js";
 import { validateAgentTaskState, waitFor } from "./agent-flows.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
 import { scheduledInvocationMatches, schedulePauseMatches, schedulePauseObservationMs, type ScheduledInvocation, type ScheduledTask } from "./routine-schedule-evidence.js";
@@ -28,6 +30,33 @@ export async function enableRoutineScheduleTrigger(page: Pick<Page, "getByRole" 
       && new URL(response.url()).pathname === triggerRoute),
     () => schedule.getByRole("button", { name: "Enable trigger", exact: true }).click());
 }
+export async function withRoutineTriggerCleanup<T>(input: {
+  api: Pick<JourneyContext["api"], "patch">; triggerRoute: string; directory: string; run(): Promise<T>;
+}): Promise<T> {
+  let primary: { error: unknown } | undefined;
+  try { return await input.run(); }
+  catch (error) { primary = { error }; throw error; }
+  finally {
+    try { await input.api.patch(input.triggerRoute, { enabled: false }); }
+    catch (error) {
+      const failure = new JourneyError("failed", "routine_trigger_disable_failed");
+      try {
+        await mkdir(input.directory, { recursive: true, mode: 0o700 });
+        await writeFile(path.join(input.directory, "scheduled-routine-cleanup-failure.json"), JSON.stringify({
+          schema: "paperclip.product-journey.routine-cleanup-failure/v1", code: failure.code,
+          triggerRoute: input.triggerRoute, primaryFailurePreserved: Boolean(primary),
+          transportCode: error instanceof ConnectionFailure && /^(api_request_failed|api_status_[1-5][0-9]{2})$/.test(error.message)
+            ? error.message : null,
+        }, null, 2), { mode: 0o600 });
+      } catch {
+        if (primary) throw primary.error;
+        throw failure;
+      }
+      // The outer lifecycle still grades cleanup and reconciles the owned trigger.
+      if (!primary) throw failure;
+    }
+  }
+}
 export async function runScheduledRoutine(context: JourneyContext, session: TargetSession, campaignId: string,
   evidence: JourneyEvidence, options: { deadlineAt: number; directory: string }) {
   const { api, page, company, user, agent } = context;
@@ -40,12 +69,17 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       evidence.checks.push({ id, passed });
       if (!passed) throw new JourneyError("failed", id.replaceAll("-", "_"));
     };
+    const bodyReceipt = (body: unknown) => typeof body === "string" ? { byteSize: Buffer.byteLength(body),
+      sha256: createHash("sha256").update(body).digest("hex"), trimmedSha256: createHash("sha256").update(body.trim()).digest("hex"),
+      lineFeedCount: body.split("\n").length - 1, backslashCount: body.split("\\").length - 1 } : null;
     await session.own({ kind: "project", name: projectName, journeyId });
     const project = await api.post<Row>(`/api/companies/${company.id}/projects`, { name: projectName, status: "planned" });
     await session.own({ kind: "project", name: projectName, id: project.id, journeyId });
     const key = "scheduled-summary", marker = `scheduled-${campaignId}`;
+    const expectedBody = `${marker}\nSchedule check complete.`;
     const prompt = `Prepare the scheduled status check. Save a task document with key ${key} and title Scheduled check. `
-      + `Its body must contain exactly these two lines: ${marker} followed by Schedule check complete. `
+      + "Copy exactly the two lines inside this block, including the final period. Do not include the fences in the document body.\n\n"
+      + `\`\`\`text\n${expectedBody}\n\`\`\`\n\n`
       + "Then finish the task. Do not create other tasks or agents.";
     await routineUiStep("open_composer", async () => {
       await page.goto(`${api.origin}/${company.issuePrefix}/routines`, { waitUntil: "domcontentloaded" });
@@ -66,7 +100,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       await projectSearch.fill(projectName);
       await page.getByRole("button", { name: projectName, exact: true }).click();
     });
-    await routineUiStep("fill_instructions", () => dialog.locator('[contenteditable="true"]').fill(prompt));
+    await routineUiStep("fill_instructions", () => fillTaskPrompt(dialog.locator('[contenteditable="true"]'), prompt));
     await session.own({ kind: "routine", name: title, journeyId });
     const response = await routineUiStep("submit", () => withBrowserEvent(
       () => page.waitForResponse(response => response.request().method() === "POST"
@@ -80,9 +114,21 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
     // Fixture policy makes duplicate scheduler work observable instead of coalescing it.
     await api.patch(route, { concurrencyPolicy: "always_enqueue" });
     const saved = await readObserved<Row>(route);
-    check("routine-browser-created", saved.companyId === company.id && saved.title === title && saved.projectId === project.id
-      && saved.assigneeAgentId === agent.id && saved.createdByUserId === user.id && saved.createdByAgentId === null
-      && saved.description === prompt && saved.concurrencyPolicy === "always_enqueue" && saved.triggers.length === 0);
+    const creationMatches = { company: saved.companyId === company.id, title: saved.title === title,
+      project: saved.projectId === project.id, assignee: saved.assigneeAgentId === agent.id,
+      userCreator: saved.createdByUserId === user.id, agentCreatorNull: saved.createdByAgentId === null,
+      description: saved.description === prompt, concurrency: saved.concurrencyPolicy === "always_enqueue", zeroTriggers: saved.triggers.length === 0 };
+    await mkdir(options.directory, { recursive: true, mode: 0o700 });
+    await writeFile(path.join(options.directory, "scheduled-routine-creation.json"), JSON.stringify({
+      schema: "paperclip.product-journey.routine-creation/v1", matches: creationMatches,
+      expectedDescription: bodyReceipt(prompt), savedDescription: bodyReceipt(saved.description),
+      expected: { companyId: company.id, titleSha256: bodyReceipt(title)!.sha256, projectId: project.id, agentId: agent.id, userId: user.id },
+      saved: { id: saved.id, companyId: saved.companyId, titleSha256: bodyReceipt(saved.title)?.sha256,
+        projectId: saved.projectId, assigneeAgentId: saved.assigneeAgentId, createdByUserId: saved.createdByUserId,
+        createdByAgentId: saved.createdByAgentId, concurrencyPolicy: saved.concurrencyPolicy, triggerCount: saved.triggers.length,
+        createdAt: saved.createdAt, updatedAt: saved.updatedAt },
+    }, null, 2), { mode: 0o600 });
+    check("routine-browser-created", Object.values(creationMatches).every(Boolean));
     const createdTrigger = await api.post<Row>(`${route}/triggers`, { kind: "schedule", label: `QA schedule ${campaignId}`,
       cronExpression: "* * * * *", timezone: "America/Chicago", enabled: false });
     const trigger = createdTrigger.trigger;
@@ -101,7 +147,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
     };
     const runs = () => readObserved<ScheduledInvocation[]>(`${route}/runs`);
     let pausedAt = 0;
-    try {
+    await withRoutineTriggerCleanup({ api, triggerRoute, directory: options.directory, run: async () => {
       const enabledResponse = await routineUiStep("enable_trigger", async () => {
         await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/triggers`, { waitUntil: "domcontentloaded" });
         return enableRoutineScheduleTrigger(page, triggerRoute);
@@ -135,11 +181,28 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       const completedAt = performance.now();
       const document = await readObserved<Row>(`${taskRoute}/documents/${key}`);
       const revision = await readObserved<Row>(`${taskRoute}/documents/${key}/revisions/${document.latestRevisionId}`);
-      const expectedBody = `${marker}\nSchedule check complete.`;
-      check("routine-result-attributed", document.companyId === company.id && document.issueId === task.id
-        && document.body?.trim() === expectedBody && document.createdByAgentId === agent.id && document.createdByUserId === null
-        && revision.documentId === document.id && revision.body?.trim() === expectedBody && revision.createdByAgentId === agent.id
-        && revision.createdByRunId === state.taskRuns[0]!.id);
+      const matches = { documentCompany: document.companyId === company.id, documentIssue: document.issueId === task.id,
+        documentExactBody: document.body?.trim() === expectedBody, documentAuthor: document.createdByAgentId === agent.id,
+        documentUserNull: document.createdByUserId === null, revisionDocument: revision.documentId === document.id,
+        revisionExactBody: revision.body?.trim() === expectedBody, revisionAuthor: revision.createdByAgentId === agent.id,
+        revisionRun: revision.createdByRunId === state.taskRuns[0]!.id };
+      // A failed grade must retain its attribution inputs without the prompt or output body.
+      await mkdir(options.directory, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(options.directory, "scheduled-routine-result.json"), JSON.stringify({
+        schema: "paperclip.product-journey.routine-result/v1", matches, expectedBody: bodyReceipt(expectedBody),
+        documentBody: bodyReceipt(document.body), revisionBody: bodyReceipt(revision.body),
+        document: { id: document.id, companyId: document.companyId, issueId: document.issueId,
+          latestRevisionId: document.latestRevisionId, createdByAgentId: document.createdByAgentId,
+          createdByUserId: document.createdByUserId, createdAt: document.createdAt, updatedAt: document.updatedAt },
+        revision: { id: revision.id, documentId: revision.documentId, createdByAgentId: revision.createdByAgentId,
+          createdByRunId: revision.createdByRunId, createdAt: revision.createdAt },
+        run: { id: state.taskRuns[0]!.id, status: state.taskRuns[0]!.status, nativePhase: state.taskRuns[0]!.nativePhase,
+          agentId: state.taskRuns[0]!.agentId, companyId: state.taskRuns[0]!.companyId,
+          environmentId: state.taskRuns[0]!.contextSnapshot?.paperclipEnvironment?.id,
+          provider: state.taskRuns[0]!.runnerProfileJson?.nativeExecutionInput?.provider?.kind,
+          model: state.taskRuns[0]!.runnerProfileJson?.nativeExecutionInput?.provider?.model },
+      }, null, 2), { mode: 0o600 });
+      check("routine-result-attributed", Object.values(matches).every(Boolean));
       if (typeof state.currentIssue.identifier !== "string" || !state.currentIssue.identifier) throw new JourneyError("failed", "routine_task_identifier_missing");
       await routineUiStep("open_history", async () => {
         await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/runs`, { waitUntil: "domcontentloaded" });
@@ -165,10 +228,6 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       await writeFile(path.join(options.directory, "scheduled-routine-checks.json"), JSON.stringify({ routineId: routine.id,
         triggerId: trigger.id, invocationId: first[0]!.id, taskId: task.id, runId: state.taskRuns[0]!.id, enabledServerAt: enabledAt, pausedMonotonicAt: pausedAt, completedMonotonicAt: completedAt,
         observedUntilMonotonicAt: final.now, documentId: document.id, revisionId: revision.id }, null, 2), { mode: 0o600 });
-    } finally {
-      // The private provider independently reconciles and stops this exact routine
-      // if this request fails or the page closes before its receipt arrives.
-      await api.patch(triggerRoute, { enabled: false });
-    }
+    } });
   } finally { await observations.preserve(options.directory); }
 }

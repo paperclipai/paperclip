@@ -41,3 +41,11 @@ Browser result access opens the task's ordinary Artifacts panel. Each exact
 registered attachment is downloaded through its visible production control, and
 the downloaded digest must match the independent registered artifact receipt.
 A URL present only in a chat message cannot satisfy this check.
+
+The two-turn proof has a boundary: the final saved checkout's hidden `.git`
+metadata and `HEAD` are not independently read after turn two. The ordinary
+workspace file API protects `.git`, and remote workspace close-readiness does
+not expose Git metadata. The second verified commit must still have the first
+verified commit as its parent, the original saved files must remain intact, and
+both runs must retain the same workspace binding. This case does not qualify
+post-completion Git metadata durability for a third turn.

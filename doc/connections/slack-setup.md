@@ -52,6 +52,9 @@ Slack user, workspace, and manager app. Another company member must authorize th
 own account, even for the same workspace. Access and rotating refresh tokens are
 user-scoped vault entries. Refreshes serialize across connections, persist the new
 refresh token, and require fresh authorization after an ambiguous exchange.
+Managed provisioning resolves the submitted grant from the Slack manager-grant
+registry. Both provisioning and revocation check its company and current user;
+these IDs are separate from tool-connection grants.
 
 Revoking a grant requests provider revocation, removes its local credentials, invalidates pending manager
 authorization, and prevents future provisioning with it. The local activity records whether provider revocation succeeded. Provider errors never restore local access. It does not uninstall
@@ -160,6 +163,10 @@ The action records a durable request before sending. Repeating the same request
 returns its saved result; an uncertain delivery is never automatically resent.
 **Open Slack configuration** opens the saved app's OAuth & Permissions page.
 Legacy connections without an app ID open Slack's app list instead.
+**Open Slack** remains available after automatic setup completion and on the
+saved connection page. It opens the current user's bot DM when its workspace
+and channel are known and its linked owner matches the signed-in user. Another
+manager or an unknown identity uses the saved provider link or Slack instead.
 
 An explicit managed reconnect reinstalls the saved app and verifies the replacement
 bot credentials. Its request ID is saved before dispatch, so a duplicate completed

@@ -14,6 +14,7 @@ use paperclip_runner_core::durable::{
 };
 use paperclip_runner_core::local_runner::{run_local_runner, LocalRunnerError, RunnerConfig};
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
+use paperclip_runner_core::oom_score::{parse_oom_score_adj, set_own_oom_score_adj};
 use serde_json::json;
 
 const RUNNERD_BUILD_METADATA_SCHEMA: &str = "paperclip-runner/runnerd-build-metadata/v1";
@@ -452,6 +453,20 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }
 
+fn apply_oom_score_adj(args: &[String]) -> Result<(), LocalRunnerError> {
+    let Some(value) = optional_value(args, "--oom-score-adj")? else {
+        return Ok(());
+    };
+    let score = parse_oom_score_adj(&value).ok_or_else(|| {
+        LocalRunnerError::invalid("invalid --oom-score-adj: expected -1000..=1000")
+    })?;
+    // Without the privilege, Runner is only less protected than requested.
+    if let Err(error) = set_own_oom_score_adj(score) {
+        eprintln!("paperclip-runnerd: failed to set --oom-score-adj: {error}");
+    }
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {
     #[cfg(unix)]
     if matches!(
@@ -471,6 +486,7 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
         println!("{}", metadata_with_provider_packs(args)?);
         return Ok(());
     }
+    apply_oom_score_adj(args)?;
     if args.iter().any(|argument| argument == "--connect-url")
         || args.iter().any(|argument| argument == "--listen-address")
         || args.iter().any(|argument| argument == "--listen-port")
