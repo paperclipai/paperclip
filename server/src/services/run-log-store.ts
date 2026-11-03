@@ -27,6 +27,14 @@ export interface RunLogFinalizeSummary {
   compressed: boolean;
 }
 
+// Snapshot of the persisted log file on disk. `mtimeMs` is the strongest liveness signal
+// available for a live run: the file grows while the run writes output, whereas the
+// `heartbeat_runs.log_bytes` column is only persisted when the run finalizes.
+export interface RunLogStatResult {
+  bytes: number;
+  mtimeMs: number | null;
+}
+
 export interface RunLogStore {
   begin(input: { companyId: string; agentId: string; runId: string }): Promise<RunLogHandle>;
   append(
@@ -35,6 +43,7 @@ export interface RunLogStore {
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  stat(handle: RunLogHandle): Promise<RunLogStatResult>;
 }
 
 function safeSegments(...segments: string[]) {
@@ -148,14 +157,28 @@ function createLocalFileRunLogStore(basePath: string): RunLogStore {
       const limitBytes = opts?.limitBytes ?? 256_000;
       return readFileRange(absPath, offset, limitBytes);
     },
+
+    async stat(handle) {
+      if (handle.store !== "local_file") {
+        return { bytes: 0, mtimeMs: null };
+      }
+      const absPath = resolveWithin(basePath, handle.logRef);
+      const stat = await fs.stat(absPath).catch(() => null);
+      if (!stat) return { bytes: 0, mtimeMs: null };
+      return { bytes: stat.size, mtimeMs: stat.mtimeMs };
+    },
   };
 }
 
 let cachedStore: RunLogStore | null = null;
 
+// Base directory holding the persisted `<companyId>/<agentId>/<runId>.ndjson` run logs.
+export function getRunLogBasePath() {
+  return process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
+}
+
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
-  const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  cachedStore = createLocalFileRunLogStore(basePath);
+  cachedStore = createLocalFileRunLogStore(getRunLogBasePath());
   return cachedStore;
 }

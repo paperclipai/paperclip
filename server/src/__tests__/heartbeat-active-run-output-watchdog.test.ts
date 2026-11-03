@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
+import path from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -25,7 +27,7 @@ import {
   heartbeatService,
 } from "../services/heartbeat.ts";
 import { recoveryService } from "../services/recovery/service.ts";
-import { getRunLogStore } from "../services/run-log-store.ts";
+import { getRunLogBasePath, getRunLogStore } from "../services/run-log-store.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -128,6 +130,10 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     ageMs: number;
     withOutput?: boolean;
     logChunk?: string;
+    // mtime stamped onto the persisted run-log file. Defaults to the run's start time
+    // (i.e. "last output happened when the run started"), which is stale relative to
+    // `now` for every seeded run.
+    logMtime?: Date;
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
@@ -222,6 +228,11 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
           logBytes,
         })
         .where(eq(heartbeatRuns.id, runId));
+      // The persisted file's mtime is the liveness signal the detector relies on mid-run
+      // (`heartbeat_runs.log_bytes` is only written when the run finalizes).
+      const logMtime = opts.logMtime ?? startedAt;
+      const absLogPath = path.resolve(getRunLogBasePath(), handle.logRef);
+      await fs.utimes(absLogPath, logMtime, logMtime);
     }
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     if (opts.sameRunTerminalEvidence === "activity") {
@@ -314,6 +325,123 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     expect(evaluation?.description).not.toContain("json-secret-value");
     expect(evaluation?.description).not.toContain(leakedJwt);
     expect(evaluation?.description).not.toContain(leakedGithubToken);
+  });
+
+  it("does not raise a stale-run card for a live file-backed run that is still writing output", async () => {
+    // TON-927: `heartbeat_runs.log_bytes` is only persisted when a run finalizes, so the
+    // recorded output columns are blind mid-run and the detector used to report a run that
+    // was demonstrably writing output as silent. The persisted run log's mtime is the
+    // honest liveness signal.
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      logChunk: "live-run-log-output-marker",
+      logMtime: new Date(now.getTime() - 5 * 60_000),
+    });
+    // Mid-run the DB byte counter is still 0 even though the file on disk has content.
+    await db.update(heartbeatRuns).set({ logBytes: 0 }).where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.notSilent).toBe(1);
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
+  });
+
+  it("does not escalate an existing stale-run card while the run log is still being written", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, managerId, issueId, runId, issuePrefix } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS + 60_000,
+      logChunk: "live-run-log-output-marker",
+      logMtime: new Date(now.getTime() - 5 * 60_000),
+    });
+    await db.update(heartbeatRuns).set({ logBytes: 0 }).where(eq(heartbeatRuns.id, runId));
+    const evaluationIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: evaluationIssueId,
+      companyId,
+      title: "Existing stale evaluation",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: managerId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      originKind: "stale_active_run_evaluation",
+      originId: runId,
+      originRunId: runId,
+      originFingerprint: `stale_active_run:${companyId}:${runId}`,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(0);
+    expect(result.escalated).toBe(0);
+    const [evaluation] = await db.select().from(issues).where(eq(issues.id, evaluationIssueId));
+    expect(evaluation?.priority).toBe("medium");
+    const sourceComments = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(sourceComments).toHaveLength(0);
+  });
+
+  it("raises a stale-run card with a real run-log tail when the persisted run log is stale", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const logMtime = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000);
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      logChunk: "stale-run-log-output-marker",
+      logMtime,
+    });
+    // Mid-run the DB byte counter is still 0 — the tail has to come from the file itself.
+    await db.update(heartbeatRuns).set({ logBytes: 0 }).where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result.created).toBe(1);
+    const [evaluation] = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluation?.description).not.toContain("No run-log tail was available.");
+    expect(evaluation?.description).toContain("stale-run-log-output-marker");
+    expect(evaluation?.description).toContain("Persisted run log:");
+    expect(evaluation?.description).toContain("Effective last output at:");
+    expect(evaluation?.description).toContain(logMtime.toISOString());
+  });
+
+  it("ignores terminal runs regardless of the persisted run log", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      logChunk: "terminal-run-log-output-marker",
+      logMtime: new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS - 60_000),
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: now })
+      .where(eq(heartbeatRuns.id, runId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+
+    expect(result).toMatchObject({ scanned: 0, created: 0 });
+    const evaluations = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stale_active_run_evaluation")));
+    expect(evaluations).toHaveLength(0);
   });
 
   it("raises critical stale-run evaluations with high priority but does not hard-block the source issue", async () => {

@@ -1082,6 +1082,84 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return startedAt ? Math.max(0, now.getTime() - startedAt.getTime()) : null;
   }
 
+  // Liveness signal taken from the persisted run log on disk.
+  //
+  // `heartbeat_runs.log_bytes` is only written when a run finalizes, so it is 0/null for a
+  // live run — it cannot be used to tell a running-but-quiet run from a run that is still
+  // writing output. The ndjson file itself grows while the run produces output, so its
+  // size and mtime are the honest evidence of liveness.
+  type RunLogLivenessSignal = {
+    logRef: string;
+    bytes: number;
+    mtimeMs: number | null;
+  };
+
+  async function statRunLogForLiveness(run: {
+    id?: string | null;
+    logStore?: string | null;
+    logRef?: string | null;
+  }): Promise<RunLogLivenessSignal | null> {
+    let logStore = run.logStore ?? null;
+    let logRef = run.logRef ?? null;
+    if ((!logStore || !logRef) && run.id) {
+      const [row] = await db
+        .select({ logStore: heartbeatRuns.logStore, logRef: heartbeatRuns.logRef })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, run.id))
+        .limit(1);
+      logStore = logStore ?? row?.logStore ?? null;
+      logRef = logRef ?? row?.logRef ?? null;
+    }
+    if (!logStore || !logRef) return null;
+    try {
+      const stat = await runLogStore.stat({ store: "local_file", logRef });
+      return { logRef, bytes: stat.bytes, mtimeMs: stat.mtimeMs };
+    } catch (err) {
+      logger.warn({ err, runId: run.id, logRef }, "failed to stat run log for stale-run watchdog evidence");
+      return null;
+    }
+  }
+
+  // Effective "last output" for a run: the later of the recorded `last_output_at` and the
+  // mtime of the persisted run log. A run that is demonstrably still writing output to its
+  // ndjson file must never be reported as silent, even when `last_output_at` was never set.
+  async function effectiveLastOutputForRun(run: {
+    id?: string | null;
+    lastOutputAt?: Date | null;
+    logStore?: string | null;
+    logRef?: string | null;
+  }): Promise<{ lastOutputAt: Date | null; logSignal: RunLogLivenessSignal | null }> {
+    const logSignal = await statRunLogForLiveness(run);
+    const logMtime = logSignal?.mtimeMs != null ? new Date(logSignal.mtimeMs) : null;
+    const candidates = [run.lastOutputAt ?? null, logMtime].filter(
+      (value): value is Date => value instanceof Date && !Number.isNaN(value.getTime()),
+    );
+    if (candidates.length === 0) return { lastOutputAt: null, logSignal };
+    const lastOutputAt = candidates.reduce((latest, candidate) =>
+      candidate.getTime() > latest.getTime() ? candidate : latest,
+    );
+    return { lastOutputAt, logSignal };
+  }
+
+  // Silence clock for a run, driven by the effective last output above.
+  async function silenceStateForRun(
+    run: {
+      id?: string | null;
+      lastOutputAt?: Date | null;
+      logStore?: string | null;
+      logRef?: string | null;
+      processStartedAt?: Date | null;
+      startedAt?: Date | null;
+      createdAt?: Date | null;
+    },
+    now = new Date(),
+  ) {
+    const { lastOutputAt, logSignal } = await effectiveLastOutputForRun(run);
+    const silenceStartedAt = lastOutputAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt ?? null;
+    const silenceAgeMs = silenceStartedAt ? Math.max(0, now.getTime() - silenceStartedAt.getTime()) : null;
+    return { silenceStartedAt, silenceAgeMs, logSignal };
+  }
+
   async function latestActiveOutputQuietUntilDecision(companyId: string, runId: string, now = new Date()) {
     const [row] = await db
       .select()
@@ -1172,15 +1250,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
       "id" | "companyId" | "status" | "lastOutputAt" | "lastOutputSeq" | "lastOutputStream" | "processStartedAt" | "startedAt" | "createdAt"
-    >,
+    > & { logStore?: string | null; logRef?: string | null },
     now = new Date(),
   ): Promise<RunOutputSilenceSummary> {
     const [quietUntilDecision, evaluation] = await Promise.all([
       latestActiveOutputQuietUntilDecision(run.companyId, run.id, now),
       findOpenStaleRunEvaluation(run.companyId, run.id),
     ]);
-    const silenceStartedAt = silenceStartedAtForRun(run);
-    const silenceAgeMs = run.status === "running" ? silenceAgeMsForRun(run, now) : null;
+    // A running run that is still writing to its persisted run log is not silent, even when
+    // `last_output_at` was never recorded for it.
+    const effectiveSilence = run.status === "running"
+      ? await silenceStateForRun(run, now)
+      : { silenceStartedAt: silenceStartedAtForRun(run), silenceAgeMs: null, logSignal: null };
+    const silenceStartedAt = effectiveSilence.silenceStartedAt;
+    const silenceAgeMs = run.status === "running" ? effectiveSilence.silenceAgeMs : null;
     const level = run.status !== "running"
       ? "not_applicable"
       : quietUntilDecision
@@ -1218,9 +1301,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   }
 
   async function readRunLogTailForEvidence(run: typeof heartbeatRuns.$inferSelect) {
-    if (!run.logStore || !run.logRef || !run.logBytes) return "";
+    if (!run.logStore || !run.logRef) return "";
     try {
-      const offset = Math.max(0, run.logBytes - ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES);
+      // Read the tail using the persisted file's real size: `heartbeat_runs.log_bytes` is only
+      // written when the run finalizes, so it is 0 for a live run whose log is already large.
+      const stat = await runLogStore.stat({ store: run.logStore as "local_file", logRef: run.logRef });
+      if (!stat.bytes) return "";
+      const offset = Math.max(0, stat.bytes - ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES);
       const result = await runLogStore.read(
         { store: run.logStore as "local_file", logRef: run.logRef },
         { offset, limitBytes: ACTIVE_RUN_OUTPUT_EVIDENCE_TAIL_BYTES },
@@ -1625,10 +1712,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     ]);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const safeTail = truncateEvidenceText(redactWatchdogEvidenceText(tail, currentUserRedactionOptions));
-    const silenceAgeMs = silenceAgeMsForRun(input.run, input.now);
+    // The silence clock is driven by the persisted run log when one exists — see
+    // `effectiveLastOutputForRun`. The legacy `last_output_at`-only clock reported live,
+    // file-backed runs as silent because `last_output_at` is never recorded for them.
+    const { silenceAgeMs, silenceStartedAt, logSignal } = await silenceStateForRun(input.run, input.now);
     return {
       safeTail,
       silenceAgeMs,
+      silenceStartedAt,
+      logSignal,
       recentEvents: recentEvents.reverse().map((event) => ({
         eventType: event.eventType,
         level: event.level,
@@ -1667,6 +1759,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         `- ${issueUiLink({ identifier: issue.identifier, id: issue.id }, input.prefix)} \`${issue.status}\`: ${issue.title}`,
       ).join("\n")
       : "- none detected";
+    const logSignal = input.evidence.logSignal;
+    const logMtimeAt = logSignal?.mtimeMs != null ? new Date(logSignal.mtimeMs) : null;
+    // The detector may have relied on the persisted run log rather than the recorded
+    // `last_output_at`. Say so explicitly so a reviewer can tell at a glance that the run
+    // was (or was not) still producing output.
+    const runLogLine = logSignal
+      ? `- Persisted run log: \`${logSignal.logRef}\` (${logSignal.bytes} bytes, last modified ${logMtimeAt?.toISOString() ?? "unknown"})`
+      : "- Persisted run log: none available for this run";
+    const effectiveLastOutputAt = input.evidence.silenceStartedAt;
+    const effectiveLastOutputSource = logSignal && logMtimeAt
+      && (!input.run.lastOutputAt || logMtimeAt.getTime() > input.run.lastOutputAt.getTime())
+      ? "persisted run log mtime"
+      : "recorded last output";
     return [
       `Paperclip detected ${input.level} output silence on an active heartbeat run.`,
       "",
@@ -1680,6 +1785,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       `- Process started at: ${input.run.processStartedAt?.toISOString() ?? "unknown"}`,
       `- Last output at: ${input.run.lastOutputAt?.toISOString() ?? "none recorded"}`,
       `- Last output sequence: ${input.run.lastOutputSeq ?? 0}`,
+      runLogLine,
+      `- Effective last output at: ${effectiveLastOutputAt?.toISOString() ?? "unknown"} (from ${effectiveLastOutputSource})`,
       `- Silent for: ${formatDuration(input.evidence.silenceAgeMs)}`,
       `- Thresholds: suspicious after ${formatDuration(ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS)}, critical after ${formatDuration(ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS)}`,
       `- Process metadata: pid \`${input.run.processPid ?? "unknown"}\`, process group \`${input.run.processGroupId ?? "unknown"}\`, in-memory handle \`${runningProcesses.has(input.run.id) ? "yes" : "no"}\``,
@@ -1893,6 +2000,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
     }
 
+    // A run that is demonstrably still writing output to its persisted run log is not silent,
+    // even when `last_output_at` was never recorded for it (`heartbeat_runs.log_bytes` is only
+    // persisted at finalize time, so the recorded output fields are blind mid-run).
+    // Do not raise a new evaluation card and do not escalate an existing one for such a run.
+    const effectiveSilence = await silenceStateForRun(input.run, input.now);
+    if ((effectiveSilence.silenceAgeMs ?? 0) < ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS) {
+      return { kind: "not_silent" as const };
+    }
+
     const prefix = await getCompanyIssuePrefix(input.run.companyId);
     const evidence = await collectStaleRunEvidence({
       run: input.run,
@@ -2039,6 +2155,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       folded: 0,
       snoozed: 0,
       skipped: 0,
+      notSilent: 0,
       evaluationIssueIds: [] as string[],
     };
 
@@ -2052,6 +2169,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       else if (outcome.kind === "existing") result.existing += 1;
       else if (outcome.kind === "escalated") result.escalated += 1;
       else if (outcome.kind === "folded") result.folded += 1;
+      else if (outcome.kind === "not_silent") result.notSilent += 1;
       else result.skipped += 1;
       if ("evaluationIssueId" in outcome && outcome.evaluationIssueId) {
         result.evaluationIssueIds.push(outcome.evaluationIssueId);
