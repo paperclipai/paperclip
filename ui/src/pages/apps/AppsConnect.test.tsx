@@ -5,7 +5,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { CONNECTABLE_APP_DEFINITIONS, GOOGLE_WORKSPACE_CONNECTOR_PROFILES, getAppStoreDefinition } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "@/api/client";
+import { ApiError, type RequestOptions } from "@/api/client";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { queryKeys } from "@/lib/queryKeys";
 import { ConnectionSetupFlow } from "@/features/connections/ConnectionSetupFlow";
@@ -81,8 +81,8 @@ vi.mock("@/api/tools", () => ({
   toolsApi: {
     syncAggregatorApps: vi.fn().mockResolvedValue({ apps: [], sync: { status: "idle" }, discovery: { availability: "available" } }),
     listGallery: (companyId: string) => listGalleryMock(companyId),
-    listApplications: (companyId: string) => listApplicationsMock(companyId),
-    listConnections: (companyId: string) => listConnectionsMock(companyId),
+    listApplications: (companyId: string, options?: RequestOptions) => options ? listApplicationsMock(companyId, options) : listApplicationsMock(companyId),
+    listConnections: (companyId: string, options?: RequestOptions) => options ? listConnectionsMock(companyId, options) : listConnectionsMock(companyId),
     listConnectionGrants: (connectionId: string) => listConnectionGrantsMock(connectionId),
     getConnection: (id: string) => getConnectionMock(id),
     getConnectionInstalls: (id: string) => getConnectionInstallsMock(id),
@@ -3444,6 +3444,39 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     );
   });
 
+  it.each([429, 503])("refreshes cached empty OAuth lists after a failed %s before deciding to create", async (status) => {
+    mockSearch.value = "source=notion";
+    listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(queryKeys.tools.applications("company-1"), { applications: [] });
+    queryClient.setQueryData(queryKeys.tools.connections("company-1"), { connections: [] });
+    const unavailable = new ApiError("Temporarily unavailable", status, null);
+    listApplicationsMock.mockRejectedValue(unavailable);
+    listConnectionsMock.mockRejectedValue(unavailable);
+    await render(queryClient);
+    expect(queryClient.getQueryState(queryKeys.tools.applications("company-1"))?.status).toBe("error");
+    expect(queryClient.getQueryState(queryKeys.tools.connections("company-1"))?.status).toBe("error");
+    listApplicationsMock.mockImplementation(async (_company, options) => {
+      if (!options?.fresh) throw unavailable;
+      return { applications: [notionApplication("active")] };
+    });
+    listConnectionsMock.mockImplementation(async (_company, options) => {
+      if (!options?.fresh) throw unavailable;
+      return { connections: [notionConnection("conn-from-other-tab", "per_user", "active")] };
+    });
+    const primary = buttonByText("Continue to Notion") ?? buttonByText("Try again");
+    expect(primary, container.textContent ?? "missing OAuth entry").toBeTruthy();
+    await act(async () => primary!.click());
+    await flushReact();
+    await flushReact();
+    expect(listApplicationsMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(listConnectionsMock.mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(listApplicationsMock).toHaveBeenCalledWith("company-1", { cache: "no-store", fresh: true });
+    expect(listConnectionsMock).toHaveBeenCalledWith("company-1", { cache: "no-store", fresh: true });
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).toHaveBeenCalledWith("conn-from-other-tab", { asCurrentUser: true });
+  });
+
   it("waits for fresh connection data before creating a Notion OAuth draft", async () => {
     mockSearch.value = "source=notion";
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
@@ -3582,6 +3615,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     listGalleryMock.mockResolvedValueOnce({ apps: [NOTION] });
     listApplicationsMock
       .mockResolvedValueOnce({ applications: [] })
+      .mockResolvedValueOnce({ applications: [] })
       .mockResolvedValueOnce({
         applications: [{
           id: "app-response-lost",
@@ -3590,6 +3624,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
         }],
       });
     listConnectionsMock
+      .mockResolvedValueOnce({ connections: [] })
       .mockResolvedValueOnce({ connections: [] })
       .mockResolvedValueOnce({
         connections: [{

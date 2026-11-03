@@ -708,6 +708,21 @@ describe("IssuesList", () => {
     });
   });
 
+  it.each([false, true])("shows an owner-selected initial 429 with retry instead of an empty list (streamlined=%s)", async (streamlined) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    const container = document.createElement("div"); document.body.append(container);
+    const retry = vi.fn();
+    const { root, queryClient } = renderWithQueryClient(<IssuesList issues={[]} error={new ApiError("rate_limited", 429, null)} onRetry={retry} onUpdateIssue={() => {}} viewStateKey="chosen-read-error" />, container);
+    try {
+      await waitForAssertion(() => expect(container.querySelector('[data-query-view="error"]')).not.toBeNull());
+      expect(container.textContent).not.toContain("No tasks match");
+      const button = [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === "Retry");
+      expect(button).toBeDefined();
+      await act(() => button!.click());
+      expect(retry).toHaveBeenCalledOnce();
+    } finally { await act(() => root.unmount()); queryClient.clear(); container.remove(); }
+  });
+
   it.each([null, 429, 503])("offers retry after a settled external-status failure while reachable (%s)", async status => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
     localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));

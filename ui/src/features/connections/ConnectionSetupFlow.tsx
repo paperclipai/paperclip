@@ -2294,7 +2294,6 @@ function StandardConnectionSetupFlow({
         settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
         onRetry={async () => {
-          const firstAttempt = !directOAuthAccessConfirmedRef.current;
           directOAuthAccessConfirmedRef.current = true;
           setOAuthError(null);
           setOAuthPhase("starting");
@@ -2310,40 +2309,27 @@ function StandardConnectionSetupFlow({
             startOAuth(connection);
             return;
           }
-          if (
-            firstAttempt
-            && !resumeConnectionId
-            && applicationsView.kind !== "error"
-            && connectionsView.kind !== "error"
-          ) {
-            connectApp(automaticOAuthEntry);
-            return;
-          }
-
-          // The create request may have reached the server even when its
-          // response did not reach the browser. Re-read both resources before
-          // creating again so Retry resumes that durable draft instead of
-          // duplicating it.
+          // Cached empty lists cannot authorize creation. A fresh lookup also
+          // recovers an earlier create whose response never reached this tab.
+          // Reserve the dialog window while this click still has user activation.
+          if (automaticOAuthEntry?.slug !== "google-workspace" || workspaceSelectionRef.current) reserveOAuthPopup();
           directOAuthRetryingRef.current = true;
           try {
-            const [applicationsResult, connectionsResult] = await Promise.all([
-              applicationsQuery.refetch(),
-              connectionsQuery.refetch(),
+            const [applications, connections] = await Promise.all([
+              toolsApi.listApplications(selectedCompanyId!, { cache: "no-store", fresh: true }),
+              toolsApi.listConnections(selectedCompanyId!, { cache: "no-store", fresh: true }),
             ]);
-            if (applicationsResult.isError || connectionsResult.isError) {
-              setOAuthPhase("error");
-              setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
-              return;
-            }
+            queryClient.setQueryData(queryKeys.tools.applications(selectedCompanyId!), applications);
+            queryClient.setQueryData(queryKeys.tools.connections(selectedCompanyId!), connections);
             const refreshedResumeConnection = resumeConnectionId
-              ? (connectionsResult.data?.connections ?? []).find(
+              ? (connections.connections ?? []).find(
                   (candidate) => candidate.id === resumeConnectionId && candidate.authKind === "oauth",
                 ) ?? null
               : null;
             const refreshedConnection = refreshedResumeConnection ?? reusableOAuthConnection(
               directOAuthSource,
-              applicationsResult.data?.applications ?? [],
-              connectionsResult.data?.connections ?? [],
+              applications.applications ?? [],
+              connections.connections ?? [],
               createNewConnection
                 ? { applicationId: prefill.applicationId, draftOnly: true }
                 : {},
@@ -2362,8 +2348,13 @@ function StandardConnectionSetupFlow({
             if (refreshedConnection) {
               startOAuth(refreshedConnection);
             } else {
-              connectMutation.mutate(automaticOAuthEntry);
+              connectApp(automaticOAuthEntry);
             }
+          } catch {
+            oauthPopupRef.current?.close();
+            oauthPopupRef.current = null;
+            setOAuthPhase("error");
+            setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
           } finally {
             directOAuthRetryingRef.current = false;
           }
