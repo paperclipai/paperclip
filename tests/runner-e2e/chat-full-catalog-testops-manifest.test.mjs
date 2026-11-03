@@ -102,8 +102,8 @@ test('foreign identity, duplicated case and changed run-bound metadata are rejec
 test('repair source metadata binds the corrected candidate and explicit changed definitions', () => {
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
-  assert.equal(repair.previousTargetSha, '43c44ccc823a8c972b247fa7159281887e6f5255');
-  assert.equal(manifest.targetSha, '51ef450754370c8a8f2cbe4bd18e1536bbc93966');
+  assert.equal(repair.previousTargetSha, 'de6d29e025683f5c28125bcaa4f38b41836d8516');
+  assert.equal(manifest.targetSha, 'ab2019e976076ec0eb60b026844f3d9211cb0208');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
@@ -112,6 +112,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   assert.equal(declarations.length, 242);
   assert.equal(new Set(declarations.map(value => value.scenarioId)).size, 242);
   assert.deepEqual(repair.changedFields.map(value => [value.key, value.field]), [
+  [
+    "activity.work-timeline",
+    "sourceFiles"
+  ],
   [
     "agents.choose-primary",
     "sourceFiles"
@@ -190,6 +194,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   ],
   [
     "questions-and-approvals.formal-hire-revision",
+    "sourceFiles"
+  ],
+  [
+    "questions-and-approvals.formal-hire-revision",
     "oracleVersion"
   ],
   [
@@ -211,6 +219,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "questions-and-approvals.review-plan",
     "oracleVersion"
+  ],
+  [
+    "secrets.configure-company-secret",
+    "sourceFiles"
   ],
   [
     "secrets.configure-company-secret",
@@ -273,8 +285,8 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     assert.deepEqual(row(change.key)[change.field], change.current);
     assert.notDeepEqual(change.current, change.previous);
   }
-  assert.equal(repair.descriptorChanges.length, 38);
-  assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 27);
+  assert.equal(repair.descriptorChanges.length, 41);
+  assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 28);
   assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['expectedRunCount', 'minimumRunCount', 'oracleVersion', 'setupPolicy', 'sourceFiles']);
   for (const change of repair.descriptorChanges) {
     assert.notDeepEqual(change.current, change.previous);
@@ -304,4 +316,15 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   assert.equal(repair.runtimeConditions.sdkPublicProof.expectedLockSha256, "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8");
   assert.equal(repair.runtimeConditions.sdkPublicProof.runtimeCompilerParserZodIdentitiesUnchanged, true);
   assert.equal(repair.runtimeConditions.toolProposal487.corePRUnmerged, true);
+  assert.deepEqual(repair.runtimeConditions.toolProposal487.replay, {
+  "corePR": 18742,
+  "coreHead": "61996a96dd09e90a5788e8711a94fc5ae631f425",
+  "corePRUnmerged": true,
+  "condition": "A new Ask-first request only for an authenticated later same-person human intent after the prior decline; same-intent retry and derived or foreign sources remain denied. No approval/execution authority change.",
+  "acceptedDirectSources": [
+    "issue.comment",
+    "issue.comment.reopen"
+  ],
+  "actualPostAssertionPGCasesPassed": 2
+});
 });

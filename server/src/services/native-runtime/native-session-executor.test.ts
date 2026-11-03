@@ -3,6 +3,7 @@ import { readIdleLocalWork, markIdleStartupComplete, markIdleIngressTracked } fr
 import * as runnerCheckpoint from "./native-runner-checkpoint.js";
 import * as stagedAttachmentRecovery from "./native-staged-attachment-recovery.js";
 import * as controllerRecovery from "./native-controller-recovery.js";
+import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
 import * as pluginTaskRuntime from "./plugin-runner-task.js";
@@ -36,7 +37,8 @@ import {
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { inspect } from "node:util";
-import { dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
+import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import {
   activityLog,
   budgetReservations,
@@ -3417,6 +3419,86 @@ describe("remote provider checkpoint snapshots", () => {
     expect(snapshotCommand).not.toContain("--exclude=./acpx-state");
     expect(snapshotCommand).not.toContain("--exclude=./codex-home");
     expect(syncOut).toHaveBeenCalledOnce();
+  });
+
+  it("lets the provider apply the exclusions when the sandbox disk cannot hold the snapshot", async () => {
+    const root = await mkdtemp(join(tmpdir(), "provider-cache-checkpoint-full-"));
+    try {
+      const live = join(root, "live", "acpx");
+      const backup = join(root, "backup", "acpx");
+      const sessionPath = `acpx/${acpxRuntimeSessionDirectoryName("session")}`;
+      const files: Record<string, string> = {
+        "pi-home/sessions/session.jsonl": "history",
+        "data/pnpm/config.json": "{}",
+        "home/.npm/_cacache/index": "npm-cache",
+        "data/pnpm/store/v10/files/00/blob": "pnpm-store",
+      };
+      for (const [path, contents] of Object.entries(files)) {
+        await mkdir(join(live, sessionPath, path, ".."), { recursive: true });
+        await writeFile(join(live, sessionPath, path), contents);
+      }
+      const excludeEntries = resolveNativeHarnessPersistenceProfile({
+        provider: { kind: "acpx", agent: "pi" },
+        session: { normalizedSessionId: "session", driverKind: "acpx_runtime" },
+      } as unknown as NativeExecutionInputV1).directories.find(entry => entry.name === "acpx")!.excludeEntries;
+      const commands: string[] = [];
+      const execute = vi.fn(async ({ command, args }: { command: string; args: string[] }) => {
+        const script = String(args[1]);
+        commands.push(script);
+        if (script.includes(" -cf ")) {
+          // Leave a partial copy behind, as tar does when the disk fills.
+          const snapshot = /mkdir -p '([^']+)'/.exec(script)![1]!;
+          await mkdir(join(snapshot, sessionPath), { recursive: true });
+          return { exitCode: 2, timedOut: false, stdout: "",
+            stderr: "tar: ./acpx/session/pi-home/sessions/session.jsonl: Wrote only 4096 of 10240 bytes\n" };
+        }
+        return { exitCode: 0, timedOut: false, stdout: execFileSync(command, args, { encoding: "utf8" }), stderr: "" };
+      });
+      // Provider exclusions match after any `/`, like GNU tar --exclude.
+      const syncOut = vi.fn(async (operations: Array<{ files: Array<{ sourcePath: string; targetPath: string; exclude?: string[] }> }>) => {
+        for (const operation of operations) for (const file of operation.files) {
+          await cp(file.sourcePath, file.targetPath, { recursive: true, filter: (path) => {
+            const entry = relative(file.sourcePath, path);
+            return !(file.exclude ?? []).some(pattern => entry === pattern || entry.endsWith(`/${pattern}`));
+          } });
+        }
+      });
+
+      await syncRemoteRunnerDirectoryOut({ runner: { execute, syncOut } as never,
+        sourcePath: live, targetPath: backup, mode: 0o700, excludeEntries });
+
+      expect(syncOut).toHaveBeenCalledOnce();
+      expect(syncOut.mock.calls[0]![0][0]!.files[0]).toMatchObject({ sourcePath: live, exclude: [...excludeEntries] });
+      expect(await readFile(join(backup, sessionPath, "pi-home/sessions/session.jsonl"), "utf8")).toBe("history");
+      expect(await readFile(join(backup, sessionPath, "data/pnpm/config.json"), "utf8")).toBe("{}");
+      for (const path of ["home/.npm", "data/pnpm/store"])
+        await expect(access(join(backup, sessionPath, path))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readdir(join(root, "live"))).toEqual(["acpx"]);
+      expect(commands.filter(script => script.startsWith("rm -rf -- "))).toHaveLength(1);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { name: "a tar failure that is not a full disk", stderr: "tar: ./auth.json: Cannot open: Permission denied\n", timedOut: false },
+    { name: "a timeout", stderr: "No space left on device\n", timedOut: true },
+  ])("removes the partial snapshot and does not widen the copy after $name", async ({ stderr, timedOut }) => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce({ exitCode: 0, timedOut: false, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 2, timedOut, stdout: "", stderr })
+      .mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "" });
+    const syncOut = vi.fn(async () => undefined);
+    await expect(syncRemoteRunnerDirectoryOut({
+      runner: { execute, syncOut } as never,
+      sourcePath: "/remote/session/filesystem/codex-home",
+      targetPath: "/tmp/paperclip-checkpoint-test-codex-home",
+      mode: 0o700,
+      excludeEntries: ["tmp", "auth.json"],
+    })).rejects.toThrow("runner_remote_checkpoint_snapshot_failed");
+    expect(syncOut).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(String(execute.mock.calls[2]?.[0]?.args?.[1])).toMatch(
+      /^rm -rf -- '\/remote\/session\/filesystem\/\.paperclip-checkpoint-/,
+    );
   });
 
   it("rejects unsafe relative checkpoint exclusions", async () => {
@@ -14578,6 +14660,78 @@ describe("runnerd provider runtime wiring", () => {
       state.toolAuthorityDefinitions.mockReset().mockResolvedValue([]);
       restore.mockRestore();
       await controller.stop();
+    }
+  });
+
+  it.each(["settled", "pending", "current-run", "legacy-file", "binding-mismatch"] as const)("refreshes a prior warm controller projection after its same-run checkpoint advances: %s", async mode => {
+    const prior = scopedNativeExecution("warm-same-run-checkpoint-advance");
+    prior.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
+    const current = { ...prior, binding: { ...prior.binding,
+      runId: mode === "current-run" ? prior.binding.runId : `${prior.binding.runId}-next` } };
+    const identity = { runId: prior.binding.runId, normalizedSessionId: prior.session.normalizedSessionId!,
+      runnerInstanceId: "runner-warm-checkpoint-advance", environmentLeaseId: "lease-warm-checkpoint-advance",
+      turnId: "prior-turn", itemId: "prior-item" };
+    const root = await initializeScopedRunnerRoot(prior, identity.runnerInstanceId);
+    const controller = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity,
+      expectedRunnerVersion: "warm-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    controller.queueCommand("run.prepare", { provider: prior.provider });
+    const path = join(root, "control-plane/control-plane-state.json");
+    const staleProjection = await readFile(path, "utf8");
+    if (mode !== "pending") {
+      controller.store.state.commands[0]!.status = "completed";
+      controller.store.state.commands[0]!.result = { status: "completed" };
+      controller.store.state.committedEvents.push({ sourceSeq: 1, sourceEventId: "warm-terminal",
+        eventType: "run.terminal", priority: 0, envelope: { ...identity }, deliveryCount: 1, logicalEffectCount: 1 });
+      controller.store.state.ackedSourceSeq = 1;
+    }
+    controller.persistRunAttachTemplate({ provider: prior.provider, normalizedSessionId: identity.normalizedSessionId });
+    let saved!: import("../../vendor/paperclip-runner/index.js").DurablePrpCheckpoint;
+    controller.setCheckpointPersistence(async checkpoint => { saved = checkpoint; });
+    await controller.flushCheckpoint();
+    // A previous admission can leave a full local projection while the owner
+    // later commits its completed command and terminal under the same run ID.
+    await writeFile(path, staleProjection);
+    await mkdir(join(root, "runner"), { recursive: true });
+    await writeFile(join(root, "runner/runner-state.json"), JSON.stringify(durableRunnerState(identity, "suspended")));
+    const supervisorDirectory = join(resolvePaperclipInstanceRoot(), "runtime/paperclip-runner/sessions");
+    await mkdir(supervisorDirectory, { recursive: true });
+    const supervisorPath = join(supervisorDirectory, `${basename(root)}.json`);
+    await writeFile(supervisorPath, JSON.stringify({ schema: "paperclip.native-session-supervisor.v1",
+      snapshot: { identity: { ...prior.binding, sessionId: identity.normalizedSessionId } } }));
+    const restore = vi.spyOn(runnerCheckpoint, "restoreNativeRunnerCheckpoint").mockImplementation(async (_db, binding, directory, sessionId) => {
+      expect(binding).toEqual({ companyId: prior.binding.companyId, issueId: prior.binding.issueId, runId: prior.binding.runId });
+      expect(sessionId).toBe(identity.normalizedSessionId);
+      if (mode === "legacy-file") return null;
+      if (mode === "binding-mismatch") throw new Error("native_runner_checkpoint_binding_mismatch");
+      saved.restoreSessionDirectory(directory);
+      return saved;
+    });
+    const admitted = new Error("warm resume reached current tool authority");
+    state.toolAuthorityDefinitions.mockRejectedValueOnce(admitted);
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    try {
+      await expect(createRunnerdBackend({ db: priorNativeRunDb(prior), execution: current,
+        runnerInstanceId: "next-warm-runner", runnerExecutionTarget: { kind: "remote", transport: "sandbox",
+          remoteCwd: "/workspace", runner: { execute: vi.fn() } } as never })).rejects.toThrow(
+        mode === "binding-mismatch" ? "native_runner_checkpoint_binding_mismatch" : admitted.message);
+      const refreshed = JSON.parse(await readFile(path, "utf8"));
+      const refreshedFromDatabase = mode === "settled" || mode === "pending";
+      expect(refreshed.commands).toEqual([expect.objectContaining({ type: "run.prepare",
+        status: mode === "settled" ? "completed" : "pending" })]);
+      expect(refreshed.committedEvents).toEqual(mode === "settled"
+        ? [expect.objectContaining({ eventType: "run.terminal" })] : []);
+      expect(isSettledRemoteWarmControlState(refreshed, identity)).toBe(mode === "settled");
+      if (refreshedFromDatabase) expect(refreshed.runAttachTemplate).not.toBeNull();
+      else expect(await readFile(path, "utf8")).toBe(staleProjection);
+      expect(restore).toHaveBeenCalledTimes(mode === "current-run" ? 0 : 1);
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(state.createTransport).not.toHaveBeenCalled();
+    } finally {
+      state.toolAuthorityDefinitions.mockReset().mockResolvedValue([]);
+      restore.mockRestore();
+      await controller.stop();
+      await rm(supervisorPath, { force: true });
     }
   });
 

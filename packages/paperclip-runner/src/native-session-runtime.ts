@@ -9,6 +9,7 @@ import type {
   NativeExecutionInput,
   NativeSessionExecutionResult,
 } from "./contracts/native-execution.js";
+import { readProviderFailure } from "./contracts/provider-failure.generated.js";
 import {
   buildNativeModelEnvelope,
   parseNativeExecutionInput,
@@ -1111,6 +1112,7 @@ async function consumeTurn(
           typeof failure.code === "string" ? failure.code : "provider_session_failed",
           failure.recoverable === true || payload.recoverable === true,
           typeof failure.message === "string" ? failure.message : undefined,
+          readProviderFailure(failure.providerFailure),
         );
       }
       const request =
@@ -2732,6 +2734,7 @@ export async function executeNativeSession(
               modelRejected
                 ? `native_provider_model_rejected: ${message}`
                 : message,
+              readProviderFailure(failure.providerFailure),
             );
           }
           if (settledCompletion === null && options.resolveMissingResult) {

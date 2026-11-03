@@ -2952,8 +2952,15 @@
     {
       "idx": 423,
       "version": "7",
+      "when": 1793685600000,
+      "tag": "0423_agent_config_read_defaults",
+      "breakpoints": true
+    },
+    {
+      "idx": 424,
+      "version": "7",
       "when": 1793696389498,
-      "tag": "0423_quick_donald_blake",
+      "tag": "0424_quick_donald_blake",
       "breakpoints": true
     }
   ]

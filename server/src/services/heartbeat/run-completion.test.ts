@@ -379,6 +379,20 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
   });
 
+  it.each(["execution", "setup"] as const)("retains a provider startup cause at the outer %s settlement boundary", async phase => {
+    const f = await fixture();
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+      category: "rate_limit", message: "This request would exceed your account's rate limit.", httpStatus: 429, retryability: "unknown" };
+    const error = Object.assign(new Error("PRP command session.open failed"), {
+      runnerCommandResult: { result: { code: "command_execution_failed", providerFailure } },
+    });
+    f.deps.runLogStore.finalize.mockRejectedValueOnce(new Error("secondary log cleanup failure"));
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(error));
+    else await f.completion.failRun(f.failure(error));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", error: "PRP command session.open failed",
+      resultJson: { providerFailure } });
+  });
+
   it("still records failure and releases issue ownership when log finalization and progress flushing fail", async () => {
     const f = await fixture();
     f.deps.runLogStore.finalize.mockRejectedValueOnce(new Error("log unavailable"));
