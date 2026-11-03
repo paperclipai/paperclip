@@ -1266,8 +1266,8 @@ describe("startServer feedback export wiring", () => {
       databaseBackupService: { runManualBackup(): Promise<unknown> };
     };
     const backup = options.databaseBackupService.runManualBackup();
-    await Promise.resolve();
     expect(idleWorkSnapshot().active).toBe(before + 1);
+    await vi.waitFor(() => expect(resolveBackup).toBeTypeOf("function"));
     if (fails) {
       const rejection = expect(backup).rejects.toThrow("backup failed");
       rejectBackup(new Error("backup failed"));
