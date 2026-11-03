@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   computeFirstScheduledBackupDelayMs,
   DEFAULT_FIRST_BACKUP_MIN_DELAY_MS,
+  findInterruptedServerBackups,
   findLatestServerBackup,
 } from "../services/database-backup-schedule.js";
 
@@ -115,5 +116,65 @@ describe("computeFirstScheduledBackupDelayMs", () => {
       nowMs,
       intervalMs: 60_000,
     })).toBe(60_000);
+  });
+});
+
+describe("findInterruptedServerBackups", () => {
+  it("returns zero for a missing or empty directory", async () => {
+    expect(await findInterruptedServerBackups(path.join(directory, "missing"), null)).toEqual({ count: 0, newestMtimeMs: null });
+    expect(await findInterruptedServerBackups(directory, null)).toEqual({ count: 0, newestMtimeMs: null });
+  });
+
+  it("counts only server-named partials newer than the latest completed dump", async () => {
+    const base = Date.UTC(2026, 10, 1, 19, 30);
+    await writeBackup("paperclip-20261031-153042.sql.gz", base - DAY);
+    await writeBackup("paperclip-20261031-120000.sql.gz.partial", base - DAY - HOUR);
+    await writeBackup("paperclip-20261101-143043.sql.gz.partial", base + 3 * 60_000);
+    await writeBackup("paperclip-20261101-143844.sql.gz.partial", base + 11 * 60_000);
+    await writeBackup("paperclip-pre-deploy.sql.gz.partial", base + HOUR);
+    const latest = await findLatestServerBackup(directory);
+    expect(latest?.name).toBe("paperclip-20261031-153042.sql.gz");
+    expect(await findInterruptedServerBackups(directory, latest!.mtimeMs)).toEqual({
+      count: 2,
+      newestMtimeMs: base + 11 * 60_000,
+    });
+    expect((await findInterruptedServerBackups(directory, null)).count).toBe(3);
+  });
+});
+
+describe("computeFirstScheduledBackupDelayMs after interrupted attempts", () => {
+  const nowMs = Date.UTC(2026, 10, 1, 19, 34);
+  const diedAtMs = nowMs - 30_000;
+  const overdue = { latestBackupMtimeMs: nowMs - DAY - HOUR, nowMs, intervalMs: DAY };
+
+  it("backs off exponentially from the last attempt that died mid-dump", () => {
+    expect(computeFirstScheduledBackupDelayMs({ ...overdue, interruptedCount: 1, lastInterruptedAtMs: diedAtMs }))
+      .toBe(HOUR - 30_000);
+    expect(computeFirstScheduledBackupDelayMs({ ...overdue, interruptedCount: 2, lastInterruptedAtMs: diedAtMs }))
+      .toBe(2 * HOUR - 30_000);
+    expect(computeFirstScheduledBackupDelayMs({ ...overdue, interruptedCount: 4, lastInterruptedAtMs: diedAtMs }))
+      .toBe(8 * HOUR - 30_000);
+  });
+
+  it("caps the backoff at one interval after the last interrupted attempt", () => {
+    for (const interruptedCount of [6, 9, 500]) {
+      expect(computeFirstScheduledBackupDelayMs({ ...overdue, interruptedCount, lastInterruptedAtMs: diedAtMs }))
+        .toBe(DAY - 30_000);
+    }
+  });
+
+  it("runs after the grace period once the backoff has elapsed", () => {
+    expect(computeFirstScheduledBackupDelayMs({ ...overdue, interruptedCount: 1, lastInterruptedAtMs: nowMs - 3 * HOUR }))
+      .toBe(DEFAULT_FIRST_BACKUP_MIN_DELAY_MS);
+  });
+
+  it("keeps a later dump-anchored deadline over a shorter backoff", () => {
+    expect(computeFirstScheduledBackupDelayMs({
+      latestBackupMtimeMs: nowMs - HOUR,
+      nowMs,
+      intervalMs: DAY,
+      interruptedCount: 1,
+      lastInterruptedAtMs: diedAtMs,
+    })).toBe(DAY - HOUR);
   });
 });
