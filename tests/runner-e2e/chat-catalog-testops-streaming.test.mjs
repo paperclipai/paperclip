@@ -356,6 +356,8 @@ async function downloaded(t, selected, available = selected.cases.length, runtim
         await writeFile(path.join(destination, 'publication.json'), JSON.stringify({ ...prepared,
           schema: 'paperclip.chat-catalog-testops-case-publication/v1', exported: prepared.exported[0], verification: 'VERIFIED',
           results: [{ executionId: row.executionId, caseId: row.caseId, attachmentsVerified: true }] }));
+        // The unchanged real upload-case producer retains this marker on a fresh POST.
+        await writeFile(path.join(destination, 'once-upload_case.json'), JSON.stringify({ stage: 'upload_case', status: 'STARTED_NO_AUTOMATIC_RESEND' }));
       }
     }
   }
@@ -413,6 +415,12 @@ test('named layouts reject empty, mixed, foreign, malformed and symlink entries 
     await assert.rejects(publicationSet(f.bundles, f.publications, context, selected, f.digest));
   }
   for (const change of [
+    async f => writeFile(path.join(f.publications, 'chat-catalog-case-publication-123-1-0', 'failure.json'), JSON.stringify({ command: 'upload-case', code: 'chat_completion_testops_upload_unverified' })),
+    async f => writeFile(path.join(f.publications, 'chat-catalog-case-publication-123-1-0', 'once-upload_case.json'), JSON.stringify({ stage: 'upload_case', status: 'COMPLETE' })),
+    async f => {
+      const file = path.join(f.publications, 'chat-catalog-case-publication-123-1-0', 'once-upload_case.json');
+      await rename(file, path.join(f.base, 'marker')); await symlink(path.join(f.base, 'marker'), file);
+    },
     async f => writeFile(path.join(f.publications, 'extra'), '{}'),
     async f => writeFile(path.join(f.publications, 'chat-catalog-case-publication-123-1-0', 'extra'), '{}'),
     async f => {
@@ -442,6 +450,9 @@ test('the owning gather CLI authenticates selection and copies only unchanged pr
     head_sha: context.workflowSha, head_branch: 'master', event: 'workflow_dispatch', path: '.github/workflows/chat-catalog-testops.yml',
     repository: event.repository, actor: { id: 42 }, triggering_actor: { id: 42 } }) });
   const output = path.join(f.base, 'projections');
+  assert.equal(await run('gather-case-projections', output, { ...env, GITHUB_RUN_ATTEMPT: '2' }, { exec,
+    fetchImpl: async () => assert.fail('unsupported retry must not contact TestOps') }), 1);
+  await assert.rejects(access(output));
   assert.equal(await run('gather-case-projections', output, env, { exec, fetchImpl: async () => assert.fail('metadata gather must not contact TestOps') }), 0);
   assert.deepEqual(await readdir(output), ['chat-catalog-case-bundle-123-1-0']);
   const copied = path.join(output, 'chat-catalog-case-bundle-123-1-0');
@@ -454,5 +465,24 @@ test('the owning gather CLI authenticates selection and copies only unchanged pr
     const downloads = f.workflow.jobs[job].steps.filter(step => step.with?.name?.startsWith('chat-catalog-case-bundle-'));
     assert.equal(downloads.length, 1); assert.equal(downloads[0].with.name, 'chat-catalog-case-bundle-${{ github.run_id }}-1-0');
     assert.equal(downloads[0].with.path, 'catalog-bundles/chat-catalog-case-bundle-${{ github.run_id }}-1-0');
+  }
+});
+
+test('singleton destination uses trusted run naming; the admitted producer remains first-attempt-only', async () => {
+  const workflow = parseDocument(await readFile(new URL('../../.github/workflows/chat-catalog-testops.yml', import.meta.url), 'utf8')).toJS();
+  const callee = parseDocument(await readFile(new URL('../../.github/workflows/chat-catalog-testops-case.yml', import.meta.url), 'utf8')).toJS();
+  for (const role of ['bundle', 'publication']) {
+    const step = workflow.jobs.verify.steps.find(step => step.with?.name?.startsWith(`chat-catalog-case-${role}-`));
+    const name = step.with.name.replaceAll('${{ github.run_id }}', '987654321');
+    const destination = step.with.path.replaceAll('${{ github.run_id }}', '987654321');
+    assert.equal(path.basename(destination), name);
+    assert.equal(pinnedDownloadPath(destination, { name }, [{ name }], true), destination);
+    const job = role === 'bundle' ? callee.jobs.report : callee.jobs.upload;
+    const producer = job.steps.find(step => step.with?.name?.startsWith(`chat-catalog-case-${role}-`));
+    assert.equal(producer.with.name.replaceAll('${{ github.run_id }}', '987654321').replaceAll('${{ fromJSON(inputs.cell).index }}', '0'), name);
+    if (role === 'publication') {
+      assert.match(producer.with.path, /once-upload_case.json/);
+      assert.match(producer.with.path, /failure.json/);
+    }
   }
 });

@@ -110,9 +110,15 @@ async function artifactDirectories(root, kind, context, selection) {
   for (const directory of directories) {
     const info = await lstat(directory);
     if (!info.isDirectory() || info.isSymbolicLink()) reject('stream_publications');
-    const wanted = kind === 'bundle' ? ['allure', 'prepared.json', 'projection'] : ['publication.json'];
+    const wanted = kind === 'bundle' ? ['allure', 'prepared.json', 'projection'] : ['publication.json', 'once-upload_case.json'];
     const entries = await readdir(directory);
-    if (entries.length !== wanted.length || entries.some(name => !wanted.includes(name))) reject('stream_publications');
+    if (entries.some(name => !wanted.includes(name))
+      || (kind === 'bundle' ? entries.length !== wanted.length : !entries.includes('publication.json'))) reject('stream_publications');
+    if (kind === 'publication' && entries.includes('once-upload_case.json')) {
+      const marker = await artifactJson(directory, 'once-upload_case.json');
+      if (Object.keys(marker).sort().join() !== 'stage,status' || marker.stage !== 'upload_case'
+        || marker.status !== 'STARTED_NO_AUTOMATIC_RESEND') reject('stream_publications');
+    }
   }
   return directories;
 }
