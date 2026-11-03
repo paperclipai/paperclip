@@ -2917,7 +2917,12 @@ describeEmbeddedPostgres("tool gateway service", () => {
     const [saved] = await db.select().from(toolInvocations);
     expect(saved).toMatchObject({ status: "failed", errorCode: "tool_execution_outcome_unknown" });
     const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, saved.id));
-    expect(events.some(event => event.policyDecision === "defer_runtime")).toBe(false);
+    expect(events.filter(event => event.eventType === "call_failed")).toEqual([
+      expect.objectContaining({ decision: "deny", reasonCode: "tool_execution_outcome_unknown" }),
+    ]);
+    const audits = await db.select().from(activityLog).where(eq(activityLog.companyId, company.id));
+    expect(audits.filter(audit => audit.action === "tool_gateway.call_failed")).toHaveLength(1);
+    expect(audits.some(audit => audit.action === "tool_gateway.call_deferred")).toBe(false);
   });
 
   it("marks an in-flight fictional provider outcome unknown and does not retry on cancellation", async () => {

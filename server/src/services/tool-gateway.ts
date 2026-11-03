@@ -11383,23 +11383,17 @@ export function createToolGatewayService(
                 err.details,
               )
             : err;
-        const status =
+        let status =
           normalizedError instanceof ToolGatewayHttpError
             ? normalizedError.status
             : 502;
-        const reasonCode =
+        let reasonCode =
           normalizedError instanceof ToolContentValidationError
             ? normalizedError.reasonCode
             : normalizedError instanceof ToolGatewayHttpError
               ? normalizedError.reasonCode
               : "tool_execution_failed";
-        const isRuntimeDeferred =
-          status === 429 &&
-          (reasonCode === "runtime_capacity_unavailable" ||
-            reasonCode === "runtime_restart_backoff" ||
-            reasonCode === "runtime_restart_suppressed");
-        const isDeferred = status === 504 || isRuntimeDeferred;
-        const message =
+        let message =
           normalizedError instanceof Error
             ? normalizedError.message
             : String(normalizedError);
@@ -11425,13 +11419,20 @@ export function createToolGatewayService(
             ? inArray(toolInvocations.status, ["executing", "succeeded"])
             : eq(toolInvocations.status, "executing")))
           .returning({ id: toolInvocations.id });
+        let outcomeUnknown = false;
         if (!failedInvocation) {
           const [saved] = await db.select({ errorCode: toolInvocations.errorCode }).from(toolInvocations)
             .where(eq(toolInvocations.id, invocationId));
-          if (saved?.errorCode === "tool_execution_outcome_unknown") {
-            throw new ToolGatewayHttpError(409, "The external outcome is unknown; inspect the provider before retrying", "tool_execution_outcome_unknown");
+          outcomeUnknown = saved?.errorCode === "tool_execution_outcome_unknown";
+          if (outcomeUnknown) {
+            status = 409;
+            reasonCode = "tool_execution_outcome_unknown";
+            message = "The external outcome is unknown; inspect the provider before retrying";
           }
         }
+        const isRuntimeDeferred = status === 429 &&
+          (reasonCode === "runtime_capacity_unavailable" || reasonCode === "runtime_restart_backoff" || reasonCode === "runtime_restart_suppressed");
+        const isDeferred = status === 504 || isRuntimeDeferred;
         void emitConnectionInvoked(db, invocationId);
         if (input.approvedActionRequestId) {
           const actionRequestId = input.approvedActionRequestId;
@@ -11507,6 +11508,7 @@ export function createToolGatewayService(
               : {}),
           },
         });
+        if (outcomeUnknown) throw new ToolGatewayHttpError(status, message, reasonCode);
         if (normalizedError instanceof ToolContentValidationError) {
           throw new ToolGatewayHttpError(422, message, reasonCode, {
             findings: normalizedError.findings,
@@ -11743,14 +11745,14 @@ export function createToolGatewayService(
         void emitConnectionInvoked(db, invocationId);
         return resultValidation.value as typeof result;
       } catch (err) {
-        const status = err instanceof ToolGatewayHttpError ? err.status : 502;
-        const reasonCode =
+        let status = err instanceof ToolGatewayHttpError ? err.status : 502;
+        let reasonCode =
           err instanceof ToolContentValidationError
             ? err.reasonCode
             : err instanceof ToolGatewayHttpError
               ? err.reasonCode
               : "tool_execution_failed";
-        const message = err instanceof Error ? err.message : String(err);
+        let message = err instanceof Error ? err.message : String(err);
         const [failedInvocation] = await db
           .update(toolInvocations)
           .set({
@@ -11764,11 +11766,15 @@ export function createToolGatewayService(
             ? inArray(toolInvocations.status, ["executing", "succeeded"])
             : eq(toolInvocations.status, "executing")))
           .returning({ id: toolInvocations.id });
+        let outcomeUnknown = false;
         if (!failedInvocation) {
           const [saved] = await db.select({ errorCode: toolInvocations.errorCode }).from(toolInvocations)
             .where(eq(toolInvocations.id, invocationId));
-          if (saved?.errorCode === "tool_execution_outcome_unknown") {
-            throw new ToolGatewayHttpError(409, "The external outcome is unknown; inspect the provider before retrying", "tool_execution_outcome_unknown");
+          outcomeUnknown = saved?.errorCode === "tool_execution_outcome_unknown";
+          if (outcomeUnknown) {
+            status = 409;
+            reasonCode = "tool_execution_outcome_unknown";
+            message = "The external outcome is unknown; inspect the provider before retrying";
           }
         }
         void emitConnectionInvoked(db, invocationId);
@@ -11806,6 +11812,7 @@ export function createToolGatewayService(
             ...(err instanceof ToolContentValidationError ? { promptInjection: err.detectorMetadata } : {}),
           },
         });
+        if (outcomeUnknown) throw new ToolGatewayHttpError(status, message, reasonCode);
         if (err instanceof ToolContentValidationError) {
           throw new ToolGatewayHttpError(422, message, reasonCode, {
             findings: err.findings,
