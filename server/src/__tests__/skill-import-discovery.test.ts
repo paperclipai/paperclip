@@ -12,7 +12,6 @@ it("surfaces existing source import on the first discovery page and delivers its
   let calls = 0;
   const bridge = await startOpenCodeMcpBridge({
     tools: [{ name: descriptor.operationId, description: descriptor.description, inputSchema: descriptor.inputSchema }],
-    // The proxy unwraps the controller's first inputText content item.
     handler: async call => { calls++; return { type: "inputText", text: JSON.stringify(searchRunnerApi(call.arguments)) }; },
   });
   const body = JSON.stringify({ jsonrpc: "2.0", id: "source-import-discovery", method: "tools/call",
@@ -63,7 +62,6 @@ it("keeps foreign-company and read-only-mode import calls denied before dispatch
 });
 
 it("preserves the actual agent credential and source-policy denial returned by the route", async () => {
-  // The HTTP route remains the policy owner. This tests forwarding, not a real policy decision.
   const request = vi.fn<typeof fetch>(async () => Response.json({ error: "Skill import policy denied" }, { status: 403 }));
   const result = await executeRunnerApi({ operationId, body: { source: "/owned-company-workspace/example-skill" } }, context,
     { apiUrl: "https://paperclip.test", token: "synthetic-agent-only", fetch: request,
