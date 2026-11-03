@@ -87,29 +87,14 @@ participation, while the cleanup remains in activity history. Record an explicit
 user recovery decision on a separate task and verify it still counts. This
 browser journey remains manual.
 
-Cold-open verification: hold `GET /api/companies/:companyId/inbox/mine` while
-approvals resolve. Only the stable list placeholder appears until required data
-settles. The board-only response contains the 100-task Mine index, missing parent
-captions, and the bounded failed-run window with canonical rich failure state.
-The initial client does not follow it with parent or failure-detail reads. Delay
-visible-row details separately and compare row/title bounds. Partial optional
-source failures keep successful tasks usable with scoped Retry. A background 429
-keeps mounted rows and inherited backoff; a different account gets its own reveal
-boundary. Mine reads one coherent snapshot per tab instead of broadcasting an
-array separately from its context. Sidebar badges retain the count endpoint.
-
-Authenticated startup can use the same-user session `boardBootstrap` to seed
-account-keyed accessible-company and board-access reads. Missing or invalid
-optional data uses the ordinary endpoints. Switch A → B → A with revoked A
-membership and verify no stale company or editor is exposed. A session-stamp
-mismatch on the Mine response refreshes identity and never commits foreign data.
-
-[Inbox component checks](../../ui/src/pages/Inbox.test.tsx),
-[real PostgreSQL route checks](../../server/src/__tests__/inbox-mine-routes.test.ts),
-and [startup browser checks](../../tests/perf/collections/startup-regressions.spec.ts)
-cover these boundaries. The [timing harness](../../tests/perf/collections/README.md)
-uses pinned matching API/UI builds and separate warm-HTTP/fresh-query samples.
-Structural tests and controlled browser identity do not prove hosted acceptance.
+Cold-open verification: load Mine with its snapshot response delayed while
+approvals resolve. Only the stable list placeholder should appear until the
+initial sources settle; a failed-run row must not jump when tasks arrive. Release
+visible-row details separately and compare row/title bounds. Mine reads its own
+100-row snapshot with parent/run context; sidebar badges use the count endpoint.
+The [Inbox component checks](../../ui/src/pages/Inbox.test.tsx) cover the source
+barrier and selected-source query; [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
+cover unread counts. Browser timing and layout proof remain separate from these tests.
 
 ### `decisions`
 

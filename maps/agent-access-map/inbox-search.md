@@ -30,14 +30,6 @@ company/private-task checks. Optional `ids` and `parentIds` batches accept at mo
 The sidebar count endpoint returns only readable unread Mine task IDs; failed-run
 counts apply the run read decision. No new agent execution or mutation path is added.
 
-The board-only `GET /api/companies/{companyId}/inbox/mine` is a presentation
-aggregate of those existing authorized reads. It stamps the current board user,
-returns parent captions and canonical failure context, and keeps the issue-list
-coalescing/eight-slot admission boundary. It creates no agent execution or new
-agent authority. Agents retain their existing task/run APIs. Optional same-user
-`boardBootstrap` data on the session endpoint seeds browser caches; it never
-replaces server authorization of subsequent requests.
-
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
