@@ -1,8 +1,8 @@
 import { expect } from "@playwright/test";
 import { checks, type Entity } from "./internal-support.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
-import { probeAgentPermission, waitForReply } from "./identity-support.js";
-import { runtimeDefinition, runtimeWorker, runtimeObservation, observeRuntime, openRuntimeAgentProfile, type RuntimeAgent } from "./runtime-support.js";
+import { probeAgentPermission, waitForReply, remainingIdentityObservationBudget } from "./identity-support.js";
+import { runtimeDefinition, runtimeWorker, runtimeObservation, observeRuntime, openRuntimeAgentProfile, verifyRuntimeResult, type RuntimeAgent } from "./runtime-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 interface Primary { companyId: string; userId: string; primaryAgentId: string | null }
 type Person = Awaited<ReturnType<typeof createAuthenticatedPerson>>;
@@ -35,6 +35,44 @@ export function gradePrimary(value: unknown) {
     && !/I(?:'ve| have)? (?:set|made|changed).*(?:primary|go.to)/i.test(o.reply), "The model directs the personal action and does not falsely claim an agent preference write.");
   return c.result();
 }
+export async function verifyReadyPrimaryChat(ctx: ChatCatalogContext, state: Record<string, unknown>, value: unknown) {
+  const o = runtimeObservation(value); const before = state.primaryBefore as Primary; const worker = state.worker as RuntimeAgent;
+  const sourceId = state.sourceBeforeNavigation; const nativeIds = state.nativeIdsBeforeNavigation;
+  if (!o || o.companyId !== ctx.input.fixtures.company.id || o.leadId !== ctx.input.fixtures.agent.id
+    || typeof sourceId !== "string" || !sourceId || !Array.isArray(nativeIds) || nativeIds.length !== 1 || typeof nativeIds[0] !== "string")
+    throw new Error("Primary Chat readiness requires its exact original conversation and native run");
+  const budget = () => remainingIdentityObservationBudget(ctx);
+  const lead = o.agents.find(row => row.id === o.leadId); if (!lead) throw new Error("Primary Chat lead is missing");
+  await expect(ctx.input.page).toHaveURL(url => {
+    const parts = url.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+    return parts.length === 3 && parts[0] === ctx.input.fixtures.company.issuePrefix && parts[1] === "chats" && [lead.id, lead.urlKey].includes(parts[2]);
+  }, { timeout: budget() }); budget();
+  const composer = ctx.input.page.getByTestId("task-chat-composer-input");
+  await expect(composer).toBeVisible({ timeout: budget() }); budget();
+  await expect(composer.locator('[contenteditable="true"], textarea').first()).toBeEditable({ timeout: budget() }); budget();
+  const chat = await ctx.input.api.get<Entity & { conversationAgentId?: string; conversationUserId?: string }>(`/api/companies/${o.companyId}/chats/${o.leadId}`, { timeout: budget() }); budget();
+  if (chat.id !== sourceId || chat.companyId !== o.companyId || chat.conversationAgentId !== o.leadId || chat.conversationUserId !== before.userId)
+    throw new Error("Ready Chat reopened a different conversation or person");
+  const comments = await ctx.input.api.get<Entity[]>(`/api/issues/${sourceId}/comments?order=asc`, { timeout: budget() }); budget();
+  const humans = comments.filter(row => !row.authorAgentId);
+  const reply = comments.find(row => row.authorAgentId === o.leadId && row.createdByRunId === nativeIds[0] && !!row.body?.trim());
+  if (humans.length !== 1 || humans[0]!.authorUserId !== before.userId || humans[0]!.body?.trim() !== ctx.scenario.query.trim() || !reply)
+    throw new Error("Ready Chat lacks its original human request and native response");
+  for (const comment of [humans[0]!, reply]) {
+    await expect(ctx.input.page.locator(`[id=${JSON.stringify(`comment-${comment.id}`)}]`)).toBeVisible({ timeout: budget() }); budget();
+  }
+  await ctx.refreshIssue(); budget();
+  const primary = await ctx.input.api.get<Primary>(endpoint(o.companyId), { timeout: budget() }); budget();
+  const chats = await ctx.input.api.get<Entity[]>(`/api/companies/${o.companyId}/chats`, { timeout: budget() }); budget();
+  const runs = await ctx.allRuns(); budget();
+  if (ctx.issue()?.id !== sourceId || primary.companyId !== o.companyId || primary.userId !== before.userId || primary.primaryAgentId !== worker.id
+    || chats.length !== state.chatCountBeforeNavigation || chats.filter(row => row.id === sourceId).length !== 1
+    || runs.length !== 1 || runs[0]?.id !== nativeIds[0] || runs[0].agentId !== o.leadId || runs[0].status !== "succeeded")
+    throw new Error("Settled Chat changed the primary preference, conversation or native work");
+  state.reopenedRecentAgent = o.leadId; state.runsAfterNavigation = runs.length; state.chatCountAfterNavigation = chats.length;
+  await ctx.input.evidence("chat-primary-ready-conversation.json", { companyId: o.companyId, agentId: o.leadId, sourceId, userId: before.userId,
+    primaryAgentId: primary.primaryAgentId, originalNativeIds: nativeIds, chatCount: chats.length, composerReady: true, originalConversationVisible: true, noExtraWork: true }); budget();
+}
 export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", async ctx => {
   const secrets = ctx.input.privateSecrets; if (!secrets) throw new Error("Primary fixture requires private credential sink");
   const browser = ctx.input.page.context().browser(); if (!browser) throw new Error("Real browser required");
@@ -48,7 +86,7 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
     otherCompanyBefore: await ctx.input.api.get<Primary>(endpoint(otherCompany.id)) };
 }, gradePrimary, {
   authentication: "human-session",
-  sourceFiles: ["chat-catalog-domains/runtime-primary.ts", "chat-catalog-domains/runtime-support.ts", "chat-scenarios/agents.yaml"],
+  sourceFiles: ["chat-catalog-domains/runtime-primary.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/agents.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx); const worker = state.worker as RuntimeAgent;
     state.beforeHumanPrimary = (await ctx.input.api.get<Primary>(endpoint(ctx.input.fixtures.company.id))).primaryAgentId;
@@ -67,12 +105,12 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
     await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible();
     const chats = `/api/companies/${ctx.input.fixtures.company.id}/chats`;
     state.chatCountBeforeNavigation = (await ctx.input.api.get<Entity[]>(chats)).length;
+    state.sourceBeforeNavigation = ctx.issue()?.id;
+    state.nativeIdsBeforeNavigation = (await ctx.allRuns()).map(run => run.id);
     await ctx.input.page.goto(`/${ctx.input.fixtures.company.issuePrefix}/chats`, { waitUntil: "domcontentloaded" });
     const lead = o.agents.find(row => row.id === ctx.input.fixtures.agent.id)!;
     await ctx.input.page.waitForURL(url => [lead.id, lead.urlKey].includes(decodeURIComponent(url.pathname.split("/").at(-1)!)));
-    state.reopenedRecentAgent = ctx.input.fixtures.agent.id;
-    state.runsAfterNavigation = (await ctx.allRuns()).length;
-    state.chatCountAfterNavigation = (await ctx.input.api.get<Entity[]>(chats)).length;
+    await verifyReadyPrimaryChat(ctx, state, o);
   },
   async observe(ctx, state) {
     const person = people.get(ctx); if (!person) throw new Error("Secondary authenticated person missing");
@@ -80,6 +118,12 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
     state.otherPersonAfter = await personPrimary(person, ctx.input.fixtures.company.id);
     state.otherCompanyAfter = await ctx.input.api.get<Primary>(endpoint((state.otherCompany as Entity).id));
     return observeRuntime(ctx, state);
+  },
+  async verifyResult(ctx, state, value) {
+    remainingIdentityObservationBudget(ctx);
+    await verifyRuntimeResult(ctx, state, value);
+    remainingIdentityObservationBudget(ctx);
+    await verifyReadyPrimaryChat(ctx, state, value);
   },
   async cleanup(ctx, state) {
     const person = people.get(ctx); people.delete(ctx); await person?.dispose();
