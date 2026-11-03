@@ -4686,6 +4686,32 @@ export function toolAccessService(
             }
             if (existing.transport === "voice") await notifyVoiceChange(tx, { kind: "connection", id: existing.id });
             const rows = await write(tx);
+            if (existing.transport === "mcp_remote" && input.credentialSecretRefs !== undefined) {
+              const nextRefs = rows[0]!.credentialSecretRefs;
+              const connectionOwnedPaths = new Set([...existing.credentialSecretRefs, ...nextRefs].map((ref) => ref.configPath));
+              const grants = await tx
+                .select()
+                .from(connectionGrants)
+                .where(and(
+                  eq(connectionGrants.companyId, existing.companyId),
+                  eq(connectionGrants.connectionId, existing.id),
+                  eq(connectionGrants.kind, "organization"),
+                  eq(connectionGrants.isDefault, true),
+                  eq(connectionGrants.status, "active"),
+                ));
+              for (const grant of grants) {
+                await tx
+                  .update(connectionGrants)
+                  .set({
+                    credentialSecretRefs: [
+                      ...grant.credentialSecretRefs.filter((ref) => !connectionOwnedPaths.has(ref.configPath)),
+                      ...nextRefs,
+                    ],
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(connectionGrants.id, grant.id));
+              }
+            }
             await syncCredentialBindings(rows[0]!, [], tx);
             await createToolRuntimeSlots(tx, runtimeSupervisor).ensureRuntimeSlot(rows[0]!);
             return rows;

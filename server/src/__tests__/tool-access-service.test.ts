@@ -3615,6 +3615,105 @@ describeEmbeddedPostgres("tool access service", () => {
     },
   );
 
+  it("keeps the organization grant in step when a remote connection gains a credential", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const vault = secretService(db);
+    const createKey = (label: string) => vault.create(company.id, {
+      provider: "local_encrypted",
+      name: `Remote ${label} ${randomUUID()}`,
+      key: `remote.${label}.${randomUUID()}`,
+      value: `${label}-value`,
+    });
+    const first = await createKey("first");
+    const second = await createKey("second");
+    const headerRef = (name: string, secretId: string) => ({
+      name: `headers.${name}`, placement: "header" as const, key: name, secretId,
+    });
+    const secretRef = (name: string, secretId: string) => ({ secretId, configPath: `headers.${name}` });
+    const connection = await service.createConnection(company.id, {
+      name: "Two header remote",
+      transport: "mcp_remote",
+      config: { url: "https://93.184.216.34/mcp" },
+      credentialRefs: [headerRef("X-First", first.id)],
+      credentialSecretRefs: [secretRef("X-First", first.id)],
+    });
+
+    await service.updateConnection(connection.id, {
+      credentialRefs: [headerRef("X-First", first.id), headerRef("X-Second", second.id)],
+      credentialSecretRefs: [secretRef("X-First", first.id), secretRef("X-Second", second.id)],
+    });
+
+    const [grant] = await db.select().from(connectionGrants).where(and(
+      eq(connectionGrants.connectionId, connection.id),
+      eq(connectionGrants.kind, "organization"),
+    ));
+    expect(grant!.credentialSecretRefs.map((ref) => ref.configPath).sort()).toEqual([
+      "headers.X-First",
+      "headers.X-Second",
+    ]);
+  });
+
+  it("keeps the credentials only the organization grant holds when a remote connection's credentials change", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const vault = secretService(db);
+    const createKey = (label: string) => vault.create(company.id, {
+      provider: "local_encrypted",
+      name: `Remote ${label} ${randomUUID()}`,
+      key: `remote.${label}.${randomUUID()}`,
+      value: `${label}-value`,
+    });
+    const header = await createKey("header");
+    const token = await createKey("token");
+    const connection = await service.createConnection(company.id, {
+      name: "Grant token remote",
+      transport: "mcp_remote",
+      config: { url: "https://93.184.216.34/mcp" },
+      credentialRefs: [{ name: "headers.X-Key", placement: "header", key: "X-Key", secretId: header.id }],
+      credentialSecretRefs: [{ secretId: header.id, configPath: "headers.X-Key" }],
+    });
+    await db.update(connectionGrants)
+      .set({ credentialSecretRefs: [
+        { secretId: header.id, configPath: "headers.X-Key" },
+        { secretId: token.id, configPath: "oauth.access_token" },
+      ] })
+      .where(eq(connectionGrants.connectionId, connection.id));
+
+    await service.updateConnection(connection.id, { credentialRefs: [], credentialSecretRefs: [] });
+
+    const [grant] = await db.select().from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connection.id));
+    expect(grant!.credentialSecretRefs).toEqual([{ secretId: token.id, configPath: "oauth.access_token" }]);
+  });
+
+  it("leaves a revoked organization grant alone when a remote connection's credentials change", async () => {
+    const company = await createCompany(db);
+    const service = createTestToolAccessService(db);
+    const secret = await secretService(db).create(company.id, {
+      provider: "local_encrypted",
+      name: `Remote revoked ${randomUUID()}`,
+      key: `remote.revoked.${randomUUID()}`,
+      value: "revoked-value",
+    });
+    const connection = await service.createConnection(company.id, {
+      name: "Revoked remote",
+      transport: "mcp_remote",
+      config: { url: "https://93.184.216.34/mcp" },
+    });
+    await db.update(connectionGrants).set({ status: "revoked", revokedAt: new Date() })
+      .where(eq(connectionGrants.connectionId, connection.id));
+
+    await service.updateConnection(connection.id, {
+      credentialRefs: [{ name: "headers.X-Key", placement: "header", key: "X-Key", secretId: secret.id }],
+      credentialSecretRefs: [{ secretId: secret.id, configPath: "headers.X-Key" }],
+    });
+
+    const [grant] = await db.select().from(connectionGrants)
+      .where(eq(connectionGrants.connectionId, connection.id));
+    expect(grant).toMatchObject({ status: "revoked", credentialSecretRefs: [] });
+  });
+
   it("creates profiles with entries, binds them to agents, and resolves effective allowed tools", async () => {
     const company = await createCompany(db);
     const service = createTestToolAccessService(db);
