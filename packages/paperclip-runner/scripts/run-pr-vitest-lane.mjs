@@ -1,26 +1,9 @@
-// Runs this package's vitest shard for a Verify Paperclip Runner lane, then —
-// on the final shard of the PR workflow only — the server package's
-// general-server-native-runner group.
-//
-// That server suite rebuilds the Runner release binaries with cargo in
-// beforeAll. The PR workflow's plain General tests server shards carry no
-// Rust cache, so hosting it there cold-compiled every third-party crate on
-// each run (277s of a 291s shard vitest step, actions run 35246999382,
-// 2026-09-17) and made that shard the slowest check of the whole run. The
-// Verify Paperclip Runner lanes already restore the shared release-runner-v1
-// Rust cache read-only, which turns that build into an incremental rebuild,
-// and the workflow files themselves list this lane's command as a package
-// script — so the suite moves here without a workflow-file change.
-//
-// Contract, mirrored in scripts/run-vitest-stable.mjs (prWorkflowName) and
-// pinned by scripts/__tests__/run-vitest-stable-shard.test.mjs:
-// - Only the PR workflow (pr.yml, whose GITHUB_WORKFLOW the reusable
-//   pr-trusted.yml jobs inherit) excludes these suites from the existing
-//   without-chat group, and only there does this wrapper run them. Other
-//   callers keep that group complete. Release verification instead selects
-//   an explicit partition and its own required cached native lane.
-// - The suite runs on the lane whose --shard=N/M has N === M (or an unsharded
-//   invocation), so exactly one PR lane carries it.
+// The two PR Vitest slots cover separate workloads: the first runs every
+// package test and the second runs the native server integration group.
+// Both need debug fixtures; only the native group also builds release units.
+// Keep the existing --shard commands compatible with master-pinned workflows.
+// Local/other callers retain ordinary package sharding. Other PR shard counts
+// keep package shards plus native tests on the final lane, preserving coverage.
 import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,18 +16,30 @@ const dryRun = process.argv.includes("--dry-run");
 
 const shardArg = args.find((value) => value.startsWith("--shard="));
 const shardMatch = shardArg ? /^--shard=(\d+)\/(\d+)$/.exec(shardArg) : null;
-if (shardArg && !shardMatch) {
+if (args.filter(value => value.startsWith("--shard=")).length > 1 || (shardArg && !shardMatch)) {
   console.error(`[pr-vitest-lane] unrecognized shard argument: ${shardArg}`);
   process.exit(1);
+}
+if (shardMatch && (Number(shardMatch[1]) < 1 || Number(shardMatch[1]) > Number(shardMatch[2]))) {
+  throw new Error(`Invalid shard: ${shardArg}`);
 }
 const isFinalShard = !shardArg || shardMatch[1] === shardMatch[2];
 const isPrWorkflow = process.env.GITHUB_WORKFLOW === "PR";
 const runNativeRunnerGroup = isPrWorkflow && isFinalShard;
+// Reuse the two existing CI slots: all package files in the first, all native
+// server files in the second. Keeping the old command arguments makes this
+// safe while the trusted workflow still comes from master. Other shard counts
+// and local callers retain ordinary Vitest sharding and the final-lane append.
+const separateWorkloads = isPrWorkflow && shardMatch?.[2] === "2";
+const runPackageTests = !separateWorkloads || !isFinalShard;
+const packageArgs = separateWorkloads ? args.filter((arg) => arg !== shardArg) : args;
 
 const plannedCommands = [
   { command: "pnpm", args: ["run", "ensure:eval-build-deps"], cwd: packageRoot },
   { command: "pnpm", args: ["run", "build:rust"], cwd: packageRoot },
-  { command: "pnpm", args: ["exec", "vitest", "run", ...args], cwd: packageRoot },
+  ...(runPackageTests
+    ? [{ command: "pnpm", args: ["exec", "vitest", "run", ...packageArgs], cwd: packageRoot }]
+    : []),
   ...(runNativeRunnerGroup
     ? [{
         command: "pnpm",
@@ -55,7 +50,7 @@ const plannedCommands = [
 ];
 
 if (dryRun) {
-  console.log(JSON.stringify({ isPrWorkflow, isFinalShard, runNativeRunnerGroup, plannedCommands }, null, 2));
+  console.log(JSON.stringify({ isPrWorkflow, isFinalShard, runNativeRunnerGroup, runPackageTests, plannedCommands }, null, 2));
   process.exit(0);
 }
 

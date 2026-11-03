@@ -100,6 +100,7 @@ export interface ExecutionReconciliation {
  * and recovery records; ordinary product surfaces render this projection. */
 export interface TaskInterruptionPresentation {
   providerFailure?: import("../provider-failure.generated.js").ProviderFailure;
+  workspaceFailure?: { message: string };
   intentId: string | null;
   responsibility: "system" | "user";
   state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";

@@ -163,11 +163,11 @@ export function createGitHubGrantContinuity(db: Db, { now, currentCloudConnector
         throw notFound("GitHub authorization not found");
       const previousGitHub = currentGrant.providerTenant?.github;
       const initialGitHub = grant.providerTenant?.github;
-      // No lock is held during provider requests. Reject a snapshot if another
-      // refresh or webhook changed access while those requests were in flight.
+      // Access revisions fence installation changes, and refresh timestamps also
+      // protect legacy snapshots. Ordinary PR webhooks update delivery health
+      // without changing access; preserve that health when this refresh commits.
       if (
         previousGitHub?.accessRevision !== initialGitHub?.accessRevision ||
-        previousGitHub?.lastWebhookAt !== initialGitHub?.lastWebhookAt ||
         previousGitHub?.lastAccessRefreshAt !==
           initialGitHub?.lastAccessRefreshAt
       ) {
