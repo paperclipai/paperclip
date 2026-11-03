@@ -35,6 +35,7 @@ export interface ServiceManager {
   status(): Promise<ServiceStatus>;
   logs(follow: boolean, lines: number): Promise<void>;
   installedExecutablePath(): Promise<string | null>;
+  definitionOwnership?(): Promise<{ kind: "operator" | "generated"; path: string }>;
   enableLinger?(): Promise<void>;
 }
 
@@ -294,36 +295,86 @@ export class LaunchdServiceManager implements ServiceManager {
 
   renderDefinition(): string { return renderLaunchdPlist({ instanceId: this.instanceId, shimPath: this.shimPath, homeDir: this.homeDir, stdoutPath: this.stdoutPath, stderrPath: this.stderrPath }); }
 
-  private async systemJobLoaded(): Promise<boolean> {
+  private isMissingJobError(error: unknown): boolean {
+    const record = error && typeof error === "object" ? error as { code?: unknown; stderr?: unknown } : {};
+    const detail = `${error instanceof Error ? error.message : String(error)}\n${typeof record.stderr === "string" ? record.stderr : ""}`;
+    if (/(could not find (?:specified )?service|service not found|not bootstrapped yet)/i.test(detail)) return true;
+    return record.code === 113 && !/(permission|not permitted|denied)/i.test(detail);
+  }
+
+  private async jobLoaded(domain: string): Promise<boolean> {
+    const target = `${domain}/${this.serviceName}`;
+    let result: CommandResult;
     try {
-      const output = (await this.runner("launchctl", ["print", `system/${this.serviceName}`])).stdout;
-      return output.startsWith(`system/${this.serviceName} = {`);
-    } catch { return false; }
+      result = await this.runner("launchctl", ["print", target]);
+    } catch (error) {
+      if (this.isMissingJobError(error)) return false;
+      throw new Error(`Cannot inspect launchd job ${target}; no service definition was changed. ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+    if (new RegExp(`^\\s*${escapeRegExp(target)}\\s*=\\s*\\{`).test(result.stdout.trimStart())) return true;
+    throw new Error(`Unexpected output from launchctl print ${target}; refusing to change service ownership.`);
+  }
+
+  private async systemJobLoaded(): Promise<boolean> {
+    return this.jobLoaded("system");
   }
 
   private async systemJobConfigured(): Promise<boolean> {
-    try { await fs.access(this.systemDefinitionPath); return true; }
-    catch { return false; }
+    try {
+      await fs.lstat(this.systemDefinitionPath);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+      throw new Error(`Cannot inspect system LaunchDaemon plist ${this.systemDefinitionPath}; refusing to change service ownership.`, { cause: error });
+    }
   }
 
   private async activeDomain(): Promise<string> {
-    return await this.systemJobLoaded() ? "system" : this.domain;
+    if (await this.systemJobLoaded()) return "system";
+    if (!(await this.systemJobConfigured())) return this.domain;
+    return await this.jobLoaded(this.domain) ? this.domain : "system";
+  }
+
+  private async bootstrapSystemJob(): Promise<void> {
+    const stat = await fs.lstat(this.systemDefinitionPath);
+    if (!stat.isFile() || stat.isSymbolicLink()) {
+      throw new Error(`Cannot load unsafe system LaunchDaemon plist ${this.systemDefinitionPath}.`);
+    }
+    await this.launchctlAction("system", "bootstrap", "system", this.systemDefinitionPath);
   }
 
   private async launchctlAction(domain: string, ...args: string[]): Promise<void> {
-    if (domain === "system") await this.runner("sudo", ["-n", "launchctl", ...args]);
-    else await this.runner("launchctl", args);
+    if (domain !== "system") {
+      await this.runner("launchctl", args);
+      return;
+    }
+    try {
+      await this.runner("sudo", ["-n", "launchctl", ...args]);
+    } catch (error) {
+      const quoted = args.map((arg) => `'${arg.replaceAll("'", "'\\''")}'`).join(" ");
+      throw new Error(`Cannot run system launchd command without interactive authorization. Run sudo launchctl ${quoted} in an administrator terminal. The CLI will not prompt for a password. ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+    }
+  }
+
+  async definitionOwnership(): Promise<{ kind: "operator" | "generated"; path: string }> {
+    const domain = await this.activeDomain();
+    if (domain === "system") {
+      const pathOrJob = await this.systemJobConfigured() ? this.systemDefinitionPath : `system/${this.serviceName}`;
+      return { kind: "operator", path: pathOrJob };
+    }
+    return { kind: "generated", path: this.definitionPath };
   }
 
   async installedExecutablePath(): Promise<string | null> {
     try {
-      return extractExecutableFromLaunchdPlist(await fs.readFile(await this.systemJobLoaded() ? this.systemDefinitionPath : this.definitionPath, "utf8"));
+      return extractExecutableFromLaunchdPlist(await fs.readFile(await this.activeDomain() === "system" ? this.systemDefinitionPath : this.definitionPath, "utf8"));
     } catch {
       return null;
     }
   }
 
   async install(options: ServiceInstallOptions): Promise<{ changed: boolean }> {
+    if (await this.systemJobLoaded()) throw new Error(`System LaunchDaemon ${this.serviceName} is loaded; refusing to install a competing GUI agent.`);
     if (await this.systemJobConfigured()) throw new Error(`System LaunchDaemon ${this.serviceName} is configured; manage its root-owned plist explicitly instead of installing a competing GUI agent.`);
     await fs.mkdir(path.dirname(this.stdoutPath), { recursive: true });
     const changed = await writeIfChanged(this.definitionPath, this.renderDefinition());
@@ -337,18 +388,24 @@ export class LaunchdServiceManager implements ServiceManager {
   }
 
   async uninstall(): Promise<void> {
+    if (await this.systemJobLoaded()) throw new Error(`System LaunchDaemon ${this.serviceName} is loaded; uninstall must not modify a competing GUI agent.`);
     if (await this.systemJobConfigured()) throw new Error(`System LaunchDaemon ${this.serviceName} is configured; uninstall must not delete or replace its root-owned plist.`);
     await this.runner("launchctl", ["bootout", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
     await this.runner("launchctl", ["disable", `${this.domain}/${this.serviceName}`]).catch(() => undefined);
     await fs.rm(this.definitionPath, { force: true });
   }
   async start(): Promise<void> {
-    if (!(await this.systemJobConfigured())) {
-      await this.install({ startNow: true, startOnLogin: await this.isEnabled() });
+    const domain = await this.activeDomain();
+    if (domain === "system") {
+      if (!(await this.systemJobLoaded())) await this.bootstrapSystemJob();
+      await this.launchctlAction("system", "kickstart", `system/${this.serviceName}`);
       return;
     }
-    const domain = await this.activeDomain();
-    await this.launchctlAction(domain, "kickstart", `${domain}/${this.serviceName}`);
+    if (await this.systemJobConfigured()) {
+      await this.launchctlAction(domain, "kickstart", `${domain}/${this.serviceName}`);
+      return;
+    }
+    await this.install({ startNow: true, startOnLogin: await this.isEnabled() });
   }
   async stop(): Promise<void> {
     const domain = await this.activeDomain();
@@ -356,6 +413,15 @@ export class LaunchdServiceManager implements ServiceManager {
   }
   async restart(): Promise<void> {
     const domain = await this.activeDomain();
+    if (domain === "system") {
+      if (!(await this.systemJobLoaded())) {
+        await this.bootstrapSystemJob();
+        await this.launchctlAction("system", "kickstart", `system/${this.serviceName}`);
+        return;
+      }
+      await this.launchctlAction("system", "kickstart", "-k", `system/${this.serviceName}`);
+      return;
+    }
     if (!(await this.systemJobConfigured())) await writeIfChanged(this.definitionPath, this.renderDefinition());
     await this.launchctlAction(domain, "kickstart", "-k", `${domain}/${this.serviceName}`);
   }
