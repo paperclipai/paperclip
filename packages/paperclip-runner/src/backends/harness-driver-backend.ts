@@ -162,7 +162,11 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       recoveryOptions,
     );
     if (!recovered.recovered || recovered.session === undefined) {
-      return { recovered: false, reason: recovered.reason };
+      return {
+        recovered: false,
+        reason: recovered.reason,
+        ...(recovered.failureClass ? { failureClass: recovered.failureClass } : {}),
+      };
     }
     try {
       assertProviderSessionIdentity(

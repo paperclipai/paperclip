@@ -84,6 +84,7 @@ import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
 import {
   NativeSessionCleanupQuarantinedError,
   NativeSessionCloseUnrecoverableError,
+  NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionProtocolIntegrityError,
 } from "../../vendor/paperclip-runner/index.js";
@@ -11751,6 +11752,21 @@ describe("native session bounded recovery", () => {
       }
     },
   );
+
+  it("stops same-run retries when the runner proves the saved provider session incompatible", () => {
+    const failure = new NativeProviderStateIncompatibleError(
+      "Error: PRP command run.attach failed: ACPX durable launch profile digest does not match runner startup",
+    );
+    const code = nativeSessionFailureSourceCode(failure);
+    expect(code).toBe("native_provider_state_incompatible");
+    const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+    expect(disposition).toEqual({ phase: "terminal_failure", failureCode: code, nextAttemptAt: null });
+    expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
+      issueStatus: "blocked", recoveryOwner: { kind: "board" },
+    });
+    // Only the typed runner class is deterministic; the same text stays retryable.
+    expect(nativeSessionFailureSourceCode(new Error(failure.message))).toBe("native_session_interrupted");
+  });
 
   it("makes only typed operator-required cleanup quarantine terminal on the first attempt", () => {
     const code = nativeSessionFailureSourceCode(

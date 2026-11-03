@@ -20,7 +20,7 @@ import type {
   PersistedHarnessTurnTerminal,
 } from "../../contracts/harness-driver.js";
 import { NativeSessionProtocolIntegrityError, nativeRestartInterruptedTurnId } from "../../contracts/native-session-backend.js";
-import { HarnessReconciliationError } from "../../contracts/harness-driver.js";
+import { HarnessReconciliationError, runnerRecoveryFailureClass } from "../../contracts/harness-driver.js";
 import {
   CODEX_CODEX_PROTOCOL_VERSION,
   CODEX_SKILLLESS_BASE_INSTRUCTIONS,
@@ -677,7 +677,12 @@ export class CodexAppServerDriver implements HarnessDriver {
       await cancellation.close().catch(() => {});
       if (error instanceof NativeSessionProtocolIntegrityError) throw error;
       if (options.signal.aborted) options.signal.throwIfAborted();
-      return { recovered: false, reason: redactCodexDiagnostic(String(error)) };
+      const failureClass = runnerRecoveryFailureClass(error);
+      return {
+        recovered: false,
+        reason: redactCodexDiagnostic(String(error)),
+        ...(failureClass ? { failureClass } : {}),
+      };
     } finally {
       cancellation.detach();
     }

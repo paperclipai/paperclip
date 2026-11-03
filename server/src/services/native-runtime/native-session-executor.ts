@@ -140,6 +140,7 @@ import type {
   PrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
 import {
+  NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionCleanupQuarantinedError,
   NativeSessionCloseUnrecoverableError,
@@ -218,7 +219,7 @@ import {
   renderNativeRunnerStagedAttachmentPrompt,
   stageNativeRunnerWakeAttachments,
 } from "./native-runner-file-handoff.js";
-import { nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
+import { NATIVE_PROVIDER_STATE_INCOMPATIBLE, nativeRuntimeContractForProvider, nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { verifyRetainedMaintenanceNoLaunch } from "./native-maintenance-no-launch.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { reportRunFailure } from "../run-failure-report.js";
@@ -6989,6 +6990,7 @@ export function nativeSessionFailureDisposition(
     sourceFailureCode === "runner_remote_provider_artifact_incompatible" ||
     sourceFailureCode === "runner_remote_provider_verification_unavailable" ||
     sourceFailureCode === "native_provider_terminal_failed" ||
+    sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE ||
     sourceFailureCode === "native_current_wake_comments_unread" ||
     sourceFailureCode === "native_current_wake_comments_changed_after_read" ||
     sourceFailureCode === "native_session_cleanup_quarantined" ||
@@ -7039,6 +7041,7 @@ export function nativeSessionFailureSourceCode(
 ):
   | "native_permission_declined"
   | "native_provider_terminal_failed"
+  | typeof NATIVE_PROVIDER_STATE_INCOMPATIBLE
   | "native_provider_approval_required"
   | "native_provider_usage_limit"
   | "native_session_cleanup_quarantined"
@@ -7065,6 +7068,7 @@ export function nativeSessionFailureSourceCode(
   | "provider_session_open_rejected"
   | "native_session_interrupted" {
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
+  if (error instanceof NativeProviderStateIncompatibleError) return NATIVE_PROVIDER_STATE_INCOMPATIBLE;
   if (error instanceof NativeProviderTerminalFailure) {
     if (error.providerCode === "approval_required") return "native_provider_approval_required";
     // Failed terminals retain their security meaning across the provider facade.
@@ -7154,6 +7158,9 @@ export function nativeSessionFailureSourceCode(
   }
   return "native_session_interrupted";
 }
+
+const NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION =
+  "The current runner cannot restore this task's saved provider session, so retrying this run cannot succeed. Retry the task to continue in a fresh provider session with the same workspace. The earlier provider conversation is not carried over.";
 
 const NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE =
   "Send a new message to continue after Paperclip verifies that the previous provider and its tools have stopped. If cleanup cannot be verified, inspect the run and its environment. Clearing a task session does not resolve this quarantine. Automatic retries are stopped.";
@@ -10491,6 +10498,8 @@ async function executePaperclipNativeSessionWithinScope(
                     ? "Provider files could not be verified after two read attempts. Inspect the retained workspace and command transport before retrying the original run."
                   : sourceFailureCode === "native_provider_terminal_failed"
                     ? "The provider session is permanently unusable. Verify stopped execution, completed actions, and task context before starting a linked continuation."
+                  : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
+                    ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
                     : recoveryEvidence.recoveryMode === "ambiguous_state"
                       ? "Inspect the original provider failure and durable events; state is ambiguous and a replacement provider session is forbidden."
                       : integrityFailure
@@ -10683,6 +10692,8 @@ async function executePaperclipNativeSessionWithinScope(
               ? NATIVE_CLEANUP_OPERATOR_RECOVERY_MESSAGE
               : sourceFailureCode === "native_provider_terminal_failed"
                 ? "Verify that the failed provider stopped and reconcile its action outcomes. A linked continuation can proceed only after these checks succeed."
+              : sourceFailureCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE
+                ? NATIVE_PROVIDER_STATE_INCOMPATIBLE_ACTION
                 : recoveryEvidence.recoveryMode === "ambiguous_state"
                   ? "Inspect the original provider failure and explicitly resolve the ambiguous session state; do not open a replacement provider session."
                   : integrityFailure
