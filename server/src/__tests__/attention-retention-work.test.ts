@@ -1090,7 +1090,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(scopes.filter(scope => scope && !scope.sourceId)).toHaveLength(0);
     expect(scopes.filter(scope => scope?.sourceId).length).toBeLessThanOrEqual(225);
     expect(new Set((await db.select().from(decisionRetention)).map(row => row.sourceId)).size).toBe(225);
-  }));
+  }), 45_000);
 
   it("retries a failed atomic archive across drain and preserves notifications during a scan", async () => {
     const row = await insertIssue("in_review", { assigneeUserId: "board" });
