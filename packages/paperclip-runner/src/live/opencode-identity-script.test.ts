@@ -1,4 +1,7 @@
 import { expect, it } from "vitest";
+import { readFileSync } from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
+import { runInNewContext } from "node:vm";
 import { acceptedIdentityIds, closedRejection, closedTerminalStatus, diagnosticChildEnvironment, diagnosticIdentity, diagnosticPrompt, failedIdentity, identityAcceptanceComplete, identityCallIds, identityResponse } from "../../test-support/opencode-identity-script.js";
 const message = (id: string, value: unknown = diagnosticIdentity) => ({ role: "tool", tool_call_id: id,
   content: JSON.stringify({ type: "inputText", text: JSON.stringify(value) }) });
@@ -60,4 +63,42 @@ it("requires the actual completed terminal payload, never merely the shared term
   for (const status of ["failed", "cancelled", "interrupted", "unknown"]) expect(closedTerminalStatus({ method: "turn/completed", params: { turn: { status } } })).not.toBe("completed");
   expect(closedTerminalStatus({ method: "turn/completed", params: { turn: { status: "completed" } } })).toBe("completed");
   expect(closedTerminalStatus({ method: "turn/completed", params: {} })).toBe("unknown");
+});
+
+it("accepts semantic identity despite reordered JSON keys from the actual controller formatter", () => {
+  const reordered = { identity: { companyId: "synthetic-company", agentId: "synthetic-agent" }, ok: true };
+  const source = readFileSync(new URL("../drivers/codex/codex-driver-values.ts", import.meta.url), "utf8");
+  const start = source.indexOf("export function dynamicToolResponse(");
+  const end = source.indexOf("\n}", start) + 2;
+  const context: { format?: (value: unknown) => { contentItems: Array<{ type: string; text: string }> } } = {};
+  runInNewContext(`${stripTypeScriptTypes(source.slice(start, end).replace("export function", "function"), { mode: "strip" })};globalThis.format=dynamicToolResponse;`, context);
+  const formatted = context.format!(reordered).contentItems;
+  expect(acceptedIdentityIds([{ role: "tool", tool_call_id: identityCallIds[0], content: JSON.stringify(formatted[0]) }])).toEqual([identityCallIds[0]]);
+});
+
+it.each([
+  { identity: diagnosticIdentity.identity },
+  { ok: true, identity: { agentId: "synthetic-agent" } },
+  { ...diagnosticIdentity, extra: "value" },
+  { ok: true, identity: { ...diagnosticIdentity.identity, extra: "value" } },
+  { ok: true, identity: { ...diagnosticIdentity.identity, agentId: "foreign" } },
+  { ok: true, identity: { ...diagnosticIdentity.identity, companyId: "foreign" } },
+  { ok: "true", identity: diagnosticIdentity.identity },
+  { content: [{ type: "text", text: JSON.stringify(diagnosticIdentity) }] },
+])("retains strict missing, extra, foreign and unsupported-shape identity rejection", value => {
+  expect(() => acceptedIdentityIds([message(identityCallIds[0]!, value)])).toThrow("diagnostic_identity_rejected");
+});
+it("records closed carrier, key and semantic-match enums without projecting unknown values", () => {
+  const secret = "synthetic-withheld-private-value";
+  const content = { ...diagnosticIdentity, identity: { ...diagnosticIdentity.identity, companyId: secret } };
+  const rejected = closedRejection(new Error("diagnostic_identity_rejected"), "script", 2, body([message(identityCallIds[0]!, content)]), identityCallIds[0]);
+  expect(rejected.pendingContentShape).toBe("string"); expect(rejected.pendingDecodedShape).toBe("record");
+  expect(rejected.pendingIdentityKeys).toBe("exact"); expect(rejected.pendingIdentityValueMatch).toBe("different");
+  expect(rejected.pendingControlledErrorMatch).toBe("different"); expect(JSON.stringify(rejected)).not.toContain(secret);
+  const reordered = { identity: { companyId: "synthetic-company", agentId: "synthetic-agent" }, ok: true };
+  expect(closedRejection(null, "script", 2, body([message(identityCallIds[0]!, reordered)]), identityCallIds[0]).pendingIdentityValueMatch).toBe("exact");
+  const failed = { code: "CONTROLLED_IDENTITY_FAILURE", ok: false };
+  expect(identityResponse(body([message(identityCallIds[0]!, failed)]), true, identityCallIds[0]).negativeObserved).toBe(true);
+  expect(() => acceptedIdentityIds([message(identityCallIds[0]!, failed)])).toThrow("diagnostic_identity_rejected");
+  expect(closedRejection(null, "script", 2, body([message(identityCallIds[0]!, failed)]), identityCallIds[0]).pendingControlledErrorMatch).toBe("exact");
 });

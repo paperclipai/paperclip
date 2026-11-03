@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 /** Synthetic protocol data only. Never use this fixture to grade a product task. */
 export const diagnosticPrompt = "Run the synthetic identity protocol diagnostic.";
 export const identityCallIds = Array.from({ length: 5 }, (_, index) => `diagnostic-identity-${index + 1}`);
@@ -19,7 +21,7 @@ export function acceptedIdentityIds(messages: unknown): string[] {
     const m = row(message);
     if (m.role !== "tool") continue;
     if (!identityCallIds.includes(String(m.tool_call_id))) throw new Error("diagnostic_identity_foreign");
-    if (JSON.stringify(identityValue(m.content)) !== JSON.stringify(diagnosticIdentity)) throw new Error("diagnostic_identity_rejected");
+    if (!isDeepStrictEqual(identityValue(m.content), diagnosticIdentity)) throw new Error("diagnostic_identity_rejected");
     if (found.includes(String(m.tool_call_id))) throw new Error("diagnostic_identity_duplicate");
     found.push(String(m.tool_call_id));
   }
@@ -46,7 +48,7 @@ export function identityResponse(body: unknown, negative = false, expectedPrevio
   try { accepted = acceptedIdentityIds(b.messages); }
   catch (error) {
     const first = b.messages.find(value => row(value).role === "tool" && row(value).tool_call_id === identityCallIds[0]);
-    if (!negative || JSON.stringify(identityValue(row(first).content)) !== JSON.stringify(failedIdentity)) throw error;
+    if (!negative || !isDeepStrictEqual(identityValue(row(first).content), failedIdentity)) throw error;
     return { accepted: [], negativeObserved: true, auxiliary: false, delta: { role: "assistant", content: "Controlled negative completed." }, finish: "stop" };
   }
   if (accepted.length === identityCallIds.length) return { accepted, negativeObserved: false, auxiliary: false,
@@ -65,6 +67,10 @@ export function closedRejection(error: unknown, stage: string, ordinal: number, 
   const b = row(body), messages = Array.isArray(b.messages) ? b.messages : [];
   const tools = Array.isArray(b.tools) ? b.tools.map(value => row(row(value).function)) : [];
   const count = tools.filter(value => /(?:^|_)get_identity$/.test(String(value.name))).length;
+  const pendingMessage = messages.find(value => row(value).role === "tool" && row(value).tool_call_id === pending);
+  const content = row(pendingMessage).content, decoded = identityValue(content), value = row(decoded);
+  const shape = (value: unknown) => value === null ? "null" : Array.isArray(value) ? "array"
+    : typeof value === "string" ? "string" : typeof value === "object" ? "record" : "other";
   return { reason: error instanceof Error && rejectionReasons.has(error.message) ? error.message : "unknown_withheld",
     stage: ["route", "body", "parse", "script", "respond"].includes(stage) ? stage : "unknown",
     ordinal: Number.isInteger(ordinal) ? Math.max(0, Math.min(13, ordinal)) : 0,
@@ -73,7 +79,12 @@ export function closedRejection(error: unknown, stage: string, ordinal: number, 
     mainPromptPresent: messages.some(value => row(value).role === "user" && (JSON.stringify(row(value).content) ?? "").includes(diagnosticPrompt)),
     stream: b.stream === true ? "true" : b.stream === false ? "false" : "other",
     pendingIndex: pending ? identityCallIds.indexOf(pending) + 1 : 0,
-    pendingResultPresent: !!pending && messages.some(value => row(value).role === "tool" && row(value).tool_call_id === pending) };
+    pendingResultPresent: !!pending && !!pendingMessage,
+    pendingContentShape: pendingMessage ? shape(content) : "missing", pendingDecodedShape: pendingMessage ? shape(decoded) : "missing",
+    pendingIdentityKeys: pendingMessage && Object.keys(value).sort().join() === "identity,ok"
+      && Object.keys(row(value.identity)).sort().join() === "agentId,companyId" ? "exact" : "different",
+    pendingIdentityValueMatch: pendingMessage && isDeepStrictEqual(decoded, diagnosticIdentity) ? "exact" : "different",
+    pendingControlledErrorMatch: pendingMessage && isDeepStrictEqual(decoded, failedIdentity) ? "exact" : "different" };
 }
 export function closedTerminalStatus(value: unknown): "completed" | "failed" | "cancelled" | "interrupted" | "unknown" {
   const n = row(value), status = row(row(n.params).turn).status;
