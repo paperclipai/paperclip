@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "43c44ccc823a8c972b247fa7159281887e6f5255",
+  "targetSha": "51ef450754370c8a8f2cbe4bd18e1536bbc93966",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -170,9 +170,9 @@
     ],
     "repairMetadata": {
       "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
-      "previousTargetSha": "36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383",
+      "previousTargetSha": "43c44ccc823a8c972b247fa7159281887e6f5255",
       "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
-      "candidateDescriptorSha256": "04205b930fc0f8c93dee5d99f9a9531ae9799067e9c9b67e28ed8f694a43d403",
+      "candidateDescriptorSha256": "54760e1dca998c2ac2b6546f6daf5a13f399d2e9b125a465810b8fadf66c35d8",
       "changedDefinitionFiles": [
         {
           "path": "tests/runner-e2e/chat-scenarios/companies.yaml",
@@ -191,7 +191,7 @@
           "sha256": "18fbb9419bbdacb46eacdaa62dfa99feb9024faf2d1eef829aa70d43952575a9"
         }
       ],
-      "conditions": "New candidate measurements only. Original 244 definitions, attempt history and old pass gate remain immutable. SDK audit custody remains diagnostic; scan rejection is unchanged. Explicit field overrides below retain original definition values. 144 alone declares reviewedmin2/max3 accounting and requires actual3 settled source-bound turns. All original clocks/models/human counts and all other nativebounds remain. No workflow/credential/reporting authority expansion.",
+      "conditions": "New candidate measurements only; original definitions and all failed attempts remain historical. Source4 repairs remaining original observation, normalized-result and owned fixture authorization/profile boundaries, exact full-proposal approval evidence and optional real completion observation. Product487 disclosure is a reviewed candidate-only overlay from UNMERGED18734. SDK privacy/AST guards are unchanged; expected restored lock now binds authenticated BUILD-input54a81 rather than stale c7f230, explicitly a new runtime eligibility condition. Only144 retains its earlier reviewed2..3 native-accounting revision with actual3 accepted; all original clocks/model/human counts and all other native bounds stay fixed. No core merge, workflow/credential/permission expansion or regrade",
       "changedFields": [
         {
           "key": "agents.choose-primary",
@@ -253,6 +253,12 @@
           ]
         },
         {
+          "key": "app-permissions.ask-before-action",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.app-review.v2"
+        },
+        {
           "key": "app-permissions.test-as-agent",
           "field": "sourceFiles",
           "previous": [
@@ -286,7 +292,7 @@
           "key": "app-permissions.test-as-agent",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.app-test.v2"
+          "current": "paperclip.chat-catalog.app-test.v3"
         },
         {
           "key": "app-permissions.test-as-agent",
@@ -299,6 +305,34 @@
           "field": "expectedOutcome",
           "previous": "The agent routes to the supported test-as-agent control with the intended actor and action identified. The result reports actual effective access and provider outcome. A successful board test is described as that test, not proof that Morgan's next runtime has the tool admitted or that the CEO can impersonate Morgan.",
           "current": "The canonical native request performs one supported, authorized test of the selected connection's sample-page read as Morgan and reports the actual result. Persisted source and target provenance plus the independent provider read prove the outcome. Existing caller and target grants remain unchanged; the test does not start Morgan's runtime, widen permissions, use another credential or create unrelated work. The successful test is not proof that Morgan's next runtime has the tool admitted."
+        },
+        {
+          "key": "cli-operations.choose-cli-context",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/privileged-support.ts",
+            "chat-catalog-domains/privileged-cli.ts",
+            "chat-scenarios/cli-operations.yaml",
+            "chat-catalog-domains/privileged-cli-support.ts",
+            "../../cli/src/index.ts"
+          ],
+          "current": [
+            "chat-catalog-domains/privileged-support.ts",
+            "chat-catalog-domains/privileged-cli.ts",
+            "chat-scenarios/cli-operations.yaml",
+            "chat-catalog-domains/privileged-cli-support.ts",
+            "../../cli/src/index.ts",
+            "../../cli/src/commands/client/context.ts",
+            "../../cli/src/commands/client/company.ts",
+            "../../cli/src/commands/client/auth.ts",
+            "../../cli/src/client/context.ts"
+          ]
+        },
+        {
+          "key": "cli-operations.choose-cli-context",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.privileged.v1",
+          "current": "paperclip.chat-catalog.cli-context.v2"
         },
         {
           "key": "companies.agent-observability",
@@ -434,10 +468,62 @@
           "current": "paperclip.chat-catalog.answer-delivery.v2"
         },
         {
+          "key": "questions-and-approvals.formal-hire-revision",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.hire-revision.native1017.v2",
+          "current": "paperclip.chat-catalog.hire-revision.native1017.v3"
+        },
+        {
           "key": "questions-and-approvals.multi-part-question",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.identity.v1",
           "current": "paperclip.chat-catalog.required-question.v2"
+        },
+        {
+          "key": "questions-and-approvals.reject-and-revise",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/identity-plan-review.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/questions-and-approvals.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/identity-plan-review.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/questions-and-approvals.yaml",
+            "../../server/src/services/chat-completion-delivery.ts"
+          ]
+        },
+        {
+          "key": "questions-and-approvals.reject-and-revise",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.identity.v1",
+          "current": "paperclip.chat-catalog.plan-review.v2"
+        },
+        {
+          "key": "questions-and-approvals.review-plan",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/identity-plan-review.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/questions-and-approvals.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/identity-plan-review.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/questions-and-approvals.yaml",
+            "../../server/src/services/chat-completion-delivery.ts"
+          ]
+        },
+        {
+          "key": "questions-and-approvals.review-plan",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.identity.v1",
+          "current": "paperclip.chat-catalog.plan-review.v2"
         },
         {
           "key": "secrets.configure-company-secret",
@@ -710,10 +796,10 @@
           ]
         },
         {
-          "key": "app-permissions.test-as-agent",
+          "key": "app-permissions.ask-before-action",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.app-test.v2"
+          "current": "paperclip.chat-catalog.app-review.v2"
         },
         {
           "key": "app-permissions.test-as-agent",
@@ -744,6 +830,40 @@
             "../../server/src/services/tool-approval-execution.ts",
             "chat-scenarios/app-permissions.yaml"
           ]
+        },
+        {
+          "key": "app-permissions.test-as-agent",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.app-test.v3"
+        },
+        {
+          "key": "cli-operations.choose-cli-context",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/privileged-support.ts",
+            "chat-catalog-domains/privileged-cli.ts",
+            "chat-scenarios/cli-operations.yaml",
+            "chat-catalog-domains/privileged-cli-support.ts",
+            "../../cli/src/index.ts"
+          ],
+          "current": [
+            "chat-catalog-domains/privileged-support.ts",
+            "chat-catalog-domains/privileged-cli.ts",
+            "chat-scenarios/cli-operations.yaml",
+            "chat-catalog-domains/privileged-cli-support.ts",
+            "../../cli/src/index.ts",
+            "../../cli/src/commands/client/context.ts",
+            "../../cli/src/commands/client/company.ts",
+            "../../cli/src/commands/client/auth.ts",
+            "../../cli/src/client/context.ts"
+          ]
+        },
+        {
+          "key": "cli-operations.choose-cli-context",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.privileged.v1",
+          "current": "paperclip.chat-catalog.cli-context.v2"
         },
         {
           "key": "companies.agent-observability",
@@ -827,12 +947,6 @@
         },
         {
           "key": "navigation-preferences.dismiss-announcement",
-          "field": "oracleVersion",
-          "previous": "paperclip.chat-catalog.identity.v1",
-          "current": "paperclip.chat-catalog.announcement-dismissal.v2"
-        },
-        {
-          "key": "navigation-preferences.dismiss-announcement",
           "field": "sourceFiles",
           "previous": [
             "chat-catalog-domains/identity-navigation-boundaries.ts",
@@ -861,16 +975,74 @@
           ]
         },
         {
+          "key": "navigation-preferences.dismiss-announcement",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.identity.v1",
+          "current": "paperclip.chat-catalog.announcement-dismissal.v2"
+        },
+        {
           "key": "questions-and-approvals.duplicate-answer",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.identity.v1",
           "current": "paperclip.chat-catalog.answer-delivery.v2"
         },
         {
+          "key": "questions-and-approvals.formal-hire-revision",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.hire-revision.native1017.v2",
+          "current": "paperclip.chat-catalog.hire-revision.native1017.v3"
+        },
+        {
           "key": "questions-and-approvals.multi-part-question",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.identity.v1",
           "current": "paperclip.chat-catalog.required-question.v2"
+        },
+        {
+          "key": "questions-and-approvals.reject-and-revise",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/identity-plan-review.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/questions-and-approvals.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/identity-plan-review.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/questions-and-approvals.yaml",
+            "../../server/src/services/chat-completion-delivery.ts"
+          ]
+        },
+        {
+          "key": "questions-and-approvals.reject-and-revise",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.identity.v1",
+          "current": "paperclip.chat-catalog.plan-review.v2"
+        },
+        {
+          "key": "questions-and-approvals.review-plan",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/identity-plan-review.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/questions-and-approvals.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/identity-plan-review.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-scenarios/questions-and-approvals.yaml",
+            "../../server/src/services/chat-completion-delivery.ts"
+          ]
+        },
+        {
+          "key": "questions-and-approvals.review-plan",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.identity.v1",
+          "current": "paperclip.chat-catalog.plan-review.v2"
         },
         {
           "key": "secrets.configure-company-secret",
@@ -891,12 +1063,6 @@
         },
         {
           "key": "skills.author-skill",
-          "field": "oracleVersion",
-          "previous": "paperclip.chat-catalog.integrator.v1",
-          "current": "paperclip.chat-catalog.skill-authoring.v2"
-        },
-        {
-          "key": "skills.author-skill",
           "field": "sourceFiles",
           "previous": [
             "chat-catalog-domains/integrator-support.ts",
@@ -912,6 +1078,12 @@
             "chat-catalog-domains/integrator-skill-versions.ts",
             "chat-catalog-domains/identity-support.ts"
           ]
+        },
+        {
+          "key": "skills.author-skill",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.integrator.v1",
+          "current": "paperclip.chat-catalog.skill-authoring.v2"
         },
         {
           "key": "skills.enable-for-agent",
@@ -1023,24 +1195,6 @@
         },
         {
           "key": "skills.studio-test",
-          "field": "expectedRunCount",
-          "previous": 2,
-          "current": 3
-        },
-        {
-          "key": "skills.studio-test",
-          "field": "minimumRunCount",
-          "previous": null,
-          "current": 2
-        },
-        {
-          "key": "skills.studio-test",
-          "field": "oracleVersion",
-          "previous": "paperclip.chat-catalog.integrator.v1",
-          "current": "paperclip.chat-catalog.skill-studio.v2"
-        },
-        {
-          "key": "skills.studio-test",
           "field": "sourceFiles",
           "previous": [
             "chat-catalog-domains/integrator-skill-studio.ts",
@@ -1058,6 +1212,24 @@
             "chat-catalog-domains/internal-definition.ts",
             "chat-scenarios/skills.yaml"
           ]
+        },
+        {
+          "key": "skills.studio-test",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.integrator.v1",
+          "current": "paperclip.chat-catalog.skill-studio.v2"
+        },
+        {
+          "key": "skills.studio-test",
+          "field": "expectedRunCount",
+          "previous": 2,
+          "current": 3
+        },
+        {
+          "key": "skills.studio-test",
+          "field": "minimumRunCount",
+          "previous": null,
+          "current": 2
         },
         {
           "key": "steering.stop-versus-pause",
@@ -1105,12 +1277,6 @@
         },
         {
           "key": "teams.configure-team",
-          "field": "oracleVersion",
-          "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.team-configure.v2"
-        },
-        {
-          "key": "teams.configure-team",
           "field": "sourceFiles",
           "previous": [
             "chat-catalog-domains/external-team-configure.ts",
@@ -1134,6 +1300,12 @@
             "chat-flow.ts",
             "chat-scenarios/teams.yaml"
           ]
+        },
+        {
+          "key": "teams.configure-team",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.team-configure.v2"
         }
       ],
       "runtimeConditions": {
@@ -1163,18 +1335,27 @@
           "condition": "Reviewed synthetic staging input only; per-worker singleton550 enables it; production feed and global index unchanged."
         },
         "sdkPublicProof": {
-          "previousRegistrySha256": "4330369fd34812273db11762c82ce4c427bae2353991eae354e7923e229b4a4a",
-          "registrySha256": "018b5b15450e84f63920575de3b5903f7838678ef66a1e17aa050e0b21b40319",
+          "previousRegistrySha256": "018b5b15450e84f63920575de3b5903f7838678ef66a1e17aa050e0b21b40319",
+          "registrySha256": "32c7971e1d9c9d31cd6791045b0265f0475c8f10932ff6dd34681681b6a89342",
           "inputCount": 506,
-          "runtimeCompilerParserZodLockIdentitiesUnchanged": true,
           "scannerAndCanaryCertificatesUnchanged": true,
-          "actual115DetectorUnknown": true,
-          "plugin558StillHeld": true
+          "plugin558StillHeld": true,
+          "runtimeCompilerParserZodIdentitiesUnchanged": true,
+          "previousExpectedLockSha256": "c7f23021335b60da0cff1dd4c75cf8b948333ef3165d7d1703eb79a589edb798",
+          "expectedLockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
+          "historical43Finding": "detector3 unresolved_context/publicSource null; owning proof rejected stale expected lock",
+          "newCandidate115Unqualified": true
+        },
+        "toolProposal487": {
+          "corePr": 18734,
+          "coreHead": "17236e1736bbecdf04eeeee87ccb794c72d03da1",
+          "corePRUnmerged": true,
+          "condition": "Candidate-only exact shared-card bounded redacted full-argument/audit disclosure; no backend authority change. Actual human review/provider dispatch joined by oracle v2."
         }
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "43c44ccc823a8c972b247fa7159281887e6f5255",
+        "targetSha": "51ef450754370c8a8f2cbe4bd18e1536bbc93966",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
       }
@@ -2792,7 +2973,7 @@
         "questions-and-approvals/tool-review"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.app-review.v2",
       "sourceFiles": [
         "chat-catalog-domains/external-app-review.ts",
         "chat-catalog-domains/external-provider.ts",
@@ -3057,7 +3238,7 @@
         "app-permissions/test-action"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.app-test.v2",
+      "oracleVersion": "paperclip.chat-catalog.app-test.v3",
       "sourceFiles": [
         "chat-catalog-domains/external-app-test.ts",
         "chat-catalog-domains/external-provider.ts",
@@ -4569,13 +4750,17 @@
         "cli-operations/context"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+      "oracleVersion": "paperclip.chat-catalog.cli-context.v2",
       "sourceFiles": [
         "chat-catalog-domains/privileged-support.ts",
         "chat-catalog-domains/privileged-cli.ts",
         "chat-scenarios/cli-operations.yaml",
         "chat-catalog-domains/privileged-cli-support.ts",
-        "../../cli/src/index.ts"
+        "../../cli/src/index.ts",
+        "../../cli/src/commands/client/context.ts",
+        "../../cli/src/commands/client/company.ts",
+        "../../cli/src/commands/client/auth.ts",
+        "../../cli/src/client/context.ts"
       ],
       "screenshot": "final-state.png",
       "evidenceKind": "private-final-state-png",
@@ -9230,7 +9415,7 @@
         "agents/hire"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v2",
+      "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v3",
       "sourceFiles": [
         "chat-catalog-domains/identity-hire-revision.ts",
         "chat-catalog-domains/identity-hire-model-choice.ts",
@@ -9358,12 +9543,13 @@
         "questions-and-approvals/confirmations"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.identity.v1",
+      "oracleVersion": "paperclip.chat-catalog.plan-review.v2",
       "sourceFiles": [
         "chat-catalog-domains/identity-plan-review.ts",
         "chat-catalog-domains/identity-support.ts",
         "chat-catalog-domains/internal-support.ts",
-        "chat-scenarios/questions-and-approvals.yaml"
+        "chat-scenarios/questions-and-approvals.yaml",
+        "../../server/src/services/chat-completion-delivery.ts"
       ],
       "screenshot": "final-state.png",
       "evidenceKind": "private-final-state-png",
@@ -9402,12 +9588,13 @@
         "agent-chat/handoff"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.identity.v1",
+      "oracleVersion": "paperclip.chat-catalog.plan-review.v2",
       "sourceFiles": [
         "chat-catalog-domains/identity-plan-review.ts",
         "chat-catalog-domains/identity-support.ts",
         "chat-catalog-domains/internal-support.ts",
-        "chat-scenarios/questions-and-approvals.yaml"
+        "chat-scenarios/questions-and-approvals.yaml",
+        "../../server/src/services/chat-completion-delivery.ts"
       ],
       "screenshot": "final-state.png",
       "evidenceKind": "private-final-state-png",

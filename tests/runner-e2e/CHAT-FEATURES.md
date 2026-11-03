@@ -217,7 +217,7 @@ overlap. Exact requirements and limitations appear in each case's preconditions.
 A declared credential does not establish whether its runtime reference exists.
 
 This lane runs the app and fixtures from candidate
-`43c44ccc823a8c972b247fa7159281887e6f5255`. It retains the evaluated app from
+`51ef450754370c8a8f2cbe4bd18e1536bbc93966`. It retains the evaluated app from
 `3b66c3c144360ddf32714a0742fd774b8ceafb16`. The first repair source added:
 owned SDK staging, public membership for three incidental human fixtures,
 company settings observation inside its original case deadline, and exact
@@ -239,8 +239,8 @@ change the previous 196-of-244 acceptance gate.
 
 Native execution uses OpenCode and
 `openrouter/deepseek/deepseek-v4.1-flash-1017` on the existing AWS fleet. Each case
-keeps its original query, oracle, run counts, clocks, budgets and zero automatic
-retries. Browser boundaries and the external assistant retain their original
+uses the manifest-declared query, oracle, counts, clocks and budgets with zero
+automatic retries; explicit reviewed condition changes are recorded below. Browser boundaries and the external assistant retain their original
 surfaces and may have zero native work runs. The external companion keeps its own
 declared provider requirement. Setup inference and unpriced usage are not free.
 
@@ -304,12 +304,21 @@ The manifest keeps the original definition source and values, with explicit scop
 
 Workflow, model, case clocks, native-run bounds, credentials, protected reporting and case identities do not change. The full harness TypeScript graph has not been qualified by local pure tests; source import/admission and the existing credential-free remote Runner build remain required before native queries. Static TestOps descriptions may still show the original definition until a separate idempotent metadata reconciliation at a safe source boundary.
 
-### Repair source 3 (2026-11-03; candidate only)
+### Historical repair source 3 (2026-11-03; candidate only)
 
-The current target is the canonical revision above. It adds the reviewed skill import guidance, version-aware Studio sample checks, scoped app review/test and team-auth prerequisites, and the synthetic announcement-dismissal input. The core guidance PR remains unmerged; candidate-owned catalogs carry that explicit runtime/tool-description change. App testing declares its changed setup context and outcome. The exact human query is preserved.
+Historical target `43c44ccc823a8c972b247fa7159281887e6f5255` added the reviewed skill import guidance, version-aware Studio sample checks, scoped app review/test and team-auth prerequisites, and the synthetic announcement-dismissal input. The core guidance PR remains unmerged; candidate-owned catalogs carry that explicit runtime/tool-description change. App testing declares its changed setup context and outcome. The exact human query is preserved.
 
 Studio test 144 alone changes native accounting from minimum/maximum 2/2 to 2/3. Acceptance requires all three genuine settled turns: initial CEO, actual Studio worker, and exactly one source-bound completion delivery. The original 540-second case clock, controller, one human request and all other case limits remain fixed. The manifest records each previous/current field against the original definition source; no old grade or catalog pass gate is rewritten.
 
 The SDK public-input registry is generated from the committed candidate tree. Compiler, parser, Zod, lock runtime identities, scanner and canary build certificates are unchanged. This does not establish the original SDK detector or a plugin pass. Plugin 558 remains held until genuine canary build evidence is reauthenticated. The public announcement fixture is one reviewed synthetic 443-byte JSON under an isolated staging prefix; production announcements and the global index are untouched. Each original worker process still selects one case, so only the dismissal case enables that input.
 
 The full-catalog private evidence policy binds the launcher digest from the same reviewed manifest as the immutable candidate target. Every final GO reads `launch.ts` from that exact Git object and validates its digest against every selected singleton policy before submission. The legacy pilot launcher digest remains separately pinned.
+
+
+### Repair source 4 (2026-11-03; candidate only)
+
+The current target is the canonical revision above. This source adds remaining-original-deadline observation for primary guidance; independently expected normalized MCP results; fixed owned timeline-file reads through fixture board authority; finite supported CLI profile guidance with no identifier substitutions and fresh board/API/company/human readback; real completion-turn observation for plan review; and the reviewed true-price hire counterpart. Original failed attempts remain unchanged.
+
+The app-review journey now requires inspection of the exact full redacted arguments and audit hash in the normal shared review card, then verifies that authorized provider dispatch equals that proposal. The 17-line product disclosure is an explicit candidate-only overlay from unmerged core PR #18734; no backend permission or approval rule changes. The independent core guidance PR #18717 also remains unmerged.
+
+SDK public-source eligibility explicitly changes its expected restored lock from stale c7f230 to the authenticated credential-free build-input SHA256 `54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8`. Compiler/parser/Zod identities and all privacy/AST/custody guards remain enforced. This correction is not a plugin pass: case 115 must qualify with its original 300-second/one-native limits, and the other five SDK cases, including plugin 558's canary certificates, remain held. All case clocks and the controller model remain unchanged; Studio144's earlier explicit 2..3 accounting revision remains the only native-bound change.
