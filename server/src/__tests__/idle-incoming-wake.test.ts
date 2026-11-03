@@ -26,6 +26,13 @@ import {
   connectionGrants,
   chatEndpoints,
   chatGitHubRegistrations,
+  chatSlackRegistrations,
+  chatEndpointLeases,
+  chatActions,
+  chatDeliveries,
+  chatPublications,
+  chatConversations,
+  issues,
   type Db,
 } from "@paperclipai/db";
 import { setCloudRuntimeConfigSnapshot } from "../services/cloud-runtime-config-snapshot.js";
@@ -42,6 +49,7 @@ import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import {
   readIdleIncomingWakeProof,
   incomingWakeFingerprint,
+  incomingWakeWorkQuery,
 } from "../services/idle-incoming-wake.js";
 import { registerConnectionEventWake } from "../services/connection-event-wake.js";
 import { idleApiActivity } from "../services/idle-api-activity.js";
@@ -384,6 +392,88 @@ function verified(incomingWake = capability): VerifiedIdleCapabilities {
         )[0]!.name,
       ).toBe("Persisted after wake");
     });
+    // Fault injection below supplies only malformed/incomplete persisted states;
+    // the positive archived transition is covered by the real configure(remove)
+    // producer in chat-channels.integration.test.ts, without deleting history.
+    async function removedGitHubFixture() {
+      const f = await seed(), applicationId = randomUUID(), connectionId = randomUUID(), endpointId = randomUUID();
+      await db.insert(toolApplications).values({ id: applicationId, companyId: f.companyId, name: "Removed GitHub", type: "chat" });
+      await db.insert(toolConnections).values({ id: connectionId, companyId: f.companyId, applicationId,
+        name: "Removed GitHub", uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel",
+        status: "archived", enabled: false, credentialSecretRefs: [] });
+      await db.insert(chatEndpoints).values({ id: endpointId, companyId: f.companyId, connectionId,
+        assignedAgentId: f.agentId, provider: "github", publicId: randomUUID(), status: "archived",
+        archivedAt: new Date(), setup: { step: "complete", runtimeGeneration: 1 } });
+      const blocked = async () => (await db.execute(sql`SELECT EXISTS (
+        ${incomingWakeWorkQuery("chat_endpoints")} AND endpoint.id = ${endpointId}::uuid) AS blocked`))[0].blocked;
+      return { ...f, applicationId, connectionId, endpointId, blocked };
+    }
+    it.each(["stamp", "active", "paused", "revoked", "persistent_provider", "enabled_connection", "active_connection",
+      "non_sdk_connection", "credentials", "malformed_credentials", "malformed_setup", "missing_generation", "fractional_generation",
+      "lease", "expired_lease", "pending_registration", "unconsumed_registration", "wrong_registry"])(
+      "keeps incomplete removed GitHub proof blocked: %s", async fault => {
+        const f = await removedGitHubFixture();
+        if (fault === "stamp") await db.update(chatEndpoints).set({ archivedAt: null }).where(eq(chatEndpoints.id, f.endpointId));
+        if (["active", "paused", "revoked"].includes(fault)) await db.update(chatEndpoints)
+          .set({ status: fault as "active" | "paused" | "revoked" }).where(eq(chatEndpoints.id, f.endpointId));
+        if (fault === "persistent_provider") await db.update(chatEndpoints).set({ provider: "discord" }).where(eq(chatEndpoints.id, f.endpointId));
+        if (fault === "enabled_connection") await db.update(toolConnections).set({ enabled: true }).where(eq(toolConnections.id, f.connectionId));
+        if (fault === "active_connection") await db.update(toolConnections).set({ status: "active" }).where(eq(toolConnections.id, f.connectionId));
+        if (fault === "non_sdk_connection") await db.update(toolConnections).set({ transport: "voice" }).where(eq(toolConnections.id, f.connectionId));
+        if (fault === "credentials" || fault === "malformed_credentials") await db.execute(sql`UPDATE tool_connections
+          SET credential_secret_refs = ${fault === "credentials" ? '[{"secretId":"retained"}]' : '{}'}::jsonb WHERE id = ${f.connectionId}::uuid`);
+        if (fault === "malformed_setup") await db.execute(sql`UPDATE chat_endpoints SET setup = '"unknown"'::jsonb WHERE id = ${f.endpointId}::uuid`);
+        if (fault === "missing_generation" || fault === "fractional_generation") await db.update(chatEndpoints)
+          .set({ setup: fault === "missing_generation" ? { step: "complete" } : { step: "complete", runtimeGeneration: 1.5 } })
+          .where(eq(chatEndpoints.id, f.endpointId));
+        if (fault === "lease" || fault === "expired_lease") await db.insert(chatEndpointLeases).values({ companyId: f.companyId,
+          endpointId: f.endpointId, leaseKey: "credentials", token: randomUUID(), expiresAt: new Date(fault === "lease" ? Date.now() + 60_000 : 0) });
+        if (fault === "pending_registration" || fault === "unconsumed_registration") await db.insert(chatGitHubRegistrations).values({
+          companyId: f.companyId, endpointId: f.endpointId, userId: f.userId, stateHash: randomUUID(), trustedOrigin: "https://tenant.example.test",
+          status: fault === "pending_registration" ? "pending" : "completed", expiresAt: new Date(Date.now() + 60_000) });
+        if (fault === "wrong_registry") await db.insert(chatSlackRegistrations).values({ endpointId: f.endpointId, companyId: f.companyId,
+          requestId: randomUUID(), status: "uncertain", manifest: {}, manifestHash: "a".repeat(64), callbackUri: "https://tenant.example.test",
+          createdByUserId: f.userId, secretIds: { clientSecret: randomUUID() } });
+        expect(await f.blocked()).toBe(true);
+        expect(await db.select({ id: chatEndpoints.id }).from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId))).toHaveLength(1);
+      });
+    it("retains tenant boundaries and rejects unfamiliar archived state at the schema boundary", async () => {
+      const f = await removedGitHubFixture();
+      await expect(db.execute(sql`UPDATE chat_endpoints SET connection_id = ${randomUUID()}::uuid WHERE id = ${f.endpointId}::uuid`)).rejects.toThrow();
+      const foreignApplication = randomUUID(), foreignConnection = randomUUID();
+      await db.insert(toolApplications).values({ id: foreignApplication, companyId: f.foreignId, name: "Foreign", type: "chat" });
+      await db.insert(toolConnections).values({ id: foreignConnection, companyId: f.foreignId, applicationId: foreignApplication,
+        name: "Foreign", uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel", status: "archived", enabled: false });
+      await expect(db.execute(sql`UPDATE chat_endpoints SET connection_id = ${foreignConnection}::uuid WHERE id = ${f.endpointId}::uuid`)).rejects.toThrow();
+      await expect(db.execute(sql`UPDATE chat_endpoints SET status = 'unknown' WHERE id = ${f.endpointId}::uuid`)).rejects.toThrow();
+      expect((await db.select().from(chatEndpoints).where(eq(chatEndpoints.id, f.endpointId)))[0].connectionId).toBe(f.connectionId);
+    });
+    it("does not let removed GitHub endpoint history discharge pending delivery, publication or action obligations", async () => {
+      const f = await removedGitHubFixture();
+      await db.insert(chatGitHubRegistrations).values({ companyId: f.companyId, endpointId: f.endpointId, userId: f.userId,
+        stateHash: randomUUID(), trustedOrigin: "https://tenant.example.test", status: "completed", consumedAt: new Date(), expiresAt: new Date(0) });
+      expect(await f.blocked()).toBe(false);
+      const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Retained chat debt", status: "done" }).returning();
+      const [conversation] = await db.insert(chatConversations).values({ companyId: f.companyId, endpointId: f.endpointId,
+        issueId: issue.id, externalConversationId: "github:retained", externalLabel: "retained", state: "endpoint_removed" }).returning();
+      await db.insert(chatDeliveries).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: conversation.id,
+        providerEventId: "retained", deduplicationKey: "retained", eventKind: "message", normalizedEvent: {}, state: "retry", nextAttemptAt: new Date() });
+      await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: conversation.id,
+        issueId: issue.id, idempotencyKey: "retained", payload: { text: "Retained" }, state: "retry", nextAttemptAt: new Date() });
+      await db.insert(chatActions).values({ companyId: f.companyId, endpointId: f.endpointId, conversationId: conversation.id,
+        kind: "provider_effect", providerActionId: "retained", payload: {}, status: "received" });
+      const report = await readIdleSleepSafety(db, hold, () => now, ownerId, async () => "none", undefined, undefined,
+        false, false, { incomingWake: verified(), collectDiagnostics: true });
+      expect(report.backgroundWork).toBe("present");
+      expect(report.diagnostics?.checks).toEqual(expect.arrayContaining([
+        { reason: "chat_endpoints", state: "none" }, { reason: "chat_deliveries", state: "present" },
+        { reason: "chat_publications", state: "present" }, { reason: "chat_actions", state: "present" },
+      ]));
+      expect(await db.select().from(chatDeliveries)).toHaveLength(1);
+      expect(await db.select().from(chatPublications)).toHaveLength(1);
+      expect(await db.select().from(chatActions)).toHaveLength(1);
+    });
+
     it("requires current broker instance and exact owner binding, preserving continuity and unsupported transport blockers", async () => {
       const f = await seed();
       const applicationId = randomUUID(),
