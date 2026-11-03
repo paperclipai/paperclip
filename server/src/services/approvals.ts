@@ -5,7 +5,7 @@ import { notifyHireApproved } from "./hire-hook.js";
 
 import { and, asc, eq, inArray, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { approvalComments, approvals } from "@paperclipai/db";
+import { approvalComments, approvals, heartbeatRuns } from "@paperclipai/db";
 import { unprocessable } from "../errors.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { createAgentLifecycle } from "./agent-lifecycle.js";
@@ -55,11 +55,17 @@ export function approvalRecords(db: Db) {
     },
 
     create: (companyId: string, data: Omit<typeof approvals.$inferInsert, "companyId">) =>
-      writeApprovalChange(db, companyId, tx => tx
-        .insert(approvals)
-        .values({ ...data, companyId })
-        .returning()
-        .then((rows) => rows[0])),
+      writeApprovalChange(db, companyId, async tx => {
+        if (data.originRunId) {
+          // This row lock serializes creation with a run's terminal write.
+          const [run] = await tx.select().from(heartbeatRuns)
+            .where(eq(heartbeatRuns.id, data.originRunId)).for("update");
+          if (!run || run.companyId !== companyId || run.agentId !== data.requestedByAgentId || run.status !== "running") {
+            throw unprocessable("Run-scoped approval requires its authenticated agent's running execution");
+          }
+        }
+        return tx.insert(approvals).values({ ...data, companyId }).returning().then(rows => rows[0]);
+      }),
 
     // Cancel an open (pending/revision_requested) approval without a board
     // decision — e.g. when its paired agent is terminated during duplicate

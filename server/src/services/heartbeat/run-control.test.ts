@@ -1,7 +1,8 @@
+import { approvalService } from "../approvals.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { activityLog, agents, agentWakeupRequests, caseEvents, caseHandoffs, cases, companies, environmentLeases, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
-import { eq, inArray, sql } from "drizzle-orm";
+import { activityLog, agents, approvals, agentWakeupRequests, caseEvents, caseHandoffs, cases, companies, environmentLeases, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runningProcesses } from "../../adapters/index.js";
 import {
@@ -131,6 +132,112 @@ describe("heartbeat run-control module boundary", () => {
 describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control database wiring", () => {
   let db: Db;
   const { fixture, liveRun } = setupRunControlDatabase("paperclip-heartbeat-run-control-module", value => { db = value; });
+
+  it("cancels only open approvals belonging to the stopped run", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    const other = await liveRun(company.id, agent.id);
+    const svc = approvalService(db);
+    const create = (originRunId: string) => svc.create(company.id, {
+      type: "request_board_approval", requestedByAgentId: agent.id, originRunId, payload: { summary: "Fictitious" },
+    });
+    const pending = await create(run.id);
+    const revision = await create(run.id);
+    const decided = await create(run.id);
+    const unrelated = await create(other.id);
+    await svc.requestRevision(revision.id, "board", "Clarify");
+    await svc.approve(decided.id, "board");
+    const stopped = await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop");
+    expect(stopped?.status).toBe("cancelled");
+    expect((await svc.getById(pending.id))?.status).toBe("cancelled");
+    expect((await svc.getById(revision.id))?.status).toBe("cancelled");
+    expect((await svc.getById(decided.id))?.status).toBe("approved");
+    expect((await svc.getById(unrelated.id))?.status).toBe("pending");
+    await expect(create(run.id)).rejects.toThrow("running execution");
+  });
+
+  it("does not leave an open approval when creation races cancellation", async () => {
+    const { company, agent } = await fixture();
+    const svc = approvalService(db);
+    for (let i = 0; i < 5; i++) {
+      const run = await liveRun(company.id, agent.id);
+      const create = svc.create(company.id, { type: "request_board_approval", requestedByAgentId: agent.id,
+        originRunId: run.id, payload: { summary: "Fictitious race" } });
+      const cancel = createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop");
+      const [created, stopped] = await Promise.allSettled([create, cancel]);
+      expect(stopped.status).toBe("fulfilled");
+      if (created.status === "fulfilled") expect((await svc.getById(created.value.id))?.status).toBe("cancelled");
+      else expect(String(created.reason)).toContain("running execution");
+      expect(await db.select().from(approvals).where(and(eq(approvals.originRunId, run.id), eq(approvals.status, "pending")))).toHaveLength(0);
+    }
+  });
+
+  it("serializes a held approval creation before cancellation", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    let release!: () => void;
+    let admitted!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const created = new Promise<void>(resolve => { admitted = resolve; });
+    const creation = db.transaction(async tx => {
+      const approval = await approvalService(tx as unknown as Db).create(company.id, {
+        type: "request_board_approval", requestedByAgentId: agent.id, originRunId: run.id, payload: {},
+      });
+      admitted();
+      await held;
+      return approval;
+    });
+    await created;
+    const stopping = createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop");
+    try {
+      const early = await Promise.race([stopping.then(() => true), new Promise<boolean>(resolve => setTimeout(() => resolve(false), 100))]);
+      expect(early).toBe(false);
+    } finally { release(); }
+    const [approval, stopped] = await Promise.all([creation, stopping]);
+    expect(stopped?.status).toBe("cancelled");
+    expect((await approvalService(db).getById(approval.id))?.status).toBe("cancelled");
+  });
+
+  it("rejects approval creation waiting behind a committed cancellation", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    let release!: () => void;
+    let admitted!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { admitted = resolve; });
+    const cancellation = db.transaction(async tx => {
+      await tx.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, run.id));
+      admitted();
+      await held;
+    });
+    await locked;
+    const creation = approvalService(db).create(company.id, { type: "request_board_approval", requestedByAgentId: agent.id,
+      originRunId: run.id, payload: {} });
+    const observation = creation.then(() => "created", () => "rejected");
+    try {
+      const early = await Promise.race([observation, new Promise<string>(resolve => setTimeout(() => resolve("waiting"), 100))]);
+      expect(early).toBe("waiting");
+    } finally { release(); }
+    await cancellation;
+    expect(await observation).toBe("rejected");
+  });
+
+  it("preserves the winning decision when approval races cancellation", async () => {
+    const { company, agent } = await fixture();
+    const svc = approvalService(db);
+    for (let i = 0; i < 5; i++) {
+      const run = await liveRun(company.id, agent.id);
+      const approval = await svc.create(company.id, { type: "request_board_approval", requestedByAgentId: agent.id,
+        originRunId: run.id, payload: {} });
+      const [decision, stopped] = await Promise.allSettled([
+        svc.approve(approval.id, "board"),
+        createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop"),
+      ]);
+      expect(stopped.status).toBe("fulfilled");
+      const final = await svc.getById(approval.id);
+      expect(final?.status).toBe(decision.status === "fulfilled" ? "approved" : "cancelled");
+    }
+  });
 
   it.each(["queued", "running", "cancelled", "succeeded"] as const)("does not supersede a retry that becomes %s between lookup and the cancellation fence", async status => {
     const { company, agent } = await fixture();

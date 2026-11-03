@@ -2,6 +2,10 @@
 
 This project can run fully in local dev without setting up PostgreSQL manually.
 
+## Run-scoped approvals
+
+For approvals created through the company approvals API by a signed run-scoped agent JWT, the server records the originating run and serializes creation against its terminal status. When the heartbeat lifecycle commits cancellation, open approvals for that run become cancelled in the same transaction; already-decided approvals are preserved. Setting `PAPERCLIP_REQUIRE_RUN_SCOPED_APPROVALS=true` rejects creation through that API with a persistent agent key or caller-supplied run header. Board requests are unaffected. This opt-in policy does not cover approvals and action requests created internally by the tool gateway; do not use it as an external-action safety boundary. A provider action already dispatched cannot be rolled back by cancelling a run.
+
 ## Persistent case handoffs
 
 The Cases experiment supports prompt-driven agent workflows on one ordinary task.
