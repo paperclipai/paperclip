@@ -97,7 +97,7 @@ export function approvalRecords(db: Db) {
       }
 
       const now = new Date();
-      return writeApprovalChange(db, existing.companyId, tx => tx
+      const updated = await writeApprovalChange(db, existing.companyId, tx => tx
         .update(approvals)
         .set({
           status: "revision_requested",
@@ -106,9 +106,11 @@ export function approvalRecords(db: Db) {
           decidedAt: now,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.status, "pending")))
         .returning()
-        .then((rows) => rows[0]), { approvalId: id });
+        .then((rows) => rows[0] ?? null), { approvalId: id });
+      if (!updated) throw unprocessable("Only pending approvals can request revision");
+      return updated;
     },
 
     resubmit: async (id: string, payload?: Record<string, unknown>) => {
@@ -118,7 +120,7 @@ export function approvalRecords(db: Db) {
       }
 
       const now = new Date();
-      return writeApprovalChange(db, existing.companyId, tx => tx
+      const updated = await writeApprovalChange(db, existing.companyId, tx => tx
         .update(approvals)
         .set({
           status: "pending",
@@ -128,9 +130,11 @@ export function approvalRecords(db: Db) {
           decidedAt: null,
           updatedAt: now,
         })
-        .where(eq(approvals.id, id))
+        .where(and(eq(approvals.id, id), eq(approvals.status, "revision_requested")))
         .returning()
-        .then((rows) => rows[0]), { approvalId: id });
+        .then((rows) => rows[0] ?? null), { approvalId: id });
+      if (!updated) throw unprocessable("Only revision requested approvals can be resubmitted");
+      return updated;
     },
 
     listComments: async (approvalId: string) => {

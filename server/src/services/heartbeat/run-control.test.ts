@@ -239,6 +239,35 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     }
   });
 
+  it.each(["revision", "resubmit"] as const)("cannot reopen a cancelled approval through a racing %s", async action => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    const svc = approvalService(db);
+    const approval = await svc.create(company.id, { type: "request_board_approval", requestedByAgentId: agent.id,
+      originRunId: run.id, payload: {} });
+    if (action === "resubmit") await svc.requestRevision(approval.id, "board", "Clarify");
+    let release!: () => void;
+    let admitted!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { admitted = resolve; });
+    const cancellation = db.transaction(async tx => {
+      await tx.select().from(approvals).where(eq(approvals.id, approval.id)).for("update");
+      admitted();
+      await held;
+      await tx.update(approvals).set({ status: "cancelled" }).where(eq(approvals.id, approval.id));
+    });
+    await locked;
+    const update = action === "revision" ? svc.requestRevision(approval.id, "board", "Clarify") : svc.resubmit(approval.id);
+    const observed = update.then(() => "updated", () => "rejected");
+    try {
+      const early = await Promise.race([observed, new Promise<string>(resolve => setTimeout(() => resolve("waiting"), 100))]);
+      expect(early).toBe("waiting");
+    } finally { release(); }
+    await cancellation;
+    expect(await observed).toBe("rejected");
+    expect((await svc.getById(approval.id))?.status).toBe("cancelled");
+  });
+
   it.each(["queued", "running", "cancelled", "succeeded"] as const)("does not supersede a retry that becomes %s between lookup and the cancellation fence", async status => {
     const { company, agent } = await fixture();
     const [run] = await db.insert(heartbeatRuns).values({
