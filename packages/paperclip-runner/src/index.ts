@@ -119,3 +119,6 @@ export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunner
 export type { RunnerProviderLaunchRequirements, RunnerProviderLaunchEnvironment, PreparedRunnerProviderLaunch, RunnerLaunchPreparer } from "./live/runner-provider-launch.js";
 
 export { resolveGrokDisableWebSearch } from "./drivers/acpx/grok-web-search.js";
+
+export { readProviderFailure, type ProviderFailure } from "./contracts/provider-failure.generated.js";
+export { providerFailureFromError } from "./drivers/provider-failure.js";

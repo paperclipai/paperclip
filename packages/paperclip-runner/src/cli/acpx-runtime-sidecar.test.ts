@@ -143,7 +143,7 @@ describe("qualified ACPX runtime sidecar", () => {
   it.each(["projection", "validation", "emission"])("preserves standard usage when optional Cursor notice %s fails", async failure => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf("    try {\n      const usageAfter = await readSidecarHostStatusWithin(activeHost);");
-    const end = source.indexOf("    terminal = boundedSidecarValue(result);", start);
+    const end = source.indexOf("    terminal = openParams ? acpxTerminalResult(", start);
     expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
     const emitted: unknown[] = [], diagnostics: unknown[] = [];
     const after = { lastRequestId: "request-1", requestTokenUsage: { "prompt-1": { input_tokens: 12, output_tokens: 3 } } };

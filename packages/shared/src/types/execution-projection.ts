@@ -99,6 +99,7 @@ export interface ExecutionReconciliation {
 /** A task-level view of one interruption. Diagnostics keep the underlying runs
  * and recovery records; ordinary product surfaces render this projection. */
 export interface TaskInterruptionPresentation {
+  providerFailure?: import("../provider-failure.generated.js").ProviderFailure;
   intentId: string | null;
   responsibility: "system" | "user";
   state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
