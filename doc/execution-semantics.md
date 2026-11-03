@@ -300,7 +300,10 @@ semantic dispatcher requirement. Missing usage remains pending accounting debt;
 a complete receipt settles the original reservation and charge once.
 
 A recovery setup failure does not establish that the original execution never
-started. Saved native execution and current Stop metadata survive configuration
+started. A same-run, company- and issue-bound coordinator attempt proves that
+native execution or result finalization was entered; selected input alone does
+not. Setup-failure writes lock that coordinator before the run, so a concurrently
+committed claim cannot be missed. Current Stop metadata survives configuration
 failure, including an acknowledgement committed while the terminal write waits.
 Only the bounded run-Stop fields, including intentional handoff, are retained;
 stale result projections are replaced. Normal Stop writes can still advance

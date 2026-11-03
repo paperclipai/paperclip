@@ -87,6 +87,7 @@ import {
   issueDocuments,
   heartbeatRunEvents,
   heartbeatRuns,
+  nativeRunFinalizations,
   issueApprovals,
   issueComments,
   issueRecoveryActions,
@@ -648,8 +649,11 @@ function readNonEmptyString(value: unknown): string | null {
 function preserveNativeExecutionObligationsSql(incoming: Record<string, unknown> | null, setupFailure = false) {
   const projected = incoming === null ? sql`null::jsonb` : sql`${JSON.stringify(incoming)}::jsonb`;
   const result = setupFailure ? sql`case when ${heartbeatRuns.runtimeMode} = 'native'
-    and jsonb_typeof(${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput') = 'object'
-    and ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput' <> '{}'::jsonb
+    and exists (select 1 from ${nativeRunFinalizations}
+      where ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+        and ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+        and ${nativeRunFinalizations.issueId} = ${heartbeatRuns.nativeIssueId}
+        and ${nativeRunFinalizations.attempt} > 0)
     and ${projected}->'executionRecovery'->>'kind' = 'bootstrap'
     and ${projected}->'executionRecovery'->>'providerWorkStarted' = 'false'
     then ${projected} - 'executionRecovery' else ${projected} end` : projected;
@@ -1220,8 +1224,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         },
       };
     }
-    const updated = await writeRunStatus(status, previousStatus, writer =>
-      previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
+    const updated = await writeRunStatus(status, previousStatus, async writer => {
+      if (options?.setupFailure && previousStatus?.runtimeMode === "native" && previousStatus.nativeIssueId) {
+        await writer.select({ runId: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+          .where(and(eq(nativeRunFinalizations.runId, runId),
+            eq(nativeRunFinalizations.companyId, previousStatus.companyId),
+            eq(nativeRunFinalizations.issueId, previousStatus.nativeIssueId)))
+          .for("update");
+      }
+      return previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? terminalizeLegacyExecution({
             db: writer,
             run: previousStatus,
@@ -1269,7 +1280,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             .catch((error: unknown) => {
               if (cancellationCondition) rethrowNativeCancellationLockConflict(error);
               throw error;
-            }));
+            });
+    });
 
     if (updated) {
       publishLiveEvent({
