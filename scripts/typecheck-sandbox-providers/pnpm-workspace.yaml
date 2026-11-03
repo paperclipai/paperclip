@@ -5,3 +5,8 @@
 packages:
   - ../../packages/plugins/sandbox-providers/*
   - ../../packages/plugins/sandbox-providers/cloudflare/bridge-template
+
+# e2b pins a glob with advisories (GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249).
+# tsc only reads these packages, and this override does not change what ships.
+overrides:
+  glob: ^14.0.2
