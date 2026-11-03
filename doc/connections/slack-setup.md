@@ -163,6 +163,9 @@ The action records a durable request before sending. Repeating the same request
 returns its saved result; an uncertain delivery is never automatically resent.
 **Open Slack configuration** opens the saved app's OAuth & Permissions page.
 Legacy connections without an app ID open Slack's app list instead.
+**Open Slack** remains available after automatic setup completion and on the
+saved connection page. It opens the current user's bot DM when its workspace
+and channel are known, then falls back to the saved provider link or Slack.
 
 An explicit managed reconnect reinstalls the saved app and verifies the replacement
 bot credentials. Its request ID is saved before dispatch, so a duplicate completed
