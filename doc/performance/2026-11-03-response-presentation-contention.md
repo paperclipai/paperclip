@@ -1,6 +1,6 @@
 # Avoid self-contention during accepted-response recovery
 
-Baseline: `82c033ed127d07862e6765aa4b69a3cf339bde81`. This change prevents the response-presentation worker from recovering different tasks on the same chat endpoint at the same time. It preserves task order, current transactional authorization, company boundaries, NOWAIT locks, and retry/drain behavior. Endpoint IDs are scheduling hints from a company-scoped wake-action join. Missing hints retain task order and every eligibility check.
+Baseline: `82c033ed127d07862e6765aa4b69a3cf339bde81`. This change prevents the response-presentation worker from recovering different tasks on a shared chat endpoint or principal at the same time. It preserves task order, current transactional authorization, company boundaries, NOWAIT locks, and retry/drain behavior. Endpoint and principal IDs are scheduling hints from a company-scoped wake-action join. Missing hints retain task order and every eligibility check.
 
 ## Evidence and limits
 
@@ -10,9 +10,9 @@ The real PostgreSQL regression uses four accepted historical responses for disti
 
 Other controls cover external-lock failure and rollback, recovery after release, paused-endpoint refusal despite a forged hint, transitive task/endpoint groups, duplicate and missing hints, shutdown, drain/resume, and an in-flight rescope with exactly-once newcomer admission. All authorization locks remain in their owners. Ingress, direct finalization/reconciliation, and other workers can still cause legitimate retries. Provider network sends are not asserted to hold these locks. Open PR #17714 fixes a complementary publication-commit lock order. PR #18686 changes run-list JSON/index work, not this worker.
 
-## Controlled local comparison
+## Initial endpoint-only comparison
 
-Five alternating pairs compared the actual archived baseline worker/query with the treatment. Each used fresh equivalent four-response fixtures and real PostgreSQL. No artificial database sleep or advisory gate was used in this comparison. Validation checked one comment per run, the exact accepted text, and one publication with the matching text/company/task/conversation/comment association. Validation ran after timing and capture counters stopped.
+Five alternating pairs compared the actual archived baseline worker/query with the initial endpoint-only treatment on source base `82c033ed`. This study preceded the principal-hint review fix below. It measures the earlier candidate, not final-head CPU. The final endpoint fixture has four distinct principals, so the added principal key does not change its groups; its constant extra hint processing was not CPU-measured. Each used fresh equivalent four-response fixtures and real PostgreSQL. No artificial database sleep or advisory gate was used in this comparison. Validation checked one comment per run, the exact accepted text, and one publication with the matching text/company/task/conversation/comment association. Validation ran after timing and capture counters stopped.
 
 The actual Vitest child recorded Node **v24.22.2** and executable `/Users/dotta/.npm/_npx/387698761821791d/node_modules/node/bin/node`. This is a shared-host measurement: the coordinator reported 18 logical CPUs and about 10.5 one-minute load, with unrelated Node/VM work. Other campaign agents paused heavy jobs. No unrelated process was stopped.
 
@@ -35,11 +35,26 @@ Retry timers and Date were advanced together. **Measured wall time excludes real
 
 Median instrumented process CPU was 177.157 → 98.164 ms, with ranges 141.654–945.351 and 80.695–121.239 ms. Median product driver calls were 443 → 293; rows were 314 → 200; query errors were 6 → 0. Each failed endpoint attempt added exactly 25 product calls and 19 returned rows. All variants completed the same four responses. The observer performed 201–205 memory checks before and 40–45 after; its CPU contribution is included and is not subtracted.
 
+## Final shared-principal work-count comparison
+
+Review identified a second shared lock: the source-authority path takes a company/principal try-advisory lock before endpoint checks. Two valid Slack bot endpoints in the same workspace can share one external-principal row. The final code also groups that principal hint from the same company-scoped wake-action join. The hint never grants authority.
+
+A real PostgreSQL regression asserts distinct endpoints and identical source principal IDs. Before the fix, one response completed on the first pass and the other failed with `NativeChatReviewPresentationContentionError`. The advisory SQL itself returned successfully, so query-error count was zero. After the fix, both exact responses and their correctly associated publications completed on the first pass. This counts-only experiment used a short real comment-transaction hold to reproduce overlap. It measured no CPU or wall-time benefit.
+
+| Stage | Admission | Responses | Product calls | Rows | Outer contention failures | Query errors |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| First pass | Task + endpoint | 1 | 91 | 65 | 1 | 0 |
+| First pass | Task + endpoint + principal | 2 | 145 | 100 | 0 | 0 |
+| Same completed work, after retry | Task + endpoint | 2 | 165 | 114 | 1 | 0 |
+| Same completed work, settled | Task + endpoint + principal | 2 | 147 | 100 | 0 | 0 |
+
+The final independent-resource control retains parallel progress when task, endpoint and principal keys differ. Existing endpoint-lock and current-authority controls remain. The original five-pair table is retained as historical evidence; no final-code CPU percentage is inferred from it.
+
 ## Reproduction and failure accounting
 
 ```sh
 pnpm exec vitest run --project @paperclipai/server server/src/__tests__/scoped-deadline-work.test.ts
-pnpm exec vitest run --project @paperclipai/server server/src/__tests__/chat-channels.integration.test.ts -t 'shared-endpoint accepted-response|endpoint scheduling hint|contended accepted response'
+pnpm exec vitest run --project @paperclipai/server server/src/__tests__/chat-channels.integration.test.ts -t 'shared-endpoint accepted-response|different endpoints for one principal|endpoint scheduling hint|contended accepted response'
 ```
 
 The committed helper materializes the pinned baseline with `git show`; it does not ship a clone of old production code. Run it with Node 24.22.2 and pnpm 9.15.4 from a clean, isolated checkout of this PR:

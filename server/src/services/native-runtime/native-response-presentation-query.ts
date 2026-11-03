@@ -7,8 +7,7 @@ export function nativeResponsePresentationCandidates(scope?: NativeResponsePrese
   const db = new QueryBuilder();
   return db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
     issueId: nativeRunFinalizations.issueId, agentId: heartbeatRuns.agentId, nextAttemptAt: nativeRunFinalizations.nextAttemptAt,
-    endpointId: chatActions.endpointId,
-
+    endpointId: chatActions.endpointId, principalId: chatActions.principalId,
   }).from(nativeRunFinalizations)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
       eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.nativeIssueId, nativeRunFinalizations.issueId)))

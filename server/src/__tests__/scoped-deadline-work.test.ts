@@ -149,6 +149,24 @@ it("retains an in-flight rescope and admits a bridging newcomer once after activ
   expect(f.onError).not.toHaveBeenCalled();
 });
 
+it("serializes a shared principal across endpoints while unrelated resources progress", async () => {
+  const keys: Record<string, string[]> = {
+    "1": ["issue:a", "endpoint:a", "principal:shared"],
+    "2": ["issue:b", "endpoint:b", "principal:shared"],
+    "3": ["issue:c", "endpoint:c", "principal:independent"],
+  };
+  const f = concurrentFixture([entry("1"), entry("2"), entry("3")], 4, true, entry => keys[entry.id]);
+  try {
+    await vi.waitFor(() => expect(f.started).toEqual(["1", "3"]), { timeout: 100 });
+    f.release("3");
+    await vi.waitFor(() => expect(f.active.has("3")).toBe(false), { timeout: 100 });
+    expect(f.started).not.toContain("2");
+    f.release("1");
+    await vi.waitFor(() => expect(f.started).toEqual(["1", "3", "2"]), { timeout: 100 });
+  } finally { f.releaseAll(); await f.worker.ready; }
+  expect(f.onError).not.toHaveBeenCalled();
+});
+
 it("checks independent tasks concurrently with a bounded number of active checks", async () => {
   const f = concurrentFixture(Array.from({ length: 6 }, (_, index) => entry(String(index))));
   try {
