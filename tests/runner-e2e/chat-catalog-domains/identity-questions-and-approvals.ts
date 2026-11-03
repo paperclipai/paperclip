@@ -201,7 +201,7 @@ export const questionIdentityCases = [
     },
   }),
   identityDefinition("questions-and-approvals.multi-part-question", ctx => questionFixture(ctx, true), gradeQuestions, {
-    expectedRunCount: 2, observe: observeQuestion,
+    expectedRunCount: 2, observe: observeQuestion, oracleVersion: "paperclip.chat-catalog.required-question.v2",
     async act(ctx, state) {
       await waitForReply(ctx);
       const row = ctx.input.page.locator(`[id=${JSON.stringify(`interaction-${entity(state, "original").id}`)}]`);
@@ -211,14 +211,22 @@ export const questionIdentityCases = [
       const firstQuestion = original.payload.questionSet?.questions[0];
       if (!firstQuestion?.required) throw new Error("Multipart first question must retain its saved required contract");
       const before = (await cards(ctx)).find(card => card.id === original.id);
+      const beforeRuns = (await ctx.allRuns()).map(run => ({ id: run.id, status: run.status }));
+      const tasksPath = `/api/companies/${ctx.input.fixtures.company.id}/issues?includeAgentCreatedTasks=true`;
+      const beforeTasks = (await ctx.input.api.get<Entity[]>(tasksPath)).filter(task => task.id !== ctx.issue()!.id);
       await expect(form.getByText(firstQuestion.prompt, { exact: true })).toBeVisible();
       const next = form.getByRole("button", { name: "Next", exact: true });
-      await expect(next).toBeDisabled();
+      // The ordinary form validates on an explicit Next click; enabled is not consent.
+      await next.click();
+      await expect(form.getByText("This question is required.", { exact: true })).toBeVisible();
       const after = (await cards(ctx)).find(card => card.id === original.id);
       await expect(form.getByText(firstQuestion.prompt, { exact: true })).toBeVisible();
-      state.validationObserved = await next.isDisabled() && before?.status === "pending" && after?.status === "pending"
+      const afterTasks = (await ctx.input.api.get<Entity[]>(tasksPath)).filter(task => task.id !== ctx.issue()!.id);
+      const afterRuns = (await ctx.allRuns()).map(run => ({ id: run.id, status: run.status }));
+      state.validationObserved = before?.status === "pending" && after?.status === "pending"
         && !before.result && !after.result && JSON.stringify(before.payload) === JSON.stringify(original.payload)
-        && JSON.stringify(after.payload) === JSON.stringify(original.payload);
+        && JSON.stringify(after.payload) === JSON.stringify(original.payload) && beforeTasks.length === 0 && afterTasks.length === 0
+        && JSON.stringify(afterRuns) === JSON.stringify(beforeRuns);
       if (!state.validationObserved) throw new Error("Required multipart question advanced or changed before an answer");
       await form.getByRole("radio", { name: "Researchers", exact: true }).click();
       await form.getByRole("button", { name: "Next", exact: true }).click();
