@@ -113,6 +113,24 @@ it.each(["missing link", "hidden work", "source mutation", "wrong command", "wro
   expect(gradeWorkTimeline(o).passed).toBe(false);
 });
 
+it.each([
+  "Today UTC: Morgan ran verification with exit code 1 and paused, you reassigned the task to Riley, and Riley fixed the label and the check passed with exit code 0.",
+  "Today UTC: Morgan ran verification with exit code 1 and paused; you reassigned the task to Riley; Riley fixed the label and the check passed with exit code 0.",
+  "Today UTC: Morgan ran verification with exit code 1 and paused then you reassigned the task to Riley and Riley fixed the label and the check passed with exit code 0.",
+])("orders matched facts independently of milestone punctuation: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+it.each([
+  "Today UTC: you reassigned the task to Riley, Morgan ran verification with exit code 1 and paused, and Riley fixed the label and the check passed with exit code 0.",
+  "Today UTC: Morgan ran verification with exit code 1 and paused, Morgan reassigned the task to Riley while you watched, and Riley fixed the label and the check passed with exit code 0.",
+  "Today UTC: Morgan ran verification with exit code 1 and paused, you reassigned the task to Riley, and Morgan fixed the label and the check passed with exit code 0.",
+  "Today UTC: Morgan ran verification with exit code 1 and paused, Riley fixed the label and the check passed with exit code 0, then you reassigned the task to Riley.",
+  "Today UTC: Morgan ran verification with exit code 1 and paused, Jordan the human reassigned the task to Riley, and Riley fixed the label and the check passed with exit code 0.",
+  "Today UTC: Morgan ran verification with exit code 1 and paused, and Riley fixed the label and the check passed with exit code 0.",
+])("retains ordering and actor requirements inside one sentence: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+
 it("admits the selected live timeline metadata without invoking fixture callbacks", async () => {
   const descriptor = findChatCatalogCase("activity.work-timeline")!;
   const implementation = workTimelineCases[0]!;
