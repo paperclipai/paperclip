@@ -75,18 +75,41 @@ const workloads = [
   { name: "operator-stop", runs: 1, events: 512, intervalMs: 100, prelude: 0, stop: true },
 ];
 function browserReport(revision, latency) {
-  return { protocolVersion: "v2-compact-markers-original-clock-stream", admissionProtocol: "sequential-provider-and-clock-readiness-before-common-epoch", setupReadinessPollingMs: 50, complete: true, cleanup: { complete: true, errors: [] }, qualificationOnly: false, diagnosticOnly: false, performanceAcceptanceEligible: true, browserRecording: { trace: "off", video: "off", screencast: false },
+  const companyId = "00000000-0000-4000-8000-000000000001", environmentId = "00000000-0000-4000-8000-000000000002";
+  const id = (kind, caseIndex, index) => `00000000-0000-4000-8000-${(kind * 100000 + caseIndex * 1000 + index).toString(16).padStart(12, "0")}`;
+  return { protocolVersion: "v3-supported-remote-original-clock-stream", transport: "sandbox-remote", companyId,
+    resourceBudgets: { providerReadinessMs: 300000, fullInvocationMs: 900000, streamingMs: 120000,
+      terminalDrainageMs: 180000, stopAcknowledgementMs: 30000, remoteLeaseCleanupMs: 30000 },
+    remote: { transport: "sandbox-remote", revision, buildRevision: revision, environmentId,
+      runnerPublicUrl: "wss://127.0.0.1:32100",
+      selection: "Normal plugin install + sandbox environment + agent defaultEnvironmentId; no runtime resolver override",
+      plugin: { pluginKey: "paperclip.fake-sandbox-provider" }, tls: { peerVerification: true, caSha256: "e".repeat(64), serverCertificateSha256: "f".repeat(64) },
+      runner: { sha256: "d".repeat(64), metadata: { prpTransportModes: ["dial_wss"] } },
+      provider: { nodeSha256: "b".repeat(64), wrapperSha256: "c".repeat(64), fixtureSha256: "a".repeat(64) } },
+    fixtureSha256: "a".repeat(64), admissionProtocol: "sequential-provider-and-clock-readiness-before-common-epoch", setupReadinessPollingMs: 50, complete: true, cleanup: { complete: true, errors: [] }, qualificationOnly: false, diagnosticOnly: false, performanceAcceptanceEligible: true, browserRecording: { trace: "off", video: "off", screencast: false },
     sourceRevision: revision, compiledBuildRevision: revision, serverArtifact: "compiled", serverEntrySha256: `${revision}-compiled`,
     measurementSha256: "synthetic-fixed-fixture", compiledHotPathHashes: { append: "append", port: "port", runtime: "runtime" },
-    cases: workloads.map(workload => ({ ...workload, stop: Boolean(workload.stop), persistedAfterReload: true,
+    cases: workloads.map((workload, caseIndex) => ({ ...workload, stop: Boolean(workload.stop), persistedAfterReload: true,
       epochMs: 1000, preludeProof: workload.prelude ? { individualDeltas: workload.prelude, uniqueSourceIdentities: workload.prelude, verifiedAtMs: 999 } : undefined,
+      settledAtMs: 1000 + latency, stopRequestedAtMs: workload.stop ? 1000 : undefined,
+      stopAcknowledgedAtMs: workload.stop ? 1000 + latency : undefined, remoteLeasesCheckedAtMs: 1001 + latency,
+      runIds: Array.from({ length: workload.runs }, (_, index) => id(1, caseIndex, index)),
+      controllerAuthority: { checkedBeforeMeasuredEpoch: true, checkedAtMs: 998, connectionClosedAtMs: 999,
+        observedReadOnly: "on", observedIsolation: "repeatable read", rows: Array.from({ length: workload.runs }, (_, index) => ({
+          run_id: id(1, caseIndex, index), issue_id: id(2, caseIndex, index), company_id: companyId,
+          lease_id: id(3, caseIndex, index), environment_id: environmentId, runtime_mode: "native", provider: "fake-plugin",
+          provider_lease_id: `fake-plugin://${id(1, caseIndex, index)}/fixture`, checkpoint_part: "header", checkpoint_header_bytes: 256,
+        })) },
+      remoteLeases: Array.from({ length: workload.runs }, (_, index) => ({ id: id(3, caseIndex, index), runId: id(1, caseIndex, index),
+        companyId, environmentId, provider: "fake-plugin", providerLeaseId: `fake-plugin://${id(1, caseIndex, index)}/fixture`,
+        status: "released", cleanupStatus: "success", releasedAt: "2026-11-03T00:00:00.000Z" })),
       visible: Array(workload.stop ? 3 : workload.events).fill({}), matchedVisibleClocks: workload.stop ? 3 : workload.events,
       firstVisibleAfterEmissionMs: latency, emissionToVisible: { medianMs: latency, p95Ms: latency },
       interChunkGaps: { paintCount: workload.events, count: workload.events - 1, medianMs: latency, maxMs: latency },
       intendedToVisible: { p95Ms: latency }, drainThroughTerminalMs: latency,
       stopThroughTerminalMs: latency, stopThroughAcknowledgementMs: latency,
-      durable: Array.from({ length: workload.runs }, (_, index) => ({ token: String(index), ordered: true,
-        uniqueSourceIdentities: workload.events, individualDeltas: workload.events, matchedSourceClocks: workload.events })),
+      durable: Array.from({ length: workload.runs }, (_, index) => ({ runId: id(1, caseIndex, index), token: String(index), ordered: true,
+        uniqueSourceIdentities: workload.stop ? 3 : workload.events, individualDeltas: workload.stop ? 3 : workload.events, matchedSourceClocks: workload.stop ? 3 : workload.events })),
     })) };
 }
 
@@ -123,7 +146,34 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       ["profile", report => { report.diagnosticOnly = true; }, /Diagnostic profiles/],
       ["profile-ineligible", report => { report.performanceAcceptanceEligible = false; }, /Profile-only evidence/],
       ["missing-retained-prelude", report => { report.cases.find(row => row.prelude).preludeProof.individualDeltas--; }, /stored prelude deltas/],
-      ["legacy-protocol", report => { delete report.protocolVersion; }, /v2 clock protocol/],
+      ["legacy-protocol", report => { delete report.protocolVersion; }, /v3 remote clock protocol/],
+      ["old-local-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; report.transport = "local"; }, /v3 remote clock protocol/],
+      ["wrong-transport", report => { report.transport = "local"; }, /sandbox remote transport/],
+      ["unregistered-resource-budget", report => { report.resourceBudgets.providerReadinessMs = 600000; }, /registered remote setup\/resource budgets/],
+      ["missing-normal-remote", report => { delete report.remote; }, /normal remote runtime provenance/],
+      ["missing-plugin", report => { delete report.remote.plugin; }, /plugin provenance/],
+      ["resolver-override", report => { report.remote.selection = "forced external controller flag"; }, /normal API remote environment selection/],
+      ["tls-unverified", report => { report.remote.tls.peerVerification = false; }, /TLS peer verification/],
+      ["plaintext-remote", report => { report.remote.runnerPublicUrl = "ws://127.0.0.1:32100"; }, /endpoint must use verified WSS/],
+      ["foreign-remote", report => { report.remote.runnerPublicUrl = "wss://example.com:32100"; }, /owned loopback/],
+      ["different-provider-artifact", report => { report.remote.provider.nodeSha256 = "9".repeat(64); }, /artifact changed/],
+      ["fixed-workload-changed", report => { report.cases[3].runs = 10; }, /Fixed workload changed/],
+      ["missing-controller-authority", report => { delete report.cases[3].controllerAuthority; }, /controller authority proof/],
+      ["authority-writable", report => { report.cases[3].controllerAuthority.observedReadOnly = "off"; }, /read-only transaction/],
+      ["authority-wrong-isolation", report => { report.cases[3].controllerAuthority.observedIsolation = "read committed"; }, /repeatable-read isolation/],
+      ["authority-late", report => { report.cases[3].controllerAuthority.checkedAtMs = 1000; }, /before the measured epoch/],
+      ["authority-fractional-closed-time", report => { report.cases[3].controllerAuthority.connectionClosedAtMs = 999.5; }, /before the measured epoch/],
+      ["authority-missing-run", report => { report.cases[3].controllerAuthority.rows.pop(); }, /Every remote run/],
+      ["authority-wrong-run", report => { report.cases[3].controllerAuthority.rows[99].run_id = report.cases[3].controllerAuthority.rows[0].run_id; }, /run set mismatch/],
+      ["authority-wrong-company", report => { report.cases[3].controllerAuthority.rows[99].company_id = "other"; }, /company mismatch/],
+      ["authority-wrong-environment", report => { report.cases[3].controllerAuthority.rows[99].environment_id = "other"; }, /environment mismatch/],
+      ["authority-wrong-provider", report => { report.cases[3].controllerAuthority.rows[99].provider = "fake"; }, /fake-plugin/],
+      ["authority-missing-checkpoint", report => { report.cases[3].controllerAuthority.rows[99].checkpoint_part = null; }, /checkpoint header/],
+      ["missing-lease-cleanup", report => { delete report.cases[3].remoteLeases; }, /lease cleanup proof/],
+      ["lease-pending", report => { report.cases[3].remoteLeases[99].status = "pending_cleanup"; }, /cleanup remains unsettled/],
+      ["lease-wrong-binding", report => { report.cases[3].remoteLeases[99].providerLeaseId = "other"; }, /fake-plugin/],
+      ["lease-check-before-timing", report => { report.cases[3].remoteLeasesCheckedAtMs = report.cases[3].settledAtMs - 1; }, /after recorded timing boundaries/],
+      ["stop-timing-restamped", report => { report.cases[5].stopAcknowledgedAtMs++; }, /timing boundary changed/],
       ["unqualified-admission", report => { delete report.admissionProtocol; }, /admission protocol/],
       ["unqualified-readiness-observation", report => { delete report.setupReadinessPollingMs; }, /readiness observation interval/],
       ["unfinished-cleanup", report => { report.cleanup.complete = false; }, /completed fixture cleanup/],
@@ -136,6 +186,16 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       ["browser-screencast", report => { report.browserRecording.screencast = true; }, /screencast capture off/],
     ]) {
       const rejected = run([`--pairs=${await manifest(name, Array(5).fill(0.30), false, change)}`, `--noise-report=${noise}`, "--require-acceptance"]);
+      assert.notEqual(rejected.status, 0); assert.match(rejected.stderr, message);
+    }
+    for (const [name, change, message] of [
+      ["old-noise-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; }, /different remote protocol/],
+      ["local-noise-transport", report => { report.transport = "local"; }, /different transport/],
+      ["changed-noise-budget", report => { report.resourceBudgets.providerReadinessMs++; }, /budgets changed after A\/A/],
+    ]) {
+      const changed = JSON.parse(await readFile(noise, "utf8")); change(changed);
+      const file = await save(name + ".json", changed);
+      const rejected = run([`--pairs=${await manifest(name, Array(5).fill(0.30))}`, `--noise-report=${file}`, "--require-acceptance"]);
       assert.notEqual(rejected.status, 0); assert.match(rejected.stderr, message);
     }
   } finally { await rm(directory, { recursive: true, force: true }); }

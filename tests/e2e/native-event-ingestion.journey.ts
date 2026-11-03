@@ -1,7 +1,8 @@
 import { createServer, type ServerResponse } from "node:http";
 import { randomUUID, createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { json } from "./agent-chat.shared";
@@ -15,6 +16,8 @@ type ClockStream = { nonce: string; markerCode: string; opened: boolean; hello: 
 type ClockCase = { events: number; intervalMs: number; epochMs?: number; streams: Map<string, ClockStream>; errors: string[] };
 type Case = { name: string; runs: number; events: number; intervalMs: number; prelude: number };
 const smoke = process.env.PAPERCLIP_INGESTION_SMOKE === "1";
+const transport = process.env.PAPERCLIP_INGESTION_TRANSPORT ?? "local";
+const providerReadinessMs = transport === "sandbox-remote" ? 300_000 : 180_000;
 const cases: Case[] = smoke ? [{ name: "qualification", runs: 1, events: 16, intervalMs: 25, prelude: 0 }] : [
   { name: "paced", runs: 1, events: 128, intervalMs: 25, prelude: 0 },
   { name: "burst16", runs: 1, events: 16, intervalMs: 0, prelude: 0 },
@@ -27,6 +30,57 @@ const stats = (values: number[]) => {
   return { count: sorted.length, medianMs: sorted[Math.floor(sorted.length / 2)], minMs: sorted[0], maxMs: sorted.at(-1),
     ...(values.length >= 100 ? { p95Ms: sorted[Math.ceil(sorted.length * 0.95) - 1] } : {}) };
 };
+
+async function remoteControllerAuthority(input: {
+  appRoot: string; companyId: string; environmentId: string; issueIds: string[];
+}) {
+  const configuration = process.env.PAPERCLIP_E2E_SERVER_CONFIG;
+  if (!configuration) throw new Error("Missing owned server configuration");
+  const config = JSON.parse(await readFile(configuration, "utf8"));
+  expect(config.database.mode).toBe("embedded-postgres");
+  const dataDirectory = await realpath(config.database.embeddedPostgresDataDir);
+  const ownedHome = await realpath(path.resolve(path.dirname(configuration), "../.."));
+  expect(dataDirectory.startsWith(`${ownedHome}${path.sep}`)).toBe(true);
+  const owner = (await readFile(path.join(dataDirectory, "postmaster.pid"), "utf8")).split(/\r?\n/);
+  expect(await realpath(owner[1])).toBe(dataDirectory);
+  const port = Number(owner[3]);
+  expect(Number.isSafeInteger(port) && port > 0 && port <= 65535).toBe(true);
+  const require = createRequire(path.join(input.appRoot, "packages/db/package.json"));
+  const postgres = require("postgres");
+  const sql = postgres({ host: "127.0.0.1", port, database: "paperclip", username: "paperclip", password: "paperclip",
+    max: 1, connect_timeout: 10, connection: { application_name: "native_ingestion_remote_authority_proof" } });
+  let proof;
+  try {
+    proof = await sql.begin("isolation level repeatable read read only", async (tx: any) => {
+      const settings = await tx`select current_setting('transaction_read_only') as read_only,
+        current_setting('transaction_isolation') as isolation`;
+      expect(settings[0].read_only).toBe("on");
+      expect(settings[0].isolation).toBe("repeatable read");
+      const rows = await tx`select r.id as run_id, r.company_id, r.native_issue_id as issue_id, r.runtime_mode,
+        l.id as lease_id, l.environment_id, l.provider, l.provider_lease_id,
+        c.part as checkpoint_part, octet_length(c.material::text) as checkpoint_header_bytes
+        from heartbeat_runs r
+        join environment_leases l on l.heartbeat_run_id = r.id and l.company_id = r.company_id
+        left join native_runner_checkpoints c on c.run_id = r.id and c.company_id = r.company_id
+          and c.issue_id = r.native_issue_id and c.part = 'header'
+        where r.company_id = ${input.companyId} and r.native_issue_id = any(${input.issueIds}::uuid[])`;
+      expect(rows).toHaveLength(input.issueIds.length);
+      expect(new Set(rows.map((row: any) => row.issue_id)).size).toBe(input.issueIds.length);
+      for (const row of rows) {
+        expect(row.company_id).toBe(input.companyId);
+        expect(row.runtime_mode).toBe("native");
+        expect(row.environment_id).toBe(input.environmentId);
+        expect(row.provider).toBe("fake-plugin");
+        expect(row.provider_lease_id).toMatch(/^fake-plugin:\/\//);
+        expect(row.checkpoint_part).toBe("header");
+        expect(Number(row.checkpoint_header_bytes)).toBeGreaterThan(0);
+      }
+      return { checkedBeforeMeasuredEpoch: true, checkedAtMs: Date.now(), transaction: "READ ONLY REPEATABLE READ",
+        observedReadOnly: settings[0].read_only, observedIsolation: settings[0].isolation, rows };
+    });
+  } finally { await sql.end({ timeout: 5 }); }
+  return { ...proof, connectionClosedAtMs: Date.now() };
+}
 
 test("native ingestion reaches the shipped UI promptly and survives reload", async ({ page, request }, info) => {
   const pending = new Map<string, Map<string, ServerResponse>>();
@@ -147,7 +201,10 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
   const browserRecording = { trace: captureMode(info.project.use.trace), video: captureMode(info.project.use.video),
     screencast: captureMode(info.project.use.trace) !== "off" || captureMode(info.project.use.video) !== "off" };
   const report: Record<string, unknown> = {
-    protocolVersion: "v2-compact-markers-original-clock-stream",
+    protocolVersion: transport === "sandbox-remote" ? "v3-supported-remote-original-clock-stream" : "v2-compact-markers-original-clock-stream",
+    transport,
+    resourceBudgets: { providerReadinessMs, fullInvocationMs: info.timeout, streamingMs: 120_000,
+      terminalDrainageMs: 180_000, stopAcknowledgementMs: 30_000, remoteLeaseCleanupMs: 30_000 },
     admissionProtocol: "sequential-provider-and-clock-readiness-before-common-epoch",
     setupReadinessPollingMs: 50,
     dependency: "Deterministic Codex app-server fixture; real application/runtime/port/PostgreSQL/live WebSocket/shipped UI",
@@ -177,7 +234,8 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
   }
   report.fixtureSha256 = createHash("sha256").update(await readFile(path.resolve(import.meta.dirname, "fixtures/in-feed-codex.mjs"))).digest("hex");
   const protocolFiles = ["native-event-ingestion.journey.ts", "playwright-native-ingestion.config.ts", "fixtures/in-feed-codex.mjs",
-    "fixtures/native-ingestion-bin/codex", "fixtures/composer-stop-codex-loader.mjs", "fixtures/native-ingestion-bootstrap.mjs"];
+    "fixtures/native-ingestion-bin/codex", "fixtures/composer-stop-codex-loader.mjs", "fixtures/native-ingestion-bootstrap.mjs",
+    "fixtures/native-ingestion-remote-server.mjs"];
   const protocolSources = await Promise.all(protocolFiles.map(async file => ({ file, bytes: await readFile(path.resolve(import.meta.dirname, file)) })));
   report.measurementSha256 = createHash("sha256").update(Buffer.concat(protocolSources.map(source => source.bytes))).digest("hex");
   const harnessRoot = path.resolve(import.meta.dirname, "../..");
@@ -185,7 +243,8 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
     sourceRevision: execFileSync("git", ["rev-parse", "HEAD"], { cwd: harnessRoot, encoding: "utf8" }).trim(),
     sourceStatus: execFileSync("git", ["status", "--porcelain", "--", "tests/e2e"], { cwd: harnessRoot, encoding: "utf8" }).trim(),
     sourceHashes: Object.fromEntries(protocolSources.map(source => [source.file, createHash("sha256").update(source.bytes).digest("hex")])),
-    driverDependencySource: process.env.PAPERCLIP_INGESTION_DRIVER_DEPENDENCIES ?? "Checkout tooling dependencies",
+    driverDependencySource: process.env.PAPERCLIP_INGESTION_DRIVER_DEPENDENCIES
+      ?? "Independent locked H3 driver install; every measured app owns separate dependencies and compiled output",
     driverLockSha256: createHash("sha256").update(await readFile(path.join(harnessRoot, "pnpm-lock.yaml"))).digest("hex"),
     scope: "Separate browser harness and driver-only tooling; every measured app uses its own frozen clean source and matching compiled stamp",
   };
@@ -193,11 +252,30 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
     await json(await request.patch("/api/instance/settings/experimental", { data: { enableNativeRunner: true, enableWorktreeRunExecution: true } }));
     await json(await request.post(`/api/companies/${company.id}/user-secret-definitions`, { data: { key: "OPENAI_API_KEY", name: "Fixture credential" } }));
     await json(await request.post(`/api/companies/${company.id}/me/user-secrets`, { data: { definitionKey: "OPENAI_API_KEY", value: "not-a-real-model-key" } }));
+    let remoteEnvironment: { id: string } | undefined;
+    if (transport === "sandbox-remote") {
+      const pluginPath = path.join(appRoot, "packages/plugins/paperclip-plugin-fake-sandbox");
+      const plugin = await json(await request.post("/api/plugins/install", { timeout: 120_000,
+        data: { packageName: pluginPath, isLocalPath: true } }));
+      expect(plugin.pluginKey).toBe("paperclip.fake-sandbox-provider");
+      const serverConfig = process.env.PAPERCLIP_E2E_SERVER_CONFIG;
+      if (!serverConfig) throw new Error("Missing owned server configuration for remote fixture provenance");
+      const remoteProvenance = JSON.parse(await readFile(path.resolve(path.dirname(serverConfig), "../..", "ingestion-remote-provenance.json"), "utf8"));
+      remoteEnvironment = await json(await request.post(`/api/companies/${company.id}/environments`, { data: {
+        name: "Native ingestion remote fixture", driver: "sandbox",
+        config: { provider: "fake-plugin", image: "fake:latest", reuseLease: false, runnerLifecycleMode: "per_turn" },
+        envVars: { PATH: `${path.dirname(remoteProvenance.provider.node)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin` },
+      } }));
+      report.remote = { ...remoteProvenance, plugin: { id: plugin.id, pluginKey: plugin.pluginKey, path: pluginPath },
+        environmentId: remoteEnvironment!.id,
+        selection: "Normal plugin install + sandbox environment + agent defaultEnvironmentId; no runtime resolver override" };
+    }
     const agents = [];
     const agentCount = Math.ceil(Math.max(...cases.map(item => item.runs)) / 50);
     for (let index = 0; index < agentCount; index++) {
       const agent = await json(await request.post(`/api/companies/${company.id}/agents`, { timeout: 120_000, data: {
         name: `Ingestion ${index + 1}`, role: "engineer", adapterType: "paperclip_runner",
+        ...(remoteEnvironment ? { defaultEnvironmentId: remoteEnvironment.id } : {}),
         adapterConfig: { provider: "codex", model: "gpt-5.1-codex-mini", env: {
           OPENAI_API_KEY: { type: "user_secret_ref", key: "OPENAI_API_KEY", version: "latest", required: true },
         } }, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 50 } },
@@ -249,7 +327,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         issueIds.push(background.id);
         issuedTokens.set(background.id, backgroundToken);
       }
-      const readinessDeadlineMs = Date.now() + 180_000;
+      const readinessDeadlineMs = Date.now() + providerReadinessMs;
       active.phase = "activation-and-provider-readiness";
       for (let index = 1; index < issueIds.length; index++) {
         const id = issueIds[index], token = issuedTokens.get(id)!;
@@ -293,6 +371,10 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         active.preludeProof = preludeProof;
         expect(count).toBe(workload.prelude); expect(identities.size).toBe(count);
       }
+      const controllerAuthority = remoteEnvironment ? await remoteControllerAuthority({
+        appRoot, companyId: company.id, environmentId: remoteEnvironment.id, issueIds,
+      }) : undefined;
+      if (controllerAuthority) active.controllerAuthority = controllerAuthority;
       const epochMs = Date.now() + 1000;
       state.epochMs = epochMs; active.epochMs = epochMs; active.phase = "streaming";
       const participants = [...pending.get(key)!.keys()];
@@ -324,6 +406,26 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         (await json(await request.get(`/api/heartbeat-runs/${runs[0].id}`))).resultJson?.nativeCancellation?.dispatchState,
       { timeout: 30_000 }).toBe("acknowledged");
       const acknowledgedAt = stop ? Date.now() : undefined;
+      let remoteLeases: unknown[] | undefined;
+      let remoteLeasesCheckedAtMs: number | undefined;
+      if (remoteEnvironment) {
+        let leases: any[] = [];
+        await expect.poll(async () => {
+          leases = await json(await request.get(`/api/environments/${remoteEnvironment.id}/leases`));
+          return runs.every(run => leases.some(lease => lease.heartbeatRunId === run.id && lease.releasedAt
+            && ["released", "expired", "failed"].includes(lease.status) && lease.cleanupStatus === "success"));
+        }, { timeout: 30_000 }).toBe(true);
+        remoteLeasesCheckedAtMs = Date.now();
+        remoteLeases = runs.map(run => {
+          const lease = leases.find((candidate: any) => candidate.heartbeatRunId === run.id);
+          expect(lease, `Missing normal sandbox lease for ${run.id}`).toBeTruthy();
+          expect(lease.environmentId).toBe(remoteEnvironment.id);
+          expect(lease.providerLeaseId).toMatch(/^fake-plugin:\/\//);
+          return { id: lease.id, runId: run.id, companyId: lease.companyId, environmentId: lease.environmentId, provider: lease.provider,
+            providerLeaseId: lease.providerLeaseId, status: lease.status, releasedAt: lease.releasedAt, cleanupStatus: lease.cleanupStatus,
+            terminationReceipt: lease.metadata?.remoteExecutionTermination };
+        });
+      }
       active.phase = "clock-reconciliation";
       await expect.poll(() => [...state.streams.values()].every(stream => !stream.error && (stop
         ? seenMarkers.every(marker => state.streams.get(nonce)!.records.has(marker.index))
@@ -341,7 +443,9 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       const { count, medianMs, maxMs } = stats(paintTimes.slice(1).map((at, index) => at - paintTimes[index]));
       const interChunkGaps = { paintCount: paintTimes.length, count, medianMs, maxMs };
       const clockEvidence: Array<Record<string, unknown>> = [];
-      const result = { ...workload, stop, nonce, markerCode, epochMs, preludeProof, clockEvidence, interChunkGaps, runIds: runs.map(run => run.id), participants: participants.length, visible, matchedVisibleClocks: visible.length,
+      const result = { ...workload, stop, nonce, markerCode, epochMs, settledAtMs: settledAt, stopRequestedAtMs: stopRequestedAt,
+        stopAcknowledgedAtMs: acknowledgedAt, preludeProof, controllerAuthority, clockEvidence, interChunkGaps,
+        remoteLeases, remoteLeasesCheckedAtMs, runIds: runs.map(run => run.id), participants: participants.length, visible, matchedVisibleClocks: visible.length,
         firstVisibleAfterEmissionMs: visible[0].visibleMs - visible[0].emittedMs,
         emissionToVisible: stats(visible.map(item => item.visibleMs - item.emittedMs)),
         intendedToVisible: stats(visible.map(item => item.visibleMs - item.intendedMs)),

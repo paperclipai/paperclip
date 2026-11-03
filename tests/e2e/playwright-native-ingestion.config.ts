@@ -11,7 +11,15 @@ process.env.PAPERCLIP_INGESTION_BROWSER_RECORDING = browserRecording ? "on" : "o
 const appRoot = path.resolve(process.env.PAPERCLIP_INGESTION_APP_ROOT ?? path.resolve(import.meta.dirname, "../.."));
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
 const bootstrap = path.resolve(import.meta.dirname, "fixtures/native-ingestion-bootstrap.mjs");
-const compiledCommand = `node --import ./server/node_modules/tsx/dist/loader.mjs ${quote(bootstrap)} && node --import ./server/node_modules/tsx/dist/loader.mjs server/dist/index.js`;
+const transport = process.env.PAPERCLIP_INGESTION_TRANSPORT ?? "local";
+if (!["local", "sandbox-remote"].includes(transport)) throw new Error("Unknown ingestion transport");
+if (transport === "sandbox-remote" && process.env.DATABASE_URL) {
+  throw new Error("Remote ingestion fixture requires a new disposable embedded database");
+}
+const remoteServer = path.resolve(import.meta.dirname, "fixtures/native-ingestion-remote-server.mjs");
+const compiledEntry = transport === "sandbox-remote"
+  ? `${quote(remoteServer)} --compiled-entry=server/dist/index.js` : "server/dist/index.js";
+const compiledCommand = `node --import ./server/node_modules/tsx/dist/loader.mjs ${quote(bootstrap)} && node --import ./server/node_modules/tsx/dist/loader.mjs ${compiledEntry}`;
 const command = process.env.PAPERCLIP_INGESTION_SERVER_COMMAND ?? compiledCommand;
 const autoStartingOnboard = /\bonboard\b[^;&]*(?:--yes|-y)\b/.test(command);
 if (command.includes("server/dist/index.js") && autoStartingOnboard) {
@@ -26,7 +34,7 @@ const providerHome = fs.mkdtempSync(path.join(os.tmpdir(), "ingestion-provider-"
 export default defineConfig({
   ...base,
   testMatch: "native-event-ingestion.journey.ts",
-  timeout: 600_000,
+  timeout: transport === "sandbox-remote" ? 900_000 : 600_000,
   ...(evidence ? { outputDir: path.join(evidence, "test-results"),
     reporter: [["list"], ["json", { outputFile: path.join(evidence, "playwright.json") }]] as ReporterDescription[] } : {}),
   use: { ...base.use, trace: browserRecording ? "on" : "off", video: "off", actionTimeout: 20_000 },
@@ -37,10 +45,11 @@ export default defineConfig({
     timeout: 240_000,
     env: {
       ...server?.env,
+      PAPERCLIP_INGESTION_TRANSPORT: transport,
       PAPERCLIP_STOP_CODEX_COMMAND: path.resolve(import.meta.dirname, "fixtures/native-ingestion-bin/codex"),
       CODEX_HOME: providerHome,
       OPENAI_API_KEY: "ingestion-fixture-key",
-      NODE_OPTIONS: `${server?.env?.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/composer-stop-codex-loader.mjs")}`,
+      NODE_OPTIONS: `${server?.env?.NODE_OPTIONS ?? ""}${transport === "local" ? ` --import=${path.resolve(import.meta.dirname, "fixtures/composer-stop-codex-loader.mjs")}` : ""}`,
     },
   },
 });
