@@ -5,10 +5,11 @@ import { createServer, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { NativeExecutionInput } from "@paperclipai/paperclip-runner";
+import type { NativeExecutionInput, NativeExecutionInputV1, NativeExecutionInputV11 } from "@paperclipai/paperclip-runner";
 import { onNativeHarnessBackupChange } from "../native-harness-backup-expiration-notifications.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { createNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp, type NativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
+import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
 
 describe("native harness backup publication", () => {
   let backupRoot = "";
@@ -30,14 +31,23 @@ describe("native harness backup publication", () => {
     const { buildNativeHarnessBackupManifest, verifyNativeHarnessBackup } = await import("./native-session-executor.js");
     backupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "native-backup-stamp-publication-"));
     vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", backupRoot);
-    const release = { harnessId: "example.native/synthetic", packageName: "@example/plugin-harness", version: "1.0.0",
+    const release: NativeExecutionInputV11["provider"]["release"] = { harnessId: "example.native/synthetic", packageName: "@example/plugin-harness", version: "1.0.0",
       integrity: `sha256-${Buffer.alloc(32, 1).toString("base64")}`, protocolVersion: 1, runtimeDigest: `sha256:${"a".repeat(64)}` };
-    const execution = { provider: extension ? { kind: "extension", harnessId: release.harnessId, release, model: "fixture", config: { account: "credential-1" } }
-      : { kind: "codex", model: "fixture", approvalPolicy: "never" },
+    const builtinExecution: NativeExecutionInputV1 = { schema: "paperclip.native-execution-input.v1",
+      provider: { kind: "codex", model: "fixture", approvalPolicy: "never" },
       binding: { companyId: "company", agentId: "agent", agentKeyId: "epoch-1", runId: "run", issueId: "issue", executionWorkspaceId: "workspace" },
+      task: { identifier: "fixture-task", title: "Back up the harness", description: null, prompt: "Complete the task", workMode: "standard" },
       workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
       session: { normalizedSessionId: "native-session", driverKind: "codex_app_server", protocolVersion: 1,
-        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } } } as NativeExecutionInput;
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+      completionContract: { id: "contract", sha256: "contract-digest", schemaVersion: "paperclip.completion-contract.v1",
+        contract: { revision: "1", objective: "Complete the task", criteria: [{ id: "objective", requirement: "A verified result exists" }] } },
+      interactionResponses: [], credentialBindings: [] };
+    const extensionExecution: NativeExecutionInputV11 = { ...builtinExecution, schema: "paperclip.native-execution-input.v11",
+      provider: { kind: "extension", harnessId: release.harnessId, release, model: "fixture", config: { account: "credential-1" }, capabilities: { resume: true } },
+      session: { ...builtinExecution.session, driverKind: "extension" }, executionMode: "default", planningContext: null,
+      runtimeContext: nativeRuntimeContextFixture(), homeMode: "isolated" };
+    const execution = extension ? extensionExecution : builtinExecution;
     const sessionScopeId = JSON.stringify({ companyId: execution.binding.companyId, agentId: execution.binding.agentId,
       sessionId: execution.session.normalizedSessionId, workspaceId: execution.binding.executionWorkspaceId, provider: execution.provider });
     const scopeDigest = createHash("sha256").update(sessionScopeId).digest("hex");
@@ -80,16 +90,17 @@ describe("native harness backup publication", () => {
     expect(() => createNativeHarnessBackupStamp({ ...input.stampInput, manifestPath: foreignManifest })).toThrow("scope_invalid");
     expect(() => createNativeHarnessBackupStamp({ ...input.stampInput,
       manifestPath: path.join(input.backupRoot, "current") + "/../current/manifest.json" })).toThrow("scope_invalid");
-    const verify = (execution = input.execution) => input.verifyNativeHarnessBackup({ root: input.storageRoot, execution, runnerInstanceId: "runner-1" });
+    const verify = (execution: NativeExecutionInput = input.execution) => input.verifyNativeHarnessBackup({ root: input.storageRoot, execution, runnerInstanceId: "runner-1" });
     expect(verify()).not.toBeNull();
     for (const binding of [{ companyId: "foreign-company" }, { agentId: "foreign-agent" }, { agentKeyId: "epoch-2" }]) {
       expect(verify({ ...input.execution, binding: { ...input.execution.binding, ...binding } })).toBeNull();
     }
-    expect(verify({ ...input.execution, session: { ...input.execution.session, normalizedSessionId: "foreign-session" } })).toBeNull();
-    if (input.execution.provider.kind === "extension") {
-      expect(verify({ ...input.execution, provider: { ...input.execution.provider, config: { account: "credential-2" } } })).toBeNull();
-      expect(verify({ ...input.execution, provider: { ...input.execution.provider, release: { ...input.execution.provider.release, version: "2.0.0" } } })).toBeNull();
-    }
+    const execution = input.execution;
+    if (execution.schema === "paperclip.native-execution-input.v11") {
+      expect(verify({ ...execution, session: { ...execution.session, normalizedSessionId: "foreign-session" } })).toBeNull();
+      expect(verify({ ...execution, provider: { ...execution.provider, config: { account: "credential-2" } } })).toBeNull();
+      expect(verify({ ...execution, provider: { ...execution.provider, release: { ...execution.provider.release, version: "2.0.0" } } })).toBeNull();
+    } else expect(verify({ ...execution, session: { ...execution.session, normalizedSessionId: "foreign-session" } })).toBeNull();
     const previous = path.join(input.backupRoot, "previous");
     await fs.rename(path.join(input.backupRoot, "current"), previous);
     expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-source")).toBe(true);

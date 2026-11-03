@@ -78,7 +78,7 @@
         "result": { "type": "object" },
         "error": {
           "type": "object", "required": ["code", "message", "retryable"],
-          "properties": { "code": { "$ref": "#/$defs/text" }, "message": { "type": "string", "minLength": 1, "maxLength": 8192 }, "retryable": { "type": "boolean" } },
+          "properties": { "code": { "$ref": "#/$defs/text" }, "message": { "type": "string", "minLength": 1, "maxLength": 8192, "pattern": "^(?=\\s*\\S)[^\\u0000-\\u001f\\u007f]+$" }, "retryable": { "type": "boolean" } },
           "additionalProperties": false
         }
       },
