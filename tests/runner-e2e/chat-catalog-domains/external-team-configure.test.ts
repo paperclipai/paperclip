@@ -13,12 +13,19 @@ function valid() {
 describe("installed team per-member readiness oracle", () => {
   const definition = teamConfigureExternalCases[0]!;
   it("accepts real missing-account diagnosis, human repair and fresh separate readiness checks", () => { expect(definition.grade(valid()).passed).toBe(true); });
+  it("accepts the exact OpenCode missing-auth warning without treating the member as ready", () => {
+    const o = valid(); o.state.initialProbes[0]!.status = "warn"; o.state.initialProbes[0]!.checks = [{ code: "opencode_hello_probe_auth_required", level: "warn" }];
+    expect(definition.grade(o).passed).toBe(true);
+    o.state.afterProbes[0]!.status = "warn";
+    expect(definition.grade(o).passed).toBe(false);
+  });
   it("also accepts an actually attributed eligible agent configuration repair", () => { const o = valid(); o.state.repairChannel = "agent-configuration"; o.activity[0]!.actorType = "agent"; o.activity[0]!.agentId = "ceo"; expect(definition.grade(o).passed).toBe(true); });
   it("rejects stale/member-substituted readiness, unrelated config edits and premature success", () => {
     for (const change of [
       (o: ReturnType<typeof valid>) => { o.state.afterProbes[0]!.testedAt = "2026-10-26T09:00:00Z"; },
       (o: ReturnType<typeof valid>) => { o.state.afterProbes[0]!.status = "fail"; },
       (o: ReturnType<typeof valid>) => { o.state.afterProbes[0]!.agentId = "coder"; },
+      (o: ReturnType<typeof valid>) => { o.state.initialProbes[0]!.agentId = "other-member"; },
       (o: ReturnType<typeof valid>) => { o.state.workingHashAfter = "changed-working-account"; },
       (o: ReturnType<typeof valid>) => { o.state.workingRevisionIdsAfter = ["masked-env-change"]; },
       (o: ReturnType<typeof valid>) => { o.state.noPrematureWholeTeamClaim = false; },

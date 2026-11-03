@@ -18,6 +18,14 @@ const fixtures = new WeakMap<ChatCatalogContext, PrivateTeam>();
 function stable(value: unknown): unknown { return Array.isArray(value) ? value.map(stable) : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, stable(item)])) : value; }
 const configHash = (agent: Agent) => createHash("sha256").update(JSON.stringify(stable({ adapterType: agent.adapterType, adapterConfig: agent.adapterConfig, runtimeConfig: agent.runtimeConfig, defaultEnvironmentId: agent.defaultEnvironmentId }))).digest("hex");
 interface Probe { agentId: string; status: string; testedAt: string; checks: Array<{code: string; level: string}> }
+function missingAccountProbe(row: Probe, agentId: string) {
+  return row.agentId === agentId && (row.status === "fail" && row.checks.some(check => check.level === "error" && /auth|credential|login/i.test(check.code))
+    || row.status === "warn" && row.checks.some(check => check.code === "opencode_hello_probe_auth_required" && check.level === "warn")
+      && row.checks.every(check => check.level === "info" || check.code === "opencode_hello_probe_auth_required" && check.level === "warn"));
+}
+function readyProbe(row: Probe, agentId: string) {
+  return row.agentId === agentId && row.status === "pass" && row.checks.every(check => check.level === "info");
+}
 async function probe(ctx: ChatCatalogContext, agent: Agent): Promise<Probe> {
   const result = await ctx.input.api.postSensitive<AdapterEnvironmentTestResult>(`${root(ctx)}/adapters/${agent.adapterType}/test-environment`, { agentId: agent.id, environmentId: agent.defaultEnvironmentId, adapterConfig: agent.adapterConfig });
   return { agentId: agent.id, status: result.status, testedAt: result.testedAt, checks: result.checks.map(check => ({ code: /^[a-zA-Z0-9_.-]{1,100}$/.test(check.code) ? check.code : "unrecognized", level: check.level })) };
@@ -26,8 +34,8 @@ export function gradeTeamConfigure(value: unknown) {
   const c = checks(), o = externalObservation(value); c.add("complete-member-configuration-evidence", !!o, "Real installed members, missing versus ready account probes, scoped repair and fresh per-member tests are required."); if (!o) return c.result();
   const initial = o.state.initialProbes as Probe[] | undefined, after = o.state.afterProbes as Probe[] | undefined;
   c.add("actual-missing-and-working-member-prerequisite", o.state.installedFromCatalog === true && typeof o.state.missingId === "string" && typeof o.state.workingId === "string" && o.state.missingId !== o.state.workingId
-    && Array.isArray(initial) && initial.some(row => row.agentId === o.state.missingId && row.status === "fail" && row.checks.some(check => check.level === "error" && /auth|credential|login/i.test(check.code)))
-    && initial.some(row => row.agentId === o.state.workingId && row.status === "pass"),
+    && Array.isArray(initial) && initial.some(row => missingAccountProbe(row, String(o.state.missingId)))
+    && initial.some(row => readyProbe(row, String(o.state.workingId))),
     "The supported catalog installer creates the team; actual runtime tests prove one exact missing account and a distinct already working member before chat.");
   c.add("specific-member-diagnosis-and-supported-repair", o.state.initialMemberNamed === true && o.state.initialHandoffSupported === true && o.state.repairConfirmed === true
     && ((o.state.repairChannel === "agent-configuration" && o.activity.some(row => row.entityId === o.state.missingId && row.action === "agent.updated" && row.actorType === "agent" && row.agentId === o.leadId))
@@ -66,7 +74,8 @@ export const teamConfigureExternalCases = [definition("teams.configure-team", as
     await ctx.input.api.patchSensitive(`/api/agents/${missingId}`, { adapterConfig: { ...override.adapterConfig, env: { ...(override.adapterConfig?.env as Record<string, unknown> ?? {}), ...missingTeamAccountEnvironment(subscription, emptyHome) } } });
     const members = catalogTeamMembers(await observeTeamResources(ctx), team.id);
     const initialProbes = await Promise.all(members.map(member => probe(ctx, member)));
-    if (!initialProbes.some(row => row.agentId === missingId && row.status === "fail" && row.checks.some(check => check.level === "error" && /auth|credential|login/i.test(check.code))) || !initialProbes.some(row => row.agentId === workingId && row.status === "pass")) throw new Error("Setup blocker: actual per-member runtime probes do not establish the required missing-versus-ready account split");
+    await ctx.input.evidence("chat-catalog-team-initial-probes.json", { initialProbes });
+    if (!initialProbes.some(row => missingAccountProbe(row, missingId)) || !initialProbes.some(row => readyProbe(row, workingId))) throw new Error("Setup blocker: actual per-member runtime probes do not establish the required missing-versus-ready account split");
     const working = await ctx.input.api.get<Agent>(`/api/agents/${workingId}`);
     const workingRevisionIdsBefore = (await ctx.input.api.get<Array<{ id: string }>>(`/api/agents/${workingId}/config-revisions`)).map(row => row.id).sort();
     await ctx.input.api.post(`${root(ctx)}/chats/${ctx.input.fixtures.agent.id}`); await ctx.refreshIssue();
@@ -75,10 +84,10 @@ export const teamConfigureExternalCases = [definition("teams.configure-team", as
       workingId, workingHashBefore: configHash(working), workingRevisionIdsBefore, initialProbes };
   } catch (error) { fixtures.delete(ctx); await rm(emptyHome, { recursive: true, force: true }); throw error; }
 }, gradeTeamConfigure, {
-  authentication: "human-session", expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 600_000,
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.team-configure.v2", expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 600_000,
   setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["missing-account-fixture", "working-account-fixture"] },
-  async verifySetup(_ctx, state) { const c = checks(), rows = state.initialProbes as Probe[]; c.add("missing-account-fixture", rows.some(row => row.agentId === state.missingId && row.status === "fail"), "Actual saved-runtime probe reports the required missing member account."); c.add("working-account-fixture", rows.some(row => row.agentId === state.workingId && row.status === "pass"), "A distinct installed member already passes its runtime probe."); return c.result(); },
-  sourceFiles: ["chat-catalog-domains/external-team-configure.ts", "chat-catalog-domains/external-team-install.ts", "codex-subscription-fixture.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "chat-flow.ts", "chat-scenarios/teams.yaml"],
+  async verifySetup(_ctx, state) { const c = checks(), rows = state.initialProbes as Probe[]; c.add("missing-account-fixture", rows.some(row => missingAccountProbe(row, String(state.missingId))), "Actual saved-runtime probe reports the required missing member account."); c.add("working-account-fixture", rows.some(row => readyProbe(row, String(state.workingId))), "A distinct installed member already passes its runtime probe."); return c.result(); },
+  sourceFiles: ["chat-catalog-domains/external-team-configure.ts", "chat-catalog-domains/external-team-install.ts", "../../server/src/adapters/registry.ts", "../../packages/adapters/opencode-local/src/server/test.ts", "codex-subscription-fixture.ts", "chat-catalog-domains/external-support.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/identity-support.ts", "chat-flow.ts", "chat-scenarios/teams.yaml"],
   async act(ctx, state) {
     await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); const initial = await observeExternal(ctx, state); state.initialRunId = initial.runs[0]?.id;
     state.initialMemberNamed = initial.reply.toLowerCase().includes(String(state.missingName).toLowerCase());
