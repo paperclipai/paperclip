@@ -24,8 +24,13 @@ Ordinary PRs do not write timing artifacts or export traces. The exporter job is
 skipped for ordinary run names. Adding another label does not run the CI matrix.
 
 Profiling preserves the existing trusted AWS runner routing. Eligible PR jobs
-use `paperclip-public-pr-x64`; the routing gate uses `ubuntu-latest` to verify
-current CI CODEOWNERS before allocating any AWS capacity.
+use `paperclip-public-pr-x64`. The synchronized maintainer admission roster
+places the metadata gate on the reserved `paperclip-ci-routing-x64` AWS fleet.
+The gate checks current CI CODEOWNERS before authorizing any PR code on AWS;
+PR edits cannot grant access. A stale roster can allocate only the bounded
+metadata gate. Normal base-branch advancement does not change an authorized
+run's placement. See [Trusted PR Workflow](DEVELOPING.md#trusted-pr-workflow)
+for the admission settings and immutable merge validation.
 The existing fail-closed GitHub-hosted fallback still applies if AWS routing
 cannot be authorized. The separate post-run Honeycomb exporter also uses
 `ubuntu-latest`; it is outside the measured PR suite.

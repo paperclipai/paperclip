@@ -19,6 +19,25 @@ approval activation, built-in provisioning and import preservation described
 below. The original baseline commit above still governs unrelated entries; this
 update does not claim operation-complete review or live agent verification.
 
+Native Cursor Cloud uses a server-derived `provider_api` placement after its
+complete native profile is validated. Create/update with `runner: paperclip`
+stores `defaultEnvironmentId: null`; the caller cannot supply placement, commands,
+working directories or arbitrary environment values. Only the bound
+`CURSOR_API_KEY` is passed to the qualified API proxy. Test does not acquire a
+Computer lease. Finish setup uses the same validated placement and account check;
+it does not inherit a default Computer or its warm-task lifecycle. Incomplete
+held drafts stay inactive until the complete profile passes activation validation.
+Task/run authority, company boundaries, budgets and per-turn callback scope remain enforced. Local Computer execution stays denied under
+managed-sandbox-only policy. Verify the actual saved agent and live run; a board
+Test result does not prove agent task-tool access.
+
+On managed-only instances with native Runner enabled, a server-held Cursor setup
+draft can resolve an automatic runner to the API controller before it has a
+model. Unsaved automatic Test requests use the same advertised default and still
+validate the full profile. Existing active Legacy agents and explicit Legacy
+choices do not convert automatically. A client-supplied setup flag does not grant
+draft status or bypass active model validation.
+
 ## `hire`
 
 Capability ID: `agents/hire`.

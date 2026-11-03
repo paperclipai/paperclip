@@ -756,6 +756,8 @@ Normal issue-thread feedback can still wake the current assignee according to th
 
 Restart recovery revisits accepted deferred messages through the latest issue run, including historical mention queues for another agent. Ordinary messages for a former owner retain their assignment handoff. Native sources require their matching committed finalization, settled environment leases, and released finalizer and copyback ownership before recovery clears old issue claims. A successful retained warm release can satisfy the lease check. Released local bookkeeping without a provider allocation and a matching SSH bookkeeping release need no provider cleanup receipt. Plugin releases record their successful acknowledgement. Pending or failed cleanup and durable owners still hold work. A successful fenced cleanup completion clears its in-flight claim in the same database write, so a restart before retry bookkeeping cannot strand saved input. The normal release checks preserve cleanup holds, pauses, and operator Stops. Recovery checks for a competing turn under the issue lock before it promotes saved input.
 
+Repeated eligibility notifications must not move an unchecked, ready deferred receipt behind receipts already reconsidered. Paginated reconstruction preserves pending ready receipts' dispatch priority while refreshing their current state. Receipts whose wait deadline has passed join the ready queue on reconstruction. Future wait grace periods, claimed-work deadlines, infrastructure retry backoffs, and current admission checks remain effective.
+
 A paused recipient does not fail an accepted deferred request. Release and periodic recovery preserve its pending receipt and may process an eligible request behind it. Resuming the agent allows normal admission to reconsider the saved input. Missing, foreign, terminated, and unapproved recipients retain their rejection rules. Explicit task holds and operator Stops still prevent unauthorized execution. This does not replay historical failed requests.
 
 Accepted agent feedback must survive a child changing to `done` before its active run exits. Deferred wake promotion may reopen that completed child only for its current assignee, with explicit agent resume intent and live tracked comments from another author. Claim promotion before reopening. Cancelled tasks, deleted comments, self-authored comments, empty continuations, and agent continuations without explicit intent keep their existing suppression rules. Normal pause, ownership, authorization, and budget gates still apply.
@@ -1600,8 +1602,9 @@ agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
 
-After a plugin session passes provider recovery and durable run admission, its
-local suspension receipt is removed. The running session then owns authority;
+After a remote sandbox session passes provider recovery and durable run admission,
+its local suspension receipt is removed. This applies to built-in sandbox runners
+and plugin tasks. The running session then owns authority;
 the old receipt must not conflict with a later warm run's journal identity.
 Failed admission retains the receipt. Normal suspension writes a new receipt.
 
