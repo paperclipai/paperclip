@@ -45,7 +45,7 @@ export async function installCommentaryReader(ctx: ChatCatalogContext, person: P
     try {
       if (!response.ok) throw new Error("Commentary browser session could not be independently read");
       browserPerson = await response.json();
-    } finally { await response.body?.cancel(); }
+    } finally { if (!response.bodyUsed) await response.body?.cancel(); }
     if (apiPerson.user?.id !== person.id || browserPerson.user?.id !== person.id)
       throw new Error("Commentary API and browser do not represent the same real reader");
     const source = await api.post<{ id: string; companyId: string; conversationUserId: string; conversationAgentId: string }>(
