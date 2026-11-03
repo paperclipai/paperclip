@@ -21,7 +21,11 @@ it.skipIf(!linuxCi)("attests real OpenCode client acceptance through runnerd, pr
   const hash = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
   try {
     const executable = resolvePinnedOpenCodeCommand();
-    const version = execFileSync(executable, ["--version"], { env: environment, encoding: "utf8", timeout: 10_000 }).trim();
+    const versionConfig = join(root, "version-config.json");
+    await writeFile(versionConfig, JSON.stringify({ share: "disabled", autoupdate: false, plugin: [] }), { mode: 0o600 });
+    const versionEnvironment = { ...environment, OPENCODE_CONFIG: versionConfig, OPENCODE_DISABLE_PROJECT_CONFIG: "true",
+      OPENCODE_DISABLE_MODELS_FETCH: "true", OPENCODE_DISABLE_DEFAULT_PLUGINS: "true" };
+    const version = execFileSync(executable, ["--version"], { env: versionEnvironment, encoding: "utf8", timeout: 10_000 }).trim();
     expect(version).toBe("1.18.34"); expect(version).toBe(QUALIFIED_OPENCODE_VERSION);
     const binarySha256 = hash(await readFile(executable));
     const node = join(root, "node"); await cp(process.execPath, node, { dereference: true }); await chmod(node, 0o500);
