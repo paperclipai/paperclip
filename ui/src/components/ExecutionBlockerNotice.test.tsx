@@ -58,6 +58,18 @@ describe("ordinary task interruption", () => {
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Your task access changed.");
     expect(container.querySelectorAll("button")).toHaveLength(1);
   });
+  it("shows workspace preparation failures as plain text while keeping retry permissions", async () => {
+    const workspaceFailure = { message: 'Could not prepare the project folder <img src=x onerror=alert(1)>.' };
+    await render({ ...failed, workspaceFailure }, { canRetry: false });
+    expect(container.textContent).toContain("Couldn’t prepare the task folders.");
+    expect(container.textContent).toContain(workspaceFailure.message);
+    expect(container.querySelector("img, button")).toBeNull();
+    await render({ ...failed, workspaceFailure });
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(retry).toHaveBeenCalledOnce();
+    await render({ ...failed, workspaceFailure, state: "working" });
+    expect(container.textContent).toBe("");
+  });
   it("shows an unknown provider's original explanation as text and preserves read-only access", async () => {
     const providerFailure = { schema: "paperclip.provider-failure.v1" as const, provider: "new-provider", phase: "startup" as const,
       category: "unknown" as const, retryability: "unknown" as const, httpStatus: 429,

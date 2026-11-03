@@ -1,4 +1,4 @@
-import { Router, type Request, type RequestHandler } from "express";
+import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
@@ -636,6 +636,7 @@ export function routineRoutes(
     const run = await svc.runRoutine(routine.id, req.body, {
       agentId: req.actor.type === "agent" ? req.actor.agentId : null,
       userId: req.actor.type === "board" ? req.actor.userId ?? null : null,
+      runId: req.actor.runId ?? null,
     });
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -653,15 +654,20 @@ export function routineRoutes(
     res.status(202).json(run);
   });
 
-  const receiveWebhook = (sentryRunFailure = false): RequestHandler => async (req, res) => {
+  router.post("/routine-triggers/public/:publicId/fire", async (req, res) => {
     if (!req.is("application/json")) {
       throw unsupportedMediaType("Send the webhook payload with Content-Type: application/json");
     }
     if (!req.body || typeof req.body !== "object" || Array.isArray(req.body)) {
       throw badRequest("Webhook payload must be a JSON object");
     }
+    const idempotencyScope = req.header("x-paperclip-idempotency-scope");
+    if (idempotencyScope != null && idempotencyScope !== "trigger" && idempotencyScope !== "routine") {
+      throw badRequest("X-Paperclip-Idempotency-Scope must be trigger or routine");
+    }
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
-      ...(sentryRunFailure ? { sentryRunFailure: true } : {}),
+      sourceRunToken: req.header("x-paperclip-source-run-token"),
+      idempotencyScope: idempotencyScope as "trigger" | "routine" | undefined,
       authorizationHeader: req.header("authorization"),
       signatureHeader: req.header("x-paperclip-signature"),
       hubSignatureHeader: req.header("x-hub-signature-256"),
@@ -672,9 +678,7 @@ export function routineRoutes(
       payload: typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : null,
     });
     res.status(202).json(result);
-  };
-  router.post("/routine-triggers/public/:publicId/fire", receiveWebhook());
-  router.post("/routine-triggers/public/:publicId/sentry-run-failures", receiveWebhook(true));
+  });
 
   return router;
 }
