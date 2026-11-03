@@ -4,7 +4,7 @@ import path from "node:path";
 import os from "node:os";
 import { beforeAll, afterAll, expect, it } from "vitest";
 import pins from "./source-sdk-public-inputs.json" with { type: "json" };
-import { createSdkArtifactScanner, sdkPublicTypeSyntax } from "./source-sdk-public-type.js";
+import { createSdkArtifactScanner, sdkPublicTypeSyntax, verifySdkPublicSource } from "./source-sdk-public-type.js";
 import { findSecretLeakMatch, normalizedSecrets } from "./redaction.js";
 import { diagnosticSecrets } from "./private-diagnostics.js";
 const hash = (v: string | Buffer) => createHash("sha256").update(v).digest("hex");
@@ -26,6 +26,26 @@ async function fixture(sourceText = source) {
   await mkdir(path.dirname(path.join(root, inputFile)), { recursive: true }); await writeFile(path.join(root, inputFile), sourceText);
   return { ...pins, lockSha256: fixtureLockSha256, inputs: { ...fixtureInputs, [inputFile]: blob(sourceText) } };
 }
+it("default public proof accepts the reviewed build lock and still rejects a changed lock", async () => {
+  const directory = await realpath(await mkdtemp(path.join(os.tmpdir(), "sdk-reviewed-runtime-")));
+  try {
+    for (const relative of Object.keys(pins.inputs)) {
+      const destination = path.join(directory, relative);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await copyFile(path.join(originalRoot, relative), destination);
+    }
+    await symlink(await realpath(path.join(originalRoot, "node_modules")), path.join(directory, "node_modules"));
+    await symlink(await realpath(path.join(originalRoot, "packages/shared/node_modules")), path.join(directory, "packages/shared/node_modules"));
+    const reviewed = JSON.parse(await readFile(path.join(originalRoot, "tests/runner-e2e/report-lock.json"), "utf8"));
+    const lock = await readFile(path.join(directory, "pnpm-lock.yaml"));
+    expect(hash(lock)).toBe(reviewed.outputSha256);
+    // Use the real default registry, without injecting alternate expected pins.
+    const proof = await verifySdkPublicSource(directory);
+    expect(proof.identity.lockSha256).toBe(hash(lock));
+    await writeFile(path.join(directory, "pnpm-lock.yaml"), Buffer.concat([lock, Buffer.from("\n# changed owning runtime input\n")]));
+    await expect(verifySdkPublicSource(directory)).rejects.toThrow("SDK public source proof unavailable");
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
 it("classifies varied genuinely public schema types while retaining the raw observation", async () => {
   for (const text of [declaration, declaration.replaceAll("z.", "schemaLibrary.").replace("{z}", "{z as schemaLibrary}"), declaration.replace("ZodString", "ZodNumber")]) {
     const scanner = createSdkArtifactScanner(root, [], await fixture()); expect(await scanner.scan(file, Buffer.from(text))).toBe(true);

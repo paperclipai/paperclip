@@ -507,7 +507,7 @@
     "tsconfig.base.json": "2d0e41f723add0c678936eb9ae1c60eab710f8e0",
     "tsconfig.json": "994ee490fb97be7cc0954f4dfd88cf0723290e6c"
   },
-  "lockSha256": "c7f23021335b60da0cff1dd4c75cf8b948333ef3165d7d1703eb79a589edb798",
+  "lockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
   "compilerPackageSha256": "3722b30210616a13a3213ded11575ba6b2dbab10c32a5ef67afca8513e27017e",
   "parserPackageSha256": "6d6a65b879cd7cd249a4367c0b57cce00e78c728de45056ac2a5ca1d1f528d1a",
   "parserEntrySha256": "6969920ae0610df927b6b3e675d1309372c268e36d391652af8e3e0183cbe8f8",
