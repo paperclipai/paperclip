@@ -22,7 +22,7 @@ type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
 type ProjectionState = {
   run?: ProjectionRun;
   action?: typeof issueRecoveryActions.$inferSelect;
-  wait?: { id: string; requestedAt: Date };
+  wait?: { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null };
   agent?: Pick<typeof agents.$inferSelect, "status" | "pauseReason">;
   projectAccessAllowed?: boolean;
   projectAccessProjectId?: string | null;
@@ -36,6 +36,24 @@ type ProjectionState = {
 function boundedJsonString(value: SQL, limit: number) {
   return sql`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
 }
+
+// Persisted wait messages can contain diagnostics. Ordinary task views expose
+// only these stable categories, never arbitrary payloads or source identifiers.
+const retryWaitMessages: Record<string, string> = {
+  workspace_repair_required: "Retry is waiting for Paperclip to recover the saved files. Your message is saved.",
+  remote_cleanup: "Retry is waiting for the previous environment to stop. Your message is saved.",
+  local_cleanup: "Retry is waiting for the previous execution to finish cleanup. Your message is saved.",
+  cleanup_pending: "Retry is waiting for the previous execution to finish cleanup. Your message is saved.",
+  execution_settling: "Retry is waiting for the previous execution to stop. Your message is saved.",
+  controller_settling: "Retry is waiting for the previous execution to finish recovery. Your message is saved.",
+  process_identity_missing: "Retry is waiting for Paperclip to verify that the previous execution stopped. Your message is saved.",
+  process_running: "Retry is waiting for the previous execution to stop. Your message is saved.",
+  execution_active: "Retry is waiting for the current run to finish. Your message is saved.",
+  decision_pending: "Retry is waiting for a pending approval or question to be resolved. Your message is saved.",
+  finalizing_saved_result: "Paperclip is finishing the saved result before Retry can continue.",
+  cleanup_quarantined: "Retry cannot continue this attempt. Send a new message after the previous execution has stopped.",
+  cancelled_by_operator: "This attempt was stopped. Send a new message to continue from saved work.",
+};
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
 function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | null | undefined {
@@ -90,6 +108,11 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   const activeObservation = action?.evidence.systemRecoveryActiveAt;
   if (system?.state === "running" && typeof activeObservation === "number" &&
       activeObservation > now - 45_000) return { ...base, state: "working" };
+  if (wait?.sourceRunId === run.id && wait.executionWaitReason) {
+    const reason = Object.hasOwn(retryWaitMessages, wait.executionWaitReason) ? wait.executionWaitReason : "execution_recovery";
+    return { ...base, state: "failed", canRetry: true, retryWait: { reason,
+      message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
+  }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
     return { ...base, state: "working" };
   return { ...base, state: "failed", canRetry: true, ...(projectAccess ? { projectAccess } : {}) };
@@ -148,7 +171,9 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
       .leftJoin(agents, and(eq(agents.companyId, heartbeatRuns.companyId), eq(agents.id, heartbeatRuns.agentId)))
       .orderBy(requestedIssueId),
-    db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt })
+    db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
+      sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
+      executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80) })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
         eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user")))
       .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt)),
