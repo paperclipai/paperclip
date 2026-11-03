@@ -3,8 +3,9 @@ import { environmentLeases, heartbeatRuns, type Db } from "@paperclipai/db";
 import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 
-/** A server-recorded run-only Stop must not manufacture a recovery incident. */
-export function hasAcknowledgedNativeRunStopReceipt(run: {
+/** Preservation accepts an audited no-op acknowledgement when no controller remains.
+ * This request does not prove that the provider received an interrupt or stopped. */
+export function hasAcknowledgedNativeRunStopRequest(run: {
   id: string; companyId: string; status: string; nativeIssueId: string | null;
   resultJson: Record<string, unknown> | null;
 }): boolean {
@@ -13,9 +14,15 @@ export function hasAcknowledgedNativeRunStopReceipt(run: {
   return intent?.schema === "paperclip.native-cancellation.v1" && intent.runId === run.id &&
     intent.companyId === run.companyId && intent.issueId === run.nativeIssueId &&
     intent.scope === "run" && intent.reasonCode === "cancellation_run_only" &&
-    intent.dispatchState === "acknowledged" && intent.dispatched === true &&
+    intent.dispatchState === "acknowledged" && typeof intent.dispatched === "boolean" &&
     typeof intent.intentAuditId === "string" && Boolean(intent.intentAuditId) &&
     typeof intent.acknowledgementAuditId === "string" && Boolean(intent.acknowledgementAuditId);
+}
+
+/** A server-recorded run-only Stop must not manufacture a recovery incident. */
+export function hasAcknowledgedNativeRunStopReceipt(run: Parameters<typeof hasAcknowledgedNativeRunStopRequest>[0]): boolean {
+  return hasAcknowledgedNativeRunStopRequest(run) &&
+    (run.resultJson?.nativeCancellation as Record<string, unknown>).dispatched === true;
 }
 
 export function hasAcknowledgedNativeStopIntent(run: Parameters<typeof hasAcknowledgedNativeRunStopReceipt>[0]): boolean {
