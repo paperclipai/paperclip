@@ -31,6 +31,10 @@ import * as githubTaskPreparation from "../services/chat-channels/github/task-pr
 import { budgetPolicies } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
+import { readIdleLocalWork } from "../services/idle-local-work.js";
+import { incomingWakeWorkQuery } from "../services/idle-incoming-wake.js";
+import { createChatRuntime } from "../services/chat-runtime.js";
+import { createChatSdkRuntime } from "../services/chat-sdk-runtime.js";
 import { readFreshWorkspaceReadiness } from "../services/fresh-workspace-continuation.js";
 import { requestTaskRetry, reconcileTaskChatRetryReceipts } from "../services/task-retry.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
@@ -805,6 +809,8 @@ class FakeChatSdkRuntime {
   get(endpointId: string) {
     return this.endpoints.get(endpointId) ?? null;
   }
+
+  hasUnsettledLifecycle() { return false; }
 
   async replaceEndpoint(options: CreateChatSdkEndpointRuntimeOptions) {
     this.replaceCount += 1;
@@ -29903,13 +29909,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       }),
     );
     await initializationEntered;
+    expect(runtime.hasUnsettledLifecycle()).toBe(false); // Fake registry tail is already settled.
+    expect(await registeredIdleProbeState()).toBe("present");
     await service.configure(endpoint.id, { action: "pause" }, "owner-user");
+    let shutdownSettled = false;
+    const shutdown = service.shutdown().then(() => { shutdownSettled = true; });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(shutdownSettled).toBe(false);
+    expect(await registeredIdleProbeState()).toBe("present");
     releaseInitialization();
 
     await expect(initializingWebhook).rejects.toMatchObject({
       status: 409,
       details: { code: "chat_endpoint_runtime_superseded" },
     });
+    await shutdown;
+    expect(shutdownSettled).toBe(true);
+    expect(await registeredIdleProbeState()).toBe("none");
     expect(runtime.endpoints.has(endpoint.id)).toBe(false);
     await expect(service.get(endpoint.id)).resolves.toMatchObject({
       status: "paused",
@@ -49451,7 +49467,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .then((rows) => rows.length);
       expect(deliveryCount).toBeGreaterThan(0);
 
+      const endpointBlocksSleep = async () => (await db.execute(sql`
+        SELECT EXISTS (${incomingWakeWorkQuery("chat_endpoints")} AND endpoint.id = ${endpoint.id}::uuid) AS blocked`))[0].blocked;
+      if (provider === "github") expect(await endpointBlocksSleep()).toBe(true);
       await service.configure(endpoint.id, { action: "remove" }, "owner-user");
+      if (provider === "github") expect(await endpointBlocksSleep()).toBe(false);
+      else expect(await endpointBlocksSleep()).toBe(true); // No persistent/provider coverage expansion.
 
       await expect(service.get(endpoint.id)).resolves.toMatchObject({
         status: "archived",
@@ -49492,6 +49513,44 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       ).resolves.toHaveLength(deliveryCount);
     },
   );
+
+  async function registeredIdleProbeState() {
+    let state: string | undefined;
+    await readIdleLocalWork({ diagnostic: (reason, value) => { if (reason === "local.registered_probes") state = value; } });
+    return state;
+  }
+
+  it.each([
+    { name: "SDK", create: createChatSdkRuntime },
+    { name: "shared", create: createChatRuntime },
+  ])("retains the service idle probe after failed $name retirement and shutdown until owner retry", async ({ create }) => {
+    const fixture = await seedCompany();
+    const f = await configuredGitHubEndpoint(fixture);
+    const registry = create();
+    const first = await registry.replaceEndpoint(f.runtime.configurations.get(f.endpoint.id)!);
+    const shutdown = vi.spyOn(first, "shutdown")
+      .mockRejectedValueOnce(new Error("remove retirement uncertain"))
+      .mockRejectedValueOnce(new Error("shutdown retirement uncertain"))
+      .mockResolvedValue(undefined);
+    const service = chatChannelService(db, { runtime: registry, fetch: f.providerFetch, publicBaseUrl: "https://paperclip.example" });
+    fixtureServices.add(service);
+    expect(await registeredIdleProbeState()).toBe("none");
+    await service.configure(f.endpoint.id, { action: "remove" }, "owner-user");
+    expect(registry.get(f.endpoint.id)).toBeNull();
+    expect(registry.list()).toEqual([]);
+    expect(registry.hasUnsettledLifecycle()).toBe(true);
+    const select = vi.spyOn(db, "select"), transaction = vi.spyOn(db, "transaction");
+    try {
+      expect(await registeredIdleProbeState()).toBe("present");
+      expect(select).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+    } finally { select.mockRestore(); transaction.mockRestore(); }
+    await expect(service.shutdown()).rejects.toThrow("shutdown retirement uncertain");
+    expect(await registeredIdleProbeState()).toBe("present");
+    await service.shutdown();
+    expect(shutdown).toHaveBeenCalledTimes(3);
+    expect(registry.hasUnsettledLifecycle()).toBe(false);
+    expect(await registeredIdleProbeState()).toBe("none");
+  });
 
   it("retries credential cleanup after archival made a remove partially complete", async () => {
     const fixture = await seedCompany();

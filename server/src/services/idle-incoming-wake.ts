@@ -297,7 +297,26 @@ export function incomingWakeWorkQuery(
     AND (expires_at IS NULL OR expires_at > now())`;
   if (reason === "chat_endpoints") {
     const ids = proof?.endpointIds ?? [];
-    return sql`SELECT 1 FROM chat_endpoints endpoint WHERE ((endpoint.provider = 'slack'
+    // Only the supported GitHub webhook path gains a removed-history proof.
+    // Archival commits before cleanup, so status alone cannot discharge work.
+    return sql`SELECT 1 FROM chat_endpoints endpoint WHERE (((endpoint.provider = 'github'
+    AND endpoint.status = 'archived' AND endpoint.archived_at IS NOT NULL
+    AND jsonb_typeof(endpoint.setup) = 'object'
+    AND CASE WHEN jsonb_typeof(endpoint.setup->'runtimeGeneration') = 'number'
+      THEN (endpoint.setup->>'runtimeGeneration')::numeric >= 1
+        AND trunc((endpoint.setup->>'runtimeGeneration')::numeric) = (endpoint.setup->>'runtimeGeneration')::numeric
+      ELSE false END
+    AND EXISTS (SELECT 1 FROM tool_connections removed_connection
+      WHERE removed_connection.id = endpoint.connection_id AND removed_connection.company_id = endpoint.company_id
+        AND removed_connection.connection_purpose = 'channel' AND removed_connection.transport = 'chat_sdk'
+        AND removed_connection.status = 'archived' AND removed_connection.enabled = false
+        AND removed_connection.credential_secret_refs = '[]'::jsonb)
+    AND NOT EXISTS (SELECT 1 FROM chat_endpoint_leases lease WHERE lease.endpoint_id = endpoint.id)
+    AND NOT EXISTS (SELECT 1 FROM chat_slack_registrations registration WHERE registration.endpoint_id = endpoint.id)
+    AND NOT EXISTS (SELECT 1 FROM chat_github_registrations registration WHERE registration.endpoint_id = endpoint.id
+      AND (registration.company_id = endpoint.company_id AND registration.status = 'completed'
+        AND registration.consumed_at IS NOT NULL) IS NOT TRUE))
+    OR (endpoint.provider = 'slack'
     AND endpoint.status = 'draft' AND endpoint.setup->>'step' = 'provider_setup'
     AND (endpoint.setup - ARRAY['step', 'command']) = '{}'::jsonb
     AND (endpoint.setup->'command' IS NULL OR endpoint.setup->'command' = 'null'::jsonb
@@ -310,7 +329,7 @@ export function incomingWakeWorkQuery(
     AND EXISTS (SELECT 1 FROM tool_connections draft_connection
       WHERE draft_connection.id = endpoint.connection_id AND draft_connection.company_id = endpoint.company_id
         AND draft_connection.connection_purpose = 'channel' AND draft_connection.transport = 'chat_sdk'
-        AND draft_connection.status = 'draft' AND draft_connection.enabled = false)) IS NOT TRUE) AND ${
+        AND draft_connection.status = 'draft' AND draft_connection.enabled = false))) IS NOT TRUE) AND ${
           ids.length
             ? sql`endpoint.id NOT IN (${sql.join(
                 ids.map((id) => sql`${id}::uuid`),
