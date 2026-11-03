@@ -71,9 +71,13 @@ until an explicit import. Stored `false` disables new enrollment unless managed
 configuration overrides it. Enrolled workspaces keep remote authority when new
 enrollment is disabled, and missing persistence prerequisites fail admission
 without a controller checkout fallback. Current authorization and responsible-user
-checks still apply;
-read-only cross-project referenced folders and explicitly concurrent shared
-writers are rejected. Managed mutable same-project repositories are supported.
+checks still apply. Authorized mentioned projects attach their configured Git
+repositories as writable task copies, with project/source identity retained in
+the saved authority. Subsequent turns recheck each retained project's visibility
+and trust policy. Shared source folders and upstream push permissions are unchanged.
+Explicitly read-only sources and explicitly concurrent shared writers are rejected.
+Workspace validation failures expose their redacted reason through the task
+interruption projection without changing Retry authority.
 Portable capture streams validated working files while staging self-contained
 Git metadata. The smaller temporary-space requirement grants no new agent access
 or execution authority. Changed sources still fail before a save receipt.

@@ -2637,8 +2637,13 @@ have stopped. Cleanup retains copies whose upload completion is unknown. This
 includes operations from older builds without save-attempt records. A final
 save alone does not prove that an older upload has stopped.
 
-V1 supports plain task folders, Git sources, and managed mutable repositories
-from the same project. It rejects read-only cross-project referenced folders,
+V1 supports plain task folders, Git sources, and managed mutable repositories.
+An authorized mentioned project's configured Git repositories become writable
+copies inside the task workspace, under `.paperclip-repositories/`. The copies
+retain their saved files, paths, refs and pins on subsequent turns. Preparation
+rechecks the access and trust policy of each retained source project. This does
+not grant permission to change a shared source folder or push to a repository.
+It rejects explicitly read-only sources,
 explicit concurrent shared writers, and custom cleanup/teardown commands on
 remote close. Manual workspace runtime commands, jobs, and services are also
 unsupported in V1 and must fail before local filesystem work. Agent tasks remain
@@ -2648,10 +2653,13 @@ must fail admission rather than fall back to a controller checkout.
 
 A reference to an authorized project with no configured workspace source does
 not attach a folder. It adds a resolution warning and preserves the task's
-workspace. A configured cross-project source remains subject to the read-only
-folder restriction. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
+workspace. A configured cross-project local folder must be imported before remote
+acquisition. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
 sources; a source-less project reference needs no folder and stays metadata-only
 when that switch is off.
+
+Task failure notices show the redacted workspace validation explanation when
+preparation fails. Existing retry permissions and execution gates still apply.
 
 An imported saved Git workspace can resume from its saved files after its old
 local repository is removed. Local repository paths remain invalid for new

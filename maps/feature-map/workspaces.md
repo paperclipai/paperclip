@@ -79,9 +79,16 @@ work. Finish the run and inspect its saved version. Replace the webserver and
 verify the next task turn uses the same remote folder without a controller
 checkout. Then release the saved allocation and verify a new one restores the
 files, Git state, and managed same-project repositories without the old sandbox
-or original Git remote. Read-only cross-project referenced folders must fail
-admission. Separate workspaces may run concurrently; shared concurrent writers
+or original Git remote. Mention another authorized Git-backed project and verify
+that all its configured repositories are editable task copies. Save changes in
+both projects, reconnect, and verify their files and Git state. Confirm that
+source folders stay unchanged, revoked project access blocks reuse, and explicitly
+read-only descriptors still fail admission. Separate workspaces may run concurrently; shared concurrent writers
 must be rejected.
+
+For a workspace validation failure, verify the task notice shows the redacted
+reason and the permitted Retry action. A newer active run or a terminal task must
+hide the obsolete notice. Check registered-secret redaction and read-only access.
 
 Repeat remote capture with enough free space for the archive and normalized Git
 metadata, but not another working-tree copy. Verify saved files and Git state

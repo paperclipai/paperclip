@@ -7,6 +7,17 @@ const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: n
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
 const agent = { status: "idle", pauseReason: null };
 
+it("preserves the actual workspace preparation error without changing retry authority", () => {
+  const failedRun = { ...run, errorCode: "workspace_validation_failed",
+    error: "The selected project has no repository source for a remote workspace.", resultJson: null };
+  expect(projectTaskInterruption(issue, { run: failedRun, agent, paused: false, approval: false }))
+    .toMatchObject({ state: "failed", canRetry: true, workspaceFailure: { message: failedRun.error } });
+  for (const status of ["done", "cancelled"]) expect(projectTaskInterruption({ ...issue, status },
+    { run: failedRun, agent, paused: false, approval: false })).not.toHaveProperty("workspaceFailure");
+  expect(projectTaskInterruption(issue, { run: { ...failedRun, errorCode: "unrelated_failure" }, agent, paused: false, approval: false }))
+    .not.toHaveProperty("workspaceFailure");
+});
+
 it("preserves a provider explanation on a failed task without changing retry authority", () => {
   const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
     category: "rate_limit", message: "API error: 429 This request would exceed your account's rate limit.",

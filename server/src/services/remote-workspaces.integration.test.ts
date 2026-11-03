@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import net from "node:net";
 import { promisify } from "node:util";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -11,7 +12,7 @@ import { activityLog, agents, agentWakeupRequests, applyPendingMigrations, close
   executionWorkspaces, executionWorkspaceSnapshots, heartbeatRunEvents, heartbeatRuns, issueRecoveryActions, issues, livenessDb, nativeRunFinalizations, projects, projectWorkspaces, workspaceOperations } from "@paperclipai/db";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
-import type { Environment, EnvironmentLease } from "@paperclipai/shared";
+import { buildProjectMentionHref, type Environment, type EnvironmentLease } from "@paperclipai/shared";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
@@ -35,6 +36,8 @@ import { registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRe
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { issueService } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import { resolveRemoteWorkspaceSource } from "./heartbeat/remote-workspace-source.js";
+import { toExecutionWorkspace } from "./execution-workspaces.js";
 
 const exec = promisify(execFile);
 const databaseUrl = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_DATABASE_URL;
@@ -122,6 +125,87 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
   const reserve = (source: Parameters<typeof reserveRemoteWorkspace>[0]["source"]) => reserveRemoteWorkspace({ db, storage,
     companyId: ids.company, issueId: ids.issue, runId: ids.run, agentId: ids.agent, environmentId: ids.environment,
     projectId: null, projectWorkspaceId: null, existingWorkspaceId: null, source });
+
+  it("edits and cold-restores both an anchor and a referenced project's task copy", async () => {
+    vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "true");
+    vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE", "true");
+    const origins = path.join(root, "origins"); await fs.mkdir(origins);
+    const git = (cwd: string, ...args: string[]) => exec("git", ["-C", cwd,
+      "-c", "user.name=Task copies", "-c", "user.email=copies@example.invalid", ...args]);
+    for (const name of ["main", "skills"]) {
+      const directory = path.join(origins, name); await fs.mkdir(directory);
+      await git(directory, "init", "--initial-branch=main");
+      await fs.writeFile(path.join(directory, "README.md"), `${name} source\n`);
+      await git(directory, "add", "."); await git(directory, "commit", "-m", "Source");
+    }
+    const port = await new Promise<number>((resolve, reject) => {
+      const listener = net.createServer(); listener.on("error", reject);
+      listener.listen(0, "127.0.0.1", () => {
+        const port = (listener.address() as net.AddressInfo).port;
+        listener.close(error => error ? reject(error) : resolve(port));
+      });
+    });
+    const daemon = spawn("git", ["daemon", "--reuseaddr", "--export-all", `--base-path=${origins}`,
+      "--listen=127.0.0.1", `--port=${port}`, "--verbose", origins], { stdio: ["ignore", "ignore", "pipe"] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        daemon.once("error", reject); daemon.once("exit", code => reject(new Error(`Git source exited: ${code}`)));
+        daemon.stderr.on("data", bytes => { if (String(bytes).includes("Ready to rumble")) resolve(); });
+      });
+      const [anchor, reference] = await db.insert(projects).values(["Main", "Skills"].map(name => ({ companyId: ids.company, name }))).returning();
+      const [anchorSource] = await db.insert(projectWorkspaces).values([
+        { companyId: ids.company, projectId: anchor.id, name: "Main", repoUrl: `git://127.0.0.1:${port}/main`, sourceType: "git_repo" },
+        { companyId: ids.company, projectId: reference.id, name: "Skills", repoUrl: `git://127.0.0.1:${port}/skills`, sourceType: "git_repo" },
+      ]).returning();
+      await db.update(issues).set({ projectId: anchor.id, projectWorkspaceId: anchorSource.id,
+        description: `Edit both projects, including [@Skills](${buildProjectMentionHref(reference.id)}).` }).where(eq(issues.id, ids.issue));
+      const input = { companyId: ids.company, issueId: ids.issue, agentId: ids.agent, runId: ids.run,
+        responsibleUserId: null, projectId: anchor.id, projectWorkspaceId: anchorSource.id };
+      const resolved = await resolveRemoteWorkspaceSource(db, input);
+      if (resolved.authority !== "remote") throw new Error("Expected remote task copies");
+      const reserved = await reserveRemoteWorkspace({ db, storage, ...input, environmentId: ids.environment,
+        existingWorkspaceId: null, source: resolved.source });
+      const first = await target("project-copies-A");
+      const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first });
+      const copy = resolved.source.repositories![0]!;
+      expect(copy.projectId).toBe(reference.id); expect(copy.readOnly).not.toBe(true);
+      for (const relative of ["", copy.relativePath]) await fs.writeFile(path.join(prepared.remoteRoot, relative, "result.md"), "saved edits\n");
+      for (const name of ["main", "skills"]) {
+        await expect(fs.access(path.join(origins, name, "result.md"))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
+        lease: prepared.lease, target: first, assertOwned: async () => undefined });
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
+      await fs.rm(path.dirname(prepared.remoteRoot), { recursive: true }); await fs.rm(origins, { recursive: true });
+      const nextRun = randomUUID(), nextLeaseId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent,
+        nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+      const [nextLease] = await db.insert(environmentLeases).values({ id: nextLeaseId, companyId: ids.company,
+        environmentId: ids.environment, heartbeatRunId: nextRun, issueId: ids.issue,
+        provider: "daytona", providerLeaseId: `allocation-${nextLeaseId}`, status: "active" }).returning();
+      const resumed = await resolveRemoteWorkspaceSource(db, { ...input, runId: nextRun,
+        existingWorkspace: toExecutionWorkspace(await workspace(reserved.id)) });
+      if (resumed.authority !== "remote") throw new Error("Expected retained remote task copies");
+      expect(resumed.source).toEqual(resolved.source);
+      const reservedAgain = await reserveRemoteWorkspace({ db, storage, ...input, runId: nextRun,
+        environmentId: ids.environment, existingWorkspaceId: reserved.id, source: resumed.source });
+      const second = await target("project-copies-B");
+      const restored = await prepareRemoteWorkspace({ db, storage, workspace: reservedAgain, runId: nextRun,
+        lease: nextLease as EnvironmentLease, target: second });
+      for (const relative of ["", copy.relativePath]) {
+        expect(await fs.readFile(path.join(restored.remoteRoot, relative, "result.md"), "utf8")).toBe("saved edits\n");
+        await fs.writeFile(path.join(restored.remoteRoot, relative, "follow-up.md"), "continued edits\n");
+      }
+      await saveRemoteWorkspace({ db, storage, workspace: restored.workspace, runId: nextRun,
+        lease: restored.lease, target: second, assertOwned: async () => undefined });
+      expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({ dirty: false, writerRunId: null });
+    } finally {
+      if (daemon.exitCode === null) {
+        const stopped = new Promise<void>(resolve => daemon.once("exit", () => resolve()));
+        daemon.kill("SIGTERM"); await stopped;
+      }
+    }
+  }, 60_000);
 
   it("prepares, saves and restores task files without a controller checkout or original allocation", async () => {
     const reserved = await reserve({ kind: "empty" }), first = await target("sandbox-A");

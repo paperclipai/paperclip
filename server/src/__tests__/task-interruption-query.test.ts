@@ -16,6 +16,28 @@ describe("task interruption latest run query", () => {
   beforeAll(async () => { database = await startEmbeddedPostgresTestDatabase("interruption-query-"); db = createDb(database.connectionString); }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
+  it("redacts workspace preparation errors on task detail and list reads", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
+    try {
+      const f = await seedInterruptionFixture(db, { selected: 1, history: 1, unrelated: 0, payloadBytes: 0 });
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
+      const secret = `private-workspace-value-${randomUUID()}`;
+      const error = `Could not prepare the project folder: ${secret}.`;
+      await db.update(heartbeatRuns).set({ errorCode: "workspace_validation_failed", error }).where(eq(heartbeatRuns.id, run!.id));
+      await createRunSecretRedactionRegistry(db).register(f.companyId, run!.id, secret);
+      const list = await taskInterruptionPresentations(db, f.companyId, f.input);
+      const detail = await taskInterruptionPresentation(db, f.input[0]!);
+      for (const presentation of [list.get(f.input[0]!.id), detail]) {
+        expect(presentation?.workspaceFailure?.message).toContain("Could not prepare the project folder");
+        expect(presentation?.workspaceFailure?.message).toContain("REDACTED");
+        expect(JSON.stringify(presentation)).not.toContain(secret);
+      }
+      vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "b".repeat(64));
+      expect(await taskInterruptionPresentation(db, f.input[0]!)).not.toHaveProperty("workspaceFailure");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id)))[0]?.error).toBe(error);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("redacts registered run secrets from both task detail and list provider explanations", async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "a".repeat(64));
     try {
