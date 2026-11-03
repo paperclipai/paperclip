@@ -215,11 +215,13 @@ function normalizePortablePath(filePath: string): string {
 }
 
 function shouldIncludePortableFile(filePath: string): boolean {
-  const baseName = path.basename(filePath);
+  const normalized = normalizePortablePath(filePath);
+  const baseName = path.basename(normalized);
   const isMarkdown = baseName.endsWith(".md");
   const isPaperclipYaml = baseName === ".paperclip.yaml" || baseName === ".paperclip.yml";
+  const isSkillFile = /(^|\/)skills\/.+/.test(normalized);
   const contentType = binaryContentTypeByExtension[path.extname(baseName).toLowerCase()];
-  return isMarkdown || isPaperclipYaml || Boolean(contentType) || isBlobStorePath(filePath);
+  return isMarkdown || isPaperclipYaml || isSkillFile || Boolean(contentType) || isBlobStorePath(normalized);
 }
 
 function findPortableExtensionPath(files: Record<string, CompanyPortabilityFileEntry>): string | null {
