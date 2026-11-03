@@ -75,6 +75,14 @@ describe("company model service configuration and actual tests", () => {
   it("rejects an ordinary agent run standing in for a decision invocation", () => { const d = companyModelIdentityCases[0]!; const o = valid(d.scenarioId); o.runs = [{ id: "test", companyId: "acorn", agentId: "ceo", status: "succeeded" }]; o.state.history = []; expect(d.grade(o).passed).toBe(false); });
   it("rejects builtin fallback being reported as model classification", () => { const d = companyModelIdentityCases[1]!; const o = valid(d.scenarioId); (o.state.testResult as { samples: Array<{ invocationId?: string }> }).samples[0]!.invocationId = undefined; expect(d.grade(o).passed).toBe(false); });
   it("rejects classifier model samples without their independent cost events", () => { const d = companyModelIdentityCases[1]!; const o = valid(d.scenarioId); o.state.testCostEvents = 0; expect(d.grade(o).passed).toBe(false); });
+  it("does not accept an instruction-only acknowledgement change as Fast response configuration guidance", () => {
+    const d = companyModelIdentityCases.find(row => row.scenarioId === "companies.fast-responses")!;
+    const o = valid(d.scenarioId);
+    o.reply = "I updated my persistent instructions to acknowledge chat requests immediately.";
+    const grade = d.grade(o);
+    expect(grade.passed).toBe(false);
+    expect(grade.checks.find(check => check.id === "honest-human-settings-guidance")?.passed).toBe(false);
+  });
   it("rejects fast response work-completion claims", () => { const d = companyModelIdentityCases[2]!; const o = valid(d.scenarioId); o.reply = "Open Settings for fast responses. Your task is finished."; expect(d.grade(o).passed).toBe(false); });
   it("rejects an acknowledgement whose independent invocation belongs to a different human", () => { const d = companyModelIdentityCases[2]!; const o = valid(d.scenarioId); (o.state.history as Array<{ responsibleUserId: string }>)[0]!.responsibleUserId = "other-person"; expect(d.grade(o).passed).toBe(false); });
 });
