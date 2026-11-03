@@ -43,6 +43,7 @@ import { selectHeartbeatEnvironment } from "./environment-selection.js";
 import { assertNativeSessionPreparationAuthority } from "../native-runtime/native-execution-lease.js";
 import { currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
 import { projectService } from "../projects.js";
+import { WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS, WorkspaceBusyDeferral } from "./retries.js";
 
 const execFile = promisify(execFileCallback);
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_PREPARATION_TEST_DATABASE_URL");
@@ -107,7 +108,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const resolver = createHeartbeatWorkspaceResolver(db);
     const input: HeartbeatWorkspacePreparationInput = {
       run, agent,
-      task: { issueRef: issue, issueId: issue.id, context: { issueId: issue.id, projectId: project.id }, responsibleUserId: null, previousSessionParams: null },
+      task: { issueRef: issue, issueId: issue.id, wasIssueAssignee: true, context: { issueId: issue.id, projectId: project.id }, responsibleUserId: null, previousSessionParams: null },
       policy: {
         trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} },
         isolatedWorkspacesEnabled: true,
@@ -287,6 +288,80 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         if (value === undefined) delete process.env[key]; else process.env[key] = value;
       }
     }
+  });
+
+  async function inheritedRemoteFixture(mode: "isolated_workspace" | "operator_branch") {
+    const { input, issue, envOrchestrator } = await fixture();
+    configureRemotePersistence();
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY = "71".repeat(32);
+    input.agent.adapterType = "paperclip_runner";
+    input.environment.selectedEnvironmentForConfig = { ...input.environment.localEnvironment,
+      driver: "sandbox", config: { provider: "daytona" } };
+    input.policy.requestedExecutionWorkspaceMode = mode;
+    input.policy.effectiveExecutionWorkspaceMode = mode;
+    const [parent] = await db.insert(issues).values({ companyId: issue.companyId, projectId: issue.projectId,
+      projectWorkspaceId: issue.projectWorkspaceId, title: "Still running coordinator", assigneeAgentId: input.agent.id }).returning();
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: issue.companyId, agentId: input.agent.id,
+      nativeIssueId: parent.id, runtimeMode: "native", status: "running", startedAt: new Date(), lastOutputAt: new Date() }).returning();
+    const authority = { schema: "paperclip.remote-workspace.v1" as const, epoch: 3,
+      snapshotId: randomUUID(), source: { kind: "empty" as const }, location: null, writerRunId: writer.id, dirty: true };
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: issue.companyId,
+      sourceIssueId: parent.id, projectId: issue.projectId, projectWorkspaceId: issue.projectWorkspaceId,
+      name: "Inherited remote workspace", mode, strategyType: "project_primary", providerType: "cloud_sandbox",
+      cwd: `/workspaces/${randomUUID()}`, metadata: { remoteWorkspace: authority } }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing" })
+      .where(eq(issues.id, issue.id));
+    input.task.issueRef = { ...issue, executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing" };
+    input.reuse.existingExecutionWorkspace = toExecutionWorkspace(workspace);
+    input.reuse.reusableExistingExecutionWorkspace = toExecutionWorkspace(workspace);
+    input.reuse.requestedShouldReuseExisting = true;
+    input.reuse.workspaceReuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({ issueExecutionWorkspaceId: workspace.id,
+      issueExecutionWorkspacePreference: "reuse_existing", existingExecutionWorkspaceStatus: "active" });
+    return { input, issue, envOrchestrator, parent, writer, workspace, authority };
+  }
+
+  it.each(["isolated_workspace", "operator_branch"] as const)("waits for the live writer of an inherited remote %s at reservation", async mode => {
+    const { input, issue, envOrchestrator, parent, writer, workspace, authority } = await inheritedRemoteFixture(mode);
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockRejectedValue(new Error("writer released; acquisition admitted"));
+    const readAuthority = async () => readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, workspace.id)))[0].metadata);
+
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      constructor: WorkspaceBusyDeferral, code: "workspace_busy", executionWorkspaceId: workspace.id,
+      holder: { runId: writer.id, issueId: parent.id }, wasIssueAssignee: true,
+    });
+    expect(acquire).not.toHaveBeenCalled();
+    expect(await readAuthority()).toEqual(authority);
+
+    await db.update(heartbeatRuns).set({ lastOutputAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 1_000) })
+      .where(eq(heartbeatRuns.id, writer.id));
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ status: 409 });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, writer.id));
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ status: 409 });
+    expect(await readAuthority()).toEqual(authority);
+    expect(acquire).not.toHaveBeenCalled();
+
+    const saved = { ...authority, writerRunId: null, dirty: false };
+    await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: saved } }).where(eq(executionWorkspaces.id, workspace.id));
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("writer released; acquisition admitted");
+    expect(acquire).toHaveBeenCalledOnce();
+    expect(await readAuthority()).toEqual({ ...saved, epoch: 4, writerRunId: input.run.id });
+    const [bound] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(bound.executionWorkspaceId).toBe(workspace.id);
+  });
+
+  it("retains admitted ownership when a remote writer wait races with reassignment", async () => {
+    const { input, issue } = await inheritedRemoteFixture("isolated_workspace");
+    const [replacement] = await db.insert(agents).values({ companyId: issue.companyId,
+      name: "New task owner", adapterType: "process" }).returning();
+    input.controllerLease.assertOwned = async () => {
+      await db.update(issues).set({ assigneeAgentId: replacement.id }).where(eq(issues.id, issue.id));
+    };
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      code: "workspace_busy", wasIssueAssignee: true,
+    });
+    const [current] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(current.assigneeAgentId).toBe(replacement.id);
   });
 
   it("rejects automatic Core services before remote reservation or acquisition", async () => {

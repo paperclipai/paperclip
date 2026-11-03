@@ -94,6 +94,12 @@ is controlled test input, not a live sandbox qualification.
 Create a child that inherits a saved isolated workspace or operator branch.
 Verify it continues the same files after the prior writer saves, including on a
 new allocation. Two bound children must not acquire concurrent writer authority.
+Start the child while its parent is still writing. Verify it waits with one
+scheduled retry and retains its workspace binding without acquiring an allocation.
+Stop the waiting task and verify that the retry cannot execute. A stale writer
+or a stopped writer with unfinished saves must remain fenced.
+Reassign the child during preparation before reservation reports contention;
+retry promotion must cancel the former assignee's run without starting it.
 The [reservation regression](../../server/src/services/remote-workspace-reservation.test.ts)
 and [saved-file lifecycle suite](../../server/src/services/remote-workspaces.integration.test.ts)
 exercise inheritance, access checks, and file continuity with real PostgreSQL.
