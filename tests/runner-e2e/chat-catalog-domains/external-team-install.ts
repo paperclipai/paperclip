@@ -22,7 +22,8 @@ import {
   checks,
   verifyRenderedReply,
 } from "./external-support.js";
-import { waitForReply } from "./identity-support.js";
+import { remainingIdentityObservationBudget, waitForReply } from "./identity-support.js";
+import type { Entity } from "./internal-support.js";
 interface Resource {
   id: string;
   companyId: string;
@@ -315,7 +316,11 @@ export const teamInstallExternalCases = [
       await ctx.input.api.patch(`/api/issues/${ctx.issue()!.id}`, {
         description: `The accepted website team preview is ${team.name}, catalog key ${team.key}, content hash ${team.contentHash}. Install the complete selected package under the current CEO using this company's existing eligible runtime account. No team resource is installed yet. The selected runtime uses ${actor.adapterType} in environment ${ctx.input.fixtures.environment.id}. The existing eligible runtime is OpenCode/OpenRouter ${selectedRuntime.model}; its credential stays in the existing same-company secret reference. The supported installer takes these per-slug adapterOverrides for this accepted runtime selection: ${JSON.stringify(adapterOverrides)}.`,
       });
+      const session = await ctx.input.api.get<{ user: { id: string } }>("/api/auth/get-session");
+      if (!session.user?.id) throw new Error("Team installer requires its actual responsible human session");
       return {
+        sourceIssueId: ctx.issue()!.id,
+        humanId: session.user.id,
         ...conditional,
         selectedRuntime,
         team,
@@ -349,7 +354,28 @@ export const teamInstallExternalCases = [
         "chat-scenarios/teams.yaml",
       ],
       async act(ctx, state) {
-        await waitForReply(ctx);
+        const remaining = () => remainingIdentityObservationBudget(ctx);
+        remaining(); await waitForReply(ctx, ctx.observationDeadlineAt); remaining();
+        const source = ctx.issue();
+        if (!source || source.id !== state.sourceIssueId || source.companyId !== ctx.input.fixtures.company.id)
+          throw new Error("Team install initial response has the wrong conversation source");
+        const [runs, comments] = await Promise.all([
+          ctx.allRuns(), ctx.input.api.get<Entity[]>(`/api/issues/${source.id}/comments?order=asc`, { timeout: remaining() }),
+        ]);
+        remaining();
+        const human = comments.filter(row => row.companyId === source.companyId && row.issueId === source.id
+          && row.authorUserId === state.humanId && !row.authorAgentId && !row.createdByRunId
+          && row.body?.trim() === ctx.scenario.query.trim());
+        const run = runs[0];
+        if (ctx.issue()?.id !== source.id || source.conversationState !== "waiting" || runs.length !== 1 || !run
+          || run.companyId !== source.companyId || run.agentId !== ctx.input.fixtures.agent.id || run.status !== "succeeded"
+          || run.runtimeMode !== "native" || run.contextSnapshot?.issueId !== source.id || human.length !== 1
+          || run.contextSnapshot?.commentId !== human[0]?.id
+          || (run.contextSnapshot.taskId !== undefined && run.contextSnapshot.taskId !== source.id)
+          || (run.nativeIssueId != null && run.nativeIssueId !== source.id)
+          || !comments.some(row => row.companyId === source.companyId && row.issueId === source.id
+            && row.authorAgentId === run.agentId && row.createdByRunId === run.id && !!row.body?.trim()))
+          throw new Error("Team install initial reply is not bound to its canonical human and native request");
         state.first = await observeTeamResources(ctx);
         state.runtimeReadback = await verifyInstalledTeamRuntime(ctx, state.team as CatalogTeam, state.first as TeamResourceSnapshot, state.selectedRuntime as TeamInstallRuntime);
         state.initialRunId = (await ctx.allRuns())[0]?.id;
