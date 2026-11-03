@@ -47,6 +47,10 @@ import { parseIssueExecutionState } from "../issue-execution-policy.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
+  STALE_RUN_EVALUATION_AUTO_CLOSE_MARKER,
+  decideStaleRunEvaluationCloseout,
+} from "./stale-run-evaluation-closeout.js";
+import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
@@ -2131,8 +2135,179 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return { kind: "created" as const, evaluationIssueId: evaluation.id };
   }
 
+  /**
+   * Close-out rule for stale-run evaluation cards whose origin run is already terminal.
+   *
+   * The watchdog raises `stale_active_run_evaluation` cards to ask "is this live run still
+   * producing output?". When the origin run reaches a terminal status that question is moot:
+   * there is nothing left to watch, cancel, or recover from. Before this rule existed every
+   * such card had to be hand-closed by a human - the class had been raised 226 times and
+   * hand-closed 226 times with the same answer every time (TON-927).
+   *
+   * The rule is conservative on purpose:
+   * - a card whose origin run is still active is left alone (it is a real review);
+   * - a card an agent is actively working is left alone;
+   * - a card whose text asks for artifact / output recovery is left alone.
+   *
+   * The reason is recorded as a comment on the card before it is closed, so the disposition
+   * is never silently dropped.
+   */
+  async function autoCloseTerminalStaleRunEvaluations(opts?: {
+    now?: Date;
+    companyId?: string;
+    /** Report what would be closed without changing anything. */
+    dryRun?: boolean;
+  }) {
+    const now = opts?.now ?? new Date();
+    const dryRun = opts?.dryRun === true;
+    const candidates = await db
+      .select({
+        id: issues.id,
+        identifier: issues.identifier,
+        status: issues.status,
+        description: issues.description,
+        originId: issues.originId,
+        assigneeAgentId: issues.assigneeAgentId,
+        executionRunId: issues.executionRunId,
+        companyId: issues.companyId,
+      })
+      .from(issues)
+      .where(
+        and(
+          opts?.companyId ? eq(issues.companyId, opts.companyId) : undefined,
+          eq(issues.originKind, STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND),
+          notInArray(issues.status, ["done", "cancelled"]),
+          visibleIssueCondition(),
+        ),
+      )
+      .limit(200);
+
+    const result = {
+      scanned: candidates.length,
+      closed: 0,
+      skipped: 0,
+      dryRun,
+      closedIdentifiers: [] as string[],
+    };
+
+    for (const card of candidates) {
+      if (!card.originId) {
+        result.skipped += 1;
+        continue;
+      }
+      const [run] = await db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          agentId: heartbeatRuns.agentId,
+          logStore: heartbeatRuns.logStore,
+          logBytes: heartbeatRuns.logBytes,
+          finishedAt: heartbeatRuns.finishedAt,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, card.originId))
+        .limit(1);
+      if (!run) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // An agent that is actively working the card owns the disposition.
+      let cardHasLiveExecution = false;
+      if (card.executionRunId) {
+        const [execution] = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, card.executionRunId))
+          .limit(1);
+        cardHasLiveExecution = execution ? !TERMINAL_HEARTBEAT_RUN_STATUSES.has(execution.status) : false;
+      }
+
+      // A card that is waiting on a human answer must not be closed underneath them.
+      const cardHasPendingInteraction = await db
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(
+          and(
+            eq(issueThreadInteractions.issueId, card.id),
+            eq(issueThreadInteractions.status, "pending"),
+          ),
+        )
+        .limit(1)
+        .then((rows) => Boolean(rows[0]));
+
+      const commentRows = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, card.id))
+        .orderBy(asc(issueComments.createdAt));
+
+      const decision = decideStaleRunEvaluationCloseout({
+        cardStatus: card.status,
+        runStatus: run.status,
+        cardHasLiveExecution,
+        cardHasPendingInteraction,
+        texts: [card.description, ...commentRows.map((row) => row.body)],
+      });
+      if (!decision.close) {
+        result.skipped += 1;
+        continue;
+      }
+
+      if (dryRun) {
+        result.closed += 1;
+        result.closedIdentifiers.push(card.identifier ?? card.id);
+        continue;
+      }
+
+      await issuesSvc.addComment(
+        card.id,
+        [
+          `<!-- ${STALE_RUN_EVALUATION_AUTO_CLOSE_MARKER} -->`,
+          "Auto-closed by the stale-run evaluation close-out rule.",
+          "",
+          `- Origin run: \`${run.id}\` (status \`${run.status}\`)`,
+          run.finishedAt ? `- Run finished at: ${run.finishedAt.toISOString()}` : "- Run finished at: unknown",
+          `- Reason: ${decision.detail}`,
+          "- The silence assessment this card was raised for no longer applies: the origin run is no longer active, so there is nothing left to cancel, watch, or recover from it.",
+          "- The card was closed automatically. Reply here (and reopen it) if this disposition is wrong.",
+        ].join("\n"),
+        { runId: run.id },
+      );
+      await issuesSvc.update(card.id, { status: "done" });
+      await logActivity(db, {
+        companyId: card.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: run.id,
+        action: "heartbeat.output_stale_evaluation_auto_closed",
+        entityType: "issue",
+        entityId: card.id,
+        details: {
+          source: "recovery.auto_close_terminal_stale_run_evaluations",
+          reason: decision.reason,
+          originRunStatus: run.status,
+          originRunId: run.id,
+          evaluationIssueIdentifier: card.identifier,
+        },
+      });
+      result.closed += 1;
+      result.closedIdentifiers.push(card.identifier ?? card.id);
+    }
+
+    return result;
+  }
+
   async function scanSilentActiveRuns(opts?: { now?: Date; companyId?: string }) {
     const now = opts?.now ?? new Date();
+    // Close out evaluation cards whose origin run is already terminal before scanning for
+    // new ones. A card whose run has ended cannot be a live review, so leaving it open only
+    // costs a human a triage pass (TON-927).
+    const closed = await autoCloseTerminalStaleRunEvaluations({ now, companyId: opts?.companyId });
+    if (closed.closed > 0) {
+      logger.info({ ...closed }, "auto-closed terminal stale-run evaluation cards");
+    }
     const suspicionBefore = new Date(now.getTime() - ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS);
     const candidates = await db
       .select()
@@ -4822,6 +4997,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
     scanSilentActiveRuns,
+    autoCloseTerminalStaleRunEvaluations,
     reconcileStrandedAssignedIssues,
     sweepStaleIssueLocks,
     buildIssueGraphLivenessAutoRecoveryPreview,

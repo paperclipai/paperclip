@@ -11090,6 +11090,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return recovery.scanSilentActiveRuns(opts);
   }
 
+  /**
+   * Retire `stale_active_run_evaluation` cards whose origin run has already finished.
+   *
+   * Exposed separately from the scan so it can be run on demand (backfill over an existing
+   * backlog) without also raising new cards. TON-927.
+   */
+  async function autoCloseTerminalStaleRunEvaluations(opts?: {
+    now?: Date;
+    companyId?: string;
+    dryRun?: boolean;
+  }) {
+    return recovery.autoCloseTerminalStaleRunEvaluations(opts);
+  }
+
   async function reconcileProductivityReviews(opts?: { now?: Date; companyId?: string }) {
     return productivityReviews.reconcileProductivityReviews(opts);
   }
@@ -16310,6 +16324,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reconcileIssueGraphLiveness,
 
     scanSilentActiveRuns,
+
+    autoCloseTerminalStaleRunEvaluations,
 
     reconcileProductivityReviews,
 

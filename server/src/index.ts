@@ -978,6 +978,21 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "environment customImage setup cleanup failed");
         }));
 
+      // Retire stale-run evaluation cards whose origin run has already finished (TON-927).
+      // This runs outside the scheduling-suppression gate on purpose: suppressing scheduling
+      // means "do not start new agent work", not "stop tidying up finished work". The rule is
+      // idempotent and only touches cards whose origin run is already terminal.
+      trackHeartbeatSchedulerWork(heartbeat
+        .autoCloseTerminalStaleRunEvaluations()
+        .then((result) => {
+          if (result.closed > 0) {
+            logger.info({ ...result }, "auto-closed terminal stale-run evaluation cards");
+          }
+        })
+        .catch((err) => {
+          logger.error({ err }, "stale-run evaluation close-out rule failed");
+        }));
+
       if (heartbeatSchedulerStopped) return;
       if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
         // Periodically reap orphaned runs (5-min staleness threshold) and make sure
