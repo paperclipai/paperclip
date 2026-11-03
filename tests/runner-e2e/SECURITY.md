@@ -1,5 +1,12 @@
 # Runner E2E security for a public repository
 
+The deployment-targeted `saved-skill-use` journey creates one synthetic skill on
+the campaign-owned agent. Its random receipt reference and numeric inputs occur
+only in the pinned skill source. Exact source, version, assignment, native read
+events and run-authored document revisions remain in the private bundle. The
+existing public projection exports closed checks and the authenticated owned
+task screenshot. The journey changes no shared agent, instance flag or budget.
+
 The deployment-targeted `file-input-answer` journey uploads a small synthetic
 CSV through the normal task composer. Its reference and numeric inputs are
 generated per attempt and occur only in the file. The independent fixture and
