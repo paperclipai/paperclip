@@ -1156,11 +1156,14 @@ The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
 
-On a machine with 4 GiB of RAM or less, use this command:
+If the memory available to the task is limited, use this command:
 
 ```sh
 node scripts/typecheck-low-memory.mjs
 ```
+
+It peaks at about 3.8 GiB, against about 5.5 GiB for `pnpm -r typecheck` on 16
+cores. It also takes about twice as long.
 
 It checks one package at a time and uses one thread for the server layers and the
 UI. Do not add `GOMEMLIMIT` to this path. It saves at most 300 MiB here, and it

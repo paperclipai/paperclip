@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Runs the workspace typecheck on a machine with 4 GiB of RAM or less. It
-// checks one package at a time, and scripts/run-tsc.mjs uses one thread for the
-// largest programs. See "Typecheck memory" in doc/DEVELOPING.md.
+// Runs the workspace typecheck with less memory, but more slowly. It checks one
+// package at a time, and scripts/run-tsc.mjs uses one thread for the largest
+// programs. See "Typecheck memory" in doc/DEVELOPING.md.
 //
 // Usage: node scripts/typecheck-low-memory.mjs
 
