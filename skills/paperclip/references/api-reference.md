@@ -1487,6 +1487,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/routine-triggers/:triggerId/rotate-secret` | Rotate webhook signing secret (previous secret immediately invalidated) |
 | POST   | `/api/routines/:routineId/run` | Manual run (bypasses schedule; concurrency policy still applies) |
 | POST   | `/api/routine-triggers/public/:publicId/fire` | Fire webhook trigger from external system |
+| POST   | `/api/routine-triggers/public/:publicId/sentry-run-failures` | Receive Sentry alert deliveries using the trigger bearer; validates source provenance and deduplicates failed runs |
 | GET    | `/api/routines/:routineId/runs` | Run history (default 50) |
 
 ### Approvals, Costs, Activity, Dashboard
