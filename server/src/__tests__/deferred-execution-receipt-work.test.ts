@@ -178,6 +178,12 @@ describe("deferred receipt durable dispatch", () => {
   });
   it("dispatches task Retry past a repeatedly invalidated backlog into real process output", async () => {
     const f = await fixture();
+    // Keep real execution behind occupied capacity while the queue clock is
+    // accelerated. Release it before starting a process with a wall-time lease.
+    const [occupant] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "running", startedAt: new Date() }).returning();
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: true, intervalSec: 0,
+      wakeOnDemand: true, maxConcurrentRuns: 1 } } }).where(eq(agents.id, f.agent.id));
     const [closed] = await db.insert(issues).values({ companyId: f.companyId, title: "Closed task history",
       status: "done", assigneeAgentId: f.agent.id }).returning();
     await db.insert(agentWakeupRequests).values(Array.from({ length: 178 }, (_, index) => ({
@@ -186,7 +192,6 @@ describe("deferred receipt durable dispatch", () => {
       payload: { issueId: closed.id, _paperclipWakeContext: { wakeCommentIds: [randomUUID()] } },
     })));
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
-    await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
     await heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !drain).ready;
     const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issue.id, actorId: f.actorId,
       observedRunId: f.source.id, idempotencyKey: randomUUID() });
@@ -199,6 +204,10 @@ describe("deferred receipt durable dispatch", () => {
     }
     const receipt = await read();
     expect(receipt.runId).toBeTruthy();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!)))[0].status).toBe("queued");
+    vi.setSystemTime(vi.getRealSystemTime());
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, occupant.id));
+    await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
     await waitForReal(async () => {
       await heartbeat.drainActiveRunExecutions();
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!));
