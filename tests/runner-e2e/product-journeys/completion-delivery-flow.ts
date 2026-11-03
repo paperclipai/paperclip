@@ -80,11 +80,15 @@ export async function completionDeliveryJourney(context: JourneyContext, session
           && event.agentId === lead.id && event.entityType === "issue" && ["issue.created", "issue.child_created"].includes(event.action)
           && sourceRuns.some(run => run.id === event.runId && run.runtimeMode === "native" && run.agentId === lead.id && hireRunIssueId(run) === chat.id));
         const ids = [...new Set(created.map(event => event.entityId))];
+        const children: Array<{ id: string; row: Row }> = [];
         for (const id of ids) {
           const row = await readObserved<Row>(`/api/issues/${id}`);
           // The private adapter rechecks native creation proof before accepting a
           // receipt. Own discovered children before an outcome assertion can fail.
           if (!owned.has(row.id)) { await session.own({ kind: "issue", name: row.title, id: row.id, journeyId }); owned.add(row.id); }
+          children.push({ id, row });
+        }
+        for (const { id, row } of children) {
           if (ids.length !== 1 || row.id !== id || !completionTaskCreationMatches(scope, row, events, sourceRuns)) {
             throw new JourneyError("failed", "completion_delegated_task_mismatch");
           }

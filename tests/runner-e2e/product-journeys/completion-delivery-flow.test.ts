@@ -14,7 +14,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
 });
 
-async function fixture(sendError?: Error) {
+async function fixture(sendError?: Error, extraChild = false) {
   const campaignId = "journey-1-deadbeef", owned: Row[] = [], posts: string[] = [];
   const lead = { id: "lead", name: `Lead ${campaignId}`, provider: "opencode", model: "configured-model", runtimeMode: "native" };
   const worker = { ...lead, id: "worker", name: `Worker ${campaignId}` };
@@ -23,6 +23,7 @@ async function fixture(sendError?: Error) {
     assigneeAgentId: lead.id, conversationAgentId: lead.id, conversationUserId: "user", createdByUserId: "user" };
   const task = { id: "actual-child", companyId: "company", title: `Completion brief ${campaignId.replace("-deadbeef", "deadbeef")}`,
     projectId: project.id, assigneeAgentId: worker.id, createdByAgentId: lead.id };
+  const children = [task, ...(extraChild ? [{ ...task, id: "extra-child", title: "Extra audited task" }] : [])];
   const sourceRun = { id: "source-run", companyId: "company", agentId: lead.id, issueId: chat.id,
     runtimeMode: "native", contextSnapshot: { source: "issue.comment" } };
   let sent = false;
@@ -35,10 +36,11 @@ async function fixture(sendError?: Error) {
     if (route === `/api/companies/company/chats/${lead.id}`) return sent ? chat : null;
     if (route === `/api/issues/${chat.id}/runs`) return [{ runId: sourceRun.id }];
     if (route === `/api/heartbeat-runs/${sourceRun.id}`) return sourceRun;
-    if (route === `/api/companies/company/activity?agentId=${lead.id}&limit=500`) return [{ id: "creation-event", companyId: "company",
-      actorType: "agent", actorId: lead.id, agentId: lead.id, entityType: "issue", entityId: task.id, action: "issue.created",
-      runId: sourceRun.id, details: { assigneeAgentId: worker.id, assigneeUserId: null } }];
-    if (route === `/api/issues/${task.id}`) return task;
+    if (route === `/api/companies/company/activity?agentId=${lead.id}&limit=500`) return children.map(child => ({ id: `creation-${child.id}`, companyId: "company",
+      actorType: "agent", actorId: lead.id, agentId: lead.id, entityType: "issue", entityId: child.id, action: "issue.created",
+      runId: sourceRun.id, details: { assigneeAgentId: worker.id, assigneeUserId: null } }));
+    const child = children.find(row => route === `/api/issues/${row.id}`);
+    if (child) return child;
     throw new Error(`Unexpected fixture read ${route}`);
   }, async post(route: string) {
     posts.push(route);
@@ -50,7 +52,7 @@ async function fixture(sendError?: Error) {
   const session = { async own(row: Row) { owned.push(structuredClone(row)); } } as unknown as TargetSession;
   const directory = await mkdtemp(path.join(os.tmpdir(), "completion-ownership-")); directories.push(directory);
   const evidence = { checks: [] } as unknown as JourneyEvidence;
-  return { owned, posts, task, run: () => completionDeliveryJourney(context, session, campaignId, evidence,
+  return { owned, posts, task, children, run: () => completionDeliveryJourney(context, session, campaignId, evidence,
     { deadlineAt: Date.now() + 10_000, directory, capture: async () => {} }) };
 }
 
@@ -68,6 +70,16 @@ it("owns an audited misnamed child before preserving the wrong-title failure, wi
   await expect(f.run()).rejects.toMatchObject({ outcome: "failed", code: "completion_delegated_task_mismatch" });
   expect(f.owned).toContainEqual({ kind: "issue", id: f.task.id, name: f.task.title, journeyId: "completion-delivery" });
   expect(f.owned.filter(row => row.kind === "issue" && !row.id && !row.freshChat)).toEqual([]);
+  expect(f.posts).toEqual(["/api/companies/company/projects"]);
+  expect(sendHireHandoffMessage).toHaveBeenCalledTimes(1);
+});
+
+it("owns every audited native child before preserving the extra-task failure", async () => {
+  const f = await fixture(undefined, true);
+  await expect(f.run()).rejects.toMatchObject({ outcome: "failed", code: "completion_delegated_task_mismatch" });
+  expect(f.owned.filter(row => row.kind === "issue" && row.id && !row.freshChat)).toEqual(f.children.map(child => ({
+    kind: "issue", id: child.id, name: child.title, journeyId: "completion-delivery",
+  })));
   expect(f.posts).toEqual(["/api/companies/company/projects"]);
   expect(sendHireHandoffMessage).toHaveBeenCalledTimes(1);
 });
