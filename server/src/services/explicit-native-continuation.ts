@@ -6,12 +6,12 @@ import { readTaskRetryIntent } from "./task-retry.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
-import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from "./native-runtime/native-failed-workspace-recovery.js";
 import { createHash } from "node:crypto";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
-import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { isCancelledNativeStartup, isFailedNativePreparation } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
@@ -214,6 +214,7 @@ export async function admitExplicitNativeContinuation(input: {
     return blocked("send_intent_missing", "Send the saved message again to continue.");
   const authorizedAt = nativeQueuedSend ? interruptRequestedAt!
     : response?.comment.createdAt ?? comment?.createdAt ?? retryWake?.requestedAt ?? new Date();
+  if (!input.dryRun) await preserveTaskRemoteWorkspaceWriter(db, companyId, issueId);
   const blocker = await getExecutionBlocker(db, companyId, issueId);
   const [boundary] = await db.select({ createdAt: issueComments.createdAt }).from(issues).innerJoin(issueComments, and(
     eq(issueComments.companyId, issues.companyId), eq(issueComments.issueId, issues.id),
@@ -434,6 +435,17 @@ export async function admitExplicitNativeContinuation(input: {
           ...leases.map(lease => lease.id)])] };
     }
     sources.push(run);
+  }
+  if (taskRetry && !sources.some(run => run.id === taskRetry.sourceRunId)) {
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, taskRetry.sourceRunId),
+    )).for("update");
+    const [source] = await db.select(continuationRunFields).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, taskRetry.sourceRunId), eq(heartbeatRuns.agentId, agentId),
+    )).for("update");
+    if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
+      || adapterExecutionControls.has(source.id) || !await isFailedNativePreparation(db, source, coordinator)) return null;
+    sources.push(source);
   }
   const nativeSources = sources.filter(run => run.runtimeMode === "native");
   const executedSources = sources.filter(run => run.runtimeMode === "native" || run.errorCode !== "execution_reconciliation_required" || run.startedAt);
