@@ -3,7 +3,7 @@ import { JourneyError } from "./types.js";
 
 export function isProductScreenshotUrl(value: string, origin: string): boolean {
   const url = new URL(value);
-  return url.origin === origin && /^\/[^/]+\/(issues|search|inbox|routines)(\/|$)/.test(url.pathname);
+  return url.origin === origin && /^\/[^/]+\/(issues|search|inbox|routines|chats)(\/|$)/.test(url.pathname);
 }
 
 export async function captureProductScreenshot(page: Page, origin: string, file: string, deadlineAt = Date.now() + 10_000) {

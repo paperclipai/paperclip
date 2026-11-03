@@ -1,5 +1,5 @@
 /** Closed, target-independent success requirements used by dispatch and retained evidence. */
-export const agentJourneyRuns = { "repository-continuation": 2, "routine-scheduled-run": 1, "file-input-answer": 1, "ask-question": 1, "plan-revise-accept": 3, "build-revise": 2,
+export const agentJourneyRuns = { "chat-continuity": 4, "repository-continuation": 2, "routine-scheduled-run": 1, "file-input-answer": 1, "ask-question": 1, "plan-revise-accept": 3, "build-revise": 2,
   "followup-while-running": 2, "protected-actions": 4, "create-skill-studio": 1, "stop-redirect": 3, "question-answer-resume": 3, "hire-delegate-reuse": 7 } as const;
 
 export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
@@ -9,6 +9,7 @@ export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
   return (count as number) >= minimum && (count as number) <= maximum;
 }
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
+  "chat-continuity": ["chat-fresh-owned-conversation", "chat-user-messages-stored-once", "chat-reload-preserved-context", "chat-new-session-boundary", "chat-fresh-context-answer", "chat-history-preserved-after-reload", "chat-no-unrequested-work", "chat-exact-turn-accounting", "configured-model-and-environment"],
   "company-access-isolation": ["isolation-owner-resource-controls", "cloud-workspace-switch-and-return", "workspace-data-scoped", "restricted-agent-positive-controls", "cross-workspace-agent-read-write-denied", "isolation-credential-revoked", "no-agent-work"],
   "repository-continuation": ["repository-configured-source-bound", "repository-first-commit-verified", "repository-original-files-saved", "repository-followup-stored-once", "repository-same-workspace-retained", "repository-second-commit-verified", "repository-original-and-result-reopened", "configured-model-and-environment"],
   "routine-scheduled-run": ["routine-browser-created", "routine-scheduler-created-execution", "routine-result-attributed", "routine-history-preserved", "routine-pause-prevented-next-run", "routine-result-reopened", "configured-model-and-environment"],
