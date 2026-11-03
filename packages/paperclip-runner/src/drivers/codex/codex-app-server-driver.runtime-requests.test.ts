@@ -76,7 +76,7 @@ it("preserves runnerd permission expiry before a failed provider terminal and re
   expect(resolve).not.toHaveBeenCalled();
   transport.push("turn/completed", { threadId: "thread-1", turn: { id: turnId, status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST", message: "Provider died" } } });
   await vi.waitFor(() => expect(events.some(event => event.eventType === "turn.failed")).toBe(true));
-  await session.close(); await consume;
+  await session.close({ reason: "fixture complete" }); await consume;
   const settlements = events.filter(event => ["runtime_request.expired", "runtime_request.cancelled", "runtime_request.resolved"].includes(event.eventType));
   expect(settlements).toHaveLength(1);
   expect(settlements[0]).toMatchObject({ eventType: "runtime_request.expired", turnId, itemId: "native-edit", payload: { ...payload, turnId, itemId: "native-edit" } });
@@ -105,7 +105,7 @@ it("preserves canonical question expiry after provider loss and refuses late ans
   await expect(session.resolveRuntimeRequest?.({ requestId: "native-question", turnId, resolution: { action: "accept" } })).rejects.toThrow();
   transport.push("turn/completed", { threadId: "thread-1", turn: { id: turnId, status: "failed", error: { code: "ACPX_PROVIDER_PROCESS_LOST", message: "Provider died" } } });
   await vi.waitFor(() => expect(events.some(event => event.eventType === "turn.failed" || event.eventType === "session.failed")).toBe(true));
-  await session.close(); await consume;
+  await session.close({ reason: "fixture complete" }); await consume;
   expect(events.filter(event => event.eventType === "runtime_request.expired")).toHaveLength(1);
   expect(events.find(event => event.eventType === "runtime_request.expired")).toMatchObject({ turnId, itemId: "question-item", payload });
   expect(events.some(event => event.eventType === "session.failed" && event.payload.code === "turn_binding_mismatch")).toBe(false);
@@ -127,7 +127,7 @@ it.each(["turn", "kind", "type", "replay"])("refuses canonical permission expiry
     requestType: kind === "type" ? "input" : "permission", replayAllowed: kind === "replay", reason: "provider_process_lost" };
   const notification = runnerdRuntimeRequestExpiryNotification("runtime_request.expired", payload, "thread-1", kind === "turn" ? "foreign-turn" : turnId)!;
   transport.push(notification.method, notification.params);
-  await pending; await consume; await session.close();
+  await pending; await consume; await session.close({ reason: "fixture complete" });
   expect(events.some(e => e.eventType === "runtime_request.expired")).toBe(false);
   expect(events.some(e => e.eventType === "session.failed" && e.payload.code === "turn_binding_mismatch")).toBe(true);
 });
@@ -159,7 +159,7 @@ describe("Codex app-server Codex driver", () => {
     });
     expect(await response).toEqual({ action: "accept", content: null, _meta: null });
     expect(session.pendingRuntimeRequests?.()).toHaveLength(0);
-    await session.close();
+    await session.close({ reason: "fixture complete" });
   });
 
   it("validates runtime request resolutions against the kind of request they answer", async () => {

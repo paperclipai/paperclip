@@ -82,6 +82,7 @@ function reduce(events: readonly PrpEvent[]): SessionSnapshot {
         environmentLeaseId: "package-local",
         runnerInstanceId: "live-console-demo-server",
         normalizedSessionId: events[0]?.normalizedSessionId ?? "session",
+        driverSessionId: "live-console-demo",
       },
       capabilities: {
         schema: "paperclip.prp.capabilities.v1",

@@ -390,7 +390,7 @@ test("mixed-font tool text shares one uninterrupted shimmer loop", async ({ page
     const animations = element.getAnimations({ subtree: true });
     const animation = animations.find(candidate => (candidate as CSSAnimation).animationName === "shimmer-text-slide")!;
     const timing = animation.effect!.getTiming();
-    const keyframes = animation.effect!.getKeyframes();
+    const keyframes = (animation.effect as KeyframeEffect).getKeyframes();
     // Sample the old dead zone: the background must keep moving after 60%.
     animation.pause();
     animation.currentTime = Number(timing.duration) * 0.65;

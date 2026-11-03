@@ -67,7 +67,7 @@ it("keeps a quiet active Codex turn in the same process across connection lease 
     expect(calls).not.toContain("turn/interrupt");
     expect(calls).not.toContain("thread/resume");
     const state = JSON.parse(await readFile(join(stateDirectory, "fake-codex-state.json"), "utf8"));
-    expect(state.threadId).toBe(opened.thread.id);
+    expect(state.threadId).toBe((opened.thread as { id: string }).id);
     expect(state.activeTurnId).toBe("provider-turn-1");
   } finally {
     await bundle.transport.close();

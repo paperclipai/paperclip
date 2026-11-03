@@ -128,10 +128,11 @@ describe("Codex app-server transport limits", () => {
   });
 
   it("installs cleanup handlers before synchronously reporting process ownership", async () => {
-    const originalSpawn = ChildProcess.prototype.spawn;
+    const childProcessPrototype = ChildProcess.prototype as ChildProcess & { spawn(...args: unknown[]): unknown };
+    const originalSpawn = childProcessPrototype.spawn;
     let spawnedProcess: ChildProcess | undefined;
     const spawnSpy = vi
-      .spyOn(ChildProcess.prototype, "spawn")
+      .spyOn(childProcessPrototype, "spawn")
       .mockImplementation(function (this: ChildProcess, ...args) {
         spawnedProcess = this;
         return originalSpawn.apply(this, args);

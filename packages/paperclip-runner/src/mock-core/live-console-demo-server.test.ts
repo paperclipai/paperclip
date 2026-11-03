@@ -333,7 +333,7 @@ class StubDriver implements HarnessDriver {
 
 const servers: LiveConsoleDemoServer[] = [];
 
-function browserHeaders(url: string, headers: HeadersInit = {}): Headers {
+function browserHeaders(url: string, headers: ConstructorParameters<typeof Headers>[0] = {}): Headers {
   const result = new Headers(headers);
   result.set("origin", new URL(url).origin);
   result.set("sec-fetch-site", "same-origin");

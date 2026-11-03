@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { buildNetworkPolicyManifests } from "../../src/network-policy.js";
+import { buildNetworkPolicyManifests as buildRawNetworkPolicyManifests, type BuildNetworkPolicyInput } from "../../src/network-policy.js";
+import type { DenyAllPolicyView, EgressAllowPolicyView } from "./manifest-views.js";
+
+const buildNetworkPolicyManifests = (input: BuildNetworkPolicyInput) =>
+  buildRawNetworkPolicyManifests(input) as unknown as [DenyAllPolicyView, EgressAllowPolicyView];
 
 describe("buildNetworkPolicyManifests", () => {
   const baseInput = {
@@ -50,7 +54,7 @@ describe("buildNetworkPolicyManifests", () => {
       r.to.some((t) => t.podSelector?.matchLabels?.app === "paperclip-server"),
     );
     expect(callbackRule).toBeDefined();
-    expect(callbackRule.ports[0].port).toBe(3100);
+    expect(callbackRule!.ports![0].port).toBe(3100);
   });
 
   it("adds public-IPv4 fallback (with private/link-local excluded) when FQDNs are configured and no CIDRs are supplied", () => {
@@ -62,10 +66,10 @@ describe("buildNetworkPolicyManifests", () => {
       r.to.some((t) => t.ipBlock?.cidr === "0.0.0.0/0"),
     );
     expect(fallback).toBeDefined();
-    expect(fallback.to[0].ipBlock.except).toEqual(
+    expect(fallback!.to[0].ipBlock!.except).toEqual(
       expect.arrayContaining(["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "127.0.0.0/8"]),
     );
-    expect(fallback.ports).toEqual(
+    expect(fallback!.ports).toEqual(
       expect.arrayContaining([
         { protocol: "TCP", port: 443 },
         { protocol: "TCP", port: 80 },
@@ -107,6 +111,6 @@ describe("buildNetworkPolicyManifests", () => {
     expect(egress.metadata.ownerReferences).toHaveLength(1);
     expect(egress.spec.podSelector.matchLabels).toEqual({ "paperclip.io/run-id": "run-123" });
     expect(egress.spec.egress).toHaveLength(1);
-    expect(egress.spec.egress[0].to[0].ipBlock.cidr).toBe("0.0.0.0/0");
+    expect(egress.spec.egress[0].to[0].ipBlock?.cidr).toBe("0.0.0.0/0");
   });
 });

@@ -81,7 +81,7 @@ describe("Codex resume accounting through the production driver", () => {
         expect(await session.usage!()).toMatchObject({
           runDelta: { inputTokens: 40, outputTokens: 6 },
         });
-        await session.close();
+        await session.close({ reason: "fixture complete" });
         second.readResponse = readResponse(140, 16);
         const recovery = await driver.recoverSession(persisted);
         expect(recovery.recovered).toBe(true);
@@ -130,7 +130,7 @@ describe("Codex resume accounting through the production driver", () => {
           inputTokens: 140,
           outputTokens: 16,
         });
-        await recoveredSession.close();
+        await recoveredSession.close({ reason: "fixture complete" });
         third.readResponse = readResponse(150, 19);
         const secondRecovery = await driver.recoverSession(advanced);
         expect(secondRecovery.recovered).toBe(true);
@@ -148,8 +148,8 @@ describe("Codex resume accounting through the production driver", () => {
           ),
         ).toEqual([]);
       } finally {
-        await recoveredSession?.close();
-        await session.close();
+        await recoveredSession?.close({ reason: "fixture complete" });
+        await session.close({ reason: "fixture complete" });
       }
     },
   );
@@ -188,7 +188,7 @@ describe("Codex resume accounting through the production driver", () => {
             baseline: { inputTokens: 100 },
             latest: { inputTokens: 140 },
           };
-        await session.close();
+        await session.close({ reason: "fixture complete" });
         const tokenUsage = {
           total: { inputTokens: 150 },
           last: { inputTokens: 10 },
@@ -213,8 +213,8 @@ describe("Codex resume accounting through the production driver", () => {
           second.calls.filter((call) => call.method === "turn/start"),
         ).toEqual([]);
       } finally {
-        await recoveredSession?.close();
-        await session.close();
+        await recoveredSession?.close({ reason: "fixture complete" });
+        await session.close({ reason: "fixture complete" });
       }
     },
   );
@@ -243,7 +243,7 @@ describe("Codex resume accounting through the production driver", () => {
     });
     await collectUntilTerminal(session.events());
     const persisted = JSON.parse(JSON.stringify(await session.snapshot!()));
-    await session.close();
+    await session.close({ reason: "fixture complete" });
     second.readResponse = {
       thread: {
         id: "thread-1",
@@ -326,7 +326,7 @@ describe("Codex resume accounting through the production driver", () => {
         .filter((call) => call.method === "thread/read")
         .every((call) => call.params.includeTurns === false),
     ).toBe(true);
-    await session.close();
+    await session.close({ reason: "fixture complete" });
   });
 
   it("keeps the startup external sandbox profile on subsequent turns", async () => {
@@ -352,6 +352,6 @@ describe("Codex resume accounting through the production driver", () => {
       transport.calls.find((call) => call.method === "turn/start")?.params
         .permissions,
     ).toBe(start.params.permissions);
-    await session.close();
+    await session.close({ reason: "fixture complete" });
   });
 });

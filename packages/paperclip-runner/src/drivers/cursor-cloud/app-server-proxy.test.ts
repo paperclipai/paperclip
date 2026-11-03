@@ -87,7 +87,7 @@ describe("Cursor Cloud bounded stdio proxy", () => {
     const terminalGate = new Promise<void>(resolve => { releaseTerminalWrites = resolve; });
     let pausedTerminalWrites = 0;
     const write = CursorCloudCheckpointStore.prototype.write;
-    vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(async function(value) {
+    vi.spyOn(CursorCloudCheckpointStore.prototype, "write").mockImplementation(async function(this: CursorCloudCheckpointStore, value) {
       if (value.phase === "terminal" && value.pendingTerminalDelivery) {
         pausedTerminalWrites += 1;
         await terminalGate;
@@ -151,7 +151,7 @@ describe("Cursor Cloud bounded stdio proxy", () => {
     });
     let openedSession!: CursorCloudSessionHandle;
     const openSession = CursorCloudDriver.prototype.openSession;
-    vi.spyOn(CursorCloudDriver.prototype, "openSession").mockImplementation(async function(input) {
+    vi.spyOn(CursorCloudDriver.prototype, "openSession").mockImplementation(async function(this: CursorCloudDriver, input) {
       openedSession = await openSession.call(this, input);
       return openedSession;
     });

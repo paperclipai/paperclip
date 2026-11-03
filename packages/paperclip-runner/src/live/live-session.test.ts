@@ -24,7 +24,7 @@ import {
   type CapabilityLiveTurnEvent,
 } from "./live-session.js";
 import { DurableCapabilityLiveSessionStore } from "./durable-live-session-store.js";
-import { defaultCapabilityRunnerdBinary } from "./runnerd-codex-transport.js";
+import { defaultCapabilityRunnerdBinary, type CapabilityRunnerdProcessEvidence } from "./runnerd-codex-transport.js";
 import { persistedCursorUsageNotice } from "../drivers/acpx/usage-accounting.js";
 import { captureTurnRejection } from "../../test/capture-turn-rejection.js";
 import * as workspaceDiff from "./workspace-diff.js";
@@ -45,7 +45,7 @@ it("admits Pi live sessions without candidate opt-in while preserving the exact 
   const session = await service.create({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", requestedModel: "openrouter/deepseek/deepseek-v4-flash-0731" });
   try {
     expect(session.snapshot().config.acpxProfile).toMatchObject({
-      agent: "pi", ...resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731"),
+      ...resolveQualifiedAcpxProfile("pi", "openrouter/deepseek/deepseek-v4-flash-0731"), agent: "pi",
     });
     const custom = await service.create({ provider: "acpx", acpxAgent: "pi", piThinkingLevel: "low", requestedModel: "another-model" });
     expect(custom.snapshot().config.acpxProfile).toMatchObject({ qualificationModel: "another-model", reportedModelId: "another-model" });
@@ -322,10 +322,25 @@ class FakeCapabilityCodexTransport implements CodexAppServerTransport {
 
 function fakeTransportFactory(state: FakeProviderState): CapabilityLiveTransportFactory {
   return (options) => {
-    const evidence = {
+    const evidence: CapabilityRunnerdProcessEvidence = {
       runnerPid: 4100 + state.transports.length,
       runnerProcessGroupId: 4100 + state.transports.length,
+      providerPid: null,
+      providerProcessStartedAt: null,
       codexPid: 5100 + state.transports.length,
+      codexProcessStartedAt: null,
+      sidecarPid: null,
+      sidecarProcessStartedAt: null,
+      agentPid: null,
+      agentProcessStartedAt: null,
+      providerDriver: null,
+      providerVersion: null,
+      acpxAgent: null,
+      agentServerVersion: null,
+      agentRuntimeVersion: null,
+      acpProtocolVersion: null,
+      providerExecutionKind: null,
+      providerService: null,
       runnerExited: false,
       runnerExitCode: null,
       runnerSignal: null,
@@ -337,7 +352,7 @@ function fakeTransportFactory(state: FakeProviderState): CapabilityLiveTransport
       options.onEvidence?.(evidence);
     });
     options.onEvidence?.(evidence);
-    return { transport, evidence: () => ({ ...evidence, runnerExited: transport.processInfo().exited }) };
+    return { transport, evidence: () => ({ ...evidence, runnerExited: transport.processInfo().exited }), detachControllerForRestart: async () => {} };
   };
 }
 
@@ -394,7 +409,7 @@ class TransientFailureLiveSessionStore implements CapabilityLiveSessionStore {
       throw new Error("transient live-session store failure");
     }
     if (
-      snapshot.terminalTurns.length > 0 &&
+      snapshot.terminalTurns!.length > 0 &&
       (this.#rejectTerminalSaves || this.#terminalSaveFailuresRemaining > 0)
     ) {
       if (this.#terminalSaveFailuresRemaining > 0) {
@@ -647,7 +662,7 @@ describe("Capability live runnerd and Codex session", () => {
       outputTokens: 4,
     })).resolves.toBe("committed");
 
-    expect((await store.load(session.id))?.usageLedger.map((receipt) => receipt.receiptId)).toEqual([
+    expect((await store.load(session.id))?.usageLedger!.map((receipt) => receipt.receiptId)).toEqual([
       "usage-before-recovery",
       "usage-after-recovery",
     ]);
@@ -1159,7 +1174,7 @@ describe("Capability live runnerd and Codex session", () => {
     expect(first.snapshot.providerThreadId).toBe(second.snapshot.providerThreadId);
     expect(state.attachments).toHaveLength(1);
     expect(second.snapshot.providerRunBinding).toEqual(state.attachments[0]);
-    expect(second.snapshot.usageLedger.slice(-2)).toMatchObject([
+    expect(second.snapshot.usageLedger!.slice(-2)).toMatchObject([
       { providerRequests: 1, inputTokens: 100, outputTokens: 10 },
       { providerRequests: 1, inputTokens: 100, outputTokens: 10 },
     ]);
@@ -1497,7 +1512,7 @@ describe("Capability live runnerd and Codex session", () => {
     const result = await session.sendMessage("report overlapping usage");
 
     expect(result.snapshot.usageLedger).toHaveLength(1);
-    expect(result.snapshot.usageLedger[0]).toMatchObject({
+    expect(result.snapshot.usageLedger![0]).toMatchObject({
       providerRequests: 1,
       inputTokens: 100,
       outputTokens: 10,
@@ -1596,7 +1611,7 @@ describe("Capability live runnerd and Codex session", () => {
     const result = await session.sendMessage("report late usage");
 
     expect(result.snapshot.usageLedger).toHaveLength(1);
-    expect(result.snapshot.usageLedger[0]).toMatchObject({
+    expect(result.snapshot.usageLedger![0]).toMatchObject({
       providerRequests: 2,
       inputTokens: 100,
       outputTokens: 10,

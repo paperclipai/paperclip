@@ -111,6 +111,23 @@ import {
 } from "./runnerd-codex-transport.js";
 
 // Explicit private-artifact test lane; production/default dist is never changed.
+type WarmAttachRecoveryCase = {
+  lossPoint: string;
+  routed: boolean;
+  recoveryFault: string;
+  executionPrepared?: boolean;
+  externalArtifact?: boolean;
+  ordinaryFollowup?: boolean | string;
+};
+
+type CommittableStore = durableControlPlane.DurablePrpControlPlaneStore & {
+  commit(candidate: durableControlPlane.DurablePrpControlPlaneStore["state"], checkpointRequired?: boolean): void;
+};
+
+function committableStore(authority: DurablePrpControlPlane): CommittableStore {
+  return authority.store as CommittableStore;
+}
+
 const defaultCapabilityRunnerdBinary = () =>
   process.env.PAPERCLIP_ATTACH_TRANSITION_RUNNER ??
   qualifiedCapabilityRunnerdBinary();
@@ -336,7 +353,7 @@ it.each(["resolved", "rejected"] as const)(
       expect(error).toMatchObject({ message: expect.stringContaining("runner_process_termination_unconfirmed") });
       if (outcome === "rejected") expect(error).toHaveProperty("cause", probeError);
       expect(children).toHaveLength(1);
-      expect(bundle.transport.processInfo()).toMatchObject({ exited: false });
+      expect(bundle.transport.processInfo!()).toMatchObject({ exited: false });
       expect(() => process.kill(children[0]!.pid!, 0)).not.toThrow();
     } finally {
       const providerPid = bundle.evidence().codexPid;
@@ -411,7 +428,7 @@ it("preserves the cause when a replacement runner's health cannot be verified", 
     if (child) return {
       child: { pid: 42, exitCode: null, kill: () => false },
       completion: Promise.reject(probeError),
-      isExitConfirmed: () => false,
+      isExitConfirmed: (): boolean => false,
     };
     child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: "ignore" });
     const ownedChild = child;
@@ -443,7 +460,7 @@ it("preserves the cause when a replacement runner's health cannot be verified", 
     });
     expect(error).toHaveProperty("message", expect.stringContaining("probe_timeout"));
     expect(launch).toHaveBeenCalledTimes(2);
-    expect(bundle.transport.processInfo()).toMatchObject({ exited: false });
+    expect(bundle.transport.processInfo!()).toMatchObject({ exited: false });
   } finally {
     const providerPid = bundle.evidence().codexPid;
     if (providerPid) {
@@ -2636,7 +2653,7 @@ it.each(["reuse", "large-instructions", "rotated-recovery", "removed-context", "
   resolved.skills[0]!.bundle.rootPath = "/guest/.agents/skills/assigned";
   const materialize = vi.spyOn(runtimeMaterializer, "prepareIsolatedCodexHome").mockRejectedValue(new Error("unexpected Core materialization"));
   const discover = vi.spyOn(codexCommandRuntime, "resolveCodexCommand").mockImplementation(() => { throw new Error("unexpected Core discovery"); });
-  let configuration: Record<string, unknown> | undefined;
+  let configuration: Record<string, unknown> | null | undefined;
   let recovered = false;
   let requestedRun = "";
   let requestedInstructions = "";
@@ -3536,7 +3553,7 @@ it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooper
     let template: Record<string, unknown> | null = null;
     let registrationStarted!: () => void;
     const started = new Promise<void>(resolve => { registrationStarted = resolve; });
-    let returnRegistration!: (registration: { connection: { mode: "listen"; listenAddress: string; listenPort: number; listenPath: string }; release: () => Promise<void> }) => void;
+    let returnRegistration!: (registration: { connection: { mode: "listen"; listenAddress: "0.0.0.0"; listenPort: number; listenPath: string }; release: () => Promise<void> }) => void;
     const registration = new Promise<Parameters<typeof returnRegistration>[0]>(resolve => { returnRegistration = resolve; });
     let finishRelease!: () => void;
     const releasing = new Promise<void>(resolve => { finishRelease = resolve; });
@@ -3547,7 +3564,7 @@ it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooper
       if (releaseFails) throw releaseError;
     });
     const registered = {
-      connection: { mode: "listen" as const, listenAddress: "127.0.0.1", listenPort: 43127, listenPath: "/setup-probe" },
+      connection: { mode: "listen" as const, listenAddress: "0.0.0.0" as const, listenPort: 43127, listenPath: "/setup-probe" },
       release,
     };
     let registrationSignal: AbortSignal | undefined;
@@ -4052,7 +4069,7 @@ it("runs the lab provider boundary through authenticated durable PRP", async () 
     }
     expect(methods).toContain("turn/completed");
     expect(terminalParams).toMatchObject({
-      threadId: opened.thread.id,
+      threadId: (opened.thread as { id: string }).id,
       turnId: "provider-turn-1",
     });
     expect(bundle.evidence().diagnostics).toContain(
@@ -4096,7 +4113,7 @@ it("controls a Codex session goal end to end through durable PRP v2", async () =
         },
       ],
     });
-    const threadId = opened.thread.id;
+    const threadId = (opened.thread as { id: string }).id;
 
     await expect(
       bundle.transport.request("thread/goal/set", {
@@ -4251,7 +4268,7 @@ it.each([false, true])("binds goal turns through the full Codex harness (autonom
     });
     expect(observed.some((event) => event.eventType === "session.failed")).toBe(false);
   } finally {
-    await session?.close();
+    await session?.close({ reason: "test complete" });
     await bundle.transport.close();
     await rm(stateDirectory, { recursive: true, force: true });
   }
@@ -5015,6 +5032,7 @@ it("does not retry a real memoized transport close whose suspension proof is una
       normalizedSessionId: identity.sessionId,
       driverKind: "codex_app_server",
       protocolVersion: 1,
+      lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
     },
     provider: { kind: "codex", model: null },
     completionContract: {
@@ -5303,7 +5321,7 @@ it.each([
       message: { role: "user", text: "Keep working until interrupted." },
     });
     if (label === "interrupted") {
-      await session.interrupt({
+      await session.interrupt!({
         turnId: turn.turnId,
         reason: "Stopped by the user",
       });
@@ -5329,7 +5347,7 @@ it.each([
       },
     });
   } finally {
-    await session.close().catch(() => undefined);
+    await session.close({ reason: "test complete" }).catch(() => undefined);
     await rm(stateDirectory, {
       recursive: true,
       force: true,
@@ -5419,7 +5437,7 @@ it("binds an immediately failed durable turn before exposing its terminal", asyn
       ],
     });
   } finally {
-    await session.close();
+    await session.close({ reason: "test complete" });
     await rm(stateDirectory, {
       recursive: true,
       force: true,
@@ -5626,9 +5644,10 @@ it("captures exact provider frames and correlates Rust and TypeScript interpreta
       if (event.eventType === "turn.completed") break;
     }
   } finally {
-    await session.close();
+    await session.close({ reason: "test complete" });
   }
   const snapshot = await session.snapshot();
+  if (snapshot.lastSourceSequence === undefined) throw new Error("Expected a source sequence in the session snapshot");
   for (
     let sourceSeq = 1;
     sourceSeq <= snapshot.lastSourceSequence;
@@ -6052,8 +6071,9 @@ it.each([
       providerPid = bundle.evidence().codexPid;
       const rotations: (typeof core.store.state)[] = [];
       const preparedStates: (typeof core.store.state)[] = [];
-      const commit = core.store.commit.bind(core.store);
-      vi.spyOn(core.store, "commit").mockImplementation((candidate) => {
+      const store = committableStore(core);
+      const commit = store.commit.bind(store);
+      vi.spyOn(store, "commit").mockImplementation((candidate) => {
         commit(candidate);
         // Capture the durable old epoch at publication. The authenticated
         // successor may activate before attachRun observes the completed command.
@@ -6481,7 +6501,7 @@ it.each([false, true])(
   30_000,
 );
 
-it.each([
+it.each<WarmAttachRecoveryCase>([
   ...[
     "before-result",
     "after-result",
@@ -6920,14 +6940,15 @@ it.each([
           ).toBe(false);
         return;
       }
-      const commit = core.store.commit.bind(core.store);
+      const store = committableStore(core);
+      const commit = store.commit.bind(store);
       let lossObserved = false;
       let signalLoss!: () => void;
       const loss = new Promise<void>((resolveLoss) => {
         signalLoss = resolveLoss;
       });
       commitSpy = vi
-        .spyOn(core.store, "commit")
+        .spyOn(store, "commit")
         .mockImplementation((candidate) => {
           // The selected process-crash boundary stays unavailable until the
           // exact owned runner is joined. A later replay must not silently
@@ -7665,7 +7686,7 @@ it("recovers an active second warm business run after deleting its controller co
   await writeFile(join(skillRoot, "SKILL.md"), "# Pinned skill\n");
   await writeFile(join(instructionRoot, "AGENTS.md"), "Pinned instructions\n");
   const server = createServer();
-  let authority: DurablePrpControlPlane | null = null, generation = 0;
+  let authority = null as DurablePrpControlPlane | null, generation = 0;
   let checkpoint: durableControlPlane.DurablePrpCheckpoint | undefined;
   const registered = new WeakSet<DurablePrpControlPlane>();
   server.on("upgrade", (request, socket, head) => authority
@@ -7709,7 +7730,7 @@ it("recovers an active second warm business run after deleting its controller co
     providerPid = first.evidence().codexPid;
     expect(providerPid).toEqual(expect.any(Number));
     const providerStart = execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim();
-    const startedAt = first.transport.processInfo().startedAt;
+    const startedAt = first.transport.processInfo!().startedAt;
     const firstCompleted = waitComplete(first.transport);
     await within("first turn/start", first.transport.request("turn/start", { input: [{ type: "text", text: "first healthy business run" }] }));
     await within("healthy first turn completion", firstCompleted);
@@ -7754,7 +7775,7 @@ it("recovers an active second warm business run after deleting its controller co
     expect(execFileSync("ps", ["-p", String(providerPid), "-o", "lstart="], { encoding: "utf8" }).trim()).toBe(providerStart);
     expect(calls).toBe(2);
     expect(authority!.store.state.commands.filter(command => command.type === "semantic_tool.result")).toHaveLength(0);
-    expect(recovered.transport.processInfo().startedAt).toBe(startedAt);
+    expect(recovered.transport.processInfo!().startedAt).toBe(startedAt);
     expect(authority!.store.state.identity).toEqual(savedIdentity);
     expect(authority!.store.state.commands.filter(command => command.type === "turn.start")).toHaveLength(1);
     expect(noSpawn).not.toHaveBeenCalled();
@@ -8807,7 +8828,7 @@ async function verifyLiveRunnerAdoption(
     evidence: [], verification: [], attentionRequests: [], artifacts: [],
   }));
   const server = createServer();
-  let authority: DurablePrpControlPlane | null = null;
+  let authority = null as DurablePrpControlPlane | null;
   const checkpoint = vi.fn(async () => undefined);
   server.on("upgrade", (request, socket, head) => {
     if (!authority) {
@@ -8905,7 +8926,7 @@ async function verifyLiveRunnerAdoption(
       );
     }
     runnerPid = first.evidence().runnerPid;
-    runnerStartedAt = first.transport.processInfo().startedAt;
+    runnerStartedAt = first.transport.processInfo!().startedAt;
     expect(runnerPid).toEqual(expect.any(Number));
 
     if (goalMidTurn) {
@@ -9173,7 +9194,7 @@ async function verifyLiveRunnerAdoption(
       } else expect(redispatchedTool).not.toHaveBeenCalled();
     }
     expect(adopted.evidence().runnerPid).toBe(runnerPid);
-    expect(adopted.transport.processInfo().startedAt).toBe(runnerStartedAt);
+    expect(adopted.transport.processInfo!().startedAt).toBe(runnerStartedAt);
     if (startWithoutCheckpoint) {
       const retained = JSON.parse(await readFile(controlPlaneStatePath, "utf8"));
       for (const type of ["run.prepare", "session.open"]) {
@@ -9217,7 +9238,7 @@ async function verifyLiveRunnerAdoption(
         expect(await Promise.race([notificationsClosed, new Promise<boolean>(resolve => { queueDeadline = setTimeout(() => resolve(false), 250); })])).toBe(true);
       } finally { clearTimeout(queueDeadline); }
       await expect(adopted.transport.close()).rejects.toBe(probeError);
-      expect(adopted.transport.processInfo()).toMatchObject({ exited: false });
+      expect(adopted.transport.processInfo!()).toMatchObject({ exited: false });
       expect(() => process.kill(runnerPid!, 0)).not.toThrow();
       expect(signal).not.toHaveBeenCalled();
       expect(checkpoint).not.toHaveBeenCalled();
@@ -9775,7 +9796,7 @@ it.each([
       expect(outcomes[1].result).toMatchObject({ content: [{ text: expect.stringContaining(feedback) }] });
       if (adoptAfterTurn) {
         const snapshot = await session.snapshot();
-        const runnerStartedAt = bundle.transport.processInfo().startedAt;
+        const runnerStartedAt = bundle.transport.processInfo!().startedAt;
         survivingPid = bundle.evidence().runnerPid;
         expect(survivingPid).toEqual(expect.any(Number));
         const artifact = readRunnerdArtifactBinding(defaultCapabilityRunnerdBinary());
@@ -9817,7 +9838,7 @@ it.each([
         expect(recovery.session).toBeDefined();
         session = recovery.session!;
         expect(adopted.evidence().runnerPid).toBe(survivingPid);
-        expect(adopted.transport.processInfo().startedAt).toBe(runnerStartedAt);
+        expect(adopted.transport.processInfo!().startedAt).toBe(runnerStartedAt);
         expect((await session.snapshot()).providerSessionId).toBe(snapshot.providerSessionId);
         expect(duplicateLauncher).not.toHaveBeenCalled();
       }
@@ -9827,7 +9848,7 @@ it.each([
       expect(allRequests.map(request => request.variant)).toEqual(supportsReasoning
         ? ["paperclip-no-reasoning", "paperclip-default"] : [undefined, undefined]);
     },
-    closeSession: async () => { await session?.close(); },
+    closeSession: async () => { await session?.close({ reason: "test complete" }); },
     closeTransport: async () => {
       try { await adopted?.transport.close(); }
       finally {

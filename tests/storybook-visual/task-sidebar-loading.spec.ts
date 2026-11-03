@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 
-test.use({ viewport: { width: 1440, height: 960 }, reducedMotion: "no-preference" });
+test.use({ viewport: { width: 1440, height: 960 }, contextOptions: { reducedMotion: "no-preference" } });
 
 async function sampleLayout(page: import("@playwright/test").Page, duration: number) {
   return page.evaluate(async (duration) => {

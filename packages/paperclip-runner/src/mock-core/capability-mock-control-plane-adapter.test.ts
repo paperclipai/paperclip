@@ -584,6 +584,7 @@ describe("CapabilityMockControlPlaneAdapter", () => {
         commandKind: "record_budget_usage",
         effect: "lost_ack",
         remaining: 1,
+        code: "budget_ack_lost",
       }],
     });
     await adapter.start();
