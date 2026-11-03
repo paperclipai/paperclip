@@ -380,6 +380,31 @@ describe("IssuesList", () => {
     container.remove();
   });
 
+  it.each([[true, true], [true, false], [false, true], [false, false]])("defaults task and subtask lists to newest updates (streamlined=%s, nesting=%s)", async (streamlined, nesting) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    const items = [
+      createIssue({ id: "child-newest", parentId: "parent", updatedAt: new Date(5000) }),
+      createIssue({ id: "parent", parentId: null, updatedAt: new Date(1000) }),
+      createIssue({ id: "newest-root", parentId: null, updatedAt: new Date(3000) }),
+      createIssue({ id: "child-older", parentId: "parent", updatedAt: new Date(4000) }),
+    ].map(issue => ({ ...issue, title: issue.id }));
+    const { root, queryClient } = renderWithQueryClient(<IssuesList issues={items} agents={[]} projects={[]}
+      viewStateKey="default-update-sort" showChecklist onUpdateIssue={() => undefined} />, container);
+    try {
+      await waitForAssertion(() => expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(4));
+      if (!nesting) {
+        act(() => container.querySelector<HTMLButtonElement>('button[title="Disable parent-child nesting"]')!.click());
+      }
+      await waitForAssertion(() => {
+        const rows = [...container.querySelectorAll('[data-testid="issue-row"]')];
+        expect(rows.map(row => row.querySelector("span")?.textContent)).toEqual(nesting
+          ? ["newest-root", "parent", "child-newest", "child-older"]
+          : ["child-newest", "child-older", "newest-root", "parent"]);
+        expect(rows.every(row => row.getAttribute("data-step"))).toBe(true);
+      });
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
   it("waits for the initial tree but keeps loaded rows visible while new ancestors load", async () => {
     const first = createIssue({ id: "child-one", parentId: "parent-one", title: "First nested task" });
     const second = createIssue({ id: "child-two", parentId: "parent-two", title: "Second nested task" });
