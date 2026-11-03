@@ -25,7 +25,7 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { persistActivity } from "./activity-log.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
-  RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
+  REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE, RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
 } from "./remote-workspace-transport.js";
 import {
   beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
@@ -196,6 +196,8 @@ export async function reserveRemoteWorkspace(input: {
       if (authority.writerRunId && authority.writerRunId !== input.runId) {
         const [prior] = await tx.select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId,
           issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+          runtimeMode: heartbeatRuns.runtimeMode, nativeSessionId: heartbeatRuns.nativeSessionId, runnerInstanceId: heartbeatRuns.runnerInstanceId,
+          errorCode: heartbeatRuns.errorCode, executionRecovery: sql<unknown>`${heartbeatRuns.resultJson}->'executionRecovery'`,
           contextIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
           lastOutputAt: heartbeatRuns.lastOutputAt, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
         }).from(heartbeatRuns).where(and(
@@ -211,8 +213,14 @@ export async function reserveRemoteWorkspace(input: {
         }
         const leases = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
           eq(environmentLeases.heartbeatRunId, authority.writerRunId)));
+        const bootstrap = object(prior?.executionRecovery);
+        const pristinePreparation = !authority.location && !authority.snapshotId && prior?.status === "failed"
+          && prior.runtimeMode === "legacy" && prior.nativeSessionId === null && prior.runnerInstanceId === null
+          && prior.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE
+          && bootstrap.kind === "bootstrap" && bootstrap.providerWorkStarted === false;
         const unusedReservation = !authority.dirty && prior && ["failed", "cancelled", "interrupted", "timed_out", "succeeded"].includes(prior.status)
-          && leases.every(hasRemoteTerminationReceipt);
+          && leases.every(lease => hasRemoteTerminationReceipt(lease) || (pristinePreparation
+            && lease.releasedAt && lease.cleanupStatus === "success" && ["released", "expired", "failed"].includes(lease.status)));
         if (!unusedReservation) throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
       }
       if (authority.writerRunId === input.runId) return existing;

@@ -929,7 +929,12 @@ The failed allocation is not reused by a successor. Normal lease cleanup and
 fresh admission retain their existing ownership and execution gates. A lost
 preparation reply therefore cannot cause a successor to overwrite that allocation.
 Provider work must not have started and the run must not have retained native
-execution identity. Unknown historical setup errors remain
+execution identity. For that persisted bootstrap-only timeout, a successor may
+claim the still-unpublished reservation after every prior lease is terminal and
+successfully cleaned up, including providers whose release returns no receipt.
+This grants no provider-stop evidence: published or saved work, retained execution
+identity, unknown failures, active leases, and incomplete cleanup still require
+their normal reconciliation and termination proof. Unknown historical setup errors remain
 outside this policy, and generic recovery cannot renew its exhausted budget.
 
 ### Runner authentication and ACP startup handshake bounds

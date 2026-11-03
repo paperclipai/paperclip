@@ -156,7 +156,26 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(await fs.readFile(path.join(remote.remoteCwd, "saved.txt"), "utf8")).toBe("retain existing work\n");
   });
 
-  it("recovers a lost preparation reply on a new allocation and retains the resulting work", async () => {
+  async function releaseBootstrapLease(receipt: boolean) {
+    const pluginId = randomUUID();
+    await db.update(environmentLeases).set({ metadata: { driver: "sandbox", pluginId, provider: "daytona",
+      sandboxProviderPlugin: true } }).where(eq(environmentLeases.id, ids.lease));
+    const runtime = environmentRuntimeService(db, { pluginWorkerManager: {
+      isRunning: () => true,
+      getWorker: () => ({ supportedMethods: ["environmentReleaseLease"] }),
+      call: async (_id: string, method: string) => {
+        expect(method).toBe("environmentReleaseLease");
+        return receipt ? { providerLeaseId: `allocation-${ids.lease}`, state: "stopped" } : undefined;
+      },
+    } as never });
+    await runtime.releaseRunLeases(ids.run, "failed");
+    expect(await lease()).toMatchObject({ status: "failed", cleanupStatus: "success" });
+    expect(Boolean((await lease()).metadata?.remoteExecutionTermination)).toBe(receipt);
+  }
+
+  it.each(["receipt", "void"] as const)("recovers a lost preparation reply after %s cleanup and retains the resulting work", async cleanup => {
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, issueId: ids.issue })
+      .where(eq(heartbeatRuns.id, ids.run));
     const reserved = await reserve({ kind: "empty" }), first = await target("lost-bootstrap-reply");
     const actual = first.runner!.execute.bind(first.runner!);
     const execute = vi.spyOn(first.runner!, "execute").mockImplementationOnce(async input => {
@@ -168,12 +187,11 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       .rejects.toMatchObject({ code: "remote_workspace_prepare_timeout" });
     const oldRoot = path.join(first.remoteCwd, ".paperclip-workspaces", reserved.id);
     const oldReceipt = await fs.readFile(path.join(oldRoot, ".paperclip-runtime", "workspace-ready.json"), "utf8");
-    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
-    const oldLease = await lease();
-    await db.update(environmentLeases).set({ status: "failed", releasedAt: new Date(), cleanupStatus: "success",
-      metadata: { ...oldLease.metadata, remoteExecutionTermination: remoteTerminationReceipt(oldLease, {
-        providerLeaseId: oldLease.providerLeaseId, state: "stopped",
-      }) } }).where(eq(environmentLeases.id, ids.lease));
+    const [failed] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, ids.run));
+    await terminalizeLegacyExecution({ db, run: failed!, status: "failed", patch: {
+      errorCode: "remote_workspace_prepare_timeout", resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+    } });
+    await releaseBootstrapLease(cleanup === "receipt");
     const continueOn = async (name: string) => {
       const runId = randomUUID(), leaseId = randomUUID();
       await db.insert(heartbeatRuns).values({ id: runId, companyId: ids.company, agentId: ids.agent,
@@ -201,6 +219,44 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     expect(execute).toHaveBeenCalledOnce();
     expect(await fs.readFile(path.join(oldRoot, ".paperclip-runtime", "workspace-ready.json"), "utf8")).toBe(oldReceipt);
   }, 60_000);
+
+  it.each(["unclassified", "provider_started", "retained_native", "runner_identity", "native_mode", "saved", "published", "dirty", "cleanup_failed", "active_lease"] as const)(
+    "keeps receiptless workspace handoff blocked for %s", async state => {
+      const reserved = await reserve({ kind: "empty" });
+      let savedAuthority: ReturnType<typeof readRemoteWorkspaceAuthority> = null;
+      let remoteRoot: string | undefined;
+      if (state === "saved" || state === "published") {
+        const remote = await target(`preserved-${state}`);
+        const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: remote });
+        remoteRoot = prepared.remoteRoot;
+        await fs.writeFile(path.join(remoteRoot, "saved.txt"), "keep prior files\n");
+        await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: ids.run,
+          lease: prepared.lease, target: remote, boundary: "initial", assertOwned: async () => undefined });
+        savedAuthority = readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata);
+      }
+      await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: state === "native_mode" ? "native" : "legacy", finishedAt: new Date(),
+        errorCode: state === "unclassified" ? "setup_failed" : "remote_workspace_prepare_timeout",
+        nativeSessionId: state === "retained_native" ? randomUUID() : null,
+        runnerInstanceId: state === "runner_identity" ? randomUUID() : null,
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: state === "provider_started" } },
+      }).where(eq(heartbeatRuns.id, ids.run));
+      if (state !== "active_lease") await releaseBootstrapLease(false);
+      if (state === "cleanup_failed") await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, ids.lease));
+      if (savedAuthority) await db.update(executionWorkspaces).set({ metadata: { ...reserved.metadata,
+        remoteWorkspace: { ...savedAuthority, dirty: false, snapshotId: state === "published" ? null : savedAuthority.snapshotId },
+      } }).where(eq(executionWorkspaces.id, reserved.id));
+      if (state === "dirty") await db.update(executionWorkspaces).set({ metadata: { ...reserved.metadata,
+        remoteWorkspace: { ...readRemoteWorkspaceAuthority(reserved.metadata)!, dirty: true },
+      } }).where(eq(executionWorkspaces.id, reserved.id));
+      const nextRun = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: nextRun, companyId: ids.company, agentId: ids.agent,
+        nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+      await expect(reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue,
+        runId: nextRun, agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null,
+        existingWorkspaceId: reserved.id, source: { kind: "empty" } })).rejects.toThrow("unfinished writer");
+      expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)?.writerRunId).toBe(ids.run);
+      if (remoteRoot) expect(await fs.readFile(path.join(remoteRoot, "saved.txt"), "utf8")).toBe("keep prior files\n");
+    });
 
   it.each(["initial", "follow-up"] as const)("edits and cold-restores both an anchor and a referenced project's task copy (%s attachment)", async attachment => {
     vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "true");
