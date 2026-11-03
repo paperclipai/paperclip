@@ -1,4 +1,5 @@
 import type { LiveEvent } from "@paperclipai/shared";
+import { beginIdleTrackedWork } from "../services/task-admission.js";
 
 export const LIVE_DELIVERY_MAX_ITEMS = 1_000;
 export const LIVE_DELIVERY_MAX_BYTES = 1024 * 1024;
@@ -90,6 +91,7 @@ export function createLiveEventDelivery(input: {
   async function drain() {
     if (draining) return;
     draining = true;
+    const finishIdleWork = beginIdleTrackedWork();
     try {
       while (queued.length && isOpen()) {
         const item = queued.shift()!;
@@ -121,7 +123,10 @@ export function createLiveEventDelivery(input: {
           retainedBytes -= item.bytes; retainedItems -= 1;
         }
       }
-    } finally { draining = false; resync(); }
+    } finally {
+      try { draining = false; resync(); }
+      finally { finishIdleWork(); }
+    }
   }
   return {
     receive(raw: string) {

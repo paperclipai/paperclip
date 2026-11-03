@@ -1,3 +1,6 @@
+import type { ApiWakeAdmission } from "./idle-api-wake-admission.js";
+import { readIdleIncomingWakeProof, incomingWakeWorkQuery, type IdleIncomingWakeProof } from "./idle-incoming-wake.js";
+import type { VerifiedIdleCapabilities, IdleIncomingWakeCapability } from "./idle-incoming-wake-capability.js";
 import { idleWorkSnapshot } from "./task-admission.js";
 import { readIdleLocalWork, type IdleLocalWork } from "./idle-local-work.js";
 import { readIdleRoutineSchedule, type ScheduledWake } from "./idle-scheduled-work.js";
@@ -38,10 +41,12 @@ export interface IdleSleepDrainStatus {
 }
 
 export interface IdleSleepSafety {
-  version: 1 | 2;
+  version: 1 | 2 | 3;
   backgroundWork: "none" | "present" | "unknown";
   scheduledWake?: ScheduledWake;
   diagnostics?: IdleSleepDiagnostics;
+  incomingWake?: IdleIncomingWakeCapability;
+  apiWakeAdmission?: ApiWakeAdmission;
 }
 
 export type InspectIdlePlugins = (hold: { ownerId: string; expiresAt: number }) => Promise<{
@@ -84,9 +89,8 @@ const WORK_CHECKS = [
   workCheck("prompt_injection_invocations", `SELECT 1 FROM prompt_injection_invocations WHERE status = 'running'`),
   // Persistent machine credentials can receive work without a human opening
   // the instance. They need an ingress wake contract before we can sleep.
-  workCheck("agent_api_keys", `SELECT 1 FROM agent_api_keys WHERE revoked_at IS NULL`),
-  workCheck("board_api_keys", `SELECT 1 FROM board_api_keys WHERE revoked_at IS NULL
-    AND (expires_at IS NULL OR expires_at > now())`),
+  workCheck("agent_api_keys", incomingWakeWorkQuery("agent_api_keys")!),
+  workCheck("board_api_keys", incomingWakeWorkQuery("board_api_keys")!),
   // Coalescing consumes a request into another run. Retain it as work until
   // both the request and that exact company/agent's run have finished.
   workCheck("agent_wakeup_requests", `SELECT 1 FROM agent_wakeup_requests w WHERE
@@ -137,20 +141,7 @@ const WORK_CHECKS = [
   // An unconfigured Slack draft has no provider identity or inbound runtime.
   // Setup still wakes through normal browser admission. Retain every enabled,
   // previously active, partially connected, foreign, or unsupported endpoint.
-  workCheck("chat_endpoints", `SELECT 1 FROM chat_endpoints endpoint WHERE (endpoint.provider = 'slack'
-    AND endpoint.status = 'draft' AND endpoint.setup->>'step' = 'provider_setup'
-    AND (endpoint.setup - ARRAY['step', 'command']) = '{}'::jsonb
-    AND (endpoint.setup->'command' IS NULL OR endpoint.setup->'command' = 'null'::jsonb
-      OR jsonb_typeof(endpoint.setup->'command') = 'string')
-    AND endpoint.activated_at IS NULL AND endpoint.provider_account_id IS NULL
-    AND endpoint.bot_external_id IS NULL AND endpoint.bot_username IS NULL
-    AND endpoint.last_event_at IS NULL AND endpoint.last_publication_at IS NULL
-    AND endpoint.health_message IS NULL AND endpoint.last_error IS NULL
-    AND NOT EXISTS (SELECT 1 FROM chat_slack_registrations registration WHERE registration.endpoint_id = endpoint.id)
-    AND EXISTS (SELECT 1 FROM tool_connections draft_connection
-      WHERE draft_connection.id = endpoint.connection_id AND draft_connection.company_id = endpoint.company_id
-        AND draft_connection.connection_purpose = 'channel' AND draft_connection.transport = 'chat_sdk'
-        AND draft_connection.status = 'draft' AND draft_connection.enabled = false)) IS NOT TRUE`),
+  workCheck("chat_endpoints", incomingWakeWorkQuery("chat_endpoints")!),
   workCheck("routines", `SELECT 1 FROM routines WHERE status NOT IN ('paused', 'archived')`),
   workCheck("routine_runs", `SELECT 1 FROM routine_runs WHERE status NOT IN ('completed', 'failed', 'skipped', 'cancelled')`),
   workCheck("plugin_jobs", `SELECT 1 FROM plugin_jobs WHERE status <> 'paused'`),
@@ -159,13 +150,7 @@ const WORK_CHECKS = [
   // Saved outbound MCP configuration and disabled drafts have no independent
   // listener. Keep local processes, channels and GitHub webhook bindings awake;
   // accepted calls, credential recovery and delivery work have separate fences.
-  workCheck("tool_connections", `SELECT 1 FROM tool_connections c WHERE c.status <> 'archived' AND (
-    (c.status = 'draft' AND c.enabled = false)
-    OR (c.status = 'active' AND c.connection_purpose = 'ai' AND c.transport = 'runtime_auth')
-    OR (c.status = 'active' AND c.connection_purpose = 'tool' AND c.transport = 'mcp_remote'
-      AND NOT EXISTS (SELECT 1 FROM connection_grants g WHERE g.connection_id = c.id
-        AND (g.company_id <> c.company_id OR g.provider_tenant->'github' IS NOT NULL)))
-    ) IS NOT TRUE`),
+  workCheck("tool_connections", incomingWakeWorkQuery("tool_connections")!),
   // An explicit board escalation has no automatic retry. Retain the visible
   // action and all execution/cleanup checks while the board decides what to do.
   workCheck("issue_recovery_actions", `SELECT 1 FROM issue_recovery_actions a WHERE a.status NOT IN ('resolved', 'cancelled')
@@ -294,6 +279,8 @@ function sameQuietHold(before: IdleSleepDrainStatus, after: IdleSleepDrainStatus
  * Only a caller holding the exact idle owner may receive an empty report.
  */
 export interface IdleSleepSafetyOptions {
+  incomingWake?: VerifiedIdleCapabilities;
+  deadlineCapability?: VerifiedIdleCapabilities;
   collectDiagnostics?: true;
 }
 
@@ -310,12 +297,15 @@ export async function readIdleSleepSafety(
   scheduledIssueMonitors = false,
   options: IdleSleepSafetyOptions = {},
 ): Promise<IdleSleepSafety> {
+  let incomingProof: IdleIncomingWakeProof | undefined;
   const diagnostic = options.collectDiagnostics ? createIdleSleepDiagnostics() : undefined;
   const report = (backgroundWork: IdleLocalWork, scheduledWake?: ScheduledWake): IdleSleepSafety => {
     const diagnostics = diagnostic?.report();
     if (backgroundWork === "none" && diagnostics?.checks.some(check =>
       check.state === "unknown" || check.state === "not_checked")) backgroundWork = "unknown";
-    return { version: backgroundWork === "none" && scheduledWake ? 2 : 1, backgroundWork,
+    return { version: backgroundWork === "none" && incomingProof ? 3 : backgroundWork === "none" && scheduledWake ? 2 : 1, backgroundWork,
+      ...(backgroundWork === "none" && incomingProof ? { incomingWake: incomingProof.capability,
+        ...(incomingProof.apiWakeAdmission ? { apiWakeAdmission: incomingProof.apiWakeAdmission } : {}) } : {}),
       ...(backgroundWork === "none" && scheduledWake ? { scheduledWake } : {}),
       ...(diagnostics ? { diagnostics } : {}) };
   };
@@ -360,9 +350,14 @@ export async function readIdleSleepSafety(
     let scheduledWake: ScheduledWake | undefined;
     const blocked = await db.transaction(async (tx) => {
       await tx.execute(sql`SET LOCAL statement_timeout = '5s'`);
+      if (options.incomingWake?.incomingWake) {
+        if (!ownerId || ownerId !== before.ownerId) return undefined;
+        incomingProof = await readIdleIncomingWakeProof(tx, { capabilities: options.incomingWake, ownerId, receiverOwner: db });
+      }
       const checks = WORK_CHECKS.filter(check =>
         (!scheduledRoutines || check.reason !== "routines")
-        && (!scheduledIssueMonitors || check.reason !== "issues"));
+        && (!scheduledIssueMonitors || check.reason !== "issues"))
+        .map(check => ({ ...check, query: incomingWakeWorkQuery(check.reason, incomingProof) ?? check.query }));
       checks.push(workCheck("agents.company_hold", sql`SELECT 1 FROM agents JOIN companies ON companies.id = agents.company_id
         WHERE ${companyHoldMismatch()}`));
       checks.push(workCheck("heartbeat_runs.budget_cancellation", sql`SELECT 1 FROM heartbeat_runs WHERE ${pendingBudgetRunCancellationPredicate()}`));
@@ -447,6 +442,9 @@ export async function readIdleSleepSafety(
       diagnostic?.record("inspection.hold", "unknown");
       return report("present");
     }
+    // Legacy alarm kinds cannot be silently combined with a new ingress proof.
+    // The negotiated deadline catalog supplies the composed v3 alarm separately.
+    if (incomingProof && scheduledWake) return report("unknown");
     return report(local, scheduledWake);
   } catch {
     // Missing migrations, unknown state, malformed configuration, timeouts and

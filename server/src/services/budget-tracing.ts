@@ -3,7 +3,7 @@ import { withDatabaseOperation } from "@paperclipai/db";
 
 type BudgetOperation = "budget.accounting.lock_wait" | "budget.accounting.recover"
   | "budget.accounting.settlement" | "budget.accounting.transaction"
-  | "budget.admission.evaluate" | "budget.admission.reserve"
+  | "budget.admission.evaluate" | "budget.admission.inspect" | "budget.admission.reconcile" | "budget.admission.reserve"
   | "budget.cancellation.deliver" | "budget.enforcement.deliver"
   | "budget.enforcement.scope" | "budget.exposure.evaluate";
 

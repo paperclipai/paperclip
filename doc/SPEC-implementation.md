@@ -1729,7 +1729,10 @@ Scheduler must skip invocation when:
 - an existing run is active
 - hard budget limit has been hit
 
-Budget admission and accounting serialize under the company accounting lock.
+Authoritative paid-work admission and accounting mutations serialize under the
+company accounting lock. Preliminary invocation checks use a read-only snapshot
+and take that lock only when a hold, incident, or enforcement transition needs
+reconciliation; reconciliation rereads current state under the lock.
 The dispatch boundary rechecks current company, agent, and project policies and
 reserves capacity before paid work starts. Accounting commits budget blocks and
 durable stop intent without waiting for provider shutdown or reconciling unrelated
