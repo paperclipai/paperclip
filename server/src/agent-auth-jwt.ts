@@ -142,7 +142,7 @@ export function createLocalAgentJwt(
     ...(authorizingUserId?.trim() ? { authorizing_user_id: authorizingUserId.trim() } : {}),
     ...(keyScope.kind === "standard" ? {} : { key_scope: keyScope }),
     iat: now,
-    exp: now + config.ttlSeconds,
+    exp: now + (keyScope.kind === "run_status_observer" ? Math.min(config.ttlSeconds, 120) : config.ttlSeconds),
     iss: config.issuer,
     aud: config.audience,
     instance_id: config.instanceId,
