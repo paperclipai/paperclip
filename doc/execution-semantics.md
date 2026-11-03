@@ -1683,6 +1683,19 @@ remains protected. Cleanup never interprets this registration as a stop receipt
 or permission to replay provider work. Repeated cleanup visits register the source
 once; settled sources add no continuing discovery or new maintenance timer.
 
+Retry and authenticated new messages also inspect the task's bound remote
+workspace for its exact failed writer. A newer setup failure cannot hide that
+writer's file obligation. A released reusable source can register preservation
+when its prepared descriptor, current workspace authority, and dedicated stop
+receipts agree. Registration keeps the lease's policy, release state, and stop
+receipts. The existing worker verifies allocation ownership before file-only
+resume. It saves the files before ordinary continuation admission; repeated
+requests do not create another recovery generation or replay provider work.
+If Retry names a newer failed preparation, continuation separately verifies that
+it never reached provider dispatch. Contradictory execution evidence keeps the
+hold. After preservation, the accepted continuation selects the bound saved
+workspace through its verified repair receipt instead of discarding its files.
+
 Every continuation carries the triggering request, ordered user direction, interaction outcomes, completed work, and explicit history coverage. A delivered message remains part of the task's request after its connection or approval resolves. The original title is background; a completed Notion read does not satisfy a later Gmail request. Author and source-trust boundaries survive rendering into both native and legacy prompts. Missing required history must be fetched before dispatch rather than described as complete.
 
 ### Remote runner process evidence
