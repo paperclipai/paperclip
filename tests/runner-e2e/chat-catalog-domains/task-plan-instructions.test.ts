@@ -138,3 +138,10 @@ for (const definition of [...taskAttachmentCases, ...runtimeDelegationCases]) {
       expect(row[key]).toEqual(definition[key]);
   });
 }
+
+for (const reply of ["Morgan has the task. I’ll report back when the website is complete.", "Morgan has the task; once the website is complete, I will return its link."]) {
+  it("147 permits a future completion promise without claiming the website is already finished", () => {
+    const f = fixture("147"); f.workerRun.status = "running"; f.observation.reply = reply;
+    expect(f.grade(f.observation).passed).toBe(true);
+  });
+}

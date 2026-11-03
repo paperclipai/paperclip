@@ -31,11 +31,15 @@ export function gradeAttachmentBrief(value: unknown) {
   const plan = currentWorkerTaskPlan({ ...o, task: saved, sourceId: o.sourceId, workerId: worker.id,
     creatorRun: o.runs.find(run => run.id === (creation as (Entity & { runId?: string }) | undefined)?.runId),
     workerRun });
+  const prematureCompletion = o.reply.split(/[.!?;\n]/).some(sentence => {
+    const claim = /\b(?:website|landing.page|web page|page)\b[^.!?\n]{0,40}\b(?:is|has been)\s+(?:(?:already|now)\s+)?(?:complete|completed|built|implemented|published|deployed)\b/i.exec(sentence);
+    return !!claim && !/\b(?:when|once|after|if|until)\s+(?:(?:the|this|that)\s+)?$/i.test(sentence.slice(0, claim.index));
+  });
   c.add("one-contextual-ordinary-work-task", work.length === 1 && !!saved && saved.companyId === o.companyId && saved.assigneeAgentId === worker.id
     && /\b(?:website|landing.page|web page)\b/i.test(`${saved.title} ${saved.description ?? ""}\n${plan}`)
     && o.activity.some(row => row.action === "issue.created" && row.entityId === saved.id && row.agentId === o.leadId)
     && hasLink(o, "issues", saved)
-    && !(workerRun?.status !== "succeeded" && /\b(?:website|landing.page|web page|page)\b[^.!?\n]{0,40}\b(?:is|has been)\s+(?:(?:already|now)\s+)?(?:complete|completed|built|implemented|published|deployed)\b/i.test(o.reply)), "One actual CEO-created website task is delegated to the intended Morgan and linked in chat.");
+    && !(workerRun?.status !== "succeeded" && prematureCompletion), "One actual CEO-created website task is delegated to the intended Morgan and linked in chat.");
   const context = `${saved?.description ?? ""}\n${describedWebsite ? o.workDocuments.map(row => row.body ?? "").join("\n") : plan}`;
   const copied = o.workAttachments.some(row => row.issueId === saved?.id && row.companyId === o.companyId && row.sha256 === o.state.briefHash
     && o.durablePath === row.contentPath);
