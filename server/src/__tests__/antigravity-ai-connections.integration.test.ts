@@ -138,6 +138,29 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
     expect(request).not.toHaveBeenCalled();
   });
 
+  it("runs two probes of the same Google subscription concurrently in separate homes", async () => {
+    const f = await fixture("subscription");
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const homes: string[] = [];
+    const first = withManagedAiProbe(db, f.runtime, async runtime => {
+      homes.push(runtime.home!); entered(); await hold;
+    });
+    let second: Promise<void> | undefined;
+    try {
+      await started;
+      second = withManagedAiProbe(db, f.runtime, async runtime => {
+        homes.push(runtime.home!);
+        expect(await readFile(join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json"), "utf8")).toBe(f.credential);
+      });
+      await vi.waitFor(() => expect(homes).toHaveLength(2), { timeout: 1000 });
+      await second;
+      expect(homes[0]).not.toBe(homes[1]);
+      expect(request).not.toHaveBeenCalled();
+    } finally { release(); await Promise.allSettled([first, second]); }
+  });
+
   it.each(["api_key", "subscription"] as const)("refuses revoked %s defaults without falling back to another saved credential", async method => {
     const f = await fixture(method);
     await f.service.save(f.companyId, f.owner, { ...f.intent, name: "Unselected fallback", connectionId: undefined }, f.credential);

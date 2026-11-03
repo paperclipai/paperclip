@@ -4,15 +4,6 @@ Product map: [runs-adapters](../feature-map/runs-adapters.md).
 
 Feature ID: `runs-adapters`.
 
-For `runs-adapters/model-accounts`, concurrent runs and account tests retain the
-same company, responsible-user, audience and agent-installation checks. Account
-use takes no execution mutex and does not wait for another runtime's credential
-cleanup. Atomic credential writes retain their generation and revocation checks.
-The [connection regressions](../../server/src/__tests__/ai-connections.test.ts)
-and [Google controls](../../server/src/__tests__/antigravity-ai-connections.integration.test.ts)
-use real PostgreSQL with provider fixtures. No REST permission changes or live
-provider qualification are claimed.
-
 Scoped local Git author contract (`runs-adapters/runs`): an admitted execution
 with managed launchers can create a local commit without a GitHub grant. A
 private per-operation Git config supplies `Paperclip <noreply@paperclip.ing>`

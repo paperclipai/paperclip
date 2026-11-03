@@ -1254,7 +1254,7 @@ describe("managed AI connections", () => {
     await expect(access(run.home!)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("serializes quota exchange with a concurrent secret edit and runtime credential read", async () => {
+  it("rereads committed quota rotation without taking an account execution mutex", async () => {
     const owner = "quota-race-owner";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { access_token: "old-access", refresh_token: "single-use", id_token: "identity", account_id: "race-account" } });
@@ -1272,15 +1272,18 @@ describe("managed AI connections", () => {
     const refreshing = service.refreshQuotaCredential(row, original, new AbortController().signal);
     try {
       await exchangeStarted.promise;
-      const edit = secretService(db).update(secretId, { description: "Changed during refresh" });
       lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock");
       const preparing = prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local", binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
-      // Runtime reads now wait at the company file lock before touching the
-      // old credential. The returned home must contain the committed rotation.
       let prepared = false;
       void preparing.then(() => { prepared = true; });
-      await vi.waitFor(() => expect(lock).toHaveBeenCalled());
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query like '%company_secrets%'`);
+        expect(waiting.length).toBeGreaterThan(0);
+      });
       expect(prepared).toBe(false);
+      expect(lock).not.toHaveBeenCalled();
+      const edit = secretService(db).update(secretId, { description: "Changed during refresh" });
       releaseExchange.resolve();
       const results = await Promise.all([refreshing, edit, preparing]);
       runtime = results[2];

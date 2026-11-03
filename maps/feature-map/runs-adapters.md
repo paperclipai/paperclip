@@ -20,15 +20,6 @@ Agent access: [companion](../agent-access-map/runs-adapters.md).
 - `runs`: `runs-adapters/runs` — inspect run status, events, output, costs, and the source task.
 - `session`: `runs-adapters/session` — preserve or reset execution context through supported lifecycle actions.
 
-Managed AI accounts allow concurrent runs and account tests. A pending cleanup
-from one runtime does not block another runtime using the same account. The
-[AI connection regressions](../../server/src/__tests__/ai-connections.test.ts)
-exercise simultaneous probes and a fresh runtime with unfinished cleanup using
-real PostgreSQL and fixture credentials. The
-[Google regressions](../../server/src/__tests__/antigravity-ai-connections.integration.test.ts)
-cover the corresponding Google account path. These checks do not qualify live
-provider authentication or a deployed release.
-
 ## How to get to it (user POV)
 
 ### `adapter-setup`
