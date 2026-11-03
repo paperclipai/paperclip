@@ -10,17 +10,37 @@ import { checks, observation, project, type InternalObservation } from "./intern
 import { integratorDefinition, groundedStatement, inspectResult, resultHref, observeInternal } from "./integrator-support.js";
 
 export const websiteChecklist = ["Navigate every interactive control using only the keyboard.", "Verify every form field has a visible label.", "Check text contrast meets WCAG AA.", "Test the landing page at a 375 pixel viewport without horizontal scrolling."];
-export function preservesWebsiteChecklist(markdown: string): boolean {
+function websiteChecklistChecks(markdown: string): boolean[] {
   const instructions = markdown.split(/\n+|(?<=[.!?])\s+/).filter(Boolean);
   // A numbered check and its indented detail form one instruction. Keep
   // separate checks isolated so an unrelated earlier width cannot ground it.
   const blocks = markdown.split(/\n(?=\s*(?:\d+[.)]|#{1,6})\s)/).map(block => block.replace(/\s+/g, " "));
   const forbidden = /\b(?:skip|omit|ignore|don't|do not|need not|not required|optional)\b/i;
   const instruction = (requirements: RegExp[]) => instructions.some(text => requirements.every(pattern => pattern.test(text)) && !forbidden.test(text));
-  return instruction([/\bkeyboard\b/i, /(?:\b(?:all|every)\b.*\b(?:interactive|control|element|action|navigation)|\b(?:interactive|control|element|action|navigation)\b.*\b(?:all|every)\b)/i, /(?:only|alone|without (?:a |the )?mouse|no mouse)/i])
-    && instruction([/\b(?:all|every|each)\b/i, /\b(?:form|input)\b/i, /\b(?:field|control|input)s?\b/i, /\bvisible\b/i, /\blabels?\b/i])
-    && instruction([/\b(?:text|foreground)\b/i, /\bcontrast\b/i, /\bWCAG(?:\s+2\.\d)?\s+(?:level\s+)?AA\b/i, /\b(?:check|verify|ensure|measure|assess|meet|meets|satisfy)\b/i])
-    && blocks.some(text => !forbidden.test(text) && [/\b375\s*(?:px|pixels?)?\b/i, /\b(?:viewport|wide|width)\b/i, /(?:without horizontal (?:scrolling|overflow)|no horizontal (?:scrolling|overflow)|(?:must not|does not|doesn't) (?:scroll|overflow) horizontally|(?:confirm|check|verify)[^.!?]{0,70}whether[^.!?]{0,70}horizontal scrolling)/i].every(pattern => pattern.test(text)));
+  return [instruction([/\bkeyboard\b/i, /(?:\b(?:all|every)\b.*\b(?:interactive|control|element|action|navigation)|\b(?:interactive|control|element|action|navigation)\b.*\b(?:all|every)\b)/i, /(?:only|alone|without (?:a |the )?mouse|no mouse)/i]),
+    instruction([/\b(?:all|every|each)\b/i, /\b(?:form|input)\b/i, /\b(?:field|control|input)s?\b/i, /\bvisible\b/i, /\blabels?\b/i]),
+    instruction([/\b(?:text|foreground)\b/i, /\bcontrast\b/i, /\bWCAG(?:\s+2\.\d)?\s+(?:level\s+)?AA\b/i, /\b(?:check|verify|ensure|measure|assess|meet|meets|satisfy)\b/i]),
+    blocks.some(text => !forbidden.test(text) && [/\b375\s*(?:px|pixels?)?\b/i, /\b(?:viewport|wide|width)\b/i, /(?:without horizontal (?:scrolling|overflow)|no horizontal (?:scrolling|overflow)|(?:must not|does not|doesn't) (?:scroll|overflow) horizontally|(?:confirm|check|verify)[^.!?]{0,70}whether[^.!?]{0,70}horizontal scrolling)/i].every(pattern => pattern.test(text)))];
+}
+export function preservesWebsiteChecklist(markdown: string): boolean {
+  return websiteChecklistChecks(markdown).every(Boolean);
+}
+/** Rich editor paragraphs/list items are semantic blocks, not Markdown source. */
+export function preservesVisibleWebsiteChecklist(blocks: readonly string[]): boolean {
+  if (!Array.isArray(blocks) || !blocks.length || blocks.some(block => typeof block !== "string")) return false;
+  const checks = blocks.map(websiteChecklistChecks);
+  let previous = 0;
+  for (let requirement = 0; requirement < 4; requirement++) {
+    const index = checks.findIndex((row, index) => index >= previous && row[requirement]);
+    if (index < 0) return false;
+    previous = index;
+  }
+  return true;
+}
+/** Serializable Playwright DOM projection; no editor text or Markdown is invented. */
+export function authoredChecklistTextBlocks(nodes: Element[]): string[] {
+  return nodes.filter(node => node.tagName === "LI" ? !node.parentElement?.closest("li") : !node.closest("li"))
+    .map(node => node.textContent ?? "");
 }
 interface SkillsObservation extends InternalObservation {
   skills: CompanySkillDetail[]; versions: Record<string, CompanySkillVersion[]>;
@@ -96,12 +116,13 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
   await expect(ctx.input.page.getByText(skill.name, { exact: true }).first()).toBeVisible({ timeout: remaining() });
   const editor = ctx.input.page.getByRole("textbox", { name: "editable markdown", exact: true });
   await expect(editor).toBeVisible({ timeout: remaining() }); await expect(editor).toBeEditable({ timeout: remaining() });
-  await expect.poll(async () => preservesWebsiteChecklist(await editor.innerText()), { timeout: remaining() }).toBe(true);
-  const body = await editor.innerText();
+  const readBlocks = () => editor.locator("p, li").evaluateAll(authoredChecklistTextBlocks);
+  await expect.poll(async () => preservesVisibleWebsiteChecklist(await readBlocks()), { timeout: remaining() }).toBe(true);
+  const body = await readBlocks();
   await ctx.input.page.reload({ waitUntil: "domcontentloaded", timeout: remaining() });
   await expect(ctx.input.page).toHaveURL(url => url.pathname === route, { timeout: remaining() });
   await expect(editor).toBeVisible({ timeout: remaining() }); await expect(editor).toBeEditable({ timeout: remaining() });
-  await expect.poll(async () => await editor.innerText() === body, { timeout: remaining() }).toBe(true);
+  await expect.poll(async () => JSON.stringify(await readBlocks()) === JSON.stringify(body), { timeout: remaining() }).toBe(true);
   const after = await ctx.input.api.get<CompanySkillDetail>(`${root(ctx)}/skills/${encodeURIComponent(skill.id)}`, { timeout: remaining() });
   if (after.id !== skill.id || after.companyId !== observed.companyId || !after.editable || after.currentVersionId !== skill.currentVersionId || after.markdown !== markdown) throw new Error("Authored skill identity, saved version or bytes changed during inspection");
   remaining();
@@ -114,7 +135,7 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
 const define = (id: string, setup: ChatCatalogCase["setup"]): ChatCatalogCase => {
   const base = integratorDefinition("skills", id, setup, observeSkills, gradeIntegratorSkills, verifySkill);
   base.sourceFiles = [...base.sourceFiles, "chat-catalog-domains/integrator-skill-versions.ts"];
-  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v2", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
+  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v2", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts", "../../ui/src/components/MarkdownEditor.tsx", "../../ui/src/pages/SkillStudio.tsx"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
     async act(ctx, state) { remainingIdentityObservationBudget(ctx); await waitForReply(ctx, ctx.observationDeadlineAt); await inspectAuthoredSkill(ctx, state, await observeSkills(ctx, state)); },
     async verifyResult(ctx, state, value) { const o = observation(value); if (!o) throw new Error("Missing authored skill inspection evidence"); await inspectAuthoredSkill(ctx, state, o); },
   } : base;

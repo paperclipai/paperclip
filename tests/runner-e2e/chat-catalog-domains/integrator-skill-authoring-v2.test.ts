@@ -4,7 +4,7 @@ import type { InternalObservation } from "./internal-support.js";
 vi.mock("@playwright/test",()=>({expect:Object.assign((node:any)=>({toBeVisible:async()=>{if(!node.visible)throw Error("Missing real UI item");},toBeEditable:async()=>{if(!node.editable)throw Error("Noneditable real UI");},toHaveURL:async(predicate:(url:URL)=>boolean)=>{if(!predicate(new URL(node.url())))throw Error("Wrong actual Studio identity");}}),{poll:(read:()=>Promise<boolean>)=>({toBe:async(expected:boolean)=>{for(let i=0;i<3;i++)if(await read()===expected)return;throw Error("UI content did not hydrate to the saved checklist");}})})}));
 const observed=vi.hoisted(()=>({base:undefined as unknown}));
 vi.mock("./integrator-support.js",async original=>({...await original<typeof import("./integrator-support.js")>(),observeInternal:vi.fn(async(_ctx:unknown,state:unknown)=>({...observed.base as object,state}))}));
-import { gradeIntegratorSkills, inspectAuthoredSkill, integratorSkillsCases, websiteChecklist } from "./integrator-skills.js";
+import { gradeIntegratorSkills, preservesVisibleWebsiteChecklist, inspectAuthoredSkill, integratorSkillsCases, websiteChecklist } from "./integrator-skills.js";
 afterEach(()=>vi.restoreAllMocks());
 function fixture(){
  const markdown=websiteChecklist.join("\n"),source="https://fixture.test/ACORN/chats/ceo";let current=source,reloads=0,editorReads=0;
@@ -13,7 +13,7 @@ function fixture(){
  const state:Record<string,unknown>={},o={scenarioId:"skills.author-skill",origin:"https://fixture.test",companyId:"company",leadId:"ceo",state,skills:[skill],versions:{skill:[version]},policy:{},editDecision:{allowed:true},tasks:[],projects:[],goals:[],comments:[],documents:[],revisions:[],humanQueries:["Turn our website review checklist into a reusable skill."],runs:[{id:"native",status:"succeeded",agentId:"ceo",companyId:"company"}],activity:[{action:"company.skill_created",entityId:"skill",agentId:"ceo"}],links:[],reply:"Created the reusable company skill, saved in the library and not assigned to any agent."} as unknown as InternalObservation;
  observed.base=o;
  const ui={library:true,studio:true,editable:true,body:markdown,changedAfterReload:false,wrongRoute:false,delayedHydration:false};const events:string[]=[];
- const editor={get visible(){return ui.studio;},get editable(){return ui.editable;},innerText:async()=>ui.delayedHydration&&editorReads++===0?"":ui.changedAfterReload&&reloads?"Lost checklist":ui.body};
+ const editor={get visible(){return ui.studio;},get editable(){return ui.editable;},locator:()=>({evaluateAll:async()=>ui.delayedHydration&&editorReads++===0?[]:(ui.changedAfterReload&&reloads?"Lost checklist":ui.body).split("\n")})};
  const page={url:()=>current,getByRole:(role:string,options?:{name?:string})=>{
   if(role==="textbox")return editor;
   if(role==="link")return{first:()=>({click:async()=>{events.push(options!.name!);current=options?.name==="Skills"?"https://fixture.test/ACORN/skills":"https://fixture.test/ACORN/skills/studio";}})};
@@ -68,4 +68,13 @@ it("waits for actual saved editor content instead of rejecting its visible empty
  const f=fixture();f.ui.delayedHydration=true;
  await expect(inspectAuthoredSkill(f.ctx,f.state,f.o)).resolves.toBeUndefined();
  expect(f.state.authoredSkillInspection).toMatchObject({checklistVisible:true,reloaded:true});
+});
+
+it("inspects real rich-text blocks without applying Markdown marker assumptions to unrelated prefaces", () => {
+ const blocks=["Do not mark a check passed without evidence.",...websiteChecklist];
+ expect(preservesVisibleWebsiteChecklist(blocks)).toBe(true);
+ expect(preservesVisibleWebsiteChecklist([blocks[0]!,...websiteChecklist.toReversed()])).toBe(false);
+ for(let index=0;index<4;index++)expect(preservesVisibleWebsiteChecklist(websiteChecklist.filter((_,i)=>i!==index))).toBe(false);
+ expect(preservesVisibleWebsiteChecklist(["Website review checklist","Type here to edit"])).toBe(false);
+ expect(preservesVisibleWebsiteChecklist([...websiteChecklist.slice(0,3),"375 pixel viewport"])).toBe(false);
 });
