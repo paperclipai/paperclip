@@ -1,9 +1,11 @@
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
+import type { Agent } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { bindAccount } from "./account-scope";
 import { hasUnverifiedSession } from "./cached-session";
 import { queryKeys } from "./queryKeys";
+import { agentConnection, agentDefaultModel } from "./bulk-agent-settings";
 import { clearPersistedQueryCache, persistedQueryScope, QUERY_CACHE_ACTIVE, QUERY_CACHE_CLEARED, QUERY_CACHE_MAX_AGE, QUERY_CACHE_PREFIX, startPersistedQueryCache } from "./persisted-query-cache";
 
 const auth = vi.hoisted(() => ({ getSession: vi.fn() }));
@@ -73,7 +75,7 @@ describe("persisted read cache", () => {
       workProducts: [{ type: "preview_url", url: "https://viewer.example.test/excluded-capability" }] };
     first.client.setQueryData([...queryKeys.issues.detail(task.id), "core"], task);
     first.client.setQueryData([...queryKeys.issues.listMineByMe("company-one"), "index", "with-routine-executions", "live-descendant-summary", 100, "alice"], [task]);
-    first.client.setQueryData(queryKeys.agents.list("company-one"), [{ id: "agent-one", name: "Saved agent", adapterConfig: { Authorization: "excluded-header", access_token: "excluded-token" }, runtimeConfig: { env: { OPENAI_API_KEY: "excluded-env-token" } } }]);
+    first.client.setQueryData(queryKeys.agents.list("company-one"), [{ id: "agent-one", name: "Saved agent", adapterConfig: { provider: "codex", model: "display-model", Authorization: "excluded-header", access_token: "excluded-token" }, runtimeConfig: { env: { OPENAI_API_KEY: "excluded-env-token" } } }]);
     first.handle.flush();
     expect([...first.storage.values.values()].join(" ")).not.toMatch(/excluded-/);
     const key = `${QUERY_CACHE_PREFIX}alice:company-one`;
@@ -86,7 +88,10 @@ describe("persisted read cache", () => {
     expect(cached).not.toHaveProperty("planDocument");
     expect(cached).not.toHaveProperty("legacyPlanDocument");
     expect(cached).not.toHaveProperty("workProducts");
-    expect(restored.client.getQueryData(queryKeys.agents.list("company-one"))).toEqual([{ id: "agent-one", name: "Saved agent" }]);
+    const cachedAgents = restored.client.getQueryData<Agent[]>(queryKeys.agents.list("company-one"))!;
+    expect(cachedAgents).toEqual([{ id: "agent-one", name: "Saved agent", adapterConfig: { provider: "codex", model: "display-model" }, runtimeConfig: {} }]);
+    expect(agentDefaultModel(cachedAgents[0]!)).toBe("display-model");
+    expect(agentConnection(cachedAgents[0]!)).toBeUndefined();
   });
 
   it("counts a task's UUID and identifier reads as one recent task", () => {
