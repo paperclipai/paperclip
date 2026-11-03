@@ -1,16 +1,20 @@
 import { existsSync, promises as fs } from "node:fs";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createServer, type ServerResponse } from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { NativeExecutionInput } from "@paperclipai/paperclip-runner";
 import { onNativeHarnessBackupChange } from "../native-harness-backup-expiration-notifications.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
+import { createNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp, type NativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 
 describe("native harness backup publication", () => {
   let backupRoot = "";
   let unsubscribe: (() => void) | undefined;
   afterEach(async () => {
+    vi.unstubAllEnvs();
     unsubscribe?.(); unsubscribe = undefined;
     if (backupRoot) await fs.rm(backupRoot, { recursive: true, force: true });
   });
@@ -22,6 +26,96 @@ describe("native harness backup publication", () => {
     await fs.writeFile(path.join(pendingRoot, "manifest.json"), "replacement");
     return { db: {}, companyId: "company", scopeDigest: "scope", backupRoot, pendingRoot, current };
   }
+  async function scopedFixture(extension: boolean) {
+    const { buildNativeHarnessBackupManifest, verifyNativeHarnessBackup } = await import("./native-session-executor.js");
+    backupRoot = await fs.mkdtemp(path.join(os.tmpdir(), "native-backup-stamp-publication-"));
+    vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", backupRoot);
+    const release = { harnessId: "example.native/synthetic", packageName: "@example/plugin-harness", version: "1.0.0",
+      integrity: `sha256-${Buffer.alloc(32, 1).toString("base64")}`, protocolVersion: 1, runtimeDigest: `sha256:${"a".repeat(64)}` };
+    const execution = { provider: extension ? { kind: "extension", harnessId: release.harnessId, release, model: "fixture", config: { account: "credential-1" } }
+      : { kind: "codex", model: "fixture", approvalPolicy: "never" },
+      binding: { companyId: "company", agentId: "agent", agentKeyId: "epoch-1", runId: "run", issueId: "issue", executionWorkspaceId: "workspace" },
+      workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
+      session: { normalizedSessionId: "native-session", driverKind: "codex_app_server", protocolVersion: 1,
+        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } } } as NativeExecutionInput;
+    const sessionScopeId = JSON.stringify({ companyId: execution.binding.companyId, agentId: execution.binding.agentId,
+      sessionId: execution.session.normalizedSessionId, workspaceId: execution.binding.executionWorkspaceId, provider: execution.provider });
+    const scopeDigest = createHash("sha256").update(sessionScopeId).digest("hex");
+    const storageRoot = path.join(backupRoot, ...(extension ? ["extension-session-backups"] : []), scopeDigest);
+    const publishedRoot = path.join(storageRoot, "failover-backups"), pendingRoot = path.join(publishedRoot, "pending");
+    for (const directory of ["runner", extension ? "extension" : "codex-home"]) {
+      await fs.mkdir(path.join(pendingRoot, directory), { recursive: true });
+      await fs.writeFile(path.join(pendingRoot, directory, "checkpoint.json"), JSON.stringify({ epoch: "epoch-1", release, account: "credential-1" }));
+    }
+    const manifest = buildNativeHarnessBackupManifest({ backupRoot: pendingRoot, execution, runnerInstanceId: "runner-1",
+      providerSessionIdentity: { providerSessionId: "native-thread", providerBackendSessionId: "native-backend" },
+      sourceProviderLeaseId: "sandbox-source", completedAt: "2026-11-03T00:00:00.000Z" });
+    await fs.writeFile(path.join(pendingRoot, "manifest.json"), JSON.stringify(manifest));
+    const stampInput = { sessionScopeId, authorizedProviderLeaseId: "sandbox-source", normalizedSessionId: "native-session",
+      runnerInstanceId: "runner-1", completedAt: manifest.completedAt };
+    return { db: {}, companyId: "company", scopeDigest, backupRoot: publishedRoot, pendingRoot, storageRoot,
+      stateBase: backupRoot, execution, manifest, stampInput, verifyNativeHarnessBackup };
+  }
+
+  it.each([false, true])("publishes and verifies scoped backups with extension layout %s", async extension => {
+    const input = await scopedFixture(extension);
+    const changes: unknown[] = [];
+    unsubscribe = onNativeHarnessBackupChange(input.db, change => changes.push(change));
+    let stamp!: NativeHarnessBackupStamp;
+    await publishNativeHarnessBackup({ ...input, stamp: async current => {
+      stamp = createNativeHarnessBackupStamp({ ...input.stampInput, manifestPath: path.join(current, "manifest.json") });
+      expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-source")).toBe(true);
+    } });
+    expect(changes).toEqual([{ companyId: input.companyId, scopeDigest: input.scopeDigest }]);
+    expect(stamp.storageKind).toBe(extension ? "extension_session" : undefined);
+    expect(verifyNativeHarnessBackupStamp(stamp, "foreign-lease")).toBe(false);
+    expect(verifyNativeHarnessBackupStamp({ ...stamp, storageKind: "../foreign" }, "sandbox-source")).toBe(false);
+    expect(verifyNativeHarnessBackupStamp({ ...stamp, storageKind: extension ? undefined : "extension_session" }, "sandbox-source")).toBe(false);
+    expect(verifyNativeHarnessBackupStamp({ ...stamp, sessionScopeSha256: "f".repeat(64) }, "sandbox-source")).toBe(false);
+    expect(verifyNativeHarnessBackupStamp({ ...stamp, sessionScopeSha256: "../foreign" }, "sandbox-source")).toBe(false);
+    expect(() => createNativeHarnessBackupStamp({ ...input.stampInput, sessionScopeId: "foreign-scope",
+      manifestPath: path.join(input.backupRoot, "current", "manifest.json") })).toThrow("scope_invalid");
+    const foreignManifest = path.join(input.stateBase, "foreign-manifest.json");
+    await fs.copyFile(path.join(input.backupRoot, "current", "manifest.json"), foreignManifest);
+    expect(() => createNativeHarnessBackupStamp({ ...input.stampInput, manifestPath: foreignManifest })).toThrow("scope_invalid");
+    expect(() => createNativeHarnessBackupStamp({ ...input.stampInput,
+      manifestPath: path.join(input.backupRoot, "current") + "/../current/manifest.json" })).toThrow("scope_invalid");
+    const verify = (execution = input.execution) => input.verifyNativeHarnessBackup({ root: input.storageRoot, execution, runnerInstanceId: "runner-1" });
+    expect(verify()).not.toBeNull();
+    for (const binding of [{ companyId: "foreign-company" }, { agentId: "foreign-agent" }, { agentKeyId: "epoch-2" }]) {
+      expect(verify({ ...input.execution, binding: { ...input.execution.binding, ...binding } })).toBeNull();
+    }
+    expect(verify({ ...input.execution, session: { ...input.execution.session, normalizedSessionId: "foreign-session" } })).toBeNull();
+    if (input.execution.provider.kind === "extension") {
+      expect(verify({ ...input.execution, provider: { ...input.execution.provider, config: { account: "credential-2" } } })).toBeNull();
+      expect(verify({ ...input.execution, provider: { ...input.execution.provider, release: { ...input.execution.provider.release, version: "2.0.0" } } })).toBeNull();
+    }
+    const previous = path.join(input.backupRoot, "previous");
+    await fs.rename(path.join(input.backupRoot, "current"), previous);
+    expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-source")).toBe(true);
+    expect(verify()?.root).toBe(previous);
+    await fs.writeFile(path.join(previous, "runner", "checkpoint.json"), "tampered");
+    expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-source")).toBe(false);
+    expect(verify()).toBeNull();
+  }, 30_000);
+
+  it.each(["namespace", "scope", "backup-parent", "candidate", "manifest"])("rejects extension backup %s symlinks after publication", async component => {
+    const input = await scopedFixture(true);
+    let stamp!: NativeHarnessBackupStamp;
+    await publishNativeHarnessBackup({ ...input, stamp: async current => {
+      stamp = createNativeHarnessBackupStamp({ ...input.stampInput, manifestPath: path.join(current, "manifest.json") });
+    } });
+    const current = path.join(input.backupRoot, "current");
+    const target = component === "namespace" ? path.dirname(input.storageRoot) : component === "scope" ? input.storageRoot
+      : component === "backup-parent" ? input.backupRoot : component === "candidate" ? current : path.join(current, "manifest.json");
+    const foreign = path.join(input.stateBase, `foreign-${component}`);
+    await fs.rename(target, foreign);
+    await fs.symlink(foreign, target, component === "manifest" ? "file" : "junction");
+    expect(verifyNativeHarnessBackupStamp(stamp, "sandbox-source")).toBe(false);
+    expect(() => createNativeHarnessBackupStamp({ ...input.stampInput, manifestPath: path.join(current, "manifest.json") })).toThrow("scope_invalid");
+    expect(() => createNativeHarnessBackupStamp({ ...input.stampInput, manifestPath: path.join(foreign, "manifest.json") })).toThrow("scope_invalid");
+  }, 30_000);
+
   it("restores the existing backup when its lease stamp fails without publishing a false change", async () => {
     const input = await fixture(); const changes: unknown[] = [];
     unsubscribe = onNativeHarnessBackupChange(input.db, change => changes.push(change));

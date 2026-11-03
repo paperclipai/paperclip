@@ -8,6 +8,7 @@ export interface NativeHarnessBackupStamp {
   normalizedSessionId: string;
   runnerInstanceId: string;
   sessionScopeSha256: string;
+  storageKind?: "extension_session";
   sourceProviderLeaseId: string;
   authorizedProviderLeaseId: string;
   manifestSha256: string;
@@ -26,11 +27,13 @@ export function nativeHarnessStateBase(): string {
   );
 }
 
-function stateRootFromDigest(digest: string): string | null {
+function stateRootFromDigest(digest: string, storageKind?: "extension_session"): string | null {
   if (!/^[0-9a-f]{64}$/.test(digest)) return null;
   const base = nativeHarnessStateBase();
-  const root = resolve(base, digest);
-  return dirname(root) === base ? root : null;
+  const parent = storageKind === "extension_session" ? resolve(base, "extension-session-backups") : base;
+  if (!isRealDirectory(base) || (parent !== base && !isRealDirectory(parent))) return null;
+  const root = resolve(parent, digest);
+  return dirname(root) === parent && isRealDirectory(root) && isRealDirectory(resolve(root, "failover-backups")) ? root : null;
 }
 
 function isRealDirectory(path: string): boolean {
@@ -100,22 +103,19 @@ export function createNativeHarnessBackupStamp(input: {
   const sessionScopeSha256 = createHash("sha256")
     .update(input.sessionScopeId)
     .digest("hex");
-  const root = stateRootFromDigest(sessionScopeSha256);
-  if (!root || !isRealDirectory(root)) {
-    throw new Error("runner_harness_backup_scope_invalid");
-  }
   const resolvedManifestPath = resolve(input.manifestPath);
-  const allowedManifestPaths = ["current", "previous"].map((candidate) =>
-    resolve(root, "failover-backups", candidate, "manifest.json"),
-  );
+  const storage = ([undefined, "extension_session"] as const)
+    .map(storageKind => ({ storageKind, root: stateRootFromDigest(sessionScopeSha256, storageKind) }))
+    .find(({ root }) => root !== null && ["current", "previous"].some(name =>
+      resolve(root, "failover-backups", name, "manifest.json") === resolvedManifestPath));
   if (
-    !allowedManifestPaths.includes(resolvedManifestPath) ||
+    input.manifestPath !== resolvedManifestPath || !storage?.root ||
     !isRealDirectory(dirname(resolvedManifestPath)) ||
     !isRealFile(resolvedManifestPath)
   ) {
     throw new Error("runner_harness_backup_scope_invalid");
   }
-  const manifestBytes = readFileSync(input.manifestPath);
+  const manifestBytes = readFileSync(resolvedManifestPath);
   const manifest = JSON.parse(manifestBytes.toString("utf8")) as Record<
     string,
     unknown
@@ -135,6 +135,7 @@ export function createNativeHarnessBackupStamp(input: {
     normalizedSessionId: input.normalizedSessionId,
     runnerInstanceId: input.runnerInstanceId,
     sessionScopeSha256,
+    ...(storage.storageKind ? { storageKind: storage.storageKind } : {}),
     sourceProviderLeaseId: manifest.sourceProviderLeaseId,
     authorizedProviderLeaseId: input.authorizedProviderLeaseId,
     manifestSha256: `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`,
@@ -163,8 +164,10 @@ export function verifyNativeHarnessBackupStamp(
     !stamp.manifestSha256.startsWith("sha256:")
   )
     return false;
-  const root = stateRootFromDigest(stamp.sessionScopeSha256);
-  if (!root || !isRealDirectory(root)) return false;
+  const storageKind = stamp.storageKind;
+  if (storageKind !== undefined && storageKind !== "extension_session") return false;
+  const root = stateRootFromDigest(stamp.sessionScopeSha256, storageKind);
+  if (!root) return false;
   const backupRoot = resolve(root, "failover-backups");
   for (const candidate of [
     resolve(backupRoot, "current"),
@@ -199,6 +202,7 @@ export function verifyNativeHarnessBackupStamp(
         if (
           typeof declared.name !== "string" ||
           !/^[A-Za-z0-9._-]+$/.test(declared.name) ||
+          declared.name === "." || declared.name === ".." ||
           typeof declared.sha256 !== "string" ||
           typeof declared.bytes !== "number"
         ) {
@@ -206,7 +210,7 @@ export function verifyNativeHarnessBackupStamp(
           break;
         }
         const directory = resolve(candidate, declared.name);
-        if (!isRealDirectory(directory)) {
+        if (dirname(directory) !== candidate || !isRealDirectory(directory)) {
           valid = false;
           break;
         }
