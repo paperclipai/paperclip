@@ -71,9 +71,32 @@ export function isStandardEvidenceFile(relative: string) {
     || extension === ".zip");
 }
 
+// Diagnostic metadata only: never an admission, completeness or grading receipt.
+// inventoryComplete describes the listed standard files, not a sealed original tree.
+interface PrivateEvidenceBudget {
+  bound: string; listedFiles: number; filesExamined: number; bytesExamined: number;
+  inventoryComplete: boolean; scanFinished: boolean; requiredEvidenceComplete: boolean | null;
+  byKind: Record<string, { files: number; bytes: number }>;
+}
+const evidenceBudgetKinds = ["json", "log", "image", "video", "zip", "html", "text", "asset"];
+function evidenceBudgetKind(extension: string): string {
+  return extension === ".json" ? "json" : extension === ".log" ? "log" : [".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(extension) ? "image"
+    : [".webm", ".mp4"].includes(extension) ? "video" : extension === ".zip" ? "zip" : extension === ".html" ? "html"
+    : [".txt", ".md", ".xml"].includes(extension) ? "text" : "asset";
+}
+function budgetFailure(message: string, budget: PrivateEvidenceBudget, bound: string) {
+  budget.bound = bound;
+  return Object.assign(new Error(message), { evidenceBudget: budget });
+}
+function scannerBudgetBound(reason: string): string {
+  return reason === "zip inspection exceeded its expanded-byte bound" ? "zip-expanded-bytes"
+    : reason === "zip inspection exceeded its time bound" ? "zip-time"
+    : reason === "embedded report exceeded its byte bound" ? "html-encoded-bytes" : "none";
+}
 export interface EvidencePackageResult {
   files: string[];
   leaks: Array<{ file: string; reason: string }>;
+  budget?: PrivateEvidenceBudget;
   missing: string[];
 }
 
@@ -186,7 +209,10 @@ export async function packageEvidence(input: {
   const available = await walk(input.privateDir, "", Boolean(input.privateCell));
   const standard = available.filter(isStandardEvidencePath);
 
-  if (input.privateCell && standard.length > 4096) throw new Error("Private cell evidence exceeds entry allowance");
+  const budget: PrivateEvidenceBudget | undefined = input.privateCell ? { bound: "none", listedFiles: Math.min(standard.length, 4097), filesExamined: 0, bytesExamined: 0,
+    inventoryComplete: false, scanFinished: false, requiredEvidenceComplete: null,
+    byKind: Object.fromEntries(evidenceBudgetKinds.map(kind => [kind, { files: 0, bytes: 0 }])) } : undefined;
+  if (input.privateCell && standard.length > 4096) throw budgetFailure("Private cell evidence exceeds entry allowance", budget!, "entries");
   const privateSecrets = input.privateCell ? normalizedSecrets(input.secrets).flatMap(value => [value, encodeURIComponent(value), Buffer.from(value).toString("base64"), Buffer.from(value).toString("base64url")]) : [];
   let privateBytes = 0;
   for (const relative of standard) {
@@ -196,8 +222,12 @@ export async function packageEvidence(input: {
     if (input.privateCell) {
       assertSecretFree(relative, privateSecrets, "private cell evidence path");
       const metadata = await lstat(source);
+      if (Number.isSafeInteger(metadata.size) && metadata.size >= 0 && Number.isSafeInteger(budget!.bytesExamined + metadata.size)) {
+        budget!.filesExamined++; budget!.bytesExamined += metadata.size;
+        const counter = budget!.byKind[evidenceBudgetKind(extension)]!; counter.files++; counter.bytes += metadata.size;
+      }
       if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > 256 * 1024 * 1024 - privateBytes)
-        throw new Error("Private cell evidence exceeds byte allowance");
+        throw budgetFailure("Private cell evidence exceeds byte allowance", budget!, "physical-bytes");
       privateBytes += metadata.size;
       if (!Number.isSafeInteger(privateBytes)) throw new Error("Invalid private cell evidence byte accounting");
       const asset = cellTraceAsset(relative, input.privateCell.owner, input.privateCell.layout);
@@ -218,7 +248,7 @@ export async function packageEvidence(input: {
       const raw = await readFile(source, "utf8");
       if (extension === ".html") {
         const issue = await inspectEmbeddedReport(raw, input.secrets);
-        if (issue) { leaks.push({ file: relative, reason: issue }); continue; }
+        if (issue) { if (budget && budget.bound === "none") budget.bound = scannerBudgetBound(issue); leaks.push({ file: relative, reason: issue }); continue; }
       }
       const parsed = extension === ".json" ? JSON.parse(raw) : null;
       const leak =
@@ -248,6 +278,7 @@ export async function packageEvidence(input: {
     } else if (extension === ".zip") {
       const leak = await inspectZip(source, input.secrets);
       if (leak) {
+        if (budget && budget.bound === "none") budget.bound = scannerBudgetBound(leak);
         leaks.push({ file: relative, reason: leak });
         continue;
       }
@@ -269,6 +300,7 @@ export async function packageEvidence(input: {
     }
   }
 
+  if (budget) { budget.inventoryComplete = true; budget.scanFinished = true; }
   const missing = input.expectPassScreenshot
     ? [
         ...REQUIRED_PASS_FILES.filter((required) => !files.includes(required)),
@@ -299,7 +331,8 @@ export async function packageEvidence(input: {
     "utf8",
   );
   files.push("evidence-manifest.json");
-  return { files, leaks, missing };
+  if (budget && input.expectPassScreenshot) budget.requiredEvidenceComplete = missing.length === 0 && leaks.length === 0;
+  return { files, leaks, missing, ...(budget ? { budget } : {}) };
 }
 
 export async function publishRunnerE2EAttemptEvidence(input: {

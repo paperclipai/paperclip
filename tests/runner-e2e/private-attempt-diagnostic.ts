@@ -3,6 +3,33 @@ import { lstat, open, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { PAPERCLIP_PROTOCOL_ACTIONS } from "../../packages/paperclip-runner/src/protocol-actions/index.js";
 
+// Reject malformed counters wholesale. Unknown input never becomes a diagnostic
+// string, path, or authority; even a complete scan remains unqualified evidence.
+function closedPackagingBudget(input: unknown, message: string) {
+  const b = input && typeof input === "object" ? input as Record<string, any> : {};
+  const kinds = ["json", "log", "image", "video", "zip", "html", "text", "asset"];
+  const number = (v: unknown) => Number.isSafeInteger(v) && (v as number) >= 0;
+  if (![b.listedFiles, b.filesExamined, b.bytesExamined].every(number) || b.listedFiles > 4097 || b.filesExamined > 4096
+    || b.filesExamined > b.listedFiles || typeof b.inventoryComplete !== "boolean" || typeof b.scanFinished !== "boolean"
+    || ![true, false, null].includes(b.requiredEvidenceComplete)) return null;
+  const byKind: Record<string, { files: number; bytes: number }> = {};
+  for (const kind of kinds) {
+    const row = b.byKind?.[kind];
+    if (!row || !number(row.files) || !number(row.bytes)) return null;
+    byKind[kind] = { files: row.files, bytes: row.bytes };
+  }
+  if (Object.values(byKind).reduce((n, r) => n + r.files, 0) !== b.filesExamined
+    || Object.values(byKind).reduce((n, r) => n + r.bytes, 0) !== b.bytesExamined
+    || b.inventoryComplete && b.filesExamined !== b.listedFiles || b.scanFinished && !b.inventoryComplete) return null;
+  if (b.requiredEvidenceComplete === true && (!b.scanFinished || b.bound !== "none")) return null;
+  const observedBound = ["none", "physical-bytes", "entries", "zip-expanded-bytes", "zip-time", "html-encoded-bytes"].includes(b.bound) ? b.bound : "unknown";
+  const bound = message === "Complete original evidence exceeds byte allowance" ? "original-seal-bytes"
+    : message === "Complete original evidence exceeds entry allowance" ? "original-seal-entries"
+    : message === "Complete packaged evidence exceeds allowance" ? "final-seal-allowance" : observedBound;
+  return { scope: "package-standard-files", bound, listedFiles: b.listedFiles, filesExamined: b.filesExamined, bytesExamined: b.bytesExamined,
+    inventoryComplete: b.inventoryComplete, scanFinished: b.scanFinished, requiredEvidenceComplete: b.requiredEvidenceComplete,
+    byKind, qualification: "unqualified" };
+}
 export interface PrivateAttemptDiagnosticInput { stage: unknown; result?: unknown; error?: unknown; observation?: unknown; evidence?: unknown }
 const record = (value: unknown): Record<string, any> => value && typeof value === "object" ? value as Record<string, any> : {};
 const member = (value: unknown, choices: string[]) => typeof value === "string" && choices.includes(value) ? value : "unknown";
@@ -71,6 +98,7 @@ export function privateAttemptDiagnostic(input: PrivateAttemptDiagnosticInput) {
   const evidence = record(input.evidence), leaks = Array.isArray(evidence.leaks) ? evidence.leaks : [];
   return {
     schema: "paperclip.private-attempt-diagnostic/v1",
+    packagingBudget: closedPackagingBudget(record(input.error).evidenceBudget ?? evidence.budget, message),
     stage: member(input.stage, ["execution", "package-original", "seal-original"]),
     status: member(result.status, ["passed", "failed", "skipped"]),
     failureClass: member(result.failureClass, ["candidate_failure", "transient_infrastructure", "permanent_infrastructure", "secret_leak", "cleanup_failure"]),
