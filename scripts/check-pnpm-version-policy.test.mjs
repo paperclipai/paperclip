@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import {
   checkPnpmVersionPolicy,
@@ -11,6 +12,8 @@ import {
   documentedPrerequisites,
   expectedPnpmVersion,
 } from "./check-pnpm-version-policy.mjs";
+
+const realRepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const validWorkspace = `packages:
   - server
@@ -185,13 +188,16 @@ test("requires each documented prerequisite", (t) => {
   ]);
 });
 
-test("rejects tracked pnpm 9 references outside dated logs, plans, and generated directories", (t) => {
+test("rejects tracked pnpm 9 references outside dated logs, plans, and historical evidence", (t) => {
   const root = createRepository(
     t,
     {
       "docs/guide.md": "Install pnpm 9 first.\n",
+      "doc/architecture/runner-cursor-capabilities.md": "Historical pack build used pnpm 9.15.4.\n",
       "doc/logs/2026-01-01-install.md": "The old shim ran pnpm add pnpm@9.15.4.\n",
       "doc/plans/2026-01-01-toolchain.md": "Move off pnpm 9.\n",
+      "packages/paperclip-runner/test-fixtures/pi-acp/offline-provider-pack-proof.darwin-arm64.json":
+        JSON.stringify({ packageManager: "pnpm@9.15.4" }),
       "scripts/versions.json": JSON.stringify({ unrelated: "9.15.4" }),
     },
     {
@@ -205,6 +211,13 @@ test("rejects tracked pnpm 9 references outside dated logs, plans, and generated
   assert.deepEqual(
     checkPnpmVersionPolicy(root, { runningVersion: expectedPnpmVersion, scanTracked: true }),
     [`docs/guide.md: references pnpm 9; the supported toolchain is pnpm@${expectedPnpmVersion}`],
+  );
+});
+
+test("accepts the real repository tracked tree under the pnpm 11 policy", () => {
+  assert.deepEqual(
+    checkPnpmVersionPolicy(realRepoRoot, { runningVersion: expectedPnpmVersion, scanTracked: true }),
+    [],
   );
 });
 

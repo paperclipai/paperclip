@@ -31,9 +31,9 @@ The existing ordering and per-human/company isolation remain in effect.
 
 Open `/chats`, choose an agent, or use `/chats/:agentRef` and its conversation sidebar.
 
-With Coordinator enabled, the composer exposes the shared model/thinking-level picker for supported agents. The agent stays fixed in this control; switching agents remains in the chat header. Choices save as conversation overrides on send, preserving the agent's configuration. A first message creates the conversation before saving settings and submitting through the ordered comments endpoint.
+With Coordinator enabled, click the agent avatar, name, or caret in the chat header to open the agent picker. They form one button with the same keyboard focus and action.
 
-Standing chats open with the latest 20 contiguous messages. Scroll upward to fetch earlier messages, answer receipts, and created tasks. The loading indicator stays in the thread; history failures offer an inline Retry while preserving the draft and reading position. Opening a chat does not fetch its lifetime comment, activity, or run history. Already observed messages survive live refresh and Back within the query-cache session.
+With Coordinator enabled, the composer exposes the shared model/thinking-level picker for supported agents. The agent stays fixed in this control; switching agents remains in the chat header. Choices save as conversation overrides on send, preserving the agent's configuration. A first message creates the conversation before saving settings and submitting through the ordered comments endpoint.
 
 Coordinator answer receipts from this conversation jump to the answer bubble without leaving chat. Answer updates from an execution task link to that source task and its decision context. Compact document links read “Open [document title] in the sidebar”.
 
@@ -51,8 +51,6 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Enab
 
 ### `agent-conversation`
 
-Local browser recipe: [long-chat startup and scrolling](../../tests/perf/agent-chat/agent-chat-startup.spec.ts), with fixture and command details in the [performance README](../../tests/perf/agent-chat/README.md). It covers recent-only reveal, delayed and failed pages, Back, older comment links, and live refresh. Synthetic local data is not deployed acceptance evidence.
-
 Automated: [chat landing](../../ui/src/pages/AgentChats.test.tsx) checks recent-chat routing; [conversation service](../../server/src/__tests__/agent-conversations.test.ts) covers persisted conversation behavior.
 
 Automated: [proactive delivery](../../server/src/__tests__/agent-chat-messages.test.ts)
@@ -64,15 +62,6 @@ unread state across reloads, source navigation and follow-up context. It does no
 qualify live PR retrieval or a model's editorial choices.
 
 Automated: [composer picker](../../ui/src/components/task-chat/ComposerRunSettingsPicker.test.tsx) covers fixed-agent model/effort selection on desktop and mobile; [composer](../../ui/src/components/task-chat/TaskChatComposer.test.tsx) covers Coordinator gating and settings submission without reassignment. [Task detail](../../ui/src/pages/IssueDetail.test.tsx) verifies canonical first/existing-chat IDs, settings-before-comment ordering, and no comment submission when settings fail to save. These tests mock the API and do not prove provider execution with the chosen model.
-
-Automated: [conversation delivery](../../server/src/__tests__/agent-conversation-delivery.test.ts)
-checks that paused or otherwise non-invokable agents leave comments pending
-without aborting startup recovery, and that a later unpause allows one delivery.
-The test persists queue admissions only; it does not start agents or providers.
-Automated: [historical chat](../../ui/src/pages/AgentChat.test.tsx) keeps an older
-conversation reachable after a cached roster refresh ends in HTTP 429. It checks
-lookup Retry and preserves permission and company boundaries. This is component
-evidence with real query state, not live provider proof.
 
 Automated: [thread and composer](../../ui/src/components/TaskChatThread.test.tsx)
 keeps an in-flight attachment through first-chat creation on desktop and mobile,
@@ -132,8 +121,6 @@ separate from Agent Chat's configured-agent prerequisites.
 Manual: Check disabled access first, enable in the disposable instance, then send and reload a conversation. Inspect the actual responding agent and persisted history; report this result separately from Agent Chat.
 
 ## Gotchas
-
-- Coordinator Markdown references to a standing agent conversation display “Chat with [agent]” and route to that chat, preserving anchors. Labels resolve once from the existing current-person/current-company chat list and agent roster; no task status glyph or task quicklook is shown for these references. Ordinary task links retain their existing treatment.
 
 - Idle chat is not failed execution.
 - See [steering](./steering.md) for in-flight messages and [questions](./questions-and-approvals.md) for interactions.

@@ -1,6 +1,8 @@
-import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { assertEphemeralAgentInstructions } from "./agent-instructions.js";
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
 import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { notifySkillVersionPinChange } from "./skill-version-retention-notifications.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { notifyExternalConversationSettlement } from "./external-conversation-settlement-notifications.js";
@@ -87,6 +89,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
       existing.adapterConfig,
     );
   }
+  await notifyStrandedAgentStatus(db, { companyId: existing.companyId, agentId: existing.id });
   await notifyRunDispatch(db, { companyId: existing.companyId });
   await notifyDeferredExecutionEligibility(db, { companyId: existing.companyId });
   if (normalizedPatch.runtimeConfig !== undefined || normalizedPatch.reportsTo !== undefined) {
@@ -95,6 +98,7 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
   if (normalizedPatch.adapterConfig !== undefined) {
     await notifySkillVersionPinChange(db, existing.companyId, existing.adapterConfig ?? {}, normalizedPatch.adapterConfig);
   }
+  assertEphemeralAgentInstructions({ ...existing, ...normalizedPatch });
   return normalizedPatch;
 }
 

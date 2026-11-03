@@ -67,18 +67,21 @@ jobs:
           node scripts/ci-dependency-cache.mjs
 
       - name: Save PR-scoped qualification dependencies
+        if: steps.qualification.outputs.cacheable == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           key: ${{ steps.qualification.outputs.dependency-key }}
           path: ${{ steps.qualification.outputs.dependency-paths }}
 
       - name: Save PR-scoped qualification builds
+        if: steps.qualification.outputs.cacheable == 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
         with:
           key: ${{ steps.qualification.outputs.build-key }}
           path: ${{ steps.qualification.outputs.build-paths }}
 
       - name: Remove materialized outputs before restore
+        if: steps.qualification.outputs.cacheable == 'true'
         run: |
           node --input-type=module <<'NODE'
           import { execFileSync } from 'node:child_process';
@@ -93,12 +96,14 @@ jobs:
           echo "CI_WARM_STARTED=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Qualify a real warm restore
+        if: steps.qualification.outputs.cacheable == 'true'
         id: warm
         uses: ./candidate/.github/actions/setup-ci-dependencies
         with:
           working-directory: candidate
 
       - name: Verify exact cache hits and record setup comparison
+        if: steps.qualification.outputs.cacheable == 'true'
         env:
           DEPS_RESTORED: ${{ steps.warm.outputs.dependencies-restored }}
           BUILDS_RESTORED: ${{ steps.warm.outputs.builds-restored }}
@@ -110,6 +115,12 @@ jobs:
           warm_seconds=$(($(date +%s) - CI_WARM_STARTED))
           printf '{"coldSeconds":%s,"warmSeconds":%s}\n' "$CI_COLD_SECONDS" "$warm_seconds" > "$OUTPUT/dependency-setup.json"
           echo "Dependency setup: ${CI_COLD_SECONDS}s cold, ${warm_seconds}s with exact materialized restores." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Explain disabled materialized reuse
+        if: steps.qualification.outputs.cacheable != 'true'
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-work-benchmark"
+          echo "Materialized dependency reuse is disabled by an unmodelled install hook. Retaining cold setup and comparing test commands only." >> "$GITHUB_STEP_SUMMARY"
 
       - name: Prepare unchanged baseline
         run: |

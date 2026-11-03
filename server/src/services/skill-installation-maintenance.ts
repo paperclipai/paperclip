@@ -158,13 +158,16 @@ export function skillInstallationMaintenance(db: Db, storage?: StorageService) {
     return { inspected: skills.length, after: skills.at(-1)?.id ?? null, results };
   }
 
-  async function eligibility(options: Page = {}) {
+  async function eligibility(options: Page & { purpose?: "migration" | "startup" } = {}) {
     const skills = await db.select().from(companySkills).where(scope(options)).orderBy(asc(companySkills.id)).limit(limit(options));
     const results = [];
     for (const skill of skills) {
-      const pins = await protectedVersions(db, skill.companyId);
+      // Migration/eviction must wait for exact pins. Replacement readiness only
+      // inspects installation durability: a serving controller may legitimately
+      // be between run admission and publishing its immutable skill selection.
+      const pins = options.purpose === "startup" ? undefined : await protectedVersions(db, skill.companyId);
       let status = linkedLocal(skill) ? "linked_local" : legacyManaged(skill) ? "legacy_managed" : "version_backed";
-      if (pins.versions === null) status = "unsupported_active_run";
+      if (pins?.versions === null) status = "unsupported_active_run";
       else if (!linkedLocal(skill) && !skill.currentVersionId) status = "missing_current_version";
       else if (skill.sourceType === "catalog" && !skill.metadata?.originVersionId) status = "legacy_catalog_origin";
       else if (status === "version_backed" && skill.currentVersionId) {

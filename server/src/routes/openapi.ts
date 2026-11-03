@@ -359,6 +359,7 @@ type OpenApiPathRegistration = {
   request?: {
     params?: z.ZodTypeAny;
     query?: z.ZodTypeAny;
+    headers?: z.ZodTypeAny;
     body?: {
       content: Record<string, { schema: unknown }>;
       required?: boolean;
@@ -620,7 +621,7 @@ function normalizeResponses(responses: Record<string, OpenApiResponse> = {}) {
 
 function parametersFromSchema(
   schema: z.ZodTypeAny,
-  location: "path" | "query",
+  location: "path" | "query" | "header",
 ) {
   const objectSchema = unwrapSchema(schema);
   if (zodTypeName(objectSchema) !== "object") return [];
@@ -664,6 +665,12 @@ class OpenAPIRegistry {
         normalizedOperation.parameters = [
           ...((normalizedOperation.parameters as unknown[]) ?? []),
           ...parametersFromSchema(request.query, "query"),
+        ];
+      }
+      if (request?.headers) {
+        normalizedOperation.parameters = [
+          ...((normalizedOperation.parameters as unknown[]) ?? []),
+          ...parametersFromSchema(request.headers, "header"),
         ];
       }
       if (request?.body) {
@@ -1297,6 +1304,7 @@ function registerCurrentRoute(input: {
   path: string;
   tags: string[];
   summary: string;
+  description?: string;
   query?: z.ZodTypeAny;
   body?: z.ZodTypeAny;
   responses?: Record<string, OpenApiResponse>;
@@ -1316,6 +1324,7 @@ function registerCurrentRoute(input: {
     ...(input["x-paperclip-transport"] ? { "x-paperclip-transport": input["x-paperclip-transport"], "x-paperclip-connection-management": input["x-paperclip-connection-management"] } : {}),
     tags: input.tags,
     summary: input.summary,
+    ...(input.description ? { description: input.description } : {}),
     ...(request ? { request } : {}),
     responses: input.responses ?? {
       200: r.ok(),
@@ -1372,6 +1381,8 @@ const PUBLIC_OPERATIONS = new Set([
   "GET /api/health",
   "GET /api/liveness",
   "HEAD /api/liveness",
+  "GET /api/ready",
+  "HEAD /api/ready",
   "GET /api/openapi.json",
   "GET /api/board-claim/{token}",
   "POST /api/cli-auth/challenges",
@@ -1819,6 +1830,25 @@ registry.registerPath({
   tags: ["health"],
   summary: "Process startup status without a response body",
   responses: { 200: { description: "Process startup recovery is complete" }, 503: { description: "Startup recovery is not complete" } },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/ready",
+  tags: ["health"],
+  summary: "Deployment readiness without database access",
+  description: "Public in-memory admission status after startup dependencies and recovery have been verified. Returns 503 immediately during shutdown. Responses are not cached; an unavailable server supplies Retry-After: 1.",
+  responses: {
+    200: r.ok(z.object({ status: z.literal("ready") }).strict()),
+    503: { description: "Starting, recovering, or draining", content: {
+      "application/json": { schema: z.object({ status: z.enum(["starting", "recovering", "draining"]) }).strict() },
+    } },
+  },
+});
+registry.registerPath({
+  method: "head", path: "/api/ready", tags: ["health"],
+  summary: "Deployment readiness without a response body",
+  responses: { 200: { description: "Ready to receive traffic" }, 503: { description: "Starting, recovering, or draining" } },
 });
 
 // Shared by the healthy and database-unreachable responses: full details
@@ -4210,6 +4240,16 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/companies/{companyId}/inbox/mine",
+  tags: ["issues"],
+  summary: "Get the board user's initial Mine inbox and required task context",
+  description: "Board-only presentation read. Returns userId, issues, contextIssues, failureRuns and verified failureIssueIds. Uses the existing company, private-task, run-read and secret-redaction policies. Optional failureError or contextError retains successful task rows. The initial task page is bounded to 100 and failed-run history to 200. No query parameters are accepted. This GET shares issue-list coalescing and admission limits; it creates no work.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 429: r.tooManyRequests },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/companies/{companyId}/issues",
   tags: ["issues"],
   summary: "List issues in a company",
@@ -5056,7 +5096,8 @@ registry.registerPath({
   method: "patch",
   path: "/api/projects/{id}",
   tags: ["projects"],
-  summary: "Update a project",
+  summary: "Update project properties and defaults",
+  description: "Save project properties and defaults. The description holds shared project context and guidance, including checklists; goalIds links the project to its goals. Read the project back to verify the saved fields. Updating description or goalIds does not rewrite existing tasks or the inputs already admitted to active native runs; changing existing work is a separate operation. Environment and executionWorkspacePolicy fields configure separate project settings and are not required to save description or goalIds.",
   request: {
     params: z.object({ id: z.string() }),
     body: jsonBody(updateProjectSchema),
@@ -5288,8 +5329,17 @@ registry.registerPath({
   path: "/api/routine-triggers/public/{publicId}/fire",
   tags: ["routines"],
   summary: "Fire a public routine trigger",
-  request: { params: z.object({ publicId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
+  request: {
+    params: z.object({ publicId: z.string() }),
+    headers: z.object({
+      "X-Paperclip-Source-Run-Token": z.string().optional().describe("Optional current Paperclip run JWT. It establishes creation provenance only; the trigger still requires its own authentication."),
+      "X-Paperclip-Idempotency-Scope": z.enum(["trigger", "routine"]).optional().describe("Scope of a stable Idempotency-Key. Default: trigger. Timestamped HMAC always uses trigger scope."),
+      "Idempotency-Key": z.string().optional().describe("Stable sender event identity, reused on retries."),
+    }),
+    body: jsonBody(z.record(z.string(), z.unknown())),
+  },
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound,
+    409: r.conflict, 415: { ...r.badRequest, description: "Unsupported media type" }, 422: r.unprocessable },
 });
 
 // ─── Goals ───────────────────────────────────────────────────────────────────
@@ -6829,7 +6879,7 @@ for (const method of ["get", "put"] as const) {
     path: "/api/companies/{companyId}/primary-agent/me",
     tags: ["agents"],
     summary: method === "get" ? "Get my primary agent" : "Set my primary agent",
-    description: "Uses the authenticated board user's personal company preference. Active company viewers may manage their own preference. Agent credentials cannot access it. Setting a primary requires a visible, approved, non-terminated agent and rejoins that agent under existing membership rules. A cleared preference retains its initialization state.",
+    description: "Uses the authenticated board user's personal company preference. Active company viewers may manage their own preference. Agent credentials cannot access it. In the human UI, open the chosen agent's profile and select its crown control (Set as my primary). Confirm the replacement when a primary is already set. The Chat picker opens conversations and does not change this preference. Setting a primary requires a visible, approved, non-terminated agent and rejoins that agent under existing membership rules. A cleared preference retains its initialization state.",
     request: {
       params: z.object({ companyId: z.string().uuid() }),
       ...(method === "put" ? { body: jsonBody(updatePrimaryAgentSchema) } : {}),
@@ -7401,6 +7451,7 @@ registry.registerPath({
   path: "/api/auth/get-session",
   tags: ["auth"],
   summary: "Get current session",
+  description: "Authenticated board sessions can include an optional same-user boardBootstrap with accessible companies and boardAccess. Existing session fields are unchanged; clients retain ordinary company and access reads when the optional projection is absent.",
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -8766,7 +8817,8 @@ registry.registerPath({
   method: "post",
   path: "/api/companies/{companyId}/skills/import",
   tags: ["skills"],
-  summary: "Import a skill",
+  summary: "Import an existing skill from a source",
+  description: "Import existing SKILL.md content from an allowed local skill directory or a supported remote source. Retain its source provenance instead of authoring new content with create_skill. Local paths must satisfy the company workspace and managed-root boundary checks. Remote imports keep their source access checks. Importing does not assign the skill to an agent. Company skill policy still applies.",
   request: {
     params: z.object({ companyId: z.string() }),
     body: jsonBody(companySkillImportSchema),
@@ -10360,7 +10412,8 @@ registerCurrentRoute({
   method: "post",
   path: "/api/health/dev-server/restart",
   tags: ["health"],
-  summary: "Request a managed dev-server restart",
+  summary: "Request a managed dev-server instance restart",
+  description: "Request a restart of this Paperclip instance through its managed development-server supervisor. In authenticated deployments this requires a board identity; an agent credential does not inherit board access from its responsible user or from a chat request. Hand that operation to an authorized board/operator when the route denies the current agent. Returns 404 when no managed supervisor is available and 409 when no restart is required. Acceptance is not proof that the restart completed. This operation does not delete stored conversations or task comments.",
   responses: {
     202: r.ok(),
     403: r.forbidden,
@@ -11290,6 +11343,17 @@ registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:read",
   method: "get",
+  path: "/api/companies/{companyId}/ai-connections/{connectionId}/identity",
+  tags: ["ai-connections"],
+  summary: "Read the selected authorized AI account's provider email and organization",
+  query: z.object({ grantId: z.string().uuid().optional() }),
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:read",
+  method: "get",
   path: "/api/companies/{companyId}/ai-connections/{connectionId}/usage",
   tags: ["ai-connections"],
   summary: "Probe the selected AI account’s provider usage limits on demand",
@@ -11737,6 +11801,15 @@ registerCurrentRoute({
   "x-paperclip-transport": "rest",
   "x-paperclip-connection-management": "connections:read",
   method: "get",
+  path: "/api/tool-connections/{connectionId}/review-counts",
+  tags: ["tool-access"],
+  summary: "Get pending action request and quarantined catalog entry counts for one connection",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:read",
+  method: "get",
   path: "/api/tool-connections/{connectionId}/usage",
   tags: ["tool-access"],
   summary: "Get tool connection usage",
@@ -12030,6 +12103,15 @@ registerCurrentRoute({
   path: "/api/tools/vercel-connect/callback",
   tags: ["tool-access"],
   summary: "Handle a managed Vercel Connect OAuth callback",
+});
+
+registerCurrentRoute({
+  "x-paperclip-transport": "rest",
+  "x-paperclip-connection-management": "connections:profiles",
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/profile-configuration",
+  tags: ["tool-access"],
+  summary: "Read connection Permissions profile configuration without summaries or review counts",
 });
 
 registerCurrentRoute({

@@ -1,4 +1,6 @@
 import { classifyNativeWorkspaceFailure } from "./native-workspace-failure.js";
+import { readRemoteWorkspaceAuthority, saveRemoteWorkspace } from "../remote-workspaces.js";
+import { REMOTE_WORKSPACE_SANDBOX_DISK_FULL } from "../remote-workspace-transport.js";
 import { recordNativeFinalizationFailure } from "./native-run-finalizer.js";
 import { inspectPluginWorkspaceForFinalization } from "./native-plugin-workspace-finalization.js";
 import type { WorkspaceWorkers } from "../plugin-workspaces.js";
@@ -37,11 +39,12 @@ function readString(value: unknown) {
 
 function workspaceSyncFailure(
   code: "workspace_sync_out_failed" | "workspace_sync_out_unrecoverable",
+  cause?: string,
 ) {
   return {
     status: "failed" as const,
     exitCode: 1,
-    stderr: `${code}\n`,
+    stderr: cause ? `${code}\n${cause}\n` : `${code}\n`,
     metadata: { workspaceSync: { code } },
   };
 }
@@ -157,6 +160,45 @@ export async function attemptNativeWorkspaceFinalization(input: {
     },
     run: async () => {
       await ownership.assertHeld();
+      const remoteAuthority = readRemoteWorkspaceAuthority(workspace?.metadata);
+      if (remoteAuthority && workspace) {
+        if (!input.environmentRuntime || !remoteAuthority.location) {
+          return workspaceSyncFailure("workspace_sync_out_unrecoverable");
+        }
+        const location = remoteAuthority.location;
+        const environmentsSvc = environmentService(input.db);
+        const lease = await environmentsSvc.getLeaseById(location.leaseId);
+        const environment = lease?.environmentId ? await environmentsSvc.getById(lease.environmentId) : null;
+        if (!lease || !environment || lease.companyId !== bound.companyId
+          || lease.heartbeatRunId !== input.runId || lease.executionWorkspaceId !== workspace.id
+          || lease.providerLeaseId !== location.providerLeaseId || environment.id !== location.environmentId
+          || ["expired", "failed", "pending_cleanup"].includes(lease.status)) {
+          return workspaceSyncFailure("workspace_sync_out_unrecoverable");
+        }
+        const target = await resolveEnvironmentExecutionTarget({
+          db: input.db, companyId: bound.companyId, adapterType: "paperclip_runner",
+          environment, leaseId: lease.id, leaseMetadata: lease.metadata, lease,
+          environmentRuntime: input.environmentRuntime,
+        });
+        if (!target) return workspaceSyncFailure("workspace_sync_out_unrecoverable");
+        try {
+          const saved = await saveRemoteWorkspace({
+            db: input.db, workspace, runId: input.runId, lease, target,
+            assertOwned: ownership.assertHeld,
+          });
+          await ownership.assertHeld();
+          return { status: "succeeded", exitCode: 0,
+            system: "Native workspace files were saved to durable storage.\n",
+            metadata: { remoteWorkspace: saved } };
+        } catch (error) {
+          await ownership.assertHeld();
+          // The code keeps the retry policy. A full sandbox disk is named on the
+          // operation, because no retry can save the workspace until space is freed.
+          const diskFull = error instanceof Error && error.message === REMOTE_WORKSPACE_SANDBOX_DISK_FULL;
+          return workspaceSyncFailure(classifyNativeWorkspaceFailure(error).code === "workspace_sync_out_unrecoverable"
+            ? "workspace_sync_out_unrecoverable" : "workspace_sync_out_failed", diskFull ? REMOTE_WORKSPACE_SANDBOX_DISK_FULL : undefined);
+        }
+      }
       if (nativeWorkspaceSync) {
         if (!input.environmentRuntime) {
           return {

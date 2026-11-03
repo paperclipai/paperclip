@@ -979,6 +979,19 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("is ignored. The agent can still run.");
   });
 
+  it.each(["cursor_cloud", "paperclip_runner"])("does not offer unsupported thinking effort for saved Cursor Cloud on %s", async adapterType => {
+    const result = await renderForm([], { adapterType, adapterConfig: {
+      ...(adapterType === "paperclip_runner" ? { provider: "cursor_cloud", lifecycleMode: "per_turn" } : {}),
+      model: "caller-model", repoUrl: "https://github.com/acme/repo",
+    } });
+    roots.push(result.root);
+    expect(result.container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+    if (adapterType === "paperclip_runner") {
+      expect(result.container.querySelector('[aria-label="Model"]')).not.toBeNull();
+      expect(result.container.textContent).toContain("Experimental");
+    }
+  });
+
   it.each(["codex", "claude", "grok"].flatMap(harness => ["modelReasoningEffort", "reasoningEffort", "effort"].map(key => ({ harness, key }))))("hydrates saved effort and clears explicit Auto for $harness ($key)", async ({ harness, key }) => {
     const profile = harness === "codex" ? { provider: "codex", model: "gpt-5.6-sol" } : { provider: "acpx", acpxAgent: harness, model: harness === "grok" ? "grok-4.7" : "claude-opus-5-5" };
     const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { ...profile, [key]: "high" } });
@@ -1309,6 +1322,49 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).not.toContain("Environment override");
     expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
+  });
+
+  it.each([null, "saved-computer"])("tests native Cursor Cloud without a Computer when the saved target is %s", async defaultEnvironmentId => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "instance-computer" });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "cursor_cloud", supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" }]);
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner", defaultEnvironmentId,
+      adapterConfig: { provider: "cursor_cloud", model: "claude-sonnet-4-5", repoUrl: "https://github.com/example/qualification" },
+    }, { showAdapterTestEnvironmentButton: true });
+    roots.push(result.root);
+
+    expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
+    await runTest(result.container);
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-1", "paperclip_runner", expect.objectContaining({ environmentId: null, agentId: "agent-1" }));
+    expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
+    expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
+  });
+
+  it("clears a Computer inherited by a new native Cursor Cloud draft", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "cursor_cloud", supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" }]);
+    const result = await renderCreateForm([], {
+      adapterType: "paperclip_runner", runner: "paperclip", defaultEnvironmentId: "previous-computer",
+      adapterSchemaValues: { provider: "cursor_cloud", model: "claude-sonnet-4-5" },
+    });
+    roots.push(result.root);
+    expect(result.onChange).toHaveBeenCalledWith({ defaultEnvironmentId: "" });
+    expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
+  });
+
+  it("tests the native default explicitly when creating Cursor Cloud with automatic runner selection", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "cursor_cloud", supportedRunners: ["paperclip"], defaultRunner: "paperclip" }]);
+    const result = await renderCreateForm([], {
+      adapterType: "cursor_cloud", runner: "auto", model: "claude-sonnet-4-5",
+      adapterSchemaValues: { provider: "cursor_cloud", repoUrl: "https://github.com/example/qualification" },
+    }, { showAdapterTestEnvironmentButton: true });
+    roots.push(result.root);
+    await runTest(result.container);
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-1", "cursor_cloud", expect.objectContaining({
+      environmentId: null, runner: "paperclip",
+    }));
   });
 
   it("requests the native Kimi model catalog while preserving an explicit saved model", async () => {

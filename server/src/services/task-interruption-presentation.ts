@@ -1,18 +1,24 @@
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql, type SQL } from "drizzle-orm";
 import { agents, agentWakeupRequests, approvals, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
-import type { TaskInterruptionPresentation } from "@paperclipai/shared";
+import { HEARTBEAT_RUN_STATUSES, readProviderFailure, type TaskInterruptionPresentation } from "@paperclipai/shared";
+import { captureTaskInterruptionFailure } from "../sentry.js";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { authorizationService } from "./authorization.js";
 import { taskWorkspaceProjectRequirements } from "./task-workspace-access.js";
+import { isAcknowledgedNativeStop } from "./acknowledged-native-stop.js";
+import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { redactCurrentUserText } from "../log-redaction.js";
+import { logger } from "../middleware/logger.js";
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
-  Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error">>;
+  Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode">>;
 type ProjectionState = {
   run?: ProjectionRun;
   action?: typeof issueRecoveryActions.$inferSelect;
@@ -26,6 +32,10 @@ type ProjectionState = {
   paused: boolean;
   approval: boolean;
 };
+
+function boundedJsonString(value: SQL, limit: number) {
+  return sql`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
+}
 
 /** Recognize old persisted failures without displaying arbitrary run error text. */
 function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | null | undefined {
@@ -47,12 +57,21 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     state: "resolved", nextRetryAt: null, canRetry: false, userAction: null,
     sourceRunIds: [run.id], observedRunId: run.id };
   if (["done", "cancelled"].includes(issue.status) || (run.status === "succeeded" && !wait)) return base;
+  const providerFailure = run.status === "failed" || run.status === "scheduled_retry"
+    ? readProviderFailure(run.resultJson?.providerFailure) : null;
+  if (providerFailure) base.providerFailure = providerFailure;
+  if (["failed", "scheduled_retry"].includes(run.status) && run.errorCode === "workspace_validation_failed"
+      && typeof run.error === "string" && run.error.trim()) base.workspaceFailure = { message: run.error };
   const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval || run.errorCode === "native_provider_approval_required" ? "approval"
     : isAiAuthenticationBlocked(run) ? "reconnect"
       : run.errorCode === "native_provider_model_rejected" ? "choose_model"
       : [agent?.pauseReason, project?.pauseReason, company?.pauseReason].some(reason => reason === "budget" || reason === "budget_exceeded")
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
   if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
+  // Intentional Stop is not an unsuccessful attempt. This is presentation only;
+  // physical containment and pending cleanup keep their execution-side gates.
+  if (!wait && run.runtimeMode === "native" && run.companyId === issue.companyId && run.nativeIssueId === issue.id
+      && isAcknowledgedNativeStop({ ...run, companyId: run.companyId, nativeIssueId: run.nativeIssueId })) return base;
   if (["running", "queued"].includes(run.status)) return { ...base, state: "working" };
   const deniedProject = deniedProjectId(issue, run);
   let projectAccess: TaskInterruptionPresentation["projectAccess"];
@@ -77,8 +96,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
 }
 
 /** Batch list reads rather than doing seven queries per row. Keep run logs and
- * large result bodies out of this projection; only authentication evidence is
- * needed for the typed reconnect action. */
+ * large result bodies out of this projection. */
 export async function taskInterruptionPresentations(db: Db, companyId: string, input: ProjectionIssue[]) {
   const selected = input.filter(issue => issue.companyId === companyId);
   const result = new Map<string, TaskInterruptionPresentation | null>();
@@ -104,13 +122,31 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
   const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
     db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
-      agentId: heartbeatRuns.agentId,
+      agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId,
+      nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode,
+      agentAdapter: agents.adapterType,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
-        and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.' then ${heartbeatRuns.error} else null end`,
+        and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.'
+        or ${heartbeatRuns.errorCode} = 'workspace_validation_failed' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
-        'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied')`,
+        'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied',
+        'cancelledByActorType', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'cancelledByActorType'`, 32)},
+        'cancelledByUserId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'cancelledByUserId'`, 160)},
+        'nativeCancellation', jsonb_build_object(
+          'schema', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'schema'`, 64)},
+          'runId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'runId'`, 160)},
+          'companyId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'companyId'`, 160)},
+          'issueId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'issueId'`, 160)},
+          'scope', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'scope'`, 32)},
+          'reasonCode', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'reasonCode'`, 64)},
+          'dispatchState', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'dispatchState'`, 32)},
+          'dispatched', coalesce(${heartbeatRuns.resultJson}->'nativeCancellation'->'dispatched' = 'true'::jsonb, false),
+          'intentAuditId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'intentAuditId'`, 160)},
+          'acknowledgementAuditId', ${boundedJsonString(sql`${heartbeatRuns.resultJson}->'nativeCancellation'->'acknowledgementAuditId'`, 160)}),
+        'providerFailure', ${heartbeatRuns.resultJson}->'providerFailure')`,
     }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
+      .leftJoin(agents, and(eq(agents.companyId, heartbeatRuns.companyId), eq(agents.id, heartbeatRuns.agentId)))
       .orderBy(requestedIssueId),
     db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
@@ -168,14 +204,55 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   for (const issue of selected) {
     const required = requirements.get(issue.id);
     const denied = required?.projectIds.filter(projectId => currentAccess.get(`${issue.assigneeAgentId}:${projectId}`) !== true);
-    result.set(issue.id, projectTaskInterruption(issue, {
+    const presentation = projectTaskInterruption(issue, {
       run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id),
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
       workspaceSelectionAvailable: required?.available ?? false,
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
-    }));
+    });
+    result.set(issue.id, presentation);
+    const run = runMap.get(issue.id);
+    const runStatus = HEARTBEAT_RUN_STATUSES.find(status => status === run?.status);
+    if (presentation?.responsibility === "system" && presentation.state === "failed" && run && runStatus) {
+      captureTaskInterruptionFailure({ companyId, taskId: issue.id, agentId: run.agentId,
+        runId: run.id, runStatus, intentId: presentation.intentId,
+        agentAdapter: run.agentAdapter ?? "unknown" });
+    }
+  }
+  const disclosures = [...result.values()].flatMap(presentation => (presentation?.providerFailure || presentation?.workspaceFailure) && presentation.observedRunId
+    ? [{ id: presentation.observedRunId, providerFailure: presentation.providerFailure,
+      workspaceFailure: presentation.workspaceFailure, presentation }] : []);
+  if (disclosures.length) {
+    try {
+      const [safe, settings] = await Promise.all([
+        createRunSecretRedactionRegistry(db).redactForRuns(companyId,
+          disclosures.map(({ id, providerFailure, workspaceFailure }) => ({ id, providerFailure, workspaceFailure }))),
+        instanceSettingsService(db).getGeneral(),
+      ]);
+      const safeMessage = (value: unknown) => typeof value === "string"
+        ? [...redactCurrentUserText(value, { enabled: settings.censorUsernameInLogs })].slice(0, 4000).join("") : "";
+      disclosures.forEach(({ presentation }, index) => {
+        if (presentation.providerFailure) {
+          const value = safe[index]?.providerFailure;
+          const failure = readProviderFailure({ ...value, message: safeMessage(value?.message) });
+          if (failure) presentation.providerFailure = failure;
+          else delete presentation.providerFailure;
+        }
+        if (presentation.workspaceFailure) {
+          const message = safeMessage(safe[index]?.workspaceFailure?.message);
+          if (message.trim()) presentation.workspaceFailure = { message };
+          else delete presentation.workspaceFailure;
+        }
+      });
+    } catch {
+      for (const { presentation } of disclosures) {
+        delete presentation.providerFailure;
+        delete presentation.workspaceFailure;
+      }
+      logger.warn({ companyId, runCount: disclosures.length }, "Could not redact run failure display; explanations omitted");
+    }
   }
   return result;
 }

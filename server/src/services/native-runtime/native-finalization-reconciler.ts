@@ -1,3 +1,4 @@
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
@@ -80,6 +81,8 @@ export async function dispatchNativeSessionResumptions(input: {
   now?: Date;
   limit?: number;
   dispatch: (claim: NativeSessionResumeClaim) => void;
+  deferIneligible?: boolean;
+  onError?: (error: unknown) => void;
 }) {
   const claims = await claimNativeSessionResumptions(input);
   for (const claim of claims) input.dispatch(claim);
@@ -98,6 +101,8 @@ export async function claimNativeSessionResumptions(input: {
   runIds?: string[];
   now?: Date;
   limit?: number;
+  deferIneligible?: boolean;
+  onError?: (error: unknown) => void;
 }): Promise<NativeSessionResumeClaim[]> {
   const now = input.now ?? new Date();
   const candidates = await input.db
@@ -136,6 +141,7 @@ export async function claimNativeSessionResumptions(input: {
   for (const candidate of candidates) {
     const leaseOwner = `${input.runnerInstanceId}:resume:${randomUUID()}`;
     let terminalRunToEmit: typeof heartbeatRuns.$inferSelect | null = null;
+    let claimFailed = false;
     const claimed = await input.db.transaction(async (tx) => {
       await tx.execute(sql`select set_config('statement_timeout', '10000', true), set_config('lock_timeout', '2000', true)`);
       const [issue] = await tx.select().from(issues).where(and(
@@ -245,6 +251,7 @@ export async function claimNativeSessionResumptions(input: {
       ) {
         const failureCode = originalFailureCode;
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, row.run.companyId);
+        await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
         await tx.update(nativeRunFinalizations).set({
           phase: "terminal_failure",
           leaseOwner: null,
@@ -313,6 +320,7 @@ export async function claimNativeSessionResumptions(input: {
       }
 
       const leaseExpiresAt = new Date(now.getTime() + 20 * 60_000);
+      await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
       const updated = await tx.update(nativeRunFinalizations).set({
         phase: "observed",
         leaseOwner,
@@ -350,6 +358,8 @@ export async function claimNativeSessionResumptions(input: {
       });
       return true;
     }).catch((error: unknown) => {
+      claimFailed = true;
+      input.onError?.(error);
       terminalRunToEmit = null;
       logger.warn({ err: error, companyId: candidate.companyId, runId: candidate.runId },
         "failed to claim native session recovery candidate");
@@ -362,8 +372,9 @@ export async function claimNativeSessionResumptions(input: {
       void reportRunFailure(input.db, terminalRunToEmit);
     }
     if (claimed) claims.push({ runId: candidate.runId, leaseOwner });
-    else await input.db.transaction(async tx => {
+    else if (claimFailed || input.deferIneligible !== false) await input.db.transaction(async tx => {
       await tx.execute(sql`select set_config('statement_timeout', '10000', true), set_config('lock_timeout', '2000', true)`);
+      await notifyLiveRunRecovery(tx, { companyId: candidate.companyId, runId: candidate.runId });
       await tx.update(nativeRunFinalizations).set({
         nextAttemptAt: new Date(now.getTime() + 30_000),
         updatedAt: now,
@@ -377,6 +388,7 @@ export async function claimNativeSessionResumptions(input: {
         or(isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.leaseExpiresAt), lte(nativeRunFinalizations.leaseExpiresAt, now)),
       ));
     }).catch((error: unknown) => {
+      input.onError?.(error);
       logger.warn({ err: error, companyId: candidate.companyId, runId: candidate.runId },
         "failed to defer native session recovery candidate");
     });

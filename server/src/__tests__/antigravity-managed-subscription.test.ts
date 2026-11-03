@@ -195,6 +195,7 @@ describe("managed Antigravity subscription projection and writeback", () => {
     account.rotation.mockImplementationOnce(async (_secretId, input) => { account.credential = input.value; account.version += 1; });
     request.mockResolvedValueOnce(Response.json({ access_token: "fixture-access", refresh_token: "fixture-retry-rotation" }))
       .mockResolvedValueOnce(Response.json({ email_verified: true, email: "alice@example.test" }));
+    await runtime.cleanup();
     const next = await prepare();
     expect(new URLSearchParams(request.mock.calls[2][1].body).get("refresh_token")).toBe("fixture-latest-rotation");
     expect(await readFile(join(String(next.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json"), "utf8"))

@@ -29,7 +29,8 @@ export interface OpenCodeMcpBridgeOptions {
   /** Runner-owned operations callable only by a trusted harness extension and never advertised to the model. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
   handler: (call: OpenCodeMcpCall) => Promise<unknown>;
-  timeoutMs?: number;
+  /** Null leaves durable requests with the owning Runner lease and bridge close. */
+  timeoutMs?: number | null;
   /** Human-gated private operations may remain pending much longer than model tool calls. */
   privateToolTimeoutMs?: number;
   maxBodyBytes?: number;
@@ -76,7 +77,7 @@ export async function startOpenCodeMcpBridge(
       calls,
       controllers,
       handler: options.handler,
-      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      timeoutMs: options.timeoutMs === null ? null : options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolTimeoutMs: options.privateToolTimeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolNames: new Set(privateTools.map((tool) => tool.name)),
       maxBodyBytes: options.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES,
@@ -146,7 +147,7 @@ async function handleRequest(
     calls: Map<string, { fingerprint: string; promise: Promise<unknown> }>;
     controllers: Map<string, AbortController>;
     handler: OpenCodeMcpBridgeOptions["handler"];
-    timeoutMs: number;
+    timeoutMs: number | null;
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
     maxBodyBytes: number;
@@ -321,23 +322,23 @@ function closeServer(server: Server): Promise<void> {
 function withCancellationAndTimeout<T>(
   promise: Promise<T>,
   controller: AbortController,
-  timeoutMs: number,
+  timeoutMs: number | null,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     let settled = false;
     const finish = (callback: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       controller.signal.removeEventListener("abort", onAbort);
       callback();
     };
     const onAbort = () => finish(() => reject(new Error("Paperclip tool call cancelled")));
-    const timer = setTimeout(() => {
+    const timer = timeoutMs === null ? undefined : setTimeout(() => {
       finish(() => reject(new Error("Paperclip tool call timed out")));
       controller.abort();
     }, timeoutMs);
-    timer.unref?.();
+    timer?.unref?.();
     controller.signal.addEventListener("abort", onAbort, { once: true });
     promise.then(
       (value) => finish(() => resolve(value)),

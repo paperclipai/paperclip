@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createIssue } from "../../storybook/fixtures/paperclipData";
 import { TaskList, type TaskListItem } from "./TaskList";
 import { TooltipProvider } from "./ui/tooltip";
+import { readTaskListSortParams } from "../lib/task-list";
 
 vi.mock("./IssueRow", () => ({ IssueRow: ({ issue, leadingControl }: { issue: { id: string; title: string }; leadingControl?: ReactNode }) =>
   <div data-issue-row-details={issue.id}>{leadingControl}<button>{issue.title}</button></div> }));
@@ -24,6 +25,34 @@ describe("TaskList progressive rendering", () => {
   async function more() {
     await act(async () => Array.from(host.querySelectorAll("button")).find(b => b.textContent === "Show more tasks")!.click());
   }
+  it("honors a creation-time URL sort and reports column sorting", async () => {
+    const items = [
+      { issue: createIssue({ id: "older", title: "Older", identifier: "PAP-1", createdAt: new Date(0) }) },
+      { issue: createIssue({ id: "newer", title: "Newer", identifier: "PAP-2", createdAt: new Date(1000) }) },
+    ];
+    const onSortChange = vi.fn();
+    await act(async () => root.render(<TooltipProvider><TaskList items={items}
+      sort={{ column: "created", direction: "descending" }} onSortChange={onSortChange} /></TooltipProvider>));
+    expect([...rows()].map(row => row.getAttribute("data-issue-row-details"))).toEqual(["newer", "older"]);
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Task ID: sort ascending"]')!.click());
+    expect(onSortChange).toHaveBeenLastCalledWith({ column: "taskId", direction: "ascending" });
+    await act(async () => root.render(<TooltipProvider><TaskList items={items}
+      sort={{ column: "taskId", direction: "ascending" }} onSortChange={onSortChange} /></TooltipProvider>));
+    expect([...rows()].map(row => row.getAttribute("data-issue-row-details"))).toEqual(["older", "newer"]);
+    await act(async () => host.querySelector<HTMLButtonElement>('button[aria-label="Task ID: sort descending"]')!.click());
+    expect(onSortChange).toHaveBeenLastCalledWith({ column: "taskId", direction: "descending" });
+  });
+
+  it.each(["status", "workflow"])("honors a Classic %s sort link", async field => {
+    const items = [
+      { issue: createIssue({ id: "later", identifier: "PAP-1", status: "done", createdAt: new Date("2026-02-01") }) },
+      { issue: createIssue({ id: "earlier", identifier: "PAP-2", status: "in_progress", createdAt: new Date("2026-01-01") }) },
+    ];
+    await act(async () => root.render(<TooltipProvider><TaskList items={items}
+      sort={readTaskListSortParams(new URLSearchParams(`sortField=${field}&sortDir=asc`))} /></TooltipProvider>));
+    expect([...rows()].map(row => row.getAttribute("data-issue-row-details"))).toEqual(["earlier", "later"]);
+  });
+
   it("bounds the first render, reveals batches, and retains mounted rows through enrichment and append", async () => {
     const items = tasks(400);
     await render(items);

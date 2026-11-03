@@ -1,4 +1,5 @@
 import { AgentAvatar } from "../components/AgentAvatar";
+import { CoordinatorAgentSwitcher } from "../components/CoordinatorAgentSwitcher";
 import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
@@ -52,6 +53,7 @@ import type { issuesApi } from "../api/issues";
 // These page fixtures exercise Classic task behavior. Preference identity and
 // persistence have their own hook tests; keep their readiness explicit here.
 const coordinatorPreference = vi.hoisted(() => ({ enabled: false, loaded: true }));
+const inlineEditorFixture = vi.hoisted(() => ({ real: false }));
 vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({
   useCoordinatorWorkspaceEnabled: () => coordinatorPreference,
 }));
@@ -360,15 +362,14 @@ vi.mock("@/plugins/launchers", () => ({
   PluginLauncherOutlet: () => null,
 }));
 
-vi.mock("../components/InlineEditor", () => ({
-  InlineEditor: ({
-    value,
-    placeholder,
-  }: {
-    value?: string;
-    placeholder?: string;
-  }) => <div>{value || placeholder}</div>,
-}));
+vi.mock("../components/InlineEditor", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../components/InlineEditor")>();
+  return {
+    InlineEditor: (props: Parameters<typeof actual.InlineEditor>[0]) => inlineEditorFixture.real
+      ? <actual.InlineEditor {...props} />
+      : <div>{props.value || props.placeholder}</div>,
+  };
+});
 
 vi.mock("../components/IssueChatThread", () => ({
   IssueChatThread: (props: {
@@ -1341,6 +1342,7 @@ describe("IssueDetail", () => {
 
   beforeEach(() => {
     Object.assign(coordinatorPreference, { enabled: false, loaded: true });
+    inlineEditorFixture.real = false;
     mockTaskPluginPanels.panels = []; mockTaskPluginPanels.isLoading = false;
     localStorage.clear();
     sessionStorage.clear();
@@ -1562,10 +1564,126 @@ describe("IssueDetail", () => {
     await act(async () => renderIssueView());
     await flushReact();
     expect(mockIssueChatThreadRender).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="issue-detail-header"]')?.textContent).toContain(createIssue().title);
+    expect(container.querySelector('[data-testid="task-detail-presentation-loading"]')).not.toBeNull();
+    expect(container.querySelector('[data-task-chat-shell]')).toBeNull();
+    expect(container.querySelector('[data-testid="issue-detail-header"]')).toBeNull();
+    expect(mockOpenPanel).not.toHaveBeenCalled();
     coordinatorPreference.loaded = true;
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+  });
+
+  it.each(["save", "failure", "escape", "unchanged", "navigate"])("retains the early title through preference readiness until %s", async (exit) => {
+    inlineEditorFixture.real = true;
+    coordinatorPreference.loaded = false;
+    const issue = createIssue();
+    const save = createDeferred<Issue>();
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.update.mockReset().mockReturnValue(save.promise);
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "title-editor-user" } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "title-editor-user" } });
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="issue-detail-header"] h2')).not.toBeNull());
+    await act(async () => (container.querySelector('[data-testid="issue-detail-header"] h2') as HTMLElement).click());
+    const input = container.querySelector<HTMLTextAreaElement>('[data-testid="issue-detail-header"] textarea')!;
+    expect(input).not.toBeNull();
+    expect(document.activeElement).toBe(input);
+    coordinatorPreference.loaded = true;
+    await act(async () => renderIssueView());
+    expect(container.querySelector('[data-testid="issue-detail-header"] textarea')).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe(issue.title);
+    expect(mockIssueChatThreadRender).not.toHaveBeenCalled();
+
+    if (exit === "navigate") {
+      const next = createIssue({ id: "issue-2", identifier: "PAP-2", title: "Another task" });
+      mockIssuesApi.get.mockResolvedValue(next);
+      mockRouteParams.issueId = "PAP-2";
+      mockLocation.pathname = "/issues/PAP-2";
+      await act(async () => renderIssueView());
+      await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+      expect(container.textContent).toContain(next.title);
+      expect(input.isConnected).toBe(false);
+      expect(mockIssuesApi.update).not.toHaveBeenCalled();
+      return;
+    }
+    if (exit === "save" || exit === "failure") {
+      await act(async () => {
+        const previous = input.value;
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, "Retained title draft");
+        (input as HTMLTextAreaElement & { _valueTracker?: { setValue(value: string): void } })._valueTracker?.setValue(previous);
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    }
+    await act(async () => { input.dispatchEvent(new KeyboardEvent("keydown", { key: exit === "escape" ? "Escape" : "Enter", bubbles: true })); });
+    if (exit === "save" || exit === "failure") {
+      await waitForAssertion(() => expect(mockIssuesApi.update).toHaveBeenCalledWith("PAP-1", { title: "Retained title draft" }));
+      expect(container.querySelector('[data-testid="issue-detail-header"] textarea')).toBe(input);
+      if (exit === "failure") {
+        await act(async () => save.reject(new Error("Title save unavailable")));
+        expect(container.querySelector('[data-testid="issue-detail-header"] textarea')).toBe(input);
+        expect(input.value).toBe("Retained title draft");
+        expect(mockIssueChatThreadRender).not.toHaveBeenCalled();
+        return;
+      }
+      const updated = { ...issue, title: "Retained title draft" };
+      mockIssuesApi.get.mockResolvedValue(updated);
+      await act(async () => save.resolve(updated));
+    } else {
+      expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    }
+    await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+    expect(container.querySelector('[data-testid="issue-detail-header"] textarea')).toBeNull();
+    expect(container.textContent).toContain(exit === "save" ? "Retained title draft" : issue.title);
+  });
+
+  it("retires an early title edit when navigating to a cached task with preferences still pending", async () => {
+    inlineEditorFixture.real = true;
+    coordinatorPreference.loaded = false;
+    const first = createIssue();
+    const second = createIssue({ id: "issue-2", identifier: "PAP-2", title: "Cached second task" });
+    mockIssuesApi.get.mockImplementation(async (id) => id === "PAP-2" ? second : first);
+    mockIssuesApi.update.mockReset();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "pending-route-user" } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "pending-route-user" } });
+    queryClient.setQueryData(queryKeys.issues.detail("PAP-2"), second);
+    queryClient.setQueryData([...queryKeys.issues.detail("PAP-2"), "core"], second);
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-2"], true);
+    const type = (input: HTMLTextAreaElement, value: string) => {
+      const previous = input.value;
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(input, value);
+      (input as HTMLTextAreaElement & { _valueTracker?: { setValue(value: string): void } })._valueTracker?.setValue(previous);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    };
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(container.querySelector('[data-testid="issue-detail-header"] h2')).not.toBeNull());
+    await act(async () => (container.querySelector('[data-testid="issue-detail-header"] h2') as HTMLElement).click());
+    const firstInput = container.querySelector<HTMLTextAreaElement>('[data-testid="issue-detail-header"] textarea')!;
+    await act(async () => type(firstInput, "Only the first task's draft"));
+    mockRouteParams.issueId = "PAP-2";
+    mockLocation.pathname = "/issues/PAP-2";
+    await act(async () => renderIssueView());
+    expect(firstInput.isConnected, "the cached destination must retire the first task's editor").toBe(false);
+    expect(container.querySelector('[data-testid="issue-detail-header"] textarea')).toBeNull();
+    const secondHeading = container.querySelector<HTMLElement>('[data-testid="issue-detail-header"] h2')!;
+    expect(secondHeading.textContent).toBe(second.title);
+    await act(async () => secondHeading.click());
+    const secondInput = container.querySelector<HTMLTextAreaElement>('[data-testid="issue-detail-header"] textarea')!;
+    expect(secondInput.value).toBe(second.title);
+    await act(async () => type(secondInput, "Only the second task's draft"));
+    coordinatorPreference.loaded = true;
+    await act(async () => renderIssueView());
+    expect(container.querySelector('[data-testid="issue-detail-header"] textarea')).toBe(secondInput);
+    expect(document.activeElement).toBe(secondInput);
+    expect(secondInput.value).toBe("Only the second task's draft");
+    expect(mockIssueChatThreadRender).not.toHaveBeenCalled();
+    await act(async () => { secondInput.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
+    expect(container.textContent).toContain(second.title);
+    expect(container.textContent).not.toContain("Only the first task's draft");
+    expect(localStorage.getItem("paperclip:inline-draft:v2:pending-route-user:issue:issue-1:title")).toContain("Only the first task's draft");
+    expect(localStorage.getItem("paperclip:inline-draft:v2:pending-route-user:issue:issue-2:title")).toBeNull();
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
   });
 
   it("supplies direct children and source-created tasks to the feed without promoting grandchildren", async () => {
@@ -1643,6 +1761,8 @@ describe("IssueDetail", () => {
     expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
     expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
     expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-task-chat-shell]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-detail-presentation-loading"]')).not.toBeNull();
 
     Object.assign(coordinatorPreference, { enabled: true, loaded: true });
     await act(async () => renderIssueView());
@@ -1677,7 +1797,8 @@ describe("IssueDetail", () => {
     } finally { release(); cancel.mockRestore(); }
   });
 
-  it("keeps an existing conversation on its agent-addressed route", async () => {
+  it.each([false, true])("keeps an existing conversation on its agent-addressed route (Coordinator %s)", async (coordinator) => {
+    coordinatorPreference.enabled = coordinator;
     const agent = createAgent();
     const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review" });
     mockIssuesApi.get.mockResolvedValue(canonical);
@@ -1688,8 +1809,15 @@ describe("IssueDetail", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
     const [breadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
-    expect(breadcrumbs[0].leading.type).toBe(AgentAvatar);
-    expect(breadcrumbs[0].leading.props).toMatchObject({ agent, size: 24 });
+    if (coordinator) {
+      expect(breadcrumbs[0].control.type).toBe(CoordinatorAgentSwitcher);
+      expect(breadcrumbs[0].control.props.agent).toEqual(agent);
+      expect(breadcrumbs[0].leading).toBeUndefined();
+      expect(breadcrumbs[0].trailing).toBeUndefined();
+    } else {
+      expect(breadcrumbs[0].leading.type).toBe(AgentAvatar);
+      expect(breadcrumbs[0].leading.props).toMatchObject({ agent, size: 24 });
+    }
     expect(breadcrumbs[0].leadingKey).toBe(`agent:${agent.id}:${JSON.stringify(agent.appearance)}`);
     const updatedAgent = { ...agent, appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "deep-tide" } } as Agent;
     await act(async () => {
@@ -1697,7 +1825,12 @@ describe("IssueDetail", () => {
     });
     await flushReact();
     const [updatedBreadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
-    expect(updatedBreadcrumbs[0].leading.props.agent).toEqual(updatedAgent);
+    if (coordinator) {
+      expect(updatedBreadcrumbs[0].control.props.agent).toEqual(updatedAgent);
+      expect(updatedBreadcrumbs[0].controlKey).not.toBe(breadcrumbs[0].controlKey);
+    } else {
+      expect(updatedBreadcrumbs[0].leading.props.agent).toEqual(updatedAgent);
+    }
     expect(updatedBreadcrumbs[0].leadingKey).not.toBe(breadcrumbs[0].leadingKey);
 
   });
@@ -1897,6 +2030,22 @@ describe("IssueDetail", () => {
     });
     expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
     expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
+  });
+
+  it("forwards exact Stop proof and runtime mode from run history into the task thread", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    const issue = createIssue();
+    mockIssuesApi.get.mockResolvedValue(issue);
+    const run = { runId: "stopped-run", runtimeMode: "native", status: "cancelled", agentId: "agent-1", createdAt: new Date().toISOString(),
+      resultJson: { executionCancellation: { state: "acknowledged", proof: "provider_api_stop_receipt" },
+        nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId: "stopped-run", companyId: issue.companyId, dispatchState: "acknowledged" } } };
+    mockActivityApi.recentRunsForIssue.mockResolvedValue([run]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+      expect(props?.companyId).toBe(issue.companyId);
+      expect(props?.linkedRuns).toEqual([expect.objectContaining(run)]);
+    });
   });
 
   it("loads full first-run activity from the task menu without an older-message disclosure", async () => {
@@ -5585,6 +5734,35 @@ describe("IssueDetail", () => {
       expect(mockPushToast).not.toHaveBeenCalled();
     },
   );
+
+  it("confirms the composer Stop from the authoritative cancellation response during a status outage", async () => {
+    mockIssuesApi.update.mockClear();
+    mockAuthApi.getSession.mockResolvedValue({ session: { userId: "user-1" }, user: { id: "user-1" } });
+    mockHeartbeatsApi.cancel.mockReset().mockResolvedValue({
+      id: "run-active-1", companyId: "company-1", runtimeMode: "native", status: "cancelled",
+      resultJson: { nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", runId: "run-active-1", companyId: "company-1",
+        scope: "run", dispatchState: "acknowledged",
+      } },
+    });
+    mockHeartbeatsApi.get.mockReset().mockRejectedValue(new Error("Status request unavailable"));
+    mockIssuesApi.get.mockResolvedValue(createIssue({
+      status: "in_progress", assigneeAgentId: "agent-1", executionRunId: "run-active-1",
+    }));
+    mockAgentsApi.list.mockResolvedValue([createAgent()]);
+    mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([{
+      id: "run-active-1", agentId: "agent-1", status: "running", runtimeMode: "native",
+      issueId: "issue-1", adapterType: "paperclip_runner",
+    }]);
+    await act(async () => { renderIssueView(); });
+    await waitForAssertion(() => expect(mockIssueChatThreadRender.mock.calls.at(-1)?.[0].onCancelRun).toBeTypeOf("function"));
+    await act(async () => {
+      await expect(mockIssueChatThreadRender.mock.calls.at(-1)![0].onCancelRun()).resolves.toBeUndefined();
+    });
+    expect(mockHeartbeatsApi.cancel).toHaveBeenCalledExactlyOnceWith("run-active-1");
+    expect(mockHeartbeatsApi.get).not.toHaveBeenCalled();
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+  });
 
   it("routes live-run finalization actions through run cancellation before issue status update", async () => {
     mockHeartbeatsApi.cancel.mockClear();

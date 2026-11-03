@@ -168,6 +168,7 @@ import { withRecoveryContext } from "./status-only-context.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
 import {
   collectDispositionRepairSourceState,
+  readDispositionRepairDurableWaitingState,
   dispositionRepairIssueFields,
   dispositionRepairDelayMs,
   DISPOSITION_REPAIR_MAX_ATTEMPTS,
@@ -2384,11 +2385,7 @@ export function recoveryService(
     });
   }
 
-  async function scanSilentActiveRuns(opts?: {
-    now?: Date;
-    companyId?: string;
-    issueCreatedAtGte?: Date | null;
-  }) {
+  async function scanSilentActiveRuns(opts?: Parameters<typeof watchdog.scanSilentActiveRuns>[0]) {
     return watchdog.scanSilentActiveRuns(opts);
   }
 
@@ -3579,7 +3576,7 @@ export function recoveryService(
 
       const [sourceState, healthyChildren, hasNewSourcePath] =
         await Promise.all([
-          collectDispositionRepairSourceState(db, { issue }),
+          readDispositionRepairDurableWaitingState(db, { issue }),
           healthyOpenChildIssues(issue),
           sourceHasNewPathOutsideRecoveryAction(action),
         ]);
@@ -6568,6 +6565,7 @@ export function recoveryService(
     escalateStrandedAssignedIssue,
     recordWatchdogDecision,
     scanSilentActiveRuns,
+    registerActiveRunSilenceWork: watchdog.registerSilenceWork,
     reconcileStrandedAssignedIssues,
     reconcileUnassignedBlockingIssues,
     reconcileActiveRecoveryActions,

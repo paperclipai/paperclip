@@ -4,9 +4,9 @@ import { eq, sql } from "drizzle-orm";
 import { pgTable, text } from "drizzle-orm/pg-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { createDb, withDedicatedDbConnection } from "./client.js";
-import { createDatabaseResponseCapture, databaseResponseCaptureFromEnv, installDatabaseResponseCapture } from "./response-capture.js";
+import { createDatabaseResponseCapture, databaseResponseCaptureFromEnv, installDatabaseResponseCapture, withDatabaseOperation } from "./response-capture.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
-import { encodeRunEventPayload, runEventPayload } from "./run-event-payload.js";
+import { runEventPayload } from "./run-event-payload.js";
 import { databaseWorkPending, reconcileDatabaseWork, signalDatabaseWork, subscribeDatabaseWork } from "./work-signals.js";
 
 const table = pgTable("response_capture_fixture", { id: text("id").primaryKey(), payload: text("payload").notNull() });
@@ -31,17 +31,17 @@ describe.skipIf(!support.supported)("database response capture PostgreSQL behavi
     vi.restoreAllMocks(); vi.unstubAllEnvs();
   });
   afterAll(async () => { await temporary?.cleanup(); });
-  function fixture(prepare?: boolean) {
+  function fixture(prepare?: boolean, maxConnections?: number, clock?: () => number) {
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
-    const db = createDb(temporary.connectionString, { prepare });
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event), clock);
+    const db = createDb(temporary.connectionString, { prepare, maxConnections });
     clients.push(db); captures.push(capture);
     expect(installDatabaseResponseCapture(db, { table, encodedTable }, capture)).toBe(db);
     expect(installDatabaseResponseCapture(db, { table, encodedTable }, capture)).toBe(db);
     return { db, capture, events };
   }
-  function summary(events: Array<Record<string, unknown>>) { return events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!; }
+  function summary(events: Array<Record<string, unknown>>) { return events.find(event => event.event === "paperclip.db_response_capture.summary.v2")!; }
 
   it("retains capture counts when ORM preparation is enabled", async () => {
     const f = fixture(true), id = randomUUID(), payload = "prepared-capture-value";
@@ -68,12 +68,12 @@ describe.skipIf(!support.supported)("database response capture PostgreSQL behavi
     expect(await f.db.delete(table).where(eq(table.id, id)).returning()).toEqual([{ id, payload: "changed" }]);
     f.capture.flush();
     expect(summary(f.events)).toMatchObject({ startedQueries: 4, completedQueries: 4 });
-    expect(f.events.filter(event => event.event === "paperclip.db_response_capture.entry.v1").map(event => event.operation).sort())
+    expect(f.events.filter(event => event.event === "paperclip.db_response_capture.entry.v2").map(event => event.operation).sort())
       .toEqual(["delete", "insert", "select", "update"]);
     expect(JSON.stringify(f.events)).not.toContain(payload);
     expect(JSON.stringify(f.events)).not.toContain(id);
   });
-  it("counts the stored encoding before a custom column decoder changes the value", async () => {
+  it("skips complex stored values before a custom column decoder changes them", async () => {
     const setup = createDb(temporary.connectionString); clients.push(setup);
     const id = randomUUID(), payload = { text: "codec-payload-sentinel\u0000value".repeat(512) };
     await setup.insert(encodedTable).values({ id, payload });
@@ -81,8 +81,7 @@ describe.skipIf(!support.supported)("database response capture PostgreSQL behavi
     expect(await f.db.select().from(encodedTable).where(eq(encodedTable.id, id))).toEqual([{ id, payload }]);
     f.capture.flush();
     const entry = f.events.find(event => event.table === "response_capture_encoded_fixture")!;
-    expect(entry.responseValueBytes).toBe(Buffer.byteLength(id) + Buffer.byteLength(encodeRunEventPayload(payload)));
-    expect(entry.responseValueBytes).toBeGreaterThan(Buffer.byteLength(JSON.stringify({ id, payload })));
+    expect(entry).toMatchObject({ sampledValueBytes: Buffer.byteLength(id), measuredValues: 1, unmeasuredValues: 1, incompleteSamples: 1 });
     expect(JSON.stringify(f.events)).not.toContain("codec-payload-sentinel");
   });
   it("keeps a raw driver query lazy and counts repeated awaits without replay", async () => {
@@ -109,6 +108,69 @@ describe.skipIf(!support.supported)("database response capture PostgreSQL behavi
     expect(summary(f.events)).toMatchObject({ startedQueries: 3, completedQueries: 3 });
     expect(JSON.stringify(f.events)).not.toContain("prepared-value");
   });
+  it("attributes concurrent prepared reuse, pooled queries, and transaction errors to their execution owners", async () => {
+    const setup = createDb(temporary.connectionString); clients.push(setup);
+    const id = randomUUID();
+    await setup.insert(table).values({ id, payload: "owner-private-value" });
+    const f = fixture(true, 1);
+    const prepared = withDatabaseOperation("builder.only", () =>
+      f.db.select().from(table).where(eq(table.id, sql.placeholder("id"))).prepare("owner_reused"));
+    await Promise.all([
+      withDatabaseOperation("response.presentation", async () => {
+        expect(await prepared.execute({ id })).toEqual([{ id, payload: "owner-private-value" }]);
+        await f.db.transaction(async tx => {
+          expect(await tx.select().from(table).where(eq(table.id, id))).toEqual([{ id, payload: "owner-private-value" }]);
+        });
+      }),
+      withDatabaseOperation("budget.admission", async () => {
+        expect(await prepared.execute({ id })).toEqual([{ id, payload: "owner-private-value" }]);
+        await expect(f.db.execute(sql`select 1/0`)).rejects.toThrow();
+      }),
+    ]);
+    f.capture.flush();
+    const entries = f.events.filter(event => event.event === "paperclip.db_response_capture.entry.v2");
+    const counts = (owner: string) => entries.filter(event => event.owner === owner).reduce((n, event) => n + Number(event.calls), 0);
+    expect(counts("response.presentation")).toBe(2);
+    expect(counts("budget.admission")).toBe(2);
+    expect(counts("builder.only")).toBe(0);
+    expect(entries.every(event => (event.callers as string[]).length === 0)).toBe(true);
+    expect(entries.find(event => event.queryErrors === 1)).toMatchObject({ owner: "budget.admission", rows: 0, sampledResults: 0 });
+    expect(summary(f.events)).toMatchObject({ startedQueries: 4, completedQueries: 4, rows: 3 });
+    expect(JSON.stringify(f.events)).not.toContain("owner-private-value");
+  });
+  it("attributes a lazy raw query to its first consumer rather than its builder or repeated await", async () => {
+    const f = fixture();
+    const query = withDatabaseOperation("builder.only", () => f.db.$client.unsafe("select 42 as answer"));
+    const result = await withDatabaseOperation("consumer.first", async () => await query);
+    expect(result).toEqual([{ answer: 42 }]);
+    expect(await withDatabaseOperation("consumer.again", async () => await query)).toBe(result);
+    f.capture.flush();
+    expect(f.events[0]).toMatchObject({ owner: "consumer.first", calls: 1, rows: 1 });
+    expect(summary(f.events)).toMatchObject({ startedQueries: 1, completedQueries: 1 });
+  });
+  it("samples bounded driver values while retaining every query and row", async () => {
+    const f = fixture();
+    await withDatabaseOperation("sampling.owner", async () => {
+      for (let index = 0; index < 33; index += 1) {
+        expect(await f.db.execute(sql`select 42 as answer`)).toEqual([{ answer: 42 }]);
+      }
+    });
+    f.capture.flush();
+    expect(f.events[0]).toMatchObject({ owner: "sampling.owner", calls: 33, rows: 33, sampledResults: 3,
+      sampledRows: 3, sampledValueBytes: 6, measuredValues: 3, unmeasuredValues: 0 });
+    expect(summary(f.events)).toMatchObject({ completedQueries: 33, rows: 33, sampledResults: 3, sampledValueBytes: 6 });
+  });
+  it("leaves a real in-flight query running when the capture deadline passes", async () => {
+    let clock = Date.now();
+    const f = fixture(undefined, 1, () => clock);
+    const pending = withDatabaseOperation("ending.owner", async () => await f.db.execute(sql`select pg_sleep(0.05), 42 as answer`));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    clock += 60_000;
+    f.capture.flush();
+    expect(summary(f.events)).toMatchObject({ startedQueries: 1, completedQueries: 0, inFlightAtEnd: 1 });
+    expect((await pending)[0].answer).toBe(42);
+    expect(f.events).toHaveLength(1);
+  });
   it("retains distinct builder callers through normal, prepared, and transaction execution", async () => {
     const f = fixture(), id = randomUUID();
     const setup = createDb(temporary.connectionString); clients.push(setup);
@@ -128,7 +190,7 @@ describe.skipIf(!support.supported)("database response capture PostgreSQL behavi
       expect(await fromB(tx, id)).toEqual([{ id, payload: "caller-sentinel" }]);
     });
     f.capture.flush();
-    const entries = f.events.filter(event => event.event === "paperclip.db_response_capture.entry.v1");
+    const entries = f.events.filter(event => event.event === "paperclip.db_response_capture.entry.v2");
     expect(entries).toHaveLength(2);
     for (const name of ["a", "b"]) {
       expect(entries.find(event => (event.callers as string[]).some(location => location.startsWith(`services/capture-caller-${name}.ts:`))))
@@ -191,13 +253,14 @@ describe.skipIf(!support.supported)("database response capture PostgreSQL behavi
     vi.stubEnv("PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW", `${new Date(now - 100).toISOString()}/${new Date(now + 59_000).toISOString()}`);
     const db = createDb(temporary.connectionString, { prepare }); clients.push(db);
     const capture = databaseResponseCaptureFromEnv()!; captures.push(capture);
-    expect(await withDedicatedDbConnection(db, async dedicated => dedicated.execute(sql`select ${"dedicated-value"}::text as value`)))
+    expect(await withDatabaseOperation("dedicated.owner", () => withDedicatedDbConnection(db, async dedicated => dedicated.execute(sql`select ${"dedicated-value"}::text as value`))))
       .toEqual([{ value: "dedicated-value" }]);
     capture.flush();
-    await vi.waitFor(() => expect(logs.some(line => JSON.parse(line).event === "paperclip.db_response_capture.summary.v1")).toBe(true),
+    await vi.waitFor(() => expect(logs.some(line => JSON.parse(line).event === "paperclip.db_response_capture.summary.v2")).toBe(true),
       { timeout: 1_000, interval: 5 });
     const events = logs.map(line => JSON.parse(line) as Record<string, unknown>);
     expect(summary(events)).toMatchObject({ startedQueries: 1, completedQueries: 1 });
+    expect(events.find(event => event.event === "paperclip.db_response_capture.entry.v2")).toMatchObject({ owner: "dedicated.owner" });
     expect(logs.join("\n")).not.toContain("dedicated-value");
     expect(logs.join("\n")).not.toContain(temporary.connectionString);
   });

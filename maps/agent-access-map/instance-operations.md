@@ -168,6 +168,9 @@ API: `present` — representative operation IDs:
   status remains an in-memory read. [Route coverage](../../server/src/__tests__/instance-settings-routes.test.ts)
   and [PostgreSQL coverage](../../server/src/services/heartbeat/upgrade-readiness.test.ts)
   establish this local boundary; hosted active-run continuity requires separate proof.
+- `GET /api/ready` and `HEAD /api/ready` — public deployment readiness only;
+  200 after recovery, 503 while starting, recovering, or draining. No SQL,
+  session resolution, company identity, or control authority.
 - `GET /api/liveness` and `HEAD /api/liveness` — public process startup status
   and build commit only; no database readiness or workspace identity.
 

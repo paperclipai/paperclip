@@ -34,7 +34,18 @@ function topLevelBlock(source, key) {
 
 export function checkTrackedPnpm9References(repoRoot) {
   const failures = [];
-  const historicalDirectories = ["doc/logs/", "doc/plans/"];
+  const historicalDirectories = [
+    "doc/logs/",
+    "doc/performance/",
+    "doc/plans/",
+    "packages/paperclip-runner/test-fixtures/pi-acp/",
+  ];
+  const historicalFiles = new Set([
+    ".agents/skills/directions-lab/references/repo-gates.md",
+    "doc/architecture/runner-cursor-capabilities.md",
+    "scripts/check-pnpm-version-policy.mjs",
+    "scripts/check-pnpm-version-policy.test.mjs",
+  ]);
   const scannedFile = /(\.(md|mdx|ya?ml|json|mjs|cjs|js|ts|tsx|sh)|Dockerfile)$/;
   const trackedFiles = execFileSync("git", ["ls-files", "-z"], { cwd: repoRoot, encoding: "utf8" })
     .split("\0")
@@ -43,8 +54,7 @@ export function checkTrackedPnpm9References(repoRoot) {
   for (const relativePath of trackedFiles) {
     if (!scannedFile.test(relativePath) || relativePath === "pnpm-lock.yaml") continue;
     if (historicalDirectories.some((directory) => relativePath.startsWith(directory))) continue;
-    if (relativePath === "scripts/check-pnpm-version-policy.mjs") continue;
-    if (relativePath === "scripts/check-pnpm-version-policy.test.mjs") continue;
+    if (historicalFiles.has(relativePath)) continue;
     const source = fs.readFileSync(path.join(repoRoot, relativePath), "utf8");
     if (/pnpm@9\.|pnpm 9\b|pnpm v9\b/.test(source)) {
       failures.push(`${relativePath}: references pnpm 9; the supported toolchain is ${expectedPackageManager}`);

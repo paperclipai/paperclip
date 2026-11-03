@@ -4166,6 +4166,7 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -4719,6 +4720,42 @@ const dependencyTestDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSU
       pendingFinalizeBlockerIssueIds: [],
     });
   });
+
+  it.each(["covered", "foreign-run", "unfinished", "failed-finalize", "late-finish", "later-operation"])(
+    "requires a successful owning finalize to cover a nested snapshot: %s", async kind => {
+      const f = await seedSharedWorkspaceDependency();
+      const runId = randomUUID(), foreignRunId = randomUUID();
+      await db.insert(heartbeatRuns).values([runId, foreignRunId].map(id => ({
+        id, companyId: f.companyId, agentId: f.assigneeAgentId, status: "succeeded",
+      })));
+      const started = new Date("2026-05-23T22:00:00.000Z");
+      const finished = new Date("2026-05-23T22:00:02.000Z");
+      await db.insert(workspaceOperations).values([
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          heartbeatRunId: runId, phase: "workspace_finalize",
+          status: kind === "failed-finalize" ? "failed" : "succeeded", startedAt: started, finishedAt: finished },
+        { companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          heartbeatRunId: kind === "foreign-run" ? foreignRunId : runId, phase: "remote_workspace_snapshot",
+          status: kind === "unfinished" ? "running" : "succeeded",
+          startedAt: new Date(started.getTime() + 100),
+          finishedAt: kind === "unfinished" ? null : new Date(finished.getTime() + (kind === "late-finish" ? 100 : -100)) },
+        ...(kind === "later-operation" ? [{
+          companyId: f.companyId, executionWorkspaceId: f.executionWorkspaceId, issueId: f.blockerId,
+          heartbeatRunId: runId, phase: "worktree_prepare", status: "succeeded",
+          startedAt: new Date(finished.getTime() + 100), finishedAt: new Date(finished.getTime() + 200),
+        }] : []),
+      ]);
+      const ready = kind === "covered";
+      expect((await svc.listWakeableBlockedDependents(f.blockerId)).map(issue => issue.id))
+        .toEqual(ready ? [f.dependentId] : []);
+      await expect(svc.getDependencyReadiness(f.dependentId)).resolves.toMatchObject({
+        isDependencyReady: ready,
+        pendingFinalizeBlockerIssueIds: ready ? [] : [f.blockerId],
+      });
+      const listed = (await svc.list(f.companyId, { status: "blocked" })).find(issue => issue.id === f.dependentId);
+      expect(listed?.blockerAttention?.pendingFinalizeBlockerIssueIds ?? []).toEqual(ready ? [] : [f.blockerId]);
+    },
+  );
 
   it("reports dependency readiness for blocked issue chains", async () => {
     const companyId = randomUUID();

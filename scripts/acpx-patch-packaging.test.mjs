@@ -27,6 +27,7 @@ import {
   createBundledInstallManifest,
   configureBundledProviderOverrides,
   materializePublishManifest,
+  readWorkspaceOverrides,
   readWorkspacePatchedDependencies,
   selectBundledDependencyPatches,
   stageBundledEsbuildOptionalDependencies,
@@ -35,6 +36,7 @@ import {
 
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const workspacePatches = readWorkspacePatchedDependencies(repoRoot);
+const workspaceOverrides = readWorkspaceOverrides(repoRoot);
 
 const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const profileData = JSON.parse(await readFile(new URL("../packages/paperclip-runner/acpx-profiles.json", import.meta.url), "utf8"));
@@ -215,7 +217,7 @@ test("published Claude bridge pins its qualified SDK and provider dependency clo
   const published = materializePublishManifest(serverPackage);
   const { installManifest } = configureBundledProviderOverrides(
     createBundledInstallManifest(published, serverPackage.bundleDependencies),
-    serverPackage.bundleDependencies, rootPackage, profileData,
+    serverPackage.bundleDependencies, workspaceOverrides, profileData,
   );
   assert.deepEqual(installManifest.overrides["@agentclientprotocol/claude-agent-acp@0.73.0"], {
     "@anthropic-ai/claude-agent-sdk": "0.3.286",
@@ -228,7 +230,7 @@ test("published Codex bridge uses its qualified producer closure without consume
   const published = materializePublishManifest(serverPackage);
   const { installManifest, profiles } = configureBundledProviderOverrides(
     createBundledInstallManifest(published, serverPackage.bundleDependencies),
-    serverPackage.bundleDependencies, rootPackage, profileData,
+    serverPackage.bundleDependencies, workspaceOverrides, profileData,
   );
   assert.deepEqual(profiles.map(profile => profile.agent), ["codex", "claude"]);
   for (const profile of profiles) {
@@ -238,15 +240,14 @@ test("published Codex bridge uses its qualified producer closure without consume
   }
   assert.equal(published.overrides, undefined);
   assert.equal(installManifest.overrides.rollup, undefined);
-  const bad = structuredClone(rootPackage);
-  bad.pnpm.overrides["@agentclientprotocol/codex-acp@1.6.2>@openai/codex"] = "0.156.1";
+  const bad = { ...workspaceOverrides, "@agentclientprotocol/codex-acp@1.6.2>@openai/codex": "0.156.1" };
   assert.throws(() => configureBundledProviderOverrides(installManifest, serverPackage.bundleDependencies, bad, profileData), /runtime override must match/);
   const unpinned = createBundledInstallManifest(published, serverPackage.bundleDependencies);
   unpinned.dependencies["@agentclientprotocol/codex-acp"] = "^1.6.2";
-  assert.throws(() => configureBundledProviderOverrides(unpinned, serverPackage.bundleDependencies, rootPackage, profileData), /exact qualified profile/);
+  assert.throws(() => configureBundledProviderOverrides(unpinned, serverPackage.bundleDependencies, workspaceOverrides, profileData), /exact qualified profile/);
   const conflict = createBundledInstallManifest(published, serverPackage.bundleDependencies);
   conflict.overrides = { "@agentclientprotocol/codex-acp@1.6.2": { "@openai/codex": "0.156.1" } };
-  assert.throws(() => configureBundledProviderOverrides(conflict, serverPackage.bundleDependencies, rootPackage, profileData), /conflicting producer override/);
+  assert.throws(() => configureBundledProviderOverrides(conflict, serverPackage.bundleDependencies, workspaceOverrides, profileData), /conflicting producer override/);
 });
 
 test("Linux-produced Claude bundles retain the SDK and install native packages for the consumer platform", (t) => {
@@ -604,9 +605,10 @@ test("server package staging applies every bundled runtime patch and preserves t
   writeFileSync(join(nativePackage, "vendor/codex"), "producer host fixture; never executed");
   mkdirSync(join(fixtureSourceRoot, "packages/paperclip-runner/src/drivers/acpx"), { recursive: true });
   writeFileSync(join(fixtureSourceRoot, "package.json"), JSON.stringify(rootPackage));
+  writeFileSync(join(fixtureSourceRoot, "pnpm-workspace.yaml"), readFileSync(new URL("../pnpm-workspace.yaml", import.meta.url)));
   writeFileSync(join(fixtureSourceRoot, "packages/paperclip-runner/acpx-profiles.json"), JSON.stringify(profileData));
   mkdirSync(join(fixtureSourceRoot, "patches"));
-  for (const patchPath of Object.values(rootPackage.pnpm.patchedDependencies)) {
+  for (const patchPath of Object.values(workspacePatches)) {
     writeFileSync(join(fixtureSourceRoot, patchPath), readFileSync(new URL(`../${patchPath}`, import.meta.url)));
   }
   t.after(() => rmSync(fixtureDir, { recursive: true, force: true }));
@@ -710,7 +712,7 @@ printf 'patched spawnEnvironment runtime\\n' > "$target/dist/runtime.js"
     readFileSync(callLog, "utf8"),
     /patch -p1 --forward -d .*node_modules\/acpx/,
   );
-  const patchedBundledDependencies = serverPackage.bundleDependencies.filter(name => rootPackage.pnpm.patchedDependencies[`${name}@${serverPackage.dependencies[name]}`]);
+  const patchedBundledDependencies = serverPackage.bundleDependencies.filter(name => workspacePatches[`${name}@${serverPackage.dependencies[name]}`]);
   assert.equal(
     readFileSync(callLog, "utf8")
       .split("\n")

@@ -1,4 +1,5 @@
 import { subscribeDatabaseWork, databaseWorkPending, reconcileDatabaseWork } from "@paperclipai/db/work-signals";
+import { withDatabaseOperation } from "@paperclipai/db";
 import { createWorkScheduler } from "./work-scheduler.js";
 import { type DeliveryQueue } from "./delivery-work-notifications.js";
 import { beginIdleTrackedWork } from "./task-admission.js";
@@ -70,7 +71,7 @@ export function createDeliveryWorkCoordinator(input: {
         const attempt = new AbortController();
         let runFailed = false;
         controller = attempt;
-        running = Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
+        running = withDatabaseOperation(`delivery.${queue}`, () => Promise.resolve().then(() => reconcileDatabaseWork(input.owner, queue))
           .then(() => workerStopped || !(input.canRun() || (task.runDuringDrain && input.canReconcile?.())) ? undefined : task.run(attempt.signal).catch(error => { runFailed = true; throw error; })).then(() => workerStopped ? false : task.hasPending()).then(pending => {
           pendingWork = pending || databaseWorkPending(input.owner, queue);
           if (pendingWork) schedule(task.retryMs);
@@ -98,7 +99,7 @@ export function createDeliveryWorkCoordinator(input: {
           controller = null;
           finish();
           if (dirty) schedule(0);
-        });
+        }));
       }
       function wake() {
         if (workerStopped) return;
@@ -127,11 +128,17 @@ export function createDeliveryWorkCoordinator(input: {
       const ready = Promise.resolve().then(() => { start(); return running; });
       return { ready, ...worker };
     },
-    async stop() {
+    // Stop dispatch queues first, keeping only already-admitted controller
+    // commands alive until their execution owners finish the handoff. A later
+    // stop() closes the retained workers and the shared scheduler as well.
+    async stop(keepQueues?: ReadonlySet<DeliveryQueue>) {
       stopped = true;
-      scheduler.stop();
-      await Promise.all(Array.from(workers.values(), worker => worker.stop()));
-      workers.clear();
+      if (!keepQueues?.size) scheduler.stop();
+      await Promise.all(Array.from(workers, async ([queue, worker]) => {
+        if (keepQueues?.has(queue)) return;
+        await worker.stop();
+        workers.delete(queue);
+      }));
     },
   };
 }

@@ -1,5 +1,8 @@
+import { readPendingNativeRunStop } from "./native-cancellation-request.js";
+import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
+import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeStatusReassessment } from "../native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
@@ -29,13 +32,14 @@ import {
 } from "@paperclipai/db";
 import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js";
 import { readProcessStartedAt } from "../hot-restart.js";
-import { getServerInfoSnapshot } from "../../server-info.js";
+import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
+import { requestNativeStartupCleanup, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-startup-cleanup.js";
 
 export type NativeControllerIdentity = {
   bootId: string;
@@ -155,7 +159,7 @@ async function observedProcessStart(pid: number): Promise<Date | null> {
 
 export async function currentNativeControllerIdentity(): Promise<NativeControllerIdentity> {
   const observed = await observedProcessStart(process.pid);
-  const fallback = new Date(getServerInfoSnapshot().processStartedAt);
+  const fallback = new Date(getServerProcessStartedAt());
   return {
     bootId: controllerBootId,
     pid: process.pid,
@@ -521,7 +525,10 @@ export async function claimNativeRestartRecoveries(input: {
       and(
         eq(heartbeatRuns.runtimeMode, "native"),
         eq(agents.adapterType, "paperclip_runner"),
-        inArray(heartbeatRuns.status, ["running", "failed"]),
+        or(inArray(heartbeatRuns.status, ["running", "failed"]), and(
+          eq(heartbeatRuns.status, "interrupted"), eq(nativeRunFinalizations.phase, "observed"),
+          sql`${heartbeatRuns.resultJson}->'nativeCancellation'->>'dispatchState' = 'pending'`,
+        )),
         isNull(nativeRunFinalizations.resultId),
         // A pre-provider retained-owner wait belongs to normal same-run
         // resumption, including when its deadline elapsed while we were down.
@@ -558,11 +565,17 @@ export async function claimNativeRestartRecoveries(input: {
       await tx.execute(
         sql`select set_config('statement_timeout', '15000', true), set_config('lock_timeout', '1000', true)`,
       );
-      await tx
+      const busy = () => ({ kind: "awaiting_evidence" as const, runId: candidate.runId,
+        reason: "recovery_rows_busy", retryAt: new Date(now.getTime() + 1_000) });
+      // During overlap the serving controller can be committing this run.
+      // Defer that concrete recovery obligation instead of failing startup
+      // or waiting while holding a lock the serving controller needs.
+      const [issue] = await tx
         .select({ id: issues.id })
         .from(issues)
         .where(eq(issues.id, candidate.issueId))
-        .for("update");
+        .for("update", { skipLocked: true });
+      if (!issue) return busy();
       const row = await tx
         .select({
           run: heartbeatRuns,
@@ -584,15 +597,17 @@ export async function claimNativeRestartRecoveries(input: {
           ),
         )
         .where(eq(heartbeatRuns.id, candidate.runId))
-        .for("update")
+        .for("update", { skipLocked: true })
         .limit(1)
         .then((rows) => rows[0] ?? null);
       if (!row) {
-        return {
-          kind: "blocked",
-          runId: candidate.runId,
-          reason: "recovery_rows_missing",
-        } as const;
+        return busy();
+      }
+      const stopCleanup = row.coordinator.phase === "observed"
+        && row.coordinator.companyId === row.run.companyId && row.coordinator.issueId === row.run.nativeIssueId
+        && await readPendingNativeRunStop(tx as unknown as Db, row.run);
+      if (!["running", "failed"].includes(row.run.status) && !(row.run.status === "interrupted" && stopCleanup)) {
+        return { kind: "blocked", runId: row.run.id, reason: "run_no_longer_recoverable" } as const;
       }
       if (isNativeRunnerOwnershipHeld(row.run)) {
         return {
@@ -611,7 +626,7 @@ export async function claimNativeRestartRecoveries(input: {
       if (!input.liveRunExecutions?.has(row.run.id) && await retireSupersededNativeRetry(tx as unknown as Db, {
         run: row.run, coordinator: row.coordinator, issueExecutionRunId: row.issueExecutionRunId, now,
       })) return { kind: "blocked", runId: row.run.id, reason: "native_retry_superseded" } as const;
-      if (row.issueExecutionRunId !== row.run.id) {
+      if (row.issueExecutionRunId !== row.run.id && !(stopCleanup && row.issueExecutionRunId === null)) {
         return {
           kind: "blocked",
           runId: row.run.id,
@@ -619,21 +634,42 @@ export async function claimNativeRestartRecoveries(input: {
         } as const;
       }
 
+      const startupContext = readNativeStartupContext(row.run, row.coordinator);
+      const startupRetryAt = startupContext ? new Date(Math.max(now.getTime() + 30_000,
+        startupContext.deadlineAtMs, row.coordinator.leaseExpiresAt?.getTime() ?? 0)) : undefined;
       if (input.liveRunExecutions?.has(row.run.id)) {
         return {
           kind: "awaiting_evidence",
           runId: row.run.id,
           reason: "current_controller_preparing",
+          ...(startupRetryAt ? { retryAt: startupRetryAt } : {}),
         } as const;
+      }
+      if (startupContext) {
+        if (await promoteNativeStartupCleanup(tx as unknown as Db, row.run, row.coordinator, now)) {
+          return { kind: "blocked", runId: row.run.id, reason: "native_startup_cleanup_pending" } as const;
+        }
+        return { kind: "awaiting_evidence", runId: row.run.id, reason: "native_startup_cleanup_pending", retryAt: startupRetryAt } as const;
       }
 
       const profile = row.run.runnerProfileJson ?? {};
-      const remoteWorkspace = readNativeWorkspaceSyncReference(profile.nativeWorkspaceSync);
-      const [pluginTask] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
+      const storedRemoteWorkspace = remoteWorkspaceRunReferenceSchema.safeParse(profile.remoteWorkspace);
+      const remoteWorkspace = readNativeWorkspaceSyncReference(profile.nativeWorkspaceSync)
+        ?? (storedRemoteWorkspace.success ? storedRemoteWorkspace.data : null);
+      const [pluginTask] = await tx.select({ id: environmentLeases.id, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
         eq(environmentLeases.companyId, row.run.companyId), eq(environmentLeases.heartbeatRunId, row.run.id),
         sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
       )).orderBy(desc(environmentLeases.createdAt)).limit(1);
-      const remoteSandbox = profile.nativeWorkspaceSync != null;
+      const startup = pluginTask?.metadata?.runnerTaskStartup as { contextId?: unknown; deadlineAtMs?: unknown; runId?: unknown } | undefined;
+      if (startup?.runId === row.run.id && typeof startup.contextId === "string" &&
+          Number.isSafeInteger(startup.deadlineAtMs) && Number(startup.deadlineAtMs) <= now.getTime() &&
+          !row.run.sessionIdAfter && row.coordinator.leaseOwner && row.coordinator.leaseExpiresAt && row.coordinator.leaseExpiresAt <= now) {
+        await requestNativeStartupCleanup(tx as unknown as Db, { companyId: row.run.companyId, agentId: row.run.agentId,
+          runId: row.run.id, contextId: startup.contextId, deadlineAtMs: Number(startup.deadlineAtMs),
+          leaseOwner: row.coordinator.leaseOwner, requiresPreparationStop: true, leaseId: pluginTask!.id }, { publish: false });
+        return { kind: "blocked", runId: row.run.id, reason: "native_startup_cleanup_pending" } as const;
+      }
+      const remoteSandbox = profile.nativeWorkspaceSync != null || profile.remoteWorkspace != null;
       const remoteProcess = remoteSandbox || !!pluginTask;
       const durableAuthority = (remoteWorkspace || pluginTask) && await hasNativeRunnerCheckpoint(tx, {
         companyId: row.run.companyId, issueId: row.coordinator.issueId, runId: row.run.id,
@@ -661,6 +697,7 @@ export async function claimNativeRestartRecoveries(input: {
           hasProviderEvidence: false,
           stderrTail: row.run.stderrExcerpt,
         });
+        await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
         await tx
           .update(nativeRunFinalizations)
           .set({
@@ -894,6 +931,9 @@ export async function claimNativeRestartRecoveries(input: {
           nativeRestartInterruptedTurnId(checkpointRecord as unknown as PersistedNativeSession) === null,
         providerAttempt: row.coordinator.attempt,
       });
+      if (stopCleanup && classification.claimKind !== "reattach_remote_runner") {
+        return { kind: "blocked", runId: row.run.id, reason: "native_stop_requires_existing_remote_session" } as const;
+      }
       const ownershipChanged =
         row.issueAssigneeAgentId !== row.run.agentId ||
         ["done", "cancelled"].includes(row.issueStatus);
@@ -1045,6 +1085,7 @@ export async function claimNativeRestartRecoveries(input: {
         recycledProviderPids: providerProcesses.recycledPids,
         stderrTail: row.run.stderrExcerpt,
       });
+      await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id, agentId: row.run.agentId });
       const claimed = await tx
         .update(nativeRunFinalizations)
         .set({

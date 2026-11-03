@@ -2187,7 +2187,7 @@ export function IssueProperties({
               setParentOpen(false);
             }}
           >
-            <StatusIcon status={candidate.status} className="h-3 w-3" />
+            <StatusIcon status={candidate.status} displayStatus={candidate.displayStatus} className="h-3 w-3" />
             <span className="truncate">
               {candidate.identifier ? `${candidate.identifier} ` : ""}
               {candidate.title}
@@ -2274,7 +2274,7 @@ export function IssueProperties({
               )}
               onClick={() => toggleBlockedBy(candidate.id)}
             >
-              <StatusIcon status={candidate.status} className="h-3 w-3" />
+              <StatusIcon status={candidate.status} displayStatus={candidate.displayStatus} className="h-3 w-3" />
               <span className="truncate">
                 {candidate.identifier ? `${candidate.identifier} ` : ""}
                 {candidate.title}
@@ -2312,7 +2312,7 @@ export function IssueProperties({
             className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs hover:bg-accent/50"
             onClick={() => setSubtasksOpen(false)}
           >
-            <StatusIcon status={child.status} className="h-3 w-3" />
+            <StatusIcon status={child.status} displayStatus={child.displayStatus} className="h-3 w-3" />
             <span className="min-w-0 truncate">
               {child.identifier ? `${child.identifier} ` : ""}
               {child.title}
@@ -2349,7 +2349,7 @@ export function IssueProperties({
       >
         <PropertyRow label="Status">
           <StatusIcon
-            status={issue.status}
+            status={issue.status} displayStatus={issue.displayStatus}
             externalConversationState={issue.externalConversationState}
             glyphContainerClassName="inline-flex size-6 shrink-0 items-center justify-center"
             blockerAttention={issue.blockerAttention}

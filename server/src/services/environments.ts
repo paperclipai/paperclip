@@ -1,4 +1,5 @@
 import { createReusableLeaseHandoff, preserveReusableLeaseHandoff, withoutReusableLeaseHandoff } from "./environment-lease-handoff.js";
+import { clearRemoteWorkspaceLocationForReleasedLease } from "./remote-workspace-snapshot-retention.js";
 import { notifyNativeEnvironmentSettlement } from "./native-environment-settlement-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "./retained-native-session-cleanup-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
@@ -7,7 +8,7 @@ import { withoutCleanupVerification } from "./cleanup-verification-proof.js";
 import { randomUUID } from "node:crypto";
 
 import { SANDBOX_PLATFORM_PROBE_METADATA_KEY } from "./environment-custom-image-runtime.js";
-import { and, desc, eq, inArray, isNull, ne, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -68,7 +69,7 @@ export async function attachSandboxCreation(db: Db, id: string, scope: { company
     }
     if (!operation || operation.state !== "pending") throw new Error("Sandbox creation ownership has already transferred");
     const lease = await attach(tx as unknown as Db);
-    await notifyEnvironmentCleanup(tx, { companyId: scope.companyId });
+    await notifyEnvironmentCleanup(tx, { companyId: scope.companyId, runId: operation.runId });
     await tx.update(sandboxCreationOperations).set({ state: "attached", leaseId: lease.id, updatedAt: new Date() })
       .where(eq(sandboxCreationOperations.id, id));
     return lease;
@@ -1695,6 +1696,16 @@ export function environmentService(db: Db) {
       const cleanupSettled = options?.expectedPendingCleanupAttemptId && options.cleanupStatus === "success"
         && status !== "pending_cleanup";
       const row = await db.transaction(async tx => {
+        if (options?.remoteExecutionTermination?.state === "destroyed") {
+          // Workspace preparation locks its authority before the lease. Keep
+          // that order when confirmed destruction clears the same authority.
+          const [identity] = await tx.select({ companyId: environmentLeases.companyId }).from(environmentLeases)
+            .where(eq(environmentLeases.id, id));
+          if (identity) await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces).where(and(
+            eq(executionWorkspaces.companyId, identity.companyId),
+            sql`${executionWorkspaces.metadata}->'remoteWorkspace'->'location'->>'leaseId' = ${id}`,
+          )).orderBy(asc(executionWorkspaces.id)).for("update");
+        }
         const condition = and(eq(environmentLeases.id, id), options?.expectedPendingCleanupAttemptId
           ? and(eq(environmentLeases.status, "pending_cleanup"),
               sql`${environmentLeases.metadata}->>'pendingCleanupAttemptId' = ${options.expectedPendingCleanupAttemptId}`)
@@ -1705,7 +1716,7 @@ export function environmentService(db: Db) {
           creationOperationId: sql<string | null>`${environmentLeases.metadata}->>'creationOperationId'`,
         }).from(environmentLeases).where(condition).for("update");
         if (!previous) return null;
-        await notifyEnvironmentCleanup(tx, { companyId: previous.companyId, runId: previous.heartbeatRunId ?? undefined });
+        await notifyEnvironmentCleanup(tx, { companyId: previous.companyId, runId: previous.heartbeatRunId ?? undefined, leaseId: id });
         if (previous.heartbeatRunId && (previous.status !== status ||
             (options?.cleanupStatus !== undefined && previous.cleanupStatus !== options.cleanupStatus) ||
             (status !== "retained" && !previous.releasedAt))) {
@@ -1724,7 +1735,7 @@ export function environmentService(db: Db) {
             .where(and(eq(sandboxCreationOperations.id, previous.creationOperationId), eq(sandboxCreationOperations.companyId, previous.companyId),
               eq(sandboxCreationOperations.leaseId, id), eq(sandboxCreationOperations.state, "cleanup_pending")));
         }
-        return tx.update(environmentLeases)
+        const released = await tx.update(environmentLeases)
         .set({
           status,
           releasedAt: status === "retained" ? null : now,
@@ -1741,6 +1752,8 @@ export function environmentService(db: Db) {
         .where(condition)
         .returning()
         .then((rows) => rows[0] ?? null);
+        if (released) await clearRemoteWorkspaceLocationForReleasedLease({ db: tx, lease: toEnvironmentLease(released) });
+        return released;
       });
       return row ? toEnvironmentLease(row) : null;
     },
@@ -1830,7 +1843,7 @@ export function environmentService(db: Db) {
         const [lease] = await tx.select({ companyId: environmentLeases.companyId, heartbeatRunId: environmentLeases.heartbeatRunId, metadata: environmentLeases.metadata })
           .from(environmentLeases).where(eq(environmentLeases.id, id)).for("update");
         if (!lease) return null;
-        await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined });
+        await notifyEnvironmentCleanup(tx, { companyId: lease.companyId, runId: lease.heartbeatRunId ?? undefined, leaseId: id });
         return tx.update(environmentLeases)
         .set({
           metadata: preserveReusableLeaseHandoff(lease.metadata, withoutCleanupVerification(metadata)),

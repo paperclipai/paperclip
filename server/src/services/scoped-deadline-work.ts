@@ -12,12 +12,14 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     queue: DeliveryQueue;
     batchSize?: number;
     minimumPassIntervalMs?: number;
-    concurrentChecks?: { limit: number; key(entry: Entry): string };
-    reconstructionIntervalMs?: number;
+    concurrentChecks?: { limit: number; key(entry: Entry): string | readonly string[] };
+    reconstructionIntervalMs?: number | ((scope: Scope | undefined) => number);
     beforePass?(): Promise<void>;
     decodeScope(hint: string): Scope | undefined;
     matches(entry: Entry, scope?: Scope): boolean;
     load(scope?: Scope, signal?: AbortSignal): Promise<Entry[] | { rows: Entry[] | null; complete: boolean }>;
+    // Owners may retain pending queue priority while refreshing eligibility.
+    mergeEntry?(pending: Entry, loaded: Entry): Entry;
     check(entry: Entry, signal?: AbortSignal): Promise<Entry | null>;
   },
   canRun: () => boolean,
@@ -62,7 +64,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     } },
     run: async signal => {
       if (!canRun() || Date.now() < earliest) return;
-      if ((options.reconstructionIntervalMs ?? 0) > 0) for (const [hint, until] of reconstructAfter) {
+      for (const [hint, until] of reconstructAfter) {
         if (until <= Date.now()) reconstructAfter.delete(hint);
       }
       const ready = [...dirty].filter(hint => Math.max(reconstructAfter.get(hint) ?? 0, scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
@@ -90,7 +92,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
           const loaded = await options.load(scope, signal);
           const result = Array.isArray(loaded) ? { rows: loaded, complete: true } : loaded;
           for (const entry of result.rows ?? []) {
-            entries.set(entry.id, entry);
+            const pending = entries.get(entry.id);
+            entries.set(entry.id, pending && options.mergeEntry ? options.mergeEntry(pending, entry) : entry);
             for (const [other, progress] of scans) if (options.matches(entry, options.decodeScope(other))) progress.seen.add(entry.id);
           }
           if (!result.complete) { dirty.add(hint); continue; }
@@ -98,8 +101,10 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
             entries.delete(entry.id); failures.delete(entry.id);
           }
           scans.delete(hint);
-          if ((options.reconstructionIntervalMs ?? 0) > 0) {
-            reconstructAfter.set(hint, Date.now() + options.reconstructionIntervalMs!);
+          const reconstructionInterval = typeof options.reconstructionIntervalMs === "function"
+            ? options.reconstructionIntervalMs(scope) : (options.reconstructionIntervalMs ?? 0);
+          if (reconstructionInterval > 0) {
+            reconstructAfter.set(hint, Date.now() + reconstructionInterval);
           }
           if ((versions.get(hint) ?? 0) !== scan.version) dirty.add(hint); else versions.delete(hint);
           if (!scope) scopeFailures.clear(); else scopeFailures.delete(hint);
@@ -114,9 +119,27 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
         && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
         .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
       const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
-      const groups = new Map<string, Entry[]>();
-      for (const entry of batch.entries) {
-        const key = options.concurrentChecks?.key(entry) ?? "";
+      // An owner may share more than one resource (for example a task and an
+      // endpoint). Merge intersecting keys before dispatch so waiting siblings
+      // do not occupy the bounded check slots ahead of independent work.
+      const parents = batch.entries.map((_, index) => index);
+      const root = (index: number): number => {
+        while (parents[index] !== index) index = parents[index];
+        return index;
+      };
+      const owners = new Map<string, number>();
+      for (const [index, entry] of batch.entries.entries()) {
+        const configured = options.concurrentChecks?.key(entry) ?? "";
+        const keys = typeof configured === "string" ? [configured] : configured;
+        for (const key of keys) {
+          const previous = owners.get(key);
+          if (previous === undefined) owners.set(key, index);
+          else parents[root(index)] = root(previous);
+        }
+      }
+      const groups = new Map<number, Entry[]>();
+      for (const [index, entry] of batch.entries.entries()) {
+        const key = root(index);
         const group = groups.get(key) ?? [];
         group.push(entry); groups.set(key, group);
       }

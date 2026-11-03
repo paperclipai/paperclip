@@ -1799,6 +1799,12 @@ function RequestToolActionCard({
   const resolutionErrorMessage = useResolutionErrorMessage();
   const isPending = state === "pending";
   const variant = payload.risk === "destructive" ? "destructive" : "cta";
+  // This server projection is already redacted and bounded by the interaction schema.
+  const inspectableArguments = typeof payload.argumentsSummaryJson === "string"
+    && payload.argumentsSummaryJson.length <= 20_000 && payload.argumentsSummaryJson.trim().length > 0
+    && typeof payload.argumentsHash === "string" && payload.argumentsHash.length <= 255
+    && payload.argumentsHash.trim().length > 0;
+
 
   useEffect(() => {
     if (!isPending) setWorking(null);
@@ -1828,6 +1834,17 @@ function RequestToolActionCard({
           {!isPending ? <ToolActionResolution state={state} interaction={interaction} /> : null}
         </div>
       </div>
+      {isPending ? inspectableArguments ? (
+        <details className="mt-3">
+          <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+            Arguments and audit hash
+          </summary>
+          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap break-words font-mono text-xs text-foreground">
+            {payload.argumentsSummaryJson}
+          </pre>
+          <p className="mt-1 break-all font-mono text-xs text-muted-foreground">{payload.argumentsHash}</p>
+        </details>
+      ) : <p className="mt-3 text-xs text-muted-foreground">Request arguments are unavailable.</p> : null}
       {isPending ? (
         <DecisionCardFooter leading={footerSlot} className="mt-3">
           <div className={cn(!footerSlot && "mt-3", "flex flex-wrap items-center justify-end gap-2")}>

@@ -1,3 +1,4 @@
+import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
 import { readNativeEventEvidenceOutcome } from "./native-runtime/evidence-classifier.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
@@ -78,10 +79,14 @@ export async function appendHeartbeatRunEvent(
   input: AppendHeartbeatRunEventInput,
 ): Promise<AppendHeartbeatRunEventResult> {
   const projectsRetention = input.eventType === "lifecycle" && Boolean(input.message?.startsWith(RETRY_EXHAUSTION_MESSAGE_PREFIX));
+  // Terminal proof may arrive after controller retirement and a quiet Stop
+  // check. Register the scoped wake before writing it, in the same transaction.
+  const projectsRecovery = ["native.process_start_requested", "native.process_identity_recorded", "native.local_process_stopped"].includes(input.eventType)
+    || Boolean(input.nativeSource && ["turn.completed", "turn.failed", "turn.cancelled", "turn.interrupted"].includes(input.eventType));
   const projectsReassessment = readNativeEventEvidenceOutcome(input.payload?.prpEvent) !== null;
   const projectsProgress = isSafeNativeChatProgressEventType(input.eventType);
   const projectsResponse = isNativeResponseEvidence(input.eventType, input.payload?.prpEvent);
-  if (!input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment && !projectsRetention) {
+  if (!input.nativeSource && !input.retryExhaustion && !projectsProgress && !projectsResponse && !projectsReassessment && !projectsRecovery && !projectsRetention) {
     const allocated = db.$with("allocated_run_event", {}).as(sql`
       update ${heartbeatRuns}
       set next_event_seq = ${heartbeatRuns.nextEventSeq} + 1,
@@ -120,6 +125,8 @@ export async function appendHeartbeatRunEvent(
     if (!run || run.companyId !== input.companyId || run.agentId !== input.agentId) {
       throw new Error("heartbeat_run_event_binding_mismatch");
     }
+
+    if (projectsRecovery) await notifyLiveRunRecovery(tx, input);
 
     if (input.retryExhaustion && !input.nativeSource) {
       // The run lock also serializes concurrent recovery checks across server

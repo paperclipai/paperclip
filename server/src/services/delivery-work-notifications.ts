@@ -2,6 +2,18 @@ import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db/work-
 
 /** Topics for existing durable queues; register intent before their writes. */
 export const DELIVERY_QUEUES = {
+  nativeRuntimeResponses: "native-runtime-responses",
+  nativeCancellation: "native-cancellation",
+  deploymentNotifications: "deployment-notifications",
+  liveInvalidations: "live-invalidations",
+  nativeProcessSessions: "native-process-sessions",
+  nativeQuestionCancellations: "native-question-cancellations",
+  activeExecutionRecovery: "active-execution-recovery",
+  settledNativeProcesses: "settled-native-processes",
+  orphanActiveLeases: "orphan-active-leases",
+  legacyShutdownSettlement: "legacy-shutdown-settlement",
+  strandedAgentStatus: "stranded-agent-status",
+  activeRunSilence: "active-run-silence",
   deferredExecutionReceipts: "deferred-execution-receipts",
   taskRetryReceiptSettlement: "task-retry-receipt-settlement",
   nativeStatusWakeIntents: "native-status-wake-intents",
@@ -18,6 +30,7 @@ export const DELIVERY_QUEUES = {
   providerTraceRetention: "provider-trace-retention",
   nativeRunnerEvidenceRetention: "native-runner-evidence-retention",
   skillVersionRetention: "skill-version-retention",
+  externalObjectRefresh: "external-object-refresh",
   databaseBackups: "database-backups",
   importSpoolCleanup: "import-spool-cleanup",
   externalConversationSettlement: "external-conversation-settlement",
@@ -121,7 +134,10 @@ export const DELIVERY_QUEUES = {
   feedback: "feedback-exports",
   chatCompletion: "chat-completions",
   connection: "connection-continuations",
+  connectionEvents: "connection-events",
+  connectionContinuity: "connection-continuity",
   gitRestorePoints: "git-restore-points",
+  remoteWorkspaceSnapshots: "remote-workspace-snapshots",
   nativeWorkspaceSyncRetention: "native-workspace-sync-retention",
   question: "question-responses",
   pluginSchedules: "plugin-schedules",
@@ -133,6 +149,7 @@ export const DELIVERY_QUEUES = {
   issueMonitors: "issue-monitors",
   agentTimers: "agent-timers",
   caseHandoffs: "case-handoffs",
+  nativeHarnessBackupExpiration: "native-harness-backup-expiration",
   nativeCheckpointExpiration: "native-checkpoint-expiration",
 } as const;
 export type DeliveryQueue = typeof DELIVERY_QUEUES[keyof typeof DELIVERY_QUEUES];

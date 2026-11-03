@@ -9,6 +9,7 @@ import { MemoryRouter } from "@/lib/router";
 import { useLocation, useNavigate } from "react-router-dom";
 import { CoordinatorTasks } from "./CoordinatorTasks";
 import { queryKeys } from "@/lib/queryKeys";
+import type { TaskListSort } from "@/lib/task-list";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn() }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: mocks.liveRuns } }));
@@ -21,7 +22,7 @@ vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => ({ userId: "
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
-vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange, onLayoutChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[]; routineTasksOnly?: boolean }) => void }; onViewChange: (view: "blocked") => void; onLayoutChange: (layout: "board") => void }) => <>
+vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, onViewChange, onLayoutChange }: { filters: { onChange: (value: { liveOnly?: boolean; priorities?: string[]; assignees?: string[]; statuses?: string[]; routineTasksOnly?: boolean }) => void }; onViewChange: (view: "blocked") => void; onLayoutChange: (layout: "list" | "board") => void }) => <>
   <button onClick={() => filters.onChange({ routineTasksOnly: true })}>Routine tasks</button>
   <button onClick={() => filters.onChange({ routineTasksOnly: false })}>Show other tasks</button>
   <button onClick={() => filters.onChange({ liveOnly: true })}>Live runs only</button>
@@ -30,11 +31,12 @@ vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, on
   <button onClick={() => filters.onChange({ assignees: ["first", "second"], statuses: ["todo"] })}>Change assignee and status</button>
   <button onClick={() => onViewChange("blocked")}>Needs attention</button>
   <button onClick={() => onLayoutChange("board")}>Board view</button>
+  <button onClick={() => onLayoutChange("list")}>List view</button>
 </> }));
 vi.mock("@/components/TaskList", async importOriginal => ({
   ...await importOriginal<typeof import("@/components/TaskList")>(),
-  TaskList: ({ items, emptyState }: { items: { issue: { id: string; title: string } }[]; emptyState: React.ReactNode }) =>
-    <div>{items.length ? items.map(item => <p key={item.issue.id} data-task-id={item.issue.id}>{item.issue.title}</p>) : emptyState}</div>,
+  TaskList: ({ items, emptyState, onSortChange }: { onSortChange?: (sort: TaskListSort) => void; items: { issue: { id: string; title: string } }[]; emptyState: React.ReactNode }) =>
+    <div><button onClick={() => onSortChange?.({ column: "taskId", direction: "descending" })}>Sort by task ID</button><output>{useLocation().search}</output>{items.length ? items.map(item => <p key={item.issue.id} data-task-id={item.issue.id}>{item.issue.title}</p>) : emptyState}</div>,
 }));
 
 describe("Coordinator tasks using the proposed table", () => {
@@ -72,6 +74,43 @@ describe("Coordinator tasks using the proposed table", () => {
     expect(mocks.list.mock.lastCall?.[1].originKind).toBeUndefined();
     flushSync(() => Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Routine tasks")!.click());
     await vi.waitFor(() => expect(host.querySelector('[data-task-id="manual-task"]')).toBeNull());
+  });
+
+  it("reads newest-first sorting and puts column sort clicks in the URL", async () => {
+    mocks.list.mockResolvedValue([createIssue({ companyId: "company", parentId: null, originKind: "routine_execution" })]);
+    await mount("/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ sortField: "created", sortDir: "desc", originKind: "routine_execution", offset: 0 }), expect.anything());
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "Sort by task ID")!.click());
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toContain("sortField=taskId"));
+    expect(Object.fromEntries(new URLSearchParams(host.querySelector("output")!.textContent!))).toMatchObject({
+      view: "all", originKind: "routine_execution", sortField: "taskId", sortDir: "desc",
+    });
+  });
+
+  it("keeps search relevance when a shared link selects creation order", async () => {
+    await mount("/issues?sortField=created&sortDir=asc&q=report");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ q: "report", sortField: "updated", sortDir: "desc" }), expect.anything());
+  });
+
+  it.each(["updated&sortDir=asc", "created&sortDir=asc", "created&sortDir=desc"])("keeps recent board tasks when the list selects %s", async order => {
+    const older = createIssue({ id: "older-task", companyId: "company", parentId: null, originKind: "routine_execution", title: "Older board task" });
+    const recent = createIssue({ id: "recent-task", companyId: "company", parentId: null, originKind: "routine_execution", title: "Recently active board task" });
+    mocks.list.mockImplementation(async (_company, filters) => filters.ids
+      ? [older, recent].filter(issue => filters.ids.includes(issue.id))
+      : filters.sortField === "updated" && filters.sortDir === "desc" ? [recent] : [older]);
+    await mount(`/issues?sortField=${order}&originKind=routine_execution`);
+    expect(host.textContent).toContain(older.title);
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "Board view")!.click());
+    await vi.waitFor(() => expect(host.textContent).toContain(recent.title));
+    expect(mocks.list.mock.calls.filter(call => call[1].projection === "index").at(-1)?.[1]).toMatchObject({ sortField: "updated", sortDir: "desc", originKind: "routine_execution", offset: 0 });
+    expect(host.querySelector("output")?.textContent).toContain(`sortField=${order}`);
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "List view")!.click());
+    await vi.waitFor(() => expect(host.textContent).toContain(older.title));
+  });
+
+  it("requests dependency edges for shared workflow links", async () => {
+    await mount("/issues?sortField=workflow&sortDir=asc");
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ includeBlockedBy: true }), expect.anything());
   });
 
   it("filters pending-decision batches by routine origin without treating excluded IDs as missing", async () => {

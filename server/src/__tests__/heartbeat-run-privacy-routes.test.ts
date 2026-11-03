@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "./helpers/full-database-response-capture.js";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -268,7 +268,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     }).where(eq(heartbeatRuns.id, f.privateRunId));
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.privateRunId));
     const observed = createDb(externalDatabaseUrl ?? tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
     try {
       const app = createApp(f.companyId, f.grantedAgentId, observed);

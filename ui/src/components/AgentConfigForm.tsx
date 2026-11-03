@@ -145,7 +145,9 @@ type AgentConfigFormProps = {
   /** Keep variable bindings beside secret access in a unified edit surface. */
   environmentVariablesPlacement?: "configuration" | "secrets";
   /** "cards" renders each section as heading + bordered card (for settings pages). Default: "inline" (border-b dividers). */
-  sectionLayout?: "inline" | "cards";
+  sectionLayout?: "inline" | "cards" | "panels";
+  /** Sections to leave out entirely (by `data-config-section` key). */
+  hiddenSections?: readonly string[];
   /** Optional settings composition; sorting changes DOM order as well as visual order. */
   sectionOrder?: readonly string[];
   sectionTitles?: Record<string, string>;
@@ -323,12 +325,21 @@ function clampDelayMsFromSeconds(value: number) {
   return clampInteger(value, 0, MAX_TURN_CONTINUATION_MAX_DELAY_SEC) * 1000;
 }
 
-function ConfigSections({ order, className, children }: {
+function ConfigSections({ order, hidden, className, children }: {
   order?: readonly string[];
+  hidden?: readonly string[];
   className: string;
   children: ReactNode;
 }) {
-  if (!order) return <div className={className}>{children}</div>;
+  const keyOf = (child: ReactNode) =>
+    isValidElement<{ "data-config-section"?: string }>(child) ? child.props["data-config-section"] : undefined;
+  const visible = hidden?.length
+    ? Children.toArray(children).filter((child) => {
+      const key = keyOf(child);
+      return !key || !hidden.includes(key);
+    })
+    : children;
+  if (!order) return <div className={className}>{visible}</div>;
   const rank = (child: ReactNode) => {
     const key = isValidElement<{ "data-config-section"?: string }>(child)
       ? child.props["data-config-section"]
@@ -336,7 +347,7 @@ function ConfigSections({ order, className, children }: {
     const index = key ? order.indexOf(key) : -1;
     return index < 0 ? order.length : index;
   };
-  const sections = Children.toArray(children).sort((a, b) => rank(a) - rank(b));
+  const sections = Children.toArray(visible).sort((a, b) => rank(a) - rank(b));
   return <div className={className}>{sections}</div>;
 }
 
@@ -345,7 +356,12 @@ function ConfigSections({ order, className, children }: {
 export function AgentConfigForm(props: AgentConfigFormProps) {
   const { mode, adapterModels: externalModels } = props;
   const isCreate = mode === "create";
-  const cards = props.sectionLayout === "cards";
+  const panels = props.sectionLayout === "panels";
+  const cards = props.sectionLayout === "cards" || panels;
+  const cardBody = panels
+    ? "space-y-3 rounded-lg bg-(--agent-detail-tile) p-(--agent-detail-module-inset)"
+    : "border border-border rounded-lg p-4 space-y-3";
+  const untitled = (key: string) => panels && props.sectionTitles?.[key] === "";
   const showAdapterTypeField = props.showAdapterTypeField ?? true;
   const showInlineAdapterTestEnvironmentFeedback = !props.onTestFeedbackChange;
   const showCreateRunPolicySection = props.showCreateRunPolicySection ?? true;
@@ -642,6 +658,12 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const fieldsAdapterType = isRunnerHarness
     ? (runner === "paperclip" || (runner === "auto" && runnerAvailability?.defaultRunner === "paperclip") ? "paperclip_runner" : harnessType)
     : adapterType;
+  const isCursorCloudRunner = harnessType === "cursor_cloud" && fieldsAdapterType === "paperclip_runner";
+  useEffect(() => {
+    if (props.mode !== "create" || !isCursorCloudRunner || !props.values.defaultEnvironmentId) return;
+    props.onChange({ defaultEnvironmentId: "" });
+  }, [props.mode, isCursorCloudRunner, isCreate ? props.values.defaultEnvironmentId : undefined,
+    isCreate ? props.onChange : undefined]);
   useEffect(() => {
     if (props.mode !== "create" || !isRunnerHarness) return;
     const resolvedRunner = runner === "auto" ? runnerAvailability?.defaultRunner : runner;
@@ -678,6 +700,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // inert while every run happens in the platform-managed environment.
   const showLegacyWorkingDirectoryField =
     isLocal
+    && !isCursorCloudRunner
     && !hideHostPaths
     && shouldShowLegacyWorkingDirectoryField({ isCreate, adapterConfig: config });
   const uiAdapter = useMemo(() => getUIAdapter(adapterType), [adapterType]);
@@ -974,10 +997,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   // Only applies in create mode and only once the K8s environment is loaded; if
   // none is available the UI surfaces a notice instead of silently selecting it.
   useEffect(() => {
-    if (!isCreate || !set || !forcedKubernetes || !kubernetesEnvironment) return;
+    if (!isCreate || !set || isCursorCloudRunner || !forcedKubernetes || !kubernetesEnvironment) return;
     if (currentDefaultEnvironmentId === kubernetesEnvironment.id) return;
     set({ defaultEnvironmentId: kubernetesEnvironment.id });
-  }, [isCreate, set, forcedKubernetes, kubernetesEnvironment, currentDefaultEnvironmentId]);
+  }, [isCreate, set, isCursorCloudRunner, forcedKubernetes, kubernetesEnvironment, currentDefaultEnvironmentId]);
 
   const runnableEnvironments = useMemo(
     () => environments.filter((environment) => {
@@ -1154,7 +1177,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       let settings = instanceSettings;
       let environmentList = environments;
       let managedSandboxOnly = experimentalSettings?.enableManagedSandboxOnly === true;
-      if (!rawCurrentDefaultEnvironmentId) {
+      if (!isCursorCloudRunner && !rawCurrentDefaultEnvironmentId) {
         // The agent has no own environment, so the Test resolves the instance
         // default, the local default, or the managed sandbox. Resolve the
         // settings, the environment list, and the managed-sandbox-only policy
@@ -1192,7 +1215,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // policy is on, probe the managed sandbox the real run uses instead. The
       // resolver throws when no managed sandbox is available, which the mutation
       // surfaces as a fail-closed error rather than a local host probe.
-      const environmentId = resolveAdapterTestEnvironmentId({
+      const environmentId = isCursorCloudRunner ? null : resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
         instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
         localDefaultEnvironmentId: resolveLocalDefaultEnvironmentId(environmentList),
@@ -1209,6 +1232,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const aiConnection = isCreate ? undefined : aiRuntimeConnectionBindingSchema.safeParse(
         (overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? props.agent.runtimeConfig.aiConnection,
       ).data;
+      const testRunnerSelection = isCursorCloudRunner
+        ? { runner: "paperclip" as const }
+        : isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {};
       if (!isCreate && props.agent.adapterType === "paperclip_runner" && adapterType === "paperclip_runner"
         && runnerAvailability?.defaultRunner !== "paperclip"
         && !isExternalRunner && aiConnection?.mode !== "router" && !isDirty && environmentId && canQualifyRunnerEnvironment(environmentList.find(environment => environment.id === environmentId))) {
@@ -1228,9 +1254,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             : adapterConfig.provider === "acpx" && adapterConfig.acpxAgent === "claude" ? "claude_local"
               : adapterType
           : adapterType;
-        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId, ...(isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {}) });
+        return testAgentSetup({ companyId: selectedCompanyId, adapterType, providerAdapter, adapterConfig, agentId, aiConnection, environmentId, ...testRunnerSelection });
       }
-      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId, ...(isRunnerHarness && (isCreate ? runner !== "auto" : overlay.runner !== undefined) ? { runner } : {}) });
+      return agentsApi.testEnvironment(selectedCompanyId, adapterType, { adapterConfig, agentId, aiConnection, environmentId, ...testRunnerSelection });
     },
   });
   const [testActionPending, setTestActionPending] = useState(false);
@@ -1464,7 +1490,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           : eff("adapterConfig", thinkingEffortKey, String(config[thinkingEffortKey] ?? ""));
   const showThinkingEffort = !(harnessType === "pi_local" && fieldsAdapterType === "paperclip_runner")
     && adapterType !== "gemini_local"
-    && adapterType !== "cursor_cloud"
+    && harnessType !== "cursor_cloud"
     && (adapterType !== "paperclip_runner" || isRunnerHarness);
   const codexSearchEnabled = adapterType === "codex_local"
     ? (isCreate ? Boolean(val!.search) : eff("adapterConfig", "search", Boolean(config.search)))
@@ -1539,7 +1565,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
   if (!isCreate && props.content === "secrets") {
     return (
-      <div className={cn("relative", cards && "space-y-6")}>
+      <div className={cn("relative", panels ? "flex flex-col gap-(--agent-detail-band-gap)" : cards && "space-y-6")}>
         {isDirty && !props.hideInlineSave && (
           <div className="sticky top-0 z-10 flex items-center justify-end border-b border-primary/20 bg-background/90 px-4 py-2 backdrop-blur-sm">
             <div className="flex items-center gap-3">
@@ -1557,7 +1583,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               ? <h3 className="mb-3 text-sm font-medium">Environment variables</h3>
               : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment variables</div>
             }
-            <div className={cn(cards ? "rounded-lg border border-border p-4" : "px-4 pb-3")}>
+            <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? (panels ? "rounded-lg bg-(--agent-detail-tile) p-(--agent-detail-module-inset)" : "rounded-lg border border-border p-4") : "px-4 pb-3")}>
               {environmentVariablesEditor}
             </div>
           </div>
@@ -1568,7 +1594,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="mb-3 text-sm font-medium">Secret access</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Secret access</div>
           }
-          <div className={cn(cards ? "space-y-3 rounded-lg border border-border p-4" : "space-y-3 px-4 pb-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "space-y-3 px-4 pb-3")}>
             <p className="text-xs text-muted-foreground">{help.secretAccess}</p>
             <AgentSecretAccessEditor
               config={{ ...config, ...overlay.adapterConfig }}
@@ -1619,7 +1645,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {upgradeWarnings.map(warning => <p key={warning.field} className="text-sm text-muted-foreground">{warning.message}</p>)}
         </div>
       ) : null}
-    <ConfigSections order={props.sectionOrder} className={cn("relative", cards && "space-y-6")}>
+    <ConfigSections order={props.sectionOrder} hidden={props.hiddenSections} className={cn("relative", panels ? "agent-config-panels" : cards && "space-y-6")}>
       {/* ---- Floating Save button (edit mode, when dirty) ---- */}
       {isDirty && !props.hideInlineSave && (
         <div className="sticky top-0 z-10 flex items-center justify-end px-4 py-2 bg-background/90 backdrop-blur-sm border-b border-primary/20">
@@ -1643,7 +1669,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium mb-3">{props.sectionTitles?.["identity"] ?? "Identity"}</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Identity</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <Field label="Name" hint={help.name}>
               <DraftInput
                 value={eff("identity", "name", props.agent.name)}
@@ -1700,16 +1726,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       )}
 
       {/* ---- Execution ---- */}
-      {forcedKubernetes ? (
+      {isCursorCloudRunner ? null : forcedKubernetes ? (
         // Instance execution policy forces the managed Kubernetes sandbox
         // (executionMode=kubernetes): never offer local / non-Kubernetes targets.
         // Render the environment read-only instead of the selectable picker.
         <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            ? (untitled("environment") ? null : <h3 className="text-sm font-medium mb-3">Environment</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <Field
               label="Default environment"
               hint="This instance runs all agents in the Kubernetes sandbox. Local execution is disabled."
@@ -1731,10 +1757,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       ) : showEnvironmentOverrideControl ? (
         <div data-config-section="environment" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Environment</h3>
+            ? (untitled("environment") ? null : <h3 className="text-sm font-medium mb-3">Environment</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <Field label="Environment override">
               <div className="space-y-2">
                 <SelectPopover
@@ -1763,9 +1789,9 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {/* ---- Adapter ---- */}
       <div data-config-section="adapter" className={cn(!cards && (isCreate ? "border-t border-border" : "border-b border-border"))}>
-        <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
+        {untitled("adapter") && !showInlineAdapterTestEnvironmentButton ? null : <div className={cn(cards ? "flex items-center justify-between mb-3" : "px-4 py-2 flex items-center justify-between gap-2")}>
           {cards
-            ? <h3 className="text-sm font-medium">{props.sectionTitles?.["adapter"] ?? "Adapter"}</h3>
+            ? (untitled("adapter") ? <span /> : <h3 className="text-sm font-medium">{props.sectionTitles?.["adapter"] ?? "Adapter"}</h3>)
             : <span className="text-xs font-medium text-muted-foreground">Adapter</span>
           }
           {showInlineAdapterTestEnvironmentButton && (
@@ -1780,8 +1806,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
               {testActionPending ? `${testActionLabel}...` : testActionLabel}
             </Button>
           )}
-        </div>
-        <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+        </div>}
+        <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
           {showAdapterTypeField && isGrokBotRunner && (
             <Field label="Harness" hint={help.adapterType}>
               <div className="inline-flex items-center gap-1.5">
@@ -1953,8 +1979,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 open={modelOpen}
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
-                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner"}
-                required={adapterType === "opencode_local" || adapterType === "pi_local" || runnerAcpxAgent === "antigravity"}
+                allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner" && !isCursorCloudRunner}
+                required={adapterType === "opencode_local" || adapterType === "pi_local" || isCursorCloudRunner || runnerAcpxAgent === "antigravity"}
                 groupByProvider={!connectionModels && (adapterType === "opencode_local" || adapterType === "pi_local")}
                 preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(adapterType)}
                 creatable
@@ -2028,10 +2054,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       {(
         <div data-config-section="configuration" className={cn(!cards && "border-b border-border")}>
           {cards
-            ? <h3 className="text-sm font-medium mb-3">Configuration</h3>
+            ? (untitled("configuration") ? null : <h3 className="text-sm font-medium mb-3">Configuration</h3>)
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Configuration</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
               {!isCreate && typeof config.bootstrapPromptTemplate === "string" && config.bootstrapPromptTemplate && (
                 <>
                   <Field label="Bootstrap prompt (legacy)" hint={help.bootstrapPrompt}>
@@ -2151,7 +2177,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium mb-3">Environment variables</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground">Environment variables</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             {isLocal ? environmentVariablesEditor : renderAdapterFields("environment")}
           </div>
         </div>
@@ -2164,7 +2190,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             ? <h3 className="text-sm font-medium flex items-center gap-2 mb-3"><Heart className="h-3 w-3" /> Run Policy</h3>
             : <div className="px-4 py-2 text-xs font-medium text-muted-foreground flex items-center gap-2"><Heart className="h-3 w-3" /> Run Policy</div>
           }
-          <div className={cn(cards ? "border border-border rounded-lg p-4 space-y-3" : "px-4 pb-3 space-y-3")}>
+          <div data-agent-tile={panels ? "" : undefined} className={cn(cards ? cardBody : "px-4 pb-3 space-y-3")}>
             <ToggleWithNumber
               label="Heartbeat on interval"
               hint={help.heartbeatInterval}
@@ -2362,6 +2388,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
 
       {props.compactTestFeedback && showInlineAdapterTestEnvironmentFeedback && showAdapterTestEnvironmentButton && (
         <RuntimeTestCard
+          tone={panels ? "tile" : "card"}
           variant={isExternalRunner ? "prerequisites" : "connection"}
           metadataOnly={accountBoundCatalog}
           state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}

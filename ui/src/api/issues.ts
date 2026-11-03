@@ -7,6 +7,7 @@ import type {
   AskUserQuestionsAnswer,
   Approval,
   CompactIssue,
+  InboxMineSnapshot,
   CreateIssueTreeHold,
   DocumentRevision,
   FeedbackTargetType,
@@ -194,6 +195,7 @@ export type IssueListFilters = {
   projection?: "index" | "rows";
   attention?: "blocked";
   status?: string;
+  displayStatus?: string;
   projectId?: string;
   parentId?: string;
   assigneeAgentId?: string;
@@ -220,7 +222,7 @@ export type IssueListFilters = {
   q?: string;
   limit?: number;
   offset?: number;
-  sortField?: "updated" | "id";
+  sortField?: "updated" | "created" | "id";
   afterId?: string;
   sortDir?: "asc" | "desc";
 };
@@ -229,6 +231,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
   const params = new URLSearchParams();
   if (filters?.attention) params.set("attention", filters.attention);
   if (filters?.status) params.set("status", filters.status);
+  if (filters?.displayStatus) params.set("displayStatus", filters.displayStatus);
   if (filters?.projectId) params.set("projectId", filters.projectId);
   if (filters?.parentId) params.set("parentId", filters.parentId);
   if (filters?.parentIds) params.set("parentIds", filters.parentIds.join(","));
@@ -279,6 +282,11 @@ function issueListSearchParams(filters?: IssueListFilters) {
 }
 
 export const issuesApi = {
+  inboxMine: (companyId: string, options?: RequestOptions) => {
+    const path = `/companies/${companyId}/inbox/mine`;
+    detachInflightGet(path);
+    return api.get<InboxMineSnapshot>(path, { ...options, cache: "no-store" });
+  },
   summaries: async (companyId: string, issueIds: readonly string[], options?: RequestOptions): Promise<IssueSummary[]> => {
     if (issueIds.length > ISSUE_SUMMARIES_MAX_IDS) throw new Error("Too many issue summary IDs");
     const ids = [...new Set(issueIds.map((id) => id.trim().toLowerCase()))].sort();

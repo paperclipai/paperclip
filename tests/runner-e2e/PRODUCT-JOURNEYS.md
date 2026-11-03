@@ -23,6 +23,11 @@ never start a server or depend on a tenant filesystem.
 
 | Journey | Required starting state | Observed outcome |
 | --- | --- | --- |
+| `repository-continuation` | Native agent; two work runs; a pinned public read-only repository | Verify independent Git bundle history and workspace bytes across two turns, preserve the original random file, and reopen registered outputs after reload. See [repository-continuation.md](product-journeys/repository-continuation.md) |
+| `routine-scheduled-run` | Native agent; one work run; an owned project and routine | Browser-create a routine, enable its minute schedule, verify one scheduled invocation and run-attributed saved output, then pause and observe the next schedule boundary with no new work |
+| `company-access-isolation` | Two registered QA Cloud workspaces; disposable company-bound agent credentials; zero model runs | Switch through the real tenant Cloud menu and return. Require allowed task reads and task creation, foreign read/create denial in both directions, exact canonical creator evidence, and key revocation. See [COMPANY-ACCESS.md](product-journeys/COMPANY-ACCESS.md) |
+| `file-input-answer` | Native agent; one work run; synthetic CSV uploaded through the composer | Verify original uploaded bytes, independently calculated accepted-row count and units, a run-attributed task document after reload, and preservation of the input attachment. The task prompt contains neither the random file reference nor the answers |
+| `inbox-triage` | Signed-in board user; a separately authenticated QA human author; a fresh self-assigned task; zero model runs | Mark an unread task read, archive it through Mine, reload both views, verify unchanged work status, then observe a real Blocked transition resurface it through the normal archive policy |
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
 | `project-task-context` | Company, signed-in board user, task-write capability; no model runs | Create a project and a self-assigned task with the project selected through the production dialogs. Reopen the project, open its task, reload both, and verify exact saved company, project, prompt, assignment, standard work mode and zero runs |
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
@@ -36,6 +41,7 @@ never start a server or depend on a tenant filesystem.
 | `create-skill-studio` | Native agent with skill-write permission; one work run | Create a uniquely named company skill, open its activity card, edit in Studio, reload and verify task-card readback |
 | `stop-redirect` | Native agent; three work runs; qualified Docker oracle | Download a verified checkpoint, observe an active native command with current-turn usage, Stop it, verify cancellation and settled accounting, then send one new direction and complete without original-run activity |
 | `followup-while-running` | Native agent; a maximum of two work runs | Save a follow-up while an independently observed native shell command is still active, then require one attributed final reply with the late requirement after reload; in-turn steering and one normal successor are accepted |
+| `hire-delegate-reuse` | Native lead with a fresh user chat and scoped hiring permission; Agent Chat enabled; direct hiring policy; seven work runs | Hire one teammate, delegate a saved checklist, reuse the same teammate for a saved review, verify native run and revision authorship, preserve the original, and follow the lead's saved result link after reload |
 | `cloud-onboarding` | Signed-in admitted Cloud account; fresh workspace; qualified bounded provider route | Create workspace in the portal, connect API key and native Codex agent in the wizard, complete a task, download and independently check its artifact |
 
 The deployment-targeted Stop journey asks the revision to finish one harmless
@@ -86,6 +92,67 @@ and cleanup. Local calibration is not deployed-target qualification.
 The shared Studio helper waits for the original saved file body before typing.
 An editor control can mount before the file query completes; editing that empty
 draft can otherwise lose the original content when the file arrives.
+
+The hiring journey uses the existing Agent Chat prompts and native hiring oracle.
+It gives each disposable project, agent, and task a campaign name. The first
+turn only hires. The target provider can then verify the native creation audit
+and prepare that exact teammate's budget before the next turn delegates work.
+Both handoffs ask for the task to be created already assigned to that teammate.
+They use the normal composer agent and project mention formats, with the exact
+IDs from the independently verified hire and owned project. Missing, foreign or
+mismatched context fails before constructing the handoff. The mentions provide
+the intended resources without prescribing a tool call or bypassing normal delegation.
+The handoff selects these references through the normal rich-editor mention menu
+and verifies each chip target before sending once. Typing Markdown link syntax
+as plain rich-editor text escapes it and is not a mention. The saved user body
+must still match the requested body exactly.
+Creating work for the lead and later reassigning it starts additional native work
+and fails the existing assignee and run checks.
+When the lead uses a delegated personal connection, normal hiring selects the
+responsible user's default rather than copying the manager's identity. Before
+registering any chat or child-creation intent or sending the first turn, the
+journey reads the actual signed-in workflow user's provider default and requires
+the exact approved connection and grant, connected and owned by that user.
+After hiring it independently checks the exact child installation. The underlying
+connection's creator is not the owner of the user's default selection. Missing,
+different or ambiguous authority fails closed; no credential, default or grant is
+changed. A responsible-user hire stores the canonical `api_key` placeholder even
+when the approved default uses a subscription. The resolved native method must
+still match that independently approved default. Every successful native run must also retain the approved connection,
+grant and responsible-user attribution in its canonical execution metadata.
+Those references are compared privately and omitted from observation evidence.
+The first independently approved child binding becomes an immutable expected
+snapshot for the final shared hiring oracle; later binding changes fail. Only
+typed transient observation GET failures may poll again within the original
+deadline. Approval, authentication and ownership failures are never replayed.
+The checklist and review each require one successful child run and a current
+document revision authored by that run. The lead uses three requested turns and
+two separate server completion callbacks,
+for seven work runs in total. Each callback must identify exactly one of the two
+completed child tasks with a distinct server delivery receipt; arbitrary extra
+lead turns fail. The journey waits for each callback and its exact run-authored
+saved reply before the next user turn. A terminal run can precede its final
+comment; missing materialization polls within the existing deadline, while a
+wrong author or binding fails immediately.
+The lead has a maximum of five work runs and the teammate has two.
+A 500-cent case allowance is split into 300 cents for the lead and 200 for the
+teammate; the allocation must not duplicate the declared case allowance.
+Setup probes and unpriced usage remain separate accounting
+uncertainties. The journey does not change company hiring policy or instance
+features. The provider must own and clean up the hired agent, both child tasks,
+the chat, and the project. Before the first send, a fresh-chat intent records the
+company, user and owned lead after a normal GET confirms no existing chat.
+Recovery can attach only that exact fresh conversation. Saved replies and links
+are allowed to render after reload within the journey deadline. Cleanup includes
+unexpected campaign-owned children after
+failure. A new deployment must qualify the journey before scheduled admission.
+Child discovery reads the exact native creation audit after the run snapshot,
+then fetches each audited agent/task ID directly. It never depends on the first
+page of a shared company list. Each proven child is recorded before the next
+lookup can fail. Observation retries are limited to typed transient GET transport failures within
+the existing deadline. Ownership callbacks and grading failures are never
+retried. Audited same-company children are recorded before manager/project
+checks fail; foreign or malformed rows remain unowned and fail the journey.
 
 The task-document journey uses the normal default-chat Artifacts pane and the
 shared document editor. Classic mode retains its editor in the task body. The
@@ -408,3 +475,16 @@ A candidate's presence in this source catalog is not qualification. It enters th
 saved daily TestOps plan only after an inspected real QA Cloud pass including
 usage, artifact/decision evidence and cleanup. The daily driver runs that saved
 plan against the registered QA tenant; it does not substitute a local instance.
+
+The scheduled-routine pause oracle uses a full 65 seconds of monotonic elapsed
+time after both pause acknowledgement and work completion. Its enable receipt
+uses the server's timestamp; client and server wall clocks are never compared.
+The journey retries only transient read transport failures within the existing
+phase and journey deadlines. Private read-failure receipts retain those
+observations. Mutations, user messages and agent work are never replayed.
+
+Repository JSON metadata observations retry only transient transport failures
+within the original journey deadline. Binary attachment and browser downloads
+remain single attempts; transport failures and digest mismatches fail visibly. Git inspection consumes the exact digest-verified download
+buffer; browser downloads remain an independent result-access check. The
+repository journey shares the observation reader and browser helpers above.

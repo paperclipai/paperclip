@@ -1,3 +1,4 @@
+import { notifyExecutionRunWork } from "../../../services/execution-control-notifications.js";
 import { notifyDeferredExecutionWork } from "../../../services/deferred-execution-notifications.js";
 import { hasRequiredWorkspaceRecovery } from "../../../services/workspace-restore-recovery-state.js";
 import { readNativeWorkspaceSyncReference } from "../../../services/native-runtime/native-workspace-sync.js";
@@ -9,6 +10,7 @@ import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-wo
 import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
 import { notifyScheduledRetryCancellation } from "../../../services/scheduled-retry-cancellation-notifications.js";
+import { readClaimedNativeStopRecovery } from "../../../services/native-runtime/native-cancellation-request.js";
 import { hasConversationContinuationPolicy } from "../../../services/conversation-continuation.js";
 import { getExecutionBlocker } from "../../../services/execution-blocker.js";
 import { validateReconstructedWorkspaceDispatch } from "../../../services/native-runtime/native-workspace-reconstruction.js";
@@ -687,6 +689,7 @@ export function createPostgresRunDispatchAdapter(
     | { applied: true; run: HeartbeatRun; postCommitEffects: PostCommitEffect[] }
     | { applied: false }
   > {
+    await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.companyId, runId: input.runId });
     await notifyScheduledRetryCancellation(tx, { companyId: input.companyId, runId: input.runId });
@@ -732,6 +735,7 @@ export function createPostgresRunDispatchAdapter(
     tx: Db,
     input: CancelSuppressedRetryInput,
   ): Promise<CancelSuppressedRetryResult> {
+    await notifyExecutionRunWork(tx, { companyId: input.companyId, runId: input.runId });
     await notifyInstructionCollection(tx, { companyId: input.companyId, runId: input.runId });
     await notifyExternalAgentSettlement(tx, { companyId: input.companyId, runId: input.runId });
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.companyId, runId: input.runId });
@@ -1018,6 +1022,7 @@ export function createPostgresRunDispatchAdapter(
     now: Date,
     providerDispatchNotStarted = false,
   ): Promise<CancelStaleQueuedRunOutcome> {
+      await notifyExecutionRunWork(tx, { companyId: run.companyId, agentId: run.agentId, runId: run.id });
       await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
       await notifyExternalAgentSettlement(tx, { companyId: run.companyId, runId: run.id });
       await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
@@ -1274,10 +1279,11 @@ export function createPostgresRunDispatchAdapter(
     input: DispatchResolvedInteractionInput<T>,
   ): Promise<DispatchResolvedInteractionOutcome<T>> {
     const dispatchLockedRun = async (tx: Db, run: HeartbeatRun, publications: ActivityPublication[]) => {
-      if (run.status !== input.expectedStatus || run.resultJson?.cancellation || run.resultJson?.startupCancellation) {
+      const stopRecovery = await readClaimedNativeStopRecovery(tx, run, input.recoveryLeaseOwner);
+      if (run.status !== input.expectedStatus || ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery)) {
         return { dispatched: false as const, cancellation: { outcome: "lost_race" as const } };
       }
-      if (input.enforceContinuationOwnership !== false) {
+      if (!stopRecovery && input.enforceContinuationOwnership !== false) {
         const { issueId, decision: initialDecision } = await decideCurrentRunStaleness(
           tx,
           run,
@@ -1362,7 +1368,8 @@ export function createPostgresRunDispatchAdapter(
     return withRunOwnershipLocks<DispatchResolvedInteractionOutcome<T>>(input, () => ({ dispatched: false as const,
       cancellation: { outcome: "lost_race" as const } }), async (tx, run) => {
       const claim = parseObject(parseObject(run.usageJson).budgetDispatch);
-      if (run.status !== input.expectedStatus || run.costAccountedAt || run.resultJson?.cancellation || run.resultJson?.startupCancellation
+      const stopRecovery = await readClaimedNativeStopRecovery(tx, run, input.recoveryLeaseOwner);
+      if (run.status !== input.expectedStatus || run.costAccountedAt || ((run.resultJson?.cancellation || run.resultJson?.startupCancellation) && !stopRecovery)
         || claim.reservationId !== admission.claim.reservationId || claim.recoveryLeaseOwner !== admission.claim.recoveryLeaseOwner
         || claim.admittedAt !== admission.claim.admittedAt || claim.handedOffAt)
         return { dispatched: false as const, cancellation: { outcome: "lost_race" as const } };
@@ -1377,13 +1384,13 @@ export function createPostgresRunDispatchAdapter(
         .where(eq(companies.id, run.companyId));
       if (!scope || scope.reservationId !== input.reservationId)
         return { dispatched: false as const, admissionBlockReason: "Provider dispatch no longer owns a held budget reservation" };
-      if (scope.projectId && !scope.currentProjectId)
+      if (!stopRecovery && scope.projectId && !scope.currentProjectId)
         return { dispatched: false as const, admissionBlockReason: "Reserved project no longer exists" };
-      if (scope.companyStatus !== "active" || scope.projectPausedAt || scope.lifecycleState !== "ready"
-        || ["paused", "terminated", "pending_approval"].includes(scope.agentStatus))
+      if (!stopRecovery && (scope.companyStatus !== "active" || scope.projectPausedAt || scope.lifecycleState !== "ready"
+        || ["paused", "terminated", "pending_approval"].includes(scope.agentStatus)))
         return { dispatched: false as const, admissionBlockReason: "Execution scope is paused or no longer ready for work" };
 
-      if (input.enforceContinuationOwnership !== false) {
+      if (!stopRecovery && input.enforceContinuationOwnership !== false) {
         const contextSnapshot = parseObject(run.contextSnapshot);
         const issueId = readNonEmptyString(contextSnapshot.issueId);
         if (issueId) {
@@ -1404,7 +1411,7 @@ export function createPostgresRunDispatchAdapter(
             cancellation: await cancelStaleRunInTx(tx, run, issueId, decision, input.expectedStatus, input.now, true) };
         }
       }
-      const budgetBlock = await recheckAdmittedRunBudgetReadOnly(tx, { companyId: run.companyId, agentId: run.agentId,
+      const budgetBlock = stopRecovery ? null : await recheckAdmittedRunBudgetReadOnly(tx, { companyId: run.companyId, agentId: run.agentId,
         runId: run.id, projectId: scope.projectId, reservationId: input.reservationId });
       if (budgetBlock) return { dispatched: false as const, admissionBlockReason: budgetBlock };
       if (input.recoveryLeaseOwner) {
