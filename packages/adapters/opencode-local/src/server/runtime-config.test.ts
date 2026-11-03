@@ -456,4 +456,25 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     expect(config.provider.openrouter.options.headers["HTTP-Referer"]).toBe("https://paperclip.ing");
     await prepared.cleanup();
   });
+
+  it("injects the complete Windows UTF-8 shell settings", async () => {
+    const configHome = await makeConfigHome();
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+      platform: "win32",
+    });
+    try {
+      const dir = path.join(prepared.env.XDG_CONFIG_HOME, "opencode");
+      const config = JSON.parse(await fs.readFile(path.join(dir, "opencode.json"), "utf8"));
+      expect(config.plugin).toEqual(["./paperclip-windows-utf8.js"]);
+      const source = await fs.readFile(path.join(dir, "paperclip-windows-utf8.js"), "utf8");
+      expect(source).toContain("[Console]::OutputEncoding");
+      expect(source).toContain("application/json; charset=utf-8");
+      expect(source).toContain("& {");
+      expect(source).toContain("param(");
+    } finally {
+      await prepared.cleanup();
+    }
+  });
 });
