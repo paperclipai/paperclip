@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "40f4215186b59dd8703792d9caa9bc9d0e4eace8",
+  "targetSha": "de6d29e025683f5c28125bcaa4f38b41836d8516",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -172,7 +172,7 @@
       "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
       "previousTargetSha": "51ef450754370c8a8f2cbe4bd18e1536bbc93966",
       "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
-      "candidateDescriptorSha256": "2d316474694cf1f2b5ee128122293b1c3c927ea70879f0515576f304f8a1655d",
+      "candidateDescriptorSha256": "9508930d225ccb7105c4210bcf35cc6e7d122c3fb6df8ed33117d30a993fba35",
       "changedDefinitionFiles": [
         {
           "path": "tests/runner-e2e/chat-scenarios/companies.yaml",
@@ -191,8 +191,37 @@
           "sha256": "18fbb9419bbdacb46eacdaa62dfa99feb9024faf2d1eef829aa70d43952575a9"
         }
       ],
-      "conditions": "New candidate measurements only; original definitions and failed attempts retained. Source5 uses remaining ORIGINAL300 for multipart initial observation, exact server canonical secret-key metadata, normal no-onboarding announcement surface, and actual ordered rich-editor content rather than Markdown marker strings. Revised observers retain independent persistence/source/identity/permission/semantic grades. UI506 bounds before trim defense is candidate-only from UNMERGED18734; backend permissions unchanged. All original queries/clocks/model/human/native limits retained; only earlier144 accounting exception remains explicit. No SDK extra admitted; otherfive held; no coremerge/regrade",
+      "conditions": "New candidate measurements only; original definitions and failed attempts retained. Source5 joins canonical native status audit to the exact accepted task/run/worker decision while preserving legacy audits and truthful worker milestones; it also uses remaining ORIGINAL300 for multipart initial observation, exact server canonical secret-key metadata, normal no-onboarding announcement surface, and actual ordered rich-editor content rather than Markdown marker strings. Revised observers retain independent persistence/source/identity/permission/semantic grades. UI506 bounds before trim defense is candidate-only from UNMERGED18734; backend permissions unchanged. All original queries/clocks/model/human/native limits retained; only earlier144 accounting exception remains explicit. No SDK extra admitted; otherfive held; no coremerge/regrade",
       "changedFields": [
+        {
+          "key": "activity.work-timeline",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/internal-definition.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-catalog-domains/internal-activity.ts",
+            "chat-scenarios/activity.yaml",
+            "chat-catalog-domains/internal-work-timeline.ts",
+            "chat-catalog-domains/internal-timeline-verifier.ts",
+            "chat-catalog-domains/internal-privacy.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/internal-routine-audit.ts",
+            "../e2e/fetch-allowed-port.ts"
+          ],
+          "current": [
+            "chat-catalog-domains/internal-definition.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-catalog-domains/internal-activity.ts",
+            "chat-scenarios/activity.yaml",
+            "chat-catalog-domains/internal-work-timeline.ts",
+            "chat-catalog-domains/internal-timeline-verifier.ts",
+            "chat-catalog-domains/internal-privacy.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/internal-routine-audit.ts",
+            "../e2e/fetch-allowed-port.ts",
+            "../../server/src/services/native-runtime/status-decision-committer.ts"
+          ]
+        },
         {
           "key": "agents.choose-primary",
           "field": "sourceFiles",
@@ -772,6 +801,35 @@
       ],
       "candidateDescriptorSnapshot": "fixtures/chat-repair-candidate-descriptors.json",
       "descriptorChanges": [
+        {
+          "key": "activity.work-timeline",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/internal-definition.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-catalog-domains/internal-activity.ts",
+            "chat-scenarios/activity.yaml",
+            "chat-catalog-domains/internal-work-timeline.ts",
+            "chat-catalog-domains/internal-timeline-verifier.ts",
+            "chat-catalog-domains/internal-privacy.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/internal-routine-audit.ts",
+            "../e2e/fetch-allowed-port.ts"
+          ],
+          "current": [
+            "chat-catalog-domains/internal-definition.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "chat-catalog-domains/internal-activity.ts",
+            "chat-scenarios/activity.yaml",
+            "chat-catalog-domains/internal-work-timeline.ts",
+            "chat-catalog-domains/internal-timeline-verifier.ts",
+            "chat-catalog-domains/internal-privacy.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/internal-routine-audit.ts",
+            "../e2e/fetch-allowed-port.ts",
+            "../../server/src/services/native-runtime/status-decision-committer.ts"
+          ]
+        },
         {
           "key": "agents.choose-primary",
           "field": "sourceFiles",
@@ -1428,6 +1486,7 @@
           "caseIds": [
             53,
             74,
+            466,
             550,
             578
           ],
@@ -1438,7 +1497,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "40f4215186b59dd8703792d9caa9bc9d0e4eace8",
+        "targetSha": "de6d29e025683f5c28125bcaa4f38b41836d8516",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
       }
@@ -1992,7 +2051,8 @@
         "chat-catalog-domains/internal-privacy.ts",
         "chat-catalog-domains/identity-auth.ts",
         "chat-catalog-domains/internal-routine-audit.ts",
-        "../e2e/fetch-allowed-port.ts"
+        "../e2e/fetch-allowed-port.ts",
+        "../../server/src/services/native-runtime/status-decision-committer.ts"
       ],
       "screenshot": "final-state.png",
       "evidenceKind": "private-final-state-png",

@@ -217,7 +217,7 @@ overlap. Exact requirements and limitations appear in each case's preconditions.
 A declared credential does not establish whether its runtime reference exists.
 
 This lane runs the app and fixtures from candidate
-`40f4215186b59dd8703792d9caa9bc9d0e4eace8`. It retains the evaluated app from
+`de6d29e025683f5c28125bcaa4f38b41836d8516`. It retains the evaluated app from
 `3b66c3c144360ddf32714a0742fd774b8ceafb16`. The first repair source added:
 owned SDK staging, public membership for three incidental human fixtures,
 company settings observation inside its original case deadline, and exact
@@ -325,4 +325,4 @@ SDK public-source eligibility explicitly changes its expected restored lock from
 
 ### Repair source 5 (2026-11-03; candidate only)
 
-The current candidate adds case53 observation within its original300s budget, case74 actual rich-editor ordered-block inspection, case550 normal Projects-surface announcement fixture, and case578 server-canonical secret-key metadata checks. Queries, models and original per-case clocks/run counts stay fixed. Its candidate-only UI487 overlay includes reviewed pre-trim size guards from unmerged corePR18734/50600786. Historical Source4 `51ef450754370c8a8f2cbe4bd18e1536bbc93966` remains the source of launch1888; later master metadata never retargets that running workflow. These repairs and focused controls are not real feature acceptance. Other five SDK cases remain held pending actual115 evidence; no core PR is merged.
+The current candidate adds case53 observation within its original300s budget, case74 actual rich-editor ordered-block inspection, case550 normal Projects-surface announcement fixture, case578 server-canonical secret-key metadata checks, and case466 canonical native status audit joins to the exact accepted task/run/worker decision. The timeline keeps its real exit1, human handoff and exit0 checks; legacy audit support remains. Queries, models and original per-case clocks/run counts stay fixed. Its candidate-only UI487 overlay includes reviewed pre-trim size guards from unmerged corePR18734/50600786. Historical Source4 `51ef450754370c8a8f2cbe4bd18e1536bbc93966` remains the source of launch1888; later master metadata never retargets that running workflow. These repairs and focused controls are not real feature acceptance. Other five SDK cases remain held pending actual115 evidence; no core PR is merged.
