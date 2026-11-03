@@ -472,6 +472,7 @@
     "sourceFiles": [
       "chat-catalog-domains/runtime-primary.ts",
       "chat-catalog-domains/runtime-support.ts",
+      "chat-catalog-domains/identity-support.ts",
       "chat-scenarios/agents.yaml"
     ],
     "oracleVersion": "paperclip.chat-catalog.runtime.v2",
@@ -1956,6 +1957,7 @@
     "scenarioId": "companies.agent-observability",
     "sourceFiles": [
       "chat-catalog-domains/identity-observability.ts",
+      "chat-catalog-domains/identity-company-observer.ts",
       "chat-catalog-domains/identity-private-browser.ts",
       "chat-catalog-domains/identity-private-browser-worker.ts",
       "chat-catalog-domains/identity-wizard.ts",
@@ -1995,6 +1997,7 @@
     "scenarioId": "companies.configure-decision-model",
     "sourceFiles": [
       "chat-catalog-domains/identity-company-models.ts",
+      "chat-catalog-domains/identity-company-observer.ts",
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/companies.yaml"
@@ -2030,6 +2033,7 @@
     "scenarioId": "companies.fast-responses",
     "sourceFiles": [
       "chat-catalog-domains/identity-company-models.ts",
+      "chat-catalog-domains/identity-company-observer.ts",
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/companies.yaml"
@@ -2072,6 +2076,7 @@
     "scenarioId": "companies.prompt-injection-guard",
     "sourceFiles": [
       "chat-catalog-domains/identity-company-models.ts",
+      "chat-catalog-domains/identity-company-observer.ts",
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/companies.yaml"
@@ -3215,7 +3220,7 @@
       "chat-catalog-domains/internal-goals.ts",
       "chat-scenarios/goals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.goal-hierarchy.v2",
     "coverageGaps": [],
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
@@ -4160,7 +4165,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/questions-and-approvals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.answer-delivery.v2",
     "expectedRunCount": 4,
     "minimumRunCount": 2,
     "turnTimeoutMs": 120000,
@@ -4198,7 +4203,7 @@
       "chat-catalog-domains/identity-questions-and-approvals.ts",
       "chat-scenarios/questions-and-approvals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.required-question.v2",
     "expectedRunCount": 2,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -4873,7 +4878,7 @@
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v2",
     "expectedRunCount": 2,
     "expectedHumanMessageCount": 2,
     "turnTimeoutMs": 120000,
@@ -4956,7 +4961,13 @@
     "attemptTimeoutMs": 660000,
     "authentication": "human-session",
     "modulePath": "./chat-catalog-domains/external-personal-secret.js",
-    "exportName": "personalSecretExternalCases"
+    "exportName": "personalSecretExternalCases",
+    "setupPolicy": {
+      "readiness": "preserve-scenario",
+      "invariantCheckIds": [
+        "current-owner-missing-required-personal-value"
+      ]
+    }
   },
   {
     "scenarioId": "secrets.secret-proposal",
@@ -5038,9 +5049,11 @@
       "chat-catalog-domains/integrator-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/integrator-skills.ts",
-      "chat-scenarios/skills.yaml"
+      "chat-scenarios/skills.yaml",
+      "chat-catalog-domains/integrator-skill-versions.ts",
+      "chat-catalog-domains/identity-support.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.v1",
+    "oracleVersion": "paperclip.chat-catalog.skill-authoring.v2",
     "expectedRunCount": 1,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
@@ -5058,6 +5071,7 @@
   {
     "scenarioId": "skills.enable-for-agent",
     "sourceFiles": [
+      "chat-catalog-domains/integrator-skill-versions.ts",
       "chat-catalog-domains/integrator-skill-enable.ts",
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-definition.ts",
@@ -5083,7 +5097,8 @@
       "chat-catalog-domains/integrator-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/integrator-skills.ts",
-      "chat-scenarios/skills.yaml"
+      "chat-scenarios/skills.yaml",
+      "chat-catalog-domains/integrator-skill-versions.ts"
     ],
     "oracleVersion": "paperclip.chat-catalog.integrator.v1",
     "expectedRunCount": 1,
@@ -5096,6 +5111,7 @@
   {
     "scenarioId": "skills.find-and-install",
     "sourceFiles": [
+      "chat-catalog-domains/integrator-skill-versions.ts",
       "chat-catalog-domains/integrator-skill-imports.ts",
       "chat-catalog-domains/integrator-skill-source.ts",
       "chat-catalog-domains/integrator-skills.ts",
@@ -5121,6 +5137,7 @@
   {
     "scenarioId": "skills.fork-read-only",
     "sourceFiles": [
+      "chat-catalog-domains/integrator-skill-versions.ts",
       "chat-catalog-domains/integrator-skill-imports.ts",
       "chat-catalog-domains/integrator-skill-source.ts",
       "chat-catalog-domains/integrator-skills.ts",
@@ -5146,6 +5163,7 @@
   {
     "scenarioId": "skills.review-update",
     "sourceFiles": [
+      "chat-catalog-domains/integrator-skill-versions.ts",
       "chat-catalog-domains/integrator-skill-update.ts",
       "chat-catalog-domains/integrator-skill-source.ts",
       "chat-catalog-domains/integrator-support.ts",
@@ -5514,10 +5532,12 @@
     "authentication": "human-session",
     "setupPolicy": {
       "readiness": "preserve-scenario",
+      "funding": "preserve-scenario",
       "invariantCheckIds": [
         "lead-ready",
         "two-real-native-workers",
-        "independent-child-pause-budget"
+        "independent-child-pause-budget",
+        "active-branches-funded"
       ]
     },
     "runPolicy": {
@@ -5607,10 +5627,12 @@
     "authentication": "human-session",
     "setupPolicy": {
       "readiness": "preserve-scenario",
+      "funding": "preserve-scenario",
       "invariantCheckIds": [
         "lead-ready",
         "two-real-native-workers",
-        "independent-child-pause-budget"
+        "independent-child-pause-budget",
+        "active-branches-funded"
       ]
     },
     "runPolicy": {
