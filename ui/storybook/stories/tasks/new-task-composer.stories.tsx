@@ -552,3 +552,16 @@ export const MobileMentionPicker: Story = { ...MentionPicker, globals: { viewpor
 export const MobileSlashCommands: Story = { ...SlashCommands, globals: { viewport: { value: "mobile", isRotated: false } } };
 export const MobileRichChips: Story = { ...RichChips, globals: { viewport: { value: "mobile", isRotated: false } } };
 export const MobileInsertRichChips: Story = { ...InsertRichChips, globals: { viewport: { value: "mobile", isRotated: false } } };
+
+export const ScreenDragOver: Story = {
+  play: async ({ canvasElement }) => {
+    const document = canvasElement.ownerDocument;
+    const page = within(document.body);
+    await expect(await page.findByRole("textbox", { name: "editable markdown" })).toBeVisible();
+    await waitFor(() => expect(page.getByTestId("task-chat-composer-add")).toBeEnabled());
+    const transfer = new DataTransfer();
+    transfer.items.add(new File(["image"], "screenshot.png", { type: "image/png" }));
+    document.body.dispatchEvent(new DragEvent("dragenter", { bubbles: true, cancelable: true, dataTransfer: transfer }));
+    await waitFor(() => expect(page.getByTestId("composer-file-drop-overlay")).toBeVisible());
+  },
+};
