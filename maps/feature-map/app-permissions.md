@@ -20,11 +20,12 @@ Agent access: [companion](../agent-access-map/app-permissions.md).
 - `test-action`: `app-permissions/test-action` — choose an actor and inputs and inspect a real action result.
 - `account-maintenance`: `app-permissions/account-maintenance` — inspect accounts, reconnect/revoke, and review connection activity.
 
-Changing the connection's agent list preserves profile assignments for agents
-that remain installed. Saving the list must not restore a removed app-profile
-assignment. New installations retain the current app-profile defaults.
-Non-empty saves also remove legacy connection-wide include rules, including
-unchanged lists and removals with no new targets.
+Declining an Ask first action declines that invocation. It does not change the
+connection's policy. A later, distinct request from the same responsible person
+can open a new review for the same action and arguments. The agent must obtain
+that new approval before execution. Retries of the declined intent and its
+rejection continuation remain declined. Missing or untrusted human provenance
+does not open another review.
 
 ## How to get to it (user POV)
 
@@ -50,14 +51,6 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Prep
 ### `permissions`
 
 Automated: [app detail](../../ui/src/pages/apps/AppDetail.test.tsx) covers agent/action controls, quarantined actions, and navigation using mocked requests.
-
-[Installation permission regressions](../../server/src/__tests__/tool-connection-installs.test.ts)
-exercise the real install API with a local operator and PostgreSQL. They check
-that adding, removing, or retaining agents preserves removed app-profile grants
-and denies write tools for agents with read-only profiles. They also check
-company installations, new-agent defaults, legacy connection-wide include
-cleanup, and access-extension audit records.
-These fixtures do not qualify an agent-authenticated request or a live provider.
 
 [Runtime assignment tests](../../server/src/__tests__/agent-runtime-assignments.test.ts)
 use PostgreSQL to verify committed assignment notifications, bounded snapshots,
@@ -96,20 +89,6 @@ still need live account qualification.
 ### `test-and-maintain`
 
 Automated: [app detail tests](../../ui/src/pages/apps/AppDetail.test.tsx) cover test-dialog/UI contracts. Real provider execution and revocation require the selected provider’s live check.
-
-AI account details share the Permissions page's grants query. Account and grants
-reads have a 15-second deadline. The AI panel retries a transient failure once,
-then shows an error with Retry. A background failure keeps loaded controls visible.
-[AI account loading tests](../../ui/src/components/ai-connections/ManagedAiConnectionDetails.test.tsx)
-exercise stalled account/grants reads, cancellation, retry recovery and cached grants.
-
-The account-details section shows the provider email and organization when
-available, beside the sign-in method and Paperclip ownership. Anthropic profile
-permission denial shows an explicit unavailable message without changing the
-connection's connected state. Account identity loads independently of maintenance
-controls, has a bounded wait and a separate retry for temporary failures, and
-is refreshed after a credential grant changes. [Account-details tests](../../ui/src/components/ai-connections/AiConnectionAccountDetails.test.tsx)
-cover these states and prevent one grant's email from appearing for another.
 
 Manual: Run a read-only action with explicit inputs and inspect returned data and activity. Refresh discovery and review new actions. Revoke or disconnect only the disposable credential, then verify subsequent use fails with an actionable reconnect state.
 

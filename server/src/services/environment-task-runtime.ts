@@ -12,6 +12,7 @@ import { pluginRegistryService } from "./plugin-registry.js";
 import { hasRemoteTerminationReceipt, remoteExecutionHasStopped, remoteTerminationReceipt } from "./remote-execution-termination.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { NativeExecutionContext } from "./native-runtime/native-execution-context.js";
+import { pluginAgentRuntimeIdentity } from "./plugin-agent-runtime-state.js";
 
 export async function pluginEnvironmentSupportsTasks(db: Db, workers: PluginWorkerManager, lease: { companyId: string; metadata: Record<string, unknown> | null }) {
   const metadata = lease.metadata ?? {};
@@ -230,11 +231,13 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
   }
   if (warmAttachment && operation.kind === "prepare") {
     const i = operation.requirements.identity;
+    const startup = context?.pluginSupported ? { contextId: context.id, deadlineAtMs: context.deadlineAtMs, runId: i.runId } : undefined;
     const marked = await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
       runnerTaskPriorIdentity: { runnerId: prior!.runnerInstanceId, leaseId: prior!.environmentLeaseId, runId: prior!.runId,
         sessionId: prior!.normalizedSessionId, turnId: prior!.turnId, itemId: prior!.itemId },
       runnerTaskIdentity: { runnerId: i.runnerInstanceId, leaseId: i.environmentLeaseId, runId: i.runId,
         sessionId: i.normalizedSessionId, turnId: i.turnId, itemId: i.itemId },
+      ...(startup ? { runnerTaskStartup: startup } : {}),
     })}::jsonb` }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.status, "active"),
       sql`coalesce(${environmentLeases.metadata}->>'runnerTaskRetiring', 'false') != 'true'`,
       sql`${environmentLeases.metadata}->'runnerTaskIdentity' = ${JSON.stringify(savedIdentity)}::jsonb`)).returning({id:environmentLeases.id});
@@ -256,6 +259,10 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
             runnerTaskSessionRetained:state.sessionStateAvailable === true})}::jsonb`,
         }).where(and(eq(environmentLeases.id, metadata.runnerTaskPreviousLeaseId), eq(environmentLeases.companyId, input.companyId)));
         const replacementDriverKey = metadata.driverKey;
+        const creationWorker = context && driver.creationOperationVersion === 1
+          ? workers.getWorker(plugin.id) : undefined;
+        const recoverableCreation = creationWorker?.supportedMethods.includes("environmentInspectLease") === true &&
+          metadata.providerMetadata && typeof metadata.providerMetadata === "object" && !Array.isArray(metadata.providerMetadata);
         let abandoned = false;
         const fresh = await createOwnedSandbox(db, {
           companyId: input.companyId, environmentId: environment!.id, heartbeatRunId: lease.heartbeatRunId,
@@ -263,7 +270,8 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
           pluginId: plugin.id, driverKey: metadata.driverKey, config: {}, requestKey: taskId,
           metadata: { driver: "plugin", pluginId: plugin.id, pluginKey: plugin.pluginKey, driverKey: metadata.driverKey,
             runnerTaskLease: true, agentId: run!.agentId,
-            ...(context ? { runnerTaskCreationContextId: context.id } : {}) },
+            ...(context ? { runnerTaskCreationContextId: context.id } : {}),
+            ...(recoverableCreation ? { creationOperationVersion: 1, providerMetadata: metadata.providerMetadata } : {}) },
         }, async identity => {
           const params = { driverKey: replacementDriverKey, companyId: input.companyId, environmentId: environment!.id,
             issueId: lease.issueId, config: driverConfig, runId: identity.runId, creationOperationId: identity.id,
@@ -276,8 +284,7 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
           try {
             return await context.wait(() => {
               dispatched = true;
-              return workers.call(plugin.id, "environmentAcquireLease", params, 30_000, undefined, settled, context.id,
-              async result => {
+              const observe = async (result: HostToWorkerMethods["environmentAcquireLease"][1]) => {
                 if (!result.providerLeaseId || result.providerLeaseId === taskId) throw new Error("Plugin replacement task identity unavailable");
                 const resource = { id: identity.id, companyId: input.companyId, environmentId: environment!.id,
                   providerLeaseId: result.providerLeaseId, providerMetadata: result.metadata };
@@ -286,7 +293,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
                 if (abandoned || !context.active || context.signal.aborted || Date.now() >= context.deadlineAtMs) {
                   await queueSandboxCreationCleanup(db, resource);
                 }
-              });
+              };
+              return recoverableCreation ? creationWorker!.call("environmentAcquireLease", params, 30_000, undefined, settled, context.id, observe)
+                : workers.call(plugin.id, "environmentAcquireLease", params, 30_000, undefined, settled, context.id, observe);
             });
           } catch (error) {
             if (!dispatched) settled();
@@ -335,6 +344,17 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         return snapshot.credential;
       });
     }
+    const executionContext = context?.pluginSupported && ["describe", "prepare", "check_project_auth", "connection"].includes(operation.kind) ? await context.projection({ pluginId: plugin.id,
+      leaseId: lease.id, taskId, environmentId: environment!.id }, async () => {
+      try {
+        const [identity, configuration] = await Promise.all([
+          pluginAgentRuntimeIdentity(db, plugin.id, input.companyId, run!.agentId),
+          pluginRegistryService(db).getConfig(plugin.id, input.companyId),
+        ]);
+        if (!identity) throw new Error("Missing transport binding");
+        return { instanceSecrets: identity.instanceSecrets, configuration: configuration?.configJson ?? {} };
+      } catch { throw new Error("Plugin task transport unavailable"); }
+    }) : undefined;
     const params = {
       driverKey: metadata.driverKey, companyId: input.companyId, environmentId: environment?.id ?? null,
       issueId: lease.issueId, config: driverConfig,
@@ -342,10 +362,13 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       lease: { providerLeaseId: lease.providerLeaseId, metadata: lease.metadata ?? undefined },
       ...(workspaceBinding ? { workspace: workspaceBinding } : {}),
       ...(freshWorkspace && scopesProjects ? { fresh: freshWorkspace } : {}), operation,
+      executionContextSupported: 1 as const,
+      ...(executionContext ? { executionContext } : {}),
     };
     const timeout = operation.kind === "copilot_metadata" ? Math.max(1, Math.min(40_000, Number(probe?.expiresAtMs) - Date.now()))
-      : 15_000;
+      : executionContext ? Math.max(1, context!.deadlineAtMs - Date.now()) : 15_000;
     const result = await callWorker("environmentTask", params, timeout);
+    if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
     if (operation.kind === "read_file") {
       const [current] = await db.select({ lease: environmentLeases, run: heartbeatRuns }).from(environmentLeases)

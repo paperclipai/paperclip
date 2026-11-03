@@ -13,6 +13,7 @@ import { agentJoinGrantsFromDefaults } from "../services/invite-grants.js";
 const support = await getEmbeddedPostgresTestSupport();
 const describeDatabase = support.supported ? describe : describe.skip;
 const expectedNewAgentGrantKeys: PermissionKey[] = [
+  "agents:read",
   "agents:configure",
   "agents:suggest-changes",
   "skills:create",

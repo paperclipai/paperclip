@@ -1284,6 +1284,22 @@ can update an entry only after the current account's summary confirms access.
 The first healthy live subscription reconciles domain data without re-fetching
 session and health; reconnects and visibility recovery retain full reconciliation.
 
+### Authenticated board startup
+
+`GET /api/auth/get-session` can include an optional `boardBootstrap` for the same
+authenticated session or Cloud tenant actor. It contains accessible company
+snapshots and the existing current-board-access projection. Directory visibility
+through instance admin alone does not add accessible companies. The ordinary
+session schema stays compatible with clients that ignore this projection.
+
+The browser seeds account-keyed navigation and board-access queries from this
+response, avoiding two serial startup reads. Normal company/access readers still
+own invalidation and refresh. A new successful session snapshot replaces older
+cached membership/access for a returning account once; later ordinary reads and
+mutations can update those queries. Missing, malformed, or failed optional bootstrap
+falls back to those readers; a failed session does not become an anonymous cache
+entry. Local trusted startup keeps its existing synthetic `local-board` principal.
+
 ### Run history authorization reads
 
 Run history reuses the authorization service's batch read API for distinct task
@@ -1732,8 +1748,11 @@ Files reads use the current committed saved version when remote authority is
 clean and has no active writer, even while its old allocation remains recorded.
 The saved loader verifies the company, workspace, snapshot, and archive before
 reading. Dirty or writer-owned authority uses the live allocation and cannot
-substitute an older save if that allocation is unavailable. Reads retain their
-authority-change fence and remove private saved-file copies after use.
+substitute an older save if that allocation is unavailable. A saved read permits
+cleanup to clear its recorded allocation while the epoch, snapshot, source,
+clean state, and absent writer stay identical. A new or reintroduced allocation
+still invalidates that read. Live reads retain the full allocation fence, and
+private saved-file copies are removed after use.
 Embedders that omit the optional saved-file loader keep valid live reads. They
 still report unavailability when neither a live location nor a loader exists.
 
@@ -1756,14 +1775,26 @@ import. An interrupted apply retains its journal and admission hold; retry the
 same command to reconcile it before starting another writer.
 
 Supported sources include empty task folders, repository URLs, and managed
-mutable repositories from the same project. Configured local folders use the
-legacy path until imported. V1 rejects read-only cross-project referenced folders
+mutable repositories. Authorized mentioned projects attach all their configured
+Git repositories as writable copies under `.paperclip-repositories/` in the task
+workspace. These copies use the existing remote save/restore lifecycle and do not
+write to the source project's folder. Later turns retain their saved paths, refs,
+pins and edits, and recheck each retained project's access and trust policy.
+New repository attachments after a save are acquired separately from the saved
+archive. Repository refs use `repoRef`, then `defaultRef`, then the Git remote's
+default. A configured remote branch is resolved before its checkout is published.
+Configured local folders use the legacy path until imported. V1 rejects explicitly read-only sources
 and custom cleanup/teardown commands on remote close. Automatic Core services, manual workspace jobs, services,
 and runtime commands are also rejected before any local directory access; run
 those commands through an agent task. One writer owns each logical
 workspace; separate workspaces can run concurrently. The Files panel identifies
 **Live workspace** and **Saved copy** with its save time. An unavailable dirty
 allocation is not silently replaced with an older saved copy.
+
+Workspace validation failures show their redacted explanation in the task's
+failure notice. They retain the normal Retry permission and admission gates.
+Retained-folder access and trust denials use this explanation; low-trust project
+boundary denials retain their dedicated project-access action.
 
 A child or follow-up task can use a remote workspace inherited through its
 persisted task binding, including an isolated workspace or operator branch.
@@ -1772,6 +1803,13 @@ The original `sourceIssueId` remains provenance; it does not prevent authorized
 bound tasks from continuing saved work. Explicitly selected roots follow the
 same binding contract and the filesystem access boundary below. Task-assignment
 grants are not filesystem permissions. The single-writer fence still applies.
+If reservation finds a current running writer, the bound task uses the existing
+workspace wait and scheduled retry path, including for isolated workspaces and
+operator branches. Reservation does not acquire another allocation or change
+the writer's saved files. A stale writer or a stopped writer with unfinished
+saves still requires reconciliation; contention retries cannot clear that fence.
+The wait retains the run's admitted assignment role so reassignment during
+preparation cannot resume the former assignee through the guest-run path.
 
 Use the focused `remote-workspace-*` and `remote-workspaces.integration` suites
 for storage, import, retention, and lifecycle regression checks. These checks do
@@ -3008,8 +3046,22 @@ identity mismatches.
 Native task-session publication is part of the terminal checkpoint transaction,
 not resource cleanup. `native-task-session-publication.ts` owns its accepted-result,
 owner, task-epoch and reset checks; heartbeat supplies prepared session metadata.
+The goal projection also advances its source epoch when a fresh native session
+holds the task's current execution lock and assignee. The predecessor must be
+terminal, and its saved goal must be absent or complete. This lets the accepted
+checkpoint publish the fresh session as the next continuation baseline. A
+different session without current task authority, an unfinished or unreadable
+goal, a reset conversation, and delayed predecessor events retain their fences.
 The goal-less regression in `native-session-resumption.test.ts` holds provider
 cleanup open and then exercises a normal follow-up and an explicit session reset.
+Its fresh-session case keeps the prior task-session row, opens one new provider
+session, and verifies that the following ordinary comment resumes that session.
+The opt-in `native-session-epoch.live.test.ts` runs the same path with an existing
+Codex login and a built native Runner. It uses warm mode, makes three model calls,
+checks exact file contents and provider-thread reuse, and removes its temporary
+credential copy and workspace. Run it with
+`PAPERCLIP_LIVE_SESSION_EPOCH=true pnpm exec vitest run server/src/services/native-runtime/native-session-epoch.live.test.ts`.
+`PAPERCLIP_LIVE_EVIDENCE_PATH` can select a JSON evidence file outside the fixture.
 Control-port tests also cover terminal snapshots before accepted results and
 result-replay contention with the status writer's coordinator-first lock order.
 Remote adoption tests must invoke actual external-state preparation. Inspecting
@@ -4023,6 +4075,11 @@ before any subsequent upload. An interrupted account-bound request stays pending
 under its original key; it is never relabelled as a provider refusal. Legacy
 unowned form drafts remain in browser storage but are not restored into another
 account. Storybook fixtures seed the same account-specific keys.
+
+New-task staged file bytes are stored in IndexedDB for the account and company.
+Writes merge the selected files with the current saved list in one read/write
+transaction. Removal and successful creation delete only the files that the
+mounted draft removed. Other open tabs keep their saved files across reloads.
 
 Successful pending-record writes have the same readable size range as browser
 storage. In particular, a large task description cannot silently drop its

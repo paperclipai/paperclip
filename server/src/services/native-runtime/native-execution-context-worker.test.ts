@@ -59,6 +59,64 @@ async function startWorker(hostHandlers: Record<string, unknown> = {}) {
 }
 
 describe("Core startup responsibility across real worker IPC", () => {
+  it.each([false, true])("reconstructs only a missing acquire reply while draining actual work (late reply=%s)", async lateReply => {
+    let releaseWrite!: () => void, writing!: () => void, releaseObservation!: () => void, observing!: () => void;
+    const writeGate = new Promise<void>(resolve => { releaseWrite = resolve; }), entered = new Promise<void>(resolve => { writing = resolve; });
+    const observationGate = new Promise<void>(resolve => { releaseObservation = resolve; }), observed = new Promise<void>(resolve => { observing = resolve; });
+    const manager = await startWorker({ "companies.get": async () => { writing(); await writeGate; return {}; } });
+    const settled = vi.fn(), unrelatedSettled = vi.fn();
+    const observe = vi.fn(async () => { observing(); await observationGate; });
+    const recover = (operationId: string) => manager.recoverStartupAcquisition?.("reconstructed-acquire", operationId);
+    let draining: Promise<void> | undefined;
+    try {
+      const acquire = manager.call(manifest.id, "environmentAcquireLease", { companyId: "company", environmentId: "environment",
+        driverKey: "tasks", config: { hostWrite: true }, runId: "run", agentId: "agent", adapterType: "paperclip_runner",
+        creationOperationId: "recovered-operation" }, 10, undefined, settled, "reconstructed-acquire", observe);
+      const rejected = expect(acquire).rejects.toThrow("timed out");
+      await entered; await rejected;
+      await expect(manager.call(manifest.id, "environmentAcquireLease", { companyId: "company", environmentId: "environment",
+        driverKey: "tasks", config: {}, runId: "run", agentId: "agent", adapterType: "paperclip_runner",
+        creationOperationId: "unrelated-operation" }, 10, undefined, unrelatedSettled, "unrelated-acquire", async () => {})).rejects.toThrow("timed out");
+      recover("unrelated-operation");
+      vi.useFakeTimers();
+      const unmatched = manager.drainStartup!("reconstructed-acquire").catch(error => error.message);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await unmatched).toBe("Task cleanup is still pending");
+      vi.useRealTimers();
+      recover("recovered-operation");
+      let drained = false;
+      draining = manager.drainStartup!("reconstructed-acquire").then(() => { drained = true; });
+      void draining.catch(() => undefined);
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(drained).toBe(false);
+      expect(settled).not.toHaveBeenCalled();
+      expect(unrelatedSettled).not.toHaveBeenCalled();
+      expect(await manager.call(manifest.id, "health", {})).toMatchObject({ status: "ok" });
+      let retired = false;
+      const retiring = manager.retireStartup!("reconstructed-acquire").then(() => { retired = true; });
+      if (lateReply) {
+        await manager.call(manifest.id, "configChanged", { config: { release: true, duplicate: true } });
+        await observed;
+      }
+      releaseWrite();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      if (lateReply) { expect(retired).toBe(false); expect(drained).toBe(false); releaseObservation(); }
+      expect(await Promise.race([draining.then(() => true), new Promise(resolve => setTimeout(() => resolve(false), 200))])).toBe(true);
+      await retiring;
+      expect(settled).toHaveBeenCalledOnce();
+      expect(observe).toHaveBeenCalledTimes(lateReply ? 1 : 0);
+      if (!lateReply) {
+        expect(unrelatedSettled).not.toHaveBeenCalled();
+        releaseObservation();
+        await manager.call(manifest.id, "configChanged", { config: { release: true, duplicate: true } });
+      }
+      await manager.drainStartup!("reconstructed-acquire");
+      await manager.drainStartup!("unrelated-acquire");
+      expect(observe).toHaveBeenCalledOnce();
+      expect(unrelatedSettled).toHaveBeenCalledOnce();
+    } finally { vi.useRealTimers(); releaseWrite(); releaseObservation(); await manager.stopAll(); await draining?.catch(() => undefined); }
+  });
+
   it("drops only a dead acquisition reply placeholder while retaining real writes until verified retirement", async () => {
     let release!: () => void, writing!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; }), entered = new Promise<void>(resolve => { writing = resolve; });

@@ -425,7 +425,63 @@ describe("managed AI connections", () => {
     } finally { open.mockRestore(); mkdir.mockRestore(); request.mockRestore(); }
   });
 
-  it.each(["timeout", "unexpected"] as const)("classifies a manual probe's %s lock failure before starting the provider", async (kind) => {
+  it("starts a second run while the same account has unfinished credential cleanup", async () => {
+    const owner = "concurrent-retained-cleanup";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const scope = { companyId, accountKey: row.grant.id }, retired = deferredSignal(), cleanup = vi.fn(async () => {});
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: {} };
+    retainAiCredentialCleanup({ scope, retired: retired.promise, cleanup });
+    let runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    try {
+      runtime = await prepareManagedAiRuntime(db, input);
+      expect(await readFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth);
+      expect(cleanup).not.toHaveBeenCalled();
+      await runtime.cleanup();
+      expect(cleanup).not.toHaveBeenCalled();
+    } finally { retired.resolve(); await reconcileRetainedAiCleanup(scope); await runtime?.cleanup(); }
+  });
+
+  it("runs concurrent probes of the same account without holding the company credential mutex", async () => {
+    const owner = "concurrent-account-probes";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth);
+    const input = { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" } as const, config: {} };
+    const entered = deferredSignal(), release = deferredSignal(), secondEntered = vi.fn();
+    const first = withManagedAiProbe(db, input, async () => { entered.resolve(); await release.promise; });
+    let second: Promise<void> | undefined;
+    try {
+      await entered.promise;
+      second = withManagedAiProbe(db, input, async () => { secondEntered(); });
+      await vi.waitFor(() => expect(secondEntered).toHaveBeenCalledOnce(), { timeout: 1000 });
+      await second;
+    } finally { release.resolve(); await Promise.allSettled([first, second]); }
+  });
+
+  it("prepares a run without waiting for another runtime's active cleanup", async () => {
+    const owner = "concurrent-active-cleanup";
+    await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
+    const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
+    await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth);
+    const [row] = await service.quotaAccounts(companyId, owner);
+    const scope = { companyId, accountKey: row.grant.id }, entered = deferredSignal(), release = deferredSignal();
+    retainAiCredentialCleanup({ scope, retired: Promise.resolve(), cleanup: async () => { entered.resolve(); await release.promise; } });
+    await entered.promise;
+    let runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>> | undefined;
+    const preparing = prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
+      binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} }).then(value => { runtime = value; });
+    try {
+      await vi.waitFor(() => expect(runtime).toBeDefined(), { timeout: 1000 });
+      expect(await readFile(path.join(String(runtime!.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth);
+    } finally { release.resolve(); await preparing; await reconcileRetainedAiCleanup(scope); await runtime?.cleanup(); }
+  });
+
+  it.each(["timeout", "unexpected"] as const)("does not acquire a company credential lock for an ordinary probe (%s)", async (kind) => {
     const owner = `manual-probe-lock-${kind}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
@@ -437,20 +493,17 @@ describe("managed AI connections", () => {
     const failure = Object.assign(new Error("injected private lock diagnostic"), { code: kind === "timeout" ? WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE : "EACCES" });
     const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock").mockRejectedValueOnce(failure);
     try {
-      const error = await withManagedAiProbe(db, input, probe).then(() => { throw new Error("Probe must not start"); }, error => error);
-      if (kind === "timeout") {
-        expect(isAiConnectionBusy(error)).toBe(true);
-        expect(error).toMatchObject({ status: 422, message: "AI credentials are being updated. Retry shortly.", details: { code: "ai_connection_busy" } });
-      } else expect(error).toBe(failure);
-      expect(probe).not.toHaveBeenCalled();
+      expect(await withManagedAiProbe(db, input, probe)).toBe("ok");
+      expect(lock).not.toHaveBeenCalled();
+      expect(probe).toHaveBeenCalledOnce();
       expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("active");
     } finally { lock.mockRestore(); }
     expect(await withManagedAiProbe(db, input, probe)).toBe("ok");
-    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledTimes(2);
     expect(await service.credential(row)).toBe(auth);
   });
 
-  it("fences retained OpenAI credentials before reads, including callers holding the mutation lock", async () => {
+  it("reads OpenAI credentials independently of another runtime cleanup or mutation lock", async () => {
     const owner = "retained-openai-read-fence";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const auth = JSON.stringify({ tokens: { account_id: owner, access_token: "valid-access", refresh_token: "valid-refresh" } });
@@ -459,9 +512,9 @@ describe("managed AI connections", () => {
     const scope = { companyId, accountKey: row.grant.id }, retired = deferredSignal(), cleanup = vi.fn(async () => {});
     retainAiCredentialCleanup({ scope, retired: retired.promise, cleanup });
     try {
-      await expect(service.runtimeCredential(row)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      await expect(service.runtimeCredential(row)).resolves.toBe(auth);
       await codexAdapter.withAccountHomeSecretMutationLock(undefined, companyId, async () => {
-        await expect(service.runtimeCredential(row, { credentialLockHeld: true })).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+        await expect(service.runtimeCredential(row)).resolves.toBe(auth);
       });
       expect(cleanup).not.toHaveBeenCalled();
       retired.resolve(); await reconcileRetainedAiCleanup(scope);
@@ -470,7 +523,7 @@ describe("managed AI connections", () => {
     } finally { retired.resolve(); await reconcileRetainedAiCleanup(scope).catch(() => {}); }
   });
 
-  it("retries retired Codex probe cleanup before the same account can launch again", async () => {
+  it("allows the same account to run while retired Codex probe cleanup is pending or fails", async () => {
     const owner = "retired-probe-retry", otherOwner = "retired-probe-other";
     const auth = (user: string, hour: string) => JSON.stringify({ tokens: { account_id: user, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
     for (const user of [owner, otherOwner]) {
@@ -490,29 +543,30 @@ describe("managed AI connections", () => {
         await writeFile(path.join(String(runtime.config.env.CODEX_HOME), "auth.json"), auth(owner, "11"));
         throw new runnerProbe.NativeEnvironmentProbeCleanupError(stopped.promise, new Error("fixture probe interruption"), []);
       })).rejects.toMatchObject({ details: { code: "native_probe_cleanup_pending" } });
-      await expect(withManagedAiProbe(db, input, provider)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
-      expect(provider).not.toHaveBeenCalled(); expect(merge).not.toHaveBeenCalled();
+      await expect(withManagedAiProbe(db, input, provider)).resolves.toBe(auth(owner, "10"));
+      expect(provider).toHaveBeenCalledOnce(); expect(merge).not.toHaveBeenCalled();
       stopped.resolve();
       await vi.waitFor(() => expect(merge).toHaveBeenCalledOnce());
-      await expect(withManagedAiProbe(db, input, provider)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
-      expect(provider).not.toHaveBeenCalled(); expect(merge).toHaveBeenCalledTimes(2);
+      await expect(withManagedAiProbe(db, input, provider)).resolves.toBe(auth(owner, "10"));
+      await vi.waitFor(() => expect(merge).toHaveBeenCalledTimes(2));
       await expect(withManagedAiProbe(db, { ...input, responsibleUserId: otherOwner }, provider)).resolves.toBe(auth(otherOwner, "10"));
       expect(await readFile(path.join(String(retained!.config.env.CODEX_HOME), "auth.json"), "utf8")).toBe(auth(owner, "11"));
       merge.mockRestore();
+      await reconcileRetainedAiCleanup({ companyId, accountKey: row.grant.id });
       await expect(withManagedAiProbe(db, input, provider)).resolves.toBe(auth(owner, "11"));
       expect(await service.credential(row)).toBe(auth(owner, "11"));
       await expect(access(retained!.home!)).rejects.toMatchObject({ code: "ENOENT" });
     } finally { stopped.resolve(); merge.mockRestore(); await retained?.cleanup().catch(() => {}); }
   });
 
-  it("keeps quota refresh outside a manual probe until its rotated credential is saved", async () => {
+  it("allows quota refresh alongside a manual probe and keeps the freshest saved credential", async () => {
     const owner = "manual-probe-race";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const auth = (hour: string) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
     await service.save(companyId, owner, { provider: "openai", method: "subscription", ownership: "personal", name: owner, loginSessionId: "fixture", agentIds: [], allAgents: true }, auth("10"));
     const [row] = await service.quotaAccounts(companyId, owner);
     const entered = deferredSignal(), release = deferredSignal();
-    const request = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("Quota must not exchange the probe's token"));
+    const request = vi.spyOn(globalThis, "fetch").mockResolvedValue(Response.json({ access_token: "quota-access", refresh_token: "quota-refresh" }));
     const probing = withManagedAiProbe(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
       binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} }, async runtime => {
       entered.resolve(); await release.promise;
@@ -525,12 +579,12 @@ describe("managed AI connections", () => {
       lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock");
       // Start outside the probe's async scope; it is a separate HTTP request.
       refreshing = service.refreshQuotaCredential(row, auth("10"), new AbortController().signal);
-      await vi.waitFor(() => expect(lock).toHaveBeenCalled());
-      expect(request).not.toHaveBeenCalled();
+      const refreshed = await refreshing;
+      expect(request).toHaveBeenCalledOnce();
+      expect(JSON.parse(refreshed)).toMatchObject({ tokens: { access_token: "quota-access", refresh_token: "quota-refresh" } });
       release.resolve(); await probing;
-      expect(await refreshing).toBe(auth("11"));
-      expect(await service.credential(row)).toBe(auth("11"));
-      expect(request).not.toHaveBeenCalled();
+      expect(await service.credential(row)).toBe(refreshed);
+      expect(request).toHaveBeenCalledOnce();
     } finally { release.resolve(); await Promise.allSettled([probing, refreshing]); lock?.mockRestore(); request.mockRestore(); }
   });
 
@@ -570,7 +624,7 @@ describe("managed AI connections", () => {
     } finally { probe.mockRestore(); resolveBinary.mockRestore(); }
   });
 
-  it("keeps the real Codex setup cleanup error and retries its original owner before another probe", async () => {
+  it("preserves the original Codex setup cleanup while another probe can run", async () => {
     const owner = "native-codex-setup-retirement-retry";
     const auth = (hour: string) => JSON.stringify({ tokens: { account_id: owner, id_token: "identity", access_token: `access-${hour}`, refresh_token: `refresh-${hour}` }, last_refresh: `2026-09-10T${hour}:00:00Z` });
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
@@ -596,7 +650,7 @@ describe("managed AI connections", () => {
       throw new runnerProbe.NativeEnvironmentProbeCleanupError(retired, new Error("fixture interrupted probe"), [], retry);
     }).mockImplementation(async options => {
       directories.push(options.runtimeDirectory);
-      expect(await readFile(path.join(options.transportOptions!.sourceCodexHome!, "auth.json"), "utf8")).toBe(auth("11"));
+      expect(await readFile(path.join(options.transportOptions!.sourceCodexHome!, "auth.json"), "utf8")).toBe(auth(physical ? "11" : "10"));
       await options.onCleanupConfirmed!();
       return { provider: "codex", providerDriver: "codex_app_server", effectiveModel: "gpt-5.6-sol", helloProbePassed: true };
     });
@@ -610,12 +664,13 @@ describe("managed AI connections", () => {
       await expect(access(retainedHome!)).resolves.toBeUndefined();
       rejectRetirement(new Error("fixture initial retirement proof failed"));
       await Promise.resolve();
-      await expect(invoke()).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
-      expect(probe).toHaveBeenCalledOnce(); expect(retry).toHaveBeenCalledOnce();
+      expect((await invoke()).status).toBe("pass");
+      expect(probe).toHaveBeenCalledTimes(2); expect(retry).toHaveBeenCalledOnce();
       await expect(access(retainedHome!)).resolves.toBeUndefined();
       physical = true;
+      await reconcileRetainedAiCleanup({ companyId, accountKey: row.grant.id });
       expect((await invoke()).status).toBe("pass");
-      expect(retry).toHaveBeenCalledTimes(2); expect(probe).toHaveBeenCalledTimes(2);
+      expect(retry).toHaveBeenCalledTimes(2); expect(probe).toHaveBeenCalledTimes(3);
       expect(await service.credential(row)).toBe(auth("11"));
       await expect(access(retainedHome!)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
@@ -636,11 +691,11 @@ describe("managed AI connections", () => {
     const replacement = await secretService(db).createCurrentUserSecretValue(companyId, owner, { definitionId: definition.id, value: auth("new-account") }, { userId: owner });
     const prepare = () => prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local",
       binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
-    const original = codexAdapter.withAccountHomeSecretMutationLock;
-    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock").mockImplementationOnce(async (env, company, callback) => {
+    const original = localEncryptedProvider.resolveVersion;
+    const lock = vi.spyOn(localEncryptedProvider, "resolveVersion").mockImplementationOnce(async options => {
       await db.update(connectionGrants).set({ credentialSecretRefs: row.grant.credentialSecretRefs.map(ref => ref.configPath === "ai.credential" ? { ...ref, secretId: replacement.id } : ref) }).where(eq(connectionGrants.id, row.grant.id));
       await syncConnectionCredentialBindings(db, row.connection);
-      return original(env, company, callback);
+      return original(options);
     });
     try { await expect(prepare()).rejects.toThrow("AI credential changed during preparation"); }
     finally { lock.mockRestore(); }
@@ -752,7 +807,7 @@ describe("managed AI connections", () => {
     }
   });
 
-  it.each(["company_file", "grant_row", "secret_row"] as const)("defers runtime preparation on a contended %s lock and succeeds once it clears", async (kind) => {
+  it.each(["company_file", "grant_row"] as const)("reads runtime credentials without an execution lock while a %s writer is active", async (kind) => {
     const owner = `runtime-lock-${kind}`;
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const auth = JSON.stringify({ tokens: { access_token: "valid-access", refresh_token: "valid-refresh", account_id: owner } });
@@ -771,9 +826,8 @@ describe("managed AI connections", () => {
     });
     try {
       if (kind !== "company_file") await held.promise;
-      const error = await prepare().then(() => { throw new Error("Runtime must defer"); }, error => error);
-      expect(isAiConnectionBusy(error)).toBe(true);
-      expect(error).toMatchObject({ status: 422, details: { code: "ai_connection_busy" } });
+      expect(await service.runtimeCredential(row)).toBe(auth);
+      expect(lock?.mock.calls ?? []).toHaveLength(0);
       expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, row.grant.id)))[0].status).toBe("active");
     } finally { release.resolve(); await holding; lock?.mockRestore(); }
     const run = await prepare();
@@ -1200,7 +1254,7 @@ describe("managed AI connections", () => {
     await expect(access(run.home!)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("serializes quota exchange with a concurrent secret edit and runtime credential read", async () => {
+  it("rereads committed quota rotation without taking an account execution mutex", async () => {
     const owner = "quota-race-owner";
     await db.insert(companyMemberships).values({ companyId, principalId: owner, principalType: "user", status: "active", membershipRole: "member" });
     const original = JSON.stringify({ tokens: { access_token: "old-access", refresh_token: "single-use", id_token: "identity", account_id: "race-account" } });
@@ -1218,15 +1272,18 @@ describe("managed AI connections", () => {
     const refreshing = service.refreshQuotaCredential(row, original, new AbortController().signal);
     try {
       await exchangeStarted.promise;
-      const edit = secretService(db).update(secretId, { description: "Changed during refresh" });
       lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock");
       const preparing = prepareManagedAiRuntime(db, { companyId, agentId, responsibleUserId: owner, adapterType: "codex_local", binding: { provider: "openai", method: "subscription", mode: "responsible_user" }, config: {} });
-      // Runtime reads now wait at the company file lock before touching the
-      // old credential. The returned home must contain the committed rotation.
       let prepared = false;
       void preparing.then(() => { prepared = true; });
-      await vi.waitFor(() => expect(lock).toHaveBeenCalled());
+      await vi.waitFor(async () => {
+        const waiting = await db.execute(sql`select pid from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock' and query like '%company_secrets%'`);
+        expect(waiting.length).toBeGreaterThan(0);
+      });
       expect(prepared).toBe(false);
+      expect(lock).not.toHaveBeenCalled();
+      const edit = secretService(db).update(secretId, { description: "Changed during refresh" });
       releaseExchange.resolve();
       const results = await Promise.all([refreshing, edit, preparing]);
       runtime = results[2];
