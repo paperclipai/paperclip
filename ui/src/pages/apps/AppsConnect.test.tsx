@@ -2623,6 +2623,131 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => dialogRoot.unmount());
   });
 
+  it.each(["Back", "Cancel", "unmount"].flatMap(exit => [false, true].map(existing => ({ exit, existing }))))(
+    "discards a fresh OAuth lookup after $exit (existing=$existing)", async ({ exit, existing }) => {
+      listGalleryMock.mockResolvedValue({ apps: [NOTION] });
+      let finishApplications!: (value: unknown) => void;
+      let finishConnections!: (value: unknown) => void;
+      listApplicationsMock.mockImplementation((_company, options?: RequestOptions) => options?.fresh
+        ? new Promise(resolve => { finishApplications = resolve; }) : Promise.resolve({ applications: [] }));
+      listConnectionsMock.mockImplementation((_company, options?: RequestOptions) => options?.fresh
+        ? new Promise(resolve => { finishConnections = resolve; }) : Promise.resolve({ connections: [] }));
+      const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const popup = { closed: false, close: vi.fn(), location: { assign: vi.fn() }, focus: vi.fn() };
+      const open = vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+      const onCancel = vi.fn();
+      const root = await render(client, false, <ConnectionSetupFlow host="dialog" serviceSlug="notion" onCancel={onCancel} />);
+      await passAccessStep();
+      expect(finishApplications).toBeTypeOf("function");
+      expect(finishConnections).toBeTypeOf("function");
+      expect(open).toHaveBeenCalledTimes(1);
+      const savedApplications = client.getQueryData(queryKeys.tools.applications("company-1"));
+      const savedConnections = client.getQueryData(queryKeys.tools.connections("company-1"));
+      if (exit === "unmount") {
+        await act(async () => root.unmount()); mountedRoot = null;
+      } else {
+        expect(buttonByText(exit)).toBeDefined();
+        await act(async () => buttonByText(exit)!.click());
+      }
+      await act(async () => {
+        finishApplications({ applications: existing ? [notionApplication("draft")] : [] });
+        finishConnections({ connections: existing ? [notionConnection("abandoned-connection", "per_user", "draft")] : [] });
+      });
+      await flushReact();
+      expect(connectAppMock).not.toHaveBeenCalled();
+      expect(startOAuthMock).not.toHaveBeenCalled();
+      expect(client.getQueryData(queryKeys.tools.applications("company-1"))).toBe(savedApplications);
+      expect(client.getQueryData(queryKeys.tools.connections("company-1"))).toBe(savedConnections);
+      expect(popup.close).toHaveBeenCalledTimes(1);
+      expect(popup.location.assign).not.toHaveBeenCalled();
+      if (exit === "Cancel") expect(onCancel).toHaveBeenCalledTimes(1);
+      if (exit === "Back") expect(container.textContent).toContain("Pick the app you want");
+      client.clear();
+    },
+  );
+
+  it.each(["success", "failure"])("keeps a newer OAuth lookup current when an abandoned one ends in %s", async outcome => {
+    const jira = getAppStoreDefinition("jira")!;
+    listGalleryMock.mockResolvedValue({ apps: [NOTION, jira] });
+    const applications: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = [];
+    const connections: Array<{ resolve: (value: unknown) => void; reject: (error: Error) => void }> = [];
+    listApplicationsMock.mockImplementation((_company, options?: RequestOptions) => options?.fresh
+      ? new Promise((resolve, reject) => { applications.push({ resolve, reject }); }) : Promise.resolve({ applications: [] }));
+    listConnectionsMock.mockImplementation((_company, options?: RequestOptions) => options?.fresh
+      ? new Promise((resolve, reject) => { connections.push({ resolve, reject }); }) : Promise.resolve({ connections: [] }));
+    const popupA = { closed: false, close: vi.fn(), location: { assign: vi.fn() }, focus: vi.fn() };
+    const popupB = { closed: false, close: vi.fn(), location: { assign: vi.fn() }, focus: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValueOnce(popupA as unknown as Window).mockReturnValue(popupB as unknown as Window);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = await render(client, false, <ConnectionSetupFlow host="dialog" serviceSlug="notion" />);
+    await passAccessStep();
+    expect(applications).toHaveLength(1);
+    await act(async () => buttonByText("Back")!.click());
+    await act(async () => root.render(<QueryClientProvider client={client}><TooltipProvider>
+      <ConnectionSetupFlow host="dialog" serviceSlug="jira" />
+    </TooltipProvider></QueryClientProvider>));
+    await flushReact();
+    await passAccessStep();
+    expect(applications).toHaveLength(2);
+    await act(async () => {
+      if (outcome === "failure") applications[0]!.reject(new Error("Old lookup failed"));
+      else applications[0]!.resolve({ applications: [notionApplication("draft")] });
+      connections[0]!.resolve({ connections: [notionConnection("abandoned-connection", "per_user", "draft")] });
+    });
+    await flushReact();
+    expect(popupA.close).toHaveBeenCalledTimes(1);
+    expect(popupB.close).not.toHaveBeenCalled();
+    expect(popupB.location.assign).not.toHaveBeenCalled();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+    expect(container.textContent).not.toContain("couldn’t check for an existing connection");
+    connectAppMock.mockResolvedValue({ connectionId: "current-connection", application: { id: "app-jira", name: "Jira" },
+      connection: { id: "current-connection", credentialPolicy: "per_user" }, catalog: [], auth: { kind: "oauth" } });
+    await act(async () => {
+      applications[1]!.resolve({ applications: [] }); connections[1]!.resolve({ connections: [] });
+    });
+    await flushReact(); await flushReact();
+    expect(connectAppMock).toHaveBeenCalledTimes(1);
+    expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({ galleryKey: "jira" }));
+    expect(startOAuthMock).toHaveBeenCalledWith("current-connection", { asCurrentUser: true });
+    client.clear();
+  });
+
+  it.each(["company", "account"])("discards a fresh OAuth lookup after the %s changes", async kind => {
+    listGalleryMock.mockResolvedValue({ apps: [NOTION] });
+    let finishApplications!: (value: unknown) => void;
+    let finishConnections!: (value: unknown) => void;
+    listApplicationsMock.mockImplementation((_company, options?: RequestOptions) => options?.fresh
+      ? new Promise(resolve => { finishApplications = resolve; }) : Promise.resolve({ applications: [] }));
+    listConnectionsMock.mockImplementation((_company, options?: RequestOptions) => options?.fresh
+      ? new Promise(resolve => { finishConnections = resolve; }) : Promise.resolve({ connections: [] }));
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "account-a" } });
+    const popup = { closed: false, close: vi.fn(), location: { assign: vi.fn() }, focus: vi.fn() };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+    const root = await render(client, false, <ConnectionSetupFlow host="dialog" serviceSlug="notion" />);
+    await passAccessStep();
+    expect(finishApplications).toBeTypeOf("function");
+    if (kind === "company") {
+      mockCompany.value = { selectedCompanyId: "company-2", selectedCompany: { id: "company-2", name: "Other organization" } };
+      await act(async () => root.render(<QueryClientProvider client={client}><TooltipProvider>
+        <ConnectionSetupFlow host="dialog" serviceSlug="notion" />
+      </TooltipProvider></QueryClientProvider>));
+    } else {
+      await act(async () => client.setQueryData(queryKeys.auth.session, { user: { id: "account-b" } }));
+    }
+    await act(async () => {
+      finishApplications({ applications: [notionApplication("draft")] });
+      finishConnections({ connections: [notionConnection("abandoned-connection", "per_user", "draft")] });
+    });
+    await flushReact();
+    expect(connectAppMock).not.toHaveBeenCalled();
+    expect(startOAuthMock).not.toHaveBeenCalled();
+    expect(popup.close).toHaveBeenCalledTimes(1);
+    expect(popup.location.assign).not.toHaveBeenCalled();
+    client.clear();
+  });
+
   it("reserves the task-dialog OAuth popup before awaiting connection setup and assigns only the validated URL", async () => {
     listGalleryMock.mockResolvedValue({ apps: [NOTION] });
     let resolveConnect!: (value: unknown) => void;
