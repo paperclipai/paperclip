@@ -285,8 +285,12 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
       const responses = await Promise.all(requests);
       expect(responses.every(response => response.status === 200)).toBe(true);
       if (coalesced) expect((await coalesced).headers["x-paperclip-request-cache"]).toBe("coalesced");
+      // The aborted socket does not join its snapshot compute. This response
+      // drains that work whether it coalesces or starts a fresh snapshot.
       await request(app).get(snapshotPath).expect(200);
-      expect(started).toHaveBeenCalledTimes(9);
+      const settledComputeCount = started.mock.calls.length;
+      await request(app).get(snapshotPath).expect(200);
+      expect(started).toHaveBeenCalledTimes(settledComputeCount + 1);
     } finally {
       release();
       await aborted;
