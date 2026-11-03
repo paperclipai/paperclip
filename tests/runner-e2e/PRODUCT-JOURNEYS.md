@@ -33,6 +33,7 @@ never start a server or depend on a tenant filesystem.
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
 | `question-answer-resume` | Native agent; up to three work runs | Reuse the classic two-question story: answer a choice and a free-text question through the browser, verify each native continuation, then read the exact saved answers in an agent-authored task document after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
+| `task-edit-lifecycle` | Company, signed-in board user, task-write capability; target support for run-owned labels and exact predeclared `taskEdit.revisedTitle` cleanup; zero model runs | Create a self-assigned task, edit its inline header title and label, reload, complete and reopen it; independently verify exact saved state, unchanged context and zero runs. Open a closed Properties panel through its shipped toggle |
 | `task-document-persistence` | Company, signed-in board user, task-write capability, prepared run-owned backlog task; no model allowance or runs | Create a general document through Artifacts, edit its title and body, reopen and reload it; independently verify exact canonical content, preserved original and latest revisions, board-user authorship, and no agent work |
 | `task-search-filter` | Company, signed-in board user, task-write capability; zero model runs | Search three owned target/control tasks through the task list, require exact matching identities, filter Backlog to exclude the completed control, reload and return from the exact saved task with search/filter context intact |
 | `plan-revise-accept` | Native agent; three work runs | Reuse the classic Plan story: canonical draft, browser revision request, new revision-bound confirmation, approval and exact saved final response |
@@ -493,8 +494,10 @@ repository journey shares the observation reader and browser helpers above.
 ## Task editing and lifecycle
 
 `task-edit-lifecycle` creates a self-assigned task through the browser with an
-explicit title. It edits the title and adds one run-owned label through the
-ordinary Properties menu. It changes the status to In Progress, reloads, marks
+explicit title. It edits the title inline in the task header and adds one
+run-owned label through the Properties panel. If the panel starts closed, the
+journey opens it through the ordinary Toggle side panel or Show properties
+control. It changes the status to In Progress, reloads, marks
 the task Done, reloads, reopens it to Todo and reloads again. Independent API
 reads bind every observed state to the same company, task and human owner.
 The exact description, assignee, project and priority remain unchanged.

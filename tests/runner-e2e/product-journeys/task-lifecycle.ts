@@ -18,11 +18,20 @@ const emptyObservation = (): LifecycleObservation => ({ task: null, runCount: nu
 
 async function properties(context: JourneyContext) {
   const { page } = context;
-  const row = page.locator("[data-property-row]").filter({ has: page.locator('[data-property-label="Labels"]') });
-  const toggle = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).first();
-  await expect.poll(async () => await row.isVisible() || await toggle.isVisible()).toBe(true);
-  if (!await row.isVisible()) await toggle.click();
+  // Closed panes keep their rows mounted. Their geometry alone does not make
+  // an inert or accessibility-hidden panel available for interaction.
+  const row = page.locator('[data-property-row]:not([inert] *):not([aria-hidden="true"] *)')
+    .filter({ has: page.locator('[data-property-label="Labels"]') }).filter({ visible: true });
+  const toggle = page.getByRole("button", { name: "Toggle side panel", exact: true, pressed: false }).filter({ visible: true });
+  const propertiesButton = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).filter({ visible: true });
+  await expect.poll(async () => await row.isVisible() || await toggle.isVisible() || await propertiesButton.isVisible()).toBe(true);
+  if (!await row.isVisible()) {
+    if (await toggle.isVisible()) await toggle.click();
+    else await propertiesButton.click();
+  }
   await expect(row).toBeVisible();
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeInViewport();
   return row;
 }
 
