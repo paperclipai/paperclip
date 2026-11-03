@@ -1,5 +1,5 @@
-// The two PR Vitest slots cover separate workloads: the first runs every
-// package test and the second runs the native server integration group.
+// The two PR Vitest slots split the package files 3:1. The second slot also runs
+// the native server integration group, so it takes the smaller share.
 // Both need debug fixtures; only the native group also builds release units.
 // Keep the existing --shard commands compatible with master-pinned workflows.
 // Local/other callers retain ordinary package sharding. Other PR shard counts
@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { invocationEnv } from "../../../scripts/ci-profile/record.mjs";
+import { SHARD_WEIGHTS_ENV } from "./vitest-shard-weights.mjs";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const workspaceRoot = resolve(packageRoot, "../..");
@@ -26,20 +27,19 @@ if (shardMatch && (Number(shardMatch[1]) < 1 || Number(shardMatch[1]) > Number(s
 const isFinalShard = !shardArg || shardMatch[1] === shardMatch[2];
 const isPrWorkflow = process.env.GITHUB_WORKFLOW === "PR";
 const runNativeRunnerGroup = isPrWorkflow && isFinalShard;
-// Reuse the two existing CI slots: all package files in the first, all native
-// server files in the second. Keeping the old command arguments makes this
-// safe while the trusted workflow still comes from master. Other shard counts
-// and local callers retain ordinary Vitest sharding and the final-lane append.
-const separateWorkloads = isPrWorkflow && shardMatch?.[2] === "2";
-const runPackageTests = !separateWorkloads || !isFinalShard;
-const packageArgs = separateWorkloads ? args.filter((arg) => arg !== shardArg) : args;
+// Reuse the two existing CI slots: three quarters of the package files in the
+// first, the remaining quarter and all native server files in the second.
+// Keeping the old command arguments makes this safe while the trusted workflow
+// still comes from master. Other shard counts and local callers retain ordinary
+// Vitest sharding and the final-lane append.
+const weightedLanes = isPrWorkflow && shardMatch?.[2] === "2";
+const packageShardWeights = weightedLanes ? "3,1" : null;
+const packageEnv = packageShardWeights ? { [SHARD_WEIGHTS_ENV]: packageShardWeights } : {};
 
 const plannedCommands = [
   { command: "pnpm", args: ["run", "ensure:eval-build-deps"], cwd: packageRoot },
   { command: "pnpm", args: ["run", "build:rust"], cwd: packageRoot },
-  ...(runPackageTests
-    ? [{ command: "pnpm", args: ["exec", "vitest", "run", ...packageArgs], cwd: packageRoot }]
-    : []),
+  { command: "pnpm", args: ["exec", "vitest", "run", ...args], cwd: packageRoot, env: packageEnv },
   ...(runNativeRunnerGroup
     ? [{
         command: "pnpm",
@@ -50,7 +50,7 @@ const plannedCommands = [
 ];
 
 if (dryRun) {
-  console.log(JSON.stringify({ isPrWorkflow, isFinalShard, runNativeRunnerGroup, runPackageTests, plannedCommands }, null, 2));
+  console.log(JSON.stringify({ isPrWorkflow, isFinalShard, runNativeRunnerGroup, packageShardWeights, plannedCommands }, null, 2));
   process.exit(0);
 }
 
@@ -58,7 +58,9 @@ for (const planned of plannedCommands) {
   const result = spawnSync(planned.command, planned.args, {
     cwd: planned.cwd,
     stdio: "inherit",
-    env: planned.args[0] === "exec" && planned.args[1] === "vitest" ? invocationEnv("vitest") : process.env,
+    env: planned.args[0] === "exec" && planned.args[1] === "vitest"
+      ? invocationEnv("vitest", { ...process.env, ...planned.env })
+      : process.env,
   });
   if (result.status !== 0) {
     process.exit(result.status ?? 1);

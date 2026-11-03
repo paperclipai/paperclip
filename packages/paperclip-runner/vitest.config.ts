@@ -1,9 +1,22 @@
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { configDefaults, defineConfig } from "vitest/config";
+import { BaseSequencer, type TestSpecification } from "vitest/node";
+
+import { parseShardWeights, SHARD_WEIGHTS_ENV, weightedShard } from "./scripts/vitest-shard-weights.mjs";
 
 const packageRoot = fileURLToPath(new URL(".", import.meta.url));
+
+// Without the weights variable this is Vitest's ordinary equal sharding.
+class WeightedShardSequencer extends BaseSequencer {
+  override async shard(files: TestSpecification[]): Promise<TestSpecification[]> {
+    const { root, shard } = this.ctx.config;
+    const weights = shard ? parseShardWeights(process.env[SHARD_WEIGHTS_ENV], shard.count) : null;
+    if (!shard || !weights) return super.shard(files);
+    return weightedShard(files, (spec: TestSpecification) => relative(root, spec.moduleId).replaceAll("\\", "/"), shard.index, weights);
+  }
+}
 
 export default defineConfig({
   resolve: {
@@ -17,6 +30,7 @@ export default defineConfig({
       ? { reporters: [...configDefaults.reporters, resolve(packageRoot, "../../scripts/ci-profile/vitest-reporter.mjs")] }
       : {}),
     environment: "node",
+    sequence: { sequencer: WeightedShardSequencer },
     include: [
       "src/**/*.test.ts",
       "src/**/*.test.tsx",
