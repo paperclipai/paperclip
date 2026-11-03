@@ -10,6 +10,7 @@ vi.mock("../user-actions.js", () => ({ createTaskThroughUi: (...args: unknown[])
 vi.mock("./task-document-flow.js", () => ({ openDocumentAuthoring: vi.fn(async () => {}) }));
 vi.mock("@playwright/test", () => ({ expect: Object.assign((locator: any) => ({
   async toBeVisible() { expect(await locator.isVisible()).toBe(true); },
+  async toBeInViewport() { expect(await locator.isVisible()).toBe(true); },
   async toContainText(text: string) { expect(await locator.textContent()).toContain(text); },
 }), { poll: (read: () => Promise<unknown>) => ({
   async toBe(value: unknown) { expect(await read()).toBe(value); },
@@ -17,13 +18,14 @@ vi.mock("@playwright/test", () => ({ expect: Object.assign((locator: any) => ({
 }) }) }));
 import { taskDependencyResume } from "./task-dependency-resume.js";
 
-interface FixtureOptions { priorRuns?: number; unrelatedActivity?: number; ownedActivity?: number; agentActivity?: number; missingActivity?: boolean; activePrior?: boolean }
+interface FixtureOptions { priorRuns?: number; unrelatedActivity?: number; ownedActivity?: number; agentActivity?: number; missingActivity?: boolean; activePrior?: boolean;
+  closedPanel?: "properties" | "toggle"; missingProperty?: boolean; missingStatusChoice?: boolean }
 async function fixture(premature = false, options: FixtureOptions = {}) {
   const directory = await mkdtemp(path.join(os.tmpdir(), "dependency-flow-"));
   const f = dependencyEvidenceFixture(), s = f.scope;
   const blocker = { ...f.created.blocker }, dependent = { ...f.created.dependent };
   const actions: string[] = [], owned: any[] = [], writes: unknown[] = [], reads: string[] = [];
-  let completed = false, assigned = false;
+  let completed = false, assigned = false, panelOpen = !options.closedPanel;
   const reference = () => /review reference is ([a-f0-9]{32})/.exec(blocker.description)?.[1];
   const output = () => JSON.stringify({ reference: reference(), blockerIdentifier: s.blockerIdentifier });
   const runs = () => assigned && (completed || premature) ? [structuredClone(f.finished.dependentRuns[0]!)] : [];
@@ -43,13 +45,27 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
     return { issueId: row.id, submittedAtMs: Date.now() };
   });
   const locator = (key: string): any => ({
-    filter() { return this; }, first() { return this; }, last() { return this; },
+    key,
+    filter(value: any) {
+      if (key === '[data-slot="popover-content"]' && value?.has) {
+        return locator(options.missingStatusChoice ? "missing-status-choice" : value.has.key);
+      }
+      return this;
+    }, first() { return this; }, last() { return this; },
     locator() { return this; },
     getByRole(_role: string, options?: any) { return locator(options?.name ? String(options.name) : key); },
-    async isVisible() { return true; },
+    async isVisible() {
+      if (key.includes("data-property-row")) return panelOpen && !options.missingProperty;
+      if (key === "Toggle side panel") return !panelOpen && options.closedPanel === "toggle";
+      if (key.includes("Show properties")) return !panelOpen && options.closedPanel === "properties";
+      return true;
+    },
+    async scrollIntoViewIfNeeded() { actions.push(`scroll:${key}`); },
     async fill(value: string) { actions.push(`fill:${key}:${value}`); },
     async click() {
       actions.push(`click:${key}`);
+      if (key === "Toggle side panel" || key.includes("Show properties")) panelOpen = true;
+      if (key === "missing-status-choice") throw new Error("missing_status_choice");
       if (key === "blocker-choice") dependent.blockedByIssueIds = [blocker.id];
       if (key === "Blocked") dependent.status = "blocked";
       if (key === "agent-choice") { assigned = true; dependent.assigneeAgentId = s.agentId; dependent.assigneeUserId = null; }
@@ -63,12 +79,14 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
   const page: any = {
     locator(selector: string) { return locator(selector); },
     getByRole(_role: string, options?: any) {
+      if (_role === "button" && options?.exact && ["Blocked", "Done"].includes(options.name)) return locator("missing-status-choice");
       const l = locator(options?.name ? String(options.name) : "buttons");
       l.filter = (options: any) => options?.hasText === blocker.title ? locator("blocker-choice")
         : options?.hasText === "Fixture agent" ? locator("agent-choice") : l;
       return l;
     },
     getByPlaceholder(name: string) { return locator(name); },
+    getByTestId(name: string) { return locator(name); },
     async goto(url: string) { actions.push(`goto:${url}`); }, async reload() { actions.push("reload"); },
   };
   const api: any = { origin: "https://qa.example.test", async get(route: string) {
@@ -128,6 +146,31 @@ describe("dependency browser flow orchestration", () => {
       expect(f.reads.some(route => route.startsWith("/api/heartbeat-runs/prior-"))).toBe(false);
       expect(f.reads).toContain("/api/issues/blocker/activity"); expect(f.reads).toContain("/api/issues/dependent/activity");
       expect(f.reads).not.toContain("/api/companies/company/activity?limit=500");
+    } finally { await rm(f.directory, { recursive: true, force: true }); }
+  });
+  it.each(["properties", "toggle"] as const)("opens a closed properties pane through its %s control before linking", async closedPanel => {
+    const f = await fixture(false, { closedPanel }); vi.useFakeTimers(); vi.setSystemTime(new Date("2020-01-01T00:00:00Z"));
+    try {
+      const operation = taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+        { deadlineAt: Date.now() + 60_000, directory: f.directory });
+      await vi.advanceTimersByTimeAsync(11_000); await operation;
+      expect(f.evidence.checks).toHaveLength(8); expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+      const opener = f.actions.findIndex(action => action.startsWith("click:") && (action.includes("Show properties") || action === "click:Toggle side panel"));
+      expect(opener).toBeGreaterThanOrEqual(0); expect(opener).toBeLessThan(f.actions.indexOf("click:blocker-choice"));
+      expect(f.actions.some(action => action.startsWith("scroll:[data-property-row]:not([inert] *):not([aria-hidden=\"true\"] *)"))).toBe(true);
+      expect(f.writes).toEqual([]);
+    } finally { await rm(f.directory, { recursive: true, force: true }); }
+  });
+  it.each([
+    ["missing property", { missingProperty: true }, "link_blocker"],
+    ["missing matching status glyph", { missingStatusChoice: true }, "set_dependent_blocked"],
+  ] as const)("fails closed on %s before agent assignment or blocker completion", async (_name, options, stage) => {
+    const f = await fixture(false, options);
+    try {
+      await expect(taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+        { deadlineAt: Date.now() + 60_000, directory: f.directory })).rejects.toThrow();
+      expect(f.actions).not.toContain("click:agent-choice"); expect(f.actions).not.toContain("click:Done"); expect(f.writes).toEqual([]);
+      expect(JSON.parse(await readFile(path.join(f.directory, "task-dependency-observations.json"), "utf8"))).toHaveProperty("stage", stage);
     } finally { await rm(f.directory, { recursive: true, force: true }); }
   });
   it.each([

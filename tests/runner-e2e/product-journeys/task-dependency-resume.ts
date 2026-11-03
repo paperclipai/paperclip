@@ -30,16 +30,26 @@ const documentSnapshot = (row: Row) => Object.fromEntries(["id", "companyId", "i
 
 async function properties(context: JourneyContext, label: string) {
   const { page } = context;
-  const row = page.locator("[data-property-row]").filter({ has: page.locator(`[data-property-label="${label}"]`) });
-  const toggle = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).first();
-  await expect.poll(async () => await row.isVisible() || await toggle.isVisible()).toBe(true);
-  if (!await row.isVisible()) await toggle.click();
+  const row = page.locator('[data-property-row]:not([inert] *):not([aria-hidden="true"] *)')
+    .filter({ has: page.locator(`[data-property-label="${label}"]`) }).filter({ visible: true });
+  const toggle = page.getByRole("button", { name: "Toggle side panel", exact: true, pressed: false }).filter({ visible: true });
+  const propertiesButton = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).filter({ visible: true });
+  await expect.poll(async () => await row.isVisible() || await toggle.isVisible() || await propertiesButton.isVisible()).toBe(true);
+  if (!await row.isVisible()) {
+    if (await toggle.isVisible()) await toggle.click();
+    else await propertiesButton.click();
+  }
   await expect(row).toBeVisible();
+  await row.scrollIntoViewIfNeeded();
+  await expect(row).toBeInViewport();
   return row;
 }
 async function setStatus(context: JourneyContext, label: string) {
-  await context.page.getByRole("button", { name: /^Change status \(current:/ }).filter({ visible: true }).first().click();
-  await context.page.getByRole("button", { name: label, exact: true }).filter({ visible: true }).click();
+  const { page } = context;
+  await page.getByTestId("issue-detail-header").filter({ visible: true })
+    .getByRole("button", { name: /^Change status \(current:/ }).click();
+  await page.locator('[data-slot="popover-content"]').filter({ visible: true })
+    .getByRole("button").filter({ has: page.getByRole("img", { name: label, exact: true }) }).click();
 }
 
 export async function taskDependencyResume(context: JourneyContext, session: TargetSession, campaignId: string, evidence: JourneyEvidence,
@@ -153,15 +163,16 @@ export async function taskDependencyResume(context: JourneyContext, session: Tar
     const dependentSaved = observations.created.dependent;
     await page.goto(url(dependentSaved.identifier ?? dependent.issueId), { waitUntil: "domcontentloaded" });
     const blockedBy = await properties(context, "Blocked by");
-    await blockedBy.getByRole("button").first().click();
+    await blockedBy.locator("[data-property-value]").getByRole("button").first().click();
     await page.getByRole("textbox", { name: "Search tasks to add as blockers", exact: true }).fill(blockerTitle);
     await page.getByRole("button").filter({ hasText: blockerTitle }).last().click();
     await expect.poll(async () => (taskSnapshot(await read.get<Row>(`/api/issues/${dependent.issueId}`)).blockedByIssueIds)).toEqual([blocker.issueId]);
+    stage = "set_dependent_blocked";
     await setStatus(context, "Blocked");
     await expect.poll(async () => (await read.get<Row>(`/api/issues/${dependent.issueId}`)).status).toBe("blocked");
     stage = "assign_blocked_task";
     const assignee = await properties(context, "Assignee");
-    await assignee.getByRole("button").first().click();
+    await assignee.locator("[data-property-value]").getByRole("button").first().click();
     await page.getByPlaceholder("Search assignees...", { exact: true }).fill(agent.name);
     await page.getByRole("button").filter({ hasText: agent.name }).last().click();
     await expect.poll(async () => (await read.get<Row>(`/api/issues/${dependent.issueId}`)).assigneeAgentId).toBe(agent.id);

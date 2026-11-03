@@ -8,6 +8,9 @@ of a local or deployed pass.
 The browser creates two tasks assigned to the signed-in person. The blocker holds
 a random review reference absent from the dependent's prompt. On the dependent,
 the person adds the blocker, selects Blocked, and assigns the disposable agent.
+Closed properties panes are opened through their visible toolbar control; mounted
+inert or accessibility-hidden rows cannot substitute for an interactive pane.
+Status choices are bound to the matching labeled glyph inside the open picker.
 The saved dependency, blocked status, and empty task/agent run histories must
 remain observable for at least ten seconds. This is a finite measured wait,
 not an unlimited claim that no execution can ever occur.
