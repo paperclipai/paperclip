@@ -1,12 +1,14 @@
+import { $insertDataTransferForRichText } from "@lexical/clipboard";
 import { createRootEditorSubscription$, realmPlugin } from "@mdxeditor/editor";
-import { $getSelection, $isRangeSelection, $isTextNode, COMMAND_PRIORITY_CRITICAL, PASTE_COMMAND } from "lexical";
+import { $addUpdateTag, $getSelection, $isRangeSelection, $isTextNode, $isLineBreakNode, COMMAND_PRIORITY_CRITICAL, PASTE_COMMAND, PASTE_TAG } from "lexical";
 import { looksLikeMarkdownPaste } from "./markdownPaste";
 import { normalizeMarkdown } from "./normalize-markdown";
 
 function isPastedLinkTarget(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || /\s/.test(trimmed)) return false;
-  if (/^(?:mailto|tel|sms):\S/i.test(trimmed) || /^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(trimmed)) return true;
+  if (/^(?:mailto|tel|sms):\S/i.test(trimmed)) return true;
+  if (/^[\p{L}\p{N}\p{M}.!#$%&'*+/=?^_`{|}~-]+@(?:[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}])?\.)+[\p{L}\p{N}](?:[\p{L}\p{N}\p{M}-]*[\p{L}\p{N}])?$/iu.test(trimmed)) return true;
   const candidate = /^www\./i.test(trimmed) ? `https://${trimmed}`
     : trimmed.startsWith("//") ? `https:${trimmed}` : trimmed;
   if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) return false;
@@ -44,24 +46,26 @@ export const pasteNormalizationPlugin = realmPlugin({
             const text = clipboardData.getData("text/plain");
             if (!text) return false;
 
-            // If there's HTML content, the source app already formatted it —
-            // let the default paste handler deal with rich content as-is.
-            if (clipboardData.getData("text/html")) return false;
+            const html = clipboardData.getData("text/html");
 
             // Markdown-looking pastes are handled by MarkdownEditor.tsx via
             // insertMarkdown(), so the plugin only owns the plain-text fallback.
-            if (looksLikeMarkdownPaste(text)) return false;
+            if (!html && looksLikeMarkdownPaste(text)) return false;
 
             const cleaned = normalizeMarkdown(text);
             const selection = $getSelection();
             if ($isRangeSelection(selection) && !selection.isCollapsed()
-              && selection.getNodes().every(node => $isTextNode(node) && node.isSimpleText())
+              && selection.getNodes().every(node => $isLineBreakNode(node) || ($isTextNode(node) && node.isSimpleText()))
               && !isPastedLinkTarget(cleaned)) {
+              $addUpdateTag(PASTE_TAG);
+              // Use the native rich-paste insertion path before LinkPlugin can
+              // mistake the plain-text flavor of this payload for a link URL.
+              if (html) $insertDataTransferForRichText(clipboardData, selection, editor);
+              else selection.insertRawText(cleaned);
               event.preventDefault();
-              selection.insertRawText(cleaned);
               return true;
             }
-            if (cleaned === text) return false;
+            if (html || cleaned === text) return false;
 
             // Prevent the original paste from being processed
             if (event instanceof ClipboardEvent) {

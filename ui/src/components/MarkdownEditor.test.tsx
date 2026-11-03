@@ -2,9 +2,10 @@
 
 import { flushSync } from "react-dom";
 import { LinkExtension, LinkNode, $isLinkNode, registerLink, TOGGLE_LINK_COMMAND } from "@lexical/link";
-import { createEditor, $createParagraphNode, $createTextNode, $getRoot, $getSelection,
+import { createEditor, $createParagraphNode, $createTextNode, $createLineBreakNode, $getRoot, $getSelection,
   $isRangeSelection, $isElementNode, $createNodeSelection, $setSelection, DecoratorNode,
-  PASTE_COMMAND, COMMAND_PRIORITY_EDITOR, COMMAND_PRIORITY_HIGH, type LexicalEditor } from "lexical";
+  PASTE_COMMAND, COMMAND_PRIORITY_HIGH, type LexicalEditor } from "lexical";
+import { registerRichText } from "@lexical/rich-text";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { buildIssueReferenceHref, buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
@@ -443,30 +444,32 @@ describe("MarkdownEditor", () => {
         for (const subscription of subscriptions) unregister.push(subscription(editor));
       } });
     }
-    unregister.push(editor.registerCommand(PASTE_COMMAND, event => {
-      const selection = $getSelection();
-      if (!$isRangeSelection(selection) || !(event instanceof ClipboardEvent) || !event.clipboardData) return false;
-      selection.insertRawText(event.clipboardData.getData("text/plain"));
-      event.preventDefault();
-      return true;
-    }, COMMAND_PRIORITY_EDITOR));
+    unregister.push(registerRichText(editor));
     return {
       editor,
-      paste(text: string) {
+      paste(text: string, softBreak = false, html?: string) {
         const data = new DataTransfer(); data.setData("text/plain", text);
+        if (html) data.setData("text/html", html);
         const event = new ClipboardEvent("paste", { clipboardData: data, cancelable: true });
         editor.update(() => {
           const node = $createTextNode('{"status":"pending"}');
           $getRoot().clear().append($createParagraphNode().append(node));
           node.select(0, node.getTextContentSize());
+          if (softBreak) {
+            const ending = $createTextNode("second line");
+            node.getParentOrThrow().append($createLineBreakNode(), ending);
+            const selection = $getSelection();
+            if (!$isRangeSelection(selection)) throw new Error("Expected range");
+            selection.focus.set(ending.getKey(), ending.getTextContentSize(), "text");
+          }
           editor.dispatchCommand(PASTE_COMMAND, event);
         }, { discrete: true });
         return editor.getEditorState().read(() => ({ text: $getRoot().getTextContent(),
           links: $getRoot().getAllTextNodes().map(node => node.getParent()).filter($isLinkNode).map(node => node.getURL()) }));
       },
-      yieldsPaste(kind: "html" | "files" | "collapsed" | "token" | "decorator") {
+      formats() { return editor.getEditorState().read(() => $getRoot().getAllTextNodes().map(node => ({ text: node.getTextContent(), bold: node.hasFormat("bold") }))); },
+      yieldsPaste(kind: "files" | "collapsed" | "token" | "decorator") {
         const data = new DataTransfer(); data.setData("text/plain", "replacement words");
-        if (kind === "html") data.setData("text/html", "<strong>replacement words</strong>");
         if (kind === "files") data.setData("Files", "image.png");
         const event = new ClipboardEvent("paste", { clipboardData: data, cancelable: true });
         let forwarded = false;
@@ -522,7 +525,29 @@ describe("MarkdownEditor", () => {
     },
   );
 
-  it.each(["https://example.test/report?q=1#section", "http://example.test", "//cdn.example.test/image.png", "www.example.test", "mailto:user@example.test", "user@example.test", "user+updates@sub.example.test"])(
+  it("replaces selected text across a soft line break", async () => {
+    const harness = await createSelectedTextPasteHarness();
+    try { expect(harness.paste('{"status":"ready"}', true)).toEqual({ text: '{"status":"ready"}', links: [] }); }
+    finally { await harness.close(); }
+  });
+
+  it("replaces selected text with rich HTML through the native paste owner", async () => {
+    const harness = await createSelectedTextPasteHarness();
+    const replacement = '{"email":"user@example.test"}';
+    try {
+      expect(harness.paste(replacement, false, `<strong>${replacement}</strong>`)).toEqual({ text: replacement, links: [] });
+      expect(harness.formats()).toEqual([{ text: replacement, bold: true }]);
+    } finally { await harness.close(); }
+  });
+
+  it("keeps a genuine URL from an HTML clipboard as an intentional link", async () => {
+    const harness = await createSelectedTextPasteHarness();
+    const url = "https://example.test/report";
+    try { expect(harness.paste(url, false, `<a href="${url}">${url}</a>`)).toEqual({ text: '{"status":"pending"}', links: [url] }); }
+    finally { await harness.close(); }
+  });
+
+  it.each(["https://example.test/report?q=1#section", "http://example.test", "//cdn.example.test/image.png", "www.example.test", "mailto:user@example.test", "user@example.test", "user+updates@sub.example.test", "user@bücher.de", "josé@example.test"])(
     "keeps selected-text URL paste as an intentional link (%s)", async url => {
       const harness = await createSelectedTextPasteHarness();
       try { expect(harness.paste(url)).toEqual({ text: '{"status":"pending"}', links: [url] }); }
@@ -530,7 +555,7 @@ describe("MarkdownEditor", () => {
     },
   );
 
-  it.each(["html", "files", "collapsed", "token", "decorator"] as const)(
+  it.each(["files", "collapsed", "token", "decorator"] as const)(
     "leaves %s paste with its existing handler", async kind => {
       const harness = await createSelectedTextPasteHarness();
       try { expect(harness.yieldsPaste(kind)).toEqual({ forwarded: true, prevented: false }); }
