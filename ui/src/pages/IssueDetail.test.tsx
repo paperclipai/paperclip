@@ -40,6 +40,8 @@ import {
   shouldScrollIssueDetailToTopOnNavigation,
 } from "./IssueDetail";
 import { queryKeys } from "../lib/queryKeys";
+import { markCachedSession } from "../lib/cached-session";
+import { startPersistedQueryCache } from "../lib/persisted-query-cache";
 import { taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import {
   armIssueDetailInboxQuickArchive,
@@ -1534,6 +1536,56 @@ describe("IssueDetail", () => {
     localStorage.clear();
     sessionStorage.clear();
     vi.restoreAllMocks();
+  });
+
+  describe.each(["read", "archive"] as const)("cached task %s account gate", action => {
+    it.each(["cached-owner", "other-owner", null])("waits for fresh identity before applying a write (verified=%s)", async verified => {
+      const issue = createIssue({ title: "Restored task" });
+      const verification = createDeferred<{ user: { id: string } } | null>();
+      mockAuthApi.getSession.mockReturnValue(verification.promise);
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "cached-owner" } });
+      const cache = startPersistedQueryCache(queryClient, { storage: null, buildId: "test", eventTarget: null });
+      markCachedSession(queryClient);
+      mockIssuesApi.get.mockReturnValue(new Promise(() => {}));
+      const ref = mockRouteParams.issueId!;
+      queryClient.setQueryData(queryKeys.issues.detail(ref), issue);
+      queryClient.setQueryData([...queryKeys.issues.detail(ref), "core"], issue);
+      const inboxKey = [...queryKeys.issues.listMineByMe(issue.companyId), "with-routine-executions", "live-descendant-summary"];
+      queryClient.setQueryData(inboxKey, [issue]);
+      mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+      mockIssuesApi.markRead.mockClear();
+      mockIssuesApi.archiveFromInbox.mockClear();
+      mockNavigate.mockClear();
+      try {
+        await act(async () => renderIssueView());
+        await waitForAssertion(() => expect(container.textContent).toContain(issue.title));
+        if (action === "archive") {
+          await waitForAssertion(() => expect(container.querySelector('button[aria-label="More task actions"]')).not.toBeNull());
+          const more = container.querySelector<HTMLButtonElement>('button[aria-label="More task actions"]');
+          await act(async () => more!.click());
+          const archive = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
+            .find(button => button.textContent?.trim() === "Archive from inbox");
+          expect(archive).toBeDefined();
+          await act(async () => archive!.click());
+          await flushReact();
+          expect(mockIssuesApi.archiveFromInbox).not.toHaveBeenCalled();
+          expect(queryClient.getQueryData(inboxKey)).toEqual([issue]);
+        } else {
+          await flushReact();
+          expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
+        }
+        expect(mockNavigate).not.toHaveBeenCalled();
+        await act(async () => { verification.resolve(verified ? { user: { id: verified } } : null); });
+        await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+        expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(verified === "cached-owner" ? 1 : 0);
+        expect(mockIssuesApi.archiveFromInbox).toHaveBeenCalledTimes(action === "archive" && verified === "cached-owner" ? 1 : 0);
+        if (verified !== "cached-owner") expect(mockNavigate).not.toHaveBeenCalled();
+      } finally {
+        verification.resolve(null);
+        await flushReact();
+        cache.dispose();
+      }
+    });
   });
 
   it.each(["new-project", null])("remembers project %s only after its task update succeeds", async (projectId) => {
