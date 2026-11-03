@@ -6,8 +6,9 @@ experiment and profile-only tools are documented in the shared `README.md`.
 
 ## Exact helper provenance
 
-The following files are byte-for-byte copies of the successful November 3, 2026
-helpers. Paths in this table describe their original temporary locations.
+The original successful November 3, 2026 helpers were snapshotted from the
+paths below. These hashes describe the original bytes, also used for the fresh
+B9 journey; the current helpers include the review fixes described below.
 
 | File | Original in `/private/tmp/` | SHA256 |
 | --- | --- | --- |
@@ -22,6 +23,27 @@ provider/model selection. It is not a qualified portable launcher. It reads
 `PAPERCLIP_PI_QUALIFICATION_OPENROUTER_API_KEY` from the environment and provisions
 an encrypted instance secret through the normal test-drive API bootstrap.
 Supply the credential privately; do not put it in arguments, logs or evidence.
+
+Those original helper bytes passed fresh verification on the updated common-base revision
+`b9a66be242395a4bab671d512643e338fbac77fe`. The reconstructed verifier below
+checked that journey's actual raw database rows: 126/69 global rows and 101
+canonical digests. Native lifecycle and independent OS checks confirmed process
+settlement. The owned instance was removed and all 3,710 retained/decompressed
+artifact entries passed the exact credential scan. See the
+[current functional evidence](../../doc/benchmarks/2026-11-03-native-event-ingestion-live.md).
+
+Review follow-ups now forward the actual detected `linkedWorktree` mode and
+prepared instance identity, and retain the exact successful active-stream
+observation instead of fetching a later status that can race completion. The
+live B9 proof above used the archived original bytes. Nine controlled cases
+executed the actual old/new helper statements, reproduced both original defects,
+and checked that completed, missing-text and reasoning-only observations remain
+ineligible. They start no app, provider, database or network. The
+[receipt](../../doc/benchmarks/native-event-ingestion-2026-11-03/live/helper-review-regressions.json)
+records both source hashes and the
+[portable source-seam check](../../doc/benchmarks/native-event-ingestion-2026-11-03/live/helper-review-regressions.mjs)
+accepts the current helper directory, an original B9 helper directory and a new
+owned output path as its three arguments.
 
 ## Repeating the functional journey
 
@@ -61,7 +83,7 @@ performance measurements.
 While the owned app/database remain available, run the independent verifier
 below. Afterwards, gracefully stop only the launcher process, confirm its HTTP
 and database ports and provider processes are gone, and remove only its recorded
-credential-bearing `dataDir`. Keep cleanup results separately. The exact copied
+credential-bearing `dataDir`. Keep cleanup results separately. The
 launcher retains the directory, so process exit alone is not data cleanup.
 Before publishing retained browser artifacts, scan the files and decompressed
 trace archive for the actual qualification credential without printing it.

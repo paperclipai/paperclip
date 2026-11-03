@@ -1,0 +1,14 @@
+{
+  "appExitCode": 0,
+  "browserExitCode": 0,
+  "processMonitorExitCode": 0,
+  "independentDbVerifierExitCode": 0,
+  "helperSha256": {
+    "independent-lifecycle-process-proof.helper.mjs": "9cbaab0f93b941062632a04ee695b05bb6569f7d66662baa5d3f2bfba943e1bc",
+    "live-launch.mjs": "353a1b1cf2ee38551349617e91c95cdfb4d0021abf55be62e7058319b8e5b6bd",
+    "owned-process-observations.helper.mjs": "ec1df17f395fa8d2015352f3e050dba3712b102554e3396ef161b13ba07909f5",
+    "verify-database.mjs": "d3bec80c1886792e3d2e92489a1e4aa5e79ad55947218f03fb6cd9a5762fd22b",
+    "cleanup.helper.mjs": "c53164efe5ceb4c1506adea2a0250120da6ff55e78ce4fd3002496b96a0ad67a",
+    "live-browser.mjs": "cf34b0f7bb8a4f84786a38f1c90b750e7a336b126e6e2bc25647095c1eac9fab"
+  }
+}
