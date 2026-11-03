@@ -1118,7 +1118,7 @@ class OpenCodeHarnessSession implements HarnessSession {
       kind: "dynamicToolCall", item: { type: "tool_call", id: itemId, name: call.tool, arguments: call.arguments },
     }, { turnId, itemId });
     this.#emit("item.completed", {
-      kind: "dynamicToolCall", item: { type: "tool_result", id: itemId, tool_use_id: itemId, is_error: true, error },
+      kind: "dynamicToolCall", item: { type: "tool_result", id: itemId, tool_use_id: itemId, is_error: true, error: redact(error) },
     }, { turnId, itemId });
   }
 

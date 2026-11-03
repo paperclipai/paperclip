@@ -153,6 +153,34 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it("bounds schema rejection errors in events and transcript without changing the MCP receipt", async () => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-large-rejection-")); roots.push(root);
+    const handler = vi.fn();
+    const driver = new OpenCodeServerDriver({ model: "openrouter/test-model", command: fixture, runtimeDirectory: root,
+      environment: { PATH: process.env.PATH },
+      dynamicTools: [{ name: "large_call", inputSchema: { type: "array", items: { type: "string" } } }],
+      dynamicToolHandler: handler,
+    });
+    const session = await driver.openSession({ runId: "large-rejection", normalizedSessionId: "large-rejection", workingDirectory: root });
+    try {
+      await session.startTurn({ message: { role: "user", text: "oversized-schema-rejection" } });
+      const events = await collectTurnEvents(session.events());
+      expect(events.at(-1)?.eventType).toBe("turn.completed");
+      const receipt = JSON.parse(await readFile(join(root, "fake-large-rejection-receipt.json"), "utf8"));
+      expect(receipt.result.isError).toBe(true);
+      expect(receipt.result.content[0].text.length).toBeGreaterThan(8_192);
+      expect(handler).not.toHaveBeenCalled();
+      for (const recorded of [events, (await session.transcript()).events]) {
+        const errors = recorded.filter(event => event.eventType === "item.completed")
+          .map(event => event.payload.item as { is_error?: boolean; error?: string }).filter(item => item?.is_error);
+        expect(errors).toHaveLength(1);
+        expect(errors[0]!.error).toContain("Invalid tool input");
+        expect(errors[0]!.error).toHaveLength(8_192);
+      }
+    } finally { await session.close({ reason: "test" }); }
+  });
+
   it.each(["1", "0"])("exports safe dispatch argument diagnostics with tool content=%s", async capture => {
     await chmod(fixture, 0o755);
     const bodies: any[] = [];

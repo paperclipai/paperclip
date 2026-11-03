@@ -501,6 +501,15 @@ const server = createServer(async (request, response) => {
           emit({ type: "session.idle", properties: { sessionID: session.id } });
           return;
         }
+        if (String(parsedPrompt.message ?? "").includes("oversized-schema-rejection")) {
+          const receipt = await mcpRequest("tools/call", {
+            name: "paperclip_large_call", arguments: Array(12_000).fill(0),
+          });
+          await writeFile(join(process.cwd(), "fake-large-rejection-receipt.json"), JSON.stringify(receipt));
+          await callTerminalTool(promptPayload);
+          emit({ type: "session.idle", properties: { sessionID: session.id } });
+          return;
+        }
         if (String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("argument-diagnostics")) {
           const receipts = [await mcpRequest("tools/call", {
             name: "paperclip_paperclip_call_assigned_tool", arguments: [],
