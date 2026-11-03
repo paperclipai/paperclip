@@ -17,6 +17,14 @@ function nativeRun(id: string, receipt: Record<string, unknown> = {}): Heartbeat
 }
 afterEach(() => vi.useRealTimers());
 describe("stop confirmation", () => {
+  it("retains every actual target ID on an uncertain multi-run Stop", async () => {
+    vi.useFakeTimers();
+    const error = waitForStoppedRuns(["already", "pending", "pending"], {
+      initialRuns: [run("already", "cancelled")], getRun: vi.fn(async () => run("pending", "running")), timeoutMs: 1000,
+    }).catch((failure: unknown) => failure);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(await error).toMatchObject({ name: "StopVerificationError", runIds: ["already", "pending"] });
+  });
   it("waits for embedded ACP acknowledgment even after terminal status", async () => {
     vi.useFakeTimers();
     const getRun = vi.fn()

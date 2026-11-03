@@ -138,9 +138,15 @@ export async function assertNativeRetainedSandboxBinding(db: Db, input: {
     eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.issueId, input.issueId),
     eq(environmentLeases.heartbeatRunId, input.runId), eq(environmentLeases.environmentId, target.environmentId),
     eq(environmentLeases.provider, target.providerKey), eq(environmentLeases.providerLeaseId, target.sandboxLeaseAcquisition.providerLeaseId)));
-  if (!owner || owner.leaseOwner || owner.phase !== "committed" || !owner.resultId || owner.recoveryState
+  if (!owner || !owner.resultId || owner.recoveryState
     || leases.length !== 1 || leases[0].metadata?.remoteCwd !== target.remoteCwd
     || !["active", "released", "expired"].includes(leases[0].status)) {
+    throw new Error("native_controller_recovery_missing_evidence:retained_sandbox_binding");
+  }
+  if (owner.leaseOwner && owner.leaseExpiresAt && owner.leaseExpiresAt > new Date()) {
+    throw new NativeControllerRecoveryWaitingError(owner.leaseExpiresAt);
+  }
+  if (owner.leaseOwner || owner.phase !== "committed") {
     throw new Error("native_controller_recovery_missing_evidence:retained_sandbox_binding");
   }
 }
