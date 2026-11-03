@@ -253,6 +253,35 @@ se puede verificar, no está hecho.
 - **El gate EGM prácticamente no se aplicaba**: 2 despachos de oro en 705
   corridas. La metodología no era un default, era una intención.
 
+### Verificacion de aceptacion (un solo comando)
+
+`scripts/egm-acceptance.sh` (instalado en `/home/paperclip/egm-acceptance.sh`) prueba
+las seis condiciones de hecho y sale con codigo != 0 si algo falla:
+
+```
+=== Aceptacion Paperclip + EGM — 2026-11-03T06:41Z ===
+  PASS  health de la instancia y de cada proyecto
+  PASS  9 proyectos con perilla EGM (full|gate|off) verificada
+  PASS  8 agentes opencode idle (asignables, sin polling)
+  PASS  8 agentes en litellm/clusty
+  PASS  0 referencias al agentId de handoff muerto en las instrucciones vivas
+  PASS  OMA-594 cerrada (status=done)
+  PASS  documento plan con diseño+síntesis (15268 bytes)
+  PASS  veredicto EGM en el plan: full — ... nueve bloqueantes ...
+  PASS  último run: 7 revisores de oro despachados
+  PASS  guardia de silencio activa (timer 2 min)
+  PASS  sin llamadas repetidas en el último run
+  PASS  puente fixdrop: 3/1 (reportes/respondidos)
+  PASS  hoke operativo: opencode_local/litellm/clusty
+  PASS  runbook de replicación en el host
+RESULTADO: 14 PASS · 0 FAIL
+```
+
+En esta ronda se corrigieron ademas las **instrucciones de los 7 agentes**, que
+seguian declarando el modelo viejo (`litellm/bosgame`, `litellm/gx10-nothink`)
+mientras corren en `litellm/clusty`: las instrucciones mienten sobre su propio
+modelo y el agente se auto-limitaba ("tu carril es local") sin necesidad.
+
 ### Definición #3 PROBADA (2026-11-03 06:38Z)
 
 Ciclo completo verificado en **OMA-594** (proyecto `vicin`, `EGM=full`), run
