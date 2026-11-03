@@ -165,7 +165,8 @@ returns its saved result; an uncertain delivery is never automatically resent.
 Legacy connections without an app ID open Slack's app list instead.
 **Open Slack** remains available after automatic setup completion and on the
 saved connection page. It opens the current user's bot DM when its workspace
-and channel are known, then falls back to the saved provider link or Slack.
+and channel are known and its linked owner matches the signed-in user. Another
+manager or an unknown identity uses the saved provider link or Slack instead.
 
 An explicit managed reconnect reinstalls the saved app and verifies the replacement
 bot credentials. Its request ID is saved before dispatch, so a duplicate completed

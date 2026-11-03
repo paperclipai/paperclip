@@ -518,6 +518,14 @@ describe("chat setup and identity-link clipboard actions", () => {
     await settle();
     expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
       .toBe("https://app.slack.com/client/workspace-a/DTEST");
+    flushSync(() => client.setQueryData(queryKeys.auth.session, { user: { id: "other-user" } }));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com");
+    flushSync(() => client.setQueryData(queryKeys.auth.session, null));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com");
     expect(container.textContent).not.toContain("Message in a channel");
     expect(container.textContent).not.toContain("Agent avatar");
     expect(container.textContent).not.toContain("Manage action permissions");
