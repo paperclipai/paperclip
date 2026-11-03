@@ -31,7 +31,7 @@ describe("create skill tool", () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: "skill-1", name: input.name,
       slug: input.name, description: input.description, currentVersionId: "version-1", sourceLocator: "/private/managed/skill", markdown: input.markdown }), { status: 201 }));
     const result = await callCreateSkillTool({ arguments: input, apiUrl: "http://localhost:3100/api", token: "test-token", companyId: "company-1" }, fetcher);
-    expect(fetcher).toHaveBeenCalledWith("http://localhost:3100/api/companies/company-1/skills", expect.objectContaining({ method: "POST" }));
+    expect(fetcher).toHaveBeenCalledWith("http://localhost:3100/api/companies/company-1/skills", expect.objectContaining({ method: "POST", redirect: "error" }));
     expect(JSON.parse(fetcher.mock.calls[0]![1].body)).toEqual(input);
     expect(result).toEqual({ id: "skill-1", name: input.name, slug: input.name, description: input.description, versionId: "version-1", studioPath: "/skills/studio/skill-1" });
   });
@@ -55,7 +55,7 @@ describe("update skill tool", () => {
     const receipt = { skillId: args.skillId, versionId: "next-version", path: "SKILL.md", studioPath: `/skills/studio/${args.skillId}` };
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...receipt, content: args.markdown }), { status: 200 }));
     expect(await callUpdateSkillTool({ arguments: args, apiUrl: "http://localhost/api", token: "token", companyId: "company" }, fetcher)).toEqual(receipt);
-    expect(fetcher).toHaveBeenCalledWith(`http://localhost/api/companies/company/skills/${args.skillId}/files`, expect.objectContaining({ method: "PATCH" }));
+    expect(fetcher).toHaveBeenCalledWith(`http://localhost/api/companies/company/skills/${args.skillId}/files`, expect.objectContaining({ method: "PATCH", redirect: "error" }));
     expect(JSON.parse(fetcher.mock.calls[0]![1].body)).toEqual({ path: "SKILL.md", content: args.markdown,
       expectedVersionId: args.expectedVersionId, idempotencyKey: args.idempotencyKey });
     fetcher.mockResolvedValueOnce(new Response(JSON.stringify({ error: "Skill version changed" }), { status: 409 }));

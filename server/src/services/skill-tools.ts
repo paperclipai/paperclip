@@ -41,7 +41,7 @@ export async function callUpdateSkillTool(input: {
     method: "PATCH",
     headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
     body: JSON.stringify({ path: "SKILL.md", content: markdown, expectedVersionId, idempotencyKey }),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(60_000), redirect: "error",
   });
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Skill update failed (${response.status})`);
@@ -56,7 +56,7 @@ export async function callCreateSkillTool(input: {
   const response = await fetcher(localRunnerApiUrl(new URL(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api/companies/${encodeURIComponent(input.companyId)}/skills`)).toString(), {
     method: "POST",
     headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" },
-    body: JSON.stringify(body), signal: AbortSignal.timeout(60_000),
+    body: JSON.stringify(body), signal: AbortSignal.timeout(60_000), redirect: "error",
   });
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Skill creation failed (${response.status})`);

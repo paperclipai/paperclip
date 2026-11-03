@@ -43,7 +43,7 @@ export async function callTaskWorkspaceTool(input: { name: string; arguments: Re
     case "prepare_repository": method = "POST"; route += "/repositories"; body = prepareWorkspaceRepositorySchema.parse(input.arguments); break;
     default: throw badRequest("Unknown workspace tool");
   }
-  const response = await fetch(localRunnerApiUrl(new URL(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${route}`)), { method, headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(60_000) });
+  const response = await fetch(localRunnerApiUrl(new URL(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${route}`)).toString(), { method, headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json" }, ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(60_000), redirect: "error" });
   const result = await response.json();
   if (!response.ok) throw new Error(typeof result.error === "string" ? result.error : `Workspace tool failed (${response.status})`);
   if (input.name === "prepare_repository") {

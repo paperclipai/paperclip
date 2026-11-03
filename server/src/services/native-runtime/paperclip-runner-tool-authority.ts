@@ -1547,7 +1547,7 @@ export class PaperclipRunnerToolAuthority {
     if (!apiUrl || !token) throw new Error("Review tool authentication is unavailable");
     // Use the existing resolution route so authorization, activity, dependency
     // wakes and request-changes continuation have one implementation.
-    const response = await fetch(localRunnerApiUrl(new URL(`${apiUrl.replace(/\/$/, "")}/api/issues/${this.binding.issueId}/interactions/${review.interaction.id}/${input.decision}`)), {
+    const response = await fetch(localRunnerApiUrl(new URL(`${apiUrl.replace(/\/$/, "")}/api/issues/${this.binding.issueId}/interactions/${review.interaction.id}/${input.decision}`)).toString(), {
       method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
       headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", "X-Paperclip-Run-Id": this.binding.runId },
       body: JSON.stringify(input.decision === "reject" ? { reason } : {}),

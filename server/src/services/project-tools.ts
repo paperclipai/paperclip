@@ -54,13 +54,13 @@ export async function callProjectTool(input: {
       idempotencyKey: `chat-handoff:${input.issueId}:${key}`,
     });
   } else throw badRequest("Unknown project tool");
-  const response = await fetch(localRunnerApiUrl(new URL(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${path}`)), {
+  const response = await fetch(localRunnerApiUrl(new URL(`${input.apiUrl.replace(/\/+$/, "").replace(/\/api$/, "")}/api${path}`)).toString(), {
     method: input.name === "set_task_title" ? "PUT" : body ? "POST" : "GET",
     headers: { Authorization: `Bearer ${input.token}`, "Content-Type": "application/json",
       ...(input.receiptOnly ? { "X-Paperclip-Receipt-Only": "true" } : {}),
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
-    signal: AbortSignal.timeout(60_000),
+    signal: AbortSignal.timeout(60_000), redirect: "error",
   });
   if (input.receiptOnly && response.status === 204) return undefined;
   const result = await response.json();

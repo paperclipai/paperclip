@@ -15,6 +15,7 @@ describe("project discovery result bounds", () => {
     vi.stubGlobal("fetch", fetch);
     expect(await callProjectTool(input)).toEqual(page);
     expect(fetch.mock.calls[0]?.[0]).toBe("http://paperclip.test/api/companies/company/projects?view=summary&limit=50");
+    expect(fetch.mock.calls[0]?.[1].redirect).toBe("error");
     await callProjectTool({ ...input, arguments: { limit: 3, cursor: page.nextCursor.toUpperCase() } });
     expect(fetch.mock.calls[1]?.[0]).toBe(`http://paperclip.test/api/companies/company/projects?view=summary&limit=3&cursor=${page.nextCursor}`);
     expect(projectToolDefinitions("standard").find(t => t.name === "list_projects")?.inputSchema)
