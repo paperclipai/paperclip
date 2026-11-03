@@ -322,9 +322,10 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 Native OpenCode semantic tool requests wait under the existing durable Runner
 owner across the ordinary 30-second MCP deadline. The native MCP client uses
-the Runner connection lease budget; ordinary driver calls keep their deadline.
+a fixed one-hour ceiling; ordinary driver calls keep their deadline.
 Company, tool, run and Stop authority do not change. Unanswered effects still
-block run attachment. The [proxy regression](../../packages/paperclip-runner/src/live/runnerd-opencode-streaming-tools.test.ts)
+block run attachment, including after the client ceiling expires while the
+Runner lease remains valid. The [proxy regression](../../packages/paperclip-runner/src/live/runnerd-opencode-streaming-tools.test.ts)
 checks delayed delivery, one tool call, and a settled next run with a deterministic
 provider. The [bridge suite](../../packages/paperclip-runner/src/drivers/opencode/mcp-bridge.test.ts)
 covers result replay, cancellation and teardown. These are local protocol checks;

@@ -2561,9 +2561,9 @@ async function startRuntime(input: {
           enabled: true,
           oauth: false,
           headers: { Authorization: `Bearer ${bridge.secret}` },
-          // The native proxy waits for durable PRP results across controller
-          // outages. Match Runner's connection lease instead of failing a
-          // still-owned write at OpenCode's ordinary MCP request deadline.
+          // Use the same fixed one-hour MCP client ceiling as native ACPX.
+          // Runner ownership can outlive this deadline; an unanswered effect
+          // must still remain pending and block replay after client expiry.
           timeout: input.options.durableToolRequests ? 60 * 60 * 1_000 : 30_000,
         },
         ...(assignedMcp

@@ -153,7 +153,7 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
-  it.each([false, true])("uses the owning runtime's MCP wait budget only for durable tool requests (%s)", async durableToolRequests => {
+  it.each([false, true])("uses the native MCP client ceiling only for durable tool requests (%s)", async durableToolRequests => {
     await chmod(fixture, 0o755);
     const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));
     roots.push(root);
