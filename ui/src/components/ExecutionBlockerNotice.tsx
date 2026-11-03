@@ -43,7 +43,9 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
         {presentation.state === "failed" && <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />}
         <span className="min-w-0 flex-1">{presentation.state === "retry_scheduled"
           ? `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`
-          : "Couldn’t finish this attempt. Your message is saved."}</span>
+          : presentation.workspaceFailure
+            ? <>Couldn’t prepare the task folders. {presentation.workspaceFailure.message}</>
+            : "Couldn’t finish this attempt. Your message is saved."}</span>
         {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry}>Retry</Button>}
       </div>
     </div>
