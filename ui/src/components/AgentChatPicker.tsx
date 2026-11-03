@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Agent } from "@paperclipai/shared";
 import { AgentIcon } from "@/components/AgentIconPicker";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 
 export interface AgentChatPickerProps {
@@ -15,11 +15,13 @@ export interface AgentChatPickerProps {
   onRetry?: () => void;
   existingChatAgentIds?: readonly string[];
   renderAgentIcon?: (agent: Agent) => ReactNode;
+  trigger?: ReactNode;
 }
 
-export function AgentChatPicker({ open, onOpenChange, ...props }: AgentChatPickerProps) {
+export function AgentChatPicker({ open, onOpenChange, trigger, ...props }: AgentChatPickerProps) {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
+      {trigger && <DialogTrigger asChild>{trigger}</DialogTrigger>}
       <DialogContent aria-describedby={undefined} className="gap-0 overflow-hidden p-0 sm:max-w-md">
         <div className="px-4 pt-4 pb-3">
           <DialogTitle>Chat with an agent</DialogTitle>

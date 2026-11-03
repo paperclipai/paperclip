@@ -31,6 +31,8 @@ The existing ordering and per-human/company isolation remain in effect.
 
 Open `/chats`, choose an agent, or use `/chats/:agentRef` and its conversation sidebar.
 
+With Coordinator enabled, click the agent avatar, name, or caret in the chat header to open the agent picker. They form one button with the same keyboard focus and action.
+
 With Coordinator enabled, the composer exposes the shared model/thinking-level picker for supported agents. The agent stays fixed in this control; switching agents remains in the chat header. Choices save as conversation overrides on send, preserving the agent's configuration. A first message creates the conversation before saving settings and submitting through the ordered comments endpoint.
 
 Coordinator answer receipts from this conversation jump to the answer bubble without leaving chat. Answer updates from an execution task link to that source task and its decision context. Compact document links read “Open [document title] in the sidebar”.
