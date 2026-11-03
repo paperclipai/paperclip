@@ -1,4 +1,5 @@
 import { sql, type SQL } from "drizzle-orm";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { activityLog, chatConversations, chatMessageLinks, issueComments, issues, issueThreadInteractions } from "@paperclipai/db";
 import { HUMAN_TASK_ORIGIN_KINDS } from "@paperclipai/shared";
 import { activeIssueInteractionCondition } from "./issue-question-context.js";
@@ -71,11 +72,18 @@ export function automaticReadRecoveryCleanupCondition() {
   )`;
 }
 
-export function humanCreatedIssueCondition() {
+/**
+ * A task a person created by hand. `table` is `issues` or an alias of it, for a
+ * query that reads the same rule on another row (PAP-768: the instigator walk
+ * of the personal decision history).
+ */
+export function humanCreatedIssueCondition(
+  table: { createdByAgentId: AnyPgColumn; createdByUserId: AnyPgColumn; originKind: AnyPgColumn } = issues,
+) {
   return sql<boolean>`(
-    ${issues.createdByAgentId} IS NULL
-    AND ${issues.createdByUserId} IS NOT NULL
-    AND ${issues.originKind} IN (${sql.join(HUMAN_TASK_ORIGIN_KINDS.map((kind) => sql`${kind}`), sql`, `)})
+    ${table.createdByAgentId} IS NULL
+    AND ${table.createdByUserId} IS NOT NULL
+    AND ${table.originKind} IN (${sql.join(HUMAN_TASK_ORIGIN_KINDS.map((kind) => sql`${kind}`), sql`, `)})
   )`;
 }
 

@@ -1,11 +1,11 @@
 import { useState, type ReactNode } from "react";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import type { Agent } from "@paperclipai/shared";
+import type { Agent, DecisionHistoryScope } from "@paperclipai/shared";
 import { attentionApi } from "@/api/attention";
 import { projectsApi } from "@/api/projects";
 import { useNavigate } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
-import { DECISION_HISTORY_OUTCOME_OPTIONS } from "@/lib/coordinator-attention";
+import { DECISION_HISTORY_OUTCOME_OPTIONS, DECISION_HISTORY_SCOPE_OPTIONS, DEFAULT_DECISION_HISTORY_SCOPE } from "@/lib/coordinator-attention";
 import { CoordinatorDecisionReceipt as Receipt } from "@/components/coordinator/CoordinatorDecisionReceipt";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
 import { Button } from "@/components/ui/button";
@@ -19,8 +19,9 @@ const HANDLED_FOR_ME = "handled_for_me";
 /**
  * The Decision history panel of both Decisions pages (PAP-749 plan §3): every
  * closed card — answered, approved, withdrawn, expired or closed with its
- * task, approvals included. Search, filter by outcome, agent and project, and
- * open the task or approval.
+ * task, approvals included. It opens on "Handled by me or for me"; Everyone
+ * lists every person's (PAP-768). Search, filter by outcome, agent and
+ * project within either, and open the task or approval.
  */
 export function DecisionHistoryPanel({
   companyId,
@@ -40,11 +41,12 @@ export function DecisionHistoryPanel({
   const [projectId, setProjectId] = useState("");
   const [groupBy, setGroupBy] = useState<Group>("none");
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
+  const [scope, setScope] = useState<DecisionHistoryScope>(DEFAULT_DECISION_HISTORY_SCOPE);
   const projects = useQuery({ queryKey: queryKeys.projects.list(companyId), queryFn: () => projectsApi.list(companyId) });
   const history = useInfiniteQuery({
-    queryKey: [...queryKeys.attention(companyId), "history", { search, outcome, agentId, projectId, sort }],
+    queryKey: [...queryKeys.attention(companyId), "history", { search, outcome, agentId, projectId, sort, scope }],
     queryFn: ({ pageParam }) => attentionApi.history(companyId, {
-      search, agentId, projectId, sort, cursor: pageParam, limit: 40,
+      search, agentId, projectId, sort, scope, cursor: pageParam, limit: 40,
       ...(outcome === HANDLED_FOR_ME ? { handledForMe: true } : { outcome }),
     }),
     initialPageParam: undefined as string | undefined,
@@ -60,6 +62,9 @@ export function DecisionHistoryPanel({
     {header}
     <ToolbarSearch query={search} onQueryChange={setSearch} label="Search decision history" placeholder="Search decisions or task IDs…" />
     <div className="grid grid-cols-2 gap-2">
+      <NativeSelect aria-label="Whose decision history" value={scope} onChange={(event) => setScope(event.target.value as DecisionHistoryScope)} className="col-span-2">
+        {DECISION_HISTORY_SCOPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </NativeSelect>
       <NativeSelect aria-label="Filter decision outcomes" value={outcome} onChange={(event) => setOutcome(event.target.value)}>
         <option value="">All outcomes</option>
         {DECISION_HISTORY_OUTCOME_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
@@ -72,7 +77,10 @@ export function DecisionHistoryPanel({
     </div>
     {history.isPending ? <p role="status" className="text-sm text-muted-foreground">Loading decisions…</p> : null}
     {history.isError ? <div role="alert" className="space-y-2 text-sm"><p>Decision history could not be loaded.</p><Button variant="outline" onClick={() => void history.refetch()}>Retry</Button></div> : null}
-    {!history.isPending && !history.isError && !items.length ? <p className="text-sm text-muted-foreground">No decisions match these filters.</p> : null}
+    {!history.isPending && !history.isError && !items.length ? <div className="space-y-2 text-sm text-muted-foreground">
+      <p>{scope === "mine" && !search && !outcome && !agentId && !projectId ? "No decisions handled by you or for you yet." : "No decisions match these filters."}</p>
+      {scope === "mine" ? <Button variant="outline" size="sm" onClick={() => setScope("all")}>Show everyone's decisions</Button> : null}
+    </div> : null}
     <div className="space-y-4">{[...groups].map(([label, entries]) => <section key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{entries.map((item) => <div key={item.id} className="space-y-1"><Receipt item={item} onOpen={navigate} userLabelMap={userLabelMap} /><p className="px-1 text-xs text-muted-foreground"><time dateTime={item.resolvedAt}>{new Date(item.resolvedAt).toLocaleString()}</time></p></div>)}</section>)}</div>
     {history.hasNextPage ? <Button variant="outline" disabled={history.isFetchingNextPage} onClick={() => void history.fetchNextPage()}>{history.isFetchingNextPage ? "Loading…" : "Load more decisions"}</Button> : null}
   </div>;

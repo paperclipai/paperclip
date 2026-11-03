@@ -2,6 +2,7 @@ import { Router, type Request } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   ATTENTION_SOURCE_KINDS,
+  DECISION_HISTORY_SCOPES,
   attentionCloseSchema,
   attentionTransferSchema,
   type AttentionCloseResult,
@@ -76,6 +77,8 @@ export function attentionRoutes(
       sort: z.enum(["newest", "oldest"]).optional(), since: z.string().datetime().optional(),
       // "Handled for me" (PAP-749 plan §6).
       handledForMe: z.enum(["true", "false"]).optional(),
+      // "Handled by me or for me", or everyone's history (PAP-768).
+      scope: z.enum(DECISION_HISTORY_SCOPES).optional(),
     }).strict().safeParse(req.query);
     if (!query.success) throw badRequest("Invalid decision history filters");
     const { handledForMe, ...filters } = query.data;

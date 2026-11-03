@@ -3,7 +3,7 @@ import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, History, Loader2 } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
-import type { Agent, AttentionCloseMode, AttentionItem, AttentionPersonalView, DecisionHistoryItem } from "@paperclipai/shared";
+import type { Agent, AttentionCloseMode, AttentionItem, AttentionPersonalView, DecisionHistoryItem, DecisionHistoryScope } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
 import { attentionApi } from "@/api/attention";
 import { agentsApi } from "@/api/agents";
@@ -15,7 +15,7 @@ import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceE
 import { useAttentionBadge, useAttentionCloseActions, useAttentionEveryoneView, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
-import { COORDINATOR_RECENT_DECISION_MS, coordinatorCardTitle, recentDecisionReceipts } from "@/lib/coordinator-attention";
+import { COORDINATOR_RECENT_DECISION_MS, DECISION_HISTORY_SCOPE_OPTIONS, DEFAULT_DECISION_HISTORY_SCOPE, coordinatorCardTitle, recentDecisionReceipts } from "@/lib/coordinator-attention";
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
 import { ATTENTION_VIEW_PARAM, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
@@ -126,8 +126,10 @@ export function CoordinatorNeedsYou() {
   const agentQuery = useQuery({ queryKey: queryKeys.agents.list(selectedCompanyId!), queryFn: () => agentsApi.list(selectedCompanyId!), enabled: !!selectedCompanyId });
   // Full history lives in its own paginated tab. Only the newest bounded page
   // is fetched here; its window expires visually without deleting any record.
-  const recent = useQuery({ queryKey: [...queryKeys.attention(selectedCompanyId!), "history", "recent"],
-    queryFn: () => attentionApi.history(selectedCompanyId!, { limit: 100, since: new Date(Date.now() - COORDINATOR_RECENT_DECISION_MS).toISOString() }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
+  // Like Decision history it opens on yours; Everyone is one choice away (PAP-768).
+  const [recentScope, setRecentScope] = useState<DecisionHistoryScope>(DEFAULT_DECISION_HISTORY_SCOPE);
+  const recent = useQuery({ queryKey: [...queryKeys.attention(selectedCompanyId!), "history", "recent", recentScope],
+    queryFn: () => attentionApi.history(selectedCompanyId!, { limit: 100, scope: recentScope, since: new Date(Date.now() - COORDINATOR_RECENT_DECISION_MS).toISOString() }), enabled: !!selectedCompanyId, refetchOnWindowFocus: true });
   const agentMap = useMemo(() => new Map((agentQuery.data ?? []).map((agent) => [agent.id, agent])), [agentQuery.data]);
   const recentItems = useMemo(() => recentDecisionReceipts(recent.data?.items ?? [], now), [recent.data, now]);
   const settlingIds = useMemo(() => new Set(settling.map(item => `${item.sourceKind}:${item.subject.id}`)), [settling]);
@@ -313,7 +315,7 @@ export function CoordinatorNeedsYou() {
     <AttentionSnoozedGroup count={snoozedItems.length} open={snoozedOpen} onToggle={() => setSnoozedOpen(open => !open)}>
       {snoozedItems.map(renderCard)}
     </AttentionSnoozedGroup>
-    {visibleRecentItems.length ? <section className="space-y-3" aria-label="Recent Decisions"><h2 className="text-sm font-medium text-muted-foreground">Recent Decisions</h2>{recentGroups.map(([label, items]) => <div key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{items.map((item) => <motion.div layout={!reducedMotion} layoutId={reducedMotion ? undefined : item.id} transition={{ duration }} key={item.id}><Receipt item={item} onOpen={navigate} userLabelMap={userLabelMap} /></motion.div>)}</div>)}</section> : null}
+    {visibleRecentItems.length || recentScope === "all" ? <section className="space-y-3" aria-label="Recent Decisions"><div className="flex items-center justify-between gap-2"><h2 className="text-sm font-medium text-muted-foreground">Recent Decisions</h2><NativeSelect aria-label="Whose recent decisions" value={recentScope} onChange={(event) => setRecentScope(event.target.value as DecisionHistoryScope)} className="w-auto">{DECISION_HISTORY_SCOPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</NativeSelect></div>{!visibleRecentItems.length ? <p className="text-sm text-muted-foreground">No decisions in the last day.</p> : null}{recentGroups.map(([label, items]) => <div key={label} className="space-y-3">{label ? <h3 className="text-sm font-medium text-muted-foreground">{label}</h3> : null}{items.map((item) => <motion.div layout={!reducedMotion} layoutId={reducedMotion ? undefined : item.id} transition={{ duration }} key={item.id}><Receipt item={item} onOpen={navigate} userLabelMap={userLabelMap} /></motion.div>)}</div>)}</section> : null}
     {recent.isError ? <p role="alert" className="text-sm text-muted-foreground">Recent decisions could not be loaded. <button className="underline" onClick={() => void recent.refetch()}>Retry</button></p> : null}
   </section></LayoutGroup>;
 }

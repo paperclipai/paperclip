@@ -1,11 +1,13 @@
-import { and, asc, desc, eq, ilike, inArray, isNotNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { activityLog, agents, approvals, budgetIncidents, companies, decisions, decisionTargetIssues, issues, issueThreadInteractions, projects, type Db } from "@paperclipai/db";
 import { ATTENTION_RECEIPT_OUTCOME_TEXT, type DecisionHistoryAction, type DecisionHistoryItem, type DecisionHistoryPage, type DecisionHistoryQuery, type DecisionHistoryResultOutcome } from "@paperclipai/shared";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import { badRequest } from "../errors.js";
 import { firstApprovalIssueId } from "./approval-visibility.js";
-import { approvalTitle } from "./attention.js";
+import { approvalTitle, MAX_INSTIGATOR_CHAIN_DEPTH } from "./attention.js";
 import { readAttentionHandledDetails } from "./attention-receipts.js";
+import { humanCreatedIssueCondition } from "./issue-participation.js";
 
 type HistoryOptions = DecisionHistoryQuery & { actor: AuthorizationActor; userId: string; issueIds?: string[] };
 type Cursor = { at: string; id: string; sort: "newest" | "oldest" };
@@ -166,12 +168,14 @@ export function pageDecisionHistory(items: DecisionHistoryItem[], limit: number,
     ? Buffer.from(JSON.stringify({ at: last.resolvedAt, id: last.id, sort })).toString("base64url") : null };
 }
 
+type HistorySourceId = SQL | typeof decisions.id | typeof issueThreadInteractions.id | typeof approvals.id;
+
 /**
- * "Handled for me" (PAP-749 plan §6): a different person answered, withdrew
- * or transferred this card while it was for `userId`. Reads the receipt on the
- * action's activity entry.
+ * A receipt on an action's activity entry that names this source and matches
+ * `person` (PAP-749 plan §6). Receipts exist only when the actor was not the
+ * card's person, so they record "handled for" and "handled by" across people.
  */
-function handledForUserSourceCondition(companyId: string, userId: string, sourceKind: DecisionHistoryItem["sourceKind"], sourceId: SQL | typeof decisions.id | typeof issueThreadInteractions.id | typeof approvals.id) {
+function receiptSourceCondition(companyId: string, person: SQL, sourceKind: DecisionHistoryItem["sourceKind"], sourceId: HistorySourceId) {
   // A budget hard stop is answered on its budget card, so the receipt names
   // the incident; history lists the incident's approval (PAP-767).
   const budgetReceipt = sourceKind === "approval"
@@ -183,11 +187,60 @@ function handledForUserSourceCondition(companyId: string, userId: string, source
   return sql<boolean>`exists (
     select 1 from ${activityLog}
     where ${activityLog.companyId} = ${companyId}
-      and (${activityLog.details} ->> 'handledForUserId') = ${userId}
+      and ${person}
       and ((${activityLog.details} -> 'receipt' ->> 'sourceKind' = ${sourceKind}
         and ${activityLog.details} -> 'receipt' ->> 'sourceId' = ${sourceId}::text)
         ${budgetReceipt})
   )`;
+}
+
+/**
+ * "Handled for me" (PAP-749 plan §6): a different person answered, withdrew
+ * or transferred this card while it was for `userId`.
+ */
+function handledForUserSourceCondition(companyId: string, userId: string, sourceKind: DecisionHistoryItem["sourceKind"], sourceId: HistorySourceId) {
+  return receiptSourceCondition(companyId, sql`(${activityLog.details} ->> 'handledForUserId') = ${userId}`, sourceKind, sourceId);
+}
+
+/** `userId` handled this card for someone else, or someone else handled it for `userId` (a transfer included). */
+function handledByOrForUserSourceCondition(companyId: string, userId: string, sourceKind: DecisionHistoryItem["sourceKind"], sourceId: HistorySourceId) {
+  return receiptSourceCondition(companyId, sql`((${activityLog.details} ->> 'handledForUserId') = ${userId}
+    or (${activityLog.details} -> 'receipt' ->> 'actorUserId') = ${userId})`, sourceKind, sourceId);
+}
+
+/**
+ * The tasks `userId` instigated: the ones they created by hand, and the agent
+ * or routine work under them up to the next hand-made task, the same walk as
+ * the live audience (`resolveIssueAudienceContextMap`). One walk down from the
+ * person's own tasks over the (company, parent) index, not one per row.
+ */
+function instigatedIssueIdsSql(companyId: string, userId: string) {
+  const root = alias(issues, "history_instigator_root");
+  const child = alias(issues, "history_instigator_child");
+  return sql`with recursive history_instigated(id, depth) as (
+      select ${root.id}, 0 from ${issues} ${sql.identifier("history_instigator_root")}
+      where ${root.companyId} = ${companyId} and ${root.createdByUserId} = ${userId} and ${humanCreatedIssueCondition(root)}
+      union all
+      select ${child.id}, history_instigated.depth + 1 from ${issues} ${sql.identifier("history_instigator_child")}
+      inner join history_instigated on ${child.parentId} = history_instigated.id
+      where ${child.companyId} = ${companyId} and not ${humanCreatedIssueCondition(child)}
+        and history_instigated.depth < ${MAX_INSTIGATOR_CHAIN_DEPTH}
+    ) select id from history_instigated`;
+}
+
+/**
+ * The card's task makes it `userId`'s (PAP-749 plan §1, Rule 2): the chat
+ * user, else the human assignee, else the instigator. Read from the task as it
+ * is now. Escalation owners are left out: a card that reached its project's
+ * or the company's decision owner is in their history once they handle it.
+ */
+function issueAudienceIsUserCondition(companyId: string, userId: string) {
+  return or(
+    eq(issues.conversationUserId, userId),
+    and(isNull(issues.conversationUserId), eq(issues.assigneeUserId, userId)),
+    and(isNull(issues.conversationUserId), isNull(issues.assigneeUserId),
+      sql`${issues.id} in (${instigatedIssueIdsSql(companyId, userId)})`),
+  );
 }
 
 /**
@@ -286,6 +339,28 @@ export function decisionHistoryService(db: Db) {
       : resultOutcomeFilter || options.outcome === "answered" || options.outcome === "decided" || options.outcome === "expired"
         ? sql`false`
         : options.outcome ? eq(approvals.status, approvalStatusByFilter[options.outcome] ?? options.outcome) : undefined;
+    // "Handled by me or for me" (PAP-768): what the person answered, withdrew
+    // or transferred, what a different person handled for them, and the cards
+    // whose audience is them: the addressee or requester, else the task's person.
+    const mine = options.scope === "mine";
+    const userId = options.userId;
+    const interactionScope = mine ? or(
+      eq(issueThreadInteractions.resolvedByUserId, userId),
+      eq(issueThreadInteractions.addresseeUserId, userId),
+      and(isNull(issueThreadInteractions.addresseeUserId), issueAudienceIsUserCondition(companyId, userId)),
+      handledByOrForUserSourceCondition(companyId, userId, "issue_thread_interaction", issueThreadInteractions.id),
+    ) : undefined;
+    const decisionScope = mine ? or(
+      eq(decisions.decidedByUserId, userId),
+      issueAudienceIsUserCondition(companyId, userId),
+      handledByOrForUserSourceCondition(companyId, userId, "decision", decisions.id),
+    ) : undefined;
+    const approvalScope = mine ? or(
+      eq(approvals.decidedByUserId, userId),
+      eq(approvals.requestedByUserId, userId),
+      and(isNull(approvals.requestedByUserId), isNotNull(issues.id), issueAudienceIsUserCondition(companyId, userId)),
+      handledByOrForUserSourceCondition(companyId, userId, "approval", approvals.id),
+    ) : undefined;
     const conditions = (time: SQL, key: SQL, title: SQL | typeof decisions.title | typeof issueThreadInteractions.title) => [
       options.issueIds ? inArray(issues.id, options.issueIds) : undefined,
       options.projectId ? eq(issues.projectId, options.projectId) : undefined,
@@ -308,7 +383,7 @@ export function decisionHistoryService(db: Db) {
         .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, companyId)))
         .where(and(eq(issueThreadInteractions.companyId, companyId), readable, isNotNull(issueThreadInteractions.resolvedAt),
           notInArray(issueThreadInteractions.status, ["pending"]),
-          interactionOutcome,
+          interactionOutcome, interactionScope,
           options.handledForMe ? handledForUserSourceCondition(companyId, options.userId, "issue_thread_interaction", issueThreadInteractions.id) : undefined,
           options.agentId ? eq(issueThreadInteractions.createdByAgentId, options.agentId) : undefined,
           ...conditions(interactionTime, interactionKey, issueThreadInteractions.title)))
@@ -323,7 +398,7 @@ export function decisionHistoryService(db: Db) {
         .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, companyId)))
         .where(and(eq(decisions.companyId, companyId), readable, notInArray(decisions.status, ["open"]),
           sql`not exists (select 1 from ${decisionTargetIssues} where ${decisionTargetIssues.decisionId} = ${decisions.id} and (${decisionTargetIssues.companyId} <> ${companyId} or ${decisionTargetIssues.issueId} not in (${readableIssues})))`,
-          decisionOutcome,
+          decisionOutcome, decisionScope,
           options.handledForMe ? handledForUserSourceCondition(companyId, options.userId, "decision", decisions.id) : undefined,
           options.agentId ? eq(decisions.originAgentId, options.agentId) : undefined,
           ...conditions(decisionTime, decisionKey, decisions.title)))
@@ -337,7 +412,7 @@ export function decisionHistoryService(db: Db) {
         .leftJoin(projects, and(eq(projects.id, issues.projectId), eq(projects.companyId, companyId)))
         .where(and(eq(approvals.companyId, companyId), notInArray(approvals.status, ["pending"]),
           or(sql`${approvalIssueId} is null`, and(isNotNull(issues.id), readable)),
-          approvalOutcome,
+          approvalOutcome, approvalScope,
           options.handledForMe ? handledForUserSourceCondition(companyId, options.userId, "approval", approvals.id) : undefined,
           options.agentId ? eq(approvals.requestedByAgentId, options.agentId) : undefined,
           ...conditions(approvalTime, approvalKey, approvalTitleSql)))

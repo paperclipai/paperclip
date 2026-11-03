@@ -237,6 +237,33 @@ async function main() {
   check("8 history Closed with task", closedWithTask.length > 0, `${closedWithTask.length} entries`);
   check("8 history Handled for me (Dotta)", handledForDotta.some((item) => item.sourceId === toWithdraw.subject.id), `${handledForDotta.length} entries, includes step 2`);
 
+  // PAP-768 part 2: history opens on "Handled by me or for me" (scope=mine,
+  // what both pages ask for first); Everyone (scope=all) is every person's.
+  // The board's case: Scott answers the confirmation on "Scott: task you
+  // created"; it must stay out of Dotta's default history.
+  const ownTaskCard = (await feed(scott, "mine")).items.find((item) => item.sourceKind === "issue_thread_interaction"
+    && item.relatedIssue?.title === "Scott: task you created");
+  if (!ownTaskCard?.relatedIssue) throw new Error("no confirmation on \"Scott: task you created\" in Scott's For you");
+  const accept = await http<unknown>(scott, "POST", `/api/issues/${ownTaskCard.relatedIssue.id}/interactions/${ownTaskCard.subject.id}/accept`, {});
+  const ownTaskRow = (items: History["items"]) => items.some((item) => item.sourceId === ownTaskCard.subject.id);
+  const scottMineHistory = await history(scott, "scope=mine");
+  const dottaMineHistory = await history(dotta, "scope=mine");
+  const dottaEveryoneHistory = await history(dotta, "scope=all");
+  check("P2 Scott's own answer is in his history", accept.status === 200 && ownTaskRow(scottMineHistory),
+    `accept "${ownTaskCard.relatedIssue.identifier} · ${ownTaskCard.relatedIssue.title}" -> ${accept.status}; in Scott's Handled by me or for me`);
+  check("P2 Dotta's default history leaves it out", !ownTaskRow(dottaMineHistory),
+    `Dotta Handled by me or for me: ${dottaMineHistory.length} entries, none on ${ownTaskCard.relatedIssue.identifier}`);
+  check("P2 Dotta's Everyone history shows it", ownTaskRow(dottaEveryoneHistory),
+    `Dotta Everyone: ${dottaEveryoneHistory.length} entries, includes ${ownTaskCard.relatedIssue.identifier} · Scott: task you created`);
+  check("P2 Dotta's history is hers", dottaMineHistory.length > 0 && dottaMineHistory.length < dottaEveryoneHistory.length,
+    `${dottaMineHistory.length} of ${dottaEveryoneHistory.length} entries`);
+  const dottaMineWithdrawn = await history(dotta, "scope=mine&outcome=withdrawn");
+  const dottaMineHandled = await history(dotta, "scope=mine&handledForMe=true");
+  const scottMineExpired = await history(scott, "scope=mine&outcome=expired");
+  check("P2 outcome filters work inside each scope", dottaMineWithdrawn.some((item) => item.sourceId === toWithdraw.subject.id)
+    && dottaMineHandled.some((item) => item.sourceId === toWithdraw.subject.id) && scottMineExpired.length > 0,
+  `Dotta mine + Withdrawn ${dottaMineWithdrawn.length} (step 2 withdraw for her), mine + Handled for me ${dottaMineHandled.length}; Scott mine + Expired ${scottMineExpired.length}`);
+
   // 9. The classic Decisions page reads the same per-person feed (`all=true&view=`).
   const classic = await feed(dotta, "mine");
   check("9 classic page feed (API only)", classic.deskBadgeCount === classic.viewCounts.mine,

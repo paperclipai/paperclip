@@ -6269,6 +6269,8 @@ registry.registerPath({
       sort: z.enum(["newest", "oldest"]).optional(),
       since: z.string().datetime().optional(),
       handledForMe: z.enum(["true", "false"]).optional().describe("Only cards for you that a different person answered, withdrew or transferred."),
+      scope: z.enum(["mine", "all"]).optional()
+        .describe("Whose history (PAP-768). `mine` is \"Handled by me or for me\": what you answered, withdrew or transferred, what a different person handled for you, and cards whose audience is you (addressee or requester, else the task's chat user, human assignee or instigator). `all` (default) is every person's history. Outcome filters apply within either scope."),
     }).strict(),
   },
   responses: {

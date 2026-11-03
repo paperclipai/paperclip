@@ -8,7 +8,7 @@ import type { AttentionItem, DecisionHistoryItem } from "@paperclipai/shared";
 import { CoordinatorNeedsYou } from "./CoordinatorNeedsYou";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], byView: {} as Record<string, AttentionItem[]>, viewCounts: undefined as undefined | Record<string, number>, listCalls: [] as unknown[], claim: vi.fn(async () => ({})), close: vi.fn(async (..._args: unknown[]) => ({ until: null })), retryTask: vi.fn(async (..._args: unknown[]) => ({ accepted: true, requestId: "r", stale: false, presentation: null })), history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn(), boardAccess: null as null | Record<string, unknown> }));
+const fixture = vi.hoisted(() => ({ pending: [] as AttentionItem[], byView: {} as Record<string, AttentionItem[]>, viewCounts: undefined as undefined | Record<string, number>, listCalls: [] as unknown[], claim: vi.fn(async () => ({})), close: vi.fn(async (..._args: unknown[]) => ({ until: null })), retryTask: vi.fn(async (..._args: unknown[]) => ({ accepted: true, requestId: "r", stale: false, presentation: null })), history: [] as DecisionHistoryItem[], url: "/decisions", mobile: false, partial: false, historyFail: false, feedFail: false, openPanel: vi.fn(), closePanel: vi.fn(), setPanelVisible: vi.fn(), navigate: vi.fn(), breadcrumbs: vi.fn(), boardAccess: null as null | Record<string, unknown>, historyByScope: {} as Record<string, DecisionHistoryItem[]>, historyCalls: [] as Array<Record<string, unknown>> }));
 const dismissals = vi.hoisted(() => ({ restore: vi.fn(async (..._args: unknown[]) => ({})) }));
 vi.mock("@/api/inboxDismissals", () => ({ inboxDismissalsApi: { restore: dismissals.restore, dismiss: vi.fn() } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
@@ -32,7 +32,11 @@ vi.mock("@/api/attention", () => ({ attentionApi: {
     if (fixture.feedFail) throw new Error("Feed unavailable");
     return { items: [...(fixture.byView[options.view ?? ""] ?? fixture.pending)], viewCounts: fixture.viewCounts };
   },
-  history: async () => { if (fixture.historyFail) throw new Error("History unavailable"); return { items: [...fixture.history], nextCursor: null }; },
+  history: async (_companyId: string, options: Record<string, unknown> = {}) => {
+    fixture.historyCalls.push(options);
+    if (fixture.historyFail) throw new Error("History unavailable");
+    return { items: [...(fixture.historyByScope[String(options.scope)] ?? fixture.history)], nextCursor: null };
+  },
 } }));
 vi.mock("motion/react", () => ({
   LayoutGroup: ({ children }: { children: ReactNode }) => children,
@@ -60,7 +64,7 @@ let container: HTMLDivElement;
 beforeEach(() => {
   fixture.pending = ["1", "2", "3"].map((id) => ({ id, sourceKind: "issue_thread_interaction", inlineResolvable: true, subject: { id, kind: "interaction", title: `Review ${id}`, metadata: { issueId: `task-${id}` } }, relatedIssue: { id: `task-${id}`, identifier: `PAP-${id}`, title: `Task ${id}`, href: `/PAP/issues/PAP-${id}` }, activityAt: new Date().toISOString() } as unknown as AttentionItem));
   fixture.history = []; fixture.url = "/decisions"; vi.clearAllMocks();
-  fixture.byView = {}; fixture.viewCounts = undefined; fixture.listCalls = []; fixture.boardAccess = null;
+  fixture.byView = {}; fixture.viewCounts = undefined; fixture.listCalls = []; fixture.boardAccess = null; fixture.historyByScope = {}; fixture.historyCalls = [];
   fixture.historyFail = false; fixture.feedFail = false; fixture.partial = false; fixture.mobile = false;
   container = document.createElement("div"); document.body.appendChild(container); root = createRoot(container);
 });
@@ -143,6 +147,64 @@ describe("Coordinator Needs You — Archived view and history filters (PAP-749 t
     });
     await flush();
     expect(historySpy).toHaveBeenCalledWith("company", expect.objectContaining({ outcome: "issue_closed" }));
+    client.clear();
+  });
+
+  const historyEntry = (id: string, issueTitle: string, resolvedByUserId: string) => ({ id: `issue_thread_interaction:${id}`, sourceKind: "issue_thread_interaction",
+    sourceId: id, issueId: `task-${id}`, issueIdentifier: `NEE-${id}`, issueTitle, title: "Confirm", label: "Approved", outcome: "accepted",
+    action: { outcome: "approved", detail: null }, resolvedAt: new Date(Date.now() - 60_000).toISOString(), resolvedByUserId, resolvedByAgentId: null,
+    agentId: null, agentName: null, projectId: null, projectName: null, href: `/NEE/issues/NEE-${id}`, target: null }) as DecisionHistoryItem;
+  const choose = async (root: ParentNode, label: string, value: string) => {
+    const select = root.querySelector<HTMLSelectElement>(`select[aria-label="${label}"]`);
+    expect(select, label).not.toBeNull();
+    await act(async () => { select!.value = value; select!.dispatchEvent(new Event("change", { bubbles: true })); });
+    await flush();
+    return select!;
+  };
+
+  it("opens Decision history and Recent Decisions on Handled by me or for me, with Everyone one choice away (PAP-768)", async () => {
+    fixture.mobile = true;
+    fixture.pending = [];
+    const mineEntry = historyEntry("1", "Dotta's launch checklist", "reviewer");
+    const othersEntry = historyEntry("2", "Scott: task you created", "scott");
+    fixture.historyByScope = { mine: [mineEntry], all: [mineEntry, othersEntry] };
+    const client = await renderPage();
+    expect(fixture.historyCalls).toContainEqual(expect.objectContaining({ scope: "mine", limit: 100 }));
+    const recent = () => container.querySelector<HTMLElement>('[aria-label="Recent Decisions"]')!;
+    expect(recent().textContent).toContain("NEE-1 · Dotta's launch checklist");
+    expect(recent().textContent).not.toContain("Scott: task you created");
+    await choose(recent(), "Whose recent decisions", "all");
+    expect(fixture.historyCalls).toContainEqual(expect.objectContaining({ scope: "all", limit: 100 }));
+    expect(recent().textContent).toContain("NEE-2 · Scott: task you created");
+
+    await click("Decision history");
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    const scope = dialog.querySelector<HTMLSelectElement>('select[aria-label="Whose decision history"]')!;
+    expect(scope.value).toBe("mine");
+    expect([...scope.options].map((option) => option.textContent)).toEqual(["Handled by me or for me", "Everyone"]);
+    expect(dialog.textContent).not.toContain("Scott: task you created");
+    await choose(dialog, "Whose decision history", "all");
+    expect(dialog.textContent).toContain("NEE-2 · Scott: task you created");
+    // An outcome filter applies within the chosen scope.
+    await choose(dialog, "Filter decision outcomes", "accepted");
+    expect(fixture.historyCalls).toContainEqual(expect.objectContaining({ scope: "all", outcome: "accepted", limit: 40 }));
+    client.clear();
+  });
+
+  it("offers everyone's decisions when nothing was handled by or for you (PAP-768)", async () => {
+    fixture.mobile = true;
+    fixture.pending = [];
+    fixture.historyByScope = { mine: [], all: [historyEntry("2", "Scott: task you created", "scott")] };
+    const client = await renderPage();
+    // Nothing of yours in the last day: Recent Decisions stays out of the way.
+    expect(container.querySelector('[aria-label="Recent Decisions"]')).toBeNull();
+    await click("Decision history");
+    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    expect(dialog.textContent).toContain("No decisions handled by you or for you yet.");
+    await act(async () => [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Show everyone's decisions")!.click());
+    await flush();
+    expect(dialog.querySelector<HTMLSelectElement>('select[aria-label="Whose decision history"]')!.value).toBe("all");
+    expect(dialog.textContent).toContain("Scott: task you created");
     client.clear();
   });
 });

@@ -1619,6 +1619,8 @@ One card for each obligation (PAP-749): cards that are one obligation share `obl
 
 Everyone view (PAP-768): both Decisions pages show a fifth tab, Everyone (`view=all`), to board members only (a local board, an instance admin, or an active member who is not a viewer). It lists every person's open cards except the ones the viewer archived or snoozed; `viewCounts.all` is its count and is never in the badge. A card for a different person shows "For @name", and acting on it asks "This is for @name. Continue?" first; the server still checks who may act.
 
+Personal history (PAP-768): `GET /companies/:companyId/attention/history` takes `scope=mine|all` (default `all`). `mine` is "Handled by me or for me": rows the viewer answered, withdrew or transferred, rows a different person handled for them (`handledForUserId` on the action's receipt), and rows whose card was for them: the interaction's addressee or the approval's requester, else the task's chat user, human assignee or instigator (the nearest hand-made task up the parent chain), read from the task as it is now. Outcome filters and Handled for me apply within either scope. Decision history on both Decisions pages and Coordinator's Recent Decisions open on `mine`; Everyone is a choice in the same panel.
+
 ## 11. Heartbeat and Adapter Contract
 
 ## 11.1 Adapter Interface

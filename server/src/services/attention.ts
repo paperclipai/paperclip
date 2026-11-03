@@ -1308,7 +1308,7 @@ export type IssueAudienceContext = {
   projectOwnerUserId?: string | null;
 };
 
-const MAX_INSTIGATOR_CHAIN_DEPTH = 50;
+export const MAX_INSTIGATOR_CHAIN_DEPTH = 50;
 
 /**
  * Company-level audience configuration (PAP-749 plan §1, Rule 2 step 5): the

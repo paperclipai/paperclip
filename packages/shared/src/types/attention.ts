@@ -665,7 +665,17 @@ export interface DecisionHistoryQuery {
   since?: string;
   /** "Handled for me": only cards for you that a different person handled (PAP-749 plan §6). */
   handledForMe?: boolean;
+  /**
+   * Whose history (PAP-768). `mine` is "Handled by me or for me": what you
+   * answered, withdrew or transferred, what a different person handled for
+   * you, and the cards whose audience is you. `all` (the default) is every
+   * person's history. The outcome filters apply within either scope.
+   */
+  scope?: DecisionHistoryScope;
 }
+
+export const DECISION_HISTORY_SCOPES = ["mine", "all"] as const;
+export type DecisionHistoryScope = (typeof DECISION_HISTORY_SCOPES)[number];
 
 export interface DecisionHistoryPage {
   items: DecisionHistoryItem[];

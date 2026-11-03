@@ -96,8 +96,11 @@ the task-level verdict, distinct from the saved artifact receipt.
 
 Open **Decision history** (on both `/decisions` surfaces) for the paginated
 history panel; it merges answered questions and confirmations, Decisions-v1
-outcomes and approvals. Outcome filters include **Withdrawn**, **Expired** (not
-cards closed with their task), **Closed with task** and **Handled for me**; a
+outcomes and approvals. It opens on **Handled by me or for me** (what you
+answered, withdrew or transferred, what someone handled for you, and the cards
+that were for you); **Everyone** in the same panel lists every person's.
+Coordinator's Recent Decisions opens on the same scope. Outcome filters include **Withdrawn**, **Expired** (not
+cards closed with their task), **Closed with task** and **Handled for me**, within either scope; a
 withdrawn entry names who withdrew it and the reason.
 
 ### `search`
@@ -163,7 +166,9 @@ Idle chats without structured requests remain absent.
 cover the view partition, the For you badge with per-view counts, the personal
 `view=archived` list and its tab count, and the claim service and route
 permission matrix. The [canonical history](../../server/src/__tests__/decision-history.test.ts)
-tests also cover approvals and the Withdrawn / Expired / Closed with task filters.
+tests also cover approvals, the Withdrawn / Expired / Closed with task filters,
+and the Handled by me or for me / Everyone scope (instigator walk, addressee and
+assignee precedence, receipts, filters and paging inside a scope).
 [Close and transfer tests](../../server/src/__tests__/attention-close.test.ts)
 cover withdraw for every interaction kind (including on a closed task), approval
 and decision cancel, personal archive/snooze, transfer, history labels, and the

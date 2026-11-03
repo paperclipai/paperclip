@@ -180,6 +180,7 @@ export type {
   DecisionHistoryItem,
   DecisionHistoryOutcomeFilter,
   DecisionHistoryQuery,
+  DecisionHistoryScope,
   DecisionHistoryPage,
   DecisionHistoryResultOutcome,
   DecisionHistoryAction,
@@ -216,6 +217,7 @@ export {
   ATTENTION_RECEIPT_OUTCOMES,
   ATTENTION_SOURCE_KINDS,
   DECISION_HISTORY_OUTCOME_FILTERS,
+  DECISION_HISTORY_SCOPES,
 } from "./types/attention.js";
 export { questionSetToAskUserQuestionsPayload } from "./question-set.js";
 export type {

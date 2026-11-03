@@ -54,6 +54,7 @@ export type {
   DecisionHistoryItem,
   DecisionHistoryOutcomeFilter,
   DecisionHistoryQuery,
+  DecisionHistoryScope,
   DecisionHistoryPage,
   DecisionHistoryResultOutcome,
   DecisionHistoryAction,
@@ -90,6 +91,7 @@ export {
   ATTENTION_RECEIPT_OUTCOMES,
   ATTENTION_SOURCE_KINDS,
   DECISION_HISTORY_OUTCOME_FILTERS,
+  DECISION_HISTORY_SCOPES,
 } from "./attention.js";
 export type {
   DecisionQueue,

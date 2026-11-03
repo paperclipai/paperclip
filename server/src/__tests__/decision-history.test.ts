@@ -242,6 +242,86 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await service.list(companyId, scott)).items.find((item) => item.sourceId === approvalId)?.handledForUserId).toBe("scott");
   });
 
+  // PAP-768: "Handled by me or for me" is the default history; Everyone is a scope.
+  it("scopes history to what I handled, what was handled for me and cards whose audience is me", async () => {
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Personal history", issuePrefix: "PHS" });
+    await db.insert(agents).values({ id: agentId, companyId, name: "Worker", role: "engineer", adapterType: "codex_local" });
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId });
+    const [scottTask, childTask, dottaTask, assignedTask, agentTask] = [randomUUID(), randomUUID(), randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(issues).values([
+      { id: scottTask, companyId, identifier: "PHS-1", title: "Scott: task you created", createdByUserId: "scott", originKind: "manual" },
+      // Agent work under Scott's task is still his (the instigator walk).
+      { id: childTask, companyId, identifier: "PHS-2", title: "Agent child", parentId: scottTask, createdByAgentId: agentId, originKind: "manual" },
+      { id: dottaTask, companyId, identifier: "PHS-3", title: "Dotta's task", createdByUserId: "dotta", originKind: "manual" },
+      // A human assignee comes before the instigator.
+      { id: assignedTask, companyId, identifier: "PHS-4", title: "Dotta's task for Scott", createdByUserId: "dotta", assigneeUserId: "scott", originKind: "manual" },
+      { id: agentTask, companyId, identifier: "PHS-5", title: "Routine work", createdByAgentId: agentId, originKind: "routine_execution" },
+    ]);
+    const at = (minutes: number) => new Date(Date.parse("2026-11-02T12:00:00.000Z") + minutes * 60_000);
+    const payload = { version: 1, prompt: "?" };
+    const [answeredOwn, expiredOwn, expiredChild, answeredForDotta, forRiley, expiredAssigned, transferred, ownerless] =
+      Array.from({ length: 8 }, () => randomUUID());
+    await db.insert(issueThreadInteractions).values([
+      { id: answeredOwn, companyId, issueId: scottTask, kind: "request_confirmation", status: "accepted", resolvedAt: at(1), resolvedByUserId: "scott", payload },
+      { id: expiredOwn, companyId, issueId: scottTask, kind: "request_confirmation", status: "expired", resolvedAt: at(2), payload },
+      { id: expiredChild, companyId, issueId: childTask, kind: "request_confirmation", status: "expired", resolvedAt: at(3), payload },
+      { id: answeredForDotta, companyId, issueId: dottaTask, kind: "request_confirmation", status: "accepted", resolvedAt: at(4), resolvedByUserId: "scott", payload },
+      // An explicit addressee wins over the task's person.
+      { id: forRiley, companyId, issueId: scottTask, addresseeUserId: "riley", kind: "request_confirmation", status: "expired", resolvedAt: at(5), payload },
+      { id: expiredAssigned, companyId, issueId: assignedTask, kind: "request_confirmation", status: "expired", resolvedAt: at(6), payload },
+      { id: transferred, companyId, issueId: agentTask, addresseeUserId: "riley", kind: "request_confirmation", status: "accepted", resolvedAt: at(7), resolvedByUserId: "riley", payload },
+      { id: ownerless, companyId, issueId: agentTask, kind: "request_confirmation", status: "expired", resolvedAt: at(8), payload },
+    ]);
+    // Scott moved Dotta's card to Riley; the receipt names him and her.
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: "scott", action: "attention.transferred", entityType: "issue", entityId: agentTask,
+      details: { handledForUserId: "dotta", receipt: { outcome: "transferred", sourceKind: "issue_thread_interaction", sourceId: transferred, issueId: agentTask, title: "Moved", actorUserId: "scott", transferredToUserId: "riley" } } });
+    const [requestedByDotta, onScottTask, systemApproval] = [randomUUID(), randomUUID(), randomUUID()];
+    await db.insert(approvals).values([
+      { id: requestedByDotta, companyId, type: "request_board_approval", status: "rejected", requestedByUserId: "dotta", payload: { title: "Dotta asks" }, decidedByUserId: "scott", decidedAt: at(9) },
+      { id: onScottTask, companyId, type: "request_board_approval", status: "approved", requestedByAgentId: agentId, payload: { title: "On Scott's task" }, decidedByUserId: "riley", decidedAt: at(10) },
+      { id: systemApproval, companyId, type: "approve_ceo_strategy", status: "approved", payload: { title: "Nobody's" }, decidedAt: at(11) },
+    ]);
+    await db.insert(issueApprovals).values({ companyId, issueId: scottTask, approvalId: onScottTask });
+    const [decisionOnScottTask, decisionWithdrawnByDotta] = [randomUUID(), randomUUID()];
+    const decisionBase = { companyId, originAgentId: agentId, originRunId: runId, body: "Choose", options: [{ id: "yes", label: "Yes", effects: [] }], expiresAt: at(0), signedSpec: "test", targetSnapshots: {} };
+    await db.insert(decisions).values([
+      { ...decisionBase, id: decisionOnScottTask, originIssueId: scottTask, title: "Scott's decision", status: "expired", decidedAt: at(12) },
+      { ...decisionBase, id: decisionWithdrawnByDotta, originIssueId: agentTask, title: "Withdrawn by Dotta", status: "cancelled", decidedAt: at(13), decidedByUserId: "dotta" },
+    ]);
+
+    const service = decisionHistoryService(db);
+    const ids = async (userId: string, extra: Record<string, unknown> = {}) => new Set((await service.list(companyId, {
+      actor: { type: "board", userId, ignoreInstanceAdmin: true, authorizingUserId: userId }, userId, limit: 100, ...extra,
+    })).items.map((item) => item.sourceId));
+    expect(await ids("scott", { scope: "mine" })).toEqual(new Set([answeredOwn, expiredOwn, expiredChild, answeredForDotta, expiredAssigned, transferred,
+      requestedByDotta, onScottTask, decisionOnScottTask]));
+    // Dotta no longer sees "PHS-1 · Scott: task you created", which Scott answered on his own task.
+    expect(await ids("dotta", { scope: "mine" })).toEqual(new Set([answeredForDotta, transferred, requestedByDotta, decisionWithdrawnByDotta]));
+    expect(await ids("riley", { scope: "mine" })).toEqual(new Set([forRiley, transferred, onScottTask]));
+    // Everyone (and no scope, the API default) is every person's history.
+    const everyone = await ids("dotta", { scope: "all" });
+    expect(everyone).toEqual(await ids("dotta"));
+    expect(everyone.size).toBe(13);
+    expect(everyone.has(answeredOwn)).toBe(true);
+    // Outcome filters and Handled for me keep working inside each scope.
+    expect(await ids("scott", { scope: "mine", outcome: "expired" })).toEqual(new Set([expiredOwn, expiredChild, expiredAssigned, decisionOnScottTask]));
+    expect(await ids("dotta", { scope: "mine", outcome: "expired" })).toEqual(new Set());
+    expect(await ids("dotta", { scope: "all", outcome: "expired" })).toEqual(new Set([expiredOwn, expiredChild, forRiley, expiredAssigned, ownerless, decisionOnScottTask]));
+    expect(await ids("dotta", { scope: "mine", handledForMe: true })).toEqual(new Set([transferred]));
+    expect(await ids("dotta", { scope: "mine", outcome: "accepted" })).toEqual(new Set([answeredForDotta, transferred]));
+    // One keyset cursor still pages through the scoped sources without gaps.
+    const paged: string[] = []; let cursor: string | undefined;
+    do {
+      const page = await service.list(companyId, { actor: { type: "board", userId: "scott", ignoreInstanceAdmin: true, authorizingUserId: "scott" },
+        userId: "scott", scope: "mine", limit: 2, cursor });
+      paged.push(...page.items.map((item) => item.sourceId));
+      cursor = page.nextCursor ?? undefined;
+    } while (cursor);
+    expect(new Set(paged)).toEqual(await ids("scott", { scope: "mine" }));
+    expect(paged).toHaveLength(9);
+  });
+
   it("paginates both sources without losing answered questions; filters before limiting; isolates companies and private tasks", async () => {
     vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
     const companyId = randomUUID(), otherCompanyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), hiddenId = randomUUID(), otherIssueId = randomUUID(), runId = randomUUID();

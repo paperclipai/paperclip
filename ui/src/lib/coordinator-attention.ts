@@ -1,4 +1,4 @@
-import { attentionReceiptText, type AttentionItem, type AttentionPersonalView, type DecisionHistoryItem, type DecisionHistoryOutcomeFilter } from "@paperclipai/shared";
+import { attentionReceiptText, type AttentionItem, type AttentionPersonalView, type DecisionHistoryItem, type DecisionHistoryOutcomeFilter, type DecisionHistoryScope } from "@paperclipai/shared";
 import { queryKeys } from "./queryKeys";
 import { isInlineResolvable } from "./attention";
 
@@ -53,6 +53,17 @@ export const DECISION_HISTORY_OUTCOME_OPTIONS: ReadonlyArray<{ value: DecisionHi
   { value: "issue_closed", label: "Closed with task" },
   { value: "cancelled", label: "Cancelled" },
 ];
+
+/**
+ * Whose decisions Decision history and Recent Decisions list (PAP-768). Your
+ * own is the default: what you answered, withdrew or transferred, what a
+ * different person handled for you, and the cards that were for you.
+ */
+export const DECISION_HISTORY_SCOPE_OPTIONS: ReadonlyArray<{ value: DecisionHistoryScope; label: string }> = [
+  { value: "mine", label: "Handled by me or for me" },
+  { value: "all", label: "Everyone" },
+];
+export const DEFAULT_DECISION_HISTORY_SCOPE: DecisionHistoryScope = "mine";
 
 /**
  * A history entry's headline. When a person acted, it names them with the

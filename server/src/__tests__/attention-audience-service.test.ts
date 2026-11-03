@@ -452,6 +452,31 @@ describeEmbeddedPostgres("attention audience service (PAP-749 task 1a)", () => {
     await request(testApp).get(`/api/companies/${companyId}/attention?view=hidden`).expect(400);
   });
 
+  it("scopes decision history on the route: mine is handled by me or for me, all is everyone (PAP-768)", async () => {
+    const { companyId, workerId } = await seedCompany("HSR");
+    const scottCard = await insertConfirmation({ companyId, issueId: await insertIssue({ companyId, createdByUserId: SCOTT, originKind: "manual" }), workerId });
+    await db.update(issueThreadInteractions)
+      .set({ status: "accepted", resolvedAt: new Date(), resolvedByUserId: SCOTT })
+      .where(eq(issueThreadInteractions.id, scottCard));
+    const app = (userId: string) => {
+      const testApp = express();
+      testApp.use((req, _res, next) => {
+        (req as any).actor = { type: "board", source: "session", userId, companyIds: [companyId], isInstanceAdmin: false };
+        next();
+      });
+      testApp.use("/api", attentionRoutes(db));
+      testApp.use(errorHandler);
+      return testApp;
+    };
+    const history = async (userId: string, query: string) =>
+      (await request(app(userId)).get(`/api/companies/${companyId}/attention/history?${query}`).expect(200)).body.items.map((item: { sourceId: string }) => item.sourceId);
+    expect(await history(SCOTT, "scope=mine")).toEqual([scottCard]);
+    expect(await history(DOTTA, "scope=mine")).toEqual([]);
+    expect(await history(DOTTA, "scope=all")).toEqual([scottCard]);
+    expect(await history(DOTTA, "")).toEqual([scottCard]);
+    await request(app(DOTTA)).get(`/api/companies/${companyId}/attention/history?scope=team`).expect(400);
+  });
+
   it("claims a pool card for one person and removes it from every other person's pool", async () => {
     const { companyId, workerId } = await seedCompany("CLM");
     const routineTask = await insertIssue({ companyId, createdByAgentId: workerId, originKind: "routine_execution" });
