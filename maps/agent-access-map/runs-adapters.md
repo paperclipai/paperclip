@@ -339,6 +339,14 @@ guard. This changes no actor permission or session-reset authority. Follow the
 [session recipe](../feature-map/runs-adapters.md#session) for recovery followed by
 ordinary turns; deterministic runner checks do not establish live provider access.
 
+Warm continuation without a retained controller owner refreshes a prior-run local
+projection from its company/task/session-bound canonical checkpoint, including
+later commits under the same run ID. Current-run state keeps its owner. Pending
+canonical commands and mismatched checkpoint bindings still hold admission. This
+adds no agent permission, session-reset authority, or provider replay path. The
+executor and remote continuity regressions cover this internal recovery boundary;
+live provider access remains separate evidence.
+
 Sandbox export carries shallow Git boundaries through the full-bundle fallback
 and uses normal Git fetch connectivity checks. Existing host ancestry and merge
 guards remain effective. This grants no task retry or operator recovery authority;

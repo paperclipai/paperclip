@@ -5966,7 +5966,10 @@ async function restoreWarmRunnerdController(input: {
       issueId = prior.issueId;
     }
   }
-  if (identity?.runId !== runId) {
+  // A prior admission can leave a full projection before later commits under
+  // the same run ID. Without a retained owner, refresh it from its canonical
+  // checkpoint; current-run state still belongs to the active controller.
+  if (identity?.runId !== runId || (!retainedRunId && runId !== input.execution.binding.runId)) {
     const restored = await restoreNativeRunnerCheckpoint(input.db,
       { companyId: input.execution.binding.companyId, issueId, runId }, root, nativeSessionKey(input.execution));
     // A legacy file-backed root still follows its existing prior-owner checks.

@@ -12,6 +12,11 @@ checkpoints and changed process configuration require verified suspension and
 replacement, while preserving the conversation and starting each turn once.
 Recovery can restart a provider to refresh its tool contract; process reuse is
 required for ordinary healthy follow-ups.
+The `stale-projection` case leaves a full local control projection from just
+before the prior run's terminal while its database checkpoint is complete. It
+must refresh that same-run projection before the next turn, then preserve the
+same Runner and provider history through another healthy follow-up. This is a
+controlled cache fault, not a reconstruction of a historical incident.
 Each recovery case includes another healthy turn after the recovered turn and
 asserts that it does not start another runner or provider process.
 The same-server case also starts preparation lease renewal during recovery and
