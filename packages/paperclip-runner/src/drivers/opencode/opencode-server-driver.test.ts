@@ -189,7 +189,8 @@ describe("OpenCodeServerDriver", () => {
         expect(events.filter(event => event.eventType === "run.result.proposed")).toHaveLength(1);
         const receipts = JSON.parse(await readFile(join(root, "fake-diagnostic-receipts.json"), "utf8"));
         expect(receipts[0].result.isError).toBe(true);
-        expect(receipts[1].result.content[0].text).toContain("benign-receipt");
+        expect(receipts[1].result.isError).toBe(true);
+        expect(receipts[2].result.content[0].text).toContain("benign-receipt");
       }
       await session.close({ reason: "test" }); session = undefined;
       expect(calls).toHaveLength(4);
@@ -198,12 +199,13 @@ describe("OpenCodeServerDriver", () => {
         const spans = body.resourceSpans[0].scopeSpans[0].spans;
         const attrs = (span: any) => Object.fromEntries(span.attributes.map((a: any) => [a.key, a.value.stringValue ?? a.value.boolValue]));
         const tools = spans.filter((span: any) => span.name === "tool paperclip_call_assigned_tool");
-        expect(tools).toHaveLength(2);
-        expect(tools.map((span: any) => span.status.code)).toEqual([2, 1]);
+        expect(tools).toHaveLength(3);
+        expect(tools.map((span: any) => span.status.code)).toEqual([2, 2, 1]);
         expect(attrs(tools[0])["paperclip.run.id"]).toBe(index === 0 ? "first" : "second");
         if (capture === "1") {
-          expect(JSON.parse(attrs(tools[0])["braintrust.input"])).toMatchObject({ schema: "paperclip.opencode.tool-diagnostics.v1", method: "tools/call", argumentType: "object", fields: { name: "number", arguments: "object" } });
-          expect(JSON.parse(attrs(tools[1])["braintrust.input"]).fields.name).toBe("string");
+          expect(JSON.parse(attrs(tools[0])["braintrust.input"])).toMatchObject({ argumentType: "array", fields: {} });
+          expect(JSON.parse(attrs(tools[1])["braintrust.input"])).toMatchObject({ schema: "paperclip.opencode.tool-diagnostics.v1", method: "tools/call", argumentType: "object", fields: { name: "number", arguments: "object" } });
+          expect(JSON.parse(attrs(tools[2])["braintrust.input"]).fields.name).toBe("string");
         } else for (const tool of tools) expect(attrs(tool)).not.toHaveProperty("braintrust.input");
       }
       for (const excluded of ["private-argument-canary", "private-key-canary", "private-value-canary", "private-provider-copy", "benign-operation"]) expect(JSON.stringify(bodies)).not.toContain(excluded);

@@ -23,8 +23,6 @@ function pairs(value: string | undefined): Record<string, string> {
   }));
 }
 
-// Closed vocabulary only: values, arbitrary property names and nested payloads
-// never enter the diagnostic, even when content capture is enabled.
 function argumentDiagnostics(value: unknown): string {
   const type = (entry: unknown) => entry === null ? "null" : Array.isArray(entry) ? "array" : typeof entry;
   const fields = record(value);
@@ -62,8 +60,6 @@ export function createOpenCodeCompanyObservability(input: {
       ["paperclip.company.id", "paperclip.agent.id", "paperclip.observability.revision"]
         .filter(key => supplied[key]).map(key => [key, supplied[key]])) };
   } catch { diagnostic("configuration_invalid"); return undefined; }
-  // Dispatch owns Paperclip tool outcomes. Native SSE call IDs are provider
-  // identities, not MCP JSON-RPC IDs; do not correlate them by name or order.
   const managedTools = new Set(["paperclip_finish", "paperclip_block", ...(input.managedToolNames ?? [])]
     .flatMap(name => [name, `paperclip_${name}`]));
   const capture = (key: string) => env[key] === "1";

@@ -87,6 +87,7 @@ import {
   canonicalOpenCodeMcpToolName,
   startOpenCodeMcpBridge,
   type OpenCodeMcpBridge,
+  type OpenCodeMcpBridgeOptions,
 } from "./mcp-bridge.js";
 import { nativeMcpLaunchBinding } from "../native-mcp.js";
 import {
@@ -394,6 +395,7 @@ export class OpenCodeServerDriver implements HarnessDriver {
           root,
           cwd,
           trace,
+          onRejectedCall: (call, error) => session?.observeRejectedToolCall(call, error),
           dispatch: (call) => {
             if (session === null)
               throw new Error("OpenCode session is not ready for tool calls");
@@ -1106,6 +1108,17 @@ class OpenCodeHarnessSession implements HarnessSession {
       { turnId: request.turnId, itemId: request.itemId },
       { bypassTerminalTurnGate: true },
     );
+  }
+
+  observeRejectedToolCall(call: { tool: string; callId: string; arguments: unknown }, error: string): void {
+    const turnId = this.#activeTurnId;
+    if (!turnId || this.#closed) return;
+    this.#emit("item.started", {
+      kind: "dynamicToolCall", item: { type: "tool_call", id: call.callId, name: call.tool, arguments: call.arguments },
+    }, { turnId, itemId: call.callId });
+    this.#emit("item.completed", {
+      kind: "dynamicToolCall", item: { type: "tool_result", id: call.callId, tool_use_id: call.callId, is_error: true, error },
+    }, { turnId, itemId: call.callId });
   }
 
   async dispatchTool(call: {
@@ -2397,6 +2410,7 @@ async function startRuntime(input: {
   root: string;
   cwd: string;
   trace: ProviderTraceFileSink | null;
+  onRejectedCall?: OpenCodeMcpBridgeOptions["onRejectedCall"];
   dispatch: (call: {
     tool: string;
     callId: string;
@@ -2434,6 +2448,7 @@ async function startRuntime(input: {
   const bridge = await startOpenCodeMcpBridge({
     tools: input.options.dynamicTools,
     handler: input.dispatch,
+    onRejectedCall: input.onRejectedCall,
   }).catch(async (error) => {
     await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;

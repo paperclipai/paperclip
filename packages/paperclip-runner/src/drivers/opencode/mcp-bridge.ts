@@ -29,6 +29,7 @@ export interface OpenCodeMcpBridgeOptions {
   /** Runner-owned operations callable only by a trusted harness extension and never advertised to the model. */
   privateTools?: readonly Readonly<Record<string, unknown>>[];
   handler: (call: OpenCodeMcpCall) => Promise<unknown>;
+  onRejectedCall?: (call: Pick<OpenCodeMcpCall, "tool" | "callId" | "arguments">, error: string) => void;
   timeoutMs?: number;
   /** Human-gated private operations may remain pending much longer than model tool calls. */
   privateToolTimeoutMs?: number;
@@ -76,6 +77,7 @@ export async function startOpenCodeMcpBridge(
       calls,
       controllers,
       handler: options.handler,
+      onRejectedCall: options.onRejectedCall,
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolTimeoutMs: options.privateToolTimeoutMs ?? options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       privateToolNames: new Set(privateTools.map((tool) => tool.name)),
@@ -146,6 +148,7 @@ async function handleRequest(
     calls: Map<string, { fingerprint: string; promise: Promise<unknown> }>;
     controllers: Map<string, AbortController>;
     handler: OpenCodeMcpBridgeOptions["handler"];
+    onRejectedCall: OpenCodeMcpBridgeOptions["onRejectedCall"];
     timeoutMs: number;
     privateToolTimeoutMs: number;
     privateToolNames: ReadonlySet<string>;
@@ -236,9 +239,11 @@ async function handleRequest(
   const validator = context.validators.get(tool);
   if (validator === undefined || !validator(args)) {
     const detail = validator?.errors?.map((error) => `${error.instancePath || "/"} ${error.message ?? "is invalid"}`).join("; ");
+    const error = `Invalid tool input${detail ? `: ${detail}` : "."}`;
+    try { context.onRejectedCall?.({ tool, callId, arguments: args }, error); } catch {}
     writeRpc(response, id, {
       isError: true,
-      content: [{ type: "text", text: `Invalid tool input${detail ? `: ${detail}` : "."}` }],
+      content: [{ type: "text", text: error }],
     });
     return;
   }

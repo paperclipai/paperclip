@@ -35,7 +35,8 @@ capture enabled, Paperclip tool spans include `braintrust.input` diagnostics
 argument JSON type and types for a fixed list of envelope fields. These are
 shape diagnostics, not a copy of the arguments. Arbitrary field names, argument
 values, nested payloads and full model request bodies are not captured.
-Paperclip tool spans use authenticated dispatch IDs; provider SSE events for
+Authenticated schema rejections also produce failed tool spans without invoking
+the controller handler. Paperclip tool spans use authenticated dispatch IDs; provider SSE events for
 those declared tools do not create duplicate spans. Native tools retain their
 provider spans without submitted-argument diagnostics. OpenCode's performance-only OTLP sink stays separate.
 
