@@ -39,12 +39,14 @@ it.skipIf(!linuxCi)("attests real OpenCode client acceptance through runnerd, pr
     const counts: number[] = [];
     for (const negative of [false, true]) {
       const accepted = new Set<string>(); let negativeObserved = false, requests = 0, fixtureError = false;
+      let justIssued: string | undefined;
       const provider = createServer(async (request, response) => {
         try {
           if (request.method !== "POST" || request.url !== "/v1/chat/completions" || ++requests > 12) throw new Error("diagnostic_route");
           let size = 0; const chunks: Buffer[] = [];
           for await (const chunk of request) { size += chunk.length; if (size > 1024 * 1024) throw new Error("diagnostic_body_bound"); chunks.push(chunk); }
-          const scripted = identityResponse(JSON.parse(Buffer.concat(chunks).toString("utf8")), negative);
+          const scripted = identityResponse(JSON.parse(Buffer.concat(chunks).toString("utf8")), negative, justIssued);
+          justIssued = scripted.delta.tool_calls?.[0]?.id;
           for (const id of scripted.accepted) accepted.add(id);
           negativeObserved ||= scripted.negativeObserved;
           response.writeHead(200, { "Content-Type": "text/event-stream" });

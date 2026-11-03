@@ -30,3 +30,10 @@ it("missing, duplicate, mismatched and malformed results fail instead of accepti
 it("does not inherit credentials or change HOME for a child", () => {
   expect(diagnosticChildEnvironment("/usr/bin:/bin")).toEqual({ PATH: "/usr/bin:/bin", LANG: "C.UTF-8" });
 });
+
+it("rejects a dropped immediate result rather than retrying the same logical call until it appears", () => {
+  const issued = identityResponse(body([])).delta.tool_calls![0]!.id;
+  expect(() => identityResponse(body([]), false, issued)).toThrow("diagnostic_next_result_missing");
+  expect(identityResponse(body([message(issued)]), false, issued).accepted).toEqual([issued]);
+  expect(identityResponse(body([message(issued, failedIdentity)]), true, issued).negativeObserved).toBe(true);
+});

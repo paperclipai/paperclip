@@ -27,9 +27,12 @@ export function acceptedIdentityIds(messages: unknown): string[] {
 export function identityAcceptanceComplete(messages: unknown): boolean {
   return JSON.stringify(acceptedIdentityIds(messages)) === JSON.stringify(identityCallIds);
 }
-export function identityResponse(body: unknown, negative = false) {
+export function identityResponse(body: unknown, negative = false, expectedPreviousId?: string) {
   const b = row(body);
   if (b.model !== "protocol-diagnostic" || b.stream !== true || !Array.isArray(b.messages)) throw new Error("diagnostic_request_invalid");
+  if (expectedPreviousId && (!identityCallIds.includes(expectedPreviousId)
+    || !b.messages.some(value => row(value).role === "tool" && row(value).tool_call_id === expectedPreviousId)))
+    throw new Error("diagnostic_next_result_missing");
   const tools = Array.isArray(b.tools) ? b.tools.map(value => row(row(value).function)) : [];
   const tool = tools.filter(value => /(?:^|_)get_identity$/.test(String(value.name)));
   if (tool.length !== 1) throw new Error("diagnostic_tool_missing");
