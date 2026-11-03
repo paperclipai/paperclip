@@ -441,7 +441,7 @@ function ReceiptDisclosure({
       .map((option) => option.label);
     request = (
       <div>
-        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences}>
+        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences} mediaMode="reference">
           {interaction.payload.prompt}
         </MarkdownBody>
         {interaction.status === "accepted" ? (
@@ -532,7 +532,7 @@ function ReceiptDisclosure({
   } else {
     request = (
       <div className="grid gap-2">
-        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences}>
+        <MarkdownBody className="text-sm text-foreground" externalReferences={externalReferences} mediaMode="reference">
           {interaction.payload.prompt}
         </MarkdownBody>
         {interaction.payload.detailsMarkdown ? (
@@ -879,7 +879,7 @@ function ConfirmationCard({
         />
       ) : isPlanConfirmation && rejecting ? null : (
         <div className="space-y-2">
-          <MarkdownBody className="text-sm leading-5 text-foreground" externalReferences={externalReferences}>
+          <MarkdownBody className="text-sm leading-5 text-foreground" externalReferences={externalReferences} mediaMode="reference">
             {isPlanConfirmation
               ? "Do you accept this plan?"
               : interaction.payload.prompt}
@@ -1169,15 +1169,17 @@ function CheckboxConfirmationCard({
   return (
     <div>
       <div className="space-y-2">
-        <MarkdownBody className="text-sm leading-5 text-foreground" externalReferences={externalReferences}>
-          {interaction.payload.prompt}
-        </MarkdownBody>
+        <div id={`${interaction.id}-prompt`}>
+          <MarkdownBody className="text-sm leading-5 text-foreground" externalReferences={externalReferences} mediaMode="reference">
+            {interaction.payload.prompt}
+          </MarkdownBody>
+        </div>
         <CompactTarget interaction={interaction} />
       </div>
       <div
         className="mt-3 grid gap-1"
         role="group"
-        aria-label={interaction.payload.prompt}
+        aria-labelledby={`${interaction.id}-prompt`}
       >
         {interaction.payload.options.length > 10 ? (
           <label className="relative mb-1 block">

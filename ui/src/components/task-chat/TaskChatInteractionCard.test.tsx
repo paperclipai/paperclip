@@ -422,7 +422,7 @@ describe("TaskChatInteractionCard", () => {
       ? createRequestConfirmation()
       : pendingRequestCheckboxConfirmationInteraction);
     interaction.status = status;
-    interaction.payload.prompt = "Review the [two screenshots](/PAP/issues/PAP-42#document-preview).\n\nSelect **Accept** to keep this design.\n\n- Check `preview.png`\n- Keep the layout";
+    interaction.payload.prompt = "Review the [two screenshots](/PAP/issues/PAP-42#document-preview).\n\nSelect **Accept** to keep this design.\n\n- Check `preview.png`\n- Keep the layout\n\n![Review image](https://provider.invalid/review.png)\n\n```mermaid\nflowchart LR\n  A --> B\n```";
     if (status === "accepted") interaction.result = { version: 1, outcome: "accepted" };
     const accept = vi.fn();
     const reject = vi.fn();
@@ -440,11 +440,26 @@ describe("TaskChatInteractionCard", () => {
     const prompt = link?.closest(".paperclip-markdown");
     expect(prompt?.querySelector("strong")?.textContent).toBe("Accept");
     expect(prompt?.querySelector("code")?.textContent).toBe("preview.png");
-    expect(prompt?.querySelectorAll("p")).toHaveLength(2);
+    expect(prompt?.querySelector("img")).toBeNull();
+    expect(prompt?.querySelectorAll("p")).toHaveLength(3);
+    expect(prompt?.querySelector("[data-markdown-image-reference]")?.textContent)
+      .toContain("Image: Review image (https://provider.invalid/review.png)");
+    expect(prompt?.querySelector("pre code.language-mermaid")?.textContent)
+      .toContain("flowchart LR");
+    expect(prompt?.querySelector(".paperclip-mermaid")).toBeNull();
     expect(prompt?.querySelectorAll("li")).toHaveLength(2);
     expect(prompt?.textContent).not.toContain("[two screenshots]");
     expect(accept).not.toHaveBeenCalled();
     expect(reject).not.toHaveBeenCalled();
+    if (kind === "checkbox" && status === "pending") {
+      const group = container.querySelector('[role="group"]');
+      const label = document.getElementById(group?.getAttribute("aria-labelledby") ?? "");
+      expect(label?.contains(prompt ?? null)).toBe(true);
+      expect(label?.textContent).toContain("two screenshots");
+      expect(label?.textContent).not.toContain("[two screenshots]");
+      expect(label?.textContent).not.toContain("**Accept**");
+      expect(group?.getAttribute("aria-label")).toBeNull();
+    }
   });
 
   it("stacks the confirmation prompt full-width and hides unlabeled custom target keys", () => {

@@ -165,6 +165,8 @@ rejection and revision remain available. Live tool reviews keep their own approv
 Confirmation and checkbox confirmation prompts use the shared Markdown renderer.
 Links, lists, emphasis, code and paragraph breaks remain readable in the task
 composer, classic cards and expanded receipts.
+Prompt images appear as references and diagrams as source text. Checkbox groups
+use the rendered prompt as their accessible label.
 
 Pending questions, confirmations, and other task-thread inputs appear in a separate
 card directly above the ordinary composer. The composer stays available for new
