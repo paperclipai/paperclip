@@ -3437,6 +3437,8 @@ describe("IssueDetail", () => {
       }, systemRecovery: { state: "exhausted", preservationOperationIds: [] } },
     } as unknown as NonNullable<Issue["activeRecoveryAction"]>;
     const issue = createIssue({ status: "blocked", assigneeAgentId: "agent-1", activeRecoveryAction: action,
+      interruption: { intentId: "held-input", responsibility: "system", state: "failed", nextRetryAt: null,
+        canRetry: true, userAction: null, sourceRunIds: ["stopped-run"], observedRunId: "stopped-run" },
       executionBlocker: { runId: "stopped-run", canRetry: false, workspaceRepairRequired: true,
         workspaceRecovery: { status: "blocked", stage: "restoring_files", canRetry: true } } as Issue["executionBlocker"],
     });
@@ -3453,6 +3455,7 @@ describe("IssueDetail", () => {
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect([...container.querySelectorAll("button")]
       .some(button => button.textContent === "Recover saved files")).toBe(true));
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Retry")).toBe(false);
     const preserve = [...container.querySelectorAll("button")].find(button => button.textContent === "Recover saved files")!;
     await act(async () => preserve.click());
     await waitForAssertion(() => expect(mockIssuesApi.recoverWorkspace).toHaveBeenCalledExactlyOnceWith("issue-1", {

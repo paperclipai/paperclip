@@ -192,6 +192,45 @@ describe("governed retained-file recovery", () => {
     expect(api.recover).toHaveBeenCalledTimes(1);
   });
 
+  it("offers a new explicit request only after the prior accepted attempt is confirmed exhausted", async () => {
+    let current = action;
+    const accepted: string[] = [];
+    api.inspect.mockImplementation(async () => inspection(current));
+    api.recover.mockImplementation(async (_issue, body) => {
+      accepted.push(body.idempotencyKey);
+      current = { ...action, evidence: { ...action.evidence, workspaceRecovery: {
+        ...(action.evidence.workspaceRecovery as object), requestIds: [...accepted],
+      } } };
+      return { actionId: action.id, status: "queued" };
+    });
+    await mount(); await click("Recover saved files");
+    expect(container.textContent).toContain("File recovery has not finished");
+    expect(api.recover).toHaveBeenCalledTimes(1);
+    await click("Try file recovery again");
+    expect(api.recover).toHaveBeenCalledTimes(2);
+    expect(accepted[1]).not.toBe(accepted[0]);
+    expect(container.textContent).not.toContain("Saved files recovered");
+  });
+
+  it("does not replace the confirmed failed key if another recovery is active at the fresh read", async () => {
+    let current = action;
+    api.inspect.mockImplementation(async () => inspection(current));
+    api.recover.mockImplementation(async (_issue, body) => {
+      current = { ...action, evidence: { ...action.evidence, workspaceRecovery: {
+        ...(action.evidence.workspaceRecovery as object), requestIds: [body.idempotencyKey],
+      } } };
+      return { actionId: action.id, status: "queued" };
+    });
+    await mount(); await click("Recover saved files");
+    const previous = api.recover.mock.calls[0][1].idempotencyKey;
+    current = { ...current, evidence: { ...current.evidence, workspaceRecovery: {
+      ...(current.evidence.workspaceRecovery as object), status: "recovering",
+    } } };
+    await click("Try file recovery again");
+    expect(api.recover).toHaveBeenCalledTimes(1);
+    expect(localStorage.getItem("workspace-file-recovery:company-1:issue-1:action-1:run-1:board-1")).toContain(previous);
+  });
+
   it("only reports recovered files after the durable preservation receipt is present", async () => {
     const recovered = { ...action, evidence: { ...action.evidence, workspaceRecovery: {
       ...(action.evidence.workspaceRecovery as object), status: "recovered",

@@ -86,11 +86,12 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
     void client.invalidateQueries({ queryKey: queryKeys.issues.runs(issueId) });
     void client.invalidateQueries({ queryKey: queryKeys.runDetail(runId) });
   };
-  const request = useMutation({ retry: false, mutationFn: async () => {
+  const request = useMutation({ retry: false, mutationFn: async (restartFailedAttempt: boolean) => {
     if (busy.current) return;
     busy.current = true;
     setNotice(null);
     setCheckedUnconfirmed(false);
+    setAcknowledged(false);
     try {
       const observed = await source.refetch();
       const fresh = boundAction(observed.data);
@@ -99,7 +100,14 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
         throw new Error("File recovery changed. Inspect its current status before requesting recovery.");
       if (!canMutate || !owner || readOwner() !== owner || !storageKey)
         throw new Error("Your account changed. Refresh before requesting file recovery.");
-      const record = readPendingSend(storageKey, matchesInput) ?? {
+      const previous = readPendingSend(storageKey, matchesInput);
+      if (restartFailedAttempt && (!previous || !Array.isArray(state.requestIds)
+        || !state.requestIds.includes(previous.idempotencyKey)
+        || asObject(fresh.evidence.systemRecovery).state !== "exhausted"))
+        throw new Error("The previous failed recovery is not confirmed. Check its status before trying again.");
+      // Unknown acceptance reuses its identity. A new bounded request requires
+      // an explicit operator click and a freshly confirmed exhausted attempt.
+      const record = (!restartFailedAttempt && previous) || {
         idempotencyKey: crypto.randomUUID(), payload: { actionId: action.id, runId }, createdAt: Date.now(),
       };
       if (!writePendingSend(storageKey, record))
@@ -134,6 +142,7 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
     invalidate();
   } });
   const failedReceipt = serverAcknowledged && recovery.status === "blocked";
+  const confirmedFailedAttempt = failedReceipt && retryable && system.state === "exhausted";
   const waiting = !failedReceipt && !saved && (restoring || acknowledged || serverAcknowledged);
   const unconfirmed = Boolean(pending && !acknowledged && !serverAcknowledged);
   return <div className={cn("flex flex-col gap-2 text-sm", className)} data-testid="retained-file-recovery">
@@ -143,9 +152,10 @@ function RetainedFilesRecovery({ action, issueId, companyId, className }: {
         : waiting ? "File recovery is queued. Waiting for verified saved files."
           : "The saved files need recovery before work can continue."}</p>
     {canMutate ? <>
-      {current && retryable && !waiting && (!unconfirmed || checkedUnconfirmed) ? <Button variant="outline" size="sm"
+      {current && retryable && !waiting && (!pending || unconfirmed && checkedUnconfirmed || confirmedFailedAttempt) ? <Button variant="outline" size="sm"
         className="self-start" disabled={request.isPending || check.isPending}
-        onClick={() => request.mutate()}>{request.isPending ? "Requesting file recovery…" : "Recover saved files"}</Button> : null}
+        onClick={() => request.mutate(confirmedFailedAttempt)}>{request.isPending ? "Requesting file recovery…"
+          : confirmedFailedAttempt ? "Try file recovery again" : "Recover saved files"}</Button> : null}
       {waiting || unconfirmed || failedReceipt || source.isError || source.data && !current ? <Button variant="ghost" size="sm" className="self-start"
         disabled={request.isPending || check.isPending} onClick={() => check.mutate()}>
         {check.isPending ? "Checking file recovery…" : "Check file recovery status"}
