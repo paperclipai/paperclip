@@ -22,7 +22,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   const errors: unknown[] = [];
   beforeAll(async () => {
     if (!external) temporary = await startEmbeddedPostgresTestDatabase("chat-recovery-milestones-");
-    db = createDb(external ?? temporary!.connectionString, { idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
+    db = createDb(external ?? temporary!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
     fixtures = createChatMilestoneFixtures(db);
   }, 60_000);
   beforeEach(async () => {
@@ -77,6 +77,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
   });
 
   it("wakes an older failed run when recovery refreshes its quota classification", async () => {
+    // Keep both idempotence checks before the provider's midnight reset even
+    // when this file runs near midnight and quiet() advances the fake clock.
+    vi.setSystemTime(new Date("2026-11-02T12:00:00.000Z"));
     const runId = randomUUID(), old = new Date(Date.now() - 48 * 60 * 60_000);
     await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
       status: "failed", runtimeMode: "legacy", responsibleUserId: f.userId,
@@ -96,6 +99,9 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await flush();
     expect(await publications()).toEqual([expect.objectContaining({ idempotencyKey: `run:${runId}:failed:${f.endpointId}` })]);
     await quiet();
+    const [monitored] = await db.select({ nextCheckAt: issues.monitorNextCheckAt }).from(issues).where(eq(issues.id, f.issueId));
+    expect(monitored.nextCheckAt).toEqual(new Date("2026-11-03T00:00:00.000Z"));
+    expect(monitored.nextCheckAt!.getTime()).toBeGreaterThan(Date.now());
     expect(await recovery.reconcileStrandedAssignedIssues()).toMatchObject({ providerQuotaMonitored: 0, skipped: 1 });
     await flush(); await quiet(); expect(await publications()).toHaveLength(1);
   });
