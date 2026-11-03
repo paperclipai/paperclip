@@ -217,10 +217,20 @@ overlap. Exact requirements and limitations appear in each case's preconditions.
 A declared credential does not establish whether its runtime reference exists.
 
 This lane runs the app and fixtures from candidate
-`3b66c3c144360ddf32714a0742fd774b8ceafb16`. Its app and domain definitions are
-unchanged from `de0941835cc8f0d01c982574ee258e110babdbeb`; the successor adds only
-finite TestOps host admission. Trusted selection, evidence transfer and publishing
-use the workflow's immutable master revision. Each result records both revisions.
+`9ab0f951a5b5990c266ef4456610e0a0775aa334`. It retains the evaluated app from
+`3b66c3c144360ddf32714a0742fd774b8ceafb16` with four bounded fixture repairs:
+owned SDK staging, public membership for three incidental human fixtures,
+company settings observation inside its original case deadline, and exact
+controller-secret baseline handling for secure human entry. The last repair
+uses the explicit `company-secret-controller-baseline.v2` oracle. Its deployment
+secret, Morgan-only binding and privacy checks remain required.
+
+The manifest retains the original `de0941835cc8f0d01c982574ee258e110babdbeb`
+definition provenance and records each changed row field in `source.repairMetadata`.
+Queries, case limits, models and the other feature predicates remain unchanged.
+Original failed measurements stay historical. Trusted selection, evidence transfer
+and publishing use the workflow's immutable master revision. Each result records
+both revisions.
 A pass qualifies that candidate measurement, not the current master app. Other
 lanes sharing a case retain their own sources. This integration does not merge
 the broad catalog branch or its core fixes, reset earlier campaign ordinals, or

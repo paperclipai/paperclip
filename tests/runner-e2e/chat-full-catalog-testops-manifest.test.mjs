@@ -94,3 +94,25 @@ test('foreign identity, duplicated case and changed run-bound metadata are rejec
   const bounds = copy(); bounds.cases[0].minimumRuns = bounds.cases[0].maximumRuns + 1;
   assert.throws(() => validateFullCatalogManifest(bounds), /row_invalid/);
 });
+
+
+test('repair source metadata preserves original definitions and declares scoped observer and oracle changes', () => {
+  const repair = manifest.source.repairMetadata;
+  assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
+  assert.equal(manifest.targetSha, '9ab0f951a5b5990c266ef4456610e0a0775aa334');
+  assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
+  assert.deepEqual(repair.changedFields.map(value => [value.key, value.field]), [
+    ['companies.agent-observability', 'sourceFiles'], ['companies.configure-decision-model', 'sourceFiles'],
+    ['companies.fast-responses', 'sourceFiles'], ['companies.prompt-injection-guard', 'sourceFiles'],
+    ['secrets.configure-company-secret', 'oracleVersion'],
+  ]);
+  for (const change of repair.changedFields) {
+    assert.deepEqual(row(change.key)[change.field], change.current);
+    if (change.field === 'sourceFiles') {
+      assert.deepEqual(change.current.filter(value => value !== 'chat-catalog-domains/identity-company-observer.ts'), change.previous);
+    } else {
+      assert.equal(change.previous, 'paperclip.chat-catalog.external.v1');
+      assert.equal(change.current, 'paperclip.chat-catalog.company-secret-controller-baseline.v2');
+    }
+  }
+});
