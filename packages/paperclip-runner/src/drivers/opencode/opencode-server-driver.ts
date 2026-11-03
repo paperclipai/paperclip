@@ -2548,13 +2548,24 @@ async function startRuntime(input: {
       throw error;
     }
   }
-  const providerRoute = modelProvider === "openrouter"
-    ? { baseUrl: "https://openrouter.ai/api/v1", key: providerEnvironment.OPENROUTER_API_KEY ?? "" }
-    : modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
-      ? { baseUrl: input.options.environment.PAPERCLIP_AI_PROVIDER_URL, key: input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "" }
-      : null;
+  // An explicit custom provider for the selected model already owns the route
+  // and the credential, so the built-in OpenRouter and Paperclip routes must not
+  // replace them.
+  const hasCustomRouteForModel = customProviderCredentials.some(
+    (credential) => credential.providerId === modelProvider,
+  );
+  const providerRoute = hasCustomRouteForModel
+    ? null
+    : modelProvider === "openrouter"
+      ? { baseUrl: "https://openrouter.ai/api/v1", key: providerEnvironment.OPENROUTER_API_KEY ?? "" }
+      : modelProvider === "paperclip" && input.options.environment?.PAPERCLIP_AI_PROVIDER_URL
+        ? { baseUrl: input.options.environment.PAPERCLIP_AI_PROVIDER_URL, key: input.options.environment.PAPERCLIP_AI_PROVIDER_KEY ?? "" }
+        : null;
   const providerProxy = providerRoute
     ? await startOpenCodeProviderProxy(providerRoute.baseUrl, providerRoute.key, providerModelId, providerEnvironment).catch(async error => {
+        // The custom proxies already listen; this path runs before the outer
+        // cleanup scope, so release them here as well.
+        for (const proxy of customProviderProxies.splice(0)) await proxy.close().catch(() => {});
         await bridge.close().catch(() => {});
         await removeIsolatedHome(isolatedHome).catch(() => {});
         throw error;

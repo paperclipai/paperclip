@@ -95,4 +95,20 @@ describe("codexCustomProviders", () => {
       JSON.stringify({ providers: {}, modelProvider: null }),
     );
   });
+
+  it("skips a provider whose headers need variables the child drops", () => {
+    const parsed = codexCustomProviders({
+      PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+        providers: {
+          gateway: { base_url: "https://gateway.test/v1", env_http_headers: { "X-API-Key": "GATEWAY_KEY" } },
+          kept: { base_url: "https://kept.test" },
+        },
+      }),
+      GATEWAY_KEY: "gateway-key",
+    });
+
+    // Codex keeps only one provider variable, so a named header variable would
+    // never resolve. The entry is skipped rather than shipped broken.
+    expect(Object.keys(parsed.providers)).toEqual(["kept"]);
+  });
 });
