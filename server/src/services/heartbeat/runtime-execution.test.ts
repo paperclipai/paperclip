@@ -1,3 +1,5 @@
+import { chmod, realpath } from "node:fs/promises";
+import { createServer } from "node:net";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
@@ -120,6 +122,38 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(revokeHeartbeatRunGatewayTokens).toHaveBeenCalledWith({ db, companyId: input.agent.companyId, runId: input.run.id });
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
+
+  it("issues the matching observer to a private sink before adapter dispatch", async () => {
+    const { input, adapter, run } = await fixture();
+    const dir = await realpath(home), socketPath = join(dir, "observer.sock");
+    const received: Array<{ runId: string; token: string }> = [];
+    const sink = createServer(socket => { let data = ""; socket.on("data", chunk => {
+      data += chunk.toString(); if (data.includes("\n")) { received.push(JSON.parse(data)); socket.end("ok\n"); }
+    }); });
+    await new Promise<void>((resolve, reject) => sink.once("error", reject).listen(socketPath, resolve));
+    await chmod(socketPath, 0o600);
+    const keys = ["PAPERCLIP_OBSERVER_SINK_SOCKET", "PAPERCLIP_OBSERVER_SINK_COMPANY_ID", "PAPERCLIP_OBSERVER_SINK_AGENT_ID", "PAPERCLIP_AGENT_JWT_SECRET"] as const;
+    const saved = keys.map(key => process.env[key]);
+    process.env.PAPERCLIP_OBSERVER_SINK_SOCKET = socketPath;
+    process.env.PAPERCLIP_OBSERVER_SINK_COMPANY_ID = run.companyId;
+    process.env.PAPERCLIP_OBSERVER_SINK_AGENT_ID = run.agentId;
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "fictional-signing-secret";
+    try {
+      adapter.execute.mockImplementationOnce(async () => {
+        expect(received).toHaveLength(1);
+        expect(received[0]?.runId).toBe(run.id);
+        const claims = JSON.parse(Buffer.from(received[0]!.token.split(".")[1]!, "base64url").toString());
+        expect(claims.key_scope).toEqual({ kind: "run_status_observer" });
+        expect(claims.run_id).toBe(run.id);
+        return { exitCode: 0, signal: null, timedOut: false };
+      });
+      expect(await executeHeartbeatRuntime(db, input)).toMatchObject({ dispatched: true });
+      expect(adapter.execute).toHaveBeenCalledOnce();
+    } finally {
+      keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
+      await new Promise<void>(resolve => sink.close(() => resolve()));
+    }
+  });
 
   it("passes preparation renewal ownership to native dispatch", async () => {
     const { input } = await fixture(true);
