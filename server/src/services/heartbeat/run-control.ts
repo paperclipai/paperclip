@@ -1,3 +1,4 @@
+import { cancelPendingRunApprovals } from "../run-approval-cancellation.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
@@ -1282,6 +1283,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           throw conflict("Budget Stop is committed, but provider termination has not been acknowledged", { runId: run.id });
         }
         await acknowledgeBudgetCancellation(run, terminationProof);
+      }
+      if (run.status === "cancelled") {
+        await db.transaction(async transaction => {
+          const tx = transaction as unknown as Db;
+          const [current] = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.id, run!.id), eq(heartbeatRuns.companyId, run!.companyId))).for("update");
+          if (current?.status === "cancelled") await cancelPendingRunApprovals(tx, run!.companyId, current.id);
+        });
       }
       return run;
     }
