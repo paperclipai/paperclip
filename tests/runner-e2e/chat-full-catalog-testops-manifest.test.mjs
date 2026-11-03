@@ -103,7 +103,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
   assert.equal(repair.previousTargetSha, 'ab2019e976076ec0eb60b026844f3d9211cb0208');
-  assert.equal(manifest.targetSha, 'd113cd3fde393230a343e13cb4672259f67b183a');
+  assert.equal(manifest.targetSha, '07f71dbd75a77b6d2ff96e3d4d289d1947538091');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
@@ -316,6 +316,8 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   assert.deepEqual(repair.runtimeConditions.studio144Accounting, { key: 'skills.studio-test', previousMinimumRuns: 2, previousMaximumRuns: 2, minimumRuns: 2, maximumRuns: 3, requiredActualAcceptedRuns: 3, originalAttemptTimeoutMs: 540000, humanMessages: 1, condition: 'Initial CEO + real Studio worker + exactly one source-bound completion delivery;2-run no-delivery positive is rejected.' });
   assert.equal(repair.runtimeConditions.toolGuidance106.corePRUnmerged, false);
   assert.equal(repair.runtimeConditions.sdkPublicProof.scannerAndCanaryCertificatesUnchanged, true);
+  assert.equal(repair.runtimeConditions.sdkPublicProof.sourceInputsChanged, true);
+  assert.equal(repair.runtimeConditions.sdkPublicProof.registrySha256, "9169583e54d165dc8d08b9a9010175d11ca87f3590477a7b23032508020ea039");
   assert.equal(repair.runtimeConditions.sdkPublicProof.plugin558StillHeld, true);
   assert.equal(repair.runtimeConditions.sdkPublicProof.expectedLockSha256, "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8");
   assert.equal(repair.runtimeConditions.sdkPublicProof.runtimeCompilerParserZodIdentitiesUnchanged, true);

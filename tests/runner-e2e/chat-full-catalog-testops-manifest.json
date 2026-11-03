@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "d113cd3fde393230a343e13cb4672259f67b183a",
+  "targetSha": "07f71dbd75a77b6d2ff96e3d4d289d1947538091",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -1527,8 +1527,8 @@
           "condition": "Reviewed synthetic staging input only; per-worker singleton550 enables it; production feed and global index unchanged."
         },
         "sdkPublicProof": {
-          "previousRegistrySha256": "018b5b15450e84f63920575de3b5903f7838678ef66a1e17aa050e0b21b40319",
-          "registrySha256": "32c7971e1d9c9d31cd6791045b0265f0475c8f10932ff6dd34681681b6a89342",
+          "previousRegistrySha256": "32c7971e1d9c9d31cd6791045b0265f0475c8f10932ff6dd34681681b6a89342",
+          "registrySha256": "9169583e54d165dc8d08b9a9010175d11ca87f3590477a7b23032508020ea039",
           "inputCount": 506,
           "scannerAndCanaryCertificatesUnchanged": true,
           "plugin558StillHeld": true,
@@ -1536,7 +1536,27 @@
           "previousExpectedLockSha256": "c7f23021335b60da0cff1dd4c75cf8b948333ef3165d7d1703eb79a589edb798",
           "expectedLockSha256": "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8",
           "historical43Finding": "detector3 unresolved_context/publicSource null; owning proof rejected stale expected lock",
-          "newCandidate115Unqualified": true
+          "newCandidate115Unqualified": true,
+          "sourceInputsChanged": true,
+          "changedInputPaths": [
+            "packages/shared/src/types/work-timeline.ts"
+          ],
+          "compileQualification": {
+            "baselineSourceSha": "124232037eebe73a513907b08f0e96bfdd454c82",
+            "compiledSourceSha": "6abe5739a713d0a8bb0308b1495846881b82d253",
+            "acceptedSourceSha": "6a8e096a577fd0da562f2032b6a7472b3b408b61",
+            "all506InputGitBlobsMatched": true,
+            "owningSharedAndPluginSdkTypeScriptBuildsPassed": true,
+            "changedRuntimeJavaScriptFiles": 0,
+            "changedDeclarationFiles": [
+              "packages/shared/dist/types/work-timeline.d.ts"
+            ],
+            "existingAndUnassignedConsumerCompiled": true,
+            "unknownEventKindRejected": true,
+            "sourceSdkControlsPassed": 51,
+            "inputAndBuildCustodyControlsPassed": 20,
+            "runtimeHeldCasesRemainHeld": true
+          }
         },
         "toolProposal487": {
           "corePr": 18734,
@@ -1558,7 +1578,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "d113cd3fde393230a343e13cb4672259f67b183a",
+        "targetSha": "07f71dbd75a77b6d2ff96e3d4d289d1947538091",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
       }

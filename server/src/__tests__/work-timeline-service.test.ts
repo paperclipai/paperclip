@@ -314,6 +314,11 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
       },
     ]);
 
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentAId,
+      action: "issue.created", entityType: "issue", entityId: childIssueId,
+      createdAt: new Date("2026-03-01T11:00:00Z"), details: { parentId: parentIssueId,
+        assigneeAgentId: agentBId, assigneeUserId: null, source: "paperclip_runner_protocol" } });
+
     const result = await workTimelineService(db).getTimeline({
       companyId,
       from: new Date("2026-03-01T00:00:00Z"),
@@ -581,7 +586,7 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     }
   });
 
-  it("checks ownership history once for the readable page and its readable parents only", async () => {
+  it("reads creation and assignment receipts only inside the bounded readable page window", async () => {
     const { companyId, userId, agentAId, agentBId } = await seedBase();
     const parentId = randomUUID(), childId = randomUUID(), hiddenId = randomUUID(), unpagedId = randomUUID();
     const foreignCompanyId = randomUUID();
@@ -605,34 +610,30 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
         from: new Date("2026-03-05T00:00:00Z"), to: new Date("2026-03-06T00:00:00Z"),
         canReadIssue: async issue => issue.id !== hiddenId });
     } finally { db.$client.options.debug = previousDebug; }
-    const history = queries.filter(row => /^select distinct /i.test(row.query) && row.query.includes('"activity_log"'));
-    expect(history).toHaveLength(1);
-    expect(history[0]!.query).not.toContain("created_at");
-    const scopedIds = history[0]!.parameters.filter(value => typeof value === "string" && /^[a-f0-9-]{36}$/.test(value));
-    expect(new Set(scopedIds)).toEqual(new Set([companyId, parentId, childId]));
-    const rows = await db.$client.unsafe(history[0]!.query, history[0]!.parameters as any[]);
-    expect(rows.map(row => row.entity_id)).toEqual([parentId]);
-    const explain = await db.$client.unsafe(`explain (analyze, format json) ${history[0]!.query}`, history[0]!.parameters as any[]);
-    const plan = explain[0]!["QUERY PLAN"][0].Plan;
-    expect(plan["Actual Rows"]).toBe(1);
-    expect(result.edges).toContainEqual(expect.objectContaining({ issueId: childId, kind: "assignment", toActorId: `agent:${agentBId}` }));
-    expect(result.edges.some(edge => edge.kind === "delegation")).toBe(false);
+    expect(queries.some(row => /^select distinct /i.test(row.query) && row.query.includes('"activity_log"'))).toBe(false);
+    const receipts = queries.filter(row => row.query.includes('from "activity_log"') && row.query.includes('"details"') && !row.query.includes("join"));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.query).toMatch(/"created_at" >=/);
+    expect(receipts[0]!.query).toMatch(/"created_at" <=/);
+    const scopedIds = receipts[0]!.parameters.filter(value => typeof value === "string" && /^[a-f0-9-]{36}$/.test(value));
+    expect(new Set(scopedIds)).toEqual(new Set([companyId, childId]));
+    expect(result.edges).toEqual([]);
     expect(result.events.every(event => event.issueId === childId)).toBe(true);
-    console.info("Timeline ownership lookup", JSON.stringify({ queryCount: history.length, scopedIssueCount: 2,
-      returnedIssueCount: rows.length, actualPlanRows: plan["Actual Rows"], planNode: plan["Node Type"] }));
+
   });
 
-  it("fails the route when ownership history cannot be read instead of inventing creation ownership", async () => {
+  it("fails the route when bounded activity receipts cannot be read instead of inventing ownership", async () => {
     const { companyId, agentAId } = await seedBase();
     const issueId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "History failure", status: "done", assigneeAgentId: agentAId,
       createdAt: new Date("2026-03-05T10:00:00Z"), updatedAt: new Date("2026-03-05T10:00:00Z") });
-    const selectDistinct = db.selectDistinct.bind(db);
-    const fault = vi.spyOn(db, "selectDistinct").mockImplementationOnce(() => selectDistinct({ issueId: sql<string>`1 / 0` }) as any);
+    const select = db.select.bind(db);
+    const fault = vi.spyOn(db, "select").mockImplementation(((fields: any) =>
+      fields?.creationRecorded ? select({ ...fields, creationRecorded: sql`1 / 0` }) : select(fields)) as any);
     try {
       const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
         .query({ issueId, from: "2026-03-05T00:00:00Z", to: "2026-03-06T00:00:00Z" });
-      expect(fault).toHaveBeenCalledOnce();
+      expect(fault).toHaveBeenCalled();
       expect(response.status).toBe(500);
       expect(response.body).not.toHaveProperty("edges");
     } finally { fault.mockRestore(); }
@@ -680,6 +681,9 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
       const assigneeAgentId = kind === "null" ? null : kind === "self-assignment" ? agentBId : agentAId;
       await db.insert(issues).values({ id: issueId, companyId, title: kind, status: "done",
         priority: "medium", assigneeAgentId, createdByUserId: userId, createdAt, updatedAt: changedAt });
+      await db.insert(activityLog).values({ companyId, actorType: "user", actorId: userId,
+        action: "issue.created", entityType: "issue", entityId: issueId, createdAt,
+        details: { parentId: null, assigneeAgentId: agentAId, assigneeUserId: null } });
       const details = kind === "absent" ? { status: "done" }
         : kind === "canonical-empty" ? { assigneeAgentId, changes: {} }
         : kind === "canonical-unchanged" ? { assigneeAgentId, changes: { assigneeAgentId: { from: agentAId, to: agentAId } } }
@@ -693,12 +697,16 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
       const assignmentEdges = res.body.edges.filter((edge: { kind: string }) => edge.kind === "assignment");
       if (kind === "self-assignment") {
         expect(assigned).toEqual([{ actorId: `agent:${agentAId}`, kind: "assigned", issueId, at: changedAt.toISOString() }]);
-        expect(assignmentEdges).toEqual([{ fromActorId: `agent:${agentAId}`, toActorId: `agent:${agentBId}`,
-          issueId, at: changedAt.toISOString(), kind: "assignment" }]);
+        expect(assignmentEdges).toEqual(expect.arrayContaining([
+          { fromActorId: `user:${userId}`, toActorId: `agent:${agentAId}`, issueId, at: createdAt.toISOString(), kind: "assignment" },
+          { fromActorId: `agent:${agentAId}`, toActorId: `agent:${agentBId}`, issueId, at: changedAt.toISOString(), kind: "assignment" },
+        ]));
       } else {
         expect(assigned).toEqual([]);
-        expect(assignmentEdges).toHaveLength(kind === "null" ? 0 : 1);
-        if (kind !== "null") expect(assignmentEdges[0]).toMatchObject({ at: createdAt.toISOString(), toActorId: `agent:${agentAId}` });
+        expect(assignmentEdges).toHaveLength(1);
+        expect(assignmentEdges[0]).toMatchObject({ at: createdAt.toISOString(), toActorId: `agent:${agentAId}` });
+        expect(res.body.events.filter((event: { kind: string }) => event.kind === "unassigned")).toEqual(kind === "null"
+          ? [{ actorId: `agent:${agentAId}`, kind: "unassigned", issueId, at: changedAt.toISOString() }] : []);
       }
     }
   });
@@ -710,6 +718,9 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     const createdAt = new Date(Date.now() - 60_000);
     await db.insert(issues).values({ id: issueId, companyId, title: "Producer receipt launch",
       status: "todo", priority: "medium", assigneeAgentId: agentAId, createdByUserId: userId, createdAt, updatedAt: createdAt });
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: userId,
+      action: "issue.created", entityType: "issue", entityId: issueId, createdAt,
+      details: { parentId: null, assigneeAgentId: agentAId, assigneeUserId: null } });
     const app = createApp(userId, true);
     const repeated = await request(app).patch(`/api/issues/${issueId}`).send({ status: "backlog", assigneeAgentId: agentAId });
     expect(repeated.status, JSON.stringify(repeated.body)).toBe(200);
@@ -737,12 +748,16 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     expect(changed.events.filter((event: { kind: string }) => event.kind === "assigned")).toEqual([
       expect.objectContaining({ actorId: `user:${userId}`, issueId, kind: "assigned" }),
     ]);
-    expect(changed.edges.filter((edge: { kind: string }) => edge.kind === "assignment")).toEqual([
+    expect(changed.edges.filter((edge: { kind: string }) => edge.kind === "assignment")).toEqual(expect.arrayContaining([
+      { fromActorId: `user:${userId}`, toActorId: `agent:${agentAId}`, issueId, at: createdAt.toISOString(), kind: "assignment" },
       expect.objectContaining({ fromActorId: `user:${userId}`, toActorId: `agent:${agentBId}`, issueId }),
-    ]);
+    ]));
     const unassigned = await request(app).patch(`/api/issues/${issueId}`).send({ assigneeAgentId: null });
     expect(unassigned.status, JSON.stringify(unassigned.body)).toBe(200);
     const cleared = await timeline();
+    const removal = (await db.select().from(activityLog)).find(row => row.entityId === issueId
+      && (row.details as any)?.changes?.assigneeAgentId?.to === null)!;
+    expect(cleared.events).toContainEqual({ actorId: `user:${userId}`, kind: "unassigned", issueId, at: removal.createdAt.toISOString() });
     expect(cleared.edges.filter((edge: { kind: string }) => edge.kind === "assignment")).toEqual(changed.edges.filter((edge: { kind: string }) => edge.kind === "assignment"));
     expect(await db.select().from(heartbeatRuns)).toEqual([]);
   });
@@ -777,4 +792,156 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
       pagination: expect.objectContaining({ totalIssues: 1 }),
     }));
   });
+  it("uses immutable creation assignment and delegation receipts despite later ownership", async () => {
+    const { companyId, userId, agentAId, agentBId } = await seedBase();
+    const parentId = randomUUID(), issueId = randomUUID();
+    const createdAt = new Date("2026-03-01T11:00:00Z");
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Parent", status: "done", createdByUserId: userId, assigneeAgentId: agentBId,
+        createdAt: new Date("2026-03-01T10:00:00Z"), updatedAt: new Date("2026-03-03T10:00:00Z") },
+      { id: issueId, companyId, title: "Child", parentId, status: "done", createdByAgentId: agentAId, assigneeAgentId: agentAId,
+        createdAt, updatedAt: new Date("2026-03-03T10:00:00Z") },
+    ]);
+    // This is the immutable receipt shape written by the native create_task authority.
+    await db.insert(activityLog).values([
+      { companyId, actorType: "agent", actorId: agentAId, action: "issue.created", entityType: "issue", entityId: issueId,
+        createdAt, details: { identifier: "TL-child", title: "Child", parentId, assigneeAgentId: agentBId,
+          assigneeUserId: null, status: "todo", source: "paperclip_runner_protocol" } },
+      { companyId, actorType: "user", actorId: userId, action: "issue.updated", entityType: "issue", entityId: issueId,
+        createdAt: new Date("2026-03-03T10:00:00Z"), details: { changes: { assigneeAgentId: { from: agentBId, to: agentAId } } } },
+    ]);
+    const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ limit: 1, from: "2026-03-01T00:00:00Z", to: "2026-03-02T00:00:00Z" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.edges).toEqual(expect.arrayContaining([
+      { fromActorId: `agent:${agentAId}`, toActorId: `agent:${agentBId}`, issueId, at: createdAt.toISOString(), kind: "assignment" },
+      { fromActorId: `agent:${agentAId}`, toActorId: `agent:${agentBId}`, issueId, at: createdAt.toISOString(), kind: "delegation" },
+    ]));
+    expect(response.body.events).toContainEqual({ actorId: `agent:${agentAId}`, issueId, at: createdAt.toISOString(), kind: "delegated" });
+  });
+
+  it("does not infer creation ownership when immutable assignment metadata is absent", async () => {
+    const { companyId, userId, agentAId } = await seedBase();
+    const issueId = randomUUID();
+    await db.insert(issues).values({ id: issueId, companyId, title: "Unknown creation owner", status: "done",
+      createdByUserId: userId, assigneeAgentId: agentAId, createdAt: new Date("2026-03-01T10:00:00Z") });
+    const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ from: "2026-03-01T00:00:00Z", to: "2026-03-02T00:00:00Z" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.edges).toEqual([]);
+  });
+
+  it.each(["missing", "malformed", "malformed-parent", "ambiguous", "foreign-target", "foreign-actor"] as const)("rejects %s creation assignment metadata", async kind => {
+    const { companyId, agentAId, agentBId } = await seedBase();
+    const foreignCompanyId = randomUUID(), foreignAgentId = randomUUID(), issueId = randomUUID();
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Foreign", issuePrefix: "FC" });
+    await db.insert(agents).values({ id: foreignAgentId, companyId: foreignCompanyId, name: "Foreign", role: "engineer", adapterType: "codex_local" });
+    await db.insert(issues).values({ id: issueId, companyId, title: "Invalid creation receipt", status: "done", assigneeAgentId: agentBId,
+      createdByAgentId: agentAId, createdAt: new Date("2026-03-01T10:00:00Z") });
+    const details = kind === "missing" ? { parentId: null }
+      : kind === "malformed" ? { parentId: null, assigneeAgentId: 42, assigneeUserId: null }
+      : { parentId: kind === "malformed-parent" ? 42 : null, assigneeAgentId: kind === "foreign-target" ? foreignAgentId : agentBId,
+          assigneeUserId: kind === "ambiguous" ? "user-1" : null };
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: kind === "foreign-actor" ? foreignAgentId : agentAId,
+      action: "issue.created", entityType: "issue", entityId: issueId, details, createdAt: new Date("2026-03-01T10:00:00Z") });
+    const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ from: "2026-03-01T00:00:00Z", to: "2026-03-02T00:00:00Z" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.edges).toEqual([]);
+  });
+
+  it("keeps explicit user creation targets without allowing fallback target fields to override them", async () => {
+    const { companyId, userId, agentAId, agentBId } = await seedBase();
+    const issueId = randomUUID(), createdAt = new Date("2026-03-01T10:00:00Z");
+    await db.insert(issues).values({ id: issueId, companyId, title: "User creation owner", status: "done", createdByAgentId: agentAId, createdAt });
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentAId, action: "issue.created",
+      entityType: "issue", entityId: issueId, createdAt,
+      details: { parentId: null, assigneeAgentId: null, assigneeUserId: userId, toAgentId: agentBId } });
+    const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ from: "2026-03-01T00:00:00Z", to: "2026-03-02T00:00:00Z" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.edges).toEqual([{ fromActorId: `agent:${agentAId}`, toActorId: `user:${userId}`,
+      issueId, at: createdAt.toISOString(), kind: "assignment" }]);
+  });
+
+  it.each([{}, { assigneeAgentId: 42 }, { changes: { assigneeAgentId: { from: "old", to: 42 } } }])("does not label missing or malformed assignment targets as unassignment: %j", async details => {
+    const { companyId, userId } = await seedBase();
+    const issueId = randomUUID(), createdAt = new Date("2026-03-01T10:00:00Z");
+    await db.insert(issues).values({ id: issueId, companyId, title: "Unknown assignment target", status: "done", createdAt });
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: userId, action: "issue.assignment",
+      entityType: "issue", entityId: issueId, createdAt, details });
+    const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ from: "2026-03-01T00:00:00Z", to: "2026-03-02T00:00:00Z" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.events.filter((event: { kind: string }) => event.kind === "unassigned")).toEqual([]);
+    expect(response.body.edges).toEqual([]);
+  });
+
+  it.each(["unreadable-parent", "foreign-parent", "outside-window"] as const)("does not fabricate delegation from %s creation evidence", async kind => {
+    const { companyId, userId, agentAId, agentBId } = await seedBase();
+    const issueId = randomUUID(), parentId = randomUUID(), foreignCompanyId = randomUUID();
+    const createdAt = new Date("2026-03-01T11:00:00Z");
+    await db.insert(companies).values({ id: foreignCompanyId, name: "Other", issuePrefix: "OP" });
+    await db.insert(issues).values([
+      { id: parentId, companyId: kind === "foreign-parent" ? foreignCompanyId : companyId,
+        title: "Parent", status: "done", createdByUserId: userId, createdAt: new Date("2026-03-01T10:00:00Z") },
+      { id: issueId, companyId, title: "Child", parentId, status: "done", createdByAgentId: agentAId, assigneeAgentId: agentBId,
+        createdAt, updatedAt: new Date("2026-03-05T10:00:00Z") },
+    ]);
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentAId,
+      action: "issue.created", entityType: "issue", entityId: issueId, createdAt,
+      details: { parentId, assigneeAgentId: agentBId, assigneeUserId: null, source: "paperclip_runner_protocol" } });
+    const result = await workTimelineService(db).getTimeline({ companyId,
+      from: new Date(kind === "outside-window" ? "2026-03-05T00:00:00Z" : "2026-03-01T00:00:00Z"),
+      to: new Date(kind === "outside-window" ? "2026-03-06T00:00:00Z" : "2026-03-02T00:00:00Z"),
+      canReadIssue: async issue => kind !== "unreadable-parent" || issue.id !== parentId });
+    expect(result.edges.filter(edge => edge.kind === "delegation")).toEqual([]);
+    expect(result.events.filter(event => event.kind === "delegated")).toEqual([]);
+    expect(result.edges.filter(edge => edge.kind === "assignment")).toHaveLength(kind === "outside-window" ? 0 : 1);
+  });
+
+  it.each([["agent", "alias"], ["agent", "primary"], ["user", "alias"], ["user", "primary"]] as const)("retains explicit legacy %s %s clears", async (owner, field) => {
+    const { companyId, userId, agentAId } = await seedBase();
+    const issueId = randomUUID(), at = new Date("2026-03-01T11:00:00Z");
+    await db.insert(issues).values({ id: issueId, companyId, title: "Legacy clear", status: "done", createdAt: at });
+    const primary = owner === "agent" ? "assigneeAgentId" : "assigneeUserId";
+    const alias = owner === "agent" ? "toAgentId" : "toUserId";
+    const target = owner === "agent" ? agentAId : userId;
+    const details = field === "alias" ? { [alias]: null } : { [primary]: null, [alias]: target };
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: userId, action: "issue.assigned",
+      entityType: "issue", entityId: issueId, createdAt: at, details });
+    const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ from: "2026-03-01T00:00:00Z", to: "2026-03-02T00:00:00Z" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.events.filter((event: { kind: string }) => event.kind !== "created")).toEqual([
+      { actorId: `user:${userId}`, kind: "unassigned", issueId, at: at.toISOString() },
+    ]);
+    expect(response.body.edges).toEqual([]);
+  });
+
+  it("uses indexed UUID lookups for creation agent identities without unsafe casts", async () => {
+    const { companyId, agentAId, agentBId } = await seedBase();
+    await db.insert(agents).values(Array.from({ length: 1000 }, () => ({ companyId, name: "Other agent", role: "engineer", adapterType: "codex_local" })));
+    await db.execute(sql`analyze agents`);
+    const issueId = randomUUID(), at = new Date("2026-03-01T11:00:00Z");
+    await db.insert(issues).values({ id: issueId, companyId, title: "Indexed creation", status: "done", createdAt: at });
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentAId, action: "issue.created",
+      entityType: "issue", entityId: issueId, createdAt: at,
+      details: { parentId: null, assigneeAgentId: agentBId, assigneeUserId: null } });
+    const queries: { query: string; parameters: unknown[] }[] = [];
+    const previousDebug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, parameters) => queries.push({ query, parameters });
+    try {
+      await workTimelineService(db).getTimeline({ companyId, from: new Date("2026-03-01T00:00:00Z"), to: new Date("2026-03-02T00:00:00Z") });
+    } finally { db.$client.options.debug = previousDebug; }
+    const receipt = queries.find(row => row.query.includes('from "activity_log"') && row.query.includes('"details"') && !row.query.includes("join"))!;
+    const explain = await db.$client.unsafe(`explain (analyze, format json) ${receipt.query}`, receipt.parameters as any[]);
+    const nodes = (plan: any): any[] => [plan, ...(plan.Plans ?? []).flatMap(nodes)];
+    const scans = nodes(explain[0]!["QUERY PLAN"][0].Plan).filter(node => node["Relation Name"] === "agents");
+    expect(scans.length).toBeGreaterThan(0);
+    expect(scans.every(node => /Index/.test(node["Node Type"]) && /\bid\b\s*=/.test(node["Index Cond"] ?? ""))).toBe(true);
+    expect(scans.some(node => node["Actual Loops"] > 0)).toBe(true);
+    console.info("Creation agent identity plan", JSON.stringify(scans.map(node => ({ type: node["Node Type"], index: node["Index Name"], condition: node["Index Cond"], loops: node["Actual Loops"], rows: node["Actual Rows"] }))));
+  });
+
 });
