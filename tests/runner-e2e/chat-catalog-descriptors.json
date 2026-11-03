@@ -4194,7 +4194,7 @@
       "chat-catalog-domains/internal-support.ts",
       "chat-scenarios/questions-and-approvals.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v2",
+    "oracleVersion": "paperclip.chat-catalog.hire-revision.native1017.v3",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -4239,9 +4239,10 @@
       "chat-catalog-domains/identity-plan-review.ts",
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
-      "chat-scenarios/questions-and-approvals.yaml"
+      "chat-scenarios/questions-and-approvals.yaml",
+      "../../server/src/services/chat-completion-delivery.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.plan-review.v2",
     "expectedRunCount": 3,
     "minimumRunCount": 1,
     "turnTimeoutMs": 120000,
@@ -4260,9 +4261,10 @@
       "chat-catalog-domains/identity-plan-review.ts",
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/internal-support.ts",
-      "chat-scenarios/questions-and-approvals.yaml"
+      "chat-scenarios/questions-and-approvals.yaml",
+      "../../server/src/services/chat-completion-delivery.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.identity.v1",
+    "oracleVersion": "paperclip.chat-catalog.plan-review.v2",
     "expectedRunCount": 3,
     "minimumRunCount": 2,
     "turnTimeoutMs": 120000,
