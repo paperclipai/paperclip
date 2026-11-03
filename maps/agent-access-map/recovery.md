@@ -4,6 +4,11 @@ Product map: [Recovery](../feature-map/recovery.md).
 
 Feature ID: `recovery`.
 
+Fresh native retry session publication remains server-owned. Goal source
+replacement requires the current task execution lock and assignee, a terminal
+predecessor, and an absent or completed saved goal. It grants no agent API or
+permission to start another executor or replay an unknown external outcome.
+
 Native finalization deadline reconciliation records unfinished workspace
 preservation through the existing server-owned recovery path. It grants no
 additional agent API, provider-stop authority or permission to replay work.
