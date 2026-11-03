@@ -2,7 +2,10 @@ import type { IssueAttachment, IssueDocumentSummary, IssueWorkProduct } from "@p
 import { getAttachmentArtifactWorkProductMetadata, isArtifactReviewDocumentKey, isSystemIssueDocumentKey } from "@paperclipai/shared";
 
 /** Documents authored here; Plans and file reviews retain their own workflows. */
-export function isGeneralTaskDocumentKey(key: string): boolean {
+export function isGeneralTaskDocumentKey(key: string | null | undefined): boolean {
+  // Only a missing key is rejected; a blank draft key keeps its prior meaning
+  // so the new-document form shows its required-field message, not "reserved".
+  if (typeof key !== "string") return false;
   return key.trim().toLowerCase() !== "plan" && !isArtifactReviewDocumentKey(key) && !isSystemIssueDocumentKey(key);
 }
 

@@ -260,7 +260,7 @@ function DocumentViewer({
   onReject?: () => void;
 }) {
   const { data: doc, isLoading, error } = useQuery({
-    queryKey: queryKeys.issues.documents(taskId),
+    queryKey: queryKeys.issues.document(taskId, docKey),
     queryFn: () => issuesApi.getDocument(taskId, docKey),
   });
 
