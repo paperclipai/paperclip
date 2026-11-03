@@ -642,6 +642,13 @@ See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 ## Connection loss and retries
 
+HTTP access logs distinguish a completed response from a connection that closes
+before or during the response. An aborted request has no success status in the
+log message. The structured response status is null when headers were not sent;
+after headers, it retains the status sent before the abort. These logs describe
+HTTP delivery, not database settlement. A disconnected issue PATCH may continue
+running, so an aborted response does not prove that its writes rolled back.
+
 The database client does not replay arbitrary statements after a disconnect.
 PostgreSQL may have committed a statement before the connection loses its
 response. The postgres.js message `write CONNECTION_CLOSED` does not prove
