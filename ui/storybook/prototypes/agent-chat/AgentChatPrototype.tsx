@@ -454,6 +454,10 @@ export function AgentChatPrototype({
         });
       if (path === "/api/workspace-preferences/me")
         return Response.json({ userId: "user-board", coordinatorWorkspaceEnabled: coordinator, updatedAt: null });
+      if (/\/issues\/[^/]+\/(decision-receipts|chat-handoffs)$/.test(path))
+        return Response.json({ items: [], nextCursor: null });
+      if (/\/companies\/[^/]+\/email\/tasks\/[^/]+$/.test(path))
+        return Response.json(null);
       if (path === "/api/instance/settings/experimental")
         return Response.json({
           enableAgentChat: scenario !== "disabled",
@@ -464,6 +468,16 @@ export function AgentChatPrototype({
       if (path === "/api/instance/settings")
         return Response.json({ experimental: {} });
       if (path === "/api/instance/settings/general") return Response.json({});
+      if (path.endsWith("/recent-comments")) {
+        const history = messages.get(task.id) ?? [];
+        const recent = history.slice(-20);
+        return Response.json({
+          comments: recent,
+          latestCommentId: recent.at(-1)?.id ?? null,
+          oldestCommentId: recent[0]?.id ?? null,
+          hasMore: history.length > recent.length,
+        });
+      }
       if (path.endsWith("/comments"))
         return Response.json([...(messages.get(task.id) ?? [])].reverse());
       if (path.endsWith("/queued-comments"))
