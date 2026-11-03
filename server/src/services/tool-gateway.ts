@@ -2666,14 +2666,14 @@ export function createToolGatewayService(
       const [approval] = await writeApprovalChange(db, input.session.companyId, async tx => {
         const origin = input.invocation;
         if (origin.actorType === "agent" && origin.runId) {
-          if (!origin.agentId) throw new Error("Run-bound invocation has no agent");
-          const run = await assertAgentRunWriteAllowed(tx, input.session.companyId, { agentId: origin.agentId, runId: origin.runId });
+          if (!origin.actorId || !origin.agentId) throw new Error("Run-bound invocation has no actor");
+          const run = await assertAgentRunWriteAllowed(tx, input.session.companyId, { agentId: origin.actorId, runId: origin.runId });
           if (!run) throw new Error("Run-bound invocation has no matching execution");
         }
         const [lockedInvocation] = await tx.select().from(toolInvocations).where(and(
           eq(toolInvocations.id, origin.id), eq(toolInvocations.companyId, input.session.companyId),
         )).for("update");
-        if (!lockedInvocation || lockedInvocation.runId !== origin.runId || lockedInvocation.agentId !== origin.agentId || lockedInvocation.actorType !== origin.actorType)
+        if (!lockedInvocation || lockedInvocation.runId !== origin.runId || lockedInvocation.agentId !== origin.agentId || lockedInvocation.actorId !== origin.actorId || lockedInvocation.actorType !== origin.actorType)
           throw new Error("Invocation origin changed before approval creation");
         const [lockedRequest] = await tx.select().from(toolActionRequests).where(and(
           eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.companyId, input.session.companyId),
@@ -2846,8 +2846,8 @@ export function createToolGatewayService(
     await db.transaction(async tx => {
       const origin = input.invocation;
       if (origin.actorType === "agent" && origin.runId) {
-        if (!origin.agentId) throw new Error("Run-bound invocation has no agent");
-        const run = await assertAgentRunWriteAllowed(tx as unknown as Db, input.session.companyId, { agentId: origin.agentId, runId: origin.runId });
+        if (!origin.actorId || !origin.agentId) throw new Error("Run-bound invocation has no actor");
+        const run = await assertAgentRunWriteAllowed(tx as unknown as Db, input.session.companyId, { agentId: origin.actorId, runId: origin.runId });
         if (!run) throw new Error("Run-bound invocation has no matching execution");
       }
       const [request] = await tx.select({ status: toolActionRequests.status }).from(toolActionRequests)

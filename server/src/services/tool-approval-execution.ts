@@ -77,15 +77,15 @@ export async function startToolInvocation(db: Db, invocationId: string, claim?: 
   const now = new Date();
   return db.transaction(async tx => {
     const [origin] = await tx.select({ companyId: toolInvocations.companyId, actorType: toolInvocations.actorType,
-      agentId: toolInvocations.agentId, runId: toolInvocations.runId }).from(toolInvocations).where(eq(toolInvocations.id, invocationId));
+      agentId: toolInvocations.agentId, actorId: toolInvocations.actorId, runId: toolInvocations.runId }).from(toolInvocations).where(eq(toolInvocations.id, invocationId));
     if (origin?.actorType === "agent" && origin.runId) {
-      if (!origin.agentId) throw new Error("Run-bound invocation has no agent");
-      const run = await assertAgentRunWriteAllowed(tx as unknown as Db, origin.companyId, { agentId: origin.agentId, runId: origin.runId });
+      if (!origin.agentId || !origin.actorId) return false;
+      const run = await assertAgentRunWriteAllowed(tx as unknown as Db, origin.companyId, { agentId: origin.actorId, runId: origin.runId });
       if (!run) throw new Error("Run-bound invocation has no matching execution");
     }
     const [invocation] = await tx.select().from(toolInvocations).where(eq(toolInvocations.id, invocationId)).for("update");
     if (!invocation || !origin || invocation.companyId !== origin.companyId || invocation.actorType !== origin.actorType
-      || invocation.agentId !== origin.agentId || invocation.runId !== origin.runId) return false;
+      || invocation.agentId !== origin.agentId || invocation.actorId !== origin.actorId || invocation.runId !== origin.runId) return false;
     if (!claim) {
       if (invocation.status === "cancelled" || invocation.errorCode === "tool_execution_outcome_unknown") return false;
       await tx.update(toolInvocations).set({ status: "executing", startedAt: now, updatedAt: now }).where(eq(toolInvocations.id, invocationId));

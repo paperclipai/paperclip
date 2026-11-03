@@ -40,6 +40,15 @@ describe.skipIf(!runControlPostgresSupport.supported)("run approval cancellation
     }
   });
 
+  it("rejects run approvals after a durable budget stop before final status", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: { budgetEnforcement: { scopeType: "company" } } } })
+      .where(eq(heartbeatRuns.id, run.id));
+    await expect(approvalService(db).create(company.id, { type: "request_board_approval", requestedByAgentId: agent.id,
+      originRunId: run.id, payload: { summary: "Fictitious" } })).rejects.toThrow("running execution");
+  });
+
   it("rejects new run-scoped approvals after stop intent commits but before final status", async () => {
     const { company, agent } = await fixture();
     const run = await liveRun(company.id, agent.id);

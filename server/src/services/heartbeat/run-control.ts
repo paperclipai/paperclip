@@ -1389,6 +1389,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           try {
             await db.transaction(async transaction => {
               const tx = transaction as unknown as Db;
+              if (committedBudgetCancellation) {
+                // The durable budget fence already revokes writes. Preserve its
+                // distinct receipt while serializing approval reconciliation.
+                const [current] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+                  eq(heartbeatRuns.id, run!.id), eq(heartbeatRuns.companyId, run!.companyId))).for("update");
+                if (current) await cancelPendingRunApprovals(tx, run!.companyId, current.id);
+                return;
+              }
               const marker = JSON.stringify({ state: "requested", requestedAt: new Date(stopRequestedAt).toISOString() });
               const [fenced] = await tx.update(heartbeatRuns).set({
                 resultJson: sql`jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), '{executionCancellation}',
