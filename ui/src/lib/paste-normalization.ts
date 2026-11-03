@@ -1,7 +1,22 @@
 import { createRootEditorSubscription$, realmPlugin } from "@mdxeditor/editor";
-import { COMMAND_PRIORITY_CRITICAL, PASTE_COMMAND } from "lexical";
+import { $getSelection, $isRangeSelection, $isTextNode, COMMAND_PRIORITY_CRITICAL, PASTE_COMMAND } from "lexical";
 import { looksLikeMarkdownPaste } from "./markdownPaste";
 import { normalizeMarkdown } from "./normalize-markdown";
+
+function isPastedLinkTarget(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed || /\s/.test(trimmed)) return false;
+  if (/^(?:mailto|tel|sms):\S/i.test(trimmed) || /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) return true;
+  const candidate = /^www\./i.test(trimmed) ? `https://${trimmed}`
+    : trimmed.startsWith("//") ? `https:${trimmed}` : trimmed;
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(candidate)) return false;
+  try {
+    const hostname = new URL(candidate).hostname;
+    return hostname.length > 0 && !/^www\.?$/i.test(hostname);
+  } catch {
+    return false;
+  }
+}
 
 /**
  * MDXEditor/Lexical plugin that intercepts paste events and normalizes
@@ -24,7 +39,7 @@ export const pasteNormalizationPlugin = realmPlugin({
 
             const clipboardData =
               event instanceof ClipboardEvent ? event.clipboardData : null;
-            if (!clipboardData) return false;
+            if (!clipboardData || Array.from(clipboardData.types).includes("Files")) return false;
 
             const text = clipboardData.getData("text/plain");
             if (!text) return false;
@@ -38,6 +53,14 @@ export const pasteNormalizationPlugin = realmPlugin({
             if (looksLikeMarkdownPaste(text)) return false;
 
             const cleaned = normalizeMarkdown(text);
+            const selection = $getSelection();
+            if ($isRangeSelection(selection) && !selection.isCollapsed()
+              && selection.getNodes().every(node => $isTextNode(node) && node.isSimpleText())
+              && !isPastedLinkTarget(cleaned)) {
+              event.preventDefault();
+              selection.insertRawText(cleaned);
+              return true;
+            }
             if (cleaned === text) return false;
 
             // Prevent the original paste from being processed
