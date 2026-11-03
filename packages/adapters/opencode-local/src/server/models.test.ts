@@ -7,20 +7,28 @@ import {
   requireOpenCodeModelId,
   resetOpenCodeModelsCacheForTests,
 } from "./models.js";
+import { resetOpenCodeFreeModelCacheForTests } from "./free-models.js";
 
 describe("openCode models", () => {
   afterEach(() => {
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     delete process.env.OPENCODE_ALLOW_ALL_MODELS;
     resetOpenCodeModelsCacheForTests();
+    resetOpenCodeFreeModelCacheForTests();
     vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
-  it("returns an empty list when discovery command is unavailable", async () => {
+  it("returns the free-model fallback when discovery command is unavailable", async () => {
     process.env.PAPERCLIP_OPENCODE_COMMAND =
       "__paperclip_missing_opencode_command__";
-    await expect(listOpenCodeModels()).resolves.toEqual([]);
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("offline"));
+    const models = await listOpenCodeModels();
+    expect(fetchSpy).toHaveBeenCalled();
+    expect(models.some((model) => model.label.includes("(free)"))).toBe(true);
+    expect(models.some((model) => model.id.startsWith("opencode/"))).toBe(true);
   });
 
   it("rejects when model is missing", async () => {
