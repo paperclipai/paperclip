@@ -49,7 +49,7 @@ it.each(["wrong parent", "missing child", "foreign goal", "no saved state", "mis
   expect(grade_goals(o).passed).toBe(false);
 });
 it("does not allow a retry to repair an invalid first parent or first foreign owner", () => {
-  for (const field of ["parentId", "ownerAgentId"]) {
+  for (const field of ["parentId", "ownerAgentId"] as const) {
     const o = valid(), first = o.state.firstCreation as InternalObservation;
     first.goals[1]![field] = "foreign";
     expect(grade_goals(o).passed).toBe(false);

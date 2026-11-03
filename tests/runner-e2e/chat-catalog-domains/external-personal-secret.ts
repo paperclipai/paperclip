@@ -48,7 +48,7 @@ interface PrivateFixture {
   endpoint: Awaited<ReturnType<typeof secretTestEndpoint>>;
 }
 const fixtures = new WeakMap<ChatCatalogContext, PrivateFixture>();
-interface PersonalSetupAgent { id: string; companyId: string; lifecycleState: string; status: string; lifecycleError?: string | null; lifecycleHolds: string[]; adapterType: string; adapterConfig: Record<string, unknown> }
+interface PersonalSetupAgent { id: string; companyId: string; lifecycleState: string; status: string; lifecycleError?: string | null; lifecycleHolds: string[]; adapterType: string; adapterConfig: Record<string, unknown> & { env?: Record<string, unknown> } }
 const missingBindingLifecycleError = "Execution configuration check failed. Paperclip could not complete this step. It will retry automatically. If this continues, contact your instance administrator.";
 export function personalSecretUnboundConfigHash(config: Record<string, unknown>): string {
   const env = { ...(config.env as Record<string, unknown> | undefined) }; delete env.PUBLISHING_API_KEY;

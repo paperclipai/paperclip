@@ -3291,3 +3291,38 @@ The shared report navigation links the dated, immutable catalog snapshot.
 Deploying this generator does not rewrite existing published history HTML.
 Activating the link on an existing page requires a separately reviewed,
 conditional navigation-only update. The metadata command publishes nothing.
+
+### Work timeline narrative calibration
+
+`activity.work-timeline` keeps its original human query, three native runs and
+720000 ms attempt bound. Its v2 oracle accepts command exit-code wording and
+incidental summary mentions without using the first worker-name match as proof
+of a handoff. It requires an ordered failed command and pause, a recorded human
+reassignment to the different repair worker, and that worker's verified repair.
+Command, filename, digest, task/run, audit, link, privacy and read-only checks
+remain independent. The deterministic owner/verifier and production timeline
+route regressions do not qualify the actual model journey. Historical failures
+retain their original grades; a missing human handoff narrative still fails.
+
+The timeline API projects initial assignment and delegation only from complete
+`issue.created` audit facts or explicitly fresh `issue.child_created` receipts
+inside the requested window. Child receipts require `createdByRequest: true`;
+false, absent or malformed flags do not establish initial ownership. The first
+bounded receipt is selected before validation, and the issue creation time must
+also be in the requested window. This is not an all-history completeness proof.
+It uses the saved actor,
+target and timestamp, and requires a readable recorded parent for delegation.
+It does not use current ownership as creation evidence. Missing or malformed
+legacy creation details leave initial ownership unknown. The API performs no
+all-history ownership-presence query. Recorded canonical and legacy ownership
+clears emit `unassigned` events with their actual actor and timestamp, without a
+target edge. Event markers are not currently rendered by the timeline chart.
+
+User identities in the timeline require active membership in the requested
+company. This gate covers receipt validation, identity lookup, and public actor,
+event and edge output, including raw IDs. Canonical audit rows remain unchanged.
+The public child and accepted-plan schemas strip idempotency and conversation
+keys; private service replay controls do not imply HTTP replay support. The
+accepted-plan fresh-child list excludes keyed/title reuse reported by its
+existing callback for supported task inputs. This is not a universal internal
+conversation-creation provenance guarantee.
