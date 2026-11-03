@@ -11,6 +11,7 @@ import { retainGitHubReviewReceipt } from "../services/chat-channels/github/task
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { recordRunPresentationDecision } from "../services/heartbeat/run-completion.js";
 import { environmentService } from "../services/environments.js";
+import { reconcilePersistedRuntimeServicesOnStartup, readWorkspaceRuntimeIdleWork } from "../services/workspace-runtime.js";
 import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
@@ -1136,6 +1137,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       idleTimeoutSeconds: 0, connectTimeoutSeconds: 0, maxLifetimeSeconds: 0,
       ...(externalTestDatabaseUrl ? { maxConnections: 4 } : {}),
     });
+    // The composed local-probe inventory includes the workspace owner. Match
+    // server startup on this fresh fixture; never adopt or start a leftover.
+    const [runtimeState] = await db.execute<{ configured: boolean }>(sql`SELECT
+      EXISTS (SELECT 1 FROM workspace_runtime_services)
+      OR EXISTS (SELECT 1 FROM project_workspaces)
+      OR EXISTS (SELECT 1 FROM execution_workspaces) AS configured`);
+    expect(runtimeState.configured).toBe(false);
+    expect(await reconcilePersistedRuntimeServicesOnStartup(db)).toEqual({
+      reconciled: 0, adopted: 0, stopped: 0, backfilled: 0, restarted: 0,
+      restartFailed: 0, exposureReservationDrift: [],
+    });
+    expect(readWorkspaceRuntimeIdleWork()).toBe("none");
   }, 90_000);
 
   afterAll(async () => {
@@ -64505,6 +64518,45 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.result.id)))[0]).toEqual(f.result);
     } finally { await f.service.shutdown(); }
   });
+
+  it("retries saved GitHub input after an endpoint admission lock collision", async () => {
+    const f = await successfulGitHubQueuedInputFixture();
+    const heartbeat = heartbeatService(db);
+    const failures: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => failures.push(error) });
+    let unlock!: () => void, locked!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const released = new Promise<void>(resolve => { unlock = resolve; });
+    const competingAdmission = db.transaction(async tx => {
+      await tx.select({ id: chatEndpoints.id }).from(chatEndpoints)
+        .where(eq(chatEndpoints.id, f.endpoint.id)).for("no key update");
+      locked();
+      await released;
+    });
+    try {
+      await acquired;
+      await heartbeat.registerDeferredReceiptWork(coordinator, () => true).ready;
+      const priorFailures = failures.length;
+      const retry = await requestTaskRetry(f.input);
+      await expect.poll(() => failures.length, { timeout: 5_000 }).toBeGreaterThan(priorFailures);
+      expect((await readAgentWakeupRequestsById(f.pending!.id))[0].runId).toBeNull();
+      unlock(); await competingAdmission;
+      await expect.poll(async () => (await readAgentWakeupRequestsById(f.pending!.id))[0].runId,
+        { timeout: 40_000 }).toBeTruthy();
+      await expect.poll(async () => (await readAgentWakeupRequestsById(retry.requestId!))[0].status,
+        { timeout: 40_000 }).toBe("coalesced");
+      const [saved] = await readAgentWakeupRequestsById(f.pending!.id);
+      expect((await readHeartbeatRunsByCompanyId(f.fixture.companyId))
+        .filter(run => run.wakeupRequestId === f.pending!.id)).toHaveLength(1);
+      expect((await readAgentWakeupRequestsById(retry.requestId!))[0].runId).toBe(saved.runId);
+      expect((await readHeartbeatRunsById(f.runId))[0]).toMatchObject({ status: "succeeded" });
+    } finally {
+      unlock(); await competingAdmission;
+      await coordinator.stop();
+      await f.service.shutdown();
+    }
+  }, 90_000);
 
   it.each(["reconnected", "newer_input", "reconnected_newer_input", "snapshot_newer_input"] as const)(
     "admits current GitHub task Retry without replaying obsolete input: %s", async kind => {
