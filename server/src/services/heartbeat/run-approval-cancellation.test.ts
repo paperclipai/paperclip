@@ -15,6 +15,15 @@ vi.mock("../local-service-supervisor.js", async (original) => ({
 describe.skipIf(!runControlPostgresSupport.supported)("run approval cancellation", () => {
   let db: Db;
   const { fixture, liveRun } = setupRunControlDatabase("paperclip-run-approval-cancellation", value => { db = value; });
+  it("rejects run approvals once a budget stop is committed", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: { budgetEnforcement: { scopeType: "company" } } } })
+      .where(eq(heartbeatRuns.id, run.id));
+    await expect(approvalService(db).create(company.id, { type: "request_board_approval", requestedByAgentId: agent.id,
+      originRunId: run.id, payload: { summary: "Fictitious" } })).rejects.toThrow("running execution");
+  });
+
   it("rejects run-scoped approvals once stop intent is committed", async () => {
     const { company, agent } = await fixture();
     const run = await liveRun(company.id, agent.id);
