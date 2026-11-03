@@ -85,6 +85,10 @@ both projects, reconnect, and verify their files and Git state. Confirm that
 source folders stay unchanged, revoked project access blocks reuse, and explicitly
 read-only descriptors still fail admission. Separate workspaces may run concurrently; shared concurrent writers
 must be rejected.
+Repeat with a project attached after the first save and a configured `defaultRef`
+that differs from the remote's default branch. The new repository must be cloned
+at that ref, saved, and readable from the committed archive after its origin is
+removed. A missing ref must not publish a partial secondary checkout.
 
 For a workspace validation failure, verify the task notice shows the redacted
 reason and the permitted Retry action. A newer active run or a terminal task must

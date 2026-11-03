@@ -1764,6 +1764,9 @@ Git repositories as writable copies under `.paperclip-repositories/` in the task
 workspace. These copies use the existing remote save/restore lifecycle and do not
 write to the source project's folder. Later turns retain their saved paths, refs,
 pins and edits, and recheck each retained project's access and trust policy.
+New repository attachments after a save are acquired separately from the saved
+archive. Repository refs use `repoRef`, then `defaultRef`, then the Git remote's
+default. A configured remote branch is resolved before its checkout is published.
 Configured local folders use the legacy path until imported. V1 rejects explicitly read-only sources
 and custom cleanup/teardown commands on remote close. Automatic Core services, manual workspace jobs, services,
 and runtime commands are also rejected before any local directory access; run

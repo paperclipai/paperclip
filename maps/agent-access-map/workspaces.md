@@ -76,6 +76,9 @@ repositories as writable task copies, with project/source identity retained in
 the saved authority. Subsequent turns recheck each retained project's visibility
 and trust policy. Shared source folders and upstream push permissions are unchanged.
 Explicitly read-only sources and explicitly concurrent shared writers are rejected.
+Snapshot repository coverage remains separate from newly requested sources, so
+a later attachment uses normal acquisition instead of claiming an older archive.
+Copies honor explicit refs and configured default refs without resetting saved edits.
 Workspace validation failures expose their redacted reason through the task
 interruption projection without changing Retry authority.
 Portable capture streams validated working files while staging self-contained

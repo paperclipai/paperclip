@@ -2643,6 +2643,10 @@ copies inside the task workspace, under `.paperclip-repositories/`. The copies
 retain their saved files, paths, refs and pins on subsequent turns. Preparation
 rechecks the access and trust policy of each retained source project. This does
 not grant permission to change a shared source folder or push to a repository.
+Repositories attached on a later turn are acquired before they become part of
+the next committed archive. Snapshot coverage is separate from the requested
+source recipe. New copies honor `repoRef`, then `defaultRef`, then the remote's
+default branch; an invalid ref cannot publish a partial secondary checkout.
 It rejects explicitly read-only sources,
 explicit concurrent shared writers, and custom cleanup/teardown commands on
 remote close. Manual workspace runtime commands, jobs, and services are also

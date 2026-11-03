@@ -103,10 +103,11 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
           if (!repository.repoUrl) throw new WorkspaceValidationFailure(
             `Project "${project.name}" has a configured folder without a repository URL.`,
             { reason: "remote_workspace_source_unavailable", projectId, projectWorkspaceId: repository.id });
+          const ref = repository.repoRef ?? repository.defaultRef ?? null;
           extra.push({ id: repository.id, projectId, projectWorkspaceId: repository.id,
             relativePath: `.paperclip-repositories/${managedProjectCheckoutName({
-              id: repository.id, repoUrl: repository.repoUrl, repoRef: repository.repoRef,
-            })}`, repoUrl: repository.repoUrl, ref: repository.repoRef });
+              id: repository.id, repoUrl: repository.repoUrl, repoRef: ref,
+            })}`, repoUrl: repository.repoUrl, ref });
         }
       }
     }
@@ -180,9 +181,10 @@ export async function resolveRemoteWorkspaceSource(db: Db, input: {
     if (repository.cwd && repository.cwd !== "/__paperclip_repo_only__") return hostSource();
     if (!remoteRepositorySource(repository.repoUrl)) return hostSource();
     identities.add(projectRepositoryIdentity(repository.repoUrl));
+    const ref = repository.repoRef ?? repository.defaultRef ?? null;
     repositories.push({ id: repository.id, relativePath: `.paperclip-repositories/${managedProjectCheckoutName({
-      id: repository.id, repoUrl: repository.repoUrl, repoRef: repository.repoRef,
-    })}`, repoUrl: repository.repoUrl, ref: repository.repoRef, projectId: source.projectId,
+      id: repository.id, repoUrl: repository.repoUrl, repoRef: ref,
+    })}`, repoUrl: repository.repoUrl, ref, projectId: source.projectId,
       projectWorkspaceId: repository.id });
   }
   return withReferences({ kind: "git", repoUrl: source.repoUrl,

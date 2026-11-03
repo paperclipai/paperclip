@@ -62,7 +62,10 @@ const {promisify}=require('node:util'); const exec=promisify(cp.execFile);
    const local=await git(['show-ref','--verify','--quiet','refs/heads/'+input.branchName]).then(()=>true,()=>false);
    await git(local?['checkout',input.branchName]:['checkout','-b',input.branchName,remoteRef]);
   }else{
-   if(input.ref)await git(['checkout','--detach',input.ref]);
+   if(input.ref){const remoteRef=input.ref.replace(/^refs\/heads\//,'');
+    const selected=await git(['rev-parse','--verify','--end-of-options',input.ref+'^{commit}'])
+      .catch(()=>git(['rev-parse','--verify','--end-of-options','refs/remotes/origin/'+remoteRef+'^{commit}']));
+    await git(['checkout','--detach',selected.stdout.trim()]);}
    if(input.branchName)await git(['checkout','-B',input.branchName]);
   }
   await fs.mkdir(path.join(staged,'.git','info'),{recursive:true,mode:0o700});
@@ -122,8 +125,16 @@ export async function prepareRemoteRepository(input: {
    if(!entry.isDirectory()||entry.isSymbolicLink()||await fs.realpath(parent)!==parent)throw Error('unsafe_repository_parent');}
   const existing=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
   if(existing){if(!existing.isDirectory()||existing.isSymbolicLink())throw Error('unsafe_repository')}
-  else{if(input.verifyOnly||input.savedArchive)throw Error('repository_missing');if(input.probeOnly){process.stdout.write(JSON.stringify({cloneRequired:true}));return;}await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,root],{env:cloneEnv});
-   if(input.ref)await exec('git',['-c','core.hooksPath=/dev/null','-C',root,'checkout','--detach',input.ref],opts);}
+  else{if(input.verifyOnly||input.savedArchive)throw Error('repository_missing');if(input.probeOnly){process.stdout.write(JSON.stringify({cloneRequired:true}));return;}
+   const staged=await fs.mkdtemp(root+'.preparing-');try{
+    await exec('git',['-c','core.hooksPath=/dev/null','-c','init.templateDir=',...input.authArgs,'clone','--no-hardlinks','--',input.repoUrl,staged],{env:cloneEnv});
+    const git=async args=>exec('git',['-c','core.hooksPath=/dev/null','-C',staged,...args],opts);
+    if(input.ref){const remoteRef=input.ref.replace(/^refs\/heads\//,'');
+     const selected=await git(['rev-parse','--verify','--end-of-options',input.ref+'^{commit}'])
+       .catch(()=>git(['rev-parse','--verify','--end-of-options','refs/remotes/origin/'+remoteRef+'^{commit}']));
+     await git(['checkout','--detach',selected.stdout.trim()]);}
+    await fs.rename(staged,root);
+   }finally{await fs.rm(staged,{recursive:true,force:true});}}
   const git=async args=>(await exec('git',['-c','core.hooksPath=/dev/null','-C',root,...args],opts)).stdout.trim();
   if(await fs.realpath(root)!==root)throw Error('unsafe_repository');
   const hasOrigin=(await git(['remote'])).split('\n').includes('origin');

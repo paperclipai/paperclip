@@ -168,6 +168,14 @@ describe.skipIf(!support.supported)("remote referenced project sources", () => {
     expect(result.authority === "remote" && result.source.repositories![0]!.readOnly).not.toBe(true);
   });
 
+  it.each([null, "feature"])("uses a referenced repository's default ref unless overridden by %s", async repoRef => {
+    const f = await fixture(true);
+    await db.update(projectWorkspaces).set({ defaultRef: "release", repoRef }).where(eq(projectWorkspaces.projectId, f.projectId));
+    const result = await resolveRemoteWorkspaceSource(db, { ...f, responsibleUserId: null,
+      projectId: null, projectWorkspaceId: null, taskDirectory: true });
+    expect(result).toMatchObject({ authority: "remote", source: { repositories: [{ ref: repoRef ?? "release" }] } });
+  });
+
   it("does not treat a configured source without a repository URL as metadata-only", async () => {
     const f = await fixture(false);
     await db.insert(projectWorkspaces).values({ companyId: f.companyId, projectId: f.projectId, name: "Configured source" });
