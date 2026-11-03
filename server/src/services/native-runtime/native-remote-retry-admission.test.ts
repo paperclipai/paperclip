@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, companies, completionContracts, heartbeatRunEvents, heartbeatRuns, issues, issueRelations,
+import { agents, companies, completionContracts, databaseWorkPending, reconcileDatabaseWork, heartbeatRunEvents, heartbeatRuns, issues, issueRelations,
   issueTreeHolds, issueTreeHoldMembers, issueRecoveryActions, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
 import type { NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
@@ -303,6 +303,68 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       reason: "native_retry_source_superseded", transitionUnchanged: false }]);
     [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     expect(owner.recoveryHistory).toMatchObject([{ reason: "native_retry_admission_ineligible" }, { reason: "native_retry_source_superseded" }]);
+  });
+
+  it("registers recovery work intent before writing a blocked retry deadline", async () => {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    const transaction = f.db.transaction.bind(f.db);
+    let writes = 0;
+    const interception = vi.spyOn(f.db, "transaction").mockImplementation((async (callback, options) => transaction(async tx => {
+      const update = tx.update.bind(tx);
+      const updates = vi.spyOn(tx, "update").mockImplementation((table => {
+        if (table === nativeRunFinalizations) {
+          writes += 1;
+          expect(databaseWorkPending(f.db, DELIVERY_QUEUES.nativeProcessSessions)).toBe(true);
+        }
+        return update(table);
+      }) as typeof tx.update);
+      try { return await callback(tx); } finally { updates.mockRestore(); }
+    }, options)) as typeof f.db.transaction);
+    try {
+      expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+        restartKind: "hard", runIds: [f.runId] })).toMatchObject([{ kind: "blocked" }]);
+      expect(writes).toBe(1);
+    } finally { interception.mockRestore(); }
+  });
+
+  it("keeps a retry deadline that changed after discovery read-only and quiet", async () => {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    const deadline = new Date(Date.now() + 60_000);
+    const transaction = f.db.transaction.bind(f.db);
+    const interception = vi.spyOn(f.db, "transaction").mockImplementationOnce((async (callback, options) => {
+      await f.db.update(nativeRunFinalizations).set({ nextAttemptAt: deadline }).where(eq(nativeRunFinalizations.runId, f.runId));
+      return transaction(callback, options);
+    }) as typeof f.db.transaction);
+    const wake = vi.fn(), unsubscribe = subscribeDeliveryWork(f.db, DELIVERY_QUEUES.nativeProcessSessions, wake);
+    try {
+      expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+        restartKind: "hard", runIds: [f.runId] })).toMatchObject([{ kind: "blocked", retryAt: deadline, transitionUnchanged: true }]);
+      const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+      expect(owner).toMatchObject({ nextAttemptAt: deadline, recoveryHistory: [], phase: "retryable_failure", attempt: 1 });
+      expect(wake).not.toHaveBeenCalled();
+    } finally { interception.mockRestore(); unsubscribe(); }
+  });
+
+  it("rolls back work intent when the locked retry deadline update matches no row", async () => {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agentId));
+    const name = `retry_noop_${f.runId.replaceAll("-", "")}`;
+    await f.db.execute(sql.raw(`create function ${name}() returns trigger language plpgsql as $$begin return null; end$$`));
+    await f.db.execute(sql.raw(`create trigger ${name} before update on native_run_finalizations for each row
+      when (old.run_id = '${f.runId}'::uuid) execute function ${name}()`));
+    const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    try {
+      await expect(claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+        restartKind: "hard", runIds: [f.runId] })).rejects.toThrow("native_retry_deferral_claim_changed");
+      expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
+      await reconcileDatabaseWork(f.db, DELIVERY_QUEUES.nativeProcessSessions);
+      expect(databaseWorkPending(f.db, DELIVERY_QUEUES.nativeProcessSessions)).toBe(false);
+    } finally {
+      await f.db.execute(sql.raw(`drop trigger ${name} on native_run_finalizations`));
+      await f.db.execute(sql.raw(`drop function ${name}()`));
+    }
   });
 
   it("does not publish or log a deferred transition when an ineligible retry still has a live lease", async () => {

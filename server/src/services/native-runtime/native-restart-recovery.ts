@@ -643,13 +643,16 @@ export async function claimNativeRestartRecoveries(input: {
       const exhaustedRemoteRetry = failedRemoteRetry && row.coordinator.attempt >= 3;
       const needsResumptionAdmission = releasedRemoteRetry || exhaustedRemoteRetry;
       const deferRemoteRetry = async (reason: string) => {
-        if (row.coordinator.leaseOwner && row.coordinator.leaseExpiresAt && row.coordinator.leaseExpiresAt > now) {
-          return { kind: "blocked", runId: row.run.id, reason, retryAt: row.coordinator.leaseExpiresAt,
+        const existingDeadline = Math.max(row.coordinator.nextAttemptAt?.getTime() ?? 0,
+          row.coordinator.leaseOwner ? row.coordinator.leaseExpiresAt?.getTime() ?? 0 : 0);
+        if (existingDeadline > now.getTime()) {
+          return { kind: "blocked", runId: row.run.id, reason, retryAt: new Date(existingDeadline),
             transitionUnchanged: true } as const;
         }
         const retryAt = new Date(now.getTime() + 30_000);
         const previous = row.coordinator.recoveryHistory.at(-1);
         const transitionUnchanged = previous?.disposition === "blocked" && previous.reason === reason;
+        await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id });
         const updated = await tx.update(nativeRunFinalizations).set({ nextAttemptAt: retryAt, updatedAt: now,
           ...(!transitionUnchanged ? { recoveryHistory: appendBoundedRecoveryHistory({
             at: now.toISOString(), restartKind: input.restartKind, controllerBootId: controller.bootId,
@@ -661,10 +664,10 @@ export async function claimNativeRestartRecoveries(input: {
           eq(nativeRunFinalizations.issueId, issue.id), eq(nativeRunFinalizations.runId, row.run.id),
           eq(nativeRunFinalizations.phase, "retryable_failure"), eq(nativeRunFinalizations.attempt, row.coordinator.attempt),
           isNull(nativeRunFinalizations.resultId),
+          or(isNull(nativeRunFinalizations.nextAttemptAt), lte(nativeRunFinalizations.nextAttemptAt, now)),
           or(isNull(nativeRunFinalizations.leaseOwner), isNull(nativeRunFinalizations.leaseExpiresAt), lte(nativeRunFinalizations.leaseExpiresAt, now)),
         )).returning({ runId: nativeRunFinalizations.runId });
-        if (!updated.length) return { kind: "blocked", runId: row.run.id, reason, retryAt, transitionUnchanged: true } as const;
-        await notifyLiveRunRecovery(tx, { companyId: row.run.companyId, runId: row.run.id });
+        if (!updated.length) throw new Error("native_retry_deferral_claim_changed");
         return { kind: "blocked", runId: row.run.id, reason, retryAt, transitionUnchanged } as const;
       };
       const resumptionAgent = needsResumptionAdmission
