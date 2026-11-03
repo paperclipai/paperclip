@@ -1,3 +1,4 @@
+import { idleApiActivity } from "./idle-api-activity.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
@@ -83,7 +84,7 @@ export async function readIdleLocalWork(options: { backupCheckpoint?: boolean; d
   }
   let probes: IdleLocalWork;
   try {
-    const local = [...localWorkProbes].map(probe => probe());
+    const local = [idleApiActivity.active() ? "present" : "none", ...[...localWorkProbes].map(probe => probe())];
     probes = local.some(state => state !== "none" && state !== "present") ? "unknown"
       : local.includes("present") ? "present" : "none";
   } catch { probes = "unknown"; }

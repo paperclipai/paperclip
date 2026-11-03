@@ -2032,6 +2032,22 @@ describe("IssueDetail", () => {
     expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
   });
 
+  it("forwards exact Stop proof and runtime mode from run history into the task thread", async () => {
+    queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
+    const issue = createIssue();
+    mockIssuesApi.get.mockResolvedValue(issue);
+    const run = { runId: "stopped-run", runtimeMode: "native", status: "cancelled", agentId: "agent-1", createdAt: new Date().toISOString(),
+      resultJson: { executionCancellation: { state: "acknowledged", proof: "provider_api_stop_receipt" },
+        nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId: "stopped-run", companyId: issue.companyId, dispatchState: "acknowledged" } } };
+    mockActivityApi.recentRunsForIssue.mockResolvedValue([run]);
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => {
+      const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+      expect(props?.companyId).toBe(issue.companyId);
+      expect(props?.linkedRuns).toEqual([expect.objectContaining(run)]);
+    });
+  });
+
   it("loads full first-run activity from the task menu without an older-message disclosure", async () => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
     mockIssuesApi.get.mockResolvedValue(createIssue());

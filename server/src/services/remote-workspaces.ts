@@ -25,7 +25,7 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { persistActivity } from "./activity-log.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
-  requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
+  RemoteWorkspaceOperationTimeoutError, requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
 } from "./remote-workspace-transport.js";
 import {
   beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
@@ -281,16 +281,19 @@ async function cleanupSavedExports(input: { db: Db; companyId: string; workspace
     for (const row of rows) {
       await input.assertOwned();
       let cleaned = false;
+      let lastError: string | null = null;
       try {
         await cleanupRemoteWorkspaceArchive({ target: input.target,
           remoteCwd: row.phase === "remote_workspace_restore" ? path.posix.dirname(input.location.remoteCwd) : input.location.remoteCwd,
           operationId: row.id });
         cleaned = true;
-      } catch { /* Keep a durable retry obligation; the acknowledged snapshot is safe. */ }
+      } catch (error) {
+        lastError = error instanceof RemoteWorkspaceOperationTimeoutError ? error.message : "remote_workspace_export_cleanup_failed";
+      }
       await input.assertOwned();
       await input.db.update(workspaceOperations).set({ metadata: sql`jsonb_set(coalesce(${workspaceOperations.metadata}, '{}'::jsonb),
         '{exportCleanup}', coalesce(${workspaceOperations.metadata}->'exportCleanup', '{}'::jsonb) ||
-        ${JSON.stringify({ state: cleaned ? "cleaned" : "pending", lastError: cleaned ? null : "remote_workspace_export_cleanup_failed" })}::jsonb)`,
+        ${JSON.stringify({ state: cleaned ? "cleaned" : "pending", lastError })}::jsonb)`,
         updatedAt: new Date() })
         .where(and(eq(workspaceOperations.id, row.id), eq(workspaceOperations.companyId, input.companyId),
           inArray(workspaceOperations.status, ["succeeded", "failed"])));
