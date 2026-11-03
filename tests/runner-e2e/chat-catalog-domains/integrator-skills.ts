@@ -1,5 +1,7 @@
 import { readSkillVersionHistory } from "./integrator-skill-versions.js";
 import { saveSkillConversationContext } from "./integrator-skill-context.js";
+import { remainingIdentityObservationBudget, waitForReply } from "./identity-support.js";
+import { expect } from "@playwright/test";
 import { factualContextQueryAttachment } from "../chat-query-attachments.js";
 import type { CompanySkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion } from "../../../packages/shared/src/types/company-skill.js";
 import type { EffectiveSkillPolicy, SkillPolicyDecision } from "../../../packages/shared/src/validators/skill-policy.js";
@@ -51,7 +53,9 @@ export function gradeIntegratorSkills(value: unknown) {
     const markdown = version?.fileInventory.find(file => file.path === "SKILL.md")?.content;
     c.add("actual-checklist-in-current-revision", !!skill && !!version && version.authorAgentId === o.leadId && typeof markdown === "string"
       && preservesWebsiteChecklist(markdown) && markdown === skill.markdown, "The current saved SKILL.md revision preserves keyboard-only controls, visible form labels, WCAG AA text contrast and a 375px viewport without horizontal overflow; paraphrase is permitted.");
-    c.add("inspectable-skill-link", !!skill && !!resultHref(o, skill.id, "studio"), "Chat links the saved editable skill in Studio.");
+    const inspection = o.state.authoredSkillInspection as AuthoredSkillInspection | undefined;
+    c.add("inspectable-authored-skill", !!skill && inspection?.companyId === o.companyId && inspection.skillId === skill.id && inspection.versionId === skill.currentVersionId && inspection.libraryVisible === true && inspection.studioVisible === true && inspection.editable === true && inspection.checklistVisible === true && inspection.reloaded === true && inspection.readbackMatched === true,
+      "The actual saved skill is discoverable through ordinary Skills/My Skills, opens editable Studio content, and survives reload with the same saved version. No specific reply-link format is required.");
     c.add("creation-not-global-assignment", !!skill && skill.usedByAgents.length === 0 && !/\b(?:enabled|assigned|activated)\s+(?:it|the skill|this skill)?\s*(?:for\s+)?(?:all|every)\b/i.test(o.reply), "Creating a reusable skill does not silently enable it for all agents or claim that happened.");
   } else if (o.scenarioId === "skills.explicit-restriction") {
     const before = o.state.skill as CompanySkillDetail; const current = o.skills.find(row => row.id === before?.id);
@@ -73,10 +77,47 @@ async function verifySkill(ctx: ChatCatalogContext, state: Record<string, unknow
   const href = resultHref(o, skill.id, "studio");
   await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name, href);
 }
+interface AuthoredSkillInspection { companyId: string; skillId: string; versionId: string; libraryVisible: true; studioVisible: true; editable: true; checklistVisible: true; reloaded: true; readbackMatched: true }
+export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Record<string, unknown>, o: InternalObservation): Promise<void> {
+  const remaining = () => remainingIdentityObservationBudget(ctx);
+  remaining();
+  const observed = skillsObservation(o);
+  const authored = observed?.skills.filter(skill => observed.activity.some(event => event.action === "company.skill_created" && event.entityId === skill.id && event.agentId === observed.leadId)) ?? [];
+  const skill = authored[0], version = skill && observed?.versions[skill.id]?.find(row => row.id === skill.currentVersionId);
+  const markdown = version?.fileInventory.find(file => file.path === "SKILL.md")?.content;
+  if (!observed || observed.companyId !== ctx.input.fixtures.company.id || observed.leadId !== ctx.input.fixtures.agent.id || authored.length !== 1 || !skill || skill.companyId !== observed.companyId || !skill.editable || !skill.currentVersionId || version?.authorAgentId !== observed.leadId || version.companyId !== observed.companyId || version.companySkillId !== skill.id || typeof markdown !== "string" || markdown !== skill.markdown || !preservesWebsiteChecklist(markdown)) throw new Error("No exact authored saved checklist version is available to inspect");
+  const source = ctx.input.page.url();
+  await ctx.input.page.getByRole("link", { name: "Skills", exact: true }).first().click({ timeout: remaining() });
+  await ctx.input.page.getByRole("link", { name: "My Skills", exact: true }).first().click({ timeout: remaining() });
+  const card = ctx.input.page.getByRole("button").filter({ has: ctx.input.page.getByText(skill.name, { exact: true }) }).first();
+  await expect(card).toBeVisible({ timeout: remaining() }); await card.click({ timeout: remaining() });
+  const route = `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`;
+  await expect(ctx.input.page).toHaveURL(url => url.pathname === route, { timeout: remaining() });
+  await expect(ctx.input.page.getByText(skill.name, { exact: true }).first()).toBeVisible({ timeout: remaining() });
+  const editor = ctx.input.page.getByRole("textbox", { name: "editable markdown", exact: true });
+  await expect(editor).toBeVisible({ timeout: remaining() }); await expect(editor).toBeEditable({ timeout: remaining() });
+  await expect.poll(async () => preservesWebsiteChecklist(await editor.innerText()), { timeout: remaining() }).toBe(true);
+  const body = await editor.innerText();
+  await ctx.input.page.reload({ waitUntil: "domcontentloaded", timeout: remaining() });
+  await expect(ctx.input.page).toHaveURL(url => url.pathname === route, { timeout: remaining() });
+  await expect(editor).toBeVisible({ timeout: remaining() }); await expect(editor).toBeEditable({ timeout: remaining() });
+  await expect.poll(async () => await editor.innerText() === body, { timeout: remaining() }).toBe(true);
+  const after = await ctx.input.api.get<CompanySkillDetail>(`${root(ctx)}/skills/${encodeURIComponent(skill.id)}`, { timeout: remaining() });
+  if (after.id !== skill.id || after.companyId !== observed.companyId || !after.editable || after.currentVersionId !== skill.currentVersionId || after.markdown !== markdown) throw new Error("Authored skill identity, saved version or bytes changed during inspection");
+  remaining();
+  state.authoredSkillInspection = { companyId: observed.companyId, skillId: skill.id, versionId: skill.currentVersionId, libraryVisible: true, studioVisible: true, editable: true, checklistVisible: true, reloaded: true, readbackMatched: true } satisfies AuthoredSkillInspection;
+  await ctx.input.evidence("chat-catalog-authored-skill-ui.json", state.authoredSkillInspection);
+  await ctx.input.page.goto(source, { waitUntil: "domcontentloaded", timeout: remaining() });
+  await expect(ctx.input.page.getByTestId("task-chat-composer-input")).toBeVisible({ timeout: remaining() });
+  remaining();
+}
 const define = (id: string, setup: ChatCatalogCase["setup"]): ChatCatalogCase => {
   const base = integratorDefinition("skills", id, setup, observeSkills, gradeIntegratorSkills, verifySkill);
   base.sourceFiles = [...base.sourceFiles, "chat-catalog-domains/integrator-skill-versions.ts"];
-  return id === "skills.author-skill" ? { ...base, authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md") } : base;
+  return id === "skills.author-skill" ? { ...base, authentication: "human-session", oracleVersion: "paperclip.chat-catalog.skill-authoring.v2", sourceFiles: [...base.sourceFiles, "chat-catalog-domains/identity-support.ts"], queryAttachments: factualContextQueryAttachment("skill-context.md"),
+    async act(ctx, state) { remainingIdentityObservationBudget(ctx); await waitForReply(ctx, ctx.observationDeadlineAt); await inspectAuthoredSkill(ctx, state, await observeSkills(ctx, state)); },
+    async verifyResult(ctx, state, value) { const o = observation(value); if (!o) throw new Error("Missing authored skill inspection evidence"); await inspectAuthoredSkill(ctx, state, o); },
+  } : base;
 };
 export const integratorSkillsCases: readonly ChatCatalogCase[] = [
   define("skills.author-skill", async ctx => {
