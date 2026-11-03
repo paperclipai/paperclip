@@ -16,6 +16,7 @@ import { instanceSettingsService } from "../services/instance-settings.js";
 import { notifyExternalObjectRefresh } from "../services/external-object-refresh-notifications.js";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -92,7 +93,7 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
     }
     throw new Error("refresh worker did not settle");
   }
-  async function quiet() { await settle(() => coordinator!.nextWakeAt() === null); }
+  async function quiet() { await settle(() => coordinator!.nextWakeAt() === null && idleWorkSnapshot().active === 0); }
   function clock() { vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true }); }
   async function change(companyId: string, patch: Partial<typeof externalObjects.$inferInsert>) {
     await db.transaction(async tx => {
@@ -601,7 +602,10 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
       await db.insert(externalObjectMentions).values(batch.map(objectId => ({ companyId: f.companyId,
         sourceIssueId: f.issueId, sourceKind: "description" as const, objectId })));
     }
-    await start(svc); await settle(() => coordinator!.nextWakeAt() === future.getTime());
+    await start(svc);
+    await vi.waitFor(() => {
+      expect(coordinator!.nextWakeAt()).toBe(future.getTime());
+    }, { timeout: 10_000, interval: 5 });
     const [incoming] = await db.insert(issues).values({ companyId: f.companyId, title: "Incoming",
       description: "https://example.com/new-object" }).returning();
     const reads: Array<{ query: string; params: unknown[] }> = [];

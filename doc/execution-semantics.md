@@ -1602,8 +1602,9 @@ agent, workspace, retained session, and termination of prior execution. The
 checkpoint must match the exact Runner, lease, run, session, turn, and item.
 A missing restart claim does not remove these checks or authorize a fresh session.
 
-After a plugin session passes provider recovery and durable run admission, its
-local suspension receipt is removed. The running session then owns authority;
+After a remote sandbox session passes provider recovery and durable run admission,
+its local suspension receipt is removed. This applies to built-in sandbox runners
+and plugin tasks. The running session then owns authority;
 the old receipt must not conflict with a later warm run's journal identity.
 Failed admission retains the receipt. Normal suspension writes a new receipt.
 
@@ -3029,7 +3030,12 @@ resumption path. This does not consume a provider attempt or stop the retained
 sandbox. A locked run/coordinator check rejects Stop, changed ownership or any
 provider progress. Startup restores even an overdue wait to the same scheduler;
 ordinary resumption rechecks current permissions and task authority. No idle
-scan is added. Per-turn continuation reconstructs a missing suspended-state
+scan is added. The same wait applies when a compatible successful predecessor
+still has a live finalization lease, even with full local controller projections.
+An expired or undated owner, incomplete canonical commands and incompatible
+execution bindings retain their existing reconciliation holds. Once the owner
+releases its lease, the existing resumption claim admits the same run once.
+Per-turn continuation reconstructs a missing suspended-state
 receipt from the admitted sandbox or prepared-task owner, including after a
 previous read failed with only a PRP projection written.
 
