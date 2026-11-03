@@ -32,10 +32,6 @@ export async function runSavedSkillUse(context: JourneyContext, session: TargetS
   let checkpoint: Row = { fixture };
   let primaryFailure: unknown;
   try {
-    const settings = await read.get<Row | undefined>("/api/instance/settings/experimental");
-    const betaSkillsEnabled = settings?.enableBetaSkills === true;
-    checkpoint = { ...checkpoint, betaSkillsEnabled };
-    if (!betaSkillsEnabled) throw new JourneyError("unsupported", "saved_skill_beta_skills_required");
     const companyRoute = `/api/companies/${context.company.id}`;
     await session.own({ kind: "skill", name: fixture.name, journeyId: id });
     const createdSkill = await context.api.post<Row>(`${companyRoute}/skills`, {
@@ -48,14 +44,20 @@ export async function runSavedSkillUse(context: JourneyContext, session: TargetS
     const skillRoute = `${companyRoute}/skills/${createdSkill.id}`;
     const skill = await read.get<Row>(skillRoute);
     if (!skill?.key || !skill.currentVersionId) throw new JourneyError("failed", "saved_skill_version_missing");
+    if (skill.id !== createdSkill.id || !createdSkill.currentVersionId || skill.currentVersionId !== createdSkill.currentVersionId)
+      throw new JourneyError("failed", "saved_skill_created_version_mismatch");
     await context.api.post(`/api/agents/${agent.id}/skills/sync?companyId=${context.company.id}`, {
-      desiredSkills: [{ key: skill.key, versionId: skill.currentVersionId }], mode: "add",
+      desiredSkills: [skill.key], mode: "add",
     });
     const assignmentRoute = `/api/agents/${agent.id}/skills?companyId=${context.company.id}`;
     const versionRoute = `${skillRoute}/versions/${skill.currentVersionId}`;
-    const [version, assignments] = await Promise.all([read.get<Row>(versionRoute), read.get<Row>(assignmentRoute)]);
-    checkpoint = { ...checkpoint, skill, version, assignments };
-    check("saved-skill-version-pinned", savedSkillSourceMatches(skill, version, assignments, fixture, context.company.id));
+    const [version, assignments, beforeDispatchSkill] = await Promise.all([
+      read.get<Row>(versionRoute), read.get<Row>(assignmentRoute), read.get<Row>(skillRoute),
+    ]);
+    checkpoint = { ...checkpoint, skill, version, assignments, beforeDispatchSkill };
+    check("saved-skill-assignment-bound", beforeDispatchSkill.id === createdSkill.id
+      && beforeDispatchSkill.currentVersionId === createdSkill.currentVersionId
+      && savedSkillSourceMatches(beforeDispatchSkill, version, assignments, fixture, context.company.id));
 
     const created = await createTaskThroughUi({ page: context.page, origin: context.api.origin,
       issuePrefix: context.company.issuePrefix, agentName: agent.name, title, prompt, workMode: "standard", requireExplicitTitle: true,
@@ -76,6 +78,11 @@ export async function runSavedSkillUse(context: JourneyContext, session: TargetS
     }, value => value.currentIssue.status === "done" && value.taskRuns.length === 1 && value.taskRuns[0]!.status === "succeeded"
       && value.taskRuns[0]!.nativePhase === "committed"
       && value.interactions.every(row => row.status !== "pending"), "saved_skill_task_not_completed");
+    const admittedVersions = state.taskRuns[0]!.contextSnapshot?.skillVersions;
+    if (state.taskRuns[0]!.contextSnapshot?.skillSelectionSnapshot !== true || !admittedVersions
+      || typeof admittedVersions !== "object" || Array.isArray(admittedVersions)
+      || !Object.hasOwn(admittedVersions, skill.key) || admittedVersions[skill.key] !== version.id)
+      throw new JourneyError("failed", "saved_skill_run_version_mismatch");
     const binding = { companyId: context.company.id, agentId: agent.id, runId: state.taskRuns[0]!.id, issueId: created.issueId };
     const request = String(state.currentIssue.description ?? "");
     check("saved-skill-input-only-in-source", request.includes(`/${fixture.slug}`) && !request.includes(fixture.expected.reference)

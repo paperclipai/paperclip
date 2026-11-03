@@ -2,7 +2,7 @@
 
 The deployment-targeted `saved-skill-use` journey creates one synthetic skill on
 the campaign-owned agent. Its random receipt reference and numeric inputs occur
-only in the pinned skill source. Exact source, version, assignment, native read
+only in the saved skill source. Exact source, immutable version, ordinary assignment, native read
 events and run-authored document revisions remain in the private bundle. The
 existing public projection exports closed checks and the authenticated owned
 task screenshot. The journey changes no shared agent, instance flag or budget.

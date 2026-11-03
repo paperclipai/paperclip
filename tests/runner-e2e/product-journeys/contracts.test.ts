@@ -39,9 +39,10 @@ function connectReceipt(): OnboardingConnectEvidence {
   };
 }
 describe("deployment journey contracts", () => {
-  it("discovers Beta skills as a required target setting for the saved-skill version pin", () => {
+  it("discovers an ordinary assigned-skill journey without an experimental pin prerequisite", () => {
     const discovered = productJourneys.find(journey => journey.id === "saved-skill-use")!;
-    expect(discovered).toMatchObject({ requiredSettings: { enableBetaSkills: true } });
+    expect(discovered).not.toHaveProperty("requiredSettings");
+    expect(journeyRequiredChecks[discovered.id]?.[0]).toBe("saved-skill-assignment-bound");
     const config = parseTargetConfig({ ...local, journeys: ["saved-skill-use"],
       limits: { durationMs: 600_000, modelBudgetCents: 100, maxRuns: 1 } });
     expect(preparationPreview(config).journeys).toContainEqual(discovered);

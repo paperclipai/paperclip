@@ -5,28 +5,29 @@ uses one native work run on the target provider's campaign-owned agent. It does
 not enroll itself in a daily plan. Local calibration and catalog discovery are
 separate from a real staging pass.
 
-The target must already have the Beta skills experimental setting enabled
-(`enableBetaSkills: true`). Skill-write access alone does not permit version
-pins. Discovery and preparation preview expose this as `requiredSettings`.
-Before journaling or creating any skill or task, the flow reads the current
-setting through `GET /api/instance/settings/experimental`. A missing, disabled
-or malformed setting returns `unsupported` with `saved_skill_beta_skills_required`.
-The journey never enables the setting or changes the shared target baseline.
+The target supplies ordinary company skill-write access. Assignment uses
+`desiredSkills: [canonicalSkillKey]`, which selects Latest and returns a stored
+`versionId: null`. This path works with Beta skills disabled. No experimental
+setting is read or changed. Experimental version pins need separate qualification.
 
 The fixture creates one synthetic company skill through the public skill API.
 The journal name, API name and Markdown frontmatter name equal its slug. Each
 contains the exact campaign ID, including its hyphens. Recovery can therefore
 find the persisted skill by name if a successful creation response is lost.
-It pins the returned version on the owned agent through the normal skill sync
-API. A separate version read must return the exact `SKILL.md` bytes. The skill's
+It assigns the skill on the owned agent through the normal skill sync API.
+The created skill must be managed, with the exact canonical company key. Its
+creation receipt and separate reads must agree on the immutable current version.
+A version read must return the exact `SKILL.md` bytes. The skill's
 random receipt reference and two numeric inputs occur only in those saved bytes.
 The slug and task prompt do not contain the reference. The task is created
 through the production browser composer and explicitly names that skill.
 
 A pass requires all seven closed checks:
 
-- `saved-skill-version-pinned`: exact company, skill, version, source bytes and
-  agent assignment before dispatch.
+- `saved-skill-assignment-bound`: exact company, managed skill, creation version,
+  source bytes and one ordinary Latest assignment before dispatch. The successful
+  run must have `contextSnapshot.skillSelectionSnapshot: true` and an admitted
+  `skillVersions[canonicalSkillKey]` equal to that immutable created version.
 - `saved-skill-input-only-in-source`: the persisted request names the skill but
   does not expose its receipt reference; no human comment supplies that reference.
 - `saved-skill-native-read-attributed`: a complete successful native skill load or

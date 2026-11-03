@@ -30,13 +30,14 @@ export function savedSkillSourceMatches(skill: Row | undefined, version: Row | u
   if (!skill || !version || !assignments) return false;
   const files = version.fileInventory;
   const entries = assignments.desiredSkillEntries;
-  return Boolean(skill.id && skill.companyId === companyId && skill.name === fixture.name && skill.slug === fixture.slug && skill.key
+  return Boolean(skill.id && skill.companyId === companyId && skill.sourceType === "managed"
+    && skill.name === fixture.name && skill.slug === fixture.slug && skill.key === `company/${companyId}/${fixture.slug}`
     && skill.markdown === fixture.markdown && skill.currentVersionId
     && version.id === skill.currentVersionId && version.companyId === companyId && version.companySkillId === skill.id
     && Array.isArray(files) && files.length === 1 && files[0].path === "SKILL.md" && files[0].content === fixture.markdown
     && (files[0].encoding === undefined || files[0].encoding === "utf8")
     && Array.isArray(entries) && entries.filter(row => row.key === skill.key).length === 1
-    && entries.find(row => row.key === skill.key)?.versionId === version.id);
+    && entries.find(row => row.key === skill.key)?.versionId === null);
 }
 
 export function savedSkillResultMatches(body: unknown, expected: SavedSkillFixture["expected"]): boolean {

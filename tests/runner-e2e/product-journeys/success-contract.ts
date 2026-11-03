@@ -9,7 +9,7 @@ export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
   return (count as number) >= minimum && (count as number) <= maximum;
 }
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
-  "saved-skill-use": ["saved-skill-version-pinned", "saved-skill-input-only-in-source", "saved-skill-native-read-attributed", "saved-skill-result-authored-by-run", "saved-skill-result-reopened", "saved-skill-source-preserved", "configured-model-and-environment"],
+  "saved-skill-use": ["saved-skill-assignment-bound", "saved-skill-input-only-in-source", "saved-skill-native-read-attributed", "saved-skill-result-authored-by-run", "saved-skill-result-reopened", "saved-skill-source-preserved", "configured-model-and-environment"],
   "company-access-isolation": ["isolation-owner-resource-controls", "cloud-workspace-switch-and-return", "workspace-data-scoped", "restricted-agent-positive-controls", "cross-workspace-agent-read-write-denied", "isolation-credential-revoked", "no-agent-work"],
   "repository-continuation": ["repository-configured-source-bound", "repository-first-commit-verified", "repository-original-files-saved", "repository-followup-stored-once", "repository-same-workspace-retained", "repository-second-commit-verified", "repository-original-and-result-reopened", "configured-model-and-environment"],
   "routine-scheduled-run": ["routine-browser-created", "routine-scheduler-created-execution", "routine-result-attributed", "routine-history-preserved", "routine-pause-prevented-next-run", "routine-result-reopened", "configured-model-and-environment"],

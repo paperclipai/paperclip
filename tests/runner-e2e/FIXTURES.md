@@ -1,10 +1,11 @@
 # Runner E2E fixture authoring
 
 The deployment-targeted [saved skill journey](product-journeys/saved-skill-use.md)
-creates and pins one campaign-owned synthetic skill through public APIs, then
+creates and assigns one campaign-owned synthetic skill by key through public APIs, then
 creates the measured task through the browser. The saved outcome must come from
 one native run. Setup never supplies the output document or its native read
-receipt. Skill ownership is journaled before creation and cleaned by the target
+receipt. The ordinary Latest assignment, immutable created version and admitted
+run version must agree. Skill ownership is journaled before creation and cleaned by the target
 provider with the other owned resources.
 
 [Chat feature evals](CHAT-FEATURES.md) load two authored YAML requests and seed

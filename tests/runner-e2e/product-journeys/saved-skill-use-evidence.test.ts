@@ -17,11 +17,11 @@ function readEvents(): Row[] {
     native(2, "tool.execution.completed", { ...payload, status: "completed", output: fixture.markdown, outputBytes: Buffer.byteLength(fixture.markdown), outputTruncated: false })];
 }
 function source() {
-  const skill: Row = { id: "skill", companyId: binding.companyId, key: "local:qa-skill", name: fixture.name, slug: fixture.slug,
+  const skill: Row = { id: "skill", companyId: binding.companyId, key: `company/${binding.companyId}/${fixture.slug}`, sourceType: "managed", name: fixture.name, slug: fixture.slug,
     markdown: fixture.markdown, currentVersionId: "version" };
   const version: Row = { id: "version", companyId: binding.companyId, companySkillId: skill.id,
     fileInventory: [{ path: "SKILL.md", kind: "skill", content: fixture.markdown }] };
-  const assignments: Row = { desiredSkillEntries: [{ key: skill.key, versionId: version.id }] };
+  const assignments: Row = { desiredSkillEntries: [{ key: skill.key, versionId: null }] };
   return { skill, version, assignments };
 }
 function output() {
@@ -47,17 +47,23 @@ describe("saved skill use evidence", () => {
     expect(() => savedSkillFixture(fixture.expected.reference, fixture.expected.reference)).toThrow();
     expect(() => savedSkillFixture("campaign", "short")).toThrow();
   });
-  it("requires exactly the assigned saved version and its original source bytes", () => {
+  it("requires an ordinary Latest assignment, its exact managed current version and original source bytes", () => {
     const good = source();
     expect(savedSkillSourceMatches(good.skill, good.version, good.assignments, fixture, binding.companyId)).toBe(true);
     const changes: Array<(value: ReturnType<typeof source>) => void> = [
       v => { v.skill.companyId = "foreign"; }, v => { v.version.companyId = "foreign"; },
       v => { v.version.companySkillId = "foreign"; }, v => { v.skill.slug = "foreign"; },
       v => { v.skill.name = "different saved name"; },
+      v => { v.skill.sourceType = "local_path"; },
+      v => { v.skill.key = "unknown"; v.assignments.desiredSkillEntries[0].key = "unknown"; },
+      v => { v.skill.currentVersionId = "different"; },
       v => { v.skill.markdown += "changed"; }, v => { v.version.id = "stale"; },
       v => { v.version.fileInventory = []; }, v => { v.version.fileInventory[0].content += "changed"; },
       v => { v.version.fileInventory[0].encoding = "base64"; }, v => { v.assignments.desiredSkillEntries = []; },
-      v => { v.assignments.desiredSkillEntries[0].versionId = null; }, v => { v.assignments.desiredSkillEntries[0].key = "foreign"; },
+      v => { v.assignments.desiredSkillEntries[0].versionId = "version"; },
+      v => { v.assignments.desiredSkillEntries[0].versionId = "stale"; },
+      v => { delete v.assignments.desiredSkillEntries[0].versionId; },
+      v => { v.assignments.desiredSkillEntries[0].key = "foreign"; },
       v => { v.assignments.desiredSkillEntries.push(v.assignments.desiredSkillEntries[0]); },
     ];
     for (const change of changes) {
