@@ -78,6 +78,7 @@ it.each([
   "Today (UTC): Morgan's verification failed and work paused. The task was reassigned to Riley by Avery. Riley fixed the label and the command passed. Did a native run fail? Both native runs succeeded.",
   "Today (UTC): Morgan's verification failed and work paused. You reassigned the task to Riley. Riley fixed the label and the command passed. If a native run failed, it would be recorded; both native runs succeeded.",
   "Today (UTC): Morgan's verification failed and work paused. The task was reassigned to Riley by the operator. Riley fixed the label and the command passed.",
+  "Today (UTC): Morgan's verification failed and work paused. You have reassigned the task to Riley. Riley fixed the label and the command passed.",
   "Today (UTC): Overview: Riley completed the repair. First Morgan's verification failed and the task was blocked. Then the board reassigned the task to Riley. Riley fixed the input and the check passed.",
 ])("accepts a complete attributed account regardless of incidental first mentions: %s", reply => {
   const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(true);
