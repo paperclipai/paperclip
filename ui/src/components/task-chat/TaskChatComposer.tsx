@@ -933,7 +933,7 @@ export function TaskChatComposer({
   const visibilityNoticeId = useId();
   const visibilityNotice = queuedEdit && !queuedEdit.stale
     ? { lead: QUEUED_COMPOSER_EDIT_LEAD, detail: QUEUED_COMPOSER_EDIT_DETAIL }
-    : liveRunActive && !queuedEdit && !pause && !takeoverVisible && !disabled
+    : liveRunActive && !queuedEdit && !pause && !disabled
       ? { lead: QUEUED_COMPOSER_LIVE_RUN_LEAD, detail: QUEUED_COMPOSER_LIVE_RUN_DETAIL }
       : null;
   const canResetPausedConversation = conversationMode && !queuedEdit && body.trim() === "/new" && attachments.length === 0;

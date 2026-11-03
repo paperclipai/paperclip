@@ -3192,6 +3192,18 @@ describe("composer Stop", () => {
     expect(onAdd).not.toHaveBeenCalled();
     expect(sendButton().getAttribute("aria-describedby")).toBe(notice()?.id);
 
+    render(
+      <TaskChatComposer
+        workMode="standard"
+        onAdd={onAdd}
+        liveRunActive
+        takeover={{ id: "question", label: "Pending input", pendingCount: 1, content: <div>Question</div>, onDismiss: vi.fn() }}
+      />
+    );
+    expect(notice()?.textContent).toBe(
+      "Visible as soon as you send. The running agent can read it now; its next turn starts after this run.",
+    );
+
     render(<TaskChatComposer workMode="standard" onAdd={onAdd} />);
     expect(notice()).toBeNull();
     expect(sendButton().hasAttribute("aria-describedby")).toBe(false);
