@@ -1,3 +1,5 @@
+import { createHeartbeatRunControl } from "../services/heartbeat/run-control.js";
+import { callbacks } from "../services/heartbeat/__tests__/run-control-fixtures.js";
 import { toolReviewProjectionService } from "../services/tool-review-projection.js";
 import { registerToolReviewProjectionWork } from "../services/tool-review-projection-work.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -27,6 +29,7 @@ import {
   connectionGrants,
   createDb,
   heartbeatRuns,
+  heartbeatRunEvents,
   issueApprovals,
   issues,
   projects,
@@ -251,6 +254,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.delete(toolApplications);
     await db.delete(companySecrets);
     await db.delete(toolPolicies);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(projects);
@@ -2742,6 +2746,139 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(requests).toHaveLength(2);
     expect(requests[0]?.status).toBe("expired");
     expect(requests[1]?.status).toBe("pending");
+  });
+
+  it("retains an unknown outcome for a direct in-flight fictional plugin call", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow fictional tool",
+      policyType: "allow", selectors: { toolName: "fixture:delete_everything" } });
+    let entered!: () => void; let resume!: () => void; let calls = 0;
+    const sent = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    const dispatcher = fakePluginDispatcher(); const execute = dispatcher.executeTool;
+    dispatcher.executeTool = async (...args) => { calls++; entered(); await gate; return execute(...args); };
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const input = { sessionToken: session.token, tool: "fixture:delete_everything", parameters: { target: "fictional" } };
+    const outcome = gateway.executeTool(input).then(() => null, error => error);
+    try { await sent; await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop"); }
+    finally { resume(); }
+    expect(await outcome).toMatchObject({ reasonCode: "tool_execution_outcome_unknown" });
+    const [invocation] = await db.select().from(toolInvocations);
+    expect(invocation.errorCode).toBe("tool_execution_outcome_unknown");
+    await expect(gateway.executeTool(input)).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+
+  it("marks an in-flight fictional provider outcome unknown and does not retry on cancellation", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Review destructive tools",
+      policyType: "require_approval", selectors: { toolName: "fixture:delete_everything" } });
+    let entered!: () => void; let resume!: () => void; let calls = 0;
+    const sent = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    const dispatcher = fakePluginDispatcher();
+    const execute = dispatcher.executeTool;
+    dispatcher.executeTool = async (...args) => { calls++; entered(); await gate; return execute(...args); };
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const input = { sessionToken: session.token, tool: "fixture:delete_everything", parameters: { target: "fictional" } };
+    await expect(gateway.executeTool(input)).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests);
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByUserId: "board-user", resolvedAt: new Date() })
+      .where(eq(issueThreadInteractions.id, request.interactionId!));
+    await db.update(approvals).set({ status: "approved", decidedByUserId: "board-user", decidedAt: new Date() })
+      .where(eq(approvals.id, request.approvalId!));
+    const attempt = gateway.executeTool({ ...input, approvedActionRequestId: request.id });
+    const outcome = attempt.then(() => null, error => error);
+    try { await sent; await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop"); }
+    finally { resume(); }
+    await outcome;
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, request.invocationId));
+    const [after] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, request.id));
+    expect(invocation.errorCode).toBe("tool_execution_outcome_unknown");
+    expect(after.status).toBe("failed");
+    await expect(gateway.executeTool({ ...input, approvedActionRequestId: request.id })).rejects.toThrow();
+    expect(calls).toBe(1);
+  });
+
+  it("refuses to create a formal approval after cancellation wins", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Review destructive tools",
+      policyType: "require_approval", selectors: { toolName: "fixture:delete_everything" } });
+    let reached!: () => void;
+    let resume!: () => void;
+    const ready = new Promise<void>(resolve => { reached = resolve; });
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: fakePluginDispatcher(),
+      beforeToolFormalApproval: async () => { reached(); await gate; } });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const attempt = gateway.executeTool({ sessionToken: session.token, tool: "fixture:delete_everything",
+      parameters: { target: "fictional" } });
+    const outcome = attempt.then(() => null, error => error);
+    try {
+      await ready;
+      await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop");
+    } finally { resume(); }
+    expect(await outcome).toBeTruthy();
+    expect(await db.select().from(approvals)).toHaveLength(0);
+    const [request] = await db.select().from(toolActionRequests);
+    expect(request.status).toBe("cancelled");
+  });
+
+  it("projects a card created concurrently with run cancellation without retrying", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Review destructive tools",
+      policyType: "require_approval", selectors: { toolName: "fixture:delete_everything" } });
+    let created!: () => void;
+    let resume!: () => void;
+    const cardCreated = new Promise<void>(resolve => { created = resolve; });
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: fakePluginDispatcher(),
+      afterToolReviewInteractionCreated: async () => { created(); await gate; } });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const attempt = gateway.executeTool({ sessionToken: session.token, tool: "fixture:delete_everything",
+      parameters: { target: "fictional" } });
+    const outcome = attempt.then(() => null, error => error);
+    try {
+      await cardCreated;
+      await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop");
+    } finally { resume(); }
+    expect(await outcome).toMatchObject({ reasonCode: "agent_run_cancelled" });
+    const [request] = await db.select().from(toolActionRequests);
+    expect(request.status).toBe("cancelled");
+    expect(request.interactionId).toBeTruthy();
+    expect(request.signedArguments).toBeNull();
+    await gateway.repairActionReviewProjections(company.id);
+    const [card] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!));
+    expect(card.status).not.toBe("pending");
+    const [approval] = await db.select().from(approvals);
+    expect(approval.status).toBe("cancelled");
+  });
+
+  it("cancels a pending gateway action and its formal approval when its run stops", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Review destructive tools",
+      policyType: "require_approval", selectors: { toolName: "fixture:delete_everything" } });
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: fakePluginDispatcher() });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "fixture:delete_everything", parameters: { target: "fictional" } }))
+      .rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests);
+    const [approval] = await db.select().from(approvals);
+    expect(request.status).toBe("pending");
+    expect(approval.status).toBe("pending");
+    const result = await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop");
+    expect(result?.status).toBe("cancelled");
+    const [after] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, request.id));
+    const [formal] = await db.select().from(approvals).where(eq(approvals.id, approval.id));
+    const [invocation] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, request.invocationId));
+    expect(after.status).toBe("cancelled");
+    expect(after.signedArguments).toBeNull();
+    expect(formal.status).toBe("cancelled");
+    expect(invocation.status).toBe("cancelled");
+    await expect(gateway.executeTool({ sessionToken: session.token, tool: "fixture:delete_everything",
+      approvedActionRequestId: request.id, parameters: { target: "fictional" } })).rejects.toThrow();
   });
 
   it("adds formal board approval for destructive tool actions and fails closed until approved", async () => {

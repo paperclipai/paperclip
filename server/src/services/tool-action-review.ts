@@ -76,6 +76,9 @@ export async function commitToolActionReview(
           )
           .for("update")
       : [];
+    // Keep the gateway lock order consistent with cancellation and dispatch.
+    await tx.select({ id: toolInvocations.id }).from(toolInvocations)
+      .where(and(eq(toolInvocations.id, source.invocationId), eq(toolInvocations.companyId, input.companyId))).for("update");
     const [current] = await tx
       .select()
       .from(toolActionRequests)

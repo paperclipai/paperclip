@@ -1381,6 +1381,19 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         );
       }
       const stopRequestedAt = Date.now();
+      // Commit Stop before waiting for process termination. Gateway admission
+      // takes a conflicting run lock; already-admitted calls become uncertain.
+      await db.transaction(async transaction => {
+        const tx = transaction as unknown as Db;
+        const marker = JSON.stringify({ state: "requested", requestedAt: new Date(stopRequestedAt).toISOString() });
+        const [fenced] = await tx.update(heartbeatRuns).set({
+          resultJson: sql`jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), '{executionCancellation}',
+            coalesce(${heartbeatRuns.resultJson}->'executionCancellation', '{}'::jsonb) || ${marker}::jsonb, true)`,
+          updatedAt: new Date(),
+        }).where(and(eq(heartbeatRuns.id, run!.id), eq(heartbeatRuns.companyId, run!.companyId),
+          inArray(heartbeatRuns.status, ["running", "queued"]))).returning({ id: heartbeatRuns.id });
+        if (fenced) await cancelPendingRunApprovals(tx, run!.companyId, run!.id);
+      });
       const cancellation = await (async () => {
         try {
           if (control) {

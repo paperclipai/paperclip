@@ -1,3 +1,4 @@
+import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { and, eq } from "drizzle-orm";
 import { toolActionRequests, toolInvocations, type Db } from "@paperclipai/db";
 import type { ToolRedactedValueSummary } from "@paperclipai/shared";
@@ -74,14 +75,22 @@ export async function bindVerifiedToolApprovalArguments(db: Db, claim: ToolAppro
 
 export async function startToolInvocation(db: Db, invocationId: string, claim?: ToolApprovalClaim) {
   const now = new Date();
-  if (!claim) {
-    await db.update(toolInvocations).set({ status: "executing", startedAt: now, updatedAt: now })
-      .where(eq(toolInvocations.id, invocationId));
-    return true;
-  }
   return db.transaction(async tx => {
-    const [invocation] = await tx.select().from(toolInvocations)
-      .where(eq(toolInvocations.id, invocationId)).for("update");
+    const [origin] = await tx.select({ companyId: toolInvocations.companyId, actorType: toolInvocations.actorType,
+      agentId: toolInvocations.agentId, runId: toolInvocations.runId }).from(toolInvocations).where(eq(toolInvocations.id, invocationId));
+    if (origin?.actorType === "agent" && origin.runId) {
+      if (!origin.agentId) throw new Error("Run-bound invocation has no agent");
+      const run = await assertAgentRunWriteAllowed(tx as unknown as Db, origin.companyId, { agentId: origin.agentId, runId: origin.runId });
+      if (!run) throw new Error("Run-bound invocation has no matching execution");
+    }
+    const [invocation] = await tx.select().from(toolInvocations).where(eq(toolInvocations.id, invocationId)).for("update");
+    if (!invocation || !origin || invocation.companyId !== origin.companyId || invocation.actorType !== origin.actorType
+      || invocation.agentId !== origin.agentId || invocation.runId !== origin.runId) return false;
+    if (!claim) {
+      if (invocation.status === "cancelled" || invocation.errorCode === "tool_execution_outcome_unknown") return false;
+      await tx.update(toolInvocations).set({ status: "executing", startedAt: now, updatedAt: now }).where(eq(toolInvocations.id, invocationId));
+      return true;
+    }
     const [request] = await tx.select().from(toolActionRequests)
       .where(eq(toolActionRequests.id, claim.actionRequestId)).for("update");
     if (invocationId !== claim.invocationId || invocation?.status !== "awaiting_approval" || invocation.startedAt !== null ||
@@ -100,8 +109,8 @@ export async function persistToolTestOutcome(db: Db, invocationId: string, outco
     resultSizeBytes: outcome.result.sizeBytes ?? null,
   } : {}), errorCode: outcome.errorCode, errorMessage: outcome.errorMessage, completedAt: now, updatedAt: now };
   if (!claim) {
-    await db.update(toolInvocations).set(values).where(eq(toolInvocations.id, invocationId));
-    return true;
+    const updated = await db.update(toolInvocations).set(values).where(and(eq(toolInvocations.id, invocationId), eq(toolInvocations.status, "executing"))).returning({ id: toolInvocations.id });
+    return updated.length > 0;
   }
   return db.transaction(async tx => {
     const [invocation] = await tx.select({ status: toolInvocations.status }).from(toolInvocations)
