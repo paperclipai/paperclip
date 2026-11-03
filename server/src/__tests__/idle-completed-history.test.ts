@@ -17,6 +17,14 @@ import { inspectIdleSpool } from "../services/idle-local-work.js";
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
 const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 
+// getUploadUrl returns the attachment once an upload completes. These tests need a new link.
+function uploadLink<T extends object>(result: T) {
+  if (!("url" in result)) throw new Error("Expected a new upload link");
+  return result as Extract<T, { url: unknown }>;
+}
+// Public MCP capabilities never delete, so ApiDispatch omits DELETE. These tests delete through the route directly.
+const DELETE_METHOD = "DELETE" as never;
+
 (support.supported ? describe : describe.skip)("retained completed history", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof tables.createDb>;
@@ -274,7 +282,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       const principal = await p.oauth.authenticate(p.token), bytes = Buffer.from("verified retained attachment");
       const args = { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(), filename: "result.txt", contentType: "text/plain",
         byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
-      const upload = await transfers.getUploadUrl(principal, args);
+      const upload = uploadLink(await transfers.getUploadUrl(principal, args));
       expect(await blocked("mcp_attachment_uploads")).toBe(true);
       const app = express(); app.use(transfers.router);
       const url = new URL(String(upload.url));
@@ -285,7 +293,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       expect(await blocked("mcp_attachment_uploads")).toBe(true);
       await db.update(tables.mcpAttachmentUploads).set({ cleanedAt: null, cleanupVerifiedAt: null }).where(eq(tables.mcpAttachmentUploads.id, String(upload.uploadId)));
       const abandonedArgs = { ...args, requestId: randomUUID() };
-      const abandoned = await transfers.getUploadUrl(principal, abandonedArgs);
+      const abandoned = uploadLink(await transfers.getUploadUrl(principal, abandonedArgs));
       expect(await blocked("mcp_attachment_uploads")).toBe(true);
       const [old] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(abandoned.uploadId)));
       await p.storage.putFile({ companyId: f.companyId, namespace: "mcp-transfers", objectKey: old.objectKey,
@@ -304,7 +312,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
         .timeout({ response: 5000, deadline: 10_000 })).status).toBe(403);
       expect(await p.storage.headObject(f.companyId, old.objectKey)).toEqual({ exists: false });
       expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, old.id)))[0]).toEqual(verified);
-      const reissued = await transfers.getUploadUrl(principal, abandonedArgs);
+      const reissued = uploadLink(await transfers.getUploadUrl(principal, abandonedArgs));
       expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, old.id)))[0])
         .toMatchObject({ cleanedAt: null, cleanupVerifiedAt: null });
       expect(await blocked("mcp_attachment_uploads")).toBe(true);
@@ -313,7 +321,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
         .timeout({ response: 5000, deadline: 10_000 });
       expect(second.status).toBe(200);
       for (const attachment of [result.body.attachment, second.body.attachment]) {
-        expect(await p.api(principal, "DELETE", `/attachments/${attachment.id}`)).toEqual({ ok: true });
+        expect(await p.api(principal, DELETE_METHOD, `/attachments/${attachment.id}`)).toEqual({ ok: true });
       }
       const [removed] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(upload.uploadId)));
       expect(removed).toMatchObject({ attachmentId: result.body.attachment.id, cleanedAt: expect.any(Date), cleanupVerifiedAt: expect.any(Date) });
@@ -364,7 +372,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       const bytes = Buffer.from("expired live publication repair");
       const args = { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(), filename: "repair.txt",
         contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") };
-      const upload = await transfers.getUploadUrl(principal, args, sessionId);
+      const upload = uploadLink(await transfers.getUploadUrl(principal, args, sessionId));
       const put = async (value: unknown) => {
         const url = new URL(String(value));
         return request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes)
@@ -387,7 +395,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       await loseReceipt();
       const expired = await current();
       expect((await put(upload.url)).status).toBe(403);
-      const repair = await transfers.getUploadUrl(principal, args, sessionId);
+      const repair = uploadLink(await transfers.getUploadUrl(principal, args, sessionId));
       const renewed = await current();
       expect(renewed).toEqual({ ...expired, expiresAt: expect.any(Date) });
       expect(renewed.expiresAt.getTime()).toBeGreaterThan(Date.now());
@@ -420,9 +428,9 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       // Deletion owns metadata/cleanup settlement. Overlap it with the locked
       // repair to prove renewal cannot revive a pointer or recreate its bytes.
       pauseRepair = true;
-      const repairing = transfers.getUploadUrl(principal, args, sessionId);
+      const repairing = transfers.getUploadUrl(principal, args, sessionId).then(uploadLink);
       await locked;
-      const deleting = p.api(board, "DELETE", `/attachments/${attachmentId}`);
+      const deleting = p.api(board, DELETE_METHOD, `/attachments/${attachmentId}`);
       let overlappingRepair: Awaited<typeof repairing>;
       try {
         await vi.waitFor(async () => expect(await p.storage.headObject(f.companyId, renewed.objectKey)).toEqual({ exists: false }),
@@ -459,12 +467,12 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
         return request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes)
           .timeout({ response: 5000, deadline: 10_000 });
       };
-      const badLink = await transfers.getUploadUrl(principal, args(f));
+      const badLink = uploadLink(await transfers.getUploadUrl(principal, args(f)));
       const badResult = await put(badLink); expect(badResult.status).toBe(200);
-      const goodLink = await transfers.getUploadUrl(unrelated, args(other));
+      const goodLink = uploadLink(await transfers.getUploadUrl(unrelated, args(other)));
       const goodResult = await put(goodLink); expect(goodResult.status).toBe(200);
       const [bad] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(badLink.uploadId)));
-      const abandonedLink = await transfers.getUploadUrl(unrelated, args(other));
+      const abandonedLink = uploadLink(await transfers.getUploadUrl(unrelated, args(other)));
       const [abandoned] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(abandonedLink.uploadId)));
       await p.storage.putFile({ companyId: other.companyId, namespace: "mcp-transfers", objectKey: abandoned.objectKey,
         originalFilename: "result.txt", contentType: "text/plain", body: bytes });
@@ -481,7 +489,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
         }
         return originalHead(companyId, objectKey);
       };
-      expect(await p.api(principal, "DELETE", `/attachments/${badResult.body.attachment.id}`)).toEqual({ ok: true });
+      expect(await p.api(principal, DELETE_METHOD, `/attachments/${badResult.body.attachment.id}`)).toEqual({ ok: true });
       await db.update(tables.mcpAttachmentUploads).set({ expiresAt: new Date(0) })
         .where(sql`${tables.mcpAttachmentUploads.id} IN (${bad.id}, ${abandoned.id})`);
       const [uncertain] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, bad.id));
@@ -496,7 +504,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, abandoned.id)))[0])
         .toMatchObject({ cleanedAt: expect.any(Date), cleanupVerifiedAt: expect.any(Date) });
       expect(await originalHead(other.companyId, abandoned.objectKey)).toEqual({ exists: false });
-      const next = await transfers.getUploadUrl(unrelated, args(other));
+      const next = uploadLink(await transfers.getUploadUrl(unrelated, args(other)));
       expect((await put(next)).status).toBe(200);
       expect(await blocked("mcp_attachment_uploads")).toBe(true);
       await expect(transfers.getDownloadUrl(principal, goodResult.body.attachment.id)).rejects.toThrow();
@@ -696,8 +704,8 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     try {
       const principal = await p.oauth.authenticate(p.token), bytes = Buffer.from("retained uncertain attachment");
       const transfers = createPublicMcpTransfers(db, p.oauth, p.api, p.storage);
-      const upload = await transfers.getUploadUrl(principal, { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(),
-        filename: "uncertain.txt", contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+      const upload = uploadLink(await transfers.getUploadUrl(principal, { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(),
+        filename: "uncertain.txt", contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }));
       const app = express(); app.use(transfers.router);
       const url = new URL(String(upload.url));
       const result = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes)
@@ -708,7 +716,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       if (failure === "delete_failed") p.storage.deleteObject = async () => { throw new Error("controlled storage removal failure"); };
       if (failure === "object_survived") p.storage.deleteObject = async () => {};
       if (failure === "head_failed") p.storage.headObject = async () => { throw new Error("controlled storage readback failure"); };
-      try { expect(await p.api(principal, "DELETE", `/attachments/${result.body.attachment.id}`)).toEqual({ ok: true }); }
+      try { expect(await p.api(principal, DELETE_METHOD, `/attachments/${result.body.attachment.id}`)).toEqual({ ok: true }); }
       finally { p.storage.deleteObject = originalDelete; p.storage.headObject = originalHead; }
       expect(await db.select().from(tables.issueAttachments).where(eq(tables.issueAttachments.id, result.body.attachment.id))).toHaveLength(0);
       expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, before.id)))[0])
@@ -718,8 +726,8 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       // The existing bounded opportunistic owner can later retire this orphan
       // only by a real successful delete and readback, preserving its identity.
       await db.update(tables.mcpAttachmentUploads).set({ expiresAt: new Date(0) }).where(eq(tables.mcpAttachmentUploads.id, before.id));
-      const pending = await transfers.getUploadUrl(principal, { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(),
-        filename: "new.txt", contentType: "text/plain", byteSize: 1, sha256: createHash("sha256").update("x").digest("hex") });
+      const pending = uploadLink(await transfers.getUploadUrl(principal, { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(),
+        filename: "new.txt", contentType: "text/plain", byteSize: 1, sha256: createHash("sha256").update("x").digest("hex") }));
       expect((await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, before.id)))[0])
         .toMatchObject({ attachmentId: before.attachmentId, cleanupVerifiedAt: expect.any(Date) });
       expect(await p.storage.headObject(f.companyId, before.objectKey)).toEqual({ exists: false });
@@ -736,8 +744,8 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     try {
       const principal = await p.oauth.authenticate(p.token), bytes = Buffer.from("removed with parent");
       const transfers = createPublicMcpTransfers(db, p.oauth, p.api, p.storage);
-      const upload = await transfers.getUploadUrl(principal, { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(),
-        filename: "parent.txt", contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
+      const upload = uploadLink(await transfers.getUploadUrl(principal, { companyId: f.companyId, taskId: f.issueId, requestId: randomUUID(),
+        filename: "parent.txt", contentType: "text/plain", byteSize: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }));
       const app = express(); app.use(transfers.router);
       const url = new URL(String(upload.url));
       const result = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes)
@@ -745,7 +753,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       expect(result.status).toBe(200);
       const originalDelete = p.storage.deleteObject;
       if (storageFailure) p.storage.deleteObject = async () => { throw new Error("controlled parent storage failure"); };
-      try { await p.api(principal, "DELETE", `/issues/${f.issueId}`); }
+      try { await p.api(principal, DELETE_METHOD, `/issues/${f.issueId}`); }
       finally { p.storage.deleteObject = originalDelete; }
       expect(await db.select().from(tables.issues).where(eq(tables.issues.id, f.issueId))).toHaveLength(0);
       const [removed] = await db.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, String(upload.uploadId)));
@@ -764,7 +772,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     await db.insert(tables.toolInvocations).values({ id: invocationId, companyId: f.companyId, issueId: f.issueId, runId: f.runId,
       actorType: "agent", actorId: f.agentId, agentId: f.agentId, toolName: "fixture:write", status: "awaiting_approval" });
     await db.insert(tables.issueThreadInteractions).values({ id: interactionId, companyId: f.companyId, issueId: f.issueId,
-      kind: "request_confirmation", payload: { version: 1, prompt: "Approve fixture action?", toolAction: { actionRequestId: requestId, invocationId } } });
+      kind: "request_confirmation", payload: { version: 1, prompt: "Approve fixture action?", toolAction: { actionRequestId: requestId, invocationId } } as never });
     await db.insert(tables.toolActionRequests).values({ id: requestId, companyId: f.companyId, issueId: f.issueId,
       invocationId, interactionId, requestedByAgentId: f.agentId, canonicalArgumentsHash: "a".repeat(64), canonicalArgumentsSummary: { summary: "fixture" } });
     expect(await blocked("tool_action_requests")).toBe(true);
@@ -945,7 +953,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
         sources: [{ omissionReasons: { download_unavailable: 1 } }] }) as never,
       isExternalActionAuthorizationChange: () => false, FailedChatRetryPublicationReadError: class extends Error {}, endpointRecord: unused,
       runIdFromMilestonePublication: () => null, fetchImpl: unused, stageTerminalReceiptReactionRemovals: unused,
-      runtimeContextForRecord: unused, scheduleMessageProcessing: unused, processReceiptReaction: unused });
+      runtimeContextForRecord: unused as never, scheduleMessageProcessing: unused, processReceiptReaction: unused });
     const text = await db.transaction(tx => policy.githubCurrentOmissionPreparedText(tx, publication, endpoint));
     expect(text).toContain("Open this Paperclip task");
     const [receipt] = await db.select().from(tables.chatActions).where(eq(tables.chatActions.kind, "github_omission_navigation"));
@@ -967,7 +975,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     const { chatCredentialMutationLease } = await import("../services/chat-credential-mutation-lease.js");
     const f = await slackFixture(), applicationId = String(1_400_000_000_000_000_000n + BigInt(Date.now()) + BigInt(randomBytes(2).readUInt16BE())), guildId = "1457808928258658549", channelId = "333333333333333333";
     const [endpoint] = await db.update(tables.chatEndpoints).set({ provider: "discord", botExternalId: applicationId,
-      providerAccountId: guildId, capabilities: { slashCommands: true } }).where(eq(tables.chatEndpoints.id, f.endpoint.id)).returning();
+      providerAccountId: guildId, capabilities: { slashCommands: true } as never }).where(eq(tables.chatEndpoints.id, f.endpoint.id)).returning();
     const [principal] = await db.update(tables.chatExternalPrincipals).set({ provider: "discord", externalId: "444444444444444444",
       providerAccountId: guildId }).where(eq(tables.chatExternalPrincipals.id, f.principal.id)).returning();
     const context = { generation: 1, credentialFingerprint: "c".repeat(64), localEpoch: 0, version: "fixture", discordGatewayOwned: true };
@@ -1035,7 +1043,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
         ? await readFile(new URL("./photon/fixtures/synthetic.heic", import.meta.url))
         : Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/6S8AAAAASUVORK5CYII=", "base64");
       const type = relationKind === "heif_jpeg_preview" ? "image/heic" : "image/png";
-      let body = bytes, closed = false;
+      let body: Buffer = bytes, closed = false;
       if (relationKind === "live_photo_video") {
         const companion = Buffer.from("Actual bounded companion bytes"), locator = { kind: "photon_attachment" as const,
           lineId: "line", chatGuid: "chat", messageGuid: "message", attachmentGuid: "attachment" };
@@ -1083,7 +1091,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       const router = Router(); router.use(issueRoutes(db, storage));
       const api = createMcpApiDispatch(router), actor = { type: "board", userId: f.userId, companyIds: [f.companyId], source: "session",
         memberships: [{ companyId: f.companyId, membershipRole: "owner", status: "active" }] };
-      for (const id of result.storedIds) expect(await api({ actor } as never, "DELETE", `/attachments/${id}`)).toEqual({ ok: true });
+      for (const id of result.storedIds) expect(await api({ actor } as never, DELETE_METHOD, `/attachments/${id}`)).toEqual({ ok: true });
       expect(await db.select().from(tables.issueAttachments)).toHaveLength(0);
       for (const asset of assets) expect((await storage.headObject(f.companyId, asset.objectKey)).exists).toBe(false);
       expect(await blockedActionKind(receipt.kind)).toBe(false);
@@ -1146,11 +1154,11 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       lockCurrentPrincipalAuthorization: unused, redactError: String, MAX_ERROR_TEXT: 500,
       nonDirectDestinationAllowed: () => false, lockTelegramCallbackNoticeAuthority: unused });
     const command = slackCommandForAgent("Idle agent", f.endpoint.publicId), scheduled: string[] = [];
-    const service = createSlackCommands(db, { runtime: { get: () => undefined }, runtimeFor: unused, handleSdkMessage: unused,
+    const service = createSlackCommands(db, { runtime: { get: () => null }, runtimeFor: unused, handleSdkMessage: unused,
       stageProviderEffect: effects.stageProviderEffect, scheduleProviderEffect: id => { scheduled.push(id); },
       ensurePrincipal: async () => ({ principal: f.principal, userId: null, linkedDenied: false }),
       runtimeCallbackEndpoint: async () => f.endpoint, getPublicBaseUrl: () => "https://history.example",
-      canonicalProviderResourceId: unused, nonDirectDestinationAllowed: () => false, sponsorAllowsGuest: unused,
+      canonicalProviderResourceId: unused as never, nonDirectDestinationAllowed: () => false, sponsorAllowsGuest: unused,
       latestSlackDmControlThreadId: unused, scheduleMessageProcessing: unused, processSlackTaskStart: unused });
     await service.handleSlackSlashCommand({ endpointId: f.endpoint.id, provider: "slack", transport: "slack_socket",
       event: { command, text: "connect", triggerId: randomUUID(), channel: { id: "DCHANNEL" },
@@ -1237,12 +1245,12 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
         if (method === "chat.postMessage") return Response.json({ ok: true, channel: "DCHANNEL", ts: "123.456" });
         throw new Error(`Unexpected setup boundary ${method}`);
       } });
-    expect(await send(f.endpoint.id, { userId: f.userId }, { requestId: randomUUID(), slackUserId: "UREQUESTER" }))
+    expect(await send(f.endpoint.id, { userId: f.userId, sessionId: null, bypassPermissionCheck: false }, { requestId: randomUUID(), slackUserId: "UREQUESTER" }))
       .toMatchObject({ status: "connection_pending" });
     expect(await blocked("chat_actions")).toBe(false);
     await db.insert(tables.chatIdentityLinks).values({ companyId: f.companyId, endpointId: f.endpoint.id,
       principalId: f.principal.id, paperclipUserId: f.userId, status: "linked", confirmedAt: now });
-    expect(await send(f.endpoint.id, { userId: f.userId }, { requestId: randomUUID(), slackUserId: "UREQUESTER" }))
+    expect(await send(f.endpoint.id, { userId: f.userId, sessionId: null, bypassPermissionCheck: false }, { requestId: randomUUID(), slackUserId: "UREQUESTER" }))
       .toMatchObject({ status: "sent" });
     expect(await blocked("chat_actions")).toBe(false);
     const [comment] = await db.insert(tables.issueComments).values({ companyId: f.companyId, issueId: f.issueId,
@@ -1371,7 +1379,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     await db.update(tables.issues).set({ status: "in_progress" }).where(eq(tables.issues.id, f.issueId));
     const [endpoint] = await db.insert(tables.chatEndpoints).values({ companyId: f.companyId, connectionId: c.connectionId,
       assignedAgentId: f.agentId, publicId: randomUUID(), provider: "slack", status: "active", publicationMode: "automatic",
-      capabilities: { actions: true, modals: true } }).returning();
+      capabilities: { actions: true, modals: true } as never }).returning();
     const [conversation] = await db.insert(tables.chatConversations).values({ companyId: f.companyId, endpointId: endpoint.id,
       issueId: f.issueId, externalConversationId: "question-channel", externalThreadId: "question-thread", externalLabel: "Question", state: "active" }).returning();
     const [principal] = await db.insert(tables.chatExternalPrincipals).values({ companyId: f.companyId, provider: "slack",
@@ -1680,7 +1688,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       await db.update(tables.heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(tables.heartbeatRuns.id, f.runId));
       for (const reason of ["browser_use_sessions", "browser_use_runs", "browser_use_browsers"]) expect(await blocked(reason), reason).toBe(false);
       const [run] = await db.select().from(tables.browserUseRuns).where(eq(tables.browserUseRuns.sessionId, started.sessionId));
-      expect(run.result?.paperclipBudgetHold).toMatchObject({ state: "settled", accountedCentsExact: "15.0000000" });
+      expect((run.result as { paperclipBudgetHold?: unknown } | null)?.paperclipBudgetHold).toMatchObject({ state: "settled", accountedCentsExact: "15.0000000" });
       await db.update(tables.browserUseRuns).set({ eventsDrained: 0 }).where(eq(tables.browserUseRuns.id, run.id));
       expect(await blocked("browser_use_runs")).toBe(true);
     } finally {
@@ -2054,7 +2062,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       // The independent readiness mailbox is retained until its binding is revoked.
       await broker.revoke(f.companyId, f.agentId, p.userId);
       expect(await blocked("dot_mailbox_items")).toBe(false);
-      await db.update(tables.dotRunnerOperations).set({ status: "dispatched", outcome: null }).where(eq(tables.dotRunnerOperations.assignmentId, assignment.id));
+      await db.update(tables.dotRunnerOperations).set({ status: "admitted", outcome: null }).where(eq(tables.dotRunnerOperations.assignmentId, assignment.id));
       expect(await blocked("dot_runner_assignments")).toBe(true);
       expect(await blocked("dot_runner_operations")).toBe(true);
     } finally { await detach(); }
@@ -2163,7 +2171,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       const failedControl = Object.create(db) as typeof db;
       failedControl.select = (() => ({ from: () => ({ where: async () => {
         enterCleanup(); await cleanupGate; throw new Error("controlled stop cleanup failure");
-      } }) })) as typeof db.select;
+      } }) })) as unknown as typeof db.select;
       const stopping = runtime.stopRuntimeServicesForExecutionWorkspace({ db: failedControl,
         executionWorkspaceId: workspace.id, workspaceCwd: directory });
       await cleanupEntered;
@@ -2177,7 +2185,7 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
         if (!firstSelect) return query;
         firstSelect = false;
         return { from: (...from: unknown[]) => {
-          const selected = Reflect.apply(query.from, query, from);
+          const selected = Reflect.apply(query.from, query, from) as { where: (...args: unknown[]) => unknown };
           return { where: (...where: unknown[]) => reconstructionGate.then(() => Reflect.apply(selected.where, selected, where)) };
         } };
       }) as typeof db.select;

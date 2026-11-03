@@ -80,12 +80,12 @@ import type { EnvironmentRuntimeService } from "../services/environment-runtime.
 function makeEnvironment(driver: string = "local"): Environment {
   return {
     id: "env-1",
-    companyId: "company-1",
     name: "Test Environment",
     description: null,
     driver: driver as Environment["driver"],
     status: "active",
     config: {},
+    envVars: {},
     metadata: null,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -129,6 +129,7 @@ function makeExecutionWorkspace(cwd: string = "/workspace/project"): RealizedExe
     cwd,
     branchName: null,
     worktreePath: null,
+    branchCreatedByRuntime: false,
     warnings: [],
     created: false,
   };
@@ -143,15 +144,15 @@ function makePersistedExecutionWorkspace(
     projectId: "project-1",
     projectWorkspaceId: null,
     sourceIssueId: null,
-    mode: "standard",
+    mode: "shared_workspace",
     strategyType: "project_primary",
     name: "workspace",
-    status: "open",
+    status: "active",
     cwd: "/workspace/project",
     repoUrl: null,
     baseRef: null,
     branchName: null,
-    providerType: "local",
+    providerType: "local_fs",
     providerRef: null,
     derivedFromExecutionWorkspaceId: null,
     lastUsedAt: new Date(),
@@ -161,6 +162,7 @@ function makePersistedExecutionWorkspace(
     cleanupReason: null,
     config: null,
     metadata: null,
+    deliveryState: "unknown",
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
@@ -803,7 +805,7 @@ describe("native runner lifecycle changes before lease acquisition", () => {
     const environment = { ...makeEnvironment("plugin"), config: { pluginKey: "fixture", driverKey: "tasks", driverConfig: {} } };
     mockGetEnvironment.mockResolvedValue(environment);
     const acquireRunLease = vi.fn(async input => ({ environment: input.environment,
-      lease: makeLease({ leasePolicy: input.environment.config.runnerLifecycleMode === "warm" ? "reuse_by_environment" : "ephemeral" }), leaseContext: {} }));
+      lease: makeLease({ leasePolicy: input.environment.config.runnerLifecycleMode === "warm" ? "reuse_by_environment" : "ephemeral" }), leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null } }));
     const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
     const result = await orchestrator.acquireForRun({ companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local",
       adapterType: "paperclip_runner", adapterConfig: { lifecycleMode: "warm" }, managedAiCredentialIdentity,
@@ -819,7 +821,7 @@ describe("native runner lifecycle changes before lease acquisition", () => {
     const acquireRunLease = vi.fn(async (input) => ({
       environment: input.environment,
       lease: makeLease({ leasePolicy: input.environment.config.reuseLease ? "reuse_by_environment" : "ephemeral" }),
-      leaseContext: { executionWorkspaceId: "existing-workspace", executionWorkspaceMode: "shared_workspace" },
+      leaseContext: { executionWorkspaceId: "existing-workspace", executionWorkspaceMode: "shared_workspace" as const },
     }));
     const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
     const input = {
@@ -853,7 +855,7 @@ describe("native runner lifecycle changes before lease acquisition", () => {
   ])("respects environment precedence and adapter scope (%s, %s, %s)", async (adapterType, runnerLifecycleMode, lifecycleMode, expectedReuse) => {
     const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false, runnerLifecycleMode } };
     mockGetEnvironment.mockResolvedValue(environment);
-    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: {} }));
+    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null } }));
     const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
     await orchestrator.acquireForRun({
       companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local", adapterType,
@@ -872,7 +874,7 @@ describe("admitted native lifecycle recovery", () => {
   ] as const)("preserves admitted %s over changed agent/environment settings", async (admittedLifecycleMode, lifecycleMode, runnerLifecycleMode, expectedReuse) => {
     const environment = { ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false, runnerLifecycleMode } };
     mockGetEnvironment.mockResolvedValue(environment);
-    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: {} }));
+    const acquireRunLease = vi.fn(async (input) => ({ environment: input.environment, lease: makeLease(), leaseContext: { executionWorkspaceId: null, executionWorkspaceMode: null } }));
     const orchestrator = environmentRunOrchestrator({} as never, { environmentRuntime: makeMockRuntime({ acquireRunLease }) });
     await orchestrator.acquireForRun({
       companyId: "company-1", selectedEnvironmentId: "env-1", localEnvironmentId: "local",

@@ -284,7 +284,7 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
         return new Response(JSON.stringify({ state: "closed", merged: true, title: "Allowed fallback" }), { status: 200 });
       });
       const svc = externalObjectService(db, { pluginWorkerManager: { call: calls } as unknown as PluginWorkerManager,
-        github: { fetch: fallback, credentialProvider: () => ({ token: "simulated-company-token", source: "company_secret" }) } });
+        github: { fetch: fallback, credentialProvider: () => ({ token: "simulated-company-token", source: "company_secret", secretName: "GITHUB_TOKEN" }) } });
       try {
         await start(svc); const f = await fixture();
         await db.update(issues).set({ description: "https://github.com/acme/app/pull/42" }).where(eq(issues.id, f.issueId));
@@ -575,7 +575,7 @@ const active: ExternalObjectResolveResult = { ok: true, snapshot: {
     const address = server.address(); if (!address || typeof address === "string") throw new Error("Missing HTTP test port");
     const svc = externalObjectService(db, { github: {
       fetch: (url, init) => fetch(`http://127.0.0.1:${address.port}${new URL(url).pathname}`, init),
-      credentialProvider: () => ({ token: "simulated-company-token", source: "company_secret" }),
+      credentialProvider: () => ({ token: "simulated-company-token", source: "company_secret", secretName: "GITHUB_TOKEN" }),
     } });
     try {
       await start(svc); const f = await fixture();

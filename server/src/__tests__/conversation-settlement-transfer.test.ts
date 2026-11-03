@@ -36,7 +36,7 @@ const support = await getEmbeddedPostgresTestSupport();
     if (reply === "response") await db.insert(issueComments).values({ companyId, issueId,
       createdByRunId: runId, authorAgentId: agentId, origin: "comment", body: padding });
     if (reply === "interaction") await db.insert(issueThreadInteractions).values({ companyId, issueId,
-      sourceRunId: runId, createdByAgentId: agentId, status: "pending", kind: "request_confirmation", payload: { version: 1 } });
+      sourceRunId: runId, createdByAgentId: agentId, status: "pending", kind: "request_confirmation", payload: { version: 1, prompt: "Approve?" } });
     return { companyId, agentId, issueId, runId, wakeId, wakeTime };
   }
 

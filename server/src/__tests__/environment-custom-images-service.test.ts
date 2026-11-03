@@ -14,6 +14,7 @@ import {
   environments,
   plugins,
 } from "@paperclipai/db";
+import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
   environmentCustomImageService,
@@ -47,6 +48,8 @@ function pluginManifest() {
     apiVersion: 1,
     version: "0.1.0",
     displayName: "Fake Sandbox Provider",
+    description: "Test fake sandbox provider",
+    author: "Paperclip",
     categories: ["automation"],
     capabilities: ["environment.drivers.register"],
     entrypoints: { worker: "./dist/worker.js" },
@@ -68,7 +71,7 @@ function pluginManifest() {
         configSchema: { type: "object" },
       },
     ],
-  } as const;
+  } satisfies PaperclipPluginManifestV1;
 }
 
 const ALL_CUSTOM_IMAGE_WORKER_METHODS = [
@@ -1229,6 +1232,8 @@ function secretPluginManifest() {
     apiVersion: 1,
     version: "0.1.0",
     displayName: "Fake Secret Sandbox Provider",
+    description: "Test fake sandbox provider",
+    author: "Paperclip",
     categories: ["automation"],
     capabilities: ["environment.drivers.register"],
     entrypoints: { worker: "./dist/worker.js" },
@@ -1259,7 +1264,7 @@ function secretPluginManifest() {
         },
       },
     ],
-  } as const;
+  } satisfies PaperclipPluginManifestV1;
 }
 
 function invalidIdentityPluginManifest() {
@@ -1268,6 +1273,8 @@ function invalidIdentityPluginManifest() {
     apiVersion: 1,
     version: "0.1.0",
     displayName: "Fake Invalid Identity Sandbox Provider",
+    description: "Test fake sandbox provider",
+    author: "Paperclip",
     categories: ["automation"],
     capabilities: ["environment.drivers.register"],
     entrypoints: { worker: "./dist/worker.js" },
@@ -1287,7 +1294,7 @@ function invalidIdentityPluginManifest() {
         configSchema: { type: "object" },
       },
     ],
-  } as const;
+  } satisfies PaperclipPluginManifestV1;
 }
 
 function prototypeKeyIdentityPluginManifest() {
@@ -1296,6 +1303,8 @@ function prototypeKeyIdentityPluginManifest() {
     apiVersion: 1,
     version: "0.1.0",
     displayName: "Fake Prototype Key Sandbox Provider",
+    description: "Test fake sandbox provider",
+    author: "Paperclip",
     categories: ["automation"],
     capabilities: ["environment.drivers.register"],
     entrypoints: { worker: "./dist/worker.js" },
@@ -1316,7 +1325,7 @@ function prototypeKeyIdentityPluginManifest() {
         configSchema: { type: "object" },
       },
     ],
-  } as const;
+  } satisfies PaperclipPluginManifestV1;
 }
 
 describeEmbeddedPostgres("environmentCustomImageService relink", () => {

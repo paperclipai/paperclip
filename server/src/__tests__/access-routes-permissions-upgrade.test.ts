@@ -201,7 +201,7 @@ describeEmbeddedPostgres("access routes permissions upgrade compatibility", () =
       companyId: company.id,
       applicationKey: `route-app-${randomUUID()}`,
       name: "Route personal app",
-      type: "mcp",
+      type: "mcp_http",
       status: "active",
     }).returning().then((rows) => rows[0]!);
     const connection = await db.insert(toolConnections).values({

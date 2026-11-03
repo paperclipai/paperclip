@@ -8,7 +8,8 @@ describe("indexed profile catalog matching", () => {
       connectionId: `connection-${index % 7}`, toolName: index % 4 ? `tool-${index}` : "quoted' path\\tool_🙂",
       riskLevel: index % 2 ? "read" : "write",
     }));
-    const selectors = ["application", "connection", "catalog_entry", "tool_name", "risk_level", "unknown"];
+    // "unknown" is deliberately outside the selector type: it must never match.
+    const selectors = ["application", "connection", "catalog_entry", "tool_name", "risk_level", "unknown"] as ProfileEntryMatch["selectorType"][];
     const rules: ProfileEntryMatch[] = catalog.flatMap(entry => selectors.map(selectorType => ({
       selectorType, applicationId: entry.applicationId, connectionId: entry.connectionId,
       catalogEntryId: entry.id, toolName: entry.toolName, riskLevel: entry.riskLevel,

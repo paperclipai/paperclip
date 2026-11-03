@@ -402,7 +402,7 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     await db.insert(issues).values({ id: issueId, companyId: seeded.companyId, title: "Finished question", status: "done" });
     await db.insert(issueThreadInteractions).values({
       id: interactionId, companyId: seeded.companyId, issueId,
-      kind: "ask_user_questions", status: "answered", payload: {},
+      kind: "ask_user_questions", status: "answered", payload: { version: 1, questions: [] },
     });
     await db.insert(issueQuestionResponseDeliveries).values({
       companyId: seeded.companyId, issueId, interactionId, sourceRunId: seeded.runId,
@@ -954,7 +954,7 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
   it("retains a shared directory that can inherit project runtime configuration", async () => {
     const workspace = await seedRetainedWorkspace();
     const [projectWorkspace] = await db.insert(projectWorkspaces).values({
-      companyId: workspace.companyId, projectId: workspace.projectId, name: "Shared fixture",
+      companyId: workspace.companyId, projectId: workspace.projectId!, name: "Shared fixture",
       metadata: { runtimeConfig: { workspaceRuntime: { services: [] } } },
     }).returning();
     await db.update(executionWorkspaces).set({ mode: "shared_workspace", projectWorkspaceId: projectWorkspace!.id })

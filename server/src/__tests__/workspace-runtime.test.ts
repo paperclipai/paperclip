@@ -335,6 +335,7 @@ function buildWorkspace(cwd: string): RealizedExecutionWorkspace {
     strategy: "project_primary",
     cwd,
     branchName: null,
+    branchCreatedByRuntime: false,
     worktreePath: null,
     warnings: [],
     created: false,
@@ -405,7 +406,7 @@ function createWorkspaceOperationRecorderDouble() {
       executionWorkspaceId = nextExecutionWorkspaceId;
     },
     recordOperation: async (input) => {
-      const result = await input.run();
+      const result = await input.run(async () => {});
       operations.push({
         phase: input.phase,
         command: input.command ?? null,
@@ -6829,6 +6830,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         strategy: "git_worktree",
         cwd: workspaceRoot,
         branchName: "feature/runtime-control",
+        branchCreatedByRuntime: false,
         worktreePath: workspaceRoot,
         warnings: [],
         created: false,
@@ -7002,6 +7004,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       strategy: workspace.mode === "isolated_workspace" ? "git_worktree" : "project_primary",
       cwd: workspace.cwd,
       branchName: null,
+      branchCreatedByRuntime: false,
       worktreePath: workspace.mode === "isolated_workspace" ? workspace.cwd : null,
       warnings: [],
       created: false,
@@ -8160,7 +8163,6 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       await stopRuntimeServicesForProjectWorkspace({
         db,
         projectWorkspaceId,
-        workspaceCwd: workspaceRoot,
       }).catch(() => undefined);
       await resetRuntimeServicesForTests();
       await fs.rm(paperclipHome, { recursive: true, force: true });
@@ -9424,6 +9426,7 @@ describe("workspace realization request additionalSources", () => {
       strategy: "project_primary",
       cwd: "/anchor",
       branchName: null,
+      branchCreatedByRuntime: false,
       worktreePath: null,
       warnings: [],
       created: false,

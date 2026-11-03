@@ -361,7 +361,7 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
   });
   it("retries a failed broadcast only while its durable marker remains, including after restart", async () => {
     const run = await runRow();
-    const publish = vi.fn(() => { throw new Error("receiver unavailable"); });
+    const publish = vi.fn(); publish.mockImplementation(() => { throw new Error("receiver unavailable"); });
     let c = coordinator(db, undefined, error => { errors.push(error); });
     const duty = { queue: DELIVERY_QUEUES.executionStatus,
       run: () => deliverExecutionStatuses(observed, { publish }), next: executionControlSchedule(observed).status };

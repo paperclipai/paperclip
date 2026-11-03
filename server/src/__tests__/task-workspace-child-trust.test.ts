@@ -29,7 +29,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(executionWorkspaces).set({ projectId: project.id }).where(eq(executionWorkspaces.id, f.workspace.id));
     await db.update(issues).set({ executionPolicy: policy }).where(eq(issues.id, f.issueId));
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: policy } }).where(eq(heartbeatRuns.id, f.runId));
-    const input = { title: `Child ${randomUUID()}`, parentId: f.issueId, assigneeAgentId: f.agentId,
+    const input = { title: `Child ${randomUUID()}`, parentId: f.issueId as string, assigneeAgentId: f.agentId as string,
       executionPolicy: policy, createdByAgentId: f.agentId, workspaceSelectionActor: f.actor,
       workspaceSelection: { kind: "existing" as const, workspaceId: f.workspace.id } };
     return { ...f, project, policy, input };
@@ -56,7 +56,7 @@ const support = await getEmbeddedPostgresTestSupport();
       req.actor = { ...f.actor, onBehalfOfMemberships: [{ companyId: f.companyId, status: "active", membershipRole: "operator" }] };
       next();
     });
-    app.use("/api", issueRoutes(db));
+    app.use("/api", issueRoutes(db, {} as unknown as Parameters<typeof issueRoutes>[1]));
     app.use(errorHandler);
     const settings = instanceSettingsService(db);
     const previous = await settings.getExperimental();
