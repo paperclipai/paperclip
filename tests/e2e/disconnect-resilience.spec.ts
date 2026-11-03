@@ -34,6 +34,16 @@ async function expectReconnecting(page: Page) {
     .filter({ hasNotText: /^Danger Zone$/ }).filter({ visible: true })).toHaveCount(0);
 }
 
+async function expectCachedTask(page: Page, issue: { id: string; title: string }) {
+  await expect.poll(() => page.evaluate(task => Object.entries(localStorage).some(([key, value]) => {
+    if (!key.startsWith("paperclip:query-cache:v1:")) return false;
+    try {
+      const record = JSON.parse(value) as { state?: { queries?: Array<{ state?: { data?: { id?: string; title?: string } } }> } };
+      return record.state?.queries?.some(query => query.state?.data?.id === task.id && query.state.data.title === task.title) ?? false;
+    } catch { return false; }
+  }), issue)).toBe(true);
+}
+
 test("a comment typed during a 20-second outage posts once and loaded task content stays visible", async ({ page, request }) => {
   const data = await fixture(request);
   const body = "A comment retained through the disconnect";
@@ -60,7 +70,7 @@ test("a comment typed during a 20-second outage posts once and loaded task conte
     expect(Date.now()).toBeGreaterThanOrEqual(interruption.until);
     await expect.poll(async () => (await json(await request.get(`/api/issues/${data.issue.id}/comments`)))
       .filter((comment: { body: string }) => comment.body === body).length).toBe(1);
-    expect(successfulPosts).toBe(1);
+    await expect.poll(() => successfulPosts).toBe(1);
     await page.reload();
     await expect(page.getByText(body, { exact: true })).toBeVisible();
     expect((await json(await request.get(`/api/issues/${data.issue.id}`))).assigneeAgentId).toBeNull();
@@ -72,24 +82,43 @@ test("a comment typed during a 20-second outage posts once and loaded task conte
 test("a queued comment survives an outage reload and sends once after session verification", async ({ page, request }) => {
   const data = await fixture(request);
   const body = "A pending comment retained across reload";
+  let reloading = false, replayPosts = 0, sessionHeld = false;
+  let releaseSession!: () => void;
+  const sessionGate = new Promise<void>(resolve => { releaseSession = resolve; });
+  page.on("request", request => {
+    if (reloading && request.method() === "POST" && request.url().endsWith("/comments") && request.postDataJSON()?.body === body) replayPosts += 1;
+  });
   try {
     await page.goto(data.route);
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
-    await outage(page);
+    const interruption = await outage(page);
+    await page.route("**/api/auth/get-session", async route => {
+      if (Date.now() < interruption.until) return route.fallback();
+      sessionHeld = true;
+      await sessionGate;
+      await route.continue();
+    });
     await page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]').fill(body);
     await page.getByTestId("task-chat-composer-send").click();
     await expectReconnecting(page);
     await expect.poll(() => page.evaluate(text => Object.values(localStorage).some(value => value.includes(text)), body)).toBe(true);
+    reloading = true;
     await page.reload();
     await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: data.issue.title, exact: true })).toBeVisible();
     await expectReconnecting(page);
     expect((await json(await request.get(`/api/issues/${data.issue.id}/comments`))).filter((comment: { body: string }) => comment.body === body)).toHaveLength(0);
     await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
+    await expect.poll(() => sessionHeld).toBe(true);
+    expect(await page.evaluate(async () => (await fetch("/api/health")).ok)).toBe(true);
+    expect(replayPosts).toBe(0);
+    releaseSession();
     await expect.poll(async () => (await json(await request.get(`/api/issues/${data.issue.id}/comments`)))
       .filter((comment: { body: string }) => comment.body === body).length).toBe(1);
+    expect(replayPosts).toBe(1);
     await page.reload();
     await expect(page.getByText(body, { exact: true })).toBeVisible();
   } finally {
+    releaseSession();
     await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
   }
 });
@@ -133,6 +162,7 @@ test("a reload during a 20-second outage restores settings, sidebar and a recent
     await page.goto(data.route);
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: data.issue.title, exact: true })).toBeVisible();
+    await expectCachedTask(page, data.issue);
     await page.getByRole("button", { name: "Open account menu", exact: true }).click();
     await page.getByRole("link", { name: "Settings", exact: true }).click();
     await expect(page.getByRole("heading", { name: "General", exact: true })).toBeVisible();
@@ -154,12 +184,47 @@ test("a reload during a 20-second outage restores settings, sidebar and a recent
   }
 });
 
+test("a legacy Inbox reload retains its saved task rows during a 20-second outage", async ({ page, request }) => {
+  const data = await fixture(request);
+  try {
+    const session = await json(await request.get("/api/auth/get-session"));
+    await json(await request.patch(`/api/issues/${data.issue.id}`, { data: { status: "todo", assigneeUserId: session.user.id } }));
+    await page.route("**/api/instance/settings/experimental", async route => {
+      const response = await route.fetch();
+      await route.fulfill({ json: { ...await response.json(), enableClassicTaskInterface: true, enableStreamlinedUi: false } });
+    });
+    await page.route("**/api/workspace-preferences/me", async route => {
+      const response = await route.fetch();
+      await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: false } });
+    });
+    await page.goto(`/${data.company.issuePrefix}/inbox/all`);
+    const row = page.locator("[data-inbox-item]").filter({ hasText: data.issue.title });
+    await expect(row).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => page.evaluate(id => Object.entries(localStorage).some(([key, value]) => {
+      if (!key.startsWith("paperclip:query-cache:v1:")) return false;
+      try {
+        return JSON.parse(value).state?.queries?.some((query: { queryKey: unknown[]; state: { data?: Array<{ id: string }> } }) =>
+          query.queryKey.includes("compact") && Array.isArray(query.state.data) && query.state.data.some(task => task.id === id)) ?? false;
+      } catch { return false; }
+    }), data.issue.id)).toBe(true);
+    await outage(page);
+    await page.reload();
+    await expectReconnecting(page);
+    await expect(row).toBeVisible();
+    await expect(page.getByRole("status", { name: "Loading tasks" })).toHaveCount(0);
+    await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
+    await expect(row).toBeVisible();
+  } finally {
+    await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
+  }
+});
+
 for (const status of [403, 404]) test(`a genuine ${status} replaces cached task content with readable copy`, async ({ page, request }) => {
   const data = await fixture(request);
   try {
     await page.goto(data.route);
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
-    await expect.poll(() => page.evaluate(() => Object.values(localStorage).some(value => value.includes("Keep this task visible")))).toBe(true);
+    await expectCachedTask(page, data.issue);
     await page.route("**/api/issues/*?view=core", route => route.fulfill({ status, json: { error: status === 403 ? "forbidden" : "not_found" } }));
     await page.reload();
     await expect(page.getByText(status === 403 ? "You don’t have permission to do that." : "This item doesn’t exist or was moved.", { exact: true })).toBeVisible();
@@ -176,7 +241,7 @@ test("signing out clears saved query data before a later outage reload", async (
   try {
     await page.goto(data.route);
     await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
-    await expect.poll(() => page.evaluate(() => Object.values(localStorage).some(value => value.includes("Keep this task visible")))).toBe(true);
+    await expectCachedTask(page, data.issue);
     await page.getByRole("button", { name: "Open account menu", exact: true }).click();
     await page.getByRole("link", { name: "Settings", exact: true }).click();
     await expect(page.getByRole("heading", { name: "General", exact: true })).toBeVisible();
