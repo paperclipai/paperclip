@@ -71,17 +71,6 @@ Gaps: No dedicated production trigger-management binding; generic `call_api`
 provides the permitted REST path. Credential replies use inline delivery and encrypted
 mutation receipts rather than shared response assets.
 
-The public Sentry alert receiver is
-`POST /api/routine-triggers/public/{publicId}/sentry-run-failures`. Only an active
-bearer-authenticated webhook trigger admits work; it never adopts an ambient
-board or agent identity. Before dispatch, it checks company/run/task binding,
-the repair agent's source-read permission, public source visibility, and bounded
-parent/creation provenance. Self-generated repair failures are acknowledged with
-no task or wake. Run-based idempotency is scoped to the routine across triggers.
-The payload retains only source identifiers and bounded event/error identifiers.
-Deterministic service and assembled HTTP tests cover these boundaries; live Sentry
-delivery remains a separate acceptance step.
-
 The host-only `GET /api/instance/task-drain?idleSleepSafety=1&scheduledWake=1`
 extension reports the earliest supported future routine deadline under an owned
 idle hold. It requires signed Cloud control authority; company agents and tenant
@@ -89,6 +78,17 @@ admin tokens cannot use it. It does not grant routine management or execution
 authority. See the [hosting protocol](../../doc/idle-sleep-safety.md#scheduled-routine-wake-protocol)
 and [route authorization tests](../../server/src/__tests__/instance-settings-routes.test.ts).
 These are local contract checks, not a live provider sleep/wake qualification.
+
+The ordinary `POST /api/routine-triggers/public/{publicId}/fire` endpoint uses its
+trigger secret. A current standard run JWT in `X-Paperclip-Source-Run-Token`
+optionally attests the caller's creation provenance; it grants no actor or
+execution authority. The instance, company, agent, active run, and cancellation
+state are verified. Payload provenance claims are not trusted. Optional
+`X-Paperclip-Idempotency-Scope: routine` shares an execution receipt across the
+routine's triggers; the default remains trigger scope. Local
+[HTTP](../../server/src/__tests__/routines-e2e.test.ts) and
+[service](../../server/src/__tests__/routines-service.test.ts) checks cover these
+contracts. This is not a live external-provider qualification.
 
 ## `run-now`
 

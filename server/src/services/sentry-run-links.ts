@@ -1,10 +1,10 @@
 import { and, eq, sql } from "drizzle-orm";
 import { companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import type { SentryRunLinkResolver } from "../sentry-links.js";
+import { readTaskCreationProvenance, unknownTaskCreationProvenance } from "./task-creation-provenance.js";
 
-/** Two indexed, company-bound metadata reads; no prompt, output, or credentials. */
 export function createSentryRunLinkResolver(db: Db): SentryRunLinkResolver {
-  return async ({ runId, companyId, agentId }) => {
+  return async ({ runId, companyId, agentId, includeCreationProvenance }) => {
     const [run] = await db.select({
       companyId: heartbeatRuns.companyId,
       agentId: heartbeatRuns.agentId,
@@ -25,6 +25,9 @@ export function createSentryRunLinkResolver(db: Db): SentryRunLinkResolver {
         taskId ? eq(issues.id, taskId) : sql`false`,
       )).where(eq(companies.id, run.companyId)).limit(1);
     if (!metadata) return null;
-    return { ...run, ...metadata };
+    const creationProvenance = includeCreationProvenance
+      ? await readTaskCreationProvenance(db, run.companyId, metadata.taskId).catch(unknownTaskCreationProvenance)
+      : undefined;
+    return { ...run, ...metadata, ...(creationProvenance ? { creationProvenance } : {}) };
   };
 }

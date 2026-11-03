@@ -54,15 +54,16 @@ Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWiza
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
 
-Sentry run-failure alerts can use the bearer-authenticated
-`/api/routine-triggers/public/:publicId/sentry-run-failures` receiver. It validates
-the source run against this company's task, admits one repair per failed run,
-and ignores tasks originating from the repair routine, including children and
-standalone creation descendants. Private or unreadable sources are ignored rather
-than copied into company-readable routine history. The routine's instructions
-should reuse existing repair cases/PRs for the same root cause. Service and HTTP
-regressions in the routine suites cover recursion, concurrent delivery, and access;
-these checks do not prove a live Sentry integration is configured.
+Normal public webhooks can record a verified caller run with
+`X-Paperclip-Source-Run-Token` and opt into routine-wide execution receipts with
+`X-Paperclip-Idempotency-Scope: routine`. Creation ancestry follows routine
+executions, caller runs, parents, and standalone follow-ups. Run-failure events
+expose bounded Sentry tags for filtering; unknown ancestry fails closed in the
+[Sentry tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
+The [HTTP suite](../../server/src/__tests__/routines-e2e.test.ts) and
+[service suite](../../server/src/__tests__/routines-service.test.ts) exercise
+persisted lineage, caller rejection, and cross-trigger deduplication. They do
+not claim a live Sentry delivery.
 
 ## Gotchas
 
