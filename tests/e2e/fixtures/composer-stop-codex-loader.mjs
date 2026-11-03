@@ -11,7 +11,7 @@ if (process.env.NODE_ENV !== "test" || !command || !isAbsolute(command)) {
 accessSync(command, constants.X_OK);
 registerHooks({
   load(url, context, nextLoad) {
-    if (/\/packages\/paperclip-runner\/(src|dist)\/drivers\/codex\/codex-command\.(js|ts)$/.test(url)) {
+    if (/(?:\/packages\/paperclip-runner\/(?:src|dist)|\/server\/(?:src|dist)\/vendor\/paperclip-runner)\/drivers\/codex\/codex-command\.(?:js|ts)$/.test(url)) {
       return {
         format: "module",
         shortCircuit: true,

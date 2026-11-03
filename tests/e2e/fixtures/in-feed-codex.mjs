@@ -2,6 +2,7 @@
 // Deterministic provider only. The production Rust runner, tool authority, and
 // authenticated MCP gateway still execute every tool and enforce access.
 import { randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -10,6 +11,9 @@ let threadId = `fixture-${randomUUID()}`;
 let turnId, toolSequence = 0, declined = false;
 let helloProbe = false;
 const recoveryFixture = process.env.PAPERCLIP_RECOVERY_FIXTURE === "1";
+const ingestionFixture = process.argv.includes('--ingestion-stream-fixture');
+let ingestionPlan = null;
+let ingestionGeneration = 0;
 let currentObjective = "";
 let emitCeoLineage = false;
 let completionContract = { revision: "1", criterionIds: ["objective"] };
@@ -20,6 +24,57 @@ const call = (tool, args) => new Promise((resolve, reject) => {
   pending.set(id, { resolve, reject });
   send({ id, method: 'item/tool/call', params: { threadId, turnId, callId: id, tool, arguments: args } });
 });
+async function sendIngestion(value) {
+  if (!process.stdout.write(`${JSON.stringify(value)}\n`)) await once(process.stdout, 'drain');
+}
+
+async function streamIngestion() {
+  if (!ingestionPlan) throw new Error('Missing INGESTION_PERF fixture plan');
+  const plan = ingestionPlan, generation = ++ingestionGeneration;
+  const gate = new URL(plan.gate);
+  if (gate.protocol !== 'http:' || !['127.0.0.1', 'localhost'].includes(gate.hostname)
+    || !gate.pathname.startsWith('/native-ingestion-gate/') || gate.username || gate.password) {
+    throw new Error('Ingestion fixture requires its local benchmark gate');
+  }
+  if (plan.prelude) {
+    const preludeId = `prelude-${turnId}`;
+    await sendIngestion({ method: 'item/started', params: { threadId, turnId,
+      item: { id: preludeId, type: 'agentMessage', phase: 'commentary', text: '' } } });
+    for (let index = 0; index < plan.prelude; index++) {
+      await sendIngestion({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId: preludeId,
+        delta: index === plan.prelude - 1 ? ` PRELUDE_${plan.nonce}_READY ` : '.' } });
+    }
+    await sendIngestion({ method: 'item/completed', params: { threadId, turnId,
+      item: { id: preludeId, type: 'agentMessage', phase: 'commentary',
+        text: `${'.'.repeat(Math.max(0, plan.prelude - 1))} PRELUDE_${plan.nonce}_READY ` } } });
+  }
+  gate.searchParams.set('participant', plan.nonce);
+  const response = await fetch(gate, { signal: AbortSignal.timeout(300_000) });
+  if (!response.ok) throw new Error(`Ingestion gate returned ${response.status}`);
+  const { epochMs } = await response.json();
+  if (!Number.isSafeInteger(epochMs)) throw new Error('Invalid ingestion schedule');
+  const itemId = `ingestion-${turnId}`;
+  await sendIngestion({ method: 'item/started', params: { threadId, turnId,
+    item: { id: itemId, type: 'agentMessage', phase: 'final_answer', text: '' } } });
+  let text = '';
+  for (let index = 0; index < plan.events; index++) {
+    const intended = epochMs + index * plan.intervalMs;
+    const wait = intended - Date.now();
+    if (wait > 0) await new Promise(resolve => setTimeout(resolve, wait));
+    if (generation !== ingestionGeneration) return;
+    const delta = `INGEST_${plan.nonce}_${index}_${intended}_${Date.now()} `;
+    text += delta;
+    await sendIngestion({ method: 'item/agentMessage/delta', params: { threadId, turnId, itemId, delta } });
+  }
+  if (generation !== ingestionGeneration) return;
+  await call('report_progress', { idempotencyKey: `ingestion-${plan.nonce}`, body: `Ingestion fixture emitted ${plan.events} measured chunks.` });
+  if (generation !== ingestionGeneration) return;
+  await finish(`Ingestion fixture ${plan.nonce} completed.`, `fixture:ingestion-${plan.nonce}`);
+  if (generation !== ingestionGeneration) return;
+  await sendIngestion({ method: 'item/completed', params: { threadId, turnId,
+    item: { id: itemId, type: 'agentMessage', phase: 'final_answer', text } } });
+  await sendIngestion({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
+}
 function unwrap(result) {
   const texts = result?.contentItems ?? result?.content ?? [];
   for (const item of texts) {
@@ -61,6 +116,7 @@ async function execute() {
     send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'completed' } } });
     return;
   }
+  if (ingestionFixture) return streamIngestion();
   if (process.argv.includes('--task-retry-fixture')) {
     const text = 'The saved result is confirmed. No external publication was repeated.';
     await call('report_progress', { idempotencyKey: 'saved-result-confirmation', body: text });
@@ -156,13 +212,21 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (recoveryFixture) send({ method: 'configWarning', params: { message: 'Recovery fixture startup notice before the first turn' } });
     if (method === 'thread/resume' && message.params?.threadId) threadId = message.params.threadId;
     if (message.params?.completionContract) completionContract = message.params.completionContract;
-    const model = process.argv.includes('--completion-stream-fixture') ? message.params?.model ?? 'in-feed-fixture' : 'in-feed-fixture';
+    const model = process.argv.includes('--completion-stream-fixture') || ingestionFixture ? message.params?.model ?? 'in-feed-fixture' : 'in-feed-fixture';
     send({ id, result: { model, modelProvider: 'fixture', thread: { id: threadId, sessionId: threadId } } });
   }
   else if (method === 'thread/read') send({ id, result: { thread: { id: threadId, turns: [] } } });
   else if (method === 'turn/start') {
-    helloProbe = process.argv.includes('--completion-stream-fixture')
+    helloProbe = (process.argv.includes('--completion-stream-fixture') || ingestionFixture)
       && JSON.stringify(message.params?.input).includes('Respond only with hello. Do not use tools or inspect files.');
+    if (ingestionFixture && !helloProbe) {
+      const match = JSON.stringify(message.params?.input).match(/INGESTION_PERF nonce=([a-z0-9]+) events=(\d+) intervalMs=(\d+) prelude=(\d+) gate=([^\s"\\]+)/);
+      if (!match) throw new Error('Missing explicit ingestion fixture plan');
+      ingestionPlan = { nonce: match[1], events: Number(match[2]), intervalMs: Number(match[3]), prelude: Number(match[4]), gate: match[5] };
+      if (ingestionPlan.events < 1 || ingestionPlan.events > 4096 || ingestionPlan.intervalMs > 1000 || ingestionPlan.prelude > 10_000) {
+        throw new Error('Ingestion fixture exceeds its bounded workload');
+      }
+    }
     emitCeoLineage = JSON.stringify(message.params).includes('CEO descendant fixture');
     declined = /connection_intent/.test(JSON.stringify(message.params)) && /rejected/.test(JSON.stringify(message.params));
     for (const part of message.params?.input ?? []) {
@@ -184,5 +248,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       process.stderr.write(`In-feed fixture: ${error.message}\n`);
       send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'failed', error: { message: error.message } } } });
     }), 50);
+  } else if (ingestionFixture && method === 'turn/interrupt') {
+    ingestionGeneration += 1;
+    send({ id, result: {} });
+    send({ method: 'turn/completed', params: { threadId, turn: { id: turnId, status: 'interrupted' } } });
   } else if (id != null) send({ id, result: {} });
 });

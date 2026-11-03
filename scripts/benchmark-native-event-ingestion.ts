@@ -14,6 +14,7 @@ import {
 import { installDatabaseWorkSignals } from "../packages/db/src/work-signals.js";
 import type { AppendHeartbeatRunEventInput, AppendHeartbeatRunEventResult } from "../server/src/services/heartbeat-run-events.js";
 import { resolveExternalTestDatabaseUrl } from "../server/src/__tests__/helpers/external-test-database.js";
+import { nativeSha256 } from "../server/src/services/native-runtime/canonical.js";
 
 // This measures the real database owner, not browser delivery or a provider.
 // The assembled application/browser acceptance is a separate required layer.
@@ -21,14 +22,28 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const serverRequire = createRequire(new URL("../server/package.json", import.meta.url));
 const { drizzle } = await import(serverRequire.resolve("drizzle-orm/postgres-js"));
 const sourcePath = "server/src/services/heartbeat-run-events.ts";
+const cursorSourcePath = "server/src/services/heartbeat/native-event-cursors.ts";
 const arg = (name: string) => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const git = (args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8" });
+function assertServiceAcceptance(recorded: any) {
+  assert.equal(recorded.cleanupComplete, true, "Owned benchmark resources have not finished cleanup");
+  assert.ok(["compare", "batch"].includes(recorded.phase), "A/A calibration is not performance acceptance");
+  assert.equal(recorded.workload?.quick, false, "Qualification smoke cannot establish acceptance");
+  assert.ok(recorded.workload.pairs >= 5, "Acceptance requires at least five paired samples");
+  assert.ok([1000, 10000, 100000].every(history => recorded.workload.histories.includes(history)), "Acceptance requires the complete retained-history matrix");
+  assert.ok(["ordered", "replay", "late-gap", "warm-suffix"].every(scenario => recorded.workload.scenarios.includes(scenario)), "Acceptance requires every fixed service scenario");
+  assert.ok(recorded.comparison?.length > 0, "Acceptance requires a same-workload A/A noise comparison");
+  assert.ok(recorded.comparison.every((entry: { acceptancePassed: boolean | null }) => entry.acceptancePassed !== false), "Service performance gate failed; inspect comparison and retained failures");
+}
 if (arg("validate-report")) {
   const recorded = JSON.parse(await fs.readFile(arg("validate-report")!, "utf8"));
   assert.equal(recorded.incomplete, false, "Incomplete evidence cannot qualify a revision");
   assert.ok(Object.keys(recorded.candidateSourceHashes ?? {}).length > 0, "Report must include supporting source hashes");
   for (const [file, expected] of Object.entries(recorded.candidateSourceHashes)) {
     assert.equal(createHash("sha256").update(await fs.readFile(path.join(root, file))).digest("hex"), expected, `Measured source changed: ${file}`);
+  }
+  if (process.argv.includes("--require-acceptance")) {
+    assertServiceAcceptance(recorded);
   }
   console.log(JSON.stringify({ valid: true, phase: recorded.phase, baselineRevision: recorded.baselineRevision,
     candidateRevision: recorded.candidateRevision, scope: recorded.scope }));
@@ -45,11 +60,13 @@ const candidateRevision = git(["rev-parse", "HEAD"]).trim();
 const histories = (arg("histories") ?? (quick ? "1000" : "1000,10000,100000")).split(",").map(Number);
 const pairs = Number(arg("pairs") ?? (quick ? 1 : 5));
 const events = Number(arg("events") ?? (quick ? 8 : 32));
+const groups = Number(arg("groups") ?? (quick ? 1 : 16));
 assert.ok(histories.every(value => Number.isSafeInteger(value) && value >= 1));
 assert.ok(Number.isSafeInteger(pairs) && pairs >= (quick ? 1 : 5), "Acceptance requires at least five paired samples");
 assert.ok(Number.isSafeInteger(events) && events >= 2 && events <= 64 && events % 2 === 0);
+assert.ok(Number.isSafeInteger(groups) && groups >= 1 && groups <= 128);
 const scenarios = quick ? ["ordered"] : ["ordered", "replay", "late-gap", "warm-suffix"];
-const workload = { histories, pairs, events, scenarios, payloadTextBytes: 128, warmSourceOffset: 1000,
+const workload = { histories, pairs, events, groups, scenarios, payloadTextBytes: 128, warmSourceOffset: 1000,
   seed: "native-event-ingestion-v1", retainedHistory: "vacuum-analyzed", quick };
 const workloadSha256 = createHash("sha256").update(JSON.stringify(workload)).digest("hex");
 const output = arg("output");
@@ -65,6 +82,7 @@ type Sample = {
   elapsedMs: number; eventsPerSecond: number; newEvents: number; duplicateEvents: number;
   appCpuMicros: number; databaseCpuMillis: number | null; heapDeltaBytes: number; rssBytes: number;
   eventLoopUtilization: number; eventLoopDelayMaxMs: number | null;
+  retainedHistoryBefore: number; retainedHistoryAfter: number;
 };
 type Arm = "baseline" | "candidate";
 const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)]!;
@@ -87,7 +105,7 @@ const report: Record<string, unknown> = {
   baselineSourceSha256: createHash("sha256").update(baselineSource).digest("hex"),
   measurement: { warmups: 2, pairedOrder: "alternating", cache: "warm; seed and projection preparation excluded", databaseCpuResolutionMillis: 10 },
   environment: { node: process.version, platform: process.platform, architecture: process.arch, cpus: availableParallelism(), loadBefore },
-  results: [], incomplete: true,
+  results: [], incomplete: true, cleanupComplete: false,
 };
 
 async function save() {
@@ -129,10 +147,10 @@ function diagnosticDb(target: Db, queries: Query[], transactions: Array<{ elapse
   const decorate = (connection: Db, transaction?: { acquisitionMs?: number; acquiredAt?: number }) => {
     const session = (connection as unknown as { session: Session }).session;
     const prepare = session.prepareQuery;
-    session.prepareQuery = function (...args: any[]) {
+    session.prepareQuery = function (this: Session, ...args: any[]) {
       const prepared = prepare.apply(this, args), execute = prepared.execute;
       const query = args[0] as Query;
-      prepared.execute = async function (...values: any[]) {
+      prepared.execute = async function (this: unknown, ...values: any[]) {
         const started = performance.now();
         try {
           const result = await execute.apply(this, values);
@@ -151,9 +169,9 @@ function diagnosticDb(target: Db, queries: Query[], transactions: Array<{ elapse
       return prepared;
     };
     const original = connection.transaction.bind(connection);
-    connection.transaction = ((callback: (tx: Db) => Promise<unknown>, ...options: any[]) => {
+    connection.transaction = ((callback: (tx: Db) => Promise<unknown>, options?: Parameters<Db["transaction"]>[1]) => {
       const started = performance.now(), state: { acquisitionMs?: number; acquiredAt?: number } = {};
-      return original(async tx => callback(decorate(tx as unknown as Db, state)), ...options).finally(() => {
+      return original(async tx => callback(decorate(tx as unknown as Db, state)), options).finally(() => {
         transactions.push({ elapsedMs: performance.now() - started, lockAcquisitionQueryMs: state.acquisitionMs,
           lockHeldThroughCommitMs: state.acquiredAt === undefined ? undefined : performance.now() - state.acquiredAt });
       });
@@ -171,6 +189,10 @@ try {
   const changed = git(["diff", "--name-only", baselineRevision, "--", "server/src/services"])
     .trim().split("\n").filter(file => file.endsWith(".ts") && !file.endsWith(".test.ts"));
   const snapshots = new Map<string, string>([[sourcePath, baselineSource]]);
+  let baselineCursorSource: string | undefined;
+  try { baselineCursorSource = git(["show", `${baselineRevision}:${cursorSourcePath}`]); }
+  catch { /* The pre-cursor baseline has no projection to prepare. */ }
+  if (baselineCursorSource) snapshots.set(cursorSourcePath, baselineCursorSource);
   for (const file of changed) {
     if (snapshots.has(file)) continue;
     try { snapshots.set(file, git(["show", `${baselineRevision}:${file}`])); }
@@ -190,6 +212,8 @@ try {
   const baselineFile = path.join(baselineDir, sourcePath);
   const baseline = await import(pathToFileURL(baselineFile).href) as EventModule;
   const candidate = phase === "aa" ? baseline : await import("../server/src/services/heartbeat-run-events.js") as EventModule;
+  report.projectionPriming = { baseline: Boolean(baselineCursorSource), candidate: phase === "aa" ? Boolean(baselineCursorSource) : true };
+  report.effectiveCandidateRevision = phase === "aa" ? baselineRevision : candidateRevision;
   if (phase === "batch") assert.equal(typeof candidate.appendHeartbeatRunEvents, "function", "Batch phase requires appendHeartbeatRunEvents");
   report.candidateSourceSha256 = createHash("sha256").update(await fs.readFile(path.join(root, sourcePath))).digest("hex");
   const proofFiles = [...new Set([sourcePath, "scripts/benchmark-native-event-ingestion.ts",
@@ -222,10 +246,13 @@ try {
   }
 
   async function prepare(f: Fixture, arm: Arm) {
-    if (arm === "baseline" || phase === "aa") return;
+    const usesBaseline = arm === "baseline" || phase === "aa";
+    if (usesBaseline && !baselineCursorSource) return;
     // Seed setup is an old-version append. Prime using the real fallback and
     // bounded rebuild before steady-state timing; cold behavior is traced below.
-    const module = await import("../server/src/services/heartbeat/native-event-cursors.js") as Record<string, unknown>;
+    const module = await import(usesBaseline
+      ? pathToFileURL(path.join(baselineDir, cursorSourcePath)).href
+      : pathToFileURL(path.join(root, cursorSourcePath)).href) as Record<string, unknown>;
     const rebuild = module.rebuildNativeEventCursorPage as undefined | ((db: Db, binding: { companyId: string; runId: string }) => Promise<{ pending: boolean }>);
     assert.equal(typeof rebuild, "function", "Cursor owner must expose rebuildNativeEventCursorPage for seeded-history preparation");
     await db!.$client.unsafe("update heartbeat_runs set event_cursor_rebuild_pending=true where id=$1::uuid", [f.runId]);
@@ -236,18 +263,29 @@ try {
     throw new Error("Cursor fixture failed to finish bounded rebuild");
   }
 
-  function emittedInputs(f: Fixture, scenario: string) {
+  function emittedInputs(f: Fixture, scenario: string, repetitions = 1) {
     if (scenario === "late-gap") return [input(f, 1)];
     const newCount = scenario === "replay" ? events / 2 : events;
-    const unique = Array.from({ length: newCount }, (_, n) => input(f, f.next + n));
-    f.next += newCount;
-    return scenario === "replay" ? [...unique, ...unique] : unique;
+    const values: AppendHeartbeatRunEventInput[] = [];
+    for (let group = 0; group < repetitions; group++) {
+      const unique = Array.from({ length: newCount }, (_, n) => input(f, f.next + n));
+      f.next += newCount;
+      values.push(...unique);
+      if (scenario === "replay") values.push(...unique);
+    }
+    return values;
   }
 
   async function invoke(target: Db, arm: Arm, values: AppendHeartbeatRunEventInput[]) {
     const owner = arm === "baseline" ? baseline : candidate;
     const receipts: AppendHeartbeatRunEventResult[] = [];
-    if (phase === "batch" && arm === "candidate") receipts.push(...await owner.appendHeartbeatRunEvents!(target, values));
+    if (phase === "batch" && arm === "candidate") {
+      for (let offset = 0; offset < values.length; offset += 64) {
+        const chunk = values.slice(offset, offset + 64);
+        assert.ok(chunk.reduce((bytes, value) => bytes + Buffer.byteLength(JSON.stringify(value.nativeSource!.canonicalPayload)), 0) <= 64 * 1024);
+        receipts.push(...await owner.appendHeartbeatRunEvents!(target, chunk));
+      }
+    }
     else for (const value of values) receipts.push(await owner.appendHeartbeatRunEvent(target, value));
     assert.equal(receipts.length, values.length);
     const expectedCursor = Math.max(...values.map(value => value.nativeSource!.sourceSeq));
@@ -256,7 +294,8 @@ try {
   }
 
   async function timed(f: Fixture, arm: Arm, scenario: string): Promise<Sample> {
-    const values = emittedInputs(f, scenario);
+    const retainedHistoryBefore = f.next - f.sourceOffset - 1;
+    const values = emittedInputs(f, scenario, groups);
     const pgBefore = backendCpuMillis(Number(settings!.backend_pid));
     const beforeMemory = process.memoryUsage(), cpuBefore = process.cpuUsage(), eluBefore = performance.eventLoopUtilization();
     const loop = monitorEventLoopDelay({ resolution: 10 });
@@ -266,17 +305,38 @@ try {
     const elapsedMs = performance.now() - started;
     loop.disable();
     const cpu = process.cpuUsage(cpuBefore), memory = process.memoryUsage();
+    const eventLoopUtilization = performance.eventLoopUtilization(eluBefore).utilization;
     const pgAfter = backendCpuMillis(Number(settings!.backend_pid));
     const newEvents = receipts.filter(receipt => receipt.disposition === "committed").length;
-    assert.equal(newEvents, scenario === "replay" ? events / 2 : values.length);
+    assert.equal(newEvents, scenario === "replay" ? values.length / 2 : values.length);
     assert.equal(receipts.at(-1)!.highestContiguousSourceSeq,
       scenario === "late-gap" ? f.history + 1 : scenario === "warm-suffix" ? 0 : f.next - 1);
+    const expectedRows = scenario === "late-gap" ? f.history + 1 : f.next - f.sourceOffset - 1;
+    const [durable] = await db!.$client.unsafe("select count(*)::integer as events, max(seq)::bigint as last from heartbeat_run_events where run_id=$1::uuid", [f.runId]);
+    assert.equal(Number(durable!.events), expectedRows, "Independent history read must account for every committed event");
+    assert.equal(Number(durable!.last), expectedRows, "Run sequences must not skip or overlap");
+    const expectedBySequence = new Map(values.map(value => [value.nativeSource!.sourceSeq, value]));
+    const sequences = [...expectedBySequence.keys()];
+    const persisted = await db!.$client.unsafe(`select source_instance_id, source_event_id, source_seq,
+      source_payload_sha256, protocol_schema_version, payload from heartbeat_run_events
+      where run_id=$1::uuid and source_instance_id=$2 and source_seq between $3::bigint and $4::bigint
+      order by source_seq`, [f.runId, f.source, Math.min(...sequences), Math.max(...sequences)]);
+    assert.equal(persisted.length, expectedBySequence.size);
+    for (const row of persisted) {
+      const expected = expectedBySequence.get(Number(row.source_seq))!;
+      assert.equal(row.source_event_id, expected.nativeSource!.sourceEventId);
+      assert.equal(row.source_instance_id, expected.nativeSource!.sourceInstanceId);
+      assert.equal(row.protocol_schema_version, expected.nativeSource!.protocolSchemaVersion);
+      assert.equal(row.source_payload_sha256, nativeSha256(expected.nativeSource!.canonicalPayload));
+      assert.deepEqual(row.payload, expected.payload, "Durable event payload must match independently of its append receipt");
+    }
     return { elapsedMs, eventsPerSecond: values.length / elapsedMs * 1000, newEvents,
       duplicateEvents: values.length - newEvents, appCpuMicros: cpu.user + cpu.system,
       databaseCpuMillis: pgBefore === null || pgAfter === null ? null : pgAfter - pgBefore,
       heapDeltaBytes: memory.heapUsed - beforeMemory.heapUsed, rssBytes: memory.rss,
-      eventLoopUtilization: performance.eventLoopUtilization(eluBefore).utilization,
-      eventLoopDelayMaxMs: loop.count ? loop.max / 1e6 : null };
+      eventLoopUtilization,
+      eventLoopDelayMaxMs: loop.count ? loop.max / 1e6 : null,
+      retainedHistoryBefore, retainedHistoryAfter: retainedHistoryBefore + newEvents };
   }
 
   // Qualify before entering the full benchmark. All comparisons preserve the
@@ -285,14 +345,16 @@ try {
     const samples: Record<Arm, Sample[]> = { baseline: [], candidate: [] };
     let a: Fixture | undefined, b: Fixture | undefined;
     if (scenario !== "late-gap") {
-      a = await fixture(history, scenario); b = await fixture(history, scenario); await prepare(b, "candidate");
+      a = await fixture(history, scenario); b = await fixture(history, scenario);
+      await prepare(a, "baseline"); await prepare(b, "candidate");
       for (let warmup = 0; warmup < 2; warmup++) {
         await timed(a, "baseline", scenario); await timed(b, "candidate", scenario);
       }
     }
     for (let pair = 0; pair < pairs; pair++) {
       if (scenario === "late-gap") {
-        a = await fixture(history, scenario); b = await fixture(history, scenario); await prepare(b, "candidate");
+        a = await fixture(history, scenario); b = await fixture(history, scenario);
+        await prepare(a, "baseline"); await prepare(b, "candidate");
       }
       for (const arm of pair % 2 ? ["candidate", "baseline"] as const : ["baseline", "candidate"] as const) {
         samples[arm].push(await timed(arm === "baseline" ? a! : b!, arm, scenario));
@@ -313,14 +375,33 @@ try {
         const [plan] = await db.$client.unsafe(`EXPLAIN (${read ? "ANALYZE, BUFFERS, " : ""}FORMAT JSON) ${query.sql}`, query.params as never[]);
         plans.push({ sql: query.sql, analyzed: read, plan: plan!["QUERY PLAN"] });
       }
+      const scanNodes = (node: any): any[] => [
+        ...(node["Relation Name"] === "heartbeat_run_events" ? [node] : []),
+        ...(node.Plans ?? []).flatMap(scanNodes),
+      ];
+      const historyScans = (plans as Array<{ analyzed: boolean; plan: Array<{ Plan: unknown }> }>).filter(plan => plan.analyzed)
+        .flatMap(plan => scanNodes(plan.plan[0].Plan));
+      const usesProjection = arm === "baseline" || phase === "aa" ? Boolean(baselineCursorSource) : true;
+      const examinedRows = (node: any) => (node["Actual Rows"] + (node["Rows Removed by Filter"] ?? 0)
+        + (node["Rows Removed by Index Recheck"] ?? 0)) * node["Actual Loops"];
+      if (usesProjection) {
+        assert.ok(historyScans.every(node => node["Node Type"] !== "Seq Scan" && examinedRows(node) <= 64),
+          "A ready cursor must not scan retained event history, including the optimized baseline arm");
+        assert.ok(!queries.some(query => /count\(\*\)/i.test(query.sql) && /heartbeat_run_events/.test(query.sql)),
+          "A ready cursor unexpectedly used the retained-history aggregate fallback");
+      }
       diagnostics[arm] = { sqlCalls: queries.length, transactions: transactions.length, sqlCallsPerEvent: queries.length / values.length,
         transactionsPerEvent: transactions.length / values.length, transactionTimings: transactions,
         lockTimingBoundary: "Acquisition query duration includes network/row-read cost; held interval ends after commit. It is not a measurement of pure lock wait.",
-        persistedEvents: receipts.filter(receipt => receipt.disposition === "committed").length, queries, plans };
+        persistedEvents: receipts.filter(receipt => receipt.disposition === "committed").length,
+        usesProjection, structuralCacheBoundPassed: usesProjection ? true : null,
+        historyScanRows: historyScans.map(examinedRows), queries, plans };
     }
     const baselineStats = summary(samples.baseline), candidateStats = summary(samples.candidate);
     const relativePairedDifference = samples.baseline.map((sample, n) => (samples.candidate[n]!.elapsedMs - sample.elapsedMs) / sample.elapsedMs);
-    (report.results as unknown[]).push({ history, scenario, baseline: baselineStats, candidate: candidateStats, diagnostics,
+    (report.results as unknown[]).push({ history, scenario,
+      latencyGate: scenario === "late-gap" ? "structural-only" : history >= 10_000 ? "improvement" : "nonregression",
+      baseline: baselineStats, candidate: candidateStats, diagnostics,
       pairedCandidateWins: relativePairedDifference.filter(value => value < 0).length,
       medianLatencyChangePercent: 100 * (candidateStats.medianMs / baselineStats.medianMs - 1),
       aaNoiseEnvelopeRelative: phase === "aa" ? Math.max(...relativePairedDifference.map(Math.abs)) : undefined,
@@ -335,25 +416,37 @@ try {
     const noise = JSON.parse(await fs.readFile(arg("noise-report")!, "utf8"));
     assert.equal(noise.phase, "aa"); assert.equal(noise.incomplete, false);
     assert.equal(noise.baselineRevision, baselineRevision); assert.equal(noise.workloadSha256, workloadSha256);
+    assert.equal(noise.candidateSourceHashes["scripts/benchmark-native-event-ingestion.ts"],
+      (report.candidateSourceHashes as Record<string, string>)["scripts/benchmark-native-event-ingestion.ts"],
+      "Measurement protocol changed after A/A calibration; rerun calibration rather than reuse its noise envelope");
     report.noiseReport = arg("noise-report");
     report.comparison = (report.results as any[]).map(result => {
       const control = noise.results.find((row: any) => row.history === result.history && row.scenario === result.scenario);
       assert.ok(control);
       const improvement = 1 - result.candidate.medianMs / result.baseline.medianMs;
+      const improvedBeyondNoise = result.pairedCandidateWins >= Math.ceil(pairs * 0.8) && improvement > control.aaNoiseEnvelopeRelative;
+      const noRegressionBeyondNoise = -improvement <= control.aaNoiseEnvelopeRelative;
       return { history: result.history, scenario: result.scenario, pairedCandidateWins: result.pairedCandidateWins,
+        latencyGate: result.latencyGate,
         improvementRelative: improvement, noiseEnvelopeRelative: control.aaNoiseEnvelopeRelative,
-        improvedBeyondNoise: result.pairedCandidateWins >= Math.ceil(pairs * 0.8) && improvement > control.aaNoiseEnvelopeRelative };
+        improvedBeyondNoise, noRegressionBeyondNoise,
+        acceptancePassed: result.latencyGate === "structural-only" ? null
+          : result.latencyGate === "improvement" ? improvedBeyondNoise : noRegressionBeyondNoise };
     });
   }
   await save();
-  console.log(JSON.stringify(report, null, 2));
 } finally {
   try {
-    for (const companyId of companiesToRemove) {
-      await db?.$client.unsafe("delete from heartbeat_run_events where company_id=$1::uuid", [companyId]);
-      await db?.$client.unsafe("delete from heartbeat_runs where company_id=$1::uuid", [companyId]);
-      await db?.$client.unsafe("delete from agents where company_id=$1::uuid", [companyId]);
-      await db?.$client.unsafe("delete from companies where id=$1::uuid", [companyId]);
+    // The owned cluster is removed as a whole below. Per-company agent deletes
+    // would repeatedly scan other fixtures through foreign-key checks. An
+    // explicitly supplied test database retains unrelated data, so remove all
+    // our event rows first, then their parents in separate phases.
+    if (externalUrl) {
+      for (const table of ["heartbeat_run_events", "heartbeat_runs", "agents", "companies"]) {
+        for (const companyId of companiesToRemove) {
+          await db?.$client.unsafe(`delete from ${table} where ${table === "companies" ? "id" : "company_id"}=$1::uuid`, [companyId]);
+        }
+      }
     }
   } finally {
     try { await db?.$client.end({ timeout: 1 }); }
@@ -362,4 +455,8 @@ try {
       finally { await fs.rm(baselineDir, { recursive: true, force: true }); }
     }
   }
+  report.cleanupComplete = true;
+  await save();
 }
+console.log(JSON.stringify(report, null, 2));
+if (process.argv.includes("--require-acceptance")) assertServiceAcceptance(report);
