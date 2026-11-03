@@ -4,7 +4,7 @@ Maintainer runbook for shipping Paperclip across npm, GitHub, and the website-fa
 
 The release model is now commit-driven:
 
-1. Every push to `master` publishes a canary automatically.
+1. Each hour, the newest verified unpublished master commit can publish a canary.
 2. Once a night, the newest master commit with a green canary publish is
    smoke-tested and republished as the nightly.
 3. Betas are manual, human-approved promotions of a chosen nightly.
@@ -64,8 +64,8 @@ internal traceability tag.
 ## Core Invariants
 
 - canaries publish from `master`
-- the canary publisher checks out the exact master push SHA. It verifies the
-  repository, event, branch, and checked-out commit before attaching local
+- the canary selector pins a verified master SHA. The publisher verifies the
+  repository, schedule or manual channel, branch, and checkout before attaching local
   `master` at that same SHA. It never switches to a newer branch tip. The local
   release script still rejects detached or non-master checkouts.
 - nightlies republish a commit that already shipped a canary (the commit must
@@ -93,11 +93,33 @@ internal traceability tag.
 
 ### Canary
 
-Every push to `master` runs the canary path inside [`.github/workflows/release.yml`](../.github/workflows/release.yml).
+The canary path inside [`.github/workflows/release.yml`](../.github/workflows/release.yml)
+runs hourly at minute 17 UTC. It also accepts a manual dispatch on `master`
+with `channel: canary`. The `source_ref` input applies to the other channels;
+canary selection always uses the fetched master history. Set `dry_run: true`
+to preview publication without publishing packages, pushing a tag or dispatching
+Docker. An unchanged source skips both automatic and manual publication.
+
+Selection examines the latest 20 first-parent commits from the master snapshot
+fetched at checkout. It selects the newest unpublished commit with successful
+exact-source Cloud readiness proof. Pending and failed source checks are
+ineligible. Selection stops at the most recent published canary, so failed newer
+checks cannot cause an older source to replace the channel. If no eligible
+source exists in this window, the run records a skip. API or malformed-proof
+errors fail the run instead. Selection reads each candidate once, with no polling.
+
+Canary schedules and manual dispatches share a concurrency group. Nightly
+schedules and dispatches use a separate group, so an hourly tick cannot replace
+a pending nightly. Hourly scheduling can add up to an hour before publication
+starts; GitHub scheduling and queue delays can add more. Master source checks,
+master image builds, and on-demand exact-source Cloud migrator publication keep
+their independent triggers. Cloud deployment does not wait for the hourly npm
+canary. Nightly, beta and stable retain their existing promotion checks.
 
 It:
 
-- verifies the pushed commit
+- verifies the selected commit again and keeps that SHA through packaging,
+  publication, Docker dispatch and the onboarding smoke lockfile
 - computes the canary version for the current UTC date
 - publishes workspace packages dependency-first under npm dist-tag `canary`
 - waits for each package version to become registry-visible before continuing

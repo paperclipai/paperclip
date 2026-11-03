@@ -5,6 +5,8 @@ const repository = "paperclipai/paperclip";
 const workflowPath = ".github/workflows/cloud-readiness.yml";
 export const sourceVerificationJob = "Cloud source verified v1";
 
+export class SourceVerificationFailed extends Error {}
+
 function assertSha(sha) {
   if (!/^[a-f0-9]{40}$/.test(sha ?? "")) throw new Error("A full lowercase source SHA is required.");
 }
@@ -56,7 +58,7 @@ export async function readSourceVerification(sha, api) {
     return { sha, runId: run.id, attempt: run.run_attempt, jobId: job.id };
   }
   if (job?.status === "completed" || run.status === "completed") {
-    throw new Error(`Cloud source verification did not pass for ${sha} (run ${run.id}, attempt ${run.run_attempt}). Rerun Cloud readiness before retrying the release.`);
+    throw new SourceVerificationFailed(`Cloud source verification did not pass for ${sha} (run ${run.id}, attempt ${run.run_attempt}). Rerun Cloud readiness before retrying the release.`);
   }
   return undefined;
 }

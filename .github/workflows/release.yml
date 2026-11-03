@@ -2,10 +2,8 @@ name: Release
 run-name: ${{ inputs.channel == 'preview' && format('Stack deploy {0} build', inputs.request_id) || inputs.channel == 'cloud-migrator' && format('Cloud migrator {0}', inputs.source_ref) || 'Release' }}
 
 on:
-  push:
-    branches:
-      - master
   schedule:
+    - cron: "17 * * * *"
     # Nightly cut at 09:00 UTC, after the workday's merges have settled.
     - cron: "0 9 * * *"
   workflow_dispatch:
@@ -18,6 +16,7 @@ on:
           - stable
           - beta
           - nightly
+          - canary
           - preview
           - cloud-migrator
         default: stable
@@ -57,7 +56,7 @@ on:
         default: false
 
 concurrency:
-  group: ${{ (inputs.channel == 'preview' || inputs.channel == 'cloud-migrator') && format('{0}-{1}', inputs.channel, inputs.source_ref) || format('release-{0}-{1}', github.event_name, github.ref) }}
+  group: ${{ (inputs.channel == 'canary' || github.event.schedule == '17 * * * *') && format('release-canary-{0}', github.ref) || (inputs.channel == 'nightly' || github.event.schedule == '0 9 * * *') && format('release-nightly-{0}', github.ref) || (inputs.channel == 'preview' || inputs.channel == 'cloud-migrator') && format('{0}-{1}', inputs.channel, inputs.source_ref) || format('release-{0}-{1}', github.event_name, github.ref) }}
   cancel-in-progress: false
 
 env:
@@ -318,9 +317,35 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  select_canary:
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && ((github.event_name == 'schedule' && github.event.schedule == '17 * * * *') || (github.event_name == 'workflow_dispatch' && inputs.channel == 'canary'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      proceed: ${{ steps.select.outputs.proceed }}
+      sha: ${{ steps.select.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Select newest verified unpublished master source
+        id: select
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/select-canary-source.mjs
+
   verify_canary:
     name: Reuse exact-source verification
-    if: github.repository == 'paperclipai/paperclip' && github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: select_canary
+    if: needs.select_canary.outputs.proceed == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 50
     permissions:
@@ -337,14 +362,14 @@ jobs:
       - name: Require successful source checks for this exact master push
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_SHA: ${{ needs.select_canary.outputs.sha }}
         run: node scripts/cloud-source-verification.mjs "$SOURCE_SHA"
 
   release_runner_source:
-    needs: [verify_canary, select_nightly, select_beta, preflight_stable]
+    needs: [select_canary, verify_canary, select_nightly, select_beta, preflight_stable]
     if: >-
       !cancelled() && (
-        (github.event_name == 'push' && needs.verify_canary.result == 'success') ||
+        (needs.select_canary.outputs.proceed == 'true' && needs.verify_canary.result == 'success') ||
         (needs.select_nightly.result == 'success' && needs.select_nightly.outputs.proceed == 'true') ||
         needs.select_beta.result == 'success' || needs.preflight_stable.result == 'success')
     runs-on: ubuntu-latest
@@ -357,12 +382,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ needs.preflight_stable.outputs.sha || needs.select_beta.outputs.sha || needs.select_nightly.outputs.sha || github.sha }}
+          ref: ${{ needs.preflight_stable.outputs.sha || needs.select_beta.outputs.sha || needs.select_nightly.outputs.sha || needs.select_canary.outputs.sha }}
           persist-credentials: false
       - name: Read the exact source packaging contract
         id: source
         env:
-          SOURCE_SHA: ${{ needs.preflight_stable.outputs.sha || needs.select_beta.outputs.sha || needs.select_nightly.outputs.sha || github.sha }}
+          SOURCE_SHA: ${{ needs.preflight_stable.outputs.sha || needs.select_beta.outputs.sha || needs.select_nightly.outputs.sha || needs.select_canary.outputs.sha }}
         run: |
           set -euo pipefail
           [[ "$SOURCE_SHA" =~ ^[a-f0-9]{40}$ ]] || exit 1
@@ -384,13 +409,14 @@ jobs:
       runner_binaries_only: true
 
   publish_canary:
-    if: ${{ !cancelled() && github.event_name == 'push' && needs.verify_canary.result == 'success' && needs.release_runner_source.result == 'success' && (needs.release_runner_source.outputs.required == 'false' || needs.release_runner_binaries.result == 'success') }}
-    needs: [verify_canary, release_runner_source, release_runner_binaries]
+    if: ${{ !cancelled() && needs.select_canary.outputs.proceed == 'true' && needs.verify_canary.result == 'success' && needs.release_runner_source.result == 'success' && (needs.release_runner_source.outputs.required == 'false' || needs.release_runner_binaries.result == 'success') }}
+    needs: [select_canary, verify_canary, release_runner_source, release_runner_binaries]
     runs-on: ubuntu-latest
     timeout-minutes: 150
     environment: npm-canary
     outputs:
       canary_version: ${{ steps.canary_tag.outputs.version }}
+      source_sha: ${{ needs.select_canary.outputs.sha }}
     permissions:
       contents: write
       id-token: write
@@ -401,18 +427,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.select_canary.outputs.sha }}
           fetch-depth: 0
 
       - name: Attach verified canary source to local master
         env:
-          SOURCE_SHA: ${{ github.sha }}
+          SOURCE_SHA: ${{ needs.select_canary.outputs.sha }}
+          RELEASE_CHANNEL: ${{ inputs.channel }}
+          RELEASE_SCHEDULE: ${{ github.event.schedule }}
         run: |
           set -euo pipefail
           if [ "$GITHUB_REPOSITORY" != "paperclipai/paperclip" ] ||
-             [ "$GITHUB_EVENT_NAME" != "push" ] ||
+             ! { { [ "$GITHUB_EVENT_NAME" = "schedule" ] && [ "$RELEASE_SCHEDULE" = "17 * * * *" ]; } ||
+                 { [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] && [ "$RELEASE_CHANNEL" = "canary" ]; }; } ||
              [ "$GITHUB_REF" != "refs/heads/master" ]; then
-            echo "Error: canary branch attachment requires a trusted master push." >&2
+            echo "Error: canary branch attachment requires a trusted scheduled or manual canary on master." >&2
             exit 1
           fi
           if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]] ||
@@ -467,7 +496,7 @@ jobs:
       - name: Save canary smoke lockfile
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: canary-smoke-lockfile-${{ github.sha }}
+          name: canary-smoke-lockfile-${{ needs.select_canary.outputs.sha }}
           path: pnpm-lock.yaml
           if-no-files-found: error
           overwrite: true
@@ -484,7 +513,7 @@ jobs:
       - name: Publish canary
         env:
           GITHUB_ACTIONS: "true"
-        run: ./scripts/release.sh canary --skip-verify
+        run: ./scripts/release.sh canary --skip-verify ${{ inputs.dry_run && '--dry-run' || '' }}
 
       - name: Dump npm debug logs
         if: failure()
@@ -497,6 +526,7 @@ jobs:
           done
 
       - name: Push canary tag
+        if: ${{ !inputs.dry_run }}
         id: canary_tag
         run: |
           tag="$(git tag --points-at HEAD | grep '^canary/v' | head -1)"
@@ -519,6 +549,7 @@ jobs:
       # it, and docker.yml's `type=sha` mapping publishes the
       # standard sha-<short> images either way.
       - name: Build Docker images for the canary tag
+        if: ${{ !inputs.dry_run }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -535,7 +566,7 @@ jobs:
   # anyone mistakes an installable package for an onboardable one.
   smoke_canary_onboarding:
     needs: publish_canary
-    if: ${{ !cancelled() && needs.publish_canary.result == 'success' }}
+    if: ${{ !cancelled() && needs.publish_canary.result == 'success' && needs.publish_canary.outputs.canary_version != '' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -548,7 +579,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ needs.publish_canary.outputs.source_sha }}
           persist-credentials: false
 
       - name: Setup pnpm
@@ -566,7 +597,7 @@ jobs:
       - name: Restore canary smoke lockfile
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: canary-smoke-lockfile-${{ github.sha }}
+          name: canary-smoke-lockfile-${{ needs.publish_canary.outputs.source_sha }}
 
       - name: Install test dependencies
         run: pnpm install --frozen-lockfile
@@ -599,7 +630,7 @@ jobs:
   # canary publish, so the nightly publish skips re-verification.
 
   select_nightly:
-    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.channel == 'nightly')
+    if: (github.event_name == 'schedule' && github.event.schedule == '0 9 * * *') || (github.event_name == 'workflow_dispatch' && inputs.channel == 'nightly')
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
