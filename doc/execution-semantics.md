@@ -2279,12 +2279,21 @@ HTTP mutation or create another receipt. Missing, changed, pending or unknown
 outcomes remain unanswered for authoritative reconciliation; a stopped run or
 revoked authority cannot recover a result.
 
-The native Claude sidecar also sets its HTTP MCP client budget to one hour,
-matching the Runner connection lease budget. This prevents Claude's default
+The native Claude sidecar also sets its HTTP MCP client budget to one hour.
+This fixed client ceiling prevents Claude's default
 60-second HTTP deadline from aborting an otherwise pending durable request.
 The setting applies to that native Claude session's MCP client; other provider
 sessions and ordinary bridge deadlines remain unchanged. Explicit cancellation
 and Runner shutdown still take precedence over that client budget.
+The native OpenCode proxy uses the same one-hour MCP client budget and leaves
+its semantic bridge request pending under Runner ownership. A controller delay
+must not turn an in-flight write into a provider-visible timeout and retry.
+Ordinary OpenCode driver calls keep their 30-second deadline. Stop, bridge close
+and Runner lease expiry still end the native wait. Unanswered effects stay
+pending and continue to block a new run; a longer wait does not certify an outcome.
+The one-hour client deadline does not renew with the Runner lease. If the client
+deadline expires while Runner still owns a call, its effect remains unknown
+until authoritative reconciliation. Expiry permits neither replay nor attachment.
 An adopted transport can receive authenticated queued semantic calls before
 the driver publishes its recovered session and tool handler. It holds those
 calls until the handler is installed, then rechecks the original authority and

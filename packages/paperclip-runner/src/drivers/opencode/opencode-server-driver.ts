@@ -198,6 +198,8 @@ export interface OpenCodeServerDriverOptions {
   environment?: NodeJS.ProcessEnv;
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   dynamicToolHandler?: DynamicToolHandler;
+  /** Internal native proxy capability: semantic calls have durable PRP ownership. */
+  durableToolRequests?: boolean;
   completionFeedback?: OpenCodeCompletionFeedback;
   onSpawn?: (meta: {
     pid: number;
@@ -2431,6 +2433,7 @@ async function startRuntime(input: {
   const bridge = await startOpenCodeMcpBridge({
     tools: input.options.dynamicTools,
     handler: input.dispatch,
+    ...(input.options.durableToolRequests ? { timeoutMs: null } : {}),
   }).catch(async (error) => {
     await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
@@ -2558,7 +2561,10 @@ async function startRuntime(input: {
           enabled: true,
           oauth: false,
           headers: { Authorization: `Bearer ${bridge.secret}` },
-          timeout: 30_000,
+          // Use the same fixed one-hour MCP client ceiling as native ACPX.
+          // Runner ownership can outlive this deadline; an unanswered effect
+          // must still remain pending and block replay after client expiry.
+          timeout: input.options.durableToolRequests ? 60 * 60 * 1_000 : 30_000,
         },
         ...(assignedMcp
           ? {
