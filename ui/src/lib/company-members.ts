@@ -2,7 +2,7 @@ import type { CompanyMember, CompanyUserDirectoryEntry } from "@/api/access";
 import type { InlineEntityOption } from "@/components/InlineEntitySelector";
 import type { MentionOption } from "@/components/MarkdownEditor";
 import type { Agent, Issue, Project } from "@paperclipai/shared";
-import { t } from "@/i18n";
+import { t } from "../i18n";
 
 export interface CompanyUserProfile {
   label: string;

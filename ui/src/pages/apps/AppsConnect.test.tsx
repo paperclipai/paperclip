@@ -3520,6 +3520,82 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
   });
 
   it.each([
+    {
+      provider: "notion", outcome: "denied", code: "oauth_authorization_denied",
+      en: "Authorization was cancelled or declined. Your saved connection was not changed.",
+      ru: "Авторизация отменена или отклонена. Сохранённое подключение не изменено.",
+    },
+    {
+      provider: "notion", outcome: "failed", code: "oauth_callback_failed",
+      en: "Authorization did not complete. Your saved connection is still here, so you can try again.",
+      ru: "Авторизация не завершена. Сохранённое подключение осталось на месте — можно повторить попытку.",
+    },
+    {
+      provider: "github", outcome: "failed", code: "github_installation_required",
+      en: "GitHub access is required. Install Paperclip and grant at least one repository, then try again.",
+      ru: "Нужен доступ к GitHub. Установите Paperclip и предоставьте доступ хотя бы к одному репозиторию, затем повторите попытку.",
+    },
+  ])("retranslates a mounted OAuth callback $code without restarting sign-in or changing its saved draft", async ({ provider, outcome, code, en, ru }) => {
+    const application = { id: `app-${provider}`, companyId: "company-1", status: "draft", metadata: { sourceTemplateKey: provider } };
+    const draft = {
+      id: "22222222-2222-4222-8222-222222222222", companyId: "company-1", applicationId: application.id,
+      name: "Original user-named connection", authKind: "oauth", credentialPolicy: provider === "github" ? "per_user" : "shared", status: "draft",
+      config: { sourceTemplateKey: provider, connectionMethodKey: provider === "github" ? "managed" : "mcp-oauth" }, transportConfig: {},
+    };
+    const before = JSON.stringify({ application, draft });
+    const query = `source=${provider}&resume=${draft.id}&oauth=${outcome}&code=${code}&error_description=RAW_CALLBACK_DESCRIPTION`;
+    mockSearch.value = query;
+    listGalleryMock.mockResolvedValue({ apps: [provider === "github" ? GITHUB_MANAGED : NOTION] });
+    listApplicationsMock.mockResolvedValue({ applications: [application] });
+    listConnectionsMock.mockResolvedValue({ connections: [draft] });
+    await render();
+    await vi.waitFor(() => expect(container.textContent).toContain(en));
+    const notice = Array.from(container.querySelectorAll("p")).find(node => node.textContent === en)!;
+    const retry = buttonByText("Try again")!;
+    expect(notice).toBeTruthy();
+    expect(retry).toBeTruthy();
+    const reads = [listGalleryMock, listApplicationsMock, listConnectionsMock, listConnectionGrantsMock, getConnectionMock, getConnectionInstallsMock, listAgentsMock, getCloudConnectorEnrollmentMock];
+    const readCounts = reads.map(mock => mock.mock.calls.length);
+    for (const [locale, expected] of [["en", en], ["ru", ru], ["en", en]] as const) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      await flushReact();
+      expect(container.contains(notice)).toBe(true);
+      expect(notice.textContent).toBe(expected);
+      expect(container.contains(retry)).toBe(true);
+      expect(retry.disabled).toBe(false);
+      expect(container.textContent).not.toContain("RAW_CALLBACK_DESCRIPTION");
+      expect(reads.map(mock => mock.mock.calls.length)).toEqual(readCounts);
+      expect(mockSearch.value).toBe(query);
+      expect(JSON.stringify({ application, draft })).toBe(before);
+      for (const mutation of [connectAppMock, startOAuthMock, finishAppMock, putConnectionInstallsMock, startCloudConnectorEnrollmentMock]) expect(mutation).not.toHaveBeenCalled();
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+
+    const providerError = "Provider timeout ORIGINAL.Diagnostics_31";
+    startOAuthMock.mockRejectedValueOnce(new Error(providerError));
+    await act(async () => retry.click());
+    await vi.waitFor(() => expect(container.textContent).toContain(providerError));
+    const providerNotice = Array.from(container.querySelectorAll("p")).find(node => node.textContent === providerError)!;
+    const retryReadCounts = reads.map(mock => mock.mock.calls.length);
+    for (const locale of ["en", "ru", "en"]) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      await flushReact();
+      expect(container.contains(providerNotice)).toBe(true);
+      expect(providerNotice.textContent).toBe(providerError);
+      expect(startOAuthMock).toHaveBeenCalledExactlyOnceWith(draft.id, { asCurrentUser: provider === "github" });
+      expect(connectAppMock).not.toHaveBeenCalled();
+      expect(finishAppMock).not.toHaveBeenCalled();
+      expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+      expect(reads.map(mock => mock.mock.calls.length)).toEqual(retryReadCounts);
+      expect(mockSearch.value).toBe(query);
+      expect(JSON.stringify({ application, draft })).toBe(before);
+      expect(mockNavigate).not.toHaveBeenCalled();
+      expect(navigateTopLevelMock).not.toHaveBeenCalled();
+    }
+  });
+
+  it.each([
     ["personal", "per_user", true],
     ["organization", "shared", false],
   ] as const)("preserves an active %s identity when reconnecting Notion", async (

@@ -83,7 +83,7 @@ describe("SidebarNavItem", () => {
       return <SidebarNavItem to="/chats" label={t("oct5Core.chat")} badge={count} badgeDescription={t("nov02Late.unreadChats", { count })} />;
     }
     render(<LocalizedItem />);
-    const english = `Chat, ${count} unread ${count === 1 ? "chat" : "chats"}`;
+    const english = `Chat, ${count} unread chats`;
     expect(link().getAttribute("aria-label")).toBe(english);
     await act(async () => setLocale("ru"));
     expect(link().getAttribute("aria-label")).toBe(`Чат, Непрочитанных чатов: ${count}`);
@@ -94,7 +94,7 @@ describe("SidebarNavItem", () => {
     render(<LocalizedItem />);
     expect(container.textContent).toContain(String(count));
     expect(link().querySelector('[data-slot="badge"]')?.getAttribute("aria-label"))
-      .toBe(`${count} unread ${count === 1 ? "chat" : "chats"}`);
+      .toBe(`${count} unread chats`);
     await act(async () => setLocale("ru"));
     expect(link().querySelector('[data-slot="badge"]')?.getAttribute("aria-label"))
       .toBe(`Непрочитанных чатов: ${count}`);

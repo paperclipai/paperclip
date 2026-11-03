@@ -187,14 +187,14 @@ function githubRecoveryUrl(value: string | null): string | null {
   }
 }
 
-function oauthCallbackErrorMessage(outcome: string | null, code: string | null): string {
+function oauthCallbackError(outcome: string | null, code: string | null): ChatUiError {
   if (outcome === "denied") {
-    return t("localizationConnections.authorizationWasCancelledOrDeclinedYourSavedC1");
+    return { key: "localizationConnections.authorizationWasCancelledOrDeclinedYourSavedC1" };
   }
   if (code === "github_installation_required") {
-    return t("localizationConnections.gitHubAccessIsRequiredInstallPaperclipAndGran2");
+    return { key: "localizationConnections.gitHubAccessIsRequiredInstallPaperclipAndGran2" };
   }
-  return t("localizationConnections.authorizationDidNotCompleteYourSavedConnectio3");
+  return { key: "localizationConnections.authorizationDidNotCompleteYourSavedConnectio3" };
 }
 
 const ROUTE_STAGE_BY_STEP: Partial<Record<Step, string>> = {
@@ -788,7 +788,7 @@ function StandardConnectionSetupFlow({
   );
   const [oauthError, setOAuthError] = useState<ChatUiError | null>(() => {
     if (!resumingAfterOAuthFailure) return null;
-    return oauthCallbackErrorMessage(oauthCallbackOutcome, oauthCallbackCode);
+    return oauthCallbackError(oauthCallbackOutcome, oauthCallbackCode);
   });
   /** Host of the page the operator is about to be sent to, shown while redirecting. */
   const [authorizationHost, setAuthorizationHost] = useState<string | null>(null);
@@ -1862,7 +1862,7 @@ function StandardConnectionSetupFlow({
     // intentionally blank.
     if (oauthCallbackOutcome === "failed" || oauthCallbackOutcome === "denied") {
       setOAuthPhase("error");
-      setOAuthError(oauthCallbackErrorMessage(oauthCallbackOutcome, oauthCallbackCode));
+      setOAuthError(oauthCallbackError(oauthCallbackOutcome, oauthCallbackCode));
     } else {
       setOAuthPhase("entry");
       setOAuthError(null);
