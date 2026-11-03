@@ -221,7 +221,7 @@ describe("deployment journey contracts", () => {
     onboarding.productJourney!.operations.modelCostUsd=null;
     expect(aggregateCampaignBilling([onboarding,result()]).observedAndEstimatedCostUsd).toBeNull();
   });
-  it.each(["task-properties", "task-create", "project-task-context"])("requires real pass evidence and forbids model work in browser-only %s passes", caseId => {
+  it.each(["inbox-triage", "task-properties", "task-create", "project-task-context"])("requires real pass evidence and forbids model work in browser-only %s passes", caseId => {
     const browser = result();
     browser.caseId = caseId;
     browser.executionId = `product-journeys.local-qa.local.${caseId}`;

@@ -1,5 +1,5 @@
 /** Closed, target-independent success requirements used by dispatch and retained evidence. */
-export const agentJourneyRuns = { "ask-question": 1, "plan-revise-accept": 3, "build-revise": 2,
+export const agentJourneyRuns = { "file-input-answer": 1, "ask-question": 1, "plan-revise-accept": 3, "build-revise": 2,
   "followup-while-running": 2, "protected-actions": 4, "create-skill-studio": 1, "stop-redirect": 3, "question-answer-resume": 3, "hire-delegate-reuse": 7 } as const;
 
 export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
@@ -9,6 +9,8 @@ export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
   return (count as number) >= minimum && (count as number) <= maximum;
 }
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
+  "inbox-triage": ["inbox-external-human-activity", "inbox-read-persisted", "inbox-archive-persisted", "inbox-archive-preserved-task-status", "inbox-relevant-activity-resurfaced", "no-agent-work"],
+  "file-input-answer": ["input-upload-bytes-preserved", "input-content-used-correctly", "input-result-attributed-to-run", "input-result-reopened", "original-input-retained", "configured-model-and-environment"],
   "task-properties": ["assignment-persisted", "no-agent-work"],
   "task-create": ["browser-created-task-persisted", "no-agent-work"],
   "task-document-persistence": ["browser-document-created", "document-revision-history-preserved", "document-reopened-after-reload", "no-agent-work"],
