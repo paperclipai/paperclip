@@ -25,7 +25,7 @@ import { canonicalExecutionUuid } from "./execution-identity.js";
 import { persistActivity } from "./activity-log.js";
 import {
   captureRemoteWorkspaceArchive, cleanupRemoteWorkspaceArchive, prepareRemoteWorkspaceDirectory, prepareRemoteRepository, remoteWorkspaceRepositoryPath,
-  RemoteWorkspaceOperationTimeoutError, requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
+  RemoteWorkspaceOperationTimeoutError, RemoteWorkspacePreparationTimeoutError, requireRemoteWorkspaceTarget, restoreRemoteWorkspaceDirectory,
 } from "./remote-workspace-transport.js";
 import {
   beginWorkspaceSnapshot, getWorkspaceSnapshot, loadWorkspaceSnapshotArchive, uploadWorkspaceSnapshot,
@@ -355,9 +355,23 @@ export async function prepareRemoteWorkspace(input: {
           restorationIdentity: preparationIdentity });
       } finally { await rm(scratch, { recursive: true, force: true }); }
     } else {
-      await prepareRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, source: initial.source,
-        preparationIdentity,
-        resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
+      try {
+        await prepareRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, source: initial.source,
+          preparationIdentity,
+          resolveGitAuth: await createRemoteWorkspaceGitAuth(input.db, input.workspace.companyId, input.runId) });
+      } catch (error) {
+        if (error instanceof RemoteWorkspaceOperationTimeoutError && error.operation === "prepare"
+          && !initial.dirty && !initial.location) {
+          const [latest] = await input.db.select({ metadata: executionWorkspaces.metadata }).from(executionWorkspaces)
+            .where(and(eq(executionWorkspaces.companyId, input.workspace.companyId), eq(executionWorkspaces.id, input.workspace.id)));
+          const current = readRemoteWorkspaceAuthority(latest?.metadata);
+          if (current && current.epoch === initial.epoch && current.writerRunId === input.runId
+            && !current.dirty && !current.location && !current.snapshotId) {
+            throw new RemoteWorkspacePreparationTimeoutError(error);
+          }
+        }
+        throw error;
+      }
     }
   }
   for (const repository of (input.source ?? initial.source).repositories ?? []) {

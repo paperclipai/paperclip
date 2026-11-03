@@ -920,6 +920,18 @@ recovery path with the specific scan cause and an operator action. Generic
 stranded-work recovery must not grant another budget for these errors. This
 does not automatically replay historical generic `setup_failed` runs.
 
+Fresh remote workspace preparation timeouts use that same bounded retry budget.
+The workspace owner re-reads its company-scoped authority after the timeout. It
+must still have the same writer and epoch, with no location, saved version, or
+unsaved task work. Only the initial directory/clone operation qualifies; restoring
+saved work, acquiring additional repositories, provisioning, and saving do not.
+The failed allocation is not reused by a successor. Normal lease cleanup and
+fresh admission retain their existing ownership and execution gates. A lost
+preparation reply therefore cannot cause a successor to overwrite that allocation.
+Provider work must not have started and the run must not have retained native
+execution identity. Unknown historical setup errors remain
+outside this policy, and generic recovery cannot renew its exhausted budget.
+
 ### Runner authentication and ACP startup handshake bounds
 
 The native Runner waits up to the ten-second connection setup budget for the

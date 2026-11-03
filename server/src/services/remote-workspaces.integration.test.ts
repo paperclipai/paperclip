@@ -126,6 +126,82 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     companyId: ids.company, issueId: ids.issue, runId: ids.run, agentId: ids.agent, environmentId: ids.environment,
     projectId: null, projectWorkspaceId: null, existingWorkspaceId: null, source });
 
+  it("keeps a fresh preparation timeout eligible for bounded bootstrap recovery", async () => {
+    const reserved = await reserve({ kind: "empty" }), remote = await target("timed-out-bootstrap");
+    const execute = vi.spyOn(remote.runner!, "execute").mockResolvedValueOnce({
+      exitCode: null, timedOut: true, stdout: "untrusted command output", stderr: "untrusted command output", signal: null,
+      pid: null, startedAt: new Date().toISOString(),
+    });
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: remote }))
+      .rejects.toMatchObject({ code: "remote_workspace_prepare_timeout" });
+    expect(execute).toHaveBeenCalledOnce();
+    expect(readRemoteWorkspaceAuthority((await workspace(reserved.id)).metadata)).toMatchObject({
+      writerRunId: ids.run, location: null, snapshotId: null, dirty: false,
+    });
+    expect(await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.companyId, ids.company))).toHaveLength(0);
+  });
+
+  it.each(["dirty", "owner_changed"] as const)("does not grant bootstrap replay after the workspace becomes %s", async state => {
+    const reserved = await reserve({ kind: "empty" }), remote = await target(`changed-${state}`);
+    await fs.writeFile(path.join(remote.remoteCwd, "saved.txt"), "retain existing work\n");
+    const authority = readRemoteWorkspaceAuthority(reserved.metadata)!;
+    vi.spyOn(remote.runner!, "execute").mockImplementationOnce(async () => {
+      await db.update(executionWorkspaces).set({ metadata: { ...reserved.metadata, remoteWorkspace: {
+        ...authority, ...(state === "dirty" ? { dirty: true } : { epoch: authority.epoch + 1, writerRunId: randomUUID() }),
+      } } }).where(eq(executionWorkspaces.id, reserved.id));
+      return { exitCode: null, timedOut: true, stdout: "", stderr: "", signal: null, pid: null, startedAt: new Date().toISOString() };
+    });
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: remote }))
+      .rejects.toMatchObject({ name: "RemoteWorkspaceOperationTimeoutError" });
+    expect(await fs.readFile(path.join(remote.remoteCwd, "saved.txt"), "utf8")).toBe("retain existing work\n");
+  });
+
+  it("recovers a lost preparation reply on a new allocation and retains the resulting work", async () => {
+    const reserved = await reserve({ kind: "empty" }), first = await target("lost-bootstrap-reply");
+    const actual = first.runner!.execute.bind(first.runner!);
+    const execute = vi.spyOn(first.runner!, "execute").mockImplementationOnce(async input => {
+      const result = await actual(input);
+      expect(result.exitCode).toBe(0);
+      return { ...result, timedOut: true };
+    });
+    await expect(prepareRemoteWorkspace({ db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: first }))
+      .rejects.toMatchObject({ code: "remote_workspace_prepare_timeout" });
+    const oldRoot = path.join(first.remoteCwd, ".paperclip-workspaces", reserved.id);
+    const oldReceipt = await fs.readFile(path.join(oldRoot, ".paperclip-runtime", "workspace-ready.json"), "utf8");
+    await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, ids.run));
+    const oldLease = await lease();
+    await db.update(environmentLeases).set({ status: "failed", releasedAt: new Date(), cleanupStatus: "success",
+      metadata: { ...oldLease.metadata, remoteExecutionTermination: remoteTerminationReceipt(oldLease, {
+        providerLeaseId: oldLease.providerLeaseId, state: "stopped",
+      }) } }).where(eq(environmentLeases.id, ids.lease));
+    const continueOn = async (name: string) => {
+      const runId = randomUUID(), leaseId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: ids.company, agentId: ids.agent,
+        nativeIssueId: ids.issue, runtimeMode: "native", status: "running" });
+      const [nextLease] = await db.insert(environmentLeases).values({ id: leaseId, companyId: ids.company,
+        environmentId: ids.environment, heartbeatRunId: runId, issueId: ids.issue, provider: "daytona",
+        providerLeaseId: `allocation-${leaseId}`, status: "active" }).returning();
+      const next = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue,
+        runId, agentId: ids.agent, environmentId: ids.environment, projectId: null, projectWorkspaceId: null,
+        existingWorkspaceId: reserved.id, source: { kind: "empty" } });
+      const remote = await target(name);
+      return prepareRemoteWorkspace({ db, storage, workspace: next, runId, lease: nextLease as EnvironmentLease,
+        target: remote }).then(prepared => ({ runId, prepared, remote }));
+    };
+    const { runId, prepared, remote } = await continueOn("fresh-bootstrap-retry");
+    await fs.writeFile(path.join(prepared.remoteRoot, "report.md"), "useful recovered result\n");
+    const { snapshotId } = await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId,
+      lease: prepared.lease, target: remote, assertOwned: async () => undefined });
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+    await fs.rm(prepared.remoteRoot, { recursive: true });
+    const restored = await continueOn("cold-bootstrap-continuation");
+    expect(await fs.readFile(path.join(restored.prepared.remoteRoot, "report.md"), "utf8")).toBe("useful recovered result\n");
+    expect(restored.prepared.reference.snapshotId).not.toBeNull();
+    expect(snapshotId).toBeTruthy();
+    expect(execute).toHaveBeenCalledOnce();
+    expect(await fs.readFile(path.join(oldRoot, ".paperclip-runtime", "workspace-ready.json"), "utf8")).toBe(oldReceipt);
+  }, 60_000);
+
   it.each(["initial", "follow-up"] as const)("edits and cold-restores both an anchor and a referenced project's task copy (%s attachment)", async attachment => {
     vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "true");
     vi.stubEnv("PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE", "true");
