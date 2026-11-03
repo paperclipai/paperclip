@@ -196,3 +196,18 @@ it("admits the selected live timeline metadata without invoking fixture callback
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
   } finally { for (const spy of spies) spy.mockRestore(); }
 });
+
+it.each([
+  "Today UTC: Morgan's verification failed before the task paused. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan's command exited with code 1 before the task was blocked. You reassigned the task to Riley. Riley added the missing label and the verification passed.",
+])("keeps explicit failure-before-pause chronology valid: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+it.each([
+  "Today UTC: Morgan paused the task before verification failed. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan was blocked before verification failed. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan's verification failed after the task paused. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan paused an unrelated task, then verification failed. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+])("rejects reversed or unrelated pause chronology: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
+});
