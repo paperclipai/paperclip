@@ -3575,7 +3575,9 @@
       "harness-env.ts",
       "../../packages/shared/src/announcements.ts",
       "../../server/src/services/announcement-feed.ts",
-      "../../server/src/routes/announcements.ts"
+      "../../server/src/routes/announcements.ts",
+      "../../ui/src/pages/Projects.tsx",
+      "../../ui/src/components/AnnouncementWell.tsx"
     ],
     "oracleVersion": "paperclip.chat-catalog.announcement-dismissal.v2",
     "expectedRunCount": 1,
@@ -4887,6 +4889,8 @@
       "chat-catalog-domains/external-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/identity-support.ts",
+      "live-fixtures.ts",
+      "../../server/src/services/secrets.ts",
       "run-observations.ts",
       "chat-flow.ts",
       "chat-scenarios/secrets.yaml"
@@ -5064,7 +5068,9 @@
       "chat-catalog-domains/integrator-skills.ts",
       "chat-scenarios/skills.yaml",
       "chat-catalog-domains/integrator-skill-versions.ts",
-      "chat-catalog-domains/identity-support.ts"
+      "chat-catalog-domains/identity-support.ts",
+      "../../ui/src/components/MarkdownEditor.tsx",
+      "../../ui/src/pages/SkillStudio.tsx"
     ],
     "oracleVersion": "paperclip.chat-catalog.skill-authoring.v2",
     "expectedRunCount": 1,
