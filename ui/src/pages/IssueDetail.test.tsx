@@ -86,6 +86,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   resolveRecoveryAction: vi.fn(),
   recoveryActions: vi.fn(),
   recoverWorkspace: vi.fn(),
+  retryTask: vi.fn(),
   previewTreeControl: vi.fn(),
   getTreeControlState: vi.fn(),
   listTreeHolds: vi.fn(),
@@ -1380,6 +1381,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
     mockIssuesApi.recoveryActions.mockReset();
     mockIssuesApi.recoverWorkspace.mockReset();
+    mockIssuesApi.retryTask.mockReset();
     mockIssuesApi.checkMonitorNow.mockReset();
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.listInteractions.mockResolvedValue([]);
@@ -3427,7 +3429,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.update.mockReset();
   });
 
-  it("keeps file preservation reachable while the task's workspace repair gate remains active", async () => {
+  it.each(["verified", "unverified", "stale", "denied"] as const)("keeps native export Retry closed with %s preservation access or source", async mode => {
     const action = {
       id: "file-recovery", companyId: "company-1", sourceIssueId: "issue-1",
       kind: "active_run_watchdog", cause: "native_workspace_sync_out_retry_exhausted",
@@ -3439,20 +3441,29 @@ describe("IssueDetail", () => {
     const issue = createIssue({ status: "blocked", assigneeAgentId: "agent-1", activeRecoveryAction: action,
       interruption: { intentId: "held-input", responsibility: "system", state: "failed", nextRetryAt: null,
         canRetry: true, userAction: null, sourceRunIds: ["stopped-run"], observedRunId: "stopped-run" },
-      executionBlocker: { runId: "stopped-run", canRetry: false, workspaceRepairRequired: true,
+      executionBlocker: { runId: "stopped-run", cause: "native_workspace_sync_out_retry_exhausted", canRetry: false, workspaceRepairRequired: true,
         workspaceRecovery: { status: "blocked", stage: "restoring_files", canRetry: true } } as Issue["executionBlocker"],
     });
     mockIssuesApi.get.mockResolvedValue(issue);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "file-operator" } });
     mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ userId: "file-operator", source: "session",
       isInstanceAdmin: false, companyIds: ["company-1"],
-      memberships: [{ companyId: "company-1", status: "active", membershipRole: "operator" }],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: mode === "denied" ? "viewer" : "operator" }],
     });
     mockIssuesApi.recoveryActions.mockResolvedValue({ active: action, actions: [action], sourceInspection: {
-      actionId: action.id, runId: "stopped-run", status: "verified", scope: "recorded_source_identity",
+      actionId: mode === "stale" ? "other-action" : action.id, runId: "stopped-run",
+      status: mode === "unverified" ? "blocked" : "verified", scope: "recorded_source_identity",
     } });
     mockIssuesApi.recoverWorkspace.mockResolvedValue({ actionId: action.id, status: "queued" });
     await act(async () => renderIssueView());
+    if (mode !== "verified") {
+      await waitForAssertion(() => expect(container.textContent).toContain(mode === "denied"
+        ? "A board member with task access" : "The recorded source is unavailable or has changed"));
+      expect([...container.querySelectorAll("button")].some(button => ["Recover saved files", "Retry"].includes(button.textContent ?? ""))).toBe(false);
+      expect(mockIssuesApi.recoverWorkspace).not.toHaveBeenCalled();
+      expect(mockIssuesApi.retryTask).not.toHaveBeenCalled();
+      return;
+    }
     await waitForAssertion(() => expect([...container.querySelectorAll("button")]
       .some(button => button.textContent === "Recover saved files")).toBe(true));
     expect([...container.querySelectorAll("button")].some(button => button.textContent === "Retry")).toBe(false);
@@ -3465,6 +3476,40 @@ describe("IssueDetail", () => {
     expect(mockIssuesApi.update).not.toHaveBeenCalled();
     expect(issue.executionBlocker?.workspaceRepairRequired).toBe(true);
     expect(container.textContent).not.toContain("Saved files recovered");
+  });
+
+  it("keeps the existing Retry path for exhausted legacy workspace restoration", async () => {
+    const interruption: NonNullable<Issue["interruption"]> = { intentId: "legacy-input", responsibility: "system", state: "failed", nextRetryAt: null,
+      canRetry: true, userAction: null, sourceRunIds: ["legacy-run"], observedRunId: "legacy-run" };
+    const issue = createIssue({ status: "blocked", assigneeAgentId: "agent-1", interruption,
+      activeRecoveryAction: { id: "legacy-recovery", companyId: "company-1", sourceIssueId: "issue-1",
+        kind: "active_run_watchdog", cause: "legacy_execution_requires_reconciliation", status: "active", ownerType: "system",
+        evidence: { runId: "legacy-run", workspaceRestoreFailure: "restore_failed",
+          workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: ["legacy-lease"] },
+          systemRecovery: { state: "exhausted" } },
+      } as unknown as NonNullable<Issue["activeRecoveryAction"]>,
+      executionBlocker: { runId: "legacy-run", cause: "legacy_execution_requires_reconciliation",
+        canRetry: true, workspaceRepairRequired: true } as Issue["executionBlocker"],
+    });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "legacy-operator" } });
+    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({ userId: "legacy-operator", source: "session",
+      isInstanceAdmin: false, companyIds: ["company-1"],
+      memberships: [{ companyId: "company-1", status: "active", membershipRole: "operator" }],
+    });
+    mockIssuesApi.retryTask.mockResolvedValue({ requestId: "legacy-retry", accepted: true, stale: false, presentation: interruption });
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect([...container.querySelectorAll("button")].some(button => button.textContent === "Retry")).toBe(true));
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Recover saved files")).toBe(false);
+    const retry = [...container.querySelectorAll("button")].find(button => button.textContent === "Retry")!;
+    await act(async () => retry.click());
+    await waitForAssertion(() => expect(mockIssuesApi.retryTask).toHaveBeenCalledExactlyOnceWith(issue.id, {
+      idempotencyKey: expect.any(String), observedRunId: "legacy-run",
+    }));
+    expect(mockIssuesApi.recoverWorkspace).not.toHaveBeenCalled();
+    expect(mockIssuesApi.resolveRecoveryAction).not.toHaveBeenCalled();
+    expect(mockIssuesApi.update).not.toHaveBeenCalled();
+    expect(issue.executionBlocker?.workspaceRepairRequired).toBe(true);
   });
 
   it("moves a blocked task back to todo when the no-live-path notice tries again", async () => {

@@ -5,7 +5,7 @@ import { isNativeWorkspaceExportRepairCause } from "@paperclipai/shared";
 import { accessApi } from "../api/access";
 import { issuesApi } from "../api/issues";
 import { useDraftOwner, useDraftOwnerReader } from "../hooks/useDraftOwner";
-import { canBoardResolveRecoveryAction } from "../lib/recovery-reconcile";
+import { canBoardResolveRecoveryAction, isRetainedWorkspaceExportCause } from "../lib/recovery-reconcile";
 import { queryKeys } from "../lib/queryKeys";
 import { classifySendFailure, pendingSendKeyFor, readPendingSend, writePendingSend } from "../lib/pending-send";
 import { asObject, cn } from "../lib/utils";
@@ -34,7 +34,7 @@ function isRetainedExport(action: IssueRecoveryAction, issueId: string, companyI
   return action.companyId === companyId && action.sourceIssueId === issueId
     && action.kind === "active_run_watchdog" && ["active", "escalated"].includes(action.status)
     && ["board", "system"].includes(action.ownerType)
-    && ["native_workspace_sync_out_retry_exhausted", "native_workspace_sync_out_unrecoverable"].includes(action.cause)
+    && isRetainedWorkspaceExportCause(action.cause)
     && typeof action.evidence.runId === "string" && action.evidence.runId.length > 0;
 }
 

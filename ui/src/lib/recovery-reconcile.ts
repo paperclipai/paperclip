@@ -37,6 +37,11 @@ export function canBoardManageRuntime(
 /** Client affordance for board task mutations; the server rechecks issue access. */
 export const canBoardResolveRecoveryAction = canBoardManageRuntime;
 
+/** Classifies the native export hold, independently of source or actor readiness. */
+export function isRetainedWorkspaceExportCause(cause: unknown): boolean {
+  return cause === "native_workspace_sync_out_retry_exhausted" || cause === "native_workspace_sync_out_unrecoverable";
+}
+
 /**
  * The execution workspace a reconcile action should target. The recovery card is rendered from a
  * specific `workspace_validation` recovery action whose evidence pins the workspace that diverged;
