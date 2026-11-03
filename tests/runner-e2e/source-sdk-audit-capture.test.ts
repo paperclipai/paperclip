@@ -21,7 +21,7 @@ async function fixture(){
   await writeFile(path.join(dir,"index.js"),body);const outputs=createHash("sha256").update(JSON.stringify(["index.js",body.length])).update(body).digest("hex");
   await writeFile(path.join(dir,".paperclip-build-complete"),JSON.stringify({sources:"a".repeat(64),outputs}));
  }
- const context={root:handoff,private:true,runId:"123",attempt:"1",executionIds:[id],cellReportProducer:await inspectCellReportProducer()};
+ const context={root:handoff,private:true as const,runId:"123",attempt:"1",executionIds:[id],cellReportProducer:await inspectCellReportProducer()};
  const source=path.join(temp,"artifacts-private/cases",scenario,"snapshots/source-sdk-privacy-observations.json"),destination=path.join(cell,"snapshots/source-sdk-privacy-observations.json");
  const reject=()=>retainPreparedSourceSdk({repositoryRoot:repo,temporaryRoot:temp,executionIds:[id],sourceRevision:"a".repeat(40),installed:false});
  const copy=()=>copySharedEvidence(capture,cell,temp,[secret],{executionId:id,context});

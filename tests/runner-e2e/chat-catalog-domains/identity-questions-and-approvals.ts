@@ -2,7 +2,7 @@ import { chatCatalogNativePhaseDeadline, chatCatalogNativePhaseIsTimely, chatCat
 import { expect } from "@playwright/test";
 import { createIssueThreadInteractionSchema } from "../../../packages/shared/src/validators/issue.js";
 import { pollUntil } from "../api.js";
-import { checks, project, entity, hasLink, putDocument } from "./internal-support.js";
+import { checks, project, entity, hasLink, putDocument, type Entity } from "./internal-support.js";
 import { identityDefinition, identityObservation, observeIdentity, openStandingChat, readAgentResource, waitForReply, remainingIdentityObservationBudget, type Interaction } from "./identity-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { createAuthenticatedPerson, enrollPrerequisitePerson } from "./identity-auth.js";
