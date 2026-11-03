@@ -39,30 +39,44 @@ export function gradeTreePause(value: unknown) {
 async function setupTree(ctx: Parameters<typeof busyRuntimeWorker>[0]): Promise<State> {
   const parent = await ctx.input.api.post<Entity>(`/api/companies/${ctx.input.fixtures.company.id}/issues`, { title: "Launch", status: "backlog", assigneeAgentId: ctx.input.fixtures.agent.id });
   const manualWorker = await runtimeWorker(ctx, "Jamie");
+  if (manualWorker.companyId !== ctx.input.fixtures.company.id || manualWorker.id === ctx.input.fixtures.agent.id) throw new Error("Independent tree budget fixture requires a distinct same-company worker");
   const manualChild = await ctx.input.api.post<Entity>(`/api/companies/${ctx.input.fixtures.company.id}/issues`, { title: "Launch copy", status: "backlog", parentId: parent.id, assigneeAgentId: manualWorker.id });
   await ctx.input.api.post(`/api/agents/${manualWorker.id}/pause`, {});
   await ctx.input.api.post(`/api/companies/${ctx.input.fixtures.company.id}/budgets/policies`, { scopeType: "agent", scopeId: manualWorker.id,
-    amount: 0, isActive: true, hardStopEnabled: true, unpricedUsagePolicy: "block" });
+    amount: 100, isActive: true, hardStopEnabled: true, unpricedUsagePolicy: "allow" });
+  // A zero amount disables enforcement. Seed an explicit synthetic accounting
+  // fixture through the public import path; this is not model/provider spend.
+  const budgetReceipt = await ctx.input.api.post<{ id: string }>(`/api/companies/${ctx.input.fixtures.company.id}/cost-events`, {
+    agentId: manualWorker.id, provider: "synthetic-eval-import", biller: "synthetic-eval-import", model: "imported-fixture-receipt",
+    billingType: "metered_api", costStatus: "reported", costCents: 125, inputTokens: 0, outputTokens: 0,
+    occurredAt: new Date().toISOString(), idempotencyKey: `tree-held-prerequisite:${ctx.input.nonce}` });
+  if (typeof budgetReceipt.id !== "string" || !budgetReceipt.id) throw new Error("Missing public synthetic accounting fixture receipt");
+  await ctx.input.evidence("runtime-tree-imported-budget-context.json", { agentId: manualWorker.id, receiptId: budgetReceipt.id,
+    origin: "public-imported-synthetic-fixture", importedFixtureCostCents: 125, hardCapCents: 100,
+    modelProviderUsage: "Not model/provider usage; explicit public synthetic accounting fixture" });
   await pollUntil({ label: "Real independent budget hold on the manually paused child owner", deadlineAt: Date.now() + 45_000,
     load: () => ctx.input.api.get<RuntimeAgent>(`/api/agents/${manualWorker.id}`), accept: row => row.status === "paused" && row.lifecycleHolds?.includes("budget") === true });
   const manual = await ctx.input.api.post<{ hold: IssueTreeHold }>(`/api/issues/${manualChild.id}/tree-holds`, { mode: "pause", reason: "Independent human copy pause", releasePolicy: { strategy: "manual" } });
   const first = await busyRuntimeWorker(ctx), riley = await runtimeWorker(ctx, "Riley"), second = await busyRuntimeWorker(ctx, { worker: riley });
   for (const state of [first, second]) await ctx.input.api.patch(`/api/issues/${state.task.id}`, { parentId: parent.id });
   const session = await ctx.input.api.get<{ user: { id: string } }>("/api/auth/get-session");
-  return { ...first, second, parent, manualWorker, manualChild, manualHold: manual.hold, humanId: session.user.id };
+  return { ...first, second, parent, manualWorker, manualChild, manualHold: manual.hold, humanId: session.user.id, syntheticBudgetReceiptId: budgetReceipt.id, syntheticAccountingCostCents: 125, syntheticAccountingOrigin: "public-imported-synthetic-fixture" };
 }
 export const runtimeTreeCases = ["task-coordination.pause-tree", "steering.stop-versus-pause"].map(id => runtimeDefinition(id, setupTree, gradeTreePause, {
   authentication: "human-session", expectedRunCount: 3, runPolicy: { kind: "terminal-counts", terminalStatusCounts: { succeeded: 1, cancelled: 2 } }, attemptTimeoutMs: 900_000,
   sourceFiles: ["chat-catalog-domains/runtime-tree.ts", "chat-catalog-domains/runtime-busy-worker.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", `chat-scenarios/${id.split(".")[0]}.yaml`],
-  setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["lead-ready", "two-real-native-workers", "independent-child-pause-budget"] },
+  setupPolicy: { readiness: "preserve-scenario", funding: "preserve-scenario", invariantCheckIds: ["lead-ready", "two-real-native-workers", "independent-child-pause-budget", "active-branches-funded"] },
   async verifySetup(ctx, state) {
     const c = checks(), lead = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`), runs = await ctx.allRuns();
     c.add("lead-ready", lead.lifecycleState === "ready" && ["idle", "active"].includes(lead.status ?? ""), "The actual CEO is ready to answer the canonical query.");
     c.add("two-real-native-workers", [state, state.second as State].every(s => s.workerWasReallyWaiting === true && runs.some(row => row.id === s.workerRunId
       && row.agentId === (s.worker as Entity).id && row.status === "running" && row.companyId === ctx.input.fixtures.company.id)), "Two actual native workers are independently active before chat.");
+    const funding = await ctx.input.api.get<{ policies: Array<{ scopeType: string; scopeId: string; amount: number; isActive: boolean; hardStopEnabled: boolean; unpricedUsagePolicy: string }> }>(`/api/companies/${ctx.input.fixtures.company.id}/budgets/overview`);
+    const activeScopes = [{ scopeType: "company", scopeId: ctx.input.fixtures.company.id }, ...[ctx.input.fixtures.agent.id, (state.worker as Entity).id, ((state.second as State).worker as Entity).id].map(scopeId => ({ scopeType: "agent", scopeId }))];
+    c.add("active-branches-funded", activeScopes.every(scope => funding.policies.some(policy => policy.scopeType === scope.scopeType && policy.scopeId === scope.scopeId && policy.amount === 500 && policy.isActive && policy.hardStopEnabled && policy.unpricedUsagePolicy === "allow")), "The real company, CEO and both active branches keep their positive execution budgets while the independent branch remains held.");
     const manual = await ctx.input.api.get<RuntimeAgent>(`/api/agents/${(state.manualWorker as Entity).id}`);
     const hold = await ctx.input.api.get<TreeState>(`/api/issues/${(state.manualChild as Entity).id}/tree-control/state`);
-    c.add("independent-child-pause-budget", manual.status === "paused" && manual.lifecycleHolds?.includes("budget") === true && hold.activePauseHold?.holdId === (state.manualHold as IssueTreeHold).id,
+    c.add("independent-child-pause-budget", manual.status === "paused" && manual.lifecycleHolds?.includes("budget") === true && funding.policies.some(policy => policy.scopeType === "agent" && policy.scopeId === manual.id && policy.amount === 100 && policy.isActive && policy.hardStopEnabled) && hold.activePauseHold?.holdId === (state.manualHold as IssueTreeHold).id,
       "The independent manual leaf pause and effective budget hold are genuine saved prerequisites."); return c.result();
   },
   async act(ctx, state) {
