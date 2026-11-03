@@ -565,11 +565,26 @@ finish writing the bounded output. Wait for the summary before collecting it.
 It never logs SQL, parameters, result
 values, connection strings, or query errors. In-flight queries continue normally.
 
-Semantic owners work in a bundled server without source maps. For queries
-without an explicit owner, keep the linked source maps and enable Node's
-`--enable-source-maps` option to resolve public caller locations. Restore prior
-Node options after capture. Known semantic owners avoid repeated stack capture.
-Queries without an available owner/caller still contribute to the totals.
+Semantic owners work in a bundled server without source maps. Specific owners
+avoid stack capture. The generic `http.request` owner keeps its exact name but,
+like an unowned query, also captures a bounded caller location during the window.
+For wrapped query builders, a map-free hosted bundle retains one static generated
+construction-site anchor (`dist-runtime/server.mjs`, `index.mjs`, or
+`chunk-<build hash>.mjs`, with line and column). Correlate it with the exact serving
+revision and bundle; it is not a TypeScript location or an execution-time CPU
+owner. Capture wrapper frames are excluded before reading the stack, and deeper
+frames in the same bundle are omitted.
+
+Unscoped driver calls, including relational queries, do not accept generated
+anchors: a bundled ORM helper could otherwise be mistaken for an application
+caller. They can still retain existing public source/dist locations; linked
+source maps and Node's `--enable-source-maps` may help resolve those locations.
+Restore prior Node options after capture. Missing callers remain unknown and
+still contribute to totals. Disabled, future and expired windows do not capture
+stacks; wrappers installed for an armed window remain after expiry. Active census
+stack capture, grouping and bounded sizing add measurement overhead. More caller
+groups still share the existing group, page and output-rate caps. This diagnostic
+is not a production performance improvement.
 
 Look for `paperclip.db_response_capture.entry.v2` and
 `paperclip.db_response_capture.summary.v2` in the process logs. Version 2 uses
