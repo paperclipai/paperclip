@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { connectionActorUserId } from "../actor.js";
 import { toConnection, toConnectionInstall } from "./projection.js";
 import { actorBinding } from "../actor.js";
@@ -178,6 +179,7 @@ export function createConnectionInstalls(db: Db, { now, getConnectionRow, assert
         profileId: string;
       }> = [];
       await db.transaction(async (tx) => {
+        if (connection.connectionPurpose === "ai") await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection, connection.companyId);
         await lockToolConnectionRuntimeInputs(tx, connection.companyId, connection.id);
         if (markMcpAccessConfigured) {
           // Preserve an explicit zero-agent selection through OAuth. Merge the

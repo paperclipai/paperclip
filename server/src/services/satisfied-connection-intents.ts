@@ -16,7 +16,7 @@ type Task = Pick<typeof issues.$inferSelect, "id" | "companyId" | "projectId" | 
 type Intent = Pick<typeof issueThreadInteractions.$inferSelect, "id" | "companyId" | "issueId" | "kind" | "status" | "payload" | "addresseeUserId"> & Partial<Pick<typeof issueThreadInteractions.$inferSelect, "sourceRunId">>;
 
 /** Verify existing access only. This never installs tools, grants access, or adopts an identity. */
-async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
+async function findAvailableConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
   if (intent.kind !== "connection_intent" || intent.status !== "pending"
     || intent.companyId !== task.companyId || intent.issueId !== task.id
     || task.assigneeUserId) return null;
@@ -65,9 +65,9 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     });
     return capability.allowed ? connection : null;
   }
-  // Additional permissions, provider authentication and inbox setup still need
-  // their governed completion paths. Aggregator cards also name an upstream app.
-  if (payload.purpose || payload.accessRequest || payload.upstreamService
+  // Additional permissions and inbox setup still need their governed completion
+  // paths. AI repair only observes the agent’s already saved account selection.
+  if ((payload.purpose && payload.purpose !== "ai") || payload.accessRequest || payload.upstreamService
     || payload.requestingAgentId !== task.assigneeAgentId || !intent.addresseeUserId) return null;
   if (intent.addresseeUserId !== "local-board") {
     const [membership] = await db.select().from(companyMemberships).where(and(
@@ -77,8 +77,13 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     if (membership?.status !== "active" || !membership.membershipRole || membership.membershipRole === "viewer") return null;
   }
   const connection = await connectionIntentService(db).usableConnectionForAgent({ companyId: task.companyId,
-    agentId: payload.requestingAgentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug });
+    agentId: payload.requestingAgentId, responsibleUserId: intent.addresseeUserId, serviceSlug: payload.serviceSlug,
+    purpose: payload.purpose, sourceRunId: intent.sourceRunId });
   if (!connection) return null;
+  // Runtime authentication has no tool catalog. Selection above enforces model
+  // compatibility, health, human audience and installation without adopting or
+  // changing a binding, default, grant or credential.
+  if (payload.purpose === "ai") return connection;
   // Use the gateway's exact descriptors and listing policy, including task,
   // project and routine context. Per-invocation approvals remain enforced.
   const access = await createToolGatewayService(db).summarizeConnectionAccessForAgent({
@@ -89,9 +94,9 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
   return access.allowedCount + access.askFirstCount > 0 ? connection : null;
 }
 
-export async function findSatisfiedToolConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
+export async function findSatisfiedConnection(db: Db, task: Task, intent: Intent, policyRunId?: string | null) {
   if (!["in_progress", "in_review"].includes(task.status)) return null;
-  return findAvailableToolConnection(db, task, intent, policyRunId);
+  return findAvailableConnection(db, task, intent, policyRunId);
 }
 
 /** Recheck both live requests and system-retired cards against the next run. */
@@ -106,8 +111,12 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
       && "connectionId" in interaction.result && typeof interaction.result.connectionId === "string";
     if (interaction.status !== "pending" && !retired) continue;
     if (retired && (interaction.payload as { requestingAgentId?: string }).requestingAgentId !== task.assigneeAgentId) continue;
+    const payload = connectionIntentPayloadSchema.safeParse(interaction.payload).data;
+    if (retired && payload?.purpose === "ai" && await connectionIntentService(db).aiRequestHasSupersededProvider(
+      task.companyId, payload.requestingAgentId, payload.serviceSlug,
+    )) continue;
     if (interaction.addresseeUserId !== responsibleUserId) return "interaction";
-    const connection = await findAvailableToolConnection(db, task, { ...interaction, status: "pending" }, policyRunId);
+    const connection = await findAvailableConnection(db, task, { ...interaction, status: "pending" }, policyRunId);
     // Historical system retirements describe a service need, not a permanent
     // binding to an account the user may later replace. Delivery and native
     // response projection still validate their own exact recorded connection.
@@ -154,7 +163,7 @@ export function satisfiedConnectionIntentService(db: Db) {
                 eq(companyMemberships.principalId, intent.addresseeUserId),
               )).for("share");
             }
-            const connection = await findSatisfiedToolConnection(txDb, task, intent);
+            const connection = await findSatisfiedConnection(txDb, task, intent);
             if (!connection) return false;
             await notifyIssueReviewState(tx, candidate);
             const now = new Date();

@@ -2092,7 +2092,13 @@ console.log(JSON.stringify({ type: "result", subtype: "success", result: "hello"
   it("preserves connection identity and defaults through reconnect; revocation wins over older attempts", async () => {
     const current = await service.select({ ...input, userId: "bob" });
     const reconnect = { ...binding, ownership: "personal" as const, name: current.connection.name, apiKey: "fixture", agentIds: [], allAgents: true, connectionId: current.connection.id };
-    const result = await service.save(companyId, "bob", reconnect, "fixture-reconnected");
+    const notified = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.connection, notified);
+    let result;
+    try {
+      result = await service.save(companyId, "bob", reconnect, "fixture-reconnected");
+      expect(notified).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
     expect(result.grantId).toBe(current.grant.id);
     expect(await service.credential(await service.select({ ...input, userId: "bob" }))).toBe("fixture-reconnected");
     const beforeRevocation = new Date(Date.now() - 1000);

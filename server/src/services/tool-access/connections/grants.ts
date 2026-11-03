@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { notifyGitHubCredentialChange } from "../../github-connection-notifications.js";
 import type { ConnectionManagementContext } from "../../connection-management.js";
 import { connectionActorUserId } from "../actor.js";
@@ -152,6 +153,7 @@ replaceConnectionGrantMembers: async (
       ];
       const binding = actorBinding(actor);
       const members = await db.transaction(async (tx) => {
+        if (connection.connectionPurpose === "ai") await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection, connection.companyId);
         // Serialize replacements before taking the current audience snapshot.
         // Otherwise a second replacement could read the old rows, wait behind
         // an in-flight replacement, and then miss locking a newly-added member.

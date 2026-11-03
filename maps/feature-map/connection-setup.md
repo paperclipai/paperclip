@@ -72,6 +72,13 @@ From Apps or connection details, use Finish setup, reconnect, or the offered
 authentication recovery action. Reload or return from the provider before
 checking whether the same saved connection became usable.
 
+For an AI account that is already selected on the agent, repair from account or
+agent settings must clear the obsolete task request and resume the task through
+normal admission. Separate questions, approvals, manual blocks and reassignment
+remain effective. [Database regression coverage](../../server/src/__tests__/satisfied-connection-intents.test.ts)
+checks system retirement, fresh-session continuation and commit-bound repair
+notifications. Live provider and deployed task recovery remain separate checks.
+
 ### `chat-channel`
 
 With chat connectors enabled, select a supported chat/email provider in Apps
