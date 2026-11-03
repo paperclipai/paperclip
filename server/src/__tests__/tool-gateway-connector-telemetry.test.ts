@@ -354,7 +354,7 @@ describeEmbeddedPostgres("gateway connector invocation telemetry", () => {
         parameters: { key: "a", value: "1" },
         idempotencyKey,
       }),
-    ).rejects.toThrow(/forced activity write failure/);
+    ).rejects.toMatchObject({ reasonCode: "tool_execution_outcome_unknown" });
 
     const [invocation] = await db.select().from(toolInvocations);
     expect(invocation?.status).toBe("failed");

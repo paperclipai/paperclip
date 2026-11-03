@@ -11289,29 +11289,6 @@ export function createToolGatewayService(
           .returning({ id: toolInvocations.id });
         if (!settledInvocation.length) throw new ToolGatewayHttpError(409, "The external outcome requires review", "tool_execution_outcome_unknown");
         resultSettledByThisCall = true;
-        if (input.approvedActionRequestId) {
-          const actionRequestId = input.approvedActionRequestId;
-          const [executedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
-            .update(toolActionRequests)
-            .set({
-              status: "executed",
-              resolvedAt: completedAt,
-              updatedAt: completedAt,
-            })
-            .where(
-              and(
-                eq(toolActionRequests.id, actionRequestId),
-                eq(toolActionRequests.status, "executing"),
-              ),
-            )
-            .returning({ id: toolActionRequests.id }));
-          if (executedRequest) {
-            await reflectToolActionInteractionLifecycle({
-              actionRequestId: executedRequest.id,
-              status: "executed",
-            });
-          }
-        }
         await writeToolCallEvent({
           invocationId,
           actionRequestId: input.approvedActionRequestId ?? null,
@@ -11362,6 +11339,29 @@ export function createToolGatewayService(
             execution: connectedMcpExecution?.execution ?? undefined,
           },
         });
+        if (input.approvedActionRequestId) {
+          const actionRequestId = input.approvedActionRequestId;
+          const [executedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
+            .update(toolActionRequests)
+            .set({
+              status: "executed",
+              resolvedAt: completedAt,
+              updatedAt: completedAt,
+            })
+            .where(
+              and(
+                eq(toolActionRequests.id, actionRequestId),
+                eq(toolActionRequests.status, "executing"),
+              ),
+            )
+            .returning({ id: toolActionRequests.id }));
+          if (executedRequest) {
+            await reflectToolActionInteractionLifecycle({
+              actionRequestId: executedRequest.id,
+              status: "executed",
+            });
+          }
+        }
         // After the bookkeeping above: a throw there is caught below, overwrites
         // the row to failed, and emits — an earlier success emit would make one
         // execution report both outcomes.
@@ -11419,16 +11419,16 @@ export function createToolGatewayService(
             ? inArray(toolInvocations.status, ["executing", "succeeded"])
             : eq(toolInvocations.status, "executing")))
           .returning({ id: toolInvocations.id });
-        let outcomeUnknown = false;
+        let outcomeUnknown = Boolean(failedInvocation && resultSettledByThisCall);
         if (!failedInvocation) {
           const [saved] = await db.select({ errorCode: toolInvocations.errorCode }).from(toolInvocations)
             .where(eq(toolInvocations.id, invocationId));
           outcomeUnknown = saved?.errorCode === "tool_execution_outcome_unknown";
-          if (outcomeUnknown) {
-            status = 409;
-            reasonCode = "tool_execution_outcome_unknown";
-            message = "The external outcome is unknown; inspect the provider before retrying";
-          }
+        }
+        if (outcomeUnknown) {
+          status = 409;
+          reasonCode = "tool_execution_outcome_unknown";
+          message = "The external outcome is unknown; inspect the provider before retrying";
         }
         const isRuntimeDeferred = status === 429 &&
           (reasonCode === "runtime_capacity_unavailable" || reasonCode === "runtime_restart_backoff" || reasonCode === "runtime_restart_suppressed");
@@ -11451,7 +11451,10 @@ export function createToolGatewayService(
               .where(
                 and(
                   eq(toolActionRequests.id, actionRequestId),
-                  eq(toolActionRequests.status, "executing"),
+                  eq(toolActionRequests.invocationId, invocationId),
+                  resultSettledByThisCall && failedInvocation
+                    ? inArray(toolActionRequests.status, ["executing", "executed"])
+                    : eq(toolActionRequests.status, "executing"),
                 ),
               )
               .returning({ id: toolActionRequests.id }));
@@ -11772,16 +11775,16 @@ export function createToolGatewayService(
             ? inArray(toolInvocations.status, ["executing", "succeeded"])
             : eq(toolInvocations.status, "executing")))
           .returning({ id: toolInvocations.id });
-        let outcomeUnknown = false;
+        let outcomeUnknown = Boolean(failedInvocation && resultSettledByThisCall);
         if (!failedInvocation) {
           const [saved] = await db.select({ errorCode: toolInvocations.errorCode }).from(toolInvocations)
             .where(eq(toolInvocations.id, invocationId));
           outcomeUnknown = saved?.errorCode === "tool_execution_outcome_unknown";
-          if (outcomeUnknown) {
-            status = 409;
-            reasonCode = "tool_execution_outcome_unknown";
-            message = "The external outcome is unknown; inspect the provider before retrying";
-          }
+        }
+        if (outcomeUnknown) {
+          status = 409;
+          reasonCode = "tool_execution_outcome_unknown";
+          message = "The external outcome is unknown; inspect the provider before retrying";
         }
         const preserveUnknown = (error: unknown) => {
           if (!outcomeUnknown) throw error;

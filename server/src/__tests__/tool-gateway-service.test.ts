@@ -2945,6 +2945,54 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(audits.some(audit => audit.action === "tool_gateway.call_deferred")).toBe(false);
   });
 
+  it.each(["approved", "plugin"] as const)("preserves review-required state after %s post-success audit failure", async path => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Fictional tool policy",
+      policyType: path === "approved" ? "require_approval" : "allow", selectors: { toolName: "fixture:delete_everything" } });
+    const dispatcher = fakePluginDispatcher();
+    const execute = vi.fn(dispatcher.executeTool);
+    dispatcher.executeTool = execute;
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const parameters = { target: "fictional" };
+    const input = { sessionToken: session.token, tool: "fixture:delete_everything", parameters };
+    let requestId: string | undefined;
+    let interactionId: string | null = null;
+    if (path === "approved") {
+      await expect(gateway.executeTool(input)).rejects.toMatchObject({ reasonCode: "approval_required" });
+      const [review] = await db.select().from(toolActionRequests);
+      requestId = review.id; interactionId = review.interactionId;
+      await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByUserId: "board-user", resolvedAt: new Date() })
+        .where(eq(issueThreadInteractions.id, interactionId!));
+      await db.update(approvals).set({ status: "approved", decidedByUserId: "board-user", decidedAt: new Date() })
+        .where(eq(approvals.id, review.approvalId!));
+    }
+    await db.execute(sql`create function test_completed_audit_failure() returns trigger language plpgsql as $$
+      begin raise exception 'fictional completion audit failure'; end $$`);
+    await db.execute(sql`create trigger test_completed_audit_failure before insert on activity_log
+      for each row when (new.action = 'tool_gateway.call_completed') execute function test_completed_audit_failure()`);
+    try {
+      const attempt = path === "approved" ? gateway.executeTool({ ...input, approvedActionRequestId: requestId })
+        : gateway.executePluginTool({ actor: { type: "agent", companyId: company.id, agentId: agent.id, runId: run.id },
+            tool: input.tool, parameters, runContext: runSessionInput(company, agent, run) });
+      await expect(attempt).rejects.toMatchObject({ status: 409, reasonCode: "tool_execution_outcome_unknown" });
+    } finally {
+      await db.execute(sql`drop trigger test_completed_audit_failure on activity_log`);
+      await db.execute(sql`drop function test_completed_audit_failure()`);
+    }
+    const [invocation] = await db.select().from(toolInvocations);
+    expect(invocation).toMatchObject({ status: "failed", errorCode: "tool_execution_outcome_unknown" });
+    const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, invocation.id));
+    expect(events).toContainEqual(expect.objectContaining({ eventType: "call_failed", reasonCode: "tool_execution_outcome_unknown" }));
+    if (requestId) {
+      const [review] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, requestId));
+      const [interaction] = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId!));
+      expect(review.status).toBe("failed");
+      expect(interaction.result).toMatchObject({ toolAction: { status: "failed", errorCode: "tool_execution_outcome_unknown" } });
+    }
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
   it("marks an in-flight fictional provider outcome unknown and does not retry on cancellation", async () => {
     const { company, agent, issue, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Review destructive tools",
