@@ -68,15 +68,16 @@ describe("optimistic task Retry", () => {
     await act(async () => settlements[0]({ requestId: "old", accepted: true, stale: false, presentation: null }));
     expect(container.textContent).toContain("Thinking");
   });
-  it("reads a deferred Retry reason after the accepted response and stops checking once explained", async () => {
+  it.each(["id", "identifier"])("reads a deferred Retry reason on the %s route and stops checking once explained", async route => {
     vi.useFakeTimers();
     const presentation = { intentId: "intent", responsibility: "system" as const, state: "failed" as const,
       canRetry: true, nextRetryAt: null, userAction: null, sourceRunIds: ["failed-run"], observedRunId: "failed-run" };
-    let saved = { ...issue, interruption: presentation } as Issue;
+    let saved = { ...issue, identifier: "RTA-1", interruption: presentation } as Issue;
     const queryFn = vi.fn(async () => saved);
-    client.setQueryData(queryKeys.issues.detail(issue.id), saved);
+    const detailKey = queryKeys.issues.detail(route === "identifier" ? saved.identifier! : issue.id);
+    client.setQueryData(detailKey, saved);
     function Observed() {
-      const { data } = useQuery({ queryKey: queryKeys.issues.detail(issue.id), queryFn, staleTime: Infinity });
+      const { data } = useQuery({ queryKey: detailKey, queryFn, staleTime: Infinity });
       const retry = useTaskRetry(data);
       return <ExecutionBlockerNotice presentation={data?.interruption} canRetry onRetry={retry.retry}
         optimistic={retry.optimistic} takingLonger={retry.takingLonger} error={retry.error} />;
