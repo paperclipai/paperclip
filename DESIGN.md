@@ -632,6 +632,8 @@ fallback view. Its last-used view is stored per user across organizations;
 explicit view URLs take precedence, and organization-filter links without a
 view open All tasks. Unread uses the server's viewer read state. Coordinator's
 Needs attention view retains its canonical pending-decision task feed.
+Status filters preserve Inbox and Unread. Unread loads accessible read ancestors
+as hierarchy context, without counting them as unread matches.
 Its sidebar groups Chat, Tasks and Needs you with space after New task and
 before More, and keeps global search beside the organization menu (below it
 in the collapsed rail).

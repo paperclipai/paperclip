@@ -12,7 +12,7 @@ import { queryKeys } from "@/lib/queryKeys";
 import type { TaskListSort } from "@/lib/task-list";
 import { taskListViews, taskListViewStorageKey, type TaskListView } from "@/lib/task-list-views";
 
-const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn(), identity: { userId: "person" as string | null, settled: true } }));
+const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn(), attention: vi.fn(), breadcrumbs: vi.fn(), liveRuns: vi.fn(), localTrusted: false, identity: { userId: "person" as string | null, settled: true } }));
 vi.mock("@/api/heartbeats", () => ({ heartbeatsApi: { liveRunsForCompany: mocks.liveRuns } }));
 vi.mock("@/api/issues", () => ({ issuesApi: { list: mocks.list, listCompact: mocks.list, get: mocks.get, listLabels: async () => [], update: vi.fn() } }));
 vi.mock("@/api/attention", () => ({ attentionApi: { taskIndex: mocks.attention } }));
@@ -20,6 +20,7 @@ vi.mock("@/api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("@/api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("@/api/access", () => ({ accessApi: { listUserDirectory: async () => ({ users: [] }) } }));
 vi.mock("@/api/companies-query", () => ({ useAccountIdentity: () => mocks.identity }));
+vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ userId: mocks.identity.userId ?? (mocks.localTrusted ? "local-board" : null), loaded: mocks.identity.settled }) }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/DialogContext", () => ({ useDialogActions: () => ({ openNewIssue: vi.fn() }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: mocks.breadcrumbs }) }));
@@ -30,6 +31,7 @@ vi.mock("@/components/TaskListToolbar", () => ({ TaskListToolbar: ({ filters, vi
   <button onClick={() => filters.onChange({ routineTasksOnly: false })}>Show other tasks</button>
   <button onClick={() => filters.onChange({ liveOnly: true })}>Live runs only</button>
   <button onClick={() => filters.onChange({ priorities: ["high"] })}>High priority</button>
+  <button onClick={() => filters.onChange({ statuses: ["in_progress"] })}>In progress only</button>
   <button onClick={() => filters.onChange({ assignees: [], statuses: [] })}>Clear assignee and status</button>
   <button onClick={() => filters.onChange({ assignees: ["first", "second"], statuses: ["todo"] })}>Change assignee and status</button>
   <button onClick={() => onLayoutChange("board")}>Board view</button>
@@ -47,6 +49,7 @@ describe("Coordinator tasks using the proposed table", () => {
   beforeEach(() => {
     vi.clearAllMocks(); localStorage.clear();
     mocks.identity = { userId: "person", settled: true };
+    mocks.localTrusted = false;
     mocks.liveRuns.mockResolvedValue([]);
     mocks.attention.mockResolvedValue({ taskIds: [pending.id] });
     mocks.get.mockResolvedValue(pending);
@@ -77,6 +80,38 @@ describe("Coordinator tasks using the proposed table", () => {
     flushSync(() => root.unmount()); root = createRoot(host);
     await mount("/issues");
     expect(host.querySelector("[data-selected-view]")?.textContent).toBe(value);
+  });
+  it("uses the resolved local-board principal when no account session exists", async () => {
+    mocks.identity = { userId: null, settled: true }; mocks.localTrusted = true;
+    mocks.list.mockResolvedValue([createIssue({ id: "local", companyId: "company", parentId: null, createdByUserId: "local-board" })]);
+    await mount("/issues");
+    expect(host.querySelector('[data-task-id="local"]')).not.toBeNull();
+    expect(localStorage.getItem(taskListViewStorageKey("coordinator", "local-board"))).toBe("inbox");
+  });
+  it.each(["inbox", "unread"])("keeps %s selected when applying a status filter", async view => {
+    const mine = createIssue({ id: "mine-running", companyId: "company", parentId: null, createdByUserId: "person", status: "in_progress" });
+    const other = createIssue({ id: "other-running", companyId: "company", parentId: null, createdByUserId: "other", status: "in_progress" });
+    const todo = createIssue({ id: "todo", companyId: "company", parentId: null, createdByUserId: "person", status: "todo" });
+    const read = createIssue({ id: "read-running", companyId: "company", parentId: null, createdByUserId: "other", status: "in_progress" });
+    mocks.list.mockImplementation(async (_company, filters) => filters.unreadForUserId === "me" ? [mine, other, todo] : [mine, other, todo, read]);
+    await mount(`/issues?view=${view}`);
+    flushSync(() => [...host.querySelectorAll("button")].find(button => button.textContent === "In progress only")!.click());
+    await vi.waitFor(() => expect(host.querySelector("output")?.textContent).toContain("status=in_progress"));
+    expect(host.querySelector("[data-selected-view]")?.textContent).toBe(view);
+    expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual(view === "inbox" ? [mine.id] : [mine.id, other.id]);
+  });
+  it("loads read ancestor chains as context for unread subtasks", async () => {
+    const grandparent = createIssue({ id: "read-grandparent", companyId: "company", parentId: null });
+    const parent = createIssue({ id: "read-parent", companyId: "company", parentId: grandparent.id });
+    const child = createIssue({ id: "unread-child", companyId: "company", parentId: parent.id });
+    mocks.list.mockImplementation(async (_company, filters) => filters.unreadForUserId === "me" ? [child] : [parent, grandparent].filter(issue => filters.ids?.includes(issue.id)));
+    await mount("/issues?view=unread");
+    await vi.waitFor(() => {
+      expect([...host.querySelectorAll("[data-task-id]")].map(row => row.getAttribute("data-task-id"))).toEqual([child.id, parent.id, grandparent.id]);
+    });
+    expect(mocks.get).not.toHaveBeenCalled();
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", ids: [parent.id] }), expect.anything());
+    expect(mocks.list).toHaveBeenCalledWith("company", expect.objectContaining({ projection: "index", ids: [grandparent.id] }), expect.anything());
   });
   it("queries the server's unread set and does not mark every task unread", async () => {
     const unread = createIssue({ id: "unread", companyId: "company", parentId: null });

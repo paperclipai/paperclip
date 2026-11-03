@@ -7,7 +7,6 @@ import { accessApi } from "@/api/access";
 import { agentsApi } from "@/api/agents";
 import { attentionApi } from "@/api/attention";
 import { heartbeatsApi } from "@/api/heartbeats";
-import { useAccountIdentity } from "@/api/companies-query";
 import { issuesApi } from "@/api/issues";
 import { projectsApi } from "@/api/projects";
 import { EmptyState } from "@/components/EmptyState";
@@ -22,6 +21,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useDialogActions } from "@/context/DialogContext";
 import { useTaskListCollection } from "@/hooks/useTaskListCollection";
 import { useIssueRowDetails } from "@/hooks/useIssueRowDetails";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
@@ -40,7 +40,7 @@ const pageSize = 200;
  * components reviewed in Design proposals / Pages / Tasks. */
 export function CoordinatorTasks() {
   const { selectedCompanyId: companyId } = useCompany();
-  const { userId, settled: identitySettled } = useAccountIdentity();
+  const { userId, loaded: identitySettled } = useCoordinatorWorkspaceEnabled();
   const { openNewIssue } = useDialogActions();
   const { setBreadcrumbs } = useBreadcrumbs();
   const client = useQueryClient();
@@ -157,11 +157,37 @@ export function CoordinatorTasks() {
   const agentNames = new Map(agents.data?.map(agent => [agent.id, agent.name]));
   const projectById = new Map(projects.data?.map(project => [project.id, project]));
   const records = (needsAttention ? attentionTasks.flatMap(task => task.data ?? []) : tasks.data?.pages.flatMap(page => page.items) ?? []) as Issue[];
+  const unreadIds = new Set(view === "unread" ? records.map(issue => issue.id) : []);
+  const parentIds = view === "unread" ? [...new Set(records.flatMap(issue =>
+    issue.parentId && !unreadIds.has(issue.parentId) ? [issue.parentId] : []))].sort() : [];
+  const parentContext = useQuery({
+    queryKey: [...queryKeys.issues.list(companyId!), "coordinator-unread-ancestors", userId, parentIds],
+    enabled: !!companyId && parentIds.length > 0,
+    queryFn: async ({ signal }) => {
+      const parents: Issue[] = [];
+      const seen = new Set(records.map(issue => issue.id));
+      let ids = parentIds;
+      while (ids.length) {
+        for (const id of ids) seen.add(id);
+        const rows: Issue[] = [];
+        for (let offset = 0; offset < ids.length; offset += 100) {
+          rows.push(...await issuesApi.listCompact(companyId!, {
+            ids: ids.slice(offset, offset + 100), projection: "index", limit: 100,
+            includeAgentCreatedTasks: true, includeRoutineExecutions: true,
+          }, { signal }) as Issue[]);
+        }
+        parents.push(...rows);
+        ids = [...new Set(rows.flatMap(issue => issue.parentId && !seen.has(issue.parentId) ? [issue.parentId] : []))];
+      }
+      return parents;
+    },
+  });
+  const recordsWithContext = [...records, ...(view === "unread" ? parentContext.data ?? [] : [])];
   const scopedRecords = needsAttention && workspaceIds.length ? records.filter(issue =>
-    workspaceIds.includes(issue.executionWorkspaceId ?? "") || workspaceIds.includes(issue.projectWorkspaceId ?? "")) : records;
+    workspaceIds.includes(issue.executionWorkspaceId ?? "") || workspaceIds.includes(issue.projectWorkspaceId ?? "")) : recordsWithContext;
   const items: TaskListItem[] = [...new Map(scopedRecords.map(issue => [issue.id, issue])).values()].map(issue => ({
     issue: { ...issue, project: issue.project ?? projectById.get(issue.projectId ?? "") },
-    unread: view === "unread",
+    unread: unreadIds.has(issue.id),
     createdBy: issue.createdByAgentId ? agentNames.get(issue.createdByAgentId) ?? "Unknown agent" : users.get(issue.createdByUserId ?? "") ?? "Board",
     assignee: issue.assigneeAgentId ? agentNames.get(issue.assigneeAgentId) ?? "Unknown agent" : users.get(issue.assigneeUserId ?? "") ?? null,
   }));
@@ -198,9 +224,8 @@ export function CoordinatorTasks() {
       if (patch.statuses !== undefined) {
         next.delete("status");
         for (const status of patch.statuses) next.append("status", status);
-        // A changed status selection replaces the legacy preset, while the
-        // independent Needs attention surface remains selected.
-        if (next.get("view") !== "needs_attention") next.set("view", "all");
+        const preset = normalizeTaskViewKey(next.get("view"));
+        if (preset && taskView(preset).surface === "issues") next.set("view", "all");
       }
       return next;
     }, { replace: true });
@@ -218,16 +243,18 @@ export function CoordinatorTasks() {
     onSuccess: () => { void client.invalidateQueries({ queryKey: queryKeys.issues.list(companyId!) }); void client.invalidateQueries({ queryKey: queryKeys.attention(companyId!) }); },
   });
   const error = (needsAttention ? attention.error ?? attentionTasks.find(task => task.error)?.error : tasks.error)
+    ?? (view === "unread" ? parentContext.error : null)
     ?? agents.error ?? projects.error ?? directory.error ?? labels.error ?? update.error
     ?? (collection.filters.liveOnly ? liveRuns.error : null);
   const pending = (needsAttention ? attention.isPending || attentionTasks.some(task => task.isPending) : tasks.isPending)
+    || (view === "unread" && parentIds.length > 0 && parentContext.isPending)
     || (collection.filters.liveOnly && liveRuns.isPending);
   useWarmTaskDetailCode(!pending && !error && items.length > 0);
   const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
     companyId, listRef,
     `${collection.visibleItems.map(item => item.issue.id).join(",")}:${[...collection.collapsedIds].join(",")}:${collection.layout}`,
     !pending && !error,
-    records,
+    recordsWithContext,
   );
   const enrichItem = (item: TaskListItem): TaskListItem => ({ ...item, issue: enrichIssueRow(item.issue) });
   const narrowed = query || collection.activeFilterCount || view === "inbox" || view === "unread";
@@ -240,6 +267,7 @@ export function CoordinatorTasks() {
     update.reset();
     void (needsAttention ? attention.refetch() : tasks.refetch());
     for (const task of attentionTasks) void task.refetch();
+    if (view === "unread" && parentIds.length) void parentContext.refetch();
     void agents.refetch(); void projects.refetch(); void directory.refetch(); void labels.refetch();
     if (collection.filters.liveOnly) void liveRuns.refetch();
   };
@@ -261,7 +289,7 @@ export function CoordinatorTasks() {
         issueLinkState={issueLinkState} collapsedIds={collection.collapsedIds} onCollapsedIdsChange={collection.setCollapsedIds} /> : empty}</div>
       {collection.layout === "board" ? collection.matchingItems.length
         ? <KanbanBoard showOverflowFades issues={collection.matchingItems.map(item => enrichIssueRow(item.issue))} agents={agents.data} onUpdateIssue={(id, data) => update.mutate({ id, data })} /> : empty : null}
-      {!needsAttention && tasks.hasNextPage ? <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>{items.length} tasks loaded. Load more to include them in filters.</span><Button variant="outline" size="sm" disabled={tasks.isFetchingNextPage} onClick={() => void tasks.fetchNextPage()}>{tasks.isFetchingNextPage ? "Loading…" : "Load more tasks"}</Button></div> : null}
+      {!needsAttention && tasks.hasNextPage ? <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground"><span>{view === "unread" ? unreadIds.size : items.length} tasks loaded. Load more to include them in filters.</span><Button variant="outline" size="sm" disabled={tasks.isFetchingNextPage} onClick={() => void tasks.fetchNextPage()}>{tasks.isFetchingNextPage ? "Loading…" : "Load more tasks"}</Button></div> : null}
     </>}
   </section></TruncatedTextMarqueeProvider></FlyoutAppearanceProvider>;
 }
