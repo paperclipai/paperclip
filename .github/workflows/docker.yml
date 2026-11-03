@@ -33,6 +33,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  source_verification:
+    name: Watch exact-source verification
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
+    runs-on: ${{ vars.AWS_POST_MERGE_CI_ENABLED == 'true' && 'runs-on/fleet=paperclip-post-merge-x64/env=public-ci' || 'ubuntu-latest' }}
+    timeout-minutes: 50
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Stop images when source checks fail and report runner waits
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/watch-release-source.mjs
+
   reuse_canary_image:
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && startsWith(github.ref, 'refs/tags/canary/v')
     runs-on: ubuntu-latest
@@ -100,7 +120,7 @@ jobs:
           - platform: linux/arm64
             runner: ubuntu-24.04-arm
             arch: arm64
-    runs-on: ${{ matrix.runner }}
+    runs-on: ${{ vars.CORE_RELEASE_AWS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && format('runs-on/fleet=paperclip-core-image-{0}/env=public-ci', matrix.arch == 'amd64' && 'x64' || 'arm64') || matrix.runner }}
     # Native builds land well inside this; it is a backstop, not a budget.
     # (The interim fix while this PR landed raised the single QEMU job's cap
     # to 120 minutes; native per-arch legs make that headroom unnecessary.)
@@ -115,6 +135,9 @@ jobs:
           # Full history and tags so `git describe` below can compute the
           # release version to stamp into the image.
           fetch-depth: 0
+          # Keep the version's full commit graph without downloading blobs
+          # from every historical revision of this large repository.
+          filter: blob:none
 
       # `.git` is dockerignored, so a running image cannot derive its own
       # version and otherwise reports the source package.json placeholder in
@@ -183,6 +206,7 @@ jobs:
           echo "Using refreshed pnpm-lock.yaml in the Docker build context."
 
       - name: Free runner disk
+        if: ${{ !(vars.CORE_RELEASE_AWS_ENABLED == 'true' && github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master') }}
         run: |
           set -euo pipefail
           echo "Disk before cleanup:"
@@ -308,9 +332,9 @@ jobs:
   # tags. Nothing is publicly tagged until this runs, so a half-published
   # multi-arch image is not a state anything can pull.
   merge-and-push:
-    if: ${{ !cancelled() && needs.build-and-push.result == 'success' }}
-    needs: build-and-push
-    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && needs.build-and-push.result == 'success' && (needs.source_verification.result == 'success' || needs.source_verification.result == 'skipped') }}
+    needs: [build-and-push, source_verification]
+    runs-on: ${{ github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32') || 'ubuntu-latest' }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -322,8 +346,6 @@ jobs:
       # script the verification step pipes in.
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          fetch-depth: 0
 
       - name: Download digests
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8

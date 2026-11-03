@@ -14,7 +14,7 @@ concurrency:
 jobs:
   build:
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32' }}
     timeout-minutes: 10
     permissions:
       contents: read
@@ -52,7 +52,7 @@ jobs:
   publish:
     needs: build
     if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    runs-on: ${{ vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32' }}
     timeout-minutes: 5
     permissions:
       contents: read

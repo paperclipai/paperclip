@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { describe } from "node:test";
 import { createActionsReader, readSourceVerification, sourceVerificationJob, waitForSourceVerification } from "./cloud-source-verification.mjs";
+
+import { cancelImageRun, runnerWaits, watchReleaseSource } from "./watch-release-source.mjs";
 
 const sha = "a".repeat(40);
 const workflow = { id: 123, path: ".github/workflows/cloud-readiness.yml" };
@@ -230,4 +232,105 @@ test("retries stop at the caller's deadline rather than outliving the poll", asy
   await assert.rejects(api("/repos/x"), /HTTP 502/);
   assert.equal(seen.length, 1);
   assert.deepEqual(waits, []);
+});
+
+
+describe("image build source monitor", () => {
+  const sha = "a".repeat(40);
+  const runId = 50;
+  const attempt = 1;
+  const workflow = { id: 123, path: ".github/workflows/cloud-readiness.yml" };
+  const sourceRun = { id: 99, workflow_id: 123, path: workflow.path, run_attempt: 1,
+    repository: { full_name: "paperclipai/paperclip" }, head_repository: { full_name: "paperclipai/paperclip" },
+    head_sha: sha, head_branch: "master", event: "push", status: "in_progress" };
+  const imageRun = { id: runId, run_attempt: attempt, head_sha: sha, head_branch: "master", event: "push",
+    repository: { id: 1170821064 }, head_repository: { id: 1170821064 },
+    path: ".github/workflows/docker.yml", status: "in_progress" };
+  const proof = { id: 111, name: "Cloud source verified v1", run_id: 99, run_attempt: 1,
+    head_sha: sha, status: "completed", conclusion: "success" };
+
+  function fixture({ jobs = [proof], run = sourceRun, current = run, image = imageRun, imageJobs = [], missing = false } = {}) {
+    const cancellations = [];
+    const messages = [];
+    const api = async path => {
+      if (path.endsWith("/workflows/cloud-readiness.yml")) return workflow;
+      if (path.includes("/workflows/123/runs?")) return { workflow_runs: missing ? [] : [run], total_count: missing ? 0 : 1 };
+      if (path.includes("/runs/99/attempts/1/jobs?")) return { jobs };
+      if (path.endsWith("/runs/99")) return current;
+      if (path.includes(`/runs/${runId}/attempts/${attempt}/jobs?`)) return { jobs: imageJobs, total_count: imageJobs.length };
+      if (path.endsWith(`/runs/${runId}`)) return image;
+      throw new Error(`Unexpected request: ${path}`);
+    };
+    return { sha, runId, attempt, api, cancel: async path => cancellations.push(path),
+      cancellations, messages, log: message => messages.push(message), summary: async message => messages.push(message) };
+  }
+
+  test("successful exact-source proof permits publication without canceling image work", async () => {
+    const f = fixture();
+    assert.equal((await watchReleaseSource(f)).jobId, proof.id);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a required check failing cancels the same image attempt before siblings finish", async () => {
+    const f = fixture({ jobs: [{ ...proof, name: "General tests", conclusion: "failure" }] });
+    await assert.rejects(watchReleaseSource(f), /General tests/);
+    assert.deepEqual(f.cancellations, ["/repos/paperclipai/paperclip/actions/runs/99/cancel", `/repos/paperclipai/paperclip/actions/runs/${runId}/cancel`]);
+  });
+
+  test("a superseded readiness attempt cancels image work with no deployable future", async () => {
+    const f = fixture({ jobs: [], run: { ...sourceRun, status: "completed", conclusion: "cancelled" } });
+    await assert.rejects(watchReleaseSource(f), /did not pass/);
+    assert.equal(f.cancellations.length, 1);
+  });
+
+  test("a rerun racing a failed job is retried rather than canceling the image", async () => {
+    const f = fixture({ jobs: [{ ...proof, name: "General tests", conclusion: "failure" }],
+      current: { ...sourceRun, run_attempt: 2 } });
+    let time = 0;
+    const api = f.api;
+    f.api = async path => time > 0 ? fixture().api(path) : api(path);
+    const result = await watchReleaseSource({ ...f, now: () => time, sleep: async ms => { time += ms; } });
+    assert.equal(result.jobId, proof.id);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("a transport failure does not issue a destructive cancellation", async () => {
+    const f = fixture();
+    await assert.rejects(watchReleaseSource({ ...f, api: async () => { throw new Error("GitHub unavailable"); } }), /unavailable/);
+    assert.deepEqual(f.cancellations, []);
+  });
+
+  test("an expired source deadline cancels work and cannot authorize publication", async () => {
+    const f = fixture({ missing: true });
+    let time = 0;
+    await assert.rejects(watchReleaseSource({ ...f, now: () => time, sleep: async ms => { time += ms; }, timeoutMs: 20 }), /did not become ready/);
+    assert.equal(time, 20);
+    assert.equal(f.cancellations.length, 1);
+  });
+
+  test("cancellation rejects another SHA, repository, ref, workflow, or attempt", async () => {
+    for (const change of [{ head_sha: "b".repeat(40) }, { head_branch: "v1" }, { event: "pull_request" },
+      { path: ".github/workflows/release.yml" }, { run_attempt: 2 }, { id: 51 },
+      { repository: { id: 42 } }, { head_repository: { id: 42 } }]) {
+      const f = fixture({ image: { ...imageRun, ...change } });
+      await assert.rejects(cancelImageRun(f), /different image workflow identity/);
+      assert.deepEqual(f.cancellations, []);
+    }
+  });
+
+  test("queue measurement does not count running time or skipped dependency jobs", () => {
+    const created_at = "2020-01-01T00:00:00Z";
+    const started_at = "2020-01-01T00:00:20Z";
+    const job = { id: 1, name: "amd64", labels: ["release"], created_at, started_at, runner_id: 10, status: "in_progress" };
+    const now = Date.parse(created_at) + 120_000;
+    assert.deepEqual(runnerWaits([job, { ...job, status: "completed", conclusion: "skipped" }], now), [{ id: 1, job: "amd64", seconds: 20 }]);
+    assert.equal(runnerWaits([{ ...job, status: "queued", runner_id: 0 }], now)[0].seconds, 120);
+  });
+
+  test("a runner wait over 60 seconds produces an Actions warning and summary", async () => {
+    const f = fixture({ imageJobs: [{ id: 1, name: "amd64", labels: ["release"], status: "queued", runner_id: 0, created_at: "2020-01-01T00:00:00Z" }] });
+    await watchReleaseSource({ ...f, now: () => Date.parse("2020-01-01T00:02:00Z") });
+    assert.ok(f.messages.some(message => message.startsWith("::warning") && message.includes("120s")));
+    assert.ok(f.messages.some(message => message.includes("Release runner wait: amd64")));
+  });
 });

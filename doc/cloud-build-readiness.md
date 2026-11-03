@@ -11,13 +11,14 @@ retired. The workflow no longer builds a legacy image or waits for one.
 Keep its filename and source-proof job name stable: npm canary publication and
 downstream image composers consume that exact contract.
 
-Standard images still publish independently through `docker.yml`. The
+Standard images build in parallel through `docker.yml`. Master image publication
+waits for the exact-source proof; a failed source check cancels its image build
+without waiting for the remaining test shards. The
 `cloud-migrator-artifacts.yml` workflow still publishes signed exact-source
 migrators independently. A downstream composer must verify those artifacts,
 build and test its own image, and record separate deployment readiness.
 
-Verification runs outside the full npm release's concurrency group. Different
-commits have independent groups. The npm canary release reuses the source proof
+Verification runs outside the full npm release's concurrency group. Each source retains its independent verification run. The npm canary release reuses the source proof
 for its exact master push instead of starting another `Release Verify` run.
 Stable releases and candidate-branch betas still run full verification.
 
@@ -125,10 +126,11 @@ latency guarantee.
 `AWS_POST_MERGE_CI_ENABLED=true` routes cloud source verification and
 exact-master migrator preparation to the
 `paperclip-post-merge` runner group. The separate Fleet label is
-`runs-on/fleet=paperclip-post-merge-x64/env=public-ci`. Its 36 reserved slots use
-the same four-vCPU, 16-GiB machines as approved PR jobs. PR capacity is reduced
-to 64; the separately provisioned image capacity is unchanged by this retirement.
-This keeps PR bursts from consuming every post-merge verification slot.
+`runs-on/fleet=paperclip-post-merge-x64/env=public-ci`. The protected fleet uses
+separate 8-vCPU, 32-GiB On-Demand workers and 32 hot standby machines. Its current
+72-job ceiling and public PR capacity are managed independently. Hot workers
+are fresh instances, not machines reused between jobs. Quota ceilings alone do
+not reserve hardware; verify actual ready standby inventory and runner timings.
 
 Every selector checks the canonical repository name and ID, master ref, and a
 push or manual event. Reusable verification also requires `inputs.ref` to equal
@@ -142,7 +144,8 @@ its trusted-publisher identity.
 Before enabling the switch, deploy the separate Fleet and restrict its GitHub
 runner group to repository ID `1170821064` and these workflows at
 `refs/heads/master`: `cloud-readiness.yml`,
-`release-verify.yml`, `runner-chaos-evals.yml`, and `release.yml`. Do not authorize
+`release-verify.yml`, `runner-chaos-evals.yml`, `release.yml`, and `docker.yml`.
+The Docker workflow uses this group only for its exact-source monitor. Do not authorize
 PR-controlled workflow versions. The direct migrator producer always uses
 GitHub-hosted runners and needs no AWS runner-group authorization. PR placement retains its independent pinned
 workflow and six-account author/actor allowlist.
@@ -157,6 +160,31 @@ source checks, and npm integrity checks are unchanged.
 route a public image job after this retirement. This source change does not
 delete runner groups, Fleets, credentials, registry images, or cache tags. Review
 shared infrastructure ownership separately before removing those resources.
+
+## Protected standard-image builders
+
+`CORE_RELEASE_AWS_ENABLED=true` routes canonical master image jobs to native
+`paperclip-core-image-x64` and `paperclip-core-image-arm64` fleets. Each has two
+32-vCPU / 128-GiB On-Demand slots and hot standby workers, for four large image
+workers in total. The `paperclip-core-release` runner group permits only
+Core's `docker.yml@refs/heads/master`. PRs, branches, and tag releases keep their
+existing GitHub-hosted placement. Disable the switch and rerun the whole image
+workflow to restore hosted placement.
+
+Image checkout retains the complete commit graph for version stamping but filters
+out historical blobs. The manifest job needs only a shallow source checkout.
+Prepared AWS image disks skip the standard hosted runner's disk cleanup. Native
+architecture builds, digest publication, the orphan-reaping smoke test, and
+attestation remain required. The source monitor has Actions write permission to cancel its own canonical
+master Docker run and failed exact-source verification siblings. It never
+automatically retries a failed source check. It checks run, attempt, SHA,
+repository, ref, and workflow identity before cancellation. Image jobs retain
+their existing package permissions.
+
+The monitor emits an Actions warning and step summary when an image or source job waits
+more than 60 seconds for a runner. This measures runner assignment, not image
+execution. Compare automatic merge-to-ready and merge-to-healthy-target timings;
+a manual dispatch or warm pool count alone does not prove deployment latency.
 
 ### Typecheck Rust dependency cache
 
@@ -236,3 +264,10 @@ fi
 A subsequent master install can populate the missing entry. Check the saved
 archive size and package reuse in install logs; a cache hit alone does not prove
 that the entry contains dependencies.
+
+Image manifest verification and attestation, plus exact-source migrator build
+and publication, use the protected four-slot GitHub-hosted `cloud-release-32`
+pool. `CORE_PUBLICATION_RUNNER=ubuntu-latest` restores standard hosted placement.
+The signing jobs remain GitHub-hosted because downstream provenance explicitly
+requires that certificate claim. Their master-only group also serves the private
+Cloud publisher and harness deployment; it excludes PRs and branch benchmarks.
