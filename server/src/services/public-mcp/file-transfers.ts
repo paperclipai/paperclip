@@ -5,6 +5,7 @@ import { and, eq, gt, isNull, lt, sql } from "drizzle-orm";
 import { type Db, mcpAttachmentUploads, mcpFileTickets, mcpOauthGrants, issues } from "@paperclipai/db";
 import { z } from "zod";
 import { MAX_ATTACHMENT_BYTES, isAllowedContentType } from "../../attachment-types.js";
+import { logger } from "../../middleware/logger.js";
 import type { StorageService } from "../../storage/types.js";
 import { authorizationService } from "../authorization.js";
 import { issueService } from "../issues.js";
@@ -80,13 +81,29 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
   }
   async function sweep() {
     await db.delete(mcpFileTickets).where(lt(mcpFileTickets.expiresAt, new Date()));
-    // Serialize cleanup against completion/reissue. Never remove a committed file.
+    // Serialize cleanup against completion/reissue. Requalify old optimistic
+    // cleanup and orphaned removed attachments, never a still-linked file.
     await db.transaction(async tx => {
-      const abandoned = await tx.select().from(mcpAttachmentUploads).where(and(isNull(mcpAttachmentUploads.attachmentId), isNull(mcpAttachmentUploads.cleanedAt), lt(mcpAttachmentUploads.expiresAt, new Date()))).limit(20).for("update", { skipLocked: true });
+      const abandoned = await tx.select().from(mcpAttachmentUploads).where(and(
+        isNull(mcpAttachmentUploads.cleanupVerifiedAt), lt(mcpAttachmentUploads.expiresAt, new Date()),
+        sql`(${mcpAttachmentUploads.attachmentId} IS NULL OR NOT EXISTS (
+          SELECT 1 FROM issue_attachments attachment WHERE attachment.id = ${mcpAttachmentUploads.attachmentId}))`,
+      )).limit(20).for("update", { skipLocked: true });
       for (const upload of abandoned) {
         if (upload.storageProvider !== storage.provider) continue;
-        await storage.deleteObject(upload.companyId, upload.objectKey);
-        await tx.update(mcpAttachmentUploads).set({ cleanedAt: new Date() }).where(eq(mcpAttachmentUploads.id, upload.id));
+        try {
+          await storage.deleteObject(upload.companyId, upload.objectKey);
+          if ((await storage.headObject(upload.companyId, upload.objectKey)).exists !== false) {
+            throw new Error("MCP upload storage cleanup could not be confirmed");
+          }
+        } catch {
+          // Cleanup is opportunistic across companies. Retain this uncertainty
+          // without denying an unrelated caller's authorized file transfer.
+          logger.warn({ companyId: upload.companyId, uploadId: upload.id }, "MCP upload cleanup remains unverified");
+          continue;
+        }
+        const verifiedAt = new Date();
+        await tx.update(mcpAttachmentUploads).set({ cleanedAt: verifiedAt, cleanupVerifiedAt: verifiedAt }).where(eq(mcpAttachmentUploads.id, upload.id));
       }
     });
   }
@@ -133,6 +150,7 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
     const published = await db.transaction(async tx => {
       const [upload] = await tx.select().from(mcpAttachmentUploads).where(eq(mcpAttachmentUploads.id, row.uploadId!)).for("update");
       if (!upload || upload.companyId !== principal.grant.companyId || upload.userId !== principal.grant.userId || upload.workSessionId !== row.workSessionId || upload.grantId && upload.grantId !== row.grantId || upload.storageProvider !== storage.provider) throw unavailable();
+      if (upload.expiresAt <= new Date() || upload.cleanedAt || upload.cleanupVerifiedAt) throw unavailable();
       if (upload.sha256 !== digest || upload.byteSize !== bytes.length || req.get("Content-Type")?.split(";")[0]?.trim().toLowerCase() !== upload.contentType) throw new McpCapabilityError("Upload bytes, size or Content-Type do not match the requested file.");
       await taskAccess(principal, upload.taskId, principal.grant.purpose !== "agent", tx as unknown as Db, row.workSessionId ?? undefined);
       const stored = upload.attachmentId ? null : await storage.putFile({ companyId: upload.companyId, namespace: "mcp-transfers", objectKey: upload.objectKey, originalFilename: upload.originalFilename, contentType: upload.contentType, body: bytes });
@@ -200,7 +218,11 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
             objectKey: `${p.grant.companyId}/mcp-transfers/${id}`, storageProvider: storage.provider, expiresAt: new Date(Date.now() + lifetime) }).returning();
         }
         if (!found || found.argumentsHash !== hash) throw new McpCapabilityError("requestId was already used for a different upload.");
-        await tx.update(mcpAttachmentUploads).set({ expiresAt: new Date(Date.now() + lifetime), cleanedAt: null }).where(eq(mcpAttachmentUploads.id, found.id));
+        // A committed identity is immutable, including after user deletion.
+        // A rejected replay must not erase verified cleanup or permit new bytes.
+        if (!found.attachmentId) await tx.update(mcpAttachmentUploads)
+          .set({ expiresAt: new Date(Date.now() + lifetime), cleanedAt: null, cleanupVerifiedAt: null })
+          .where(eq(mcpAttachmentUploads.id, found.id));
         return found;
       });
       if (upload.attachmentId) {
@@ -214,6 +236,26 @@ export function createPublicMcpTransfers(db: Db, oauth: PublicMcpOAuth, api: Api
           ...(publication ? { publication } : {}) };
         // An older upload can lack publication proof. Verify the same bytes
         // through another bounded PUT; never manufacture a receipt from metadata.
+        await db.transaction(async tx => {
+          const [current] = await tx.select().from(mcpAttachmentUploads)
+            .where(eq(mcpAttachmentUploads.id, upload.id)).for("update");
+          if (!current || current.companyId !== p.grant.companyId || current.userId !== p.grant.userId
+            || current.argumentsHash !== hash || current.workSessionId !== sessionId
+            || current.grantId && current.grantId !== p.grant.id
+            || current.attachmentId !== attachment.id || current.storageProvider !== storage.provider
+            || current.cleanedAt || current.cleanupVerifiedAt) throw unavailable();
+          const owner = await workSession(p, sessionId, current.taskId, true, tx as unknown as Db);
+          const live = await attachmentAccess(p, attachment.id, tx as unknown as Db, sessionId);
+          if (!owner || live.issueId !== current.taskId || live.provider !== current.storageProvider
+            || live.objectKey !== current.objectKey || live.originalFilename !== current.originalFilename
+            || live.byteSize !== current.byteSize || live.sha256 !== current.sha256
+            || live.originatingRunId !== owner.runId || live.createdByAgentId !== owner.agentId) throw unavailable();
+          // Keep the committed attachment and cleanup identity immutable. A
+          // concurrent deletion still removes that attachment/stamps this row;
+          // PUT rechecks both and never stores bytes for a committed upload.
+          await tx.update(mcpAttachmentUploads).set({ expiresAt: new Date(Date.now() + lifetime) })
+            .where(eq(mcpAttachmentUploads.id, current.id));
+        });
       }
       return { ...await ticket(p, { uploadId: upload.id }, sessionId), method: "PUT", headers: { "Content-Type": a.contentType }, uploadId: upload.id, maxBytes: MAX_ATTACHMENT_BYTES,
         instructions: "Send the exact file bytes with the given Content-Type. Success saves the attachment and returns its ID. An agent upload also returns a verified publication receipt; cite its evidenceRef in your completion report. There is no separate upload completion tool. Do not share this temporary file credential. Reuse requestId after a lost response." };

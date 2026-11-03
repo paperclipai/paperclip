@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://paperclip.dev/schemas/prp/v1/provider-failure.schema.json",
+  "title": "Provider failure",
+  "type": "object",
+  "required": ["schema", "provider", "phase", "category", "message", "retryability"],
+  "properties": {
+    "schema": { "const": "paperclip.provider-failure.v1" },
+    "provider": { "type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[a-zA-Z0-9_.:/-]+$" },
+    "phase": { "enum": ["startup", "turn"] },
+    "category": { "enum": ["rate_limit", "quota_exhausted", "authentication", "permission", "model_unavailable", "invalid_request", "overloaded", "timeout", "unknown"] },
+    "message": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "providerCode": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[a-zA-Z0-9_.:/-]+$" },
+    "httpStatus": { "type": "integer", "minimum": 400, "maximum": 599 },
+    "requestId": { "type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[a-zA-Z0-9_.:/-]+$" },
+    "retryAt": { "type": "string", "format": "date-time" },
+    "retryability": { "enum": ["transient", "requires_action", "unknown"] }
+  },
+  "additionalProperties": false
+}

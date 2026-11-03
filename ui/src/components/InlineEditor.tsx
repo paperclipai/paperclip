@@ -33,7 +33,7 @@ interface InlineEditorProps {
    * own affordance opens the editor (the description bubble's pencil, PAP-375).
    */
   defaultEditing?: boolean;
-  /** Notified when the multiline editor swaps between display and edit mode. */
+  /** Notified when the editor swaps between display and edit mode. */
   onEditingChange?: (editing: boolean) => void;
   /**
    * Keep unsaved edits in browser storage under this key, so a reload or an
@@ -91,6 +91,16 @@ function OwnedInlineEditor({
   draftOwner,
 }: InlineEditorProps & { draftOwner: string | undefined }) {
   const [editing, setEditing] = useState(false);
+  const editingChangeCallback = useRef(onEditingChange);
+  editingChangeCallback.current = onEditingChange;
+  useEffect(() => {
+    if (multiline || !editing) return;
+    const notify = editingChangeCallback.current;
+    notify?.(true);
+    // Report only an edit that actually opened. This also retires the old
+    // account's edit on unmount, without a late save notifying its new owner.
+    return () => notify?.(false);
+  }, [editing, multiline]);
   const [multilineEditing, setMultilineEditing] = useState(multiline && defaultEditing);
   const [multilineFocused, setMultilineFocused] = useState(false);
   const [draft, setDraft] = useState(value);

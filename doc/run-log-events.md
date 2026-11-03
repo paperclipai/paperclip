@@ -92,6 +92,17 @@ They also become native Observability spans only with an operator OTLP endpoint.
 
 ## Native PRP Run-Log Events
 
+Provider startup command failures and failed provider turns can carry a
+`providerFailure` cause with schema `paperclip.provider-failure.v1`. The cause
+retains a normalized category, a bounded and redacted provider explanation, the
+startup/turn phase, and available status, code, request ID, or retry time. Provider
+adapters extract these fields; arbitrary exception objects, request bodies,
+headers, environment variables, and stacks are excluded. Unknown categories retain
+their explanation. The cause stays in company-scoped run records and the run log;
+it is not added to first-party Telemetry, Observability attributes, or Sentry
+failure reports. The reportable run error keeps its existing generic text. Startup
+receipts retain it across controller restart before any provider turn exists.
+
 Completed OpenCode builtin `bash` parts preserve the numeric process exit from
 `state.metadata.exit` in `tool.execution.completed.payload.exitCode`. The tool
 status stays `completed` even when the command exits with a nonzero code. This

@@ -12,7 +12,7 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     queue: DeliveryQueue;
     batchSize?: number;
     minimumPassIntervalMs?: number;
-    concurrentChecks?: { limit: number; key(entry: Entry): string };
+    concurrentChecks?: { limit: number; key(entry: Entry): string | readonly string[] };
     reconstructionIntervalMs?: number | ((scope: Scope | undefined) => number);
     beforePass?(): Promise<void>;
     decodeScope(hint: string): Scope | undefined;
@@ -116,9 +116,27 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
         && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
         .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
       const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
-      const groups = new Map<string, Entry[]>();
-      for (const entry of batch.entries) {
-        const key = options.concurrentChecks?.key(entry) ?? "";
+      // An owner may share more than one resource (for example a task and an
+      // endpoint). Merge intersecting keys before dispatch so waiting siblings
+      // do not occupy the bounded check slots ahead of independent work.
+      const parents = batch.entries.map((_, index) => index);
+      const root = (index: number): number => {
+        while (parents[index] !== index) index = parents[index];
+        return index;
+      };
+      const owners = new Map<string, number>();
+      for (const [index, entry] of batch.entries.entries()) {
+        const configured = options.concurrentChecks?.key(entry) ?? "";
+        const keys = typeof configured === "string" ? [configured] : configured;
+        for (const key of keys) {
+          const previous = owners.get(key);
+          if (previous === undefined) owners.set(key, index);
+          else parents[root(index)] = root(previous);
+        }
+      }
+      const groups = new Map<number, Entry[]>();
+      for (const [index, entry] of batch.entries.entries()) {
+        const key = root(index);
         const group = groups.get(key) ?? [];
         group.push(entry); groups.set(key, group);
       }

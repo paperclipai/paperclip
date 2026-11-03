@@ -1,3 +1,4 @@
+import { readPendingNativeRunStop } from "./native-cancellation-request.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { NATIVE_RETAINED_OWNER_WAIT } from "./native-controller-recovery.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
@@ -524,7 +525,10 @@ export async function claimNativeRestartRecoveries(input: {
       and(
         eq(heartbeatRuns.runtimeMode, "native"),
         eq(agents.adapterType, "paperclip_runner"),
-        inArray(heartbeatRuns.status, ["running", "failed"]),
+        or(inArray(heartbeatRuns.status, ["running", "failed"]), and(
+          eq(heartbeatRuns.status, "interrupted"), eq(nativeRunFinalizations.phase, "observed"),
+          sql`${heartbeatRuns.resultJson}->'nativeCancellation'->>'dispatchState' = 'pending'`,
+        )),
         isNull(nativeRunFinalizations.resultId),
         // A pre-provider retained-owner wait belongs to normal same-run
         // resumption, including when its deadline elapsed while we were down.
@@ -599,6 +603,12 @@ export async function claimNativeRestartRecoveries(input: {
       if (!row) {
         return busy();
       }
+      const stopCleanup = row.coordinator.phase === "observed"
+        && row.coordinator.companyId === row.run.companyId && row.coordinator.issueId === row.run.nativeIssueId
+        && await readPendingNativeRunStop(tx as unknown as Db, row.run);
+      if (!["running", "failed"].includes(row.run.status) && !(row.run.status === "interrupted" && stopCleanup)) {
+        return { kind: "blocked", runId: row.run.id, reason: "run_no_longer_recoverable" } as const;
+      }
       if (isNativeRunnerOwnershipHeld(row.run)) {
         return {
           kind: "blocked",
@@ -616,7 +626,7 @@ export async function claimNativeRestartRecoveries(input: {
       if (!input.liveRunExecutions?.has(row.run.id) && await retireSupersededNativeRetry(tx as unknown as Db, {
         run: row.run, coordinator: row.coordinator, issueExecutionRunId: row.issueExecutionRunId, now,
       })) return { kind: "blocked", runId: row.run.id, reason: "native_retry_superseded" } as const;
-      if (row.issueExecutionRunId !== row.run.id) {
+      if (row.issueExecutionRunId !== row.run.id && !(stopCleanup && row.issueExecutionRunId === null)) {
         return {
           kind: "blocked",
           runId: row.run.id,
@@ -921,6 +931,9 @@ export async function claimNativeRestartRecoveries(input: {
           nativeRestartInterruptedTurnId(checkpointRecord as unknown as PersistedNativeSession) === null,
         providerAttempt: row.coordinator.attempt,
       });
+      if (stopCleanup && classification.claimKind !== "reattach_remote_runner") {
+        return { kind: "blocked", runId: row.run.id, reason: "native_stop_requires_existing_remote_session" } as const;
+      }
       const ownershipChanged =
         row.issueAssigneeAgentId !== row.run.agentId ||
         ["done", "cancelled"].includes(row.issueStatus);

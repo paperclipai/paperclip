@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   authUsers,
   companies,
@@ -149,7 +150,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(next.kind).toBe("bootstrap_incomplete");
   });
 
-  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry", "diskless-warm-suspended", "diskless-warm-suspended-read-retry", "diskless-live-inspection"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
+  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "stale-projection", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry", "diskless-warm-suspended", "diskless-warm-suspended-read-retry", "diskless-live-inspection"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
     const hardRestart = !["warm", "same-server"].includes(scenario);
     const diskless = scenario.startsWith("diskless");
     const perTurn = scenario.startsWith("diskless-per-turn");
@@ -362,6 +363,28 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           changed++;
         }
         expect(changed).toBe(1);
+      }
+      if (scenario === "stale-projection") {
+        const checkpoint = await loadNativeRunnerCheckpoint(fixture.db, { companyId,
+          issueId: fixture.issueId, runId: fixture.runId });
+        expect(checkpoint).not.toBeNull();
+        const sessions = resolve(resolvePaperclipInstanceRoot(), "runtime/paperclip-runner/durable-sessions");
+        let projected = 0;
+        for (const name of await readdir(sessions)) {
+          const root = resolve(sessions, name), path = resolve(root, "control-plane/control-plane-state.json");
+          if (!existsSync(path) || JSON.parse(await readFile(path, "utf8")).identity?.runId !== fixture.runId) continue;
+          checkpoint!.restoreSessionDirectory(root);
+          const state = JSON.parse(await readFile(path, "utf8"));
+          const terminalIndex = state.committedEvents.findLastIndex((event: { eventType: string }) => event.eventType === "run.terminal");
+          expect(terminalIndex).toBeGreaterThan(0);
+          // Retain a full local projection from just before the terminal. The
+          // database keeps the complete same-run checkpoint and all receipts.
+          state.committedEvents = state.committedEvents.slice(0, terminalIndex);
+          state.ackedSourceSeq = state.committedEvents.at(-1).sourceSeq;
+          await writeFile(path, JSON.stringify(state), { mode: 0o600 });
+          projected++;
+        }
+        expect(projected).toBe(1);
       }
       if (diskless) {
         // Preserve sandbox/provider storage and workspace dependencies. Delete
@@ -1213,8 +1236,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(run?.processPid).toBe(remotePid);
   });
 
-  it("gives a recovery claim its full lease after an old batch observation", async () => {
-    const fixture = await seedRun("LATE-BATCH-CLAIM");
+  it.each(["running", "interrupted-stop", "interrupted-no-intent", "interrupted-foreign-intent", "interrupted-missing-audit", "interrupted-foreign-owner", "interrupted-terminal", "interrupted-no-checkpoint"])("gives only eligible recovery a full lease after an old batch observation (%s)", async mode => {
+    const fixture = await seedRun(`LATE-BATCH-CLAIM-${mode}`);
     const binding = { companyId, issueId: fixture.issueId, runId: fixture.runId };
     const root = resolve(runtimeRoot, fixture.runId);
     const observedAt = new Date(Date.now() - 90_000);
@@ -1236,9 +1259,45 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       // Set up an abandoned predecessor. Never alter the successor's deadline.
       await fixture.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(observedAt.getTime() - 1_000) })
         .where(eq(nativeRunFinalizations.runId, fixture.runId));
+      if (mode !== "running") {
+        const intentAuditId = randomUUID(), requestedAt = new Date().toISOString();
+        await fixture.db.insert(activityLog).values({ id: intentAuditId, companyId, actorType: "system", actorId: "native-session-cancellation",
+          action: "native.cancellation_intent_recorded", entityType: "heartbeat_run", entityId: fixture.runId, runId: fixture.runId, agentId });
+        await fixture.db.update(heartbeatRuns).set({ status: "interrupted", finishedAt: new Date(),
+          errorCode: "lease_released_before_terminal", resultJson: {
+            cancelledByActorType: "user", cancelledByUserId: "test-board",
+            cancellation: { expected: true, initiator: { type: "user" }, reason: "Operator requested Stop" },
+            startupCancellation: { beforeNativeSelection: false, requestedAt, errorCode: "cancelled" },
+            executionCancellation: { state: "requested", requestedAt },
+            nativeCancellation: { schema: "paperclip.native-cancellation.v1", ...binding,
+              ...(mode === "interrupted-foreign-intent" ? { issueId: randomUUID() } : {}), scope: "run", reasonCode: "cancellation_run_only",
+              intentId: `native-cancellation:${randomUUID()}`, intentAuditId: mode === "interrupted-missing-audit" ? randomUUID() : intentAuditId, dispatchState: "pending", dispatched: false,
+              effects: ["release_run_resources"] },
+          } }).where(eq(heartbeatRuns.id, fixture.runId));
+        await fixture.db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, fixture.issueId));
+        if (mode === "interrupted-no-intent") await fixture.db.update(heartbeatRuns).set({ resultJson: {} }).where(eq(heartbeatRuns.id, fixture.runId));
+        if (mode === "interrupted-foreign-owner") {
+          const other = await seedRun(`OTHER-${mode}`);
+          await fixture.db.update(issues).set({ executionRunId: other.runId }).where(eq(issues.id, fixture.issueId));
+        }
+        if (mode === "interrupted-terminal") await fixture.db.update(nativeRunFinalizations).set({ phase: "terminal_failure" })
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        if (mode === "interrupted-no-checkpoint") await fixture.db.update(heartbeatRuns).set({
+          runnerProfileJson: sql`${heartbeatRuns.runnerProfileJson} - 'sessionCheckpoint'`,
+        }).where(eq(heartbeatRuns.id, fixture.runId));
+      }
       const controller = { ...successor, bootId: randomUUID() };
       const [claim] = await claimNativeRestartRecoveries({ db: fixture.db, controller,
         restartKind: "hard", now: observedAt, runIds: [fixture.runId] });
+      if (mode !== "running" && mode !== "interrupted-stop") {
+        expect(["reattach_existing_runner", "reattach_remote_runner", "resume_dead_runner", "bootstrap_incomplete"]).not.toContain(claim?.kind);
+        const [unchanged] = await fixture.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+        expect(unchanged.status).toBe("interrupted");
+        const [owner] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId));
+        expect(owner.controllerGeneration).toBe(1);
+        expect(owner.leaseOwner).toBe("previous-batch-owner");
+        return;
+      }
       expect(claim).toMatchObject({ kind: "reattach_remote_runner", runId: fixture.runId });
       if (!("leaseOwner" in claim)) throw new Error("Expected a recovery claim");
       const [saved] = await fixture.db.execute(sql`select extract(epoch from (lease_expires_at - clock_timestamp())) as remaining

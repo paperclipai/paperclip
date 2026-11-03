@@ -1,4 +1,5 @@
 import pino from "pino";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Logger } from "pino";
 import { pinoHttp } from "pino-http";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
@@ -83,6 +84,11 @@ function requestLogUrl(req: {
     : stripSecretBearingUrlParts(typeof req.url === "string" ? req.url : "");
 }
 
+function abortedRequestMessage(req: IncomingMessage, res: ServerResponse) {
+  if (!req.readableAborted && res.writableFinished) return null;
+  return `${req.method} ${requestLogUrl(req)} — request aborted${res.headersSent ? " during response" : " before response"}`;
+}
+
 export function createHttpLogger(baseLogger: Logger) {
   return pinoHttp({
     logger: baseLogger,
@@ -137,17 +143,20 @@ export function createHttpLogger(baseLogger: Logger) {
       },
     },
     customLogLevel(_req, res, err) {
+      if (err || (res as ServerResponse & { err?: unknown }).err || res.statusCode >= 500) return "error";
+      if (_req.readableAborted || !res.writableFinished) return "warn";
       if (shouldSilenceHttpSuccessLog(_req.method, _req.url, res.statusCode)) {
         return "silent";
       }
-      if (err || res.statusCode >= 500) return "error";
       if (res.statusCode >= 400) return "warn";
       return "info";
     },
     customSuccessMessage(req, res) {
-      return `${req.method} ${requestLogUrl(req)} ${res.statusCode}`;
+      return abortedRequestMessage(req, res) ?? `${req.method} ${requestLogUrl(req)} ${res.statusCode}`;
     },
     customErrorMessage(req, res, err) {
+      const abortedMessage = abortedRequestMessage(req, res);
+      if (abortedMessage) return abortedMessage;
       if (
         isSecretSensitiveHttpRequest(req.method, requestClassificationUrl(req))
       ) {

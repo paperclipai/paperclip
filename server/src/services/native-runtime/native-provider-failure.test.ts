@@ -19,6 +19,19 @@ const terminal: PrpTerminalState = {
 const observation = () => createNativeProviderFailureObservation({ kind: "codex", model });
 
 describe("native provider failure observation", () => {
+  it.each(["acpx", "codex", "opencode"])("retains a typed explanation for %s without granting recovery authority", kind => {
+    const observed = createNativeProviderFailureObservation({ kind });
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "new-provider", phase: "turn",
+      category: "unknown", message: "An unfamiliar provider rejection.", retryability: "unknown" };
+    const failed = { ...event, payload: { status: "failed", error: { providerFailure } } };
+    observed.observe({ ...failed, sourceKind: "control_plane" });
+    expect(observed.providerFailureForTerminal("turn", terminal)).toBeNull();
+    observed.observe(failed);
+    expect(observed.providerFailureForTerminal("turn", terminal)).toEqual(providerFailure);
+    expect(observed.forTerminal("turn", terminal)).toBeNull();
+    expect(observed.providerFailureForTerminal("other-turn", terminal)).toBeNull();
+    expect(observed.providerFailureForTerminal("turn", { ...terminal, runTerminalState: "succeeded" })).toBeNull();
+  });
   it("surfaces a structured capacity failure without copying arbitrary provider text", () => {
     const observed = createNativeProviderFailureObservation({ kind: "codex" });
     observed.observe({ ...event, payload: { status: "failed", error: { codexErrorInfo: "serverOverloaded", message: "Private arbitrary response" } } });

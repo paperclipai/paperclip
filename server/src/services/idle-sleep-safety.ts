@@ -13,6 +13,23 @@ import { verifiedResourceCleanup } from "./cleanup-verification-proof.js";
 import { companyHoldMismatch } from "../modules/agent-lifecycle/index.js";
 import { pendingBudgetRunCancellationPredicate } from "./heartbeat/budget-cancellation.js";
 import { nativeResponsePresentationPendingQuery } from "./native-runtime/native-response-presentation-query.js";
+import { passiveIdleConversation } from "./conversation-idle-proof.js";
+import { idleChatHistoryChecks } from "./chat-channels/idle-history-proof.js";
+import { idleToolActionHistoryChecks } from "./tool-action-idle-proof.js";
+import { idleBrowserHistoryChecks } from "./browser-use-idle-proof.js";
+import { idleDecisionHistoryChecks } from "./decision-idle-proof.js";
+import { idleWorkspaceHistoryChecks } from "./workspace-history-idle-proof.js";
+import { idleMcpHistoryChecks } from "./public-mcp/idle-history-proof.js";
+import { idleExternalAgentHistoryChecks } from "../modules/external-agents/index.js";
+
+export const completedHistoryChecks = [
+  ...idleChatHistoryChecks, ...idleToolActionHistoryChecks, ...idleBrowserHistoryChecks,
+  ...idleDecisionHistoryChecks, ...idleWorkspaceHistoryChecks, ...idleMcpHistoryChecks,
+  ...idleExternalAgentHistoryChecks,
+] as const;
+
+const ordinaryIssues = `SELECT 1 FROM issues i WHERE i.status NOT IN ('done', 'cancelled')
+  AND (${passiveIdleConversation('i')}) IS NOT TRUE`;
 
 export interface IdleSleepDrainStatus {
   ownerId?: string;
@@ -63,7 +80,7 @@ const WORK_CHECKS = [
     state NOT IN ('saved', 'unchanged', 'resolved', 'unavailable', 'conflict')
     OR process_stopped_at IS NULL OR next_attempt_at IS NOT NULL
     OR receipt ? 'baseline' OR receipt->>'cleanupPending' = 'true'`),
-  workCheck("sandbox_creation_operations", `SELECT 1 FROM sandbox_creation_operations WHERE state = 'pending'`),
+  workCheck("sandbox_creation_operations", `SELECT 1 FROM sandbox_creation_operations WHERE state IN ('pending', 'needs_reconciliation')`),
   workCheck("budget_reservations", `SELECT 1 FROM budget_reservations WHERE state NOT IN ('settled', 'released')`),
   workCheck("budget_policies", `SELECT 1 FROM budget_policies WHERE enforcement_version > enforcement_delivered_version`),
   workCheck("agents.lifecycle", `SELECT 1 FROM agents WHERE lifecycle_state IN
@@ -82,7 +99,7 @@ const WORK_CHECKS = [
       SELECT 1 FROM heartbeat_runs r WHERE r.id = w.run_id
         AND r.company_id = w.company_id AND r.agent_id = w.agent_id
         AND ${finishedRun("r")})))`),
-  workCheck("issues", `SELECT 1 FROM issues WHERE status NOT IN ('done', 'cancelled')`),
+  workCheck("issues", ordinaryIssues),
   // A completed issue can still need its first watchdog review, including a
   // retry after immediate evaluation failed before creating a review/run.
   workCheck("issue_watchdogs", `SELECT 1 FROM issue_watchdogs WHERE status <> 'disabled'`),
@@ -248,23 +265,7 @@ const WORK_CHECKS = [
           OR effect.delivery_state <> 'delivered' OR effect.delivered_at IS NULL
           OR effect.next_attempt_at IS NOT NULL))
     ) IS NOT TRUE`),
-  // These less common work sources fail closed on any retained state. Their
-  // terminal-state exceptions can be added with tests for the owning service.
-  ...[
-    "chat_deliveries", "chat_publications", "chat_actions",
-    "chat_completion_deliveries", "tool_action_requests", "tool_action_deliveries",
-    "workspace_runtime_services",
-    "execution_workspace_runtime_leases",
-    "company_transfer_runs", "decisions", "decision_effect_executions",
-    "decision_archive_notification_outbox", "browser_use_sessions", "browser_use_runs",
-    "browser_use_browsers",
-    "company_secret_proposals",
-    "mcp_oauth_grants", "mcp_mutation_receipts", "mcp_event_subscriptions",
-    "mcp_event_deliveries", "mcp_attachment_uploads", "dot_agent_bindings",
-    "dot_runner_assignments", "dot_runner_operations", "dot_mailbox_items",
-    "muse_agent_bindings", "muse_credentials", "muse_runner_assignments",
-    "muse_runner_operations", "muse_mailbox_items", "muse_input_deliveries", "external_agent_holds",
-  ].map((table) => workCheck(table, `SELECT 1 FROM ${table}`)),
+  ...completedHistoryChecks.map(check => workCheck(check.reason, check.query)),
 ] as const;
 
 function sameQuietHold(before: IdleSleepDrainStatus, after: IdleSleepDrainStatus, now: number): boolean {
