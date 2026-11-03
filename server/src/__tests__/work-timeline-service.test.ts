@@ -900,4 +900,48 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     expect(result.edges.filter(edge => edge.kind === "assignment")).toHaveLength(kind === "outside-window" ? 0 : 1);
   });
 
+  it.each([["agent", "alias"], ["agent", "primary"], ["user", "alias"], ["user", "primary"]] as const)("retains explicit legacy %s %s clears", async (owner, field) => {
+    const { companyId, userId, agentAId } = await seedBase();
+    const issueId = randomUUID(), at = new Date("2026-03-01T11:00:00Z");
+    await db.insert(issues).values({ id: issueId, companyId, title: "Legacy clear", status: "done", createdAt: at });
+    const primary = owner === "agent" ? "assigneeAgentId" : "assigneeUserId";
+    const alias = owner === "agent" ? "toAgentId" : "toUserId";
+    const target = owner === "agent" ? agentAId : userId;
+    const details = field === "alias" ? { [alias]: null } : { [primary]: null, [alias]: target };
+    await db.insert(activityLog).values({ companyId, actorType: "user", actorId: userId, action: "issue.assigned",
+      entityType: "issue", entityId: issueId, createdAt: at, details });
+    const response = await request(createApp()).get(`/api/companies/${companyId}/timeline`)
+      .query({ from: "2026-03-01T00:00:00Z", to: "2026-03-02T00:00:00Z" });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.events.filter((event: { kind: string }) => event.kind !== "created")).toEqual([
+      { actorId: `user:${userId}`, kind: "unassigned", issueId, at: at.toISOString() },
+    ]);
+    expect(response.body.edges).toEqual([]);
+  });
+
+  it("uses indexed UUID lookups for creation agent identities without unsafe casts", async () => {
+    const { companyId, agentAId, agentBId } = await seedBase();
+    await db.insert(agents).values(Array.from({ length: 1000 }, () => ({ companyId, name: "Other agent", role: "engineer", adapterType: "codex_local" })));
+    await db.execute(sql`analyze agents`);
+    const issueId = randomUUID(), at = new Date("2026-03-01T11:00:00Z");
+    await db.insert(issues).values({ id: issueId, companyId, title: "Indexed creation", status: "done", createdAt: at });
+    await db.insert(activityLog).values({ companyId, actorType: "agent", actorId: agentAId, action: "issue.created",
+      entityType: "issue", entityId: issueId, createdAt: at,
+      details: { parentId: null, assigneeAgentId: agentBId, assigneeUserId: null } });
+    const queries: { query: string; parameters: unknown[] }[] = [];
+    const previousDebug = db.$client.options.debug;
+    db.$client.options.debug = (_connection, query, parameters) => queries.push({ query, parameters });
+    try {
+      await workTimelineService(db).getTimeline({ companyId, from: new Date("2026-03-01T00:00:00Z"), to: new Date("2026-03-02T00:00:00Z") });
+    } finally { db.$client.options.debug = previousDebug; }
+    const receipt = queries.find(row => row.query.includes('from "activity_log"') && row.query.includes('"details"') && !row.query.includes("join"))!;
+    const explain = await db.$client.unsafe(`explain (analyze, format json) ${receipt.query}`, receipt.parameters as any[]);
+    const nodes = (plan: any): any[] => [plan, ...(plan.Plans ?? []).flatMap(nodes)];
+    const scans = nodes(explain[0]!["QUERY PLAN"][0].Plan).filter(node => node["Relation Name"] === "agents");
+    expect(scans.length).toBeGreaterThan(0);
+    expect(scans.every(node => /Index/.test(node["Node Type"]) && /id =/.test(node["Index Cond"] ?? ""))).toBe(true);
+    expect(scans.some(node => node["Actual Loops"] > 0)).toBe(true);
+    console.info("Creation agent identity plan", JSON.stringify(scans.map(node => ({ type: node["Node Type"], index: node["Index Name"], condition: node["Index Cond"], loops: node["Actual Loops"], rows: node["Actual Rows"] }))));
+  });
+
 });

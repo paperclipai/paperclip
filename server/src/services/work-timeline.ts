@@ -119,7 +119,7 @@ function dateIso(value: Date | null | undefined) {
   return value ? value.toISOString() : null;
 }
 
-/** One ownership contract for history detection and recorded event projection. */
+/** Scalar ownership facts for bounded recorded creation and change events. */
 function timelineOwnershipProjection() {
   const record = (value: SQL) => sql`case when jsonb_typeof(${value}) = 'object' then ${value} else '{}'::jsonb end`;
   const details = record(sql`${activityLog.details}`);
@@ -134,18 +134,20 @@ function timelineOwnershipProjection() {
   });
   const stringValue = (value: SQL) => sql<string | null>`case when jsonb_typeof(${value}) = 'string'
     then nullif(btrim(${value} #>> '{}'), '') else null end`;
-  const target = (key: string, legacyKey: string) => sql<string | null>`case when ${canonical}
-    then ${stringValue(sql`${changes} -> ${key} -> 'to'`)}
-    else coalesce(${stringValue(sql`${details} -> ${key}`)}, ${stringValue(sql`${details} -> ${legacyKey}`)}) end`;
+  const targetValue = (key: string, legacyKey: string) => sql`case when ${canonical} then ${changes} -> ${key} -> 'to'
+    when ${details} ? ${key} then ${details} -> ${key} else ${details} -> ${legacyKey} end`;
+  const target = (key: string, legacyKey: string) => stringValue(targetValue(key, legacyKey));
   const creationAgentId = stringValue(sql`${details} -> 'assigneeAgentId'`);
   const creationUserId = stringValue(sql`${details} -> 'assigneeUserId'`);
   const sameCompanyAgent = (id: SQL) => sql`exists (select 1 from ${agents}
-    where ${agents.id}::text = ${id} and ${agents.companyId} = ${activityLog.companyId})`;
+    where ${agents.id} = case when ${id} ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      then ${id}::uuid else null end and ${agents.companyId} = ${activityLog.companyId})`;
   const knownUser = (id: SQL) => sql`exists (select 1 from ${authUsers} where ${authUsers.id} = ${id})`;
   const creationOwnerTypes = ["assigneeAgentId", "assigneeUserId"].map(key => sql`${details} ? ${key}
     and jsonb_typeof(${details} -> ${key}) in ('string', 'null')`);
-  const cleared = ["assigneeAgentId", "assigneeUserId"].map((key, index) => sql`(${changed[index]}
-    and jsonb_typeof(case when ${canonical} then ${changes} -> ${key} -> 'to' else ${details} -> ${key} end) = 'null')`);
+  const cleared = ([["assigneeAgentId", "toAgentId"], ["assigneeUserId", "toUserId"]] as const).map(([key, alias], index) => sql`(
+    (case when ${canonical} or ${details} ? ${key} then ${changed[index]} else ${details} ? ${alias} end)
+    and jsonb_typeof(${targetValue(key, alias)}) = 'null')`);
   return {
     recorded: sql<boolean>`coalesce(position('assign' in ${activityLog.action}) > 0 or
       (${activityLog.action} = 'issue.updated' and (${sql.join(changed, sql` or `)})), false)`,
