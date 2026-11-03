@@ -1,3 +1,4 @@
+import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-mcp/upload-cleanup.js";
 import type { IssueDisplayStatus } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
@@ -13958,7 +13959,7 @@ export function issueService(db: Db) {
         .where(eq(issueAttachments.id, id))
         .then((rows) => rows[0] ?? null),
 
-    removeAttachment: async (id: string) =>
+    removeAttachment: async (id: string, options?: { mcpCleanup?: McpAttachmentCleanup | null }) =>
       db.transaction(async (tx) => {
         const existing = await tx
           .select({
@@ -13988,6 +13989,11 @@ export function issueService(db: Db) {
         await notifyIssueRecovery(tx, { companyId: existing.companyId });
         await tx.delete(issueAttachments).where(eq(issueAttachments.id, id));
         await tx.delete(assets).where(eq(assets.id, existing.assetId));
+        if (options?.mcpCleanup?.id === existing.id && options.mcpCleanup.companyId === existing.companyId
+          && options.mcpCleanup.issueId === existing.issueId && options.mcpCleanup.provider === existing.provider
+          && options.mcpCleanup.objectKey === existing.objectKey) {
+          await recordMcpAttachmentCleanup(tx, options.mcpCleanup);
+        }
         return existing;
       }),
 

@@ -1,3 +1,4 @@
+import * as wakeSettlementNotifications from "../services/external-conversation-settlement-notifications.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "../services/heartbeat/run-lifecycle.js";
@@ -8,14 +9,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { nativeRunProjectionWork } from "../services/native-runtime/native-run-projection-work.js";
 import { projectCommittedRun } from "../services/native-runtime/native-run-projection.js";
 import { notifyNativeFinalizationWork } from "../services/native-finalization-notifications.js";
-import { finalizeNativeRun } from "../services/native-runtime/native-run-finalizer.js";
+import { finalizeNativeRun, recordNativeFinalizationFailure } from "../services/native-runtime/native-run-finalizer.js";
 import * as statusCommitter from "../services/native-runtime/status-decision-committer.js";
 import { PaperclipControlPlanePort } from "../services/native-runtime/paperclip-control-plane-port.js";
 import { NativeRunCoordinatorStore } from "../services/native-runtime/native-run-coordinator-store.js";
@@ -120,6 +121,154 @@ describe("committed native run projection lifecycle", () => {
   async function accepted(status: "succeeded" | "failed" | "cancelled" = "succeeded") {
     const binding = await seed(); await complete(binding, "control_plane", db, status); await barrier(binding); return binding;
   }
+  async function claimedWake(binding: Awaited<ReturnType<typeof seed>>) {
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, source: "issue",
+      status: "claimed", runId: binding.runId, claimedAt: new Date(), payload: { issueId: binding.issueId } }).returning();
+    await db.update(heartbeatRuns).set({ wakeupRequestId: wake.id }).where(eq(heartbeatRuns.id, binding.runId));
+    return wake;
+  }
+  const readWake = async (id: string) => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, id)))[0];
+
+  it.each(["succeeded", "failed", "cancelled"] as const)("settles the exact wake atomically with a fresh %s projection", async status => {
+    const binding = await accepted(status), wake = await claimedWake(binding);
+    await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const run = await read(binding.runId), settled = await readWake(wake.id);
+    expect(run.status).toBe(status);
+    expect(settled).toMatchObject({ status: status === "succeeded" ? "completed" : status, runId: binding.runId,
+      companyId, agentId, finishedAt: run.finishedAt, error: run.error });
+    expect(settled.finishedAt).not.toBeNull();
+    await projectCommittedRun({ db, run, coordinator: await state(binding.runId) });
+    expect(await readWake(wake.id)).toEqual(settled);
+  });
+
+  it.each(["provider", "workspace"] as const)("settles the exact wake when %s finalization retries exhaust", async scope => {
+    const binding = await accepted(), wake = await claimedWake(binding);
+    if (scope === "workspace") await db.update(workspaceOperations).set({ status: "failed" })
+      .where(eq(workspaceOperations.heartbeatRunId, binding.runId));
+    if (scope === "provider") await db.update(nativeRunResults).set({
+      resultJson: sql`jsonb_set(${nativeRunResults.resultJson}, '{terminal,runTerminalState}', '"unknown"'::jsonb)`,
+    }).where(eq(nativeRunResults.runId, binding.runId));
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await db.update(nativeRunFinalizations).set({ nextAttemptAt: new Date(0) })
+        .where(eq(nativeRunFinalizations.runId, binding.runId));
+      if (scope === "provider") await reconcileNativeFinalizations(db, [binding.runId]);
+      else await recordNativeFinalizationFailure({ db, runId: binding.runId, projectRunStatus: true,
+        failureScope: "workspace", error: new Error("native_workspace_finalize_failed") });
+      if (attempt < 2) {
+        expect((await read(binding.runId)).status).toBe("running");
+        expect(await readWake(wake.id)).toMatchObject({ status: "claimed", finishedAt: null });
+      }
+    }
+    const run = await read(binding.runId);
+    expect((await state(binding.runId)).phase).toBe("terminal_failure");
+    expect(run).toMatchObject({ status: scope === "provider" ? "succeeded" : "failed", nativePhase: "terminal_failure" });
+    expect(run.finishedAt).not.toBeNull();
+    expect(await readWake(wake.id)).toMatchObject({ status: scope === "provider" ? "completed" : "failed",
+      runId: binding.runId, finishedAt: run.finishedAt });
+  });
+
+  it("keeps the source wake claimed when exhausted failure does not own terminal projection", async () => {
+    const binding = await accepted(), wake = await claimedWake(binding);
+    await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.heartbeatRunId, binding.runId));
+    for (let attempt = 0; attempt < 3; attempt++) await recordNativeFinalizationFailure({ db, runId: binding.runId,
+      projectRunStatus: false, failureScope: "workspace", error: new Error("native_workspace_finalize_failed") });
+    expect((await state(binding.runId)).phase).toBe("terminal_failure");
+    expect((await read(binding.runId)).status).toBe("running");
+    expect(await readWake(wake.id)).toEqual(wake);
+  });
+
+  it("rolls back exhausted projection and its claim if wake notification registration fails", async () => {
+    const binding = await accepted(), wake = await claimedWake(binding);
+    await db.update(workspaceOperations).set({ status: "failed" }).where(eq(workspaceOperations.heartbeatRunId, binding.runId));
+    const fail = () => recordNativeFinalizationFailure({ db, runId: binding.runId,
+      projectRunStatus: true, failureScope: "workspace" as const, error: new Error("native_workspace_finalize_failed") });
+    await fail(); await fail();
+    const beforeRun = await read(binding.runId), beforeCoordinator = await state(binding.runId);
+    const notify = wakeSettlementNotifications.notifyExternalConversationSettlement;
+    vi.spyOn(wakeSettlementNotifications, "notifyExternalConversationSettlement").mockImplementation(async (tx, scope) => {
+      const [current] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+      expect(current.status).toBe("claimed");
+      await notify(tx, scope);
+      throw new Error("exhaustion wake notification failure");
+    });
+    await expect(fail()).rejects.toThrow("exhaustion wake notification failure");
+    expect(await read(binding.runId)).toEqual(beforeRun);
+    expect(await state(binding.runId)).toEqual(beforeCoordinator);
+    expect(await readWake(wake.id)).toEqual(wake);
+  });
+
+  it.each(["succeeded", "failed", "cancelled"] as const)("discovers and repairs an old %s run's claimed wake once", async status => {
+    const binding = await accepted(status);
+    await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+    const run = await read(binding.runId), wake = await claimedWake(binding);
+    const work = nativeRunProjectionWork(db);
+    const [entry] = await work.load({ companyId, runId: binding.runId });
+    expect(entry).toMatchObject({ id: binding.runId });
+    await work.check(entry);
+    expect(await readWake(wake.id)).toMatchObject({ status: status === "succeeded" ? "completed" : status,
+      finishedAt: run.finishedAt });
+    expect((await read(binding.runId)).finishedAt).toEqual(run.finishedAt);
+    expect(await work.load({ companyId, runId: binding.runId })).toEqual([]);
+  });
+
+  it.each(["unbound", "newer-run", "queued", "cancelled", "foreign-company", "foreign-agent", "live-owner"] as const)(
+    "does not settle a %s wake claim", async fault => {
+      const binding = await accepted(), wake = await claimedWake(binding);
+      await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+      if (fault === "unbound" || fault === "newer-run") await db.update(agentWakeupRequests)
+        .set({ runId: fault === "unbound" ? null : randomUUID() }).where(eq(agentWakeupRequests.id, wake.id));
+      if (fault === "queued" || fault === "cancelled") await db.update(agentWakeupRequests)
+        .set({ status: fault }).where(eq(agentWakeupRequests.id, wake.id));
+      if (fault === "foreign-company") {
+        const otherCompany = randomUUID();
+        await db.insert(companies).values({ id: otherCompany, name: "Other wake owner", issuePrefix: `OW${randomUUID().slice(0, 6)}` });
+        await db.update(agentWakeupRequests).set({ companyId: otherCompany }).where(eq(agentWakeupRequests.id, wake.id));
+      }
+      if (fault === "foreign-agent") {
+        const otherAgent = randomUUID();
+        await db.insert(agents).values({ id: otherAgent, companyId, name: "Other wake owner", adapterType: "paperclip_runner" });
+        await db.update(agentWakeupRequests).set({ agentId: otherAgent }).where(eq(agentWakeupRequests.id, wake.id));
+      }
+      if (fault === "live-owner") await db.update(heartbeatRuns).set({ status: "running", nativePhase: "terminal_failure",
+        errorCode: "native_execution_ownership_unverified" }).where(eq(heartbeatRuns.id, binding.runId));
+      const before = await readWake(wake.id);
+      await projectCommittedRun({ db, run: await read(binding.runId), coordinator: await state(binding.runId) });
+      expect(await readWake(wake.id)).toEqual(before);
+      if (fault === "live-owner") expect((await read(binding.runId)).status).toBe("running");
+    },
+  );
+
+  it("registers wake settlement intent before mutation and rolls back notification failure", async () => {
+    const binding = await accepted(), wake = await claimedWake(binding);
+    await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+    const before = await read(binding.runId);
+    const notify = wakeSettlementNotifications.notifyExternalConversationSettlement;
+    const notification = vi.spyOn(wakeSettlementNotifications, "notifyExternalConversationSettlement")
+      .mockImplementation(async (tx, scope) => {
+        const [current] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+        expect(current.status).toBe("claimed");
+        await notify(tx, scope);
+        throw new Error("wake intent registration failure");
+      });
+    await expect(projectCommittedRun({ db, run: before, coordinator: await state(binding.runId) }))
+      .rejects.toThrow("wake intent registration failure");
+    expect(notification).toHaveBeenCalledOnce();
+    expect(await read(binding.runId)).toEqual(before);
+    expect(await readWake(wake.id)).toEqual(wake);
+  });
+
+  it("rolls back terminal projection and exact wake settlement together", async () => {
+    const binding = await accepted(), wake = await claimedWake(binding);
+    await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+    const before = await read(binding.runId);
+    await expect(db.transaction(async tx => {
+      await projectCommittedRun({ db: tx as unknown as Db, run: before, coordinator: await state(binding.runId) });
+      throw new Error("projection rollback fixture");
+    })).rejects.toThrow("projection rollback fixture");
+    expect(await read(binding.runId)).toEqual(before);
+    expect(await readWake(wake.id)).toEqual(wake);
+  });
+
   it("reconstructs a committed decision with an unfinished run projection and stays quiet after repair", async () => {
     const binding = await accepted();
     await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
