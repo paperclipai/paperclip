@@ -2315,6 +2315,7 @@ async function runFileGateway() {
   const responsesDir = path.posix.join(queueDir, "responses");
   const logsDir = path.posix.join(queueDir, "logs");
   const readyFile = path.posix.join(queueDir, "ready.json");
+  const pidFile = path.posix.join(queueDir, "server.pid");
 
   async function queueDepth() {
     const entries = await fs.readdir(requestsDir, { withFileTypes: true }).catch(() => []);
@@ -2522,6 +2523,14 @@ async function runFileGateway() {
       baseUrl: \`http://\${host}:\${address.port}\`,
       startedAt: new Date().toISOString(),
     };
+    // The host's start script records \`$!\` in the pid file, but when
+    // \`node\` on the remote PATH is a version-manager shim (Volta, fnm, ...)
+    // that is the shim's pid and the real server is its child. stop() kills
+    // what the pid file names, so the shim died and this server lived on under
+    // PID 1 after every run. Claim the file with our own pid before readiness.
+    const tempPidFile = \`\${pidFile}.tmp\`;
+    await fs.writeFile(tempPidFile, String(process.pid) + "\\n", "utf8");
+    await fs.rename(tempPidFile, pidFile);
     const tempReadyFile = \`\${readyFile}.tmp\`;
     await fs.writeFile(tempReadyFile, JSON.stringify(ready), "utf8");
     await fs.rename(tempReadyFile, readyFile);

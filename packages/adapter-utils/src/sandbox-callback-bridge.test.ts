@@ -3204,6 +3204,54 @@ describe("sandbox callback bridge", () => {
     expect(stderr).toContain("Unsupported PAPERCLIP_API_BRIDGE_MODE: totally_unknown_mode");
   }, 15_000);
 
+  it("claims the pid file with the gateway's own pid before it reports ready", async () => {
+    // The host records `$!` of `nohup node ... &` in server.pid. When `node`
+    // on the remote PATH is a version-manager shim, `$!` is the shim and the
+    // real server is its child, so stop() killed the shim and leaked the
+    // server after every run (#18096). The gateway therefore overwrites the
+    // pid file with its own pid before it writes ready.json.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-pid-file-"));
+    cleanupDirs.push(rootDir);
+    const entrypoint = path.join(rootDir, "paperclip-bridge-server.mjs");
+    await writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
+    const queueDir = path.join(rootDir, "queue");
+    await mkdir(queueDir, { recursive: true });
+    const pidFile = path.join(queueDir, "server.pid");
+    const readyFile = path.join(queueDir, "ready.json");
+    await writeFile(pidFile, "999999\n", "utf8"); // what the start script wrote: the shim's pid
+
+    const child = spawn(process.execPath, [entrypoint], {
+      env: {
+        ...process.env,
+        PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
+        PAPERCLIP_BRIDGE_TOKEN: "test-token",
+        PAPERCLIP_BRIDGE_PORT: "0",
+      },
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    cleanupFns.push(async () => {
+      child.kill();
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    const deadline = Date.now() + 10_000;
+    let ready: { pid?: number } | null = null;
+    while (Date.now() < deadline) {
+      try {
+        ready = JSON.parse(await readFile(readyFile, "utf8")) as { pid?: number };
+        break;
+      } catch {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+    }
+    expect(ready, "gateway never wrote ready.json. stderr: " + stderr).not.toBeNull();
+    expect(ready?.pid).toBe(child.pid);
+    expect((await readFile(pidFile, "utf8")).trim()).toBe(String(child.pid));
+  }, 15_000);
+
   it("test_http2_gateway_writes_no_frame_between_ready_and_the_preface", async () => {
     // Spawn the real generated gateway in http2_v1 mode and read its raw
     // stdout bytes. The only frame-codec write on this path is the READY
