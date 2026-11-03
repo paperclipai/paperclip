@@ -3305,10 +3305,24 @@ route regressions do not qualify the actual model journey. Historical failures
 retain their original grades; a missing human handoff narrative still fails.
 
 The timeline API projects initial assignment and delegation only from complete
-`issue.created` audit facts inside the requested window. It uses the saved actor,
+`issue.created` audit facts or explicitly fresh `issue.child_created` receipts
+inside the requested window. Child receipts require `createdByRequest: true`;
+false, absent or malformed flags do not establish initial ownership. The first
+bounded receipt is selected before validation, and the issue creation time must
+also be in the requested window. This is not an all-history completeness proof.
+It uses the saved actor,
 target and timestamp, and requires a readable recorded parent for delegation.
 It does not use current ownership as creation evidence. Missing or malformed
 legacy creation details leave initial ownership unknown. The API performs no
 all-history ownership-presence query. Recorded canonical and legacy ownership
 clears emit `unassigned` events with their actual actor and timestamp, without a
 target edge. Event markers are not currently rendered by the timeline chart.
+
+User identities in the timeline require active membership in the requested
+company. This gate covers receipt validation, identity lookup, and public actor,
+event and edge output, including raw IDs. Canonical audit rows remain unchanged.
+The public child and accepted-plan schemas strip idempotency and conversation
+keys; private service replay controls do not imply HTTP replay support. The
+accepted-plan fresh-child list excludes keyed/title reuse reported by its
+existing callback for supported task inputs. This is not a universal internal
+conversation-creation provenance guarantee.

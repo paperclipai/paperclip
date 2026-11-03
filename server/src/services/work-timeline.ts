@@ -6,6 +6,7 @@ import {
   agents,
   approvals,
   authUsers,
+  companyMemberships,
   heartbeatRuns,
   issueApprovals,
   issueComments,
@@ -119,6 +120,14 @@ function dateIso(value: Date | null | undefined) {
   return value ? value.toISOString() : null;
 }
 
+function activeTimelineUser(companyId: string | SQL, userId: SQL) {
+  return sql<boolean>`exists (select 1 from ${companyMemberships}
+    where ${companyMemberships.companyId} = ${companyId}
+      and ${companyMemberships.principalType} = 'user'
+      and ${companyMemberships.principalId} = ${userId}
+      and ${companyMemberships.status} = 'active')`;
+}
+
 /** Scalar ownership facts for bounded recorded creation and change events. */
 function timelineOwnershipProjection() {
   const record = (value: SQL) => sql`case when jsonb_typeof(${value}) = 'object' then ${value} else '{}'::jsonb end`;
@@ -142,7 +151,8 @@ function timelineOwnershipProjection() {
   const sameCompanyAgent = (id: SQL) => sql`exists (select 1 from ${agents}
     where ${agents.id} = case when ${id} ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
       then ${id}::uuid else null end and ${agents.companyId} = ${activityLog.companyId})`;
-  const knownUser = (id: SQL) => sql`exists (select 1 from ${authUsers} where ${authUsers.id} = ${id})`;
+  const knownUser = (id: SQL) => sql`(exists (select 1 from ${authUsers} where ${authUsers.id} = ${id})
+    and ${activeTimelineUser(sql`${activityLog.companyId}`, id)})`;
   const creationOwnerTypes = ["assigneeAgentId", "assigneeUserId"].map(key => sql`${details} ? ${key}
     and jsonb_typeof(${details} -> ${key}) in ('string', 'null')`);
   const cleared = ([["assigneeAgentId", "toAgentId"], ["assigneeUserId", "toUserId"]] as const).map(([key, alias], index) => sql`(
@@ -152,7 +162,8 @@ function timelineOwnershipProjection() {
     recorded: sql<boolean>`coalesce(position('assign' in ${activityLog.action}) > 0 or
       (${activityLog.action} = 'issue.updated' and (${sql.join(changed, sql` or `)})), false)`,
     cleared: sql<boolean>`coalesce(${sql.join(cleared, sql` or `)}, false)`,
-    creationRecorded: sql<boolean>`coalesce(${activityLog.action} = 'issue.created'
+    creationRecorded: sql<boolean>`coalesce((${activityLog.action} = 'issue.created'
+        or (${activityLog.action} = 'issue.child_created' and ${details} -> 'createdByRequest' = 'true'::jsonb))
       and (${sql.join(creationOwnerTypes, sql` and `)})
       and ((${creationAgentId} is not null and ${creationUserId} is null and ${sameCompanyAgent(creationAgentId)})
         or (${creationUserId} is not null and ${creationAgentId} is null and ${knownUser(creationUserId)}))
@@ -482,7 +493,7 @@ export function workTimelineService(db: Db) {
         ? db
           .select({ id: authUsers.id, name: authUsers.name, image: authUsers.image })
           .from(authUsers)
-          .where(inArray(authUsers.id, maybeUuidList(userIds)))
+          .where(and(inArray(authUsers.id, maybeUuidList(userIds)), activeTimelineUser(companyId, sql`${authUsers.id}`)))
         : [],
     ]);
 
@@ -742,12 +753,23 @@ export function workTimelineService(db: Db) {
       });
     }
 
+    // The first visible receipt is selected before validating its facts. A
+    // later replay must not rescue an unknown original or invent its owner.
+    const creationReceipts = new Map<string, typeof logRows[number]>();
+    for (const row of logRows) {
+      if (row.action !== "issue.created" && row.action !== "issue.child_created") continue;
+      const first = creationReceipts.get(row.issueId);
+      if (!first || row.createdAt < first.createdAt) creationReceipts.set(row.issueId, row);
+    }
+
     for (const row of logRows) {
       const logActorType = row.actorType === "agent" || row.actorType === "user" || row.actorType === "plugin"
         ? row.actorType : "system";
       const fromActorId = actorId(logActorType, row.actorId);
-      if (row.action === "issue.created") {
-        if (!row.creationRecorded) continue;
+      if (row.action === "issue.created" || row.action === "issue.child_created") {
+        const issue = issueById.get(row.issueId);
+        if (creationReceipts.get(row.issueId) !== row || !row.creationRecorded || !issue
+          || issue.createdAt < from || issue.createdAt > to) continue;
         const toActorId = row.creationAgentId ? actorId("agent", row.creationAgentId)
           : actorId("user", row.creationUserId!);
         actorIds.add(fromActorId);
@@ -774,7 +796,8 @@ export function workTimelineService(db: Db) {
     }
 
     const actorMaps = await loadActorMaps(input.companyId, actorIds);
-    const actors: WorkTimelineActor[] = Array.from(actorIds).map((id) => {
+    const publicActorIds = new Set(Array.from(actorIds).filter(id => !id.startsWith("user:") || actorMaps.users.has(id.slice("user:".length))));
+    const actors: WorkTimelineActor[] = Array.from(publicActorIds).map((id) => {
       const [type, rawId] = id.split(":", 2) as [TimelineActorType, string];
       if (type === "agent") {
         const agent = actorMaps.agents.get(rawId);
@@ -791,8 +814,8 @@ export function workTimelineService(db: Db) {
     return {
       actors,
       spans: Array.from(spanByRunId.values()).sort((left, right) => left.start.localeCompare(right.start)),
-      events: events.sort((left, right) => left.at.localeCompare(right.at)),
-      edges: edges.sort((left, right) => left.at.localeCompare(right.at)),
+      events: events.filter(event => publicActorIds.has(event.actorId)).sort((left, right) => left.at.localeCompare(right.at)),
+      edges: edges.filter(edge => publicActorIds.has(edge.fromActorId) && publicActorIds.has(edge.toActorId)).sort((left, right) => left.at.localeCompare(right.at)),
       pagination: {
         limit,
         offset,
