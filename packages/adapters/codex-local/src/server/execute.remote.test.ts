@@ -404,9 +404,12 @@ describe("codex remote execution", () => {
       config: {
         engine: "cli",
         remoteCodexHomeMode: "empty",
+        paperclipRuntimeSkills: [],
         command: "codex",
         env: {
           CODEX_HOME: codexHomeDir,
+          PAPERCLIP_GITHUB_AUTH_MODE: "none",
+          PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled",
         },
       },
       context: {
@@ -471,6 +474,26 @@ describe("codex remote execution", () => {
       onLog: async () => {},
     })).rejects.toThrow("no configured provider credential");
     expect(syncDirectoryToSsh).not.toHaveBeenCalled();
+  });
+
+  it("runs with an empty caller-owned home and server-added settings without a host login", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-reject-key-"));
+    cleanupDirs.push(rootDir);
+    await execute({
+      runId: "run-reject-key",
+      agent: { id: "agent-1", companyId: "company-1", name: "Fixture", adapterType: "codex_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", remoteCodexHomeMode: "empty", paperclipRuntimeSkills: [], command: "codex", env: {
+        CODEX_HOME: rootDir, PAPERCLIP_GITHUB_AUTH_MODE: "none", PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled",
+      } },
+      context: {},
+      executionTransport: { remoteExecution: {
+        host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/remote/workspace",
+        remoteCwd: "/remote/workspace", privateKey: "PRIVATE KEY", knownHosts: "fixture", strictHostKeyChecking: true,
+      } },
+      onLog: async () => {},
+    });
+    expect(syncDirectoryToSsh).toHaveBeenCalled();
   });
 
   it("does not resume saved Codex sessions for remote SSH execution without a matching remote identity", async () => {

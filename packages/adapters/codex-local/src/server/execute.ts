@@ -657,9 +657,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
-  const extraConfiguredEnv = Object.keys(envConfig).some(key => key !== "CODEX_HOME");
+  const safeServerEnv = new Set(["CODEX_HOME", "PAPERCLIP_GITHUB_AUTH_MODE", "PAPERCLIP_RUNNER_NETWORK_ACCESS"]);
+  const extraConfiguredEnv = Object.keys(envConfig).some(key => !safeServerEnv.has(key));
   if (externalHome && (!executionTargetIsRemote || !configuredCodexHome || configuredOpenAiApiKey || config.managedAiConnection || extraConfiguredEnv || ctx.observability)) {
     throw new Error("remoteCodexHomeMode=empty requires a remote target, explicit CODEX_HOME and no configured provider credential, extra environment or observability exporter");
+  }
+  if (externalHome && configuredCodexHome && isManagedCodexHomePath(process.env, agent.companyId, configuredCodexHome)) {
+    throw new Error("remoteCodexHomeMode=empty requires a caller-owned CODEX_HOME outside the managed home");
   }
   const skillSourceHome = configuredCodexHome;
   const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
@@ -670,12 +674,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const desiredSet = new Set(desiredSkillNames);
   // An explicit inventory is the server's authorized execution selection. Include
   // empty inventories: revocation must not fall back to a previously populated home.
-  let runtimeSkillDigest = Array.isArray(config.paperclipRuntimeSkills)
+  let runtimeSkillDigest = !externalHome && Array.isArray(config.paperclipRuntimeSkills)
     ? createHash("sha256").update(JSON.stringify({ connectorSkillDigest,
       skills: codexSkillEntries.filter(entry => desiredSet.has(entry.key))
         .map(entry => [entry.key, entry.source]).sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))),
     })).digest("hex")
-    : connectorSkillDigest;
+    : externalHome ? null : connectorSkillDigest;
   const runtimeCredentialHome = runtimeSkillDigest
     ? skillSourceHome ?? await prepareManagedCodexHome(process.env, onLog, agent.companyId, { apiKey: configuredOpenAiApiKey })
     : null;
