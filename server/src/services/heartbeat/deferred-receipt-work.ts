@@ -81,12 +81,14 @@ export function registerDeferredReceiptWork(
         )).orderBy(asc(agentWakeupRequests.id)).limit(100);
         const complete = rows.length < 100;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
+        const now = Date.now();
         return { rows: rows.map(row => {
           const deadline = kind === "native" && row.status === "claimed" && row.claimedAt ? row.claimedAt.getTime() + 60_000
             : kind === "native" && row.error ? row.updatedAt.getTime() + 30_000
             : kind === "deferred" && row.delayed && !row.interruptedLegacy ? row.updatedAt.getTime() + 30_000
             : null;
-          return { id: row.id, companyId: row.companyId, dueAt: deadline ?? Date.now(), immediate: deadline === null };
+          const immediate = deadline === null || deadline <= now;
+          return { id: row.id, companyId: row.companyId, dueAt: immediate ? now : deadline, immediate };
         }), complete };
       },
       check: async entry => {

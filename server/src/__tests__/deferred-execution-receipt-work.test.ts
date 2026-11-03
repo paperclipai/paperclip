@@ -153,12 +153,14 @@ describe("deferred receipt durable dispatch", () => {
       source: "on_demand", status: "completed", reason: "task_retry", payload: { issueId: f.issue.id } });
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready; await quiet();
   });
-  it("reconsiders every saved receipt during repeated company eligibility changes", async () => {
+  it.each([false, true])("reconsiders every saved receipt during repeated company eligibility changes (expired wait: %s)", async expiredWait => {
     const f = await fixture();
     const ids = Array.from({ length: 178 }, (_, index) => `${(index + 1).toString(16).padStart(8, "0")}-0000-4000-8000-000000000000`);
     await db.insert(agentWakeupRequests).values(ids.map(id => ({ id, companyId: f.companyId, agentId: f.agent.id,
       source: "on_demand", status: "deferred_issue_execution",
-      payload: { issueId: f.issue.id, _paperclipWakeContext: { wakeCommentIds: [randomUUID()] } },
+      updatedAt: new Date(Date.now() - 60_000),
+      payload: { issueId: f.issue.id, _paperclipWakeContext: { wakeCommentIds: [randomUUID()] },
+        ...(expiredWait ? { executionWait: { reason: "recovery" } } : {}) },
     })));
     const checked = new Set<string>();
     await registerDeferredReceiptWork(db, coordinator, {
