@@ -64467,6 +64467,45 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     } finally { await f.service.shutdown(); }
   });
 
+  it("retries saved GitHub input after an endpoint admission lock collision", async () => {
+    const f = await successfulGitHubQueuedInputFixture();
+    const heartbeat = heartbeatService(db);
+    const failures: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => failures.push(error) });
+    let unlock!: () => void, locked!: () => void;
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const released = new Promise<void>(resolve => { unlock = resolve; });
+    const competingAdmission = db.transaction(async tx => {
+      await tx.select({ id: chatEndpoints.id }).from(chatEndpoints)
+        .where(eq(chatEndpoints.id, f.endpoint.id)).for("no key update");
+      locked();
+      await released;
+    });
+    try {
+      await acquired;
+      await heartbeat.registerDeferredReceiptWork(coordinator, () => true).ready;
+      const priorFailures = failures.length;
+      const retry = await requestTaskRetry(f.input);
+      await expect.poll(() => failures.length, { timeout: 5_000 }).toBeGreaterThan(priorFailures);
+      expect((await readAgentWakeupRequestsById(f.pending!.id))[0].runId).toBeNull();
+      unlock(); await competingAdmission;
+      await expect.poll(async () => (await readAgentWakeupRequestsById(f.pending!.id))[0].runId,
+        { timeout: 40_000 }).toBeTruthy();
+      await expect.poll(async () => (await readAgentWakeupRequestsById(retry.requestId!))[0].status,
+        { timeout: 40_000 }).toBe("coalesced");
+      const [saved] = await readAgentWakeupRequestsById(f.pending!.id);
+      expect((await readHeartbeatRunsByCompanyId(f.fixture.companyId))
+        .filter(run => run.wakeupRequestId === f.pending!.id)).toHaveLength(1);
+      expect((await readAgentWakeupRequestsById(retry.requestId!))[0].runId).toBe(saved.runId);
+      expect((await readHeartbeatRunsById(f.runId))[0]).toMatchObject({ status: "succeeded" });
+    } finally {
+      unlock(); await competingAdmission;
+      await coordinator.stop();
+      await f.service.shutdown();
+    }
+  }, 90_000);
+
   it.each(["reconnected", "newer_input", "reconnected_newer_input", "snapshot_newer_input"] as const)(
     "admits current GitHub task Retry without replaying obsolete input: %s", async kind => {
       const f = await currentGitHubTaskRetryFixture(kind.includes("newer_input"));
