@@ -154,7 +154,6 @@ function timelineOwnershipProjection() {
     cleared: sql<boolean>`coalesce(${sql.join(cleared, sql` or `)}, false)`,
     creationRecorded: sql<boolean>`coalesce(${activityLog.action} = 'issue.created'
       and (${sql.join(creationOwnerTypes, sql` and `)})
-      and ${details} ? 'parentId' and jsonb_typeof(${details} -> 'parentId') in ('string', 'null')
       and ((${creationAgentId} is not null and ${creationUserId} is null and ${sameCompanyAgent(creationAgentId)})
         or (${creationUserId} is not null and ${creationAgentId} is null and ${knownUser(creationUserId)}))
       and ((${activityLog.actorType} = 'agent' and ${sameCompanyAgent(sql`${activityLog.actorId}`)})

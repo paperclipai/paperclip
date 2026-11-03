@@ -1241,6 +1241,7 @@ const workTimelineResponseSchema = z
             "approved",
             "delegated",
             "assigned",
+            "unassigned",
           ]),
           issueId: z.string(),
           at: z.string(),
