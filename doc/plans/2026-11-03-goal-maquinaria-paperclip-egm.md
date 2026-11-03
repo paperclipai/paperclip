@@ -302,6 +302,60 @@ Coste del ciclo completo: **66.9k tokens in / 9.6k out / 7.6k reasoning** para u
 diseño con 7 revisiones — el precio de que el diseño llegue al board con nueve
 bloqueantes nombrados en vez de vacío.
 
+### D.2 cerrado: por qué la cuarentena machine-readable exige un humano (2026-11-03)
+
+La plataforma **sí** tiene cuarentena machine-readable: `sourceTrust` con presets
+`standard` | `low_trust_review` y disposición `quarantined` | `promoted`
+(`packages/shared/src/trust-policy.ts`), y se **deriva del actor**: un agente con
+`permissions.trustPreset = low_trust_review` escribe ⇒ sus escrituras nacen
+marcadas (`server/src/services/source-trust.ts:97`).
+
+Para que un agente low-trust pueda **correr**, la plataforma exige tres cosas
+(`server/src/services/low-trust-runtime-containment.ts:44`):
+
+1. `enableIsolatedWorkspaces` a nivel de instancia → **habilitado** (verificado:
+   `GET /api/instance/settings/experimental` → `true`, con
+   `enableIsolatedWorkspacesByDefault=false` para no cambiarle el workspace a nadie).
+2. Que el workspace del run sea `isolated_workspace` → **automático** para un
+   agente low-trust (`heartbeat.ts:2576` lo fuerza).
+3. **Autoridad humana sobre el run**: o un wakeup request de un actor `user`
+   (una sesión real del board), o que la issue sea **de conversación**
+   (`conversation_agent_id` = agente y `conversation_user_id` puesto).
+
+**Por qué el intake autónomo no puede tenerla**: el puente se autentica con el
+token del board → actor `board`, no `user` → sin autoridad humana → el run se
+rechaza en el setup con
+`Low-trust review requires a concrete project, root issue, or issue-id boundary.`
+(comprobado de tres maneras: resume, wake por comentario, reasignación + comentario).
+
+Es una limitación **estructural**, no un bug de configuración: el preset low-trust
+de la plataforma está diseñado para trabajo supervisado por una persona, y el
+ingreso autónomo desde GitHub no tiene persona en el loop por diseño.
+
+**Lo que quedó funcionando** (autónomo, sin humano):
+- El puente v2 deja cada reporte del cliente como comentario en la issue
+  "Bandeja de entrada" (`OMA-601`).
+- El agente **`intake`** (nuevo, `opencode_local`, `litellm/clusty-nothink`,
+  heartbeat apagado) crea la issue del cliente a partir de ese comentario:
+  probado en vivo — `gampify/gampify#82` → **`OMA-603` "[fixdrop] Export en Safari
+  17 no baja el PDF"**, con el cuerpo enmarcado como dato y el marcador
+  `fixdrop-origin:`.
+- La cuarentena del contenido de terceros queda como **encuadre textual + regla**
+  (documentada y verificada), no como `sourceTrust`.
+
+**Las dos formas de conseguir la cuarentena machine-readable** (decisión del
+operador):
+1. **Una acción humana**: que la bandeja sea una issue **de conversación** (un
+   usuario chatea una vez con el intake). Entonces la autoridad humana queda
+   fijada en la issue y todo lo que el intake cree nace con
+   `sourceTrust=low_trust_review`.
+2. Que el intake lo haga un **usuario** (o un agente con `standard` pero woken
+   por un `user`).
+
+Lo que hace falta para (1): que la issue de la bandeja tenga
+`conversation_agent_id=intake` y `conversation_user_id=<usuario>`, que sólo se
+puede setear desde la conversación del board (o por el chat de un canal).
+
 ### Hallazgos posteriores (2026-11-03, tarde)
 
 1. **`low_trust_review` es incompatible con los pulsos.** Con
