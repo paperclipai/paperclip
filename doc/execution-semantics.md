@@ -210,6 +210,14 @@ finalize from the same company, workspace, issue, and run. A nested snapshot
 that finishes before that finalize finishes does not leave a permanent wait.
 Unfinished operations and work after the finalize still require a later save.
 
+Daytona file export can preserve an already captured workspace archive when the
+guarded download copy runs out of sandbox capacity. It removes partial copies,
+rechecks confinement in the sandbox-user process, and uses the existing bounded
+stream with a successful completion receipt before replacing host files. The
+writer and finalization holds remain until ordinary snapshot publication and
+cleanup complete. This fallback does not remove source files, rerun provider
+work, or solve capacity failure while creating the workspace archive itself.
+
 ### Answered Slack conversations
 
 An accepted scheduled-monitor yield remains unfinished task work. Its committed

@@ -131,3 +131,89 @@ it.skipIf(Object.values(requiredTools).some(tool => !tool)).each(["success", "pr
   expect(await fs.readlink(path.join(remote, "unsafe-link"))).toBe("/etc/passwd");
   expect((await fs.readdir(remote)).filter(name => name.startsWith(".paperclip-upload"))).toEqual([]);
 }, 40_000);
+
+it.skipIf(Object.values(requiredTools).some(tool => !tool)).each([
+  "saved", "read failure", "replaced source", "stream budget", "copy permission", "timeout",
+])("exports an already captured file without room for a second sandbox copy: %s", async scenario => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-file-capacity-"));
+  roots.push(root);
+  const remote = path.join(root, "remote"), bin = path.join(root, "bin");
+  await fs.mkdir(remote); await fs.mkdir(bin);
+  for (const name of ["base64", "bash"] as const) await fs.symlink(requiredTools[name]!, path.join(bin, name));
+  const dd = path.join(bin, "dd");
+  const ddFailure = `#!/bin/sh\n'${requiredTools.dd}' "$@"\nstatus=$?\ncase " $* " in *" if="*) exit 23 ;; esac\nexit "$status"\n`;
+  await fs.writeFile(dd, scenario === "read failure" ? ddFailure : `#!/bin/sh\nexec '${requiredTools.dd}' "$@"\n`, { mode: 0o755 });
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}` };
+  const source = path.join(remote, "captured.pcws"), output = path.join(root, "saved.pcws");
+  const bytes = Buffer.alloc(5 * 1024 * 1024, "captured workspace\n");
+  await fs.writeFile(source, bytes, { mode: 0o600 });
+  await fs.writeFile(output, "newer host work");
+  const outside = path.join(root, "outside.txt");
+  await fs.writeFile(outside, "not in the admitted workspace");
+  const failures: string[] = [];
+  let fault = scenario !== "saved";
+  let downloads = 0, sessions = 0, closed = 0;
+  const sandbox = {
+    disk: scenario === "stream budget" ? 1 / 4096 : 1,
+    process: {
+      executeCommand: async (command: string) => {
+        // Fail the real copy's output sink without filling the shared host.
+        if (fault && scenario === "copy permission" && command.includes("cp --")) {
+          return { exitCode: 43, result: "cp: Permission denied\nsnapshot copy failed" };
+        }
+        const result = spawnSync(requiredTools.bash!, ["-c", 'ulimit -f 128; exec sh -c "$1"', "bash", command], { env, encoding: "utf8" });
+        if (result.status !== 0) failures.push(result.stderr);
+        return { exitCode: result.status ?? 1, result: result.stdout + result.stderr };
+      },
+      createPty: async (options: DaytonaPtyCreateOptions) => {
+        sessions += 1;
+        if (fault && scenario === "replaced source") { await fs.unlink(source); await fs.symlink(outside, source); }
+        const child = spawn(requiredTools.python3!, ["-c", ptyRelay], { env, cwd: options.cwd });
+        child.stdout.on("data", options.onData);
+        const completion = new Promise<{ exitCode: number }>(resolve => child.once("exit", code => { closed += 1; resolve({ exitCode: code ?? 1 }); }));
+        return {
+          waitForConnection: async () => {},
+          sendInput: async (data: string | Uint8Array) => {
+            const text = Buffer.from(data).toString().trim();
+            if (fault && scenario === "timeout" && Buffer.from(text, "base64").toString().includes('dd if="$_pc_real"')) return;
+            child.stdin.write(Buffer.from(data));
+          },
+          wait: () => completion,
+          kill: async () => { child.kill(); await completion; },
+          disconnect: async () => { child.kill(); await completion; },
+        };
+      },
+    },
+    fs: {
+      downloadFiles: async () => { downloads += 1; throw new Error("privileged download must not read the live source"); },
+      deleteFile: (file: string) => fs.rm(file, { force: true }),
+    },
+  };
+  const sync = () => performSyncOut({ sandbox: sandbox as never, remoteDir: remote, timeoutSeconds: fault && scenario === "timeout" ? 0.5 : 30,
+    operations: [{ operationId: "save", files: [{ sourcePath: source, targetPath: output, kind: "file", mode: 0o600 }] }],
+  });
+  if (fault) {
+    await expect(sync()).rejects.toThrow(scenario === "copy permission" ? "Permission denied"
+      : scenario === "stream budget" ? "sandbox disk budget" : scenario === "timeout" ? "timed out" : "without a successful archive receipt");
+    expect(await fs.readFile(output, "utf8")).toBe("newer host work");
+    expect(await fs.readFile(outside, "utf8")).toBe("not in the admitted workspace");
+    expect((await fs.readdir(remote)).filter(name => name.startsWith(".paperclip-upload"))).toEqual([]);
+    expect((await fs.readdir(root)).filter(name => name.startsWith(".paperclip-upload"))).toEqual([]);
+    expect(sessions).toBe(scenario === "copy permission" ? 0 : 1);
+    expect(closed).toBe(sessions);
+    fault = false;
+    sandbox.disk = 1;
+    if (scenario === "replaced source") { await fs.unlink(source); await fs.writeFile(source, bytes); }
+    await fs.writeFile(dd, `#!/bin/sh\nexec '${requiredTools.dd}' "$@"\n`, { mode: 0o755 });
+  }
+  const result = await sync();
+  expect(failures.join("\n")).toMatch(/File\s?size limit exceeded/i);
+  expect((await fs.readFile(output)).equals(bytes)).toBe(true);
+  expect((await fs.readFile(source)).equals(bytes)).toBe(true);
+  expect((await fs.stat(output)).mode & 0o777).toBe(0o600);
+  expect(result.operations).toEqual([{ operationId: "save", filesTransferred: 1, bytesTransferred: bytes.length }]);
+  expect(downloads).toBe(0);
+  expect(sessions).toBe(scenario === "saved" || scenario === "copy permission" ? 1 : 2);
+  expect(closed).toBe(sessions);
+  expect((await fs.readdir(remote)).filter(name => name.startsWith(".paperclip-upload"))).toEqual([]);
+}, 40_000);

@@ -91,6 +91,13 @@ receipt or retaining a partial archive. The
 checks the space allowance and concurrent-change boundary; its filesystem quota
 is controlled test input, not a live sandbox qualification.
 
+For Daytona, also fail the guarded file-download copy after a workspace archive
+exists. Verify export preserves the complete archive, removes partial copies,
+and succeeds again after reconnect. A failed or oversized stream must preserve
+newer host files. The [capacity suite](../../packages/plugins/sandbox-providers/daytona/src/file-sync-capacity.test.ts)
+uses real local copies and terminals; the adjacent opt-in live suite checks
+disposable Daytona allocations without filling their disks.
+
 Create a child that inherits a saved isolated workspace or operator branch.
 Verify it continues the same files after the prior writer saves, including on a
 new allocation. Two bound children must not acquire concurrent writer authority.
