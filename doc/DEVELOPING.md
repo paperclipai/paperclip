@@ -1095,6 +1095,16 @@ verifying Vite/HMR behavior.
 
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
+The Runner transport suite keeps attachment recovery, warm attachment, live
+adoption, and suspension in separate test files. Vitest can schedule these
+independent fixtures on its existing file workers; cases within each file stay
+serial. Real lease/deadline waits and assertions are unchanged. Run the complete
+family, including the separate deadline and settlement regressions, with:
+
+```sh
+pnpm --filter @paperclipai/paperclip-runner exec vitest run runnerd-codex-transport
+```
+
 #### Embedded Postgres template cache
 
 To run the suite with one owned PostgreSQL server and a separate disposable
@@ -3180,7 +3190,7 @@ Run the credential-free real-process restart suite with:
 ```sh
 pnpm --filter @paperclipai/paperclip-runner build:runner-binaries
 pnpm exec vitest run server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts
-pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport.test.ts -t 'adopts a live runner'
+pnpm --filter @paperclipai/paperclip-runner exec vitest run src/live/runnerd-codex-transport-adoption.test.ts -t 'adopts a live runner'
 ```
 
 The suite uses isolated PostgreSQL state, isolated `PAPERCLIP_HOME` roots, real
