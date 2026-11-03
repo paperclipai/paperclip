@@ -24,7 +24,7 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
   const workspaces = choices.data?.workspaces ?? [];
   const grantId = registration?.managerGrantId ?? selectedGrant ?? (workspaces.length === 1 ? workspaces[0]!.grantId : null);
   const needsAuthorization = !grantId || registration?.errorCode === "slack_manager_reauthorize" || Boolean(grantId && !workspaces.some(workspace => workspace.grantId === grantId));
-  const reconnectWorkspace = needsAuthorization && (started || endpoint.setup?.slackManagerError === "slack_manager_reauthorize");
+  const reconnectWorkspace = needsAuthorization && (started || Boolean(error) || endpoint.setup?.slackManagerError === "slack_manager_reauthorize");
   const uncertain = registration?.status === "uncertain";
   const creating = registration?.status === "creating";
   async function run(action: () => Promise<void>) {

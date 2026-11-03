@@ -7,7 +7,7 @@ import { type ChatEndpoint } from "@/api/chatEndpoints";
 import { storybookAgents, storybookAuthSession } from "./paperclipData";
 import { defaultSlackAppConfiguration } from "@paperclipai/shared";
 
-export type SlackSetupScenario = "choose" | "create" | "manual" | "install" | "declined" | "approval_denied" | "manager_reauthorize" | "uncertain" | "manifest_pending" | "recovery" | "verify" | "avatar_failed" | "welcome_failed" | "success";
+export type SlackSetupScenario = "choose" | "create" | "manual" | "install" | "declined" | "approval_denied" | "manager_reauthorize" | "manager_authorization_failed" | "uncertain" | "manifest_pending" | "recovery" | "verify" | "avatar_failed" | "welcome_failed" | "success";
 
 /** Production wizard over a local provider fixture. No requests go to Slack. */
 export function SlackSetupFixture({ scenario = "create", managed = false, managedAvailable = true, workspaceCount = 1, optionsDelayMs = 0, optionsError = false }: { scenario?: SlackSetupScenario; managed?: boolean; managedAvailable?: boolean; workspaceCount?: number; optionsDelayMs?: number; optionsError?: boolean }) {
@@ -28,6 +28,7 @@ export function SlackSetupFixture({ scenario = "create", managed = false, manage
     };
     const grantId = "11111111-1111-4111-8111-111111111111";
     let authorized = workspaceCount > 0 || new URLSearchParams(window.location.search).get("slackFixtureAuthorized") === "1";
+    let authorizationFailed = false;
     if (scenario === "manager_reauthorize" && !authorized) endpoint.setup!.slackManagerError = "slack_manager_reauthorize";
     const created = () => {
       endpoint.setup!.slackRegistration = { status: "install", ...(managed ? { managerGrantId: grantId } : {}), appId: "ASTORY", managementUrl: "https://api.slack.com/apps/ASTORY" };
@@ -62,6 +63,10 @@ export function SlackSetupFixture({ scenario = "create", managed = false, manage
         return Response.json({ managedAvailable: managed && managedAvailable, defaultMethod: managed ? "managed" : "automatic", workspaces: managed && authorized ? Array.from({ length: Math.max(1, workspaceCount) }, (_, i) => ({ grantId: i ? "22222222-2222-4222-8222-222222222222" : grantId, workspaceId: `TSTORY${i}`, workspaceName: i ? "Research workspace" : "Paperclip", userId: "UPERSON" })) : [] });
       }
       if (path === "/api/chat-endpoints/slack-story/slack/managed/authorize") {
+        if (scenario === "manager_authorization_failed" && !authorized && !authorizationFailed) {
+          authorizationFailed = true;
+          return Response.json({ error: "Reconnect your Slack workspace to continue setting up this agent." }, { status: 422 });
+        }
         authorized = true;
         const returnUrl = new URL(window.location.href);
         returnUrl.hash = "";

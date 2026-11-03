@@ -79,6 +79,7 @@ export const WorkspaceReconnect: Story = {
   },
 };
 export const MobileWorkspaceReconnect: Story = { ...WorkspaceReconnect, name: "Mobile · Reconnect workspace", globals: { viewport: { value: "mobile1", isRotated: false } } };
+export const WorkspaceAuthorizationFailed: Story = { ...WorkspaceReconnect, name: "Recovery · Workspace authorization request failed", args: { scenario: "manager_authorization_failed", workspaceCount: 0 } };
 export const EventConfigurationPending: Story = { name: "Recovery · App configuration pending", args: { scenario: "manifest_pending" } };
 export const UncertainCreation: Story = { name: "Recovery · Uncertain creation", args: { scenario: "uncertain" } };
 export const SavedCredentials: Story = { name: "Recovery · Saved credentials", args: { scenario: "recovery" } };
