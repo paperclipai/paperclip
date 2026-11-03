@@ -357,13 +357,20 @@ describePostgres("already available connection requests", () => {
       });
       cardId = card.id;
       await wait(passive);
-      expect(errors).toEqual([]); expect(idleWorkSnapshot().active).toBe(0);
+      expect(errors).toEqual([]);
       expect((await db.select().from(issueThreadInteractions))[0].status).toBe("pending");
       const now = Date.now(), ownerId = randomUUID();
       const drain = (): IdleSleepDrainStatus => ({ ownerId, draining: true, startedAt: new Date(now - 1000),
         expiresAt: new Date(now + 60_000), activeRuns: 0, pendingWakes: 0 });
-      // Match the host drain: passive maintenance cannot enter the safety scan.
-      expect(await readIdleSleepSafety(db, drain, Date.now, ownerId, async () => "none", undefined, undefined, true, true)).toMatchObject({ backgroundWork: "none" });
+      // Match the host drain: passive maintenance pauses, but transaction
+      // settlement may still reconcile. Wait for a quiet safety proof instead
+      // of assuming the hasPending callback ended the coordinator's attempt.
+      await vi.waitFor(async () => {
+        const beforeSafety = idleWorkSnapshot();
+        const safety = await readIdleSleepSafety(db, drain, Date.now, ownerId, async () => "none", undefined, undefined, true, true);
+        expect(safety, JSON.stringify({ beforeSafety, afterSafety: idleWorkSnapshot(), draining })).toMatchObject({ backgroundWork: "none" });
+      }, { timeout: 8000, interval: 25 });
+      expect(idleWorkSnapshot().active).toBe(0);
       // This mutation has no queue notification: awake-only maintenance must
       // still discover new access; after sleep startup performs the same scan.
       draining = false;
