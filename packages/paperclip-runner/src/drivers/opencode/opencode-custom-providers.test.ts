@@ -178,8 +178,11 @@ describe("parseOpenCodeCustomProviders", () => {
       OPENAI_KEY: "openai-key",
     });
 
-    // No endpoint means no proxy; the override stays exactly as declared.
-    expect(parsed.providers.openai?.options).toEqual({});
+    // No endpoint means no proxy. The override keeps its declaration, including
+    // the key reference: dropping it would silently remove the operator's key,
+    // and resolving it would write a durable credential into the config.
+    expect(parsed.providers.openai?.options).toEqual({ apiKey: "{env:OPENAI_KEY}" });
+    expect(parsed.providers.openai?.models).toEqual({ "gpt-x": { name: "X" } });
     expect(parsed.credentials).toEqual([]);
   });
 });

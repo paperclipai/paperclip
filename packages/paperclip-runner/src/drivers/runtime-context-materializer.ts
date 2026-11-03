@@ -316,8 +316,8 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
  */
 export function codexCustomProviders(
   environment: Record<string, string | undefined> | undefined,
-): { providers: Record<string, unknown>; modelProvider: string | null } {
-  const empty = { providers: {}, modelProvider: null };
+): { providers: Record<string, unknown>; modelProvider: string | null; providerKey: string | null } {
+  const empty = { providers: {}, modelProvider: null, providerKey: null };
   const raw = environment?.PAPERCLIP_CODEX_PROVIDERS;
   if (typeof raw !== "string" || raw.trim().length === 0) return empty;
   let parsed: unknown;
@@ -328,20 +328,31 @@ export function codexCustomProviders(
   }
   if (!isRecord(parsed) || !isRecord(parsed.providers)) return empty;
   const providers: Record<string, unknown> = {};
+  const keysByProvider = new Map<string, string>();
   for (const [providerId, entry] of Object.entries(parsed.providers)) {
-    if (!isRecord(entry) || providerId.trim().length === 0) continue;
-    // `env_key` names an environment variable that Codex reads itself, so the
-    // value never has to appear here. Any other `{env:...}` reference would be
-    // written as a literal, or as a durable secret in an agent-readable file;
-    // drop those fields instead of copying credentials into the runtime config.
-    const sanitized = dropSecretPlaceholders(entry);
-    if (sanitized) providers[providerId] = sanitized;
+    if (isRecord(entry) && providerId.trim().length > 0) {
+      const resolved = resolveProviderFields(entry, environment);
+      if (!resolved) continue;
+      // Codex reads a provider credential from the variable named by `env_key`.
+      // Only one variable survives the sanitized child environment, so every
+      // custom provider points at it and the run supplies the value.
+      const envKey = typeof entry.env_key === "string" ? entry.env_key.trim() : "";
+      const key = envKey ? environment?.[envKey] : undefined;
+      if (key) {
+        keysByProvider.set(providerId, key);
+        resolved.env_key = CODEX_PROVIDER_KEY_ENV;
+      }
+      providers[providerId] = resolved;
+    }
   }
   if (Object.keys(providers).length === 0) return empty;
   const selected = typeof parsed.model_provider === "string" ? parsed.model_provider.trim() : "";
-  // A selector that names no emitted table would make Codex fail with an error
-  // that never mentions the env var, so it is dropped instead of emitted.
-  return { providers, modelProvider: selected && selected in providers ? selected : null };
+  const modelProvider = selected && selected in providers ? selected : null;
+  return {
+    providers,
+    modelProvider,
+    providerKey: modelProvider ? keysByProvider.get(modelProvider) ?? null : null,
+  };
 }
 
 /** The custom provider table as a standalone TOML document. */
@@ -355,18 +366,41 @@ export function codexCustomProviderToml(
   return `${stringifyToml(document)}\n`;
 }
 
+const CODEX_PROVIDER_KEY_ENV = "PAPERCLIP_AI_PROVIDER_KEY";
+const CREDENTIAL_FIELD_RE = /(authorization|api[-_]?key|token|secret|password|cookie)/i;
+
 /**
- * Remove fields whose value still contains an `{env:...}` reference. Codex
- * cannot resolve the placeholder, and writing the referenced secret into
- * `config.toml` would expose a durable key to task-controlled code.
+ * Resolve `{env:...}` references in provider fields.
+ *
+ * A reference in a non-credential field (a base URL, a routing header) becomes
+ * its value, so the endpoint Codex calls is the one the probe verified. A
+ * reference in a credential field is dropped: the value must not be written to
+ * an agent-readable config, and Codex reaches the credential through `env_key`.
  */
-function dropSecretPlaceholders(entry: Record<string, unknown>): Record<string, unknown> | null {
+function resolveProviderFields(
+  entry: Record<string, unknown>,
+  environment: Record<string, string | undefined> | undefined,
+): Record<string, unknown> | null {
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(entry)) {
-    if (typeof value === "string" && /\{env:[A-Za-z_][A-Za-z0-9_]*\}/.test(value)) continue;
-    if (Array.isArray(value) && value.some((item) => typeof item === "string" && /\{env:/.test(item))) continue;
+    if (typeof value === "string") {
+      if (!value.includes("{env:")) {
+        out[key] = value;
+        continue;
+      }
+      if (CREDENTIAL_FIELD_RE.test(key)) continue;
+      out[key] = value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) =>
+        environment?.[name] ?? match,
+      );
+      continue;
+    }
+    if (Array.isArray(value)) {
+      const items = value.filter((item) => typeof item !== "string" || !item.includes("{env:"));
+      if (items.length > 0) out[key] = items;
+      continue;
+    }
     if (isRecord(value)) {
-      const nested = dropSecretPlaceholders(value);
+      const nested = resolveProviderFields(value, environment);
       if (nested && Object.keys(nested).length > 0) out[key] = nested;
       continue;
     }
@@ -443,8 +477,9 @@ export async function prepareIsolatedCodexHome(input: {
     join(input.codexHome, "skills"),
   );
 
-  const { toml: providerConfig, modelProvider: selectedProvider } =
+  const { toml: providerConfig, modelProvider: selectedProvider, providerKey } =
     await codexProviderConfigFor(input);
+  applyProviderKey(input.environment, providerKey);
   await writeIsolatedCodexConfig(input, providerConfig);
   await writeIsolatedCodexAuth(input, selectedProvider);
 }
@@ -459,14 +494,23 @@ export async function prepareIsolatedCodexHome(input: {
 async function codexProviderConfigFor(input: {
   environment?: Record<string, string | undefined>;
   sourceCodexHome?: string | null;
-}): Promise<{ toml: string; modelProvider: string | null }> {
+}): Promise<{ toml: string; modelProvider: string | null; providerKey: string | null }> {
   const customProviders = codexCustomProviders(input.environment);
   // A selected custom provider owns routing for this run. Reading the source
   // home then could reject a stale managed entry the run never uses.
   const managedProviders = customProviders.modelProvider
     ? null
     : await managedCodexProviders(input.sourceCodexHome);
-  return codexProviderToml(customProviders, managedProviders);
+  return { ...codexProviderToml(customProviders, managedProviders), providerKey: customProviders.providerKey };
+}
+
+/** Hand the custom provider credential to the sanitized Codex environment. */
+function applyProviderKey(
+  environment: Record<string, string | undefined> | undefined,
+  providerKey: string | null,
+): void {
+  if (!environment || !providerKey) return;
+  environment[CODEX_PROVIDER_KEY_ENV] = providerKey;
 }
 
 async function writeIsolatedCodexConfig(input: CodexAuthInput & { nativeMcp?: NativeMcpLaunchBinding | null }, providerConfig: string): Promise<void> {

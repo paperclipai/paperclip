@@ -3348,7 +3348,9 @@ export function parseOpenCodeCustomProviders(
     if (baseUrl) options.baseURL = baseUrl;
     else delete options.baseURL;
     const rawKey = typeof options.apiKey === "string" ? options.apiKey.trim() : "";
-    delete options.apiKey;
+    // Only a proxied provider moves its key out of the config. An override of a
+    // built-in provider keeps calling the built-in endpoint, so its key stays.
+    if (baseUrl) delete options.apiKey;
     const headers: Record<string, string> = {};
     if (isRecord(options.headers)) {
       const retained: Record<string, unknown> = {};

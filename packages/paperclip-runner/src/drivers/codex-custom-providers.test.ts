@@ -22,10 +22,12 @@ describe("codexCustomProviderToml", () => {
     expect(toml).toContain('model_provider = "custom"');
     expect(toml).toContain("[model_providers.custom]");
     expect(toml).toContain('base_url = "https://api.deepseek.com"');
-    expect(toml).toContain('env_key = "OPENAI_COMPATIBLE_API_KEY"');
+    // Codex reads the credential from the single variable the sanitized child
+    // environment keeps; the value itself never reaches the file.
+    expect(toml).toContain('env_key = "PAPERCLIP_AI_PROVIDER_KEY"');
     expect(toml).toContain('wire_api = "chat"');
-    // The key itself is referenced by name, never written into the file.
     expect(toml).not.toContain("sk-live");
+    expect(toml).not.toContain("OPENAI_COMPATIBLE_API_KEY");
   });
 
   it("never copies a referenced secret into the config", () => {
@@ -43,7 +45,7 @@ describe("codexCustomProviderToml", () => {
       OPENAI_COMPATIBLE_API_KEY: "sk-live",
     });
 
-    expect(toml).toContain('env_key = "OPENAI_COMPATIBLE_API_KEY"');
+    expect(toml).toContain('env_key = "PAPERCLIP_AI_PROVIDER_KEY"');
     // The placeholder field is dropped instead of being resolved into the file.
     expect(toml).not.toContain("Authorization");
     expect(toml).not.toContain("sk-live");
@@ -119,5 +121,18 @@ describe("codexCustomProviderToml", () => {
     // The table is written, but Codex still uses its default provider.
     expect(selection.toml).toContain("[model_providers.extra]");
     expect(selection.modelProvider).toBeNull();
+  });
+
+  it("resolves a placeholder endpoint instead of dropping it", () => {
+    const toml = codexCustomProviderToml({
+      PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+        providers: { gateway: { base_url: "{env:GATEWAY_URL}", wire_api: "chat" } },
+        model_provider: "gateway",
+      }),
+      GATEWAY_URL: "https://gateway.test/v1",
+    });
+
+    expect(toml).toContain('base_url = "https://gateway.test/v1"');
+    expect(toml).toContain('model_provider = "gateway"');
   });
 });
