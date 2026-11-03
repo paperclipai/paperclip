@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import type { CompanySkillDetail, CompanySkillVersion, CompanySkillUpdateStatus } from "../../../packages/shared/src/types/company-skill.js";
 import type { SkillSource, SkillSourceRefreshResult } from "../../../packages/shared/src/types/skill-source.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
-import { pollUntil, SkillSourceUpdateReadError } from "../api.js";
+import { pollUntil } from "../api.js";
 import { remainingIdentityObservationBudget } from "./identity-support.js";
 import { checks, observation, type InternalObservation } from "./internal-support.js";
 import { editableLocalNotes } from "./integrator-skill-source.js";
@@ -17,11 +17,24 @@ export { accessibilityUpdatePins } from "./integrator-skill-pins.js";
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const root = (ctx: ChatCatalogContext) => `/api/companies/${ctx.input.fixtures.company.id}`;
 interface UpdateObservation extends InternalObservation { upstream: CompanySkillDetail; localFork: CompanySkillDetail; upstreamVersions: CompanySkillVersion[]; forkVersions: CompanySkillVersion[]; source: SkillSource; updateStatus: Pick<CompanySkillUpdateStatus, "supported" | "currentRef" | "latestRef" | "hasUpdate"> }
-async function observeUpdate(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<UpdateObservation> {
+const updateReceipts = new WeakMap<ChatCatalogContext, { localDigest: string; status: UpdateObservation["updateStatus"] }>();
+async function observeUpdate(ctx: ChatCatalogContext, state: Record<string, unknown>, checkpoint = false): Promise<UpdateObservation> {
   const base = await observeInternal(ctx, state); const api = ctx.input.api; const upstream = state.upstream as CompanySkillDetail; const local = state.localFork as CompanySkillDetail;
-  return { ...base, upstream: await api.get<CompanySkillDetail>(`${root(ctx)}/skills/${upstream.id}`), localFork: await api.get<CompanySkillDetail>(`${root(ctx)}/skills/${local.id}`),
+  const saved = { upstream: await api.get<CompanySkillDetail>(`${root(ctx)}/skills/${upstream.id}`), localFork: await api.get<CompanySkillDetail>(`${root(ctx)}/skills/${local.id}`),
     upstreamVersions: await readSkillVersionHistory(api, ctx.input.fixtures.company.id, upstream.id), forkVersions: await readSkillVersionHistory(api, ctx.input.fixtures.company.id, local.id),
-    source: await api.get<SkillSource>(`${root(ctx)}/skill-sources/${(state.source as SkillSource).id}`), updateStatus: await api.getSkillSourceUpdateStatus<UpdateObservation["updateStatus"]>(ctx.input.fixtures.company.id, upstream.id) };
+    source: await api.get<SkillSource>(`${root(ctx)}/skill-sources/${(state.source as SkillSource).id}`) };
+  // This is the same genuine semantic checkpoint, not another provider read.
+  // Only the exact immutable public commit can retain it during grade settling;
+  // mutable remote refs must be read again even if local state is unchanged.
+  const localDigest = hash(JSON.stringify({ companyId: ctx.input.fixtures.company.id, sourceId: ctx.issue()?.id,
+    humanQueries: base.humanQueries, runs: base.runs.map(run => ({ id: run.id, companyId: run.companyId, agentId: run.agentId,
+      status: run.status, issueId: run.contextSnapshot?.issueId, commentId: run.contextSnapshot?.commentId })), ...saved })), prior = updateReceipts.get(ctx);
+  const immutable = /^[a-f0-9]{40}$/.test(saved.source.trackingRef) && saved.source.trackingRef === accessibilityUpdatePins.newCommit
+    && saved.source.fullName.toLowerCase() === new URL(accessibilityUpdatePins.repositoryURL).pathname.slice(1).toLowerCase();
+  const status = !checkpoint && immutable && prior?.localDigest === localDigest && prior.status.latestRef === accessibilityUpdatePins.newCommit ? prior.status
+    : await api.getSkillSourceUpdateStatus<UpdateObservation["updateStatus"]>(ctx.input.fixtures.company.id, upstream.id);
+  updateReceipts.set(ctx, { localDigest, status: { ...status } });
+  return { ...base, ...saved, updateStatus: status };
 }
 function updateObservation(value: unknown): UpdateObservation | undefined { const o = value as UpdateObservation; return observation(value) && !!o.upstream && !!o.localFork && Array.isArray(o.upstreamVersions) && Array.isArray(o.forkVersions) && !!o.source && !!o.updateStatus ? o : undefined; }
 function substantiveDiff(reply: string) {
@@ -83,9 +96,23 @@ export const integratorSkillUpdateCases = [integratorDefinition("skills", "skill
 { authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 540_000,
   sourceFiles: ["chat-catalog-domains/identity-support.ts", "chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-update.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
   async act(ctx, state) {
-    const first = await pollUntil({ label: "actual upstream diff presented before installation", deadlineAt: Date.now() + 180_000, intervalMs: 1000, load: () => observeUpdate(ctx, state), retryOnError: error => !(error instanceof SkillSourceUpdateReadError), accept: o => o.runs.length === 1 && o.runs[0]?.status === "succeeded" && ctx.issue()?.conversationState === "waiting" });
+    updateReceipts.delete(ctx);
+    const waitForSource = async (count: number, deadlineAt: number) => pollUntil({ label: "actual skill-update source response", deadlineAt, intervalMs: 1000,
+      load: async () => { await ctx.refreshIssue(); return ctx.allRuns(); },
+      accept: runs => Date.now() < deadlineAt && runs.length === count && runs.every(run => run.status === "succeeded") && ctx.issue()?.conversationState === "waiting",
+      reject: runs => runs.length > count || runs.some(run => ["failed", "cancelled", "timed_out"].includes(run.status)) ? "Skill update source has failed or excess native work" : undefined });
+    remainingIdentityObservationBudget(ctx);
+    await waitForSource(1, Math.min(Date.now() + 180_000, ctx.observationDeadlineAt!));
+    remainingIdentityObservationBudget(ctx);
+    const first = await observeUpdate(ctx, state, true);
+    remainingIdentityObservationBudget(ctx);
     state.reviewCheckpoint = { ...first, state: structuredClone(state) }; await ctx.input.evidence("chat-skill-source-review-before-update.json", state.reviewCheckpoint);
     if (!previewCorrect(first)) throw new Error("The initial actual diff review was wrong or installed prematurely; later updates cannot repair it");
+    updateReceipts.delete(ctx);
     const { sendChatMessage } = await import("../chat-flow.js"); await sendChatMessage(ctx.input.page, "Apply that reviewed upstream accessibility update now, keeping our editable local copy unchanged.");
+    await waitForSource(2, ctx.observationDeadlineAt!);
+    remainingIdentityObservationBudget(ctx);
+    await observeUpdate(ctx, state, true);
+    remainingIdentityObservationBudget(ctx);
   },
 })];
