@@ -1159,7 +1159,7 @@ Runner binary.
 On a machine with 4 GiB of RAM or less, use this command:
 
 ```sh
-pnpm typecheck:low-memory
+node scripts/typecheck-low-memory.mjs
 ```
 
 It checks one package at a time and uses one thread for the server layers and the

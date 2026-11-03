@@ -220,7 +220,7 @@ pnpm test:run
 pnpm build
 ```
 
-On a machine with 4 GiB of RAM or less, use `pnpm typecheck:low-memory` instead of `pnpm -r typecheck`. See `doc/DEVELOPING.md`.
+On a machine with 4 GiB of RAM or less, use `node scripts/typecheck-low-memory.mjs` instead of `pnpm -r typecheck`. See `doc/DEVELOPING.md`.
 
 If anything cannot be run, explicitly report what was not run and why.
 

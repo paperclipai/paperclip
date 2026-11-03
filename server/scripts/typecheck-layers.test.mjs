@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { lowMemoryTscArgs, runTsc } from "../../scripts/run-tsc.mjs";
+import { STEPS, typecheckLowMemory } from "../../scripts/typecheck-low-memory.mjs";
 import { layerConfig, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -232,6 +234,129 @@ describe("typecheckLayers", () => {
 
     expect(status).toBe(1);
     expect(configs).toHaveLength(1);
+  });
+});
+
+describe("typecheckLayers with the real compiler", () => {
+  const tsc = path.join(serverRoot, "node_modules", "typescript", "bin", "tsc");
+  const roots = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  function compilerFixture() {
+    const root = mkdtempSync(path.join(tmpdir(), "typecheck-layers-real-"));
+    roots.push(root);
+    mkdirSync(path.join(root, "src"));
+    writeFileSync(path.join(root, "package.json"), `${JSON.stringify({ type: "module" })}\n`);
+    writeFileSync(
+      path.join(root, "tsconfig.json"),
+      `${JSON.stringify({
+        compilerOptions: {
+          target: "ES2023",
+          module: "NodeNext",
+          moduleResolution: "NodeNext",
+          strict: true,
+          types: [],
+          outDir: "dist",
+          rootDir: "src",
+        },
+        include: ["src"],
+      })}\n`,
+    );
+    const sources = {
+      "leaf.ts": `export const leaf = 1;\n`,
+      "one.ts": `import { two } from "./two.js";\nimport { leaf } from "./leaf.js";\nexport const one = () => leaf + two();\n`,
+      "two.ts": `import { one } from "./one.js";\nexport const two = (): number => one.length;\n`,
+      "route.ts": `import { one } from "./one.js";\nexport const route = () => one();\n`,
+      "route.test.ts": `import { route } from "./route.js";\nexport const checked: number = route();\n`,
+    };
+    for (const [name, text] of Object.entries(sources)) {
+      writeFileSync(path.join(root, "src", name), text);
+    }
+    return root;
+  }
+
+  function check(root) {
+    const output = [];
+    const status = typecheckLayers({
+      serverRoot: root,
+      log: () => {},
+      run: (args, { cwd }) => {
+        const result = spawnSync(process.execPath, [tsc, ...args], { cwd, encoding: "utf8" });
+        output.push(result.stdout, result.stderr);
+        return { status: result.status ?? 1, signal: result.signal };
+      },
+    });
+    return { status, output: output.join("") };
+  }
+
+  it("emits declarations between layers and checks every layer", () => {
+    const root = compilerFixture();
+
+    const { status, output } = check(root);
+
+    expect(output).toBe("");
+    expect(status).toBe(0);
+    const declarations = path.join(root, "node_modules", ".cache", "paperclip-typecheck", "dts");
+    for (const name of ["leaf.d.ts", "one.d.ts", "two.d.ts", "route.d.ts"]) {
+      expect(existsSync(path.join(declarations, name))).toBe(true);
+    }
+    expect(existsSync(path.join(declarations, "route.test.d.ts"))).toBe(false);
+  }, 60_000);
+
+  it("reports a changed export in the layers that depend on it", () => {
+    const root = compilerFixture();
+    writeFileSync(path.join(root, "src", "leaf.ts"), `export const renamedLeaf = 1;\n`);
+
+    const { status, output } = check(root);
+
+    expect(status).not.toBe(0);
+    expect(output).toMatch(/src\/one\.ts\(\d+,\d+\): error TS\d+/);
+    expect(output).toContain("leaf");
+  }, 60_000);
+
+  it("reports a type change through declarations in the test layer", () => {
+    const root = compilerFixture();
+    writeFileSync(
+      path.join(root, "src", "route.ts"),
+      `import { one } from "./one.js";\nexport const route = (): string => String(one());\n`,
+    );
+
+    const { status, output } = check(root);
+
+    expect(status).not.toBe(0);
+    expect(output).toMatch(/src\/route\.test\.ts\(\d+,\d+\): error TS2322/);
+  }, 60_000);
+});
+
+describe("typecheckLowMemory", () => {
+  it("runs every step in low-memory mode and stops at a failure", () => {
+    const calls = [];
+    const run = (args, { env }) => {
+      calls.push([args, env.PAPERCLIP_TYPECHECK_LOW_MEMORY]);
+      return calls.length === 1 ? 0 : 3;
+    };
+
+    expect(typecheckLowMemory({ cwd: serverRoot, env: {}, run })).toBe(3);
+    expect(calls).toEqual(STEPS.map((args) => [args, "1"]));
+  });
+
+  it("does not run the typecheck after a failed preflight", () => {
+    const calls = [];
+
+    const status = typecheckLowMemory({
+      cwd: serverRoot,
+      env: {},
+      run: (args) => {
+        calls.push(args);
+        return 1;
+      },
+    });
+
+    expect(status).toBe(1);
+    expect(calls).toHaveLength(1);
   });
 });
 

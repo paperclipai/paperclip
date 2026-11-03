@@ -3,9 +3,9 @@
 //
 // TypeScript 7 is a native binary, so Node heap flags do not limit it. Each
 // checker keeps its own copy of the types, which makes the checker count the
-// most useful control a package has over its peak memory. `pnpm
-// typecheck:low-memory` sets PAPERCLIP_TYPECHECK_LOW_MEMORY=1 so the largest
-// programs check on a single thread.
+// most useful control a package has over its peak memory.
+// scripts/typecheck-low-memory.mjs sets PAPERCLIP_TYPECHECK_LOW_MEMORY=1 so the
+// largest programs check on a single thread.
 //
 // Usage: node ../scripts/run-tsc.mjs [tsc arguments]
 
