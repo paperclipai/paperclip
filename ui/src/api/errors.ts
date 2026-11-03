@@ -159,7 +159,8 @@ export function errorCodes(err: unknown): string[] {
 export function isRawErrorCode(value: string): boolean {
   const text = value.trim();
   if (!text || /\s/.test(text)) return false;
-  return /^[A-Za-z0-9]+(?:[_.][A-Za-z0-9]+)+$/.test(text) || /^[A-Z][A-Z0-9_]{2,}$/.test(text);
+  return Object.hasOwn(KIND_COPY, text) || text === "unauthorized"
+    || /^[A-Za-z0-9]+(?:[_.][A-Za-z0-9]+)+$/.test(text) || /^[A-Z][A-Z0-9_]{2,}$/.test(text);
 }
 
 /** A server message that is safe to show: not a raw code, not a generic status line. */

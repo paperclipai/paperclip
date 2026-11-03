@@ -1047,9 +1047,9 @@ describe("Inbox toolbar", () => {
       await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
       await vi.waitFor(() => expect(container.textContent).toContain("Cached readable task"));
       const row = container.querySelector("[data-inbox-item]");
-      apiMocks.inboxMine.mockRejectedValue(status === "network" ? new Error("Refresh unavailable") : new ApiError("Refresh unavailable", status, null));
+      apiMocks.inboxMine.mockRejectedValue(status === "network" ? new TypeError("Failed to fetch") : new ApiError("Refresh unavailable", status, null));
       await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe("company-1") }); });
-      await vi.waitFor(() => expect(document.body.textContent).toContain("Some inbox items couldn’t load."));
+      expect(document.body.textContent).not.toContain("Some inbox items couldn’t load.");
       expect(container.querySelector("[data-inbox-item]")).toBe(row);
       expect(container.textContent).toContain("Cached readable task");
       expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
@@ -1502,7 +1502,7 @@ describe("Inbox toolbar", () => {
       routerMock.location.pathname = "/inbox/mine";
       setIssueRows([createIssue({ title: "Available task" })]);
       const bundled = source === "failureError" || source === "contextError";
-      if (bundled) mineFixture = { ...mineFixture, [source]: { status: 503, message: "Optional source unavailable" } };
+      if (bundled) mineFixture = { ...mineFixture, [source]: { status: 403, message: "Optional source access denied" } };
       else apiMocks[source].mockRejectedValue(new Error("Optional source unavailable"));
       const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
       const root = createRoot(container);
@@ -1524,6 +1524,25 @@ describe("Inbox toolbar", () => {
       } finally { await act(() => root.unmount()); queryClient.clear(); }
     },
   );
+
+  it.each(["failureError", "contextError"] as const)("keeps loaded tasks quiet during a transient %s", async source => {
+    routerMock.location.pathname = "/inbox/mine";
+    setIssueRows([createIssue({ title: "Available task" })]);
+    mineFixture = { ...mineFixture, [source]: { status: 503, message: "tenant_app_unavailable" } };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    try {
+      await act(() => root.render(<QueryClientProvider client={client}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Available task"));
+      expect(document.body.textContent).not.toContain("Some inbox items couldn’t load.");
+      expect(document.body.textContent).not.toContain("tenant_app_unavailable");
+      const row = container.querySelector("[data-inbox-item]");
+      apiMocks.inboxMine.mockResolvedValue(createMineSnapshot({ issues: mineFixture.issues }));
+      await act(async () => { await client.invalidateQueries({ queryKey: queryKeys.issues.listMineByMe("company-1") }); });
+      expect(container.querySelector("[data-inbox-item]")).toBe(row);
+      expect(container.textContent).toContain("Available task");
+    } finally { await act(() => root.unmount()); client.clear(); }
+  });
 
   it("shows an error and retry instead of an endless skeleton when a required external status filter fails", async () => {
     routerMock.location.pathname = "/inbox/mine";
