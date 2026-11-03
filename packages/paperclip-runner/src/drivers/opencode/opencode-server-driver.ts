@@ -3376,8 +3376,13 @@ export function parseOpenCodeCustomProviders(
     // the agent-readable config: reject that entry. A credential-free override
     // only adds settings (models, limits), so it is kept as written.
     if (!baseUrl) {
-      if (rawKey) {
-        warnings.push(`PAPERCLIP_OPENCODE_PROVIDERS: provider "${providerId}" declares an API key without baseURL; the override was ignored. Add baseURL to use a custom credential.`);
+      // Any credential this entry can carry counts: a key, or a header whose
+      // name and value are both operator-controlled. Header names are
+      // arbitrary, so an override without an endpoint cannot be proxied and is
+      // rejected whenever it declares one.
+      const declaredHeaders = isRecord(options.headers) ? Object.keys(options.headers).length : 0;
+      if (rawKey || declaredHeaders > 0) {
+        warnings.push(`PAPERCLIP_OPENCODE_PROVIDERS: provider "${providerId}" declares a credential without baseURL; the override was ignored. Add baseURL to use a custom credential.`);
         continue;
       }
       delete options.apiKey;

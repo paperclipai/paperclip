@@ -459,7 +459,15 @@ export function codexProviderToml(
   custom: { providers: Record<string, unknown>; modelProvider: string | null },
   managed: { providers: Record<string, unknown>; modelProvider: string } | null,
 ): { toml: string; modelProvider: string | null } {
-  const providers = { ...(managed?.providers ?? {}), ...custom.providers };
+  // Merge field by field. A partial override of an existing provider adds to it
+  // instead of replacing the table and dropping its endpoint or key reference.
+  const providers: Record<string, unknown> = { ...(managed?.providers ?? {}) };
+  for (const [providerId, block] of Object.entries(custom.providers)) {
+    const previous = providers[providerId];
+    providers[providerId] = isRecord(previous) && isRecord(block)
+      ? { ...previous, ...block }
+      : block;
+  }
   if (Object.keys(providers).length === 0) return { toml: "", modelProvider: null };
   const document: Record<string, unknown> = { model_providers: providers };
   // A custom selector wins; otherwise keep the managed one so a custom table

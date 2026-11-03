@@ -189,6 +189,17 @@ describe("parseOpenCodeCustomProviders", () => {
     expect(parsed.warnings).toEqual([]);
   });
 
+  it("rejects an override that declares headers without an endpoint", () => {
+    const parsed = parseOpenCodeCustomProviders({
+      PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
+        openai: { options: { headers: { Authorization: "Bearer literal-secret" } } },
+      }),
+    });
+
+    expect(parsed.providers).toEqual({});
+    expect(parsed.warnings[0]).toContain("without baseURL");
+  });
+
   it("rejects an override that declares a key without an endpoint", () => {
     const parsed = parseOpenCodeCustomProviders({
       PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({

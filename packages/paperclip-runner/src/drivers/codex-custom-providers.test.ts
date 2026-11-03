@@ -172,4 +172,24 @@ describe("codexCustomProviderToml", () => {
     });
     expect(skipped).toBe("");
   });
+
+  it("merges a partial override into the managed table", () => {
+    const { toml, modelProvider } = codexProviderToml(
+      codexCustomProviders({
+        PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({ providers: { paperclip: { name: "Custom name" } } }),
+      }),
+      {
+        providers: {
+          paperclip: { base_url: "https://managed.test", wire_api: "responses", env_key: "PAPERCLIP_AI_PROVIDER_KEY" },
+        },
+        modelProvider: "paperclip",
+      },
+    );
+
+    expect(modelProvider).toBe("paperclip");
+    expect(toml).toContain('name = "Custom name"');
+    // The managed endpoint and key reference survive the partial override.
+    expect(toml).toContain('base_url = "https://managed.test"');
+    expect(toml).toContain('env_key = "PAPERCLIP_AI_PROVIDER_KEY"');
+  });
 });
