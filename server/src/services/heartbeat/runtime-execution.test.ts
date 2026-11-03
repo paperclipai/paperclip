@@ -1,3 +1,4 @@
+import * as nativeStopRecovery from "../native-runtime/native-cancellation-request.js";
 import { chmod, realpath } from "node:fs/promises";
 import { createServer } from "node:net";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
@@ -167,6 +168,31 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       await expect(executeHeartbeatRuntime(db, input)).rejects.toThrow();
       expect(adapter.execute).not.toHaveBeenCalled();
     } finally {
+      keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
+    }
+  });
+
+  it("allows claimed remote Stop recovery when the observer sink is unavailable", async () => {
+    const { input, run } = await fixture(true);
+    const keys = ["PAPERCLIP_OBSERVER_SINK_SOCKET", "PAPERCLIP_OBSERVER_SINK_COMPANY_ID", "PAPERCLIP_OBSERVER_SINK_AGENT_ID"] as const;
+    const saved = keys.map(key => process.env[key]);
+    process.env.PAPERCLIP_OBSERVER_SINK_SOCKET = join(await realpath(home), "missing-stop-observer.sock");
+    process.env.PAPERCLIP_OBSERVER_SINK_COMPANY_ID = run.companyId;
+    process.env.PAPERCLIP_OBSERVER_SINK_AGENT_ID = run.agentId;
+    const leaseOwner = randomUUID();
+    input.runtime.runOptions.nativeLeaseOwner = leaseOwner;
+    input.runtime.runOptions.nativeRestartRecovery = { kind: "reattach_remote_runner", runId: run.id, leaseOwner,
+      controllerGeneration: 1, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+      remote: { providerLeaseId: "fictional", remoteCwd: "/workspace" } };
+    const claim = vi.spyOn(nativeStopRecovery, "readClaimedNativeStopRecovery").mockResolvedValue(true);
+    const backend = vi.fn(() => ({} as never));
+    input.options.nativeSessionBackendFactory = backend;
+    try {
+      await executeHeartbeatRuntime(db, input);
+      expect(backend).toHaveBeenCalledWith(expect.anything(), { recoveryPurpose: "stop_cleanup" });
+      expect(executePaperclipNativeSession).toHaveBeenCalledOnce();
+    } finally {
+      claim.mockRestore();
       keys.forEach((key, i) => { if (saved[i] === undefined) delete process.env[key]; else process.env[key] = saved[i]; });
     }
   });

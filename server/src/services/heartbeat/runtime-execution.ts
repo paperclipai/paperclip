@@ -519,8 +519,14 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
   );
   let observerDelivery: Awaited<ReturnType<typeof startRunObserverDelivery>> = null;
   try {
-    observerDelivery = await startRunObserverDelivery(db, { id: run.id, companyId: run.companyId, agentId: run.agentId },
-      observerDeliveryConfig(process.env));
+    const observerConfig = observerDeliveryConfig(process.env);
+    const stopRecovery = observerConfig && observerConfig.companyId === run.companyId && observerConfig.agentId === run.agentId
+      && nativeRuntimeResolution.kind === "native" && runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
+      && await readClaimedNativeStopRecovery(db, run, runOptions.nativeLeaseOwner);
+    // An already-claimed Stop recovery must reach its termination backend even
+    // when no observer sink is available. It must not issue a fresh capability.
+    if (!stopRecovery) observerDelivery = await startRunObserverDelivery(db,
+      { id: run.id, companyId: run.companyId, agentId: run.agentId }, observerConfig);
     if (nativeRuntimeResolution.kind === "native") {
       if (!nativeExecution || !nativeRunnerInstanceId)
         throw new Error("native_runtime_selection_not_persisted");

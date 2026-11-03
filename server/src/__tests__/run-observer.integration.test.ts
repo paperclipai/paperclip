@@ -67,6 +67,63 @@ describe("run observer capability", () => {
     }
   });
 
+  it("closes without waiting for a stalled renewal and never sends its late result", async () => {
+    const directory = await mkdtemp(path.join(await realpath(tmpdir()), "observer-stalled-"));
+    await chmod(directory, 0o700);
+    const socketPath = path.join(directory, "sink.sock");
+    let messages = 0, queries = 0, reached!: () => void, release!: (rows: unknown[]) => void;
+    const waiting = new Promise<void>(resolve => { reached = resolve; });
+    const stalled = new Promise<unknown[]>(resolve => { release = resolve; });
+    const sink = createServer(socket => { socket.once("data", () => { messages++; socket.end("ok\n"); }); });
+    await new Promise<void>((resolve, reject) => sink.once("error", reject).listen(socketPath, resolve));
+    await chmod(socketPath, 0o600);
+    const fakeDb = { select: () => ({ from: () => ({ where: () => {
+      if (++queries === 1) return Promise.resolve([{ status: "running", resultJson: null }]);
+      reached(); return stalled;
+    } }) }) } as unknown as typeof server.db;
+    const run = { id: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
+    const delivery = await startRunObserverDelivery(fakeDb, run,
+      { socketPath, companyId: run.companyId, agentId: run.agentId }, { refreshMs: 100 });
+    try {
+      await waiting;
+      const start = Date.now();
+      await delivery!.close();
+      expect(Date.now() - start).toBeLessThan(500);
+      release([{ status: "running", resultJson: null }]);
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(messages).toBe(1);
+    } finally {
+      delivery?.close(); release([]);
+      await new Promise<void>(resolve => sink.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("stops scheduling checks after the run is no longer active", async () => {
+    const directory = await mkdtemp(path.join(await realpath(tmpdir()), "observer-finished-"));
+    await chmod(directory, 0o700);
+    const socketPath = path.join(directory, "sink.sock");
+    let queries = 0;
+    const sink = createServer(socket => { socket.once("data", () => socket.end("ok\n")); });
+    await new Promise<void>((resolve, reject) => sink.once("error", reject).listen(socketPath, resolve));
+    await chmod(socketPath, 0o600);
+    const fakeDb = { select: () => ({ from: () => ({ where: async () =>
+      [{ status: ++queries === 1 ? "running" : "cancelled", resultJson: null }] }) }) } as unknown as typeof server.db;
+    const run = { id: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
+    const delivery = await startRunObserverDelivery(fakeDb, run,
+      { socketPath, companyId: run.companyId, agentId: run.agentId }, { refreshMs: 100 });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 350));
+      expect(queries).toBe(2);
+      await new Promise(resolve => setTimeout(resolve, 250));
+      expect(queries).toBe(2);
+    } finally {
+      delivery?.close();
+      await new Promise<void>(resolve => sink.close(() => resolve()));
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("renews the same run capability after the sink restarts without replaying work", async () => {
     const f = await server.fixture({ connectionScenario: "fresh" });
     const directory = await mkdtemp(path.join(await realpath(tmpdir()), "observer-restart-"));
