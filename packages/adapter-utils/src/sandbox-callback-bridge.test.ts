@@ -1816,6 +1816,47 @@ describe("sandbox callback bridge", () => {
     }
   });
 
+  function bridgeRunnerReporting(ready: Record<string, unknown>) {
+    const scripts: string[] = [];
+    const runner = {
+      execute: vi.fn(async (input: { args?: string[] }) => {
+        scripts.push(input.args?.[1] ?? "");
+        return {
+          exitCode: 0, signal: null, timedOut: false, stderr: "", pid: null,
+          startedAt: new Date().toISOString(), stdout: JSON.stringify(ready),
+        };
+      }),
+    };
+    return { runner, scripts };
+  }
+
+  it("stops the bridge by the pid the gateway reported in ready.json, not the shell's $!", async () => {
+    const { runner, scripts } = bridgeRunnerReporting({ host: "127.0.0.1", port: 3101, pid: 42000 });
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner, remoteCwd: "/workspace", assetRemoteDir: "/workspace/assets",
+      queueDir: "/workspace/queue", bridgeToken: "private-bridge-token", timeoutMs: 30_000,
+    });
+    expect(bridge.pid).toBe(42000);
+    await bridge.stop();
+    const stopScript = scripts.at(-1) ?? "";
+    expect(stopScript).toContain("pid=42000");
+    expect(stopScript).toContain('kill "$pid"');
+    expect(stopScript).not.toContain("cat ");
+  });
+
+  it("falls back to the pid file when ready.json carries no pid", async () => {
+    const { runner, scripts } = bridgeRunnerReporting({ host: "127.0.0.1", port: 3101 });
+    const bridge = await startSandboxCallbackBridgeServer({
+      runner, remoteCwd: "/workspace", assetRemoteDir: "/workspace/assets",
+      queueDir: "/workspace/queue", bridgeToken: "private-bridge-token", timeoutMs: 30_000,
+    });
+    expect(bridge.pid).toBe(0);
+    await bridge.stop();
+    const stopScript = scripts.at(-1) ?? "";
+    expect(stopScript).toContain("server.pid");
+    expect(stopScript).toContain('kill "$pid"');
+  });
+
   it("marks command-managed bridge operations with the bridge execution channel", async () => {
     const runner = {
       execute: vi.fn(async () => ({
@@ -3202,54 +3243,6 @@ describe("sandbox callback bridge", () => {
 
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("Unsupported PAPERCLIP_API_BRIDGE_MODE: totally_unknown_mode");
-  }, 15_000);
-
-  it("claims the pid file with the gateway's own pid before it reports ready", async () => {
-    // The host records `$!` of `nohup node ... &` in server.pid. When `node`
-    // on the remote PATH is a version-manager shim, `$!` is the shim and the
-    // real server is its child, so stop() killed the shim and leaked the
-    // server after every run (#18096). The gateway therefore overwrites the
-    // pid file with its own pid before it writes ready.json.
-    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-pid-file-"));
-    cleanupDirs.push(rootDir);
-    const entrypoint = path.join(rootDir, "paperclip-bridge-server.mjs");
-    await writeFile(entrypoint, getSandboxCallbackBridgeServerSource(), "utf8");
-    const queueDir = path.join(rootDir, "queue");
-    await mkdir(queueDir, { recursive: true });
-    const pidFile = path.join(queueDir, "server.pid");
-    const readyFile = path.join(queueDir, "ready.json");
-    await writeFile(pidFile, "999999\n", "utf8"); // what the start script wrote: the shim's pid
-
-    const child = spawn(process.execPath, [entrypoint], {
-      env: {
-        ...process.env,
-        PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
-        PAPERCLIP_BRIDGE_TOKEN: "test-token",
-        PAPERCLIP_BRIDGE_PORT: "0",
-      },
-      stdio: ["ignore", "ignore", "pipe"],
-    });
-    cleanupFns.push(async () => {
-      child.kill();
-    });
-    let stderr = "";
-    child.stderr.on("data", (chunk) => {
-      stderr += chunk;
-    });
-
-    const deadline = Date.now() + 10_000;
-    let ready: { pid?: number } | null = null;
-    while (Date.now() < deadline) {
-      try {
-        ready = JSON.parse(await readFile(readyFile, "utf8")) as { pid?: number };
-        break;
-      } catch {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-    }
-    expect(ready, "gateway never wrote ready.json. stderr: " + stderr).not.toBeNull();
-    expect(ready?.pid).toBe(child.pid);
-    expect((await readFile(pidFile, "utf8")).trim()).toBe(String(child.pid));
   }, 15_000);
 
   it("test_http2_gateway_writes_no_frame_between_ready_and_the_preface", async () => {

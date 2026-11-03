@@ -1801,19 +1801,22 @@ export async function startSandboxCallbackBridgeServer(input: {
       ? readyData.baseUrl.trim()
       : `http://${host}:${port}`;
 
+  const serverPid =
+    typeof readyData.pid === "number" && Number.isInteger(readyData.pid) && readyData.pid > 0 ? readyData.pid : 0;
+
   return {
     baseUrl,
     host,
     port,
-    pid: typeof readyData.pid === "number" && Number.isFinite(readyData.pid) ? readyData.pid : 0,
+    pid: serverPid,
     directories,
     stop: async () => {
       const stopResult = await runSandboxBridgeControlCommand(input.runner, {
         command: shellCommand,
         args: shellCommandArgs(
           [
-            `if [ -s ${shellQuote(directories.pidFile)} ]; then`,
-            `  pid="$(cat ${shellQuote(directories.pidFile)})"`,
+            serverPid > 0 ? `pid=${serverPid}` : `pid="$(cat ${shellQuote(directories.pidFile)} 2>/dev/null)"`,
+            `if [ -n "$pid" ]; then`,
             "  kill \"$pid\" 2>/dev/null || true",
             "  i=0",
             "  while kill -0 \"$pid\" 2>/dev/null && [ \"$i\" -lt 40 ]; do",
@@ -2315,7 +2318,6 @@ async function runFileGateway() {
   const responsesDir = path.posix.join(queueDir, "responses");
   const logsDir = path.posix.join(queueDir, "logs");
   const readyFile = path.posix.join(queueDir, "ready.json");
-  const pidFile = path.posix.join(queueDir, "server.pid");
 
   async function queueDepth() {
     const entries = await fs.readdir(requestsDir, { withFileTypes: true }).catch(() => []);
@@ -2523,14 +2525,6 @@ async function runFileGateway() {
       baseUrl: \`http://\${host}:\${address.port}\`,
       startedAt: new Date().toISOString(),
     };
-    // The host's start script records \`$!\` in the pid file, but when
-    // \`node\` on the remote PATH is a version-manager shim (Volta, fnm, ...)
-    // that is the shim's pid and the real server is its child. stop() kills
-    // what the pid file names, so the shim died and this server lived on under
-    // PID 1 after every run. Claim the file with our own pid before readiness.
-    const tempPidFile = \`\${pidFile}.tmp\`;
-    await fs.writeFile(tempPidFile, String(process.pid) + "\\n", "utf8");
-    await fs.rename(tempPidFile, pidFile);
     const tempReadyFile = \`\${readyFile}.tmp\`;
     await fs.writeFile(tempReadyFile, JSON.stringify(ready), "utf8");
     await fs.rename(tempReadyFile, readyFile);
