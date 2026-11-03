@@ -240,7 +240,7 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
     return journal;
   }
 
-  it("settles a failed probe journal before another provider starts for the same Google account", async () => {
+  it("runs another provider while the same Google account retains failed probe cleanup", async () => {
     const f = await fixture("subscription");
     const replacement = googleCredential("recovered-probe-project");
     const journalPath = quotaCredentialRecoveryPath(f.companyId, f.saved.grantId);
@@ -253,9 +253,8 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
       return realOpen(...args);
     });
     let originalHome: string | undefined;
-    const provider = vi.fn(async (runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>>) => {
-      expect(await readFile(join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json"), "utf8")).toBe(replacement);
-    });
+    const provider = vi.fn(async (runtime: Awaited<ReturnType<typeof prepareManagedAiRuntime>>) =>
+      readFile(join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json"), "utf8"));
     try {
       await expect(withManagedAiProbe(db, f.runtime, async runtime => {
         originalHome = runtime.home;
@@ -263,12 +262,13 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
         unavailable = true;
       })).rejects.toThrow("fixture Google journal unavailable");
       await expect(access(originalHome!)).resolves.toBeUndefined();
-      await expect(withManagedAiProbe(db, f.runtime, provider)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
-      expect(provider).not.toHaveBeenCalled();
+      await expect(withManagedAiProbe(db, f.runtime, provider)).resolves.toBe(f.credential);
+      expect(provider).toHaveBeenCalledOnce();
       expect(await f.service.credential(await f.service.select(f.select))).toBe(f.credential);
       unavailable = false;
-      await withManagedAiProbe(db, f.runtime, provider);
-      expect(provider).toHaveBeenCalledOnce();
+      await reconcileRetainedGoogleCleanup({ companyId: f.companyId, accountKey: f.saved.grantId });
+      await expect(withManagedAiProbe(db, f.runtime, provider)).resolves.toBe(replacement);
+      expect(provider).toHaveBeenCalledTimes(2);
       await expect(access(originalHome!)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await f.service.credential(await f.service.select(f.select))).toBe(replacement);
       expect(await quotaCredentialRecovery(f.companyId, f.saved.grantId).read()).toBeNull();
@@ -276,7 +276,7 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
     } finally { unavailable = false; open.mockRestore(); }
   });
 
-  it("lets retirement cleanup acquire the credential lock before another account use joins it", async () => {
+  it("reads Google credentials without joining an unfinished retirement cleanup", async () => {
     const f = await fixture("subscription"), runtime = await prepareManagedAiRuntime(db, f.runtime);
     const replacement = googleCredential("retirement-concurrency-project");
     await writeFile(join(String(runtime.config.env.GEMINI_HOME), "antigravity-acp", "acp_token.json"), replacement);
@@ -303,9 +303,10 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
     const using = f.service.runtimeCredential(f.selection);
     void using.catch(() => undefined);
     try {
-      if (requestedLock) await credentialLockEntered;
+      await expect(using).resolves.toBe(f.credential);
+      expect(requestedLock).toBe(false);
       release();
-      await expect(using).resolves.toBe(replacement);
+      await reconcileRetainedGoogleCleanup(scope);
       await expect(access(runtime.home!)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await f.service.credential(await f.service.select(f.select))).toBe(replacement);
       expect(request).not.toHaveBeenCalled();
@@ -318,18 +319,16 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
     }
   });
 
-  it("defers credential use when another retained owner arrives before lock acquisition", async () => {
+  it("reads Google credentials while another retained owner is still live", async () => {
     const f = await fixture("subscription"), scope = { companyId: f.companyId, accountKey: f.saved.grantId };
     let retire!: () => void;
     const retired = new Promise<void>(resolve => { retire = resolve; });
     const cleanup = vi.fn(async () => {});
-    const originalLock = codexAdapter.withAccountHomeSecretMutationLock;
-    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock").mockImplementationOnce((env, company, callback) => {
-      retainGoogleCredentialCleanup({ scope, cleanup, retired });
-      return originalLock(env, company, callback);
-    });
+    retainGoogleCredentialCleanup({ scope, cleanup, retired });
+    const lock = vi.spyOn(codexAdapter, "withAccountHomeSecretMutationLock");
     try {
-      await expect(f.service.runtimeCredential(f.selection)).rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+      await expect(f.service.runtimeCredential(f.selection)).resolves.toBe(f.credential);
+      expect(lock).not.toHaveBeenCalled();
       expect(cleanup).not.toHaveBeenCalled();
       expect(request).not.toHaveBeenCalled();
     } finally { lock.mockRestore(); retire(); await reconcileRetainedGoogleCleanup(scope); }
@@ -352,8 +351,7 @@ describeDatabase("Google AI connection authority with real PostgreSQL", () => {
     try {
       await codexAdapter.withAccountHomeSecretMutationLock(undefined, f.companyId, async () => {
         retire(); await cleanupEntered;
-        await expect(f.service.runtimeCredential(f.selection, { credentialLockHeld: true }))
-          .rejects.toMatchObject({ details: { code: "ai_connection_busy" } });
+        await expect(f.service.runtimeCredential(f.selection)).resolves.toBe(f.credential);
         expect(failedLock).toBe(false);
         expect(finished).toBe(false);
       });
