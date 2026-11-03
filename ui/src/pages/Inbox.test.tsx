@@ -287,6 +287,7 @@ function createApproval(overrides: Partial<Approval> = {}): Approval {
     id: "approval-1",
     companyId: "company-1",
     type: "hire_agent",
+    originRunId: null,
     requestedByAgentId: null,
     requestedByUserId: "local-board",
     status: "pending",
