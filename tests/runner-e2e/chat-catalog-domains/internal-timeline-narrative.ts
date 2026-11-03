@@ -17,7 +17,7 @@ export function truthfulTimelineAccount(input: {
   const humanActor = `\\b(?:${humanActors})\\b`;
   const assignment = "\\b(?:reassign(?:ed|ment)?|assign(?:ed|ment)?|hand(?:ed)?(?:\\s+\\w+){0,4}\\s+(?:off|over)|handed|handoff)\\b";
   const target = `\\bto\\s+${escape(repairWorker)}\\b`;
-  const actorAction = `${humanActor}(?:\\s+(?:then|later|now|personally|explicitly|actually|had|has|also)){0,3}\\s+${assignment}`;
+  const actorAction = `${humanActor}(?:\\s+(?:then|later|now|personally|explicitly|actually|had|has|have|also)){0,3}\\s+${assignment}`;
   const passiveAction = `\\b(?:was|got|had been|has been)\\s+${assignment}`;
   const handoffToRepairWorker = new RegExp(`${actorAction}[^.!?\\n]{0,60}${target}|${passiveAction}[^.!?\\n]{0,60}${target}[^.!?\\n]{0,40}\\bby\\s+(?:(?:the|a|an)\\s+)?${humanActor}`, "i");
   const differentNamedPerson = (text: string) => {
