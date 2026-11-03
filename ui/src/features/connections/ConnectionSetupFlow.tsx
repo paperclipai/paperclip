@@ -1,3 +1,4 @@
+import { bindAccount } from "@/lib/account-scope";
 import { StepHeader } from "./ConnectionSetupHeader";
 import { GoogleWorkspaceServicesDialog } from "./GoogleWorkspaceServices";
 import type { GoogleWorkspaceServiceSelection } from "@paperclipai/shared";
@@ -803,6 +804,27 @@ function StandardConnectionSetupFlow({
   const [dialogOAuthConnectionId, setDialogOAuthConnectionId] = useState<string | null>(null);
   const [authorizationFallbackUrl, setAuthorizationFallbackUrl] = useState<string | null>(null);
   const oauthHandoffAbortRef = useRef<AbortController | null>(null);
+  const oauthLookupScope = JSON.stringify([selectedCompanyId, requestedAppKey, resumeConnectionId, connectionIntentId, credentialSource, host, createNewConnection]);
+  const oauthLookupScopeRef = useRef(oauthLookupScope);
+  oauthLookupScopeRef.current = oauthLookupScope;
+  const pendingOAuthLookupRef = useRef<{ scope: string; account: ReturnType<typeof bindAccount> } | null>(null);
+  const cancelOAuthLookup = useCallback(() => {
+    if (!pendingOAuthLookupRef.current) return false;
+    pendingOAuthLookupRef.current = null;
+    directOAuthRetryingRef.current = false;
+    oauthPopupRef.current?.close();
+    oauthPopupRef.current = null;
+    return true;
+  }, []);
+  useEffect(() => {
+    if (pendingOAuthLookupRef.current && pendingOAuthLookupRef.current.scope !== oauthLookupScope) {
+      cancelOAuthLookup();
+      setOAuthPhase("entry");
+      setOAuthError(null);
+    }
+  }, [cancelOAuthLookup, oauthLookupScope]);
+  useEffect(() => () => { cancelOAuthLookup(); }, [cancelOAuthLookup]);
+
   const [showConnectionChoice, setShowConnectionChoice] = useState(
     existingConnections.length > 0 && Boolean(onUseExisting),
   );
@@ -1026,6 +1048,7 @@ function StandardConnectionSetupFlow({
   };
 
   const backToGallery = () => {
+    cancelOAuthLookup();
     // Back is a wizard transition, so keep the selected app and entered draft
     // intact. Picking another connector will replace that state explicitly.
     setStep("gallery");
@@ -2294,6 +2317,7 @@ function StandardConnectionSetupFlow({
         settingsValid={additionalSettingsValid && instructionsValid}
         onOpenAuthorization={openAuthorizationTab}
         onRetry={async () => {
+          if (pendingOAuthLookupRef.current) return;
           directOAuthAccessConfirmedRef.current = true;
           setOAuthError(null);
           setOAuthPhase("starting");
@@ -2313,12 +2337,16 @@ function StandardConnectionSetupFlow({
           // recovers an earlier create whose response never reached this tab.
           // Reserve the dialog window while this click still has user activation.
           if (automaticOAuthEntry?.slug !== "google-workspace" || workspaceSelectionRef.current) reserveOAuthPopup();
+          const lookup = { scope: oauthLookupScope, account: bindAccount(queryClient) };
+          pendingOAuthLookupRef.current = lookup;
+          const isCurrentLookup = () => pendingOAuthLookupRef.current === lookup && oauthLookupScopeRef.current === lookup.scope && lookup.account.isCurrentScope();
           directOAuthRetryingRef.current = true;
           try {
             const [applications, connections] = await Promise.all([
               toolsApi.listApplications(selectedCompanyId!, { cache: "no-store", fresh: true }),
               toolsApi.listConnections(selectedCompanyId!, { cache: "no-store", fresh: true }),
             ]);
+            if (!isCurrentLookup()) return;
             queryClient.setQueryData(queryKeys.tools.applications(selectedCompanyId!), applications);
             queryClient.setQueryData(queryKeys.tools.connections(selectedCompanyId!), connections);
             const refreshedResumeConnection = resumeConnectionId
@@ -2351,12 +2379,22 @@ function StandardConnectionSetupFlow({
               connectApp(automaticOAuthEntry);
             }
           } catch {
+            if (!isCurrentLookup()) return;
             oauthPopupRef.current?.close();
             oauthPopupRef.current = null;
             setOAuthPhase("error");
             setOAuthError("Paperclip couldn’t check for an existing connection. Try again.");
           } finally {
-            directOAuthRetryingRef.current = false;
+            if (pendingOAuthLookupRef.current === lookup) {
+              if (!isCurrentLookup()) {
+                cancelOAuthLookup();
+                setOAuthPhase("entry");
+                setOAuthError(null);
+              } else {
+                pendingOAuthLookupRef.current = null;
+                directOAuthRetryingRef.current = false;
+              }
+            }
           }
         }}
         onBack={() => {
@@ -2366,6 +2404,7 @@ function StandardConnectionSetupFlow({
           backToGallery();
         }}
         onCancel={() => {
+          cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
           (onCancel ?? (() => navigate("/apps")))();
         }}
@@ -2411,6 +2450,7 @@ function StandardConnectionSetupFlow({
           setOAuthError(null);
         }}
         onCancel={() => {
+          cancelOAuthLookup();
           oauthHandoffAbortRef.current?.abort();
           (onCancel ?? (() => navigate("/apps")))();
         }}
