@@ -336,6 +336,72 @@ fn cancellation_stops_the_actual_process_and_retains_terminal_facts() {
             && event.payload["runTerminalState"] == "cancelled"));
 }
 
+fn assert_cleanup_retains_owned_process_group(poison: bool) {
+    use std::io::{BufRead, BufReader};
+    use std::os::unix::process::CommandExt;
+
+    let fixture = Fixture::new();
+    let mut executor = fixture.executor();
+    executor.execute(&fixture.prepare()).unwrap();
+    let group = executor.process.as_ref().unwrap().process_group_id();
+    let mut member = ProcessCommand::new("sh")
+        .args(["-c", "printf 'ready\\n'; exec sleep 15"])
+        .process_group(i32::try_from(group).unwrap())
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let mut ready = String::new();
+    BufReader::new(member.stdout.take().unwrap())
+        .read_line(&mut ready)
+        .unwrap();
+    assert_eq!(ready, "ready\n");
+    let stopped = if poison {
+        executor.poison();
+        None
+    } else {
+        Some(executor.execute(&command("turn.stop", json!({}))))
+    };
+    let retained = executor.state.as_ref().unwrap().process_group;
+    let persisted: Value = serde_json::from_slice(
+        &fs::read(fixture.root.join(EXTENSION_PROVIDER_STATE_FILE)).unwrap(),
+    )
+    .unwrap();
+    let group_still_present = require_group_absent(group).is_err();
+    member.wait().unwrap();
+
+    assert!(
+        group_still_present,
+        "fixture member was reaped before cleanup proof"
+    );
+    if let Some(result) = stopped {
+        assert!(result.is_err(), "Stop confirmed an unretired process group");
+    }
+    assert_eq!(retained, Some(group));
+    assert_eq!(persisted["processGroup"], json!(group));
+    assert!(executor.process.is_none());
+    require_group_absent(group).unwrap();
+    let retried = executor.execute(&command("turn.stop", json!({}))).unwrap();
+    assert_eq!(retried.result["providerExitConfirmed"], true);
+    assert!(executor.state.as_ref().unwrap().process_group.is_none());
+    let persisted: Value = serde_json::from_slice(
+        &fs::read(fixture.root.join(EXTENSION_PROVIDER_STATE_FILE)).unwrap(),
+    )
+    .unwrap();
+    assert!(persisted["processGroup"].is_null());
+}
+
+#[test]
+fn stop_retains_cleanup_ownership_until_the_whole_process_group_is_absent() {
+    assert_cleanup_retains_owned_process_group(false);
+}
+
+#[test]
+fn protocol_poison_retains_cleanup_ownership_until_the_whole_process_group_is_absent() {
+    assert_cleanup_retains_owned_process_group(true);
+}
+
 #[test]
 fn checkpoint_recovers_only_with_the_same_release_and_stopped_process() {
     let fixture = Fixture::new();

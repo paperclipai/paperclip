@@ -99,14 +99,7 @@ impl ExtensionCommandExecutor {
                 Ok(())
             });
         }
-        if let Some(mut process) = self.process.take() {
-            if process.terminate_group().is_ok() {
-                let _ = self.update(|state| {
-                    state.process_group = None;
-                    Ok(())
-                });
-            }
-        }
+        let _ = self.stop_process();
     }
     pub(super) fn request(
         &mut self,
@@ -267,12 +260,25 @@ impl ExtensionCommandExecutor {
         Ok(())
     }
     pub(super) fn stop_process(&mut self) -> Result<(), DurableRunnerError> {
+        let group = self
+            .process
+            .as_ref()
+            .map(SupervisedProcess::process_group_id)
+            .or_else(|| self.state.as_ref().and_then(|state| state.process_group));
         if let Some(mut process) = self.process.take() {
             process
                 .terminate_group()
                 .map_err(|_| invalid("extension process-group cleanup is unconfirmed"))?;
-        } else if let Some(group) = self.state.as_ref().and_then(|state| state.process_group) {
-            require_group_absent(group)?;
+        }
+        if let Some(group) = group {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                match require_group_absent(group) {
+                    Ok(()) => break,
+                    Err(error) if Instant::now() >= deadline => return Err(error),
+                    Err(_) => std::thread::sleep(Duration::from_millis(5)),
+                }
+            }
         }
         if self.state.is_some() {
             self.update(|state| {
