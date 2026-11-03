@@ -44,8 +44,10 @@ footer: do not render Save & exit in a separate parent block below it. Check thi
 alignment in every step and conditional state, not just the first screen.
 
 Completed Slack setup is a success view: show the full agent avatar, success message,
-and one centered Done action. Omit Save & exit after the connection has been
-confirmed. The shared footer rule applies to its unfinished setup steps.
+and one centered Done action. Retain an Open Slack link in the success message
+and on the completed connection page so automatic completion does not remove
+the way to use the bot. Omit Save & exit after the connection has been confirmed.
+The shared footer rule applies to its unfinished setup steps.
 
 The New task form opens immediately. Load its code with the board and fill
 agent and project choices in place as their requests finish. Keep text entered

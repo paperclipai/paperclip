@@ -23,6 +23,7 @@ never start a server or depend on a tenant filesystem.
 
 | Journey | Required starting state | Observed outcome |
 | --- | --- | --- |
+| `routine-scheduled-run` | Native agent; one work run; an owned project and routine | Browser-create a routine, enable its minute schedule, verify one scheduled invocation and run-attributed saved output, then pause and observe the next schedule boundary with no new work |
 | `file-input-answer` | Native agent; one work run; synthetic CSV uploaded through the composer | Verify original uploaded bytes, independently calculated accepted-row count and units, a run-attributed task document after reload, and preservation of the input attachment. The task prompt contains neither the random file reference nor the answers |
 | `inbox-triage` | Signed-in board user; a separately authenticated QA human author; a fresh self-assigned task; zero model runs | Mark an unread task read, archive it through Mine, reload both views, verify unchanged work status, then observe a real Blocked transition resurface it through the normal archive policy |
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
@@ -472,3 +473,10 @@ A candidate's presence in this source catalog is not qualification. It enters th
 saved daily TestOps plan only after an inspected real QA Cloud pass including
 usage, artifact/decision evidence and cleanup. The daily driver runs that saved
 plan against the registered QA tenant; it does not substitute a local instance.
+
+The scheduled-routine pause oracle uses a full 65 seconds of monotonic elapsed
+time after both pause acknowledgement and work completion. Its enable receipt
+uses the server's timestamp; client and server wall clocks are never compared.
+The journey retries only transient read transport failures within the existing
+phase and journey deadlines. Private read-failure receipts retain those
+observations. Mutations, user messages and agent work are never replayed.

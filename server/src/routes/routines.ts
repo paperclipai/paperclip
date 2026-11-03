@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type RequestHandler } from "express";
 import type { Db } from "@paperclipai/db";
 import {
   createRoutineSchema,
@@ -653,7 +653,7 @@ export function routineRoutes(
     res.status(202).json(run);
   });
 
-  router.post("/routine-triggers/public/:publicId/fire", async (req, res) => {
+  const receiveWebhook = (sentryRunFailure = false): RequestHandler => async (req, res) => {
     if (!req.is("application/json")) {
       throw unsupportedMediaType("Send the webhook payload with Content-Type: application/json");
     }
@@ -661,6 +661,7 @@ export function routineRoutes(
       throw badRequest("Webhook payload must be a JSON object");
     }
     const result = await svc.firePublicTrigger(req.params.publicId as string, {
+      ...(sentryRunFailure ? { sentryRunFailure: true } : {}),
       authorizationHeader: req.header("authorization"),
       signatureHeader: req.header("x-paperclip-signature"),
       hubSignatureHeader: req.header("x-hub-signature-256"),
@@ -671,7 +672,9 @@ export function routineRoutes(
       payload: typeof req.body === "object" && req.body !== null ? req.body as Record<string, unknown> : null,
     });
     res.status(202).json(result);
-  });
+  };
+  router.post("/routine-triggers/public/:publicId/fire", receiveWebhook());
+  router.post("/routine-triggers/public/:publicId/sentry-run-failures", receiveWebhook(true));
 
   return router;
 }

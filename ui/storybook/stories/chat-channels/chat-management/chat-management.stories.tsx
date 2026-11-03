@@ -166,6 +166,7 @@ export const TestMessage: Story = {
     await expect(await canvas.findByRole("button", { name: "Test message sent" })).toBeVisible();
     await expect(canvas.queryByRole("link", { name: "View message" })).not.toBeInTheDocument();
     await expect(canvas.getByRole("link", { name: "Open Slack configuration" })).toHaveAttribute("href", "https://api.slack.com/apps/ASTORY/oauth");
+    await expect(canvas.getByRole("link", { name: /^Open Slack$/ })).toHaveAttribute("href", "https://app.slack.com");
     await expect(canvas.queryByText("Agent avatar")).not.toBeInTheDocument();
     await expect(canvas.queryByText("Message in a channel")).not.toBeInTheDocument();
   },

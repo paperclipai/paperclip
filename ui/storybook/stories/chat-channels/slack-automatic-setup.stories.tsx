@@ -35,6 +35,7 @@ export const SendAMessage: Story = { name: "04 · Send a message", args: { scena
 export const Success: Story = { name: "04 · Success", args: { scenario: "success" }, play: async ({ canvasElement }) => {
   const canvas = within(canvasElement);
   await expect(await canvas.findByRole("heading", { name: "Success" })).toBeVisible();
+  await expect(canvas.getByRole("link", { name: /^Open Slack$/ })).toHaveAttribute("href", "https://app.slack.com/client/TSTORY/DSTORY");
 } };
 export const ChooseAgentSelected: Story = {
   name: "Choose agent · Advanced defaults", args: { scenario: "choose" }, parameters: { initialEntries: [`${start}&agentId=agent-codex`] },
