@@ -1,8 +1,13 @@
 //! Linux out-of-memory priority for Runner and the processes it supervises.
 
 use std::io;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const SCORE_RANGE: std::ops::RangeInclusive<i16> = -1000..=1000;
+
+// Set only by the launch flag, so a launcher that does not opt in keeps today's
+// inheritance even when Runner starts with a negative score.
+static RELEASE_SUPERVISED_PROCESSES: AtomicBool = AtomicBool::new(false);
 
 pub fn parse_oom_score_adj(value: &str) -> Option<i16> {
     value
@@ -15,6 +20,8 @@ pub fn parse_oom_score_adj(value: &str) -> Option<i16> {
 /// no default. A negative value needs privilege or a floor set by the launcher;
 /// callers treat a failure as non-fatal because it only leaves Runner killable.
 pub fn set_own_oom_score_adj(score: i16) -> io::Result<()> {
+    // The launcher opted in even if this write fails and Runner keeps its score.
+    RELEASE_SUPERVISED_PROCESSES.store(true, Ordering::Relaxed);
     #[cfg(target_os = "linux")]
     {
         std::fs::write("/proc/self/oom_score_adj", score.to_string())
@@ -29,12 +36,15 @@ pub fn set_own_oom_score_adj(score: i16) -> io::Result<()> {
     }
 }
 
-/// Children inherit Runner's score, and protection meant for Runner must not make
-/// harness and tool processes harder to kill than the Runner reporting on them.
+/// Children inherit Runner's score. With the launch flag set, protection meant for
+/// Runner must not make harness and tool processes as hard to kill as Runner.
 ///
 /// A fork in the window after exec keeps Runner's score. So does the child if this
 /// write fails, which leaves it no more protected than Runner, so it is not fatal.
 pub(crate) fn release_supervised_process(pid: u32) {
+    if !RELEASE_SUPERVISED_PROCESSES.load(Ordering::Relaxed) {
+        return;
+    }
     #[cfg(target_os = "linux")]
     if let Some(score) = std::fs::read_to_string("/proc/self/oom_score_adj")
         .ok()
