@@ -1,0 +1,205 @@
+{
+  "startedAt": "2026-11-03T21:34:05.755Z",
+  "config": {
+    "repository": "/private/tmp/native-ingestion-delivery-batching",
+    "origin": "http://127.0.0.1:3104",
+    "company": {
+      "id": "09885f08-ef5e-42e4-b87b-29575f393527",
+      "issuePrefix": "NAT"
+    },
+    "agent": {
+      "id": "41c128d6-d378-4f4c-9d68-939ac46697d7",
+      "name": "Live ingestion agent"
+    },
+    "evidenceDir": "/private/tmp/native-ingestion-live-proof-base61-b9",
+    "revision": "b9a66be242395a4bab671d512643e338fbac77fe",
+    "dataDir": "/private/tmp/paperclip-native-live-data-SJZHZZ",
+    "pid": 67350,
+    "build": {
+      "commit": "b9a66be242395a4bab671d512643e338fbac77fe",
+      "serverSha256": "7db3ab75d39e5d6a467f961a267991cc55781439572cc37e45b4599908d1e23b",
+      "uiSha256": "7b0deb598621b2d6a276263a05073eb8215008fa297ebc41975e4871b08f6529"
+    },
+    "platform": {
+      "node": "v26.4.0",
+      "os": "darwin",
+      "architecture": "arm64"
+    },
+    "provider": {
+      "kind": "opencode",
+      "model": "openrouter/deepseek/deepseek-v4-flash-0731"
+    }
+  },
+  "journeys": [
+    {
+      "kind": "stream-tool-result-reload",
+      "marker": "LIVE-INGESTION-1793741646239",
+      "status": "passed",
+      "issueId": "bda268d7-f40b-4572-b2d6-2b21fd5128fe",
+      "visibleDelta": {
+        "runId": "e51fe504-e971-4ba1-a146-d91b5b8c92ae",
+        "sourceEventId": "8f70aafb-262f-4091-8a9e-6da213aacc2c:e51fe504-e971-4ba1-a146-d91b5b8c92ae:68",
+        "sourceSeq": 68,
+        "emittedAt": "2026-11-03T21:34:39.482Z",
+        "visibleText": "Completed. Sent the START marker, inspected task documents (count: 0), delivered the twelve numbered sentences, and included LIVE-INGESTION-1793741646239-DONE. Task finished."
+      },
+      "firstVisibleAt": 1793741680262,
+      "streamingRunStatuses": [
+        {
+          "id": "e51fe504-e971-4ba1-a146-d91b5b8c92ae",
+          "status": "running",
+          "runtimeMode": "native",
+          "driverKind": "opencode_server",
+          "providerSessionId": "ses_e5caa7197ffe0i2yXDZpgkjmou",
+          "nativeSessionId": "5d0b36b7-e0c8-49e1-9e7b-6771395593a0",
+          "startedAt": "2026-11-03T21:34:07.427Z",
+          "finishedAt": null,
+          "error": null,
+          "nativePhase": "workspace_finalizing",
+          "provider": {
+            "kind": "opencode",
+            "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+            "permissionMode": "allow"
+          }
+        }
+      ],
+      "visibleBeforeTerminal": true,
+      "runs": [
+        {
+          "id": "e51fe504-e971-4ba1-a146-d91b5b8c92ae",
+          "status": "succeeded",
+          "runtimeMode": "native",
+          "driverKind": "opencode_server",
+          "providerSessionId": "ses_e5caa7197ffe0i2yXDZpgkjmou",
+          "nativeSessionId": "5d0b36b7-e0c8-49e1-9e7b-6771395593a0",
+          "startedAt": "2026-11-03T21:34:07.427Z",
+          "finishedAt": "2026-11-03T21:34:41.115Z",
+          "error": null,
+          "nativePhase": "committed",
+          "provider": {
+            "kind": "opencode",
+            "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+            "permissionMode": "allow"
+          }
+        }
+      ],
+      "eventCounts": {
+        "session.started": 1,
+        "session.capabilities.updated": 1,
+        "session.goal.snapshot": 1,
+        "item.completed": 17,
+        "turn.submitted": 1,
+        "harness.diagnostic": 2,
+        "turn.started": 1,
+        "turn.accepted": 1,
+        "tool.execution.started": 3,
+        "item.started": 5,
+        "tool.execution.progressed": 3,
+        "tool.execution.completed": 3,
+        "item.delta": 33,
+        "run.result.proposed": 1,
+        "turn.completed": 1,
+        "run.result.accepted": 1,
+        "run.terminal": 1
+      },
+      "toolEvidence": [
+        {
+          "eventType": "tool.execution.started",
+          "sourceEventId": "8f70aafb-262f-4091-8a9e-6da213aacc2c:e51fe504-e971-4ba1-a146-d91b5b8c92ae:16",
+          "sourceSeq": 16,
+          "name": "paperclip_list_task_documents",
+          "operation": "unknown",
+          "status": "running"
+        },
+        {
+          "eventType": "tool.execution.progressed",
+          "sourceEventId": "8f70aafb-262f-4091-8a9e-6da213aacc2c:e51fe504-e971-4ba1-a146-d91b5b8c92ae:19",
+          "sourceSeq": 19,
+          "name": "paperclip_list_task_documents",
+          "operation": "unknown",
+          "status": "running"
+        },
+        {
+          "eventType": "tool.execution.completed",
+          "sourceEventId": "8f70aafb-262f-4091-8a9e-6da213aacc2c:e51fe504-e971-4ba1-a146-d91b5b8c92ae:25",
+          "sourceSeq": 25,
+          "name": "paperclip_list_task_documents",
+          "operation": "unknown",
+          "status": "completed"
+        }
+      ],
+      "persistedAfterReload": true
+    },
+    {
+      "kind": "stop-live-provider",
+      "status": "passed",
+      "issueId": "224e4c2d-2c2b-40a2-9a1a-00324107c2ce",
+      "startedTools": [
+        {
+          "name": "paperclip_report_progress",
+          "operation": "unknown",
+          "sourceEventId": "2901c54d-9367-44e7-8106-b5652c7f3fb7:9807b34f-4325-462d-bcd2-4addf66696e3:14"
+        },
+        {
+          "name": "bash",
+          "operation": "unknown",
+          "sourceEventId": "2901c54d-9367-44e7-8106-b5652c7f3fb7:9807b34f-4325-462d-bcd2-4addf66696e3:21"
+        }
+      ],
+      "activeRunId": "9807b34f-4325-462d-bcd2-4addf66696e3",
+      "requestedAt": 1793741702357,
+      "acknowledgedAt": 1793741702838,
+      "run": {
+        "id": "9807b34f-4325-462d-bcd2-4addf66696e3",
+        "status": "cancelled",
+        "runtimeMode": "native",
+        "driverKind": "opencode_server",
+        "providerSessionId": "ses_e5ca9d521ffeueFZ6fehxzu4m2",
+        "nativeSessionId": "c05af93c-9841-48d0-9e30-64627ef8ef26",
+        "startedAt": "2026-11-03T21:34:45.913Z",
+        "finishedAt": "2026-11-03T21:35:02.584Z",
+        "error": "Cancelled by a board operator",
+        "nativePhase": "observed",
+        "provider": {
+          "kind": "opencode",
+          "model": "openrouter/deepseek/deepseek-v4-flash-0731",
+          "permissionMode": "allow"
+        },
+        "cancellation": {
+          "runId": "9807b34f-4325-462d-bcd2-4addf66696e3",
+          "scope": "run",
+          "schema": "paperclip.native-cancellation.v1",
+          "effects": [
+            "release_run_resources"
+          ],
+          "issueId": "224e4c2d-2c2b-40a2-9a1a-00324107c2ce",
+          "intentId": "native-cancellation:4c22f136-eff2-4b1b-a246-078dbe2a9308",
+          "companyId": "09885f08-ef5e-42e4-b87b-29575f393527",
+          "decisionId": null,
+          "dispatched": true,
+          "reasonCode": "cancellation_run_only",
+          "recordedAt": "2026-11-03T21:35:02.426Z",
+          "dispatchState": "acknowledged",
+          "intentAuditId": "caf271ae-08eb-4aae-9ccb-985bc825a6bb",
+          "acknowledgedAt": "2026-11-03T21:35:02.582Z",
+          "acknowledgementAuditId": "3500ea19-25e8-47c3-b132-98084238af76",
+          "priorCoordinatorDecisionId": null
+        }
+      },
+      "runIdsAfterReload": [
+        "9807b34f-4325-462d-bcd2-4addf66696e3"
+      ]
+    }
+  ],
+  "status": "passed",
+  "health": {
+    "status": "ok",
+    "gitCommit": "b9a66be242395a4bab671d512643e338fbac77fe"
+  },
+  "provider": {
+    "adapterType": "paperclip_runner",
+    "provider": "opencode",
+    "model": "openrouter/deepseek/deepseek-v4-flash-0731"
+  },
+  "finishedAt": "2026-11-03T21:35:04.145Z"
+}

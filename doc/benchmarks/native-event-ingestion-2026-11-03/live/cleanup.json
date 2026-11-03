@@ -1,0 +1,17 @@
+{
+  "startedAt": "2026-11-03T21:37:36.355Z",
+  "appPid": 67350,
+  "postgresPid": 69270,
+  "httpPort": 3104,
+  "postgresPort": 54333,
+  "removedOwnedDataDirs": [
+    "/private/tmp/paperclip-native-live-data-SJZHZZ"
+  ],
+  "errors": [],
+  "appAbsent": true,
+  "postgresAbsent": true,
+  "appPortClosed": true,
+  "postgresPortClosed": true,
+  "passed": true,
+  "finishedAt": "2026-11-03T21:37:37.457Z"
+}
