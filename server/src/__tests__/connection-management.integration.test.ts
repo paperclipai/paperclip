@@ -6,9 +6,10 @@ import { join } from "node:path";
 import { createServer } from "node:http";
 import { and, eq, sql } from "drizzle-orm";
 import { beforeAll, afterAll, describe, expect, it, vi } from "vitest";
-import { createDb, authUsers, activityLog, agentApiKeys, companies, companySecrets, companySecretVersions, chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolPolicies, toolRateLimitCounters, connectionGrants, connectionGrantMembers, connectionGrantDelegations, toolAccessAuditEvents, toolOauthStates, issueThreadInteractions, connectionIntentDeliveries, agents, companyMemberships, heartbeatRuns, issues, principalPermissionGrants, projects, toolApplications, toolConnections, toolConnectionInstalls, toolMcpGateways, toolMcpGatewayTokens, toolActionRequests, toolCatalogEntries, toolInvocations, toolCallEvents, toolProfiles, toolProfileBindings, plugins, adapterAuthSessions, environments, routines, chatGitHubReviews } from "@paperclipai/db";
+import { createDb, authUsers, activityLog, agentApiKeys, companies, companySecrets, companySecretVersions, chatConversations, chatDeliveries, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolPolicies, toolRateLimitCounters, connectionGrants, connectionGrantMembers, connectionGrantDelegations, toolAccessAuditEvents, toolOauthStates, issueThreadInteractions, connectionIntentDeliveries, agents, companyMemberships, heartbeatRuns, issues, principalPermissionGrants, projects, toolApplications, toolConnections, toolConnectionInstalls, aiConnectionPools, toolMcpGateways, toolMcpGatewayTokens, toolActionRequests, toolCatalogEntries, toolInvocations, toolCallEvents, toolProfileEntries, toolProfiles, toolProfileBindings, plugins, adapterAuthSessions, environments, routines, chatGitHubReviews } from "@paperclipai/db";
 import { findSatisfiedToolConnection, satisfiedConnectionIntentService } from "../services/satisfied-connection-intents.js";
 import { connectionManagementService, continuingConnectionManagement } from "../services/connection-management.js";
+import { aiConnectionService } from "../services/ai-connections.js";
 import { redactRunnerApiPayloads } from "../services/native-runtime/runner-api-log-redaction.js";
 import * as remoteEndpointGuard from "../services/remote-http-endpoint-guard.js";
 import * as remoteHttpFetch from "../services/remote-http-fetch.js";
@@ -87,13 +88,14 @@ describe("connection management with production default agents", () => {
       authority: new PaperclipRunnerToolAuthority(server.db, { companyId: base.companyId, agentId: agent.id, issueId: base.issueId, runId: base.runId, apiUrl: server.apiUrl, storage: server.storage }) };
   }
 
-  it("matches ordinary install capabilities on real PostgreSQL for scoped, retained and fallback resources", async () => {
+  it.each(["tool", "ai"] as const)("matches ordinary %s install capabilities on real PostgreSQL for scoped, retained and fallback resources", async (connectionPurpose) => {
     const f = await server.fixture({ connectionScenario: "fresh" });
     const candidateIds = [f.agentId, randomUUID(), randomUUID()];
     await server.db.insert(agents).values(candidateIds.slice(1).map((id, index) => ({ id, companyId: f.companyId, name: `Capability target ${index}`, adapterType: "process" })));
     const [application] = await server.db.insert(toolApplications).values({ companyId: f.companyId, name: "Capability differential", type: "mcp_http" }).returning();
     const [connection] = await server.db.insert(toolConnections).values({ companyId: f.companyId, applicationId: application.id,
-      uid: randomUUID(), name: "Capability differential", transport: "mcp_remote", authKind: "none", createdByUserId: "different-creator" }).returning();
+      uid: randomUUID(), name: "Capability differential", connectionPurpose,
+      transport: connectionPurpose === "ai" ? "runtime_auth" : "mcp_remote", authKind: "none", createdByUserId: "different-creator" }).returning();
     await server.db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.responsibleUserId!,
       permissionKey: "tools:manage_profiles", scope: { targetAgentIds: candidateIds.slice(0, 2) } });
     const service = connectionManagementService(server.db);
@@ -177,7 +179,7 @@ describe("connection management with production default agents", () => {
     expect(await faulting.describeAgentInstallCapabilities(localActor, resource, [candidateIds[1]])).toEqual([denied]);
   });
 
-  it("preserves the complete grants GET across human roles and denies a real install mutation after revocation", async () => {
+  it.each(["tool", "ai"] as const)("preserves the complete %s grants GET across human roles and denies a real install mutation after revocation", async (connectionPurpose) => {
     const f = await server.fixture({ connectionScenario: "fresh" });
     const candidateIds = [f.agentId, randomUUID(), randomUUID()];
     await server.db.insert(agents).values(candidateIds.slice(1).map((id, index) => ({ id, companyId: f.companyId, name: `Grant target ${index}`, adapterType: "process" })));
@@ -198,7 +200,8 @@ describe("connection management with production default agents", () => {
       scope: permissionKey === "tools:manage_profiles" ? { targetAgentIds: candidateIds.slice(0, 2) } : null })));
     const [application] = await server.db.insert(toolApplications).values({ companyId: f.companyId, name: "Grants response parity", type: "mcp_http" }).returning();
     const [connection] = await server.db.insert(toolConnections).values({ companyId: f.companyId, applicationId: application.id,
-      uid: randomUUID(), name: "Grants response parity", transport: "mcp_remote", authKind: "none", createdByUserId: users.creator }).returning();
+      uid: randomUUID(), name: "Grants response parity", connectionPurpose,
+      transport: connectionPurpose === "ai" ? "runtime_auth" : "mcp_remote", authKind: "none", createdByUserId: users.creator }).returning();
     const grants = await server.db.insert(connectionGrants).values([
       { companyId: f.companyId, connectionId: connection.id, kind: "organization", createdByUserId: users.creator, isDefault: true },
       ...[users.creator, users.manager, users.member].map((subjectUserId, index) => ({ companyId: f.companyId, connectionId: connection.id, kind: "user" as const,
@@ -251,6 +254,65 @@ describe("connection management with production default agents", () => {
     const savedInstalls = await server.db.select().from(toolConnectionInstalls).where(eq(toolConnectionInstalls.connectionId, connection.id));
     expect(savedInstalls.map(install => install.targetId)).toEqual(expect.arrayContaining(candidateIds.slice(0, 2)));
     expect(savedInstalls).toHaveLength(2);
+  });
+
+  it("checks company-wide personal AI installs once per target and preserves pool member authorization", async () => {
+    const f = await server.fixture({ connectionScenario: "fresh" });
+    const candidateIds = [f.agentId, ...Array.from({ length: 19 }, () => randomUUID())];
+    await server.db.insert(agents).values(candidateIds.slice(1).map((id, index) => ({ id, companyId: f.companyId, name: `AI target ${index}`, adapterType: "process" })));
+    const [application] = await server.db.insert(toolApplications).values({ companyId: f.companyId, name: "AI capability checks", type: "mcp_http" }).returning();
+    const [connection] = await server.db.insert(toolConnections).values({ companyId: f.companyId, applicationId: application.id,
+      uid: randomUUID(), name: "Personal AI account", transport: "runtime_auth", connectionPurpose: "ai", authKind: "api_key",
+      credentialPolicy: "per_user", createdByUserId: f.responsibleUserId }).returning();
+    const [grant] = await server.db.insert(connectionGrants).values({ companyId: f.companyId, connectionId: connection.id,
+      kind: "user", subjectUserId: f.responsibleUserId, createdByUserId: f.responsibleUserId }).returning();
+    await server.db.insert(toolConnectionInstalls).values({ companyId: f.companyId, connectionId: connection.id, targetType: "company", targetId: f.companyId });
+    await server.db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.responsibleUserId!,
+      permissionKey: "tools:manage_profiles", scope: { targetAgentIds: candidateIds } });
+    let targetReads = 0;
+    const observedDb = new Proxy(server.db, { get(target, key, receiver) {
+      if (key !== "select") return Reflect.get(target, key, receiver);
+      return (...fields: Parameters<typeof target.select>) => {
+        const builder = target.select(...fields), from = builder.from.bind(builder);
+        builder.from = ((...args: Parameters<typeof from>) => {
+          const query = from(...args), execute = query.execute.bind(query);
+          query.execute = (async (...executeArgs: Parameters<typeof execute>) => {
+            if (query.toSQL().sql.includes('"agents"."id" =')) targetReads++;
+            return execute(...executeArgs);
+          }) as typeof execute;
+          return query;
+        }) as typeof builder.from;
+        return builder;
+      };
+    } });
+    const service = connectionManagementService(observedDb);
+    const actor: AuthorizationActor = { type: "board", userId: f.responsibleUserId, source: "cloud_tenant" };
+    const resource = { type: "connection_management" as const, companyId: f.companyId, connectionId: connection.id, operation: "configure", readOnly: false };
+    const baseline = [];
+    for (const targetAgentId of candidateIds) baseline.push(await service.capability(actor, "connections:profiles", { ...resource, targetAgentId }));
+    expect(baseline.every(result => result.allowed)).toBe(true);
+    expect(targetReads).toBe(candidateIds.length ** 2);
+    targetReads = 0;
+    expect(await service.describeAgentInstallCapabilities(actor, resource, candidateIds)).toEqual(baseline);
+    expect(targetReads).toBe(candidateIds.length);
+
+    const [pool] = await server.db.insert(toolConnections).values({ companyId: f.companyId, applicationId: application.id,
+      uid: randomUUID(), name: "Pool with private member", transport: "runtime_auth", connectionPurpose: "ai", authKind: "none" }).returning();
+    await server.db.insert(aiConnectionPools).values({ id: pool.id, companyId: f.companyId, pluginKey: "fixture-pool", config: {
+      name: "Pool", enabled: true, mode: "round_robin", thresholdPercent: 90,
+      members: [{ id: randomUUID(), binding: { mode: "delegated", provider: "openai", method: "api_key", connectionId: connection.id, grantId: grant.id }, profile: { provider: "codex", model: "fixture-model" } }],
+    } });
+    await server.db.delete(principalPermissionGrants).where(and(eq(principalPermissionGrants.companyId, f.companyId), eq(principalPermissionGrants.principalId, f.responsibleUserId!)));
+    await server.db.insert(principalPermissionGrants).values({ companyId: f.companyId, principalType: "user", principalId: f.responsibleUserId!,
+      permissionKey: "tools:manage_profiles", scope: { connectionIds: [pool.id] } });
+    const poolResource = { ...resource, connectionId: pool.id };
+    expect((await service.describeAgentInstallCapabilities(actor, poolResource, candidateIds.slice(0, 2))).every(result => result.allowed)).toBe(true);
+    // The pool grant cannot replace the member account's own authority.
+    await server.db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, grant.id));
+    await server.db.update(toolConnections).set({ createdByUserId: "different-owner" }).where(eq(toolConnections.id, connection.id));
+    const ordinary = await service.capability(actor, "connections:profiles", { ...poolResource, targetAgentId: candidateIds[0] });
+    expect(ordinary.allowed).toBe(false);
+    expect(await service.describeAgentInstallCapabilities(actor, poolResource, candidateIds.slice(0, 2))).toEqual([ordinary, ordinary]);
   });
 
   it("creates and configures tool connections and profiles with fresh grants and actual key/JWT authentication", async () => {
@@ -344,6 +406,53 @@ describe("connection management with production default agents", () => {
     for (const id of profileIds) expect(await f.request("GET", `/tool-profiles/${id}/new-tools?connectionId=${first.body.id}`)).toMatchObject({ status: 403 });
     await server.db.update(principalPermissionGrants).set({ scope: { connectionIds: [first.body.id, second.body.id] } }).where(and(eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, "tools:manage_profiles")));
     for (const id of profileIds) expect(await f.request("GET", `/tool-profiles/${id}/new-tools?connectionId=${first.body.id}`)).toMatchObject({ status: 200 });
+  });
+
+  it("keeps connection profile configuration scoped and rechecks each profile against current personal access", async () => {
+    const f = await fixture();
+    const create = async (name: string) => {
+      const response = await f.request("POST", `/companies/${f.companyId}/tools/connections`, {
+        name, transport: "mcp_remote", authKind: "none", config: { url: "https://1.1.1.1/mcp" },
+      });
+      expect(response).toMatchObject({ status: 201 });
+      return response.body;
+    };
+    const owned = await create("Configuration owned"), privateConnection = await create("Configuration private");
+    const [app, intent] = await server.db.insert(toolProfiles).values([
+      { companyId: f.companyId, profileKey: `app:${owned.id}`, name: "App" },
+      { companyId: f.companyId, profileKey: `connection-intent:${owned.id}:${f.agentId}`, name: "Intent",
+        metadata: { source: "connection_intent", connectionId: owned.id, agentId: f.agentId } },
+    ]).returning();
+    await server.db.insert(toolProfileBindings).values({ companyId: f.companyId, profileId: intent.id, targetType: "agent", targetId: f.agentId });
+    await server.db.insert(toolProfileEntries).values([
+      { companyId: f.companyId, profileId: app.id, selectorType: "connection", connectionId: privateConnection.id },
+      { companyId: f.companyId, profileId: intent.id, selectorType: "connection", connectionId: owned.id },
+    ]);
+    const path = `/tool-connections/${owned.id}/profile-configuration`;
+    const uidResult = await f.request("GET", `/tool-connections/${encodeURIComponent(owned.uid)}/profile-configuration`);
+    expect(uidResult).toMatchObject({ status: 200 });
+    expect(uidResult.body.profiles.map((p: { id: string }) => p.id).sort()).toEqual([app.id, intent.id].sort());
+    const foreign = await fixture();
+    expect(await foreign.request("GET", `/tool-connections/${owned.id}/profile-configuration`)).toMatchObject({ status: 404 });
+    for (const token of [f.key.token, f.jwt]) {
+      const result = await f.request("GET", path, undefined, token);
+      expect(result).toMatchObject({ status: 200 });
+      expect(result.body.profiles.map((p: { id: string }) => p.id).sort()).toEqual([app.id, intent.id].sort());
+      expect(result.body.profiles.every((p: object) => !("summary" in p) && !("newToolsPendingCount" in p))).toBe(true);
+    }
+    // Seeing the displayed connection must not expose a profile spanning a
+    // second account after that account becomes private to another person.
+    await server.db.update(toolConnections).set({ credentialPolicy: "per_user", createdByUserId: randomUUID() }).where(eq(toolConnections.id, privateConnection.id));
+    for (const token of [f.key.token, f.jwt]) {
+      expect(await f.request("GET", path, undefined, token)).toMatchObject({ status: 200, body: { profiles: [expect.objectContaining({ id: intent.id })] } });
+      expect(await f.request("GET", `/tool-connections/${privateConnection.id}/profile-configuration`, undefined, token)).toMatchObject({ status: 403 });
+      expect(await f.request("GET", `/tool-connections/${randomUUID()}/profile-configuration`, undefined, token)).toMatchObject({ status: 404 });
+    }
+    await server.db.update(toolConnections).set({ createdByUserId: f.userId }).where(eq(toolConnections.id, privateConnection.id));
+    expect((await f.request("GET", path)).body.profiles).toHaveLength(2);
+    await server.db.delete(principalPermissionGrants).where(and(eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, "tools:manage_profiles")));
+    expect(await f.request("GET", path)).toMatchObject({ status: 403 });
+    expect(await f.request("GET", path, undefined, f.jwt)).toMatchObject({ status: 403 });
   });
 
   it("rechecks authority after remote endpoint validation before committing a connection update", async () => {
@@ -1640,6 +1749,36 @@ describe("connection management with production default agents", () => {
       await server.db.delete(principalPermissionGrants).where(and(eq(principalPermissionGrants.principalId, f.agentId), eq(principalPermissionGrants.permissionKey, "tools:manage_profiles")));
       expect(await f.request("POST", `/companies/${f.companyId}/ai-connections`, { provider: "openai", method: "api_key", name: "No sharing authority", ownership: "personal", apiKey: "fixture-secret", agentIds: [f.agentId] })).toMatchObject({ status: 403 });
     } finally { provider = null; unregisterServerAdapter("paperclip_runner"); }
+  });
+
+  it("reads only the authorized Anthropic account identity through actual agent authentication", async () => {
+    const f = await fixture();
+    const account = await aiConnectionService(server.db).save(f.companyId, f.userId, {
+      provider: "anthropic", method: "subscription", ownership: "personal", name: "Account identity fixture",
+      loginSessionId: "fixture", agentIds: [f.agentId], allAgents: false,
+    }, "selected-identity-credential");
+    let calls = 0;
+    provider = async (url, init) => {
+      calls++;
+      expect(url).toBe("https://api.anthropic.com/api/oauth/profile");
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer selected-identity-credential");
+      return Response.json({ account: { uuid: "private-seat", email: "avery@example.test" }, organization: { uuid: "private-org", name: "Example team" } });
+    };
+    const path = `/companies/${f.companyId}/ai-connections/${account.connectionId}/identity?grantId=${account.grantId}`;
+    try {
+      for (const token of [f.key.token, f.jwt]) {
+        const response = await f.request("GET", path, undefined, token);
+        expect(response).toMatchObject({ status: 200, body: { ...account, status: "available", accountLabel: "avery@example.test", organizationLabel: "Example team" } });
+        for (const secret of ["selected-identity-credential", "private-seat", "private-org"]) expect(JSON.stringify(response)).not.toContain(secret);
+      }
+      expect(calls).toBe(2);
+      expect((await f.request("GET", path.replace(f.companyId, f.foreignCompanyId))).status).toBe(403);
+      expect((await f.request("GET", path.replace(account.grantId, randomUUID()))).status).toBe(404);
+      expect(calls).toBe(2);
+      await server.db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, account.grantId));
+      expect(await f.request("GET", path)).toMatchObject({ status: 200, body: { status: "unavailable", errorCode: "connection_unavailable", accountLabel: null } });
+      expect(calls).toBe(2);
+    } finally { provider = null; }
   });
 
   it("filters AI account and pool listings by the agent's resolved connection scope", async () => {

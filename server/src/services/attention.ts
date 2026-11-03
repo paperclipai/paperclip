@@ -1,5 +1,6 @@
+import { recoveryActionAttentionCondition, ATTENTION_BUDGET_WARNING_PERCENT, ATTENTION_AGENT_ERROR_STATUS, collapsePendingConfirmationsToNewest, readRunIssueId, listFailedRunsWithNewerRun, requiresReviewAttention, terminalBlockerRequiresAttention } from "./attention-source-eligibility.js";
 import { approvalExecutionIssueCondition, firstApprovalIssueId } from "./approval-visibility.js";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -58,7 +59,7 @@ import {
   BLOCKER_ATTENTION_MAX_NODES,
   issueService,
 } from "./issues.js";
-import { executionIssueCondition, visibleIssueCondition } from "./issue-visibility.js";
+import { attentionIssueCondition, executionIssueCondition } from "./issue-visibility.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
 import { issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
@@ -106,8 +107,6 @@ const SOURCE_RANK: Record<AttentionSourceKind, number> = {
 };
 
 const PENDING_INTERACTION_STATUSES = ["pending"] as const;
-const OPEN_RECOVERY_STATUSES = ["active", "escalated"] as const;
-const HUMAN_RECOVERY_OWNER_TYPES = ["user", "board"] as const;
 const DETAIL_EXCERPT_LENGTH = 160;
 const DETAIL_IMAGE_LIMIT = 3;
 const OPEN_DECISION_DEFAULT_LIMIT = 500;
@@ -766,37 +765,6 @@ export function interactionResolverAudience(
   };
 }
 
-function collapsePendingConfirmationsToNewest<T extends {
-  id: string;
-  issueId: string;
-  kind: string;
-  createdAt: Date;
-  payload: unknown;
-}>(rows: T[]) {
-  // Quality gates bind independent outputs; a newer visual approval must not
-  // hide a still-pending copy approval (or affect its badge count).
-  const independent = (row: T) => Boolean(row.payload && typeof row.payload === "object" && "qualityReview" in row.payload && row.payload.qualityReview);
-  const newestByGroup = new Map<string, T>();
-  for (const row of rows) {
-    if (row.kind !== "request_confirmation" || independent(row)) continue;
-    const groupKey = `${row.issueId}:${row.kind}`;
-    const newest = newestByGroup.get(groupKey);
-    if (
-      !newest
-      || row.createdAt.getTime() > newest.createdAt.getTime()
-      || (row.createdAt.getTime() === newest.createdAt.getTime() && row.id > newest.id)
-    ) {
-      newestByGroup.set(groupKey, row);
-    }
-  }
-
-  return rows.filter((row) => (
-    row.kind !== "request_confirmation"
-    || independent(row)
-    || newestByGroup.get(`${row.issueId}:${row.kind}`)?.id === row.id
-  ));
-}
-
 function budgetObservedPercent(amountObserved: number, amountLimit: number) {
   return amountLimit > 0 ? Math.round((amountObserved / amountLimit) * 10_000) / 100 : 0;
 }
@@ -866,9 +834,7 @@ async function issueSummaryMap(
     .where(and(
       eq(issues.companyId, companyId),
       inArray(issues.id, ids),
-      includeConversations
-        ? or(executionIssueCondition(), and(visibleIssueCondition(), isNotNull(issues.conversationAgentId)))
-        : executionIssueCondition(),
+      attentionIssueCondition(includeConversations),
       readCondition,
     ));
   return new Map(rows.map((row) => [row.id, {
@@ -1108,77 +1074,12 @@ function resolveBlockingIssue(
   return null;
 }
 
-function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
-  const issueId = contextSnapshot?.issueId ?? contextSnapshot?.taskId;
-  return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
-}
-
-type FailedRunProbe = { id: string; agentId: string; issueId: string | null; createdAt: Date };
-
-const FAILED_RUN_PROBE_BATCH_SIZE = 1000;
-
-async function listFailedRunsWithNewerRun(db: Db, companyId: string, failedRuns: FailedRunProbe[]) {
-  const withNewerRun = new Set<string>();
-  const keyed = failedRuns.filter(run => run.issueId !== null);
-  for (let start = 0; start < keyed.length; start += FAILED_RUN_PROBE_BATCH_SIZE) {
-    const batch = keyed.slice(start, start + FAILED_RUN_PROBE_BATCH_SIZE);
-    for (const id of await listFailedRunBatchWithNewerRun(db, companyId, batch)) withNewerRun.add(id);
-  }
-  const unkeyed = failedRuns.filter(run => run.issueId === null);
-  if (unkeyed.length === 0) return withNewerRun;
-  const agentIds = [...new Set(unkeyed.map(run => run.agentId))];
-  const oldestCreatedAt = unkeyed.reduce((oldest, run) => run.createdAt < oldest ? run.createdAt : oldest,
-    unkeyed[0]!.createdAt);
-  const latestByAgent = new Map<string, Date>();
-  for (let start = 0; start < agentIds.length; start += FAILED_RUN_PROBE_BATCH_SIZE) {
-    const rows = await db.select({
-      agentId: heartbeatRuns.agentId,
-      createdAt: sql<Date>`max(${heartbeatRuns.createdAt})`.mapWith(heartbeatRuns.createdAt),
-    }).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.companyId, companyId),
-      inArray(heartbeatRuns.agentId, agentIds.slice(start, start + FAILED_RUN_PROBE_BATCH_SIZE)),
-      gt(heartbeatRuns.createdAt, oldestCreatedAt),
-      sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId', '') = ''`,
-    )).groupBy(heartbeatRuns.agentId);
-    for (const row of rows) latestByAgent.set(row.agentId, row.createdAt);
-  }
-  for (const run of unkeyed) {
-    if ((latestByAgent.get(run.agentId)?.getTime() ?? 0) > run.createdAt.getTime()) withNewerRun.add(run.id);
-  }
-  return withNewerRun;
-}
-
-async function listFailedRunBatchWithNewerRun(db: Db, companyId: string, failedRuns: FailedRunProbe[]) {
-  if (failedRuns.length === 0) return [];
-  const failed = sql.join(
-    failedRuns.map((run) => sql`(${run.id}::uuid, ${run.agentId}::uuid, ${run.issueId}::text, ${new Date(run.createdAt.getTime() + 1).toISOString()}::timestamptz)`),
-    sql`, `,
-  );
-  const runIssueId = sql`(${heartbeatRuns.contextSnapshot} ->> 'issueId')`;
-  const runTaskId = sql`(${heartbeatRuns.contextSnapshot} ->> 'taskId')`;
-  const newerRunExists = (match: SQL) => sql`exists (
-    select 1 from ${heartbeatRuns}
-    where ${heartbeatRuns.companyId} = ${companyId}
-      and ${heartbeatRuns.agentId} = failed.agent_id
-      and ${heartbeatRuns.createdAt} >= failed.newer_from
-      and ${match}
-  )`;
-  const rows = await db.execute(sql`
-    select failed.id
-    from (values ${failed}) as failed (id, agent_id, issue_id, newer_from)
-    where ${newerRunExists(sql`${runIssueId} = failed.issue_id`)}
-      or ${newerRunExists(sql`${runTaskId} = failed.issue_id and ${runIssueId} is null`)}
-  `) as unknown as Array<{ id: string }>;
-  return rows.map((row) => row.id);
-}
-
 export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
   const openDecisionLimit = Math.min(
     Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
     OPEN_DECISION_MAX_LIMIT,
   );
-  const service = {
-    list: async (companyId: string, options: AttentionListOptions = {}): Promise<AttentionFeed> => {
+  async function list(companyId: string, options: AttentionListOptions = {}, questionIssueIds?: readonly string[]): Promise<AttentionFeed> {
       if (options.all && !options.queue && !options.allowUnscopedAll) {
         throw badRequest("all requires a queue filter");
       }
@@ -1202,7 +1103,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         collected.push({ ...item, dismissal });
       };
 
-      if (!options.excludeSources?.includes("approval")) {
+      if (!questionIssueIds && !options.excludeSources?.includes("approval")) {
         const pendingApprovals = await db
           .select({
             id: approvals.id,
@@ -1293,6 +1194,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .where(and(
           eq(issueThreadInteractions.companyId, companyId),
           inArray(issueThreadInteractions.status, [...PENDING_INTERACTION_STATUSES]),
+          questionIssueIds ? inArray(issueThreadInteractions.issueId, [...questionIssueIds]) : undefined,
+          questionIssueIds ? eq(issueThreadInteractions.kind, "ask_user_questions") : undefined,
         ))
         .orderBy(desc(issueThreadInteractions.updatedAt), desc(issueThreadInteractions.id));
       // Addressee invokability needs the org graph; the audience line also needs
@@ -1382,6 +1285,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }));
       }
 
+      if (!questionIssueIds) {
       const openDecisionQuery = db.select({
         id: decisions.id,
         bundleId: decisions.bundleId,
@@ -1508,8 +1412,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         .from(issueRecoveryActions)
         .where(and(
           eq(issueRecoveryActions.companyId, companyId),
-          inArray(issueRecoveryActions.status, [...OPEN_RECOVERY_STATUSES]),
-          inArray(issueRecoveryActions.ownerType, [...HUMAN_RECOVERY_OWNER_TYPES]),
+          recoveryActionAttentionCondition(),
         ))
         .orderBy(desc(issueRecoveryActions.updatedAt), desc(issueRecoveryActions.id));
       const [recoveryIssueMap, recoveryImageMap] = await Promise.all([
@@ -1636,8 +1539,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           }));
         }
         const blockerAttention = issue.blockerAttention;
-        if (blockerAttention?.state !== "stalled" && blockerAttention?.state !== "needs_attention") continue;
-        if (blockerAttention.blockingTreeLive) continue;
+        if (!terminalBlockerRequiresAttention(blockerAttention)) continue;
         const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
         const terminalIssueId = blockerAttention.terminalBlockerIssueId ?? issue.id;
         const terminalSummary = terminalBlockerSummaries.get(terminalIssueId)
@@ -1739,7 +1641,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const pendingApprovalId = pendingApprovalByIssueId.get(review.id) ?? null;
         const reviewAttention = reviewAttentionByIssueId.get(review.id);
         const stalled = reviewAttention?.state === "stalled";
-        if (!hasHumanParticipant && !review.assigneeUserId && !pendingApprovalId && !stalled) continue;
+        if (!requiresReviewAttention({ hasHumanParticipant, hasUserAssignee: Boolean(review.assigneeUserId),
+          hasPendingApproval: Boolean(pendingApprovalId), stalled })) continue;
         const issue = reviewIssueMap.get(review.id);
         if (!issue) continue;
         const dedupKey = `review:${review.id}`;
@@ -1858,7 +1761,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
       const budgetOverview = await budgetService(db).overview(companyId);
       for (const incident of budgetOverview.activeIncidents) {
         const observedPercent = budgetObservedPercent(incident.amountObserved, incident.amountLimit);
-        if (incident.thresholdType !== "hard" && observedPercent < 85) continue;
+        if (incident.thresholdType !== "hard" && observedPercent < ATTENTION_BUDGET_WARNING_PERCENT) continue;
         const dedupKey = `budget:${incident.policyId}:${toIso(incident.windowStart)}:${incident.thresholdType}`;
         add(createItem({
           companyId,
@@ -1921,7 +1824,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           updatedAt: agents.updatedAt,
         })
         .from(agents)
-        .where(and(eq(agents.companyId, companyId), eq(agents.status, "error")))
+        .where(and(eq(agents.companyId, companyId), eq(agents.status, ATTENTION_AGENT_ERROR_STATUS)))
         .orderBy(desc(agents.updatedAt), desc(agents.id));
 
       for (const agent of erroredAgents) {
@@ -1960,6 +1863,8 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             images: [],
           },
         }));
+      }
+
       }
 
       const deduped = new Map<string, AttentionItem>();
@@ -2069,18 +1974,22 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         }
       }
       return { ...summary, nextCursor, items };
-    },
-  };
+  }
   return {
-    ...service,
+    list: (companyId: string, options: AttentionListOptions = {}) => list(companyId, options),
+    taskQuestions: async (companyId: string, issueIds: readonly string[], options: { actor: AuthorizationActor; userId: string }): Promise<AttentionItem[]> => {
+      if (issueIds.length === 0) return [];
+      const feed = await list(companyId, { ...options, all: true, allowUnscopedAll: true }, issueIds);
+      return feed.items;
+    },
     summary: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionSummary> => {
-      const { items: _items, nextCursor: _cursor, ...summary } = await service.list(companyId, {
+      const { items: _items, nextCursor: _cursor, ...summary } = await list(companyId, {
         ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
       });
       return summary;
     },
     taskIndex: async (companyId: string, options: Pick<AttentionListOptions, "userId" | "actor"> = {}): Promise<AttentionTaskIndex> => {
-      const { items, nextCursor: _cursor, ...summary } = await service.list(companyId, {
+      const { items, nextCursor: _cursor, ...summary } = await list(companyId, {
         ...options, all: true, allowUnscopedAll: true, summaryOnly: true,
       });
       return { ...summary, taskIds: [...new Set(items.flatMap(item => item.relatedIssue

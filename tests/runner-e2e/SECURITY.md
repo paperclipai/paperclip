@@ -1,5 +1,30 @@
 # Runner E2E security for a public repository
 
+The deployment-targeted `file-input-answer` journey uploads a small synthetic
+CSV through the normal task composer. Its reference and numeric inputs are
+generated per attempt and occur only in the file. The independent fixture and
+run/revision receipts remain in the private Cloud bundle; the public QA report
+exports only the existing closed checks and authenticated task screenshot.
+The `inbox-triage` journey creates and changes only its owned self-assigned task.
+It uses no model, no foreign user records, and no direct database writes.
+
+The explicit `remote-workspace-storage` cell snapshots only its synthetic
+projectless task folder in an owned disposable sandbox. Its prompt creates a
+small Python project, local Git history without a remote, and an untracked random
+reference. Provider credentials and agent homes remain outside that folder.
+The ordinary settings read must report remote storage enabled by default; the
+workflow does not opt itself in. Its five-minute active outage and later completed-session
+replacement retain the existing native identity and no-replay checks.
+The server's S3 override is admitted only for this suite and the explicit
+`rolling-web-deployment` suite, and only from explicit
+`PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_*` configuration, with a unique instance
+prefix. Ambient storage settings remain stripped and rejected for other suites.
+Snapshot objects, databases, raw provider IDs, and execution workspaces remain
+private. Public checkpoint evidence contains only fixture IDs, saved-version
+references, file digests, and allowlisted state. Screenshot and report sanitizers
+remain the existing Product E2E pipeline. Discovery and local oracle calibration
+do not establish provider permissions or a live acceptance result.
+
 The explicit [chat feature evals](CHAT-FEATURES.md) use synthetic project briefs
 and either a privately supplied Codex subscription login through the existing
 isolated company staging helper or the OpenCode profile's encrypted OpenRouter
@@ -155,6 +180,15 @@ new immutable SHA before upgrading an action. The credential-free security test
 rejects mutable tag or branch references.
 
 ## Secrets and protected environments
+
+Kimi's explicit-only `kimi-qualification` cells use `KIMI_API_KEY`, delivered
+through the launcher's normal encrypted company-secret fixture path. All ambient
+`KIMI_*` values, including legacy model keys and login-home aliases, are removed
+from the product server environment. Neither the catalog nor evidence stores
+the key. The maintained Code profile does not borrow an ambient OAuth cache or
+fall back to `KIMI_MODEL_API_KEY`. This registration does not add a hosted paid
+workflow credential grant; hosted authorization and secret delivery remain a
+separate change.
 
 Explicit Grok subscription campaigns may select `GROK_AUTH_JSON` from the same
 protected paid environment. Deliver it only to that subscription profile's paid
@@ -593,3 +627,12 @@ Slack qualification, and they do not publish trusted archives or credentials.
 Report identities preserve legacy chat tasks and exact `area.case` chat catalog
 tasks. Additional task segments, path separators and dotted nonchat tasks remain
 invalid. This parsing does not qualify a result or grant a new execution.
+
+The explicit rolling web deployment cell shares only its disposable PostgreSQL,
+S3 prefix, and generated secrets between controllers. It removes the entire old
+home after graceful handoff. Its read-only observer does not create recovery
+authority. Provider credentials still enter through encrypted fixture secrets.
+Local rolling smoke receipts explicitly exclude active-agent and hosted proof.
+
+The personal inbox journey requires a separately authenticated, registered QA human author. Its target provider exposes one controlled comment operation on the exact campaign-owned task. The public oracle independently reads the saved comment and verifies its distinct human author, exact content, company, task, and absence of an agent run. The private provider closes the isolated author context during evidence-first cleanup. No provider or native run is allowed for this browser-only journey; agent cross-task execution guards remain intact.
+The `routine-scheduled-run` journey uses one campaign-owned routine, project, and scheduled task. It enables a minute schedule only for the bounded observation. Cleanup must pause the routine, disable its triggers, and reconcile scheduler-created tasks before stopping agent work. Private recovery repeats these checks after a lost response. Retain task and routine history; never leave a recurring trigger enabled after an attempt.

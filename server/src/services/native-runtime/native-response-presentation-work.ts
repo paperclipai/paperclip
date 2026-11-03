@@ -14,7 +14,7 @@ export function registerNativeResponsePresentationWork(db: Db,
   return nativeResponsePresentationWork(db).register(coordinator, canRun);
 }
 
-type Entry = { id: string; companyId: string; issueId: string; agentId: string; dueAt: number };
+type Entry = { id: string; companyId: string; issueId: string; agentId: string; endpointId?: string | null; principalId?: string | null; dueAt: number };
 
 export function nativeResponsePresentationWork(db: Db) {
   const candidates = (scope?: NativeResponsePresentationScope, after?: string, runId?: string) => {
@@ -31,7 +31,7 @@ export function nativeResponsePresentationWork(db: Db) {
     let after: string | undefined;
     while (canRun() && !signal?.aborted) {
       const rows = await measureRunPhase("response.resolve", () => candidates(scope, after));
-      for (const row of rows) entries.push({ id: row.id, companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, dueAt: row.nextAttemptAt?.getTime() ?? 0 });
+      for (const row of rows) entries.push({ id: row.id, companyId: row.companyId, issueId: row.issueId, agentId: row.agentId, endpointId: row.endpointId, principalId: row.principalId, dueAt: row.nextAttemptAt?.getTime() ?? 0 });
       if (rows.length < 100) return entries;
       after = rows[rows.length - 1].id;
     }
@@ -56,6 +56,13 @@ export function nativeResponsePresentationWork(db: Db) {
   function register(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
     const worker = registerScopedDeadlineWork(coordinator, {
       queue: DELIVERY_QUEUES.nativeResponsePresentation,
+      // Endpoint and principal IDs are only dispatch hints. Recovery still locks and checks
+      // the complete current source authority inside its own transaction.
+      concurrentChecks: { limit: 4, key: (entry: Entry) => [
+        `issue:${entry.companyId}:${entry.issueId}`,
+        ...(entry.endpointId ? [`endpoint:${entry.companyId}:${entry.endpointId}`] : []),
+        ...(entry.principalId ? [`principal:${entry.companyId}:${entry.principalId}`] : []),
+      ] },
       decodeScope: (hint: string): NativeResponsePresentationScope | undefined => hint === "*" ? undefined : JSON.parse(hint),
       matches: (entry: Entry, scope?: NativeResponsePresentationScope) => !scope || entry.companyId === scope.companyId && (!scope.issueId || entry.issueId === scope.issueId) && (!scope.runId || entry.id === scope.runId) && (!scope.agentId || entry.agentId === scope.agentId),
       load: (scope, signal) => load(scope, signal, canRun),

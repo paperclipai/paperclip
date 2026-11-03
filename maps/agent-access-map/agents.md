@@ -330,7 +330,10 @@ API: `present` — GET and PUT /api/companies/{companyId}/primary-agent/me.
 
 Agent access: `restricted` — this is the authenticated human's personal
 preference. Agent keys and native call_api use agent identity and are denied by
-the board gate; no dedicated agent selection tool is present.
+the board gate; no dedicated agent selection tool is present. Native API discovery
+directs the person to the chosen agent's profile/crown control and replacement
+confirmation; it does not impersonate the person's session or turn the Chat
+picker into a preference control.
 
 Policy: Requires board user identity, company access and active membership,
 except implicit-local board or instance administrator. Viewers may choose their

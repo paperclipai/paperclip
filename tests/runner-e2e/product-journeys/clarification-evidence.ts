@@ -1,4 +1,4 @@
-import { gradeQuestionResume, questionPath, validResumeQuestionForm } from "../question-resume-scoring.js";
+import { gradeQuestionResume, questionPath, validResumeQuestionForm, validResumeReferenceForm } from "../question-resume-scoring.js";
 import type { ContinuationCheckpoint } from "../continuation-scoring.js";
 import { validateAgentTaskState } from "./agent-flows.js";
 import type { JourneyContext } from "./types.js";
@@ -19,7 +19,8 @@ export function clarificationQuestionFailure(point: ContinuationCheckpoint, ques
     });
     return apiCreated ? `clarification_${stage}_api_fallback` : `clarification_${stage}_native_path_invalid`;
   }
-  return validResumeQuestionForm(point, question, choice) ? undefined : `clarification_${stage}_form_invalid`;
+  return (choice ? validResumeQuestionForm(point, question, true) : validResumeReferenceForm(point, question))
+    ? undefined : `clarification_${stage}_form_invalid`;
 }
 
 export function gradeClarificationEvidence(context: JourneyContext, issueId: string, marker: string,

@@ -1111,6 +1111,7 @@ impl AcpxCommandExecutor {
         )?;
         let mut session = AcpxProviderSession::start(&config).map_err(|error| {
             DurableRunnerError::invalid(format!("failed to start ACPX provider: {error}"))
+                .with_provider_failure(error.provider_failure())
         })?;
         if session.identity().profile_digest != state.descriptor.command_digest {
             let _ = session.shutdown("qualified ACPX profile digest mismatch");

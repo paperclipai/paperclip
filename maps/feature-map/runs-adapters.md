@@ -102,6 +102,11 @@ The [remote continuity regression](../../doc/testing-native-remote-continuity.md
 uses a real Linux runner and deterministic provider. Live provider acceptance is
 a separate check.
 
+Repeat with a full prior-run controller projection that predates its committed
+database checkpoint under the same run ID. Admission must refresh that projection
+before reuse. A pending canonical command must still hold execution; current-run
+state and a retained warm owner must keep their existing authority.
+
 In a fresh sandbox workspace, fetch a different published branch with depth one,
 then save a local result and finish. Verify export imports the shallow history,
 retains host-only edits, and completes finalization without another provider turn.
@@ -129,6 +134,14 @@ the owner's newer completed checkpoint. The
 cover checkpoint restoration and its guards; real-provider acceptance remains
 separate evidence.
 
+For native OpenCode, hold an assigned tool result for more than 30 seconds.
+Verify that the provider receives the saved result once and the next run can
+attach with no pending tool call. Stop and bridge teardown must still end an
+unanswered wait without claiming the action failed or repeating it. The
+[native proxy regression](../../packages/paperclip-runner/src/live/runnerd-opencode-streaming-tools.test.ts)
+uses the real Rust Runner and proxy with a deterministic provider; live provider
+and deployed sandbox acceptance remain separate evidence.
+
 After a completed warm turn, change an agent setting that invalidates its
 instruction copy, then send a follow-up. Verify the old runner suspends during
 preparation, saved files remain available, and the follow-up completes once.
@@ -145,6 +158,18 @@ must still reset the session and preserve the stored workspace owner. The
 [session admission regression](../../server/src/__tests__/heartbeat-session-preparation.test.ts)
 checks this with PostgreSQL and synthetic provider execution; it is not live
 warm-process or latency evidence.
+
+After an isolated remote Retry, send a follow-up with unchanged workspace policy.
+Verify the same workspace remains bound and no strategy-replacement operation is
+recorded. Change the strategy or base ref and confirm that the normal replacement
+guard still applies. The
+[remote preparation regression](../../server/src/services/heartbeat/workspace-preparation.test.ts)
+checks persisted configuration across both admissions; it does not prove a live
+provider conversation resumed.
+
+For a workspace carrying an older temporary fingerprint, verify that ordinary
+reuse retains the strategy warning. Use the normal fresh recovery flow after
+preserving its work, then repeat the unchanged follow-up check on the new workspace.
 
 For `runs-adapters/session`, complete a task in a disposable warm sandbox and
 retain its saved workspace file. Let the warm session close normally and verify
@@ -273,6 +298,10 @@ For native OpenCode with assigned connections, inspect the provider tool surface
 on both local and sandbox execution. It should contain bounded assigned-tool
 search/call schemas. Confirm the search description states the 1–20 page limit
 and default of 5. Follow `nextOffset` to inspect later pages.
+Repeat discovery with empty and whitespace-only `schemaTool` values, including
+`schemaOffset: 0`, and confirm it still returns searchable tools. An unknown
+schema reference or a positive schema offset without a reference must explain
+how to correct the call.
 Discover an allowed tool, call its returned alias, revoke
 its grant, and confirm discovery and execution enforce that revocation. Repeat
 in planning/ask mode with a write tool and confirm denial. The controller must
@@ -314,6 +343,14 @@ a separate acceptance requirement.
 ### `run-history`
 
 Automated: [live run routes](../../server/src/__tests__/agent-live-run-routes.test.ts) and [run event sequencing](../../server/src/__tests__/heartbeat-run-event-sequencing.test.ts) cover run data contracts.
+
+For `runs-adapters/runs`, verify a provider rejection during startup and during a
+turn. The task interruption and run detail must show the same sanitized provider
+explanation after reload. Unknown provider categories keep their message. A newer
+attempt or a completed task hides the stale task notice, while historical run
+details retain it. Check that existing retry and access gates remain effective.
+The transport restart regression and PostgreSQL finalization integration cover
+the persisted cause; component tests cover plain-text rendering and read-only use.
 
 Manual: Start a disposable task, open its running transcript, and follow it to a terminal outcome. Reload and compare task/run IDs, status, output, and cost. Verify a failed run remains distinguishable from a completed run with useful output.
 

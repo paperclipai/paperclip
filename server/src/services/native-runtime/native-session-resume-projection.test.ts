@@ -5,6 +5,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { findNativeSessionResumeRun } from "./native-session-resume.js";
+import { resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
 const supported = Boolean(externalUrl) || (await getEmbeddedPostgresTestSupport()).supported;
@@ -58,7 +59,7 @@ const supported = Boolean(externalUrl) || (await getEmbeddedPostgresTestSupport(
     const saved = source();
     await db.insert(heartbeatRuns).values([saved, run(1), run(2)]);
     const result = await select();
-    expect(result).toEqual({ ...saved, runnerProfileJson: { nativeExecutionInput, sessionCheckpoint: checkpoint, nativeToolContractFingerprint: "fingerprint" },
+    expect(result).toEqual({ ...saved, runnerProfileJson: { nativeExecutionInput, sessionCheckpoint: checkpoint, nativeToolContractFingerprint: "fingerprint", nativeControllerRecovery: null },
       contextSnapshot: { paperclipWake, paperclipIssue } });
     const stored = await db.select({ profile: heartbeatRuns.runnerProfileJson, context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(eq(heartbeatRuns.id, saved.id));
     expect(stored[0].profile).toEqual(profile);
@@ -78,6 +79,16 @@ const supported = Boolean(externalUrl) || (await getEmbeddedPostgresTestSupport(
       expect(selected?.id).toBe(newer.id);
       expect(selected?.runnerProfileJson.sessionCheckpoint).toEqual(value);
     }
+  });
+
+  it("does not call missing or newer incompatible recovery material a fresh session", async () => {
+    const saved = source();
+    await db.insert(heartbeatRuns).values([saved, run(30, { id: currentRunId, status: "running" })]);
+    const { beforeCreatedAt: _before, ...binding } = input;
+    expect(await resolveNativeControllerRecovery(db, binding)).toEqual({ kind: "missing_evidence", reason: "snapshot_binding" });
+    // The newest progress barrier remains authoritative even without a snapshot.
+    await db.insert(heartbeatRuns).values(run(10, { runtimeMode: "legacy" }));
+    expect(await resolveNativeControllerRecovery(db, binding)).toEqual({ kind: "missing_evidence", reason: "newer_progress_barrier" });
   });
 
   it("skips only unused SQL-null, JSON-null, scalar, array and checkpoint-null profiles", async () => {

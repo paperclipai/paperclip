@@ -14,6 +14,10 @@ OpenCode delegation or changing the other suites' model.
 fixture graph through `FixtureRegistry.setupAll(requested)`. Omitting the
 argument preserves the existing all-fixtures behavior. A verified onboarding
 context may seed the graph; independent setup is labeled as recipe provenance.
+The model-free task-document journey reuses the run-owned backlog-task fixture.
+It creates and changes the document only through the production browser editor;
+setup never seeds the saved outcome. Task ownership also covers its documents
+and revisions during cleanup.
 
 ## Connection creation fixtures
 
@@ -168,6 +172,12 @@ keeps `reuseLease:false` and `runnerLifecycleMode:"per_turn"`. The dedicated
 warm-continuity fixture uses `reuseLease:true` and
 `runnerLifecycleMode:"warm"`; its distinct `configurationKey` is part of the
 suite fingerprint even though both fixtures report `environmentId:"daytona"`.
+Suites may select an `environmentOverrides` entry by task ID and environment
+ID when one case needs a different lifecycle. The matrix, setup payload and
+suite fingerprint use that selected configuration. Kimi's native Write Stop
+and provider-loss cases select the non-reused, per-turn Daytona fixture required
+by their strict observer; its other Daytona cases retain warm reuse. Local Kimi
+fixtures retain the instance-managed environment.
 Keep short provider cleanup backstops, a Daytona secret reference, and an
 immutable image digest. Teardown
 must delete the environment with reusable-lease destruction and must fail the
@@ -192,6 +202,19 @@ matrix. Unsupported profile/environment combinations belong in
 `supportedEnvironments`, not in ad hoc test conditionals.
 
 ## Task cases and matchers
+
+`api-artifact-transfer` is one explicit native Codex/Daytona cell using the
+existing single-turn flow and fixture registry. A synthetic backlog issue is
+created through the public API before the tested task. The task carries its ID
+and requires `download_artifact`; the fixture never preinstalls the output.
+The independent oracle reads the stored source through its authorized asset
+endpoint and verifies the full delivered response against that source and the
+completed installation receipt after production run-log redaction. The existing
+server asset-created audit must prove API-capture origin in the tested run;
+matching bytes from an uploaded substitute are insufficient. It also compares the seeded
+description, so agreeing attachment metadata cannot hide a missing byte.
+The normal run-attributed public attachment download and reloaded browser link
+remain required. No new credential or private provider hook is introduced.
 
 A `RunnerTaskFixture` owns a work mode, a typed flow, expected run count,
 nonce-based title/prompt/marker factories, per-environment attempt deadlines,
@@ -379,6 +402,31 @@ default. Its file case anchors the task to a public project workspace, validates
 the model's claimed result by reading the actual final bytes, and also exercises
 remote copy-back. Keep candidate admission scoped to the selected model and the
 isolated operator environment; ordinary agent configuration must not enable it.
+
+## Kimi Code candidate qualification
+
+The explicit-only `kimi-qualification` suite reuses eight established user
+journeys and adds native pending-permission Stop and native worker-loss journeys
+in each local/Daytona environment, with one attempt per cell. The
+`runner-acpx-kimi` profile selects the exact candidate/model pair in the isolated
+server, and receives only an encrypted `KIMI_API_KEY` secret reference. No native question/plan or usage/cost support is inferred from these fixtures. Semantic Paperclip interaction cards retain their
+existing browser, durable revision, and continuation assertions.
+
+The file cell creates its project/workspace through the public fixture registry
+path, then the agent creates, edits, validates and registers the file itself.
+Independent workspace byte and downloaded-artifact byte matchers both remain
+required. Stop/reset and chat restart reuse their existing active-work and
+continuation observations. They do not replace native pending-permission,
+provider-loss, or complete runtime-cleanup acceptance. The original
+`extended-harnesses` matrix remains unchanged.
+
+The two Kimi lifecycle tasks require a native Write request with an exact
+workspace target. The browser must show its permission card before the action.
+One task uses public Stop; the other kills only the attributed native child.
+Both require a rejected stale Allow response, expired pending work, no completed
+mutation, continuous target absence, and physical process retirement. The Linux
+fault helper verifies process birth, ancestry, pinned code, held descriptors and
+pidfd identity before it can signal a process.
 
 ## Persistent agent files
 

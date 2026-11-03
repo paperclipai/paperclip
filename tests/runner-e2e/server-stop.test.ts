@@ -89,6 +89,7 @@ it.skipIf(process.platform === "win32")("joins signal, final cleanup and repeate
   expect(stop(child)).toBe(first);
   await stop(child);
   expect(logs).toEqual([]);
+  expect(() => stop.assertGracefulExit(child)).not.toThrow();
 });
 
 it.skipIf(process.platform === "win32")("bounds an unresponsive child and reaps it with one escalation", async () => {
@@ -98,6 +99,7 @@ it.skipIf(process.platform === "win32")("bounds an unresponsive child and reaps 
   const { stop, logs } = stopper(50);
   await Promise.all([stop(child), stop(child), stop(child)]);
   expect(child.signalCode).toBe("SIGKILL");
+  expect(() => stop.assertGracefulExit(child)).toThrow("forced cleanup cannot qualify");
   expect(logs).toHaveLength(1);
   expect(() => process.kill(child.pid!, 0)).toThrow();
 });

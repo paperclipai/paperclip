@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, forwardRef, useImperativeHandle, type ForwardedRef } from "react";
+import { act, forwardRef, useImperativeHandle, useState, type ForwardedRef } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import { ThemeProvider } from "@/context/ThemeContext";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import {
   expiredSecretProposalInteraction,
+  pendingToolActionLongProposalInteraction,
   pendingAskUserQuestionsInteraction,
   pendingRequestCheckboxConfirmationInteraction,
   pendingRequestItemVerdictsInteraction,
@@ -55,6 +56,8 @@ vi.mock("@/components/MarkdownEditor", () => ({
     );
   }),
 }));
+
+(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 function createRequestConfirmation(
   overrides: Partial<RequestConfirmationInteraction> = {},
@@ -116,6 +119,40 @@ describe("TaskChatInteractionCard", () => {
   afterEach(() => {
     flushSync(() => root.unmount());
     container.remove();
+  });
+
+  it("opens the real tool review and reveals the proposal tail before approval", async () => {
+    const accept = vi.fn();
+    const reject = vi.fn();
+    const interaction = structuredClone(pendingToolActionLongProposalInteraction);
+    function ReviewSurface() {
+      const [reviewing, setReviewing] = useState(false);
+      return <TaskChatInteractionCard item={interactionItem(interaction)}
+        presentation={reviewing ? "takeover" : "timeline"}
+        onReviewRequest={() => setReviewing(true)}
+        onAcceptInteraction={accept} onRejectInteraction={reject} />;
+    }
+    flushSync(() => root.render(<TooltipProvider><ThemeProvider><ReviewSurface /></ThemeProvider></TooltipProvider>));
+    expect(container.textContent).not.toContain("November 8, 2030");
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Review request")!.click();
+    });
+    const details = container.querySelector("details")!;
+    expect(details).not.toBeNull();
+    expect(details.open).toBe(false);
+    expect(container.querySelector("pre")?.textContent).toBe(interaction.payload.toolAction!.argumentsSummaryJson);
+    expect(details.textContent).toContain("November 8, 2030");
+    expect(details.textContent).toContain("[redacted]");
+    expect(details.textContent).toContain(interaction.payload.toolAction!.argumentsHash);
+    await act(async () => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(accept).not.toHaveBeenCalled();
+    expect(reject).not.toHaveBeenCalled();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Approve & run")!.click();
+    });
+    expect(accept).toHaveBeenCalledExactlyOnceWith(interaction, undefined, undefined, false);
+    expect(reject).not.toHaveBeenCalled();
   });
 
   it("does not render a pending confirmation in the timeline", () => {

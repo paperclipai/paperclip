@@ -1,3 +1,4 @@
+import { notifyNativeStatusWakeWork } from "../deferred-execution-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { lockCurrentNativeWorkAssessmentEvidence } from "./work-assessments.js";
 import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finalization-recovery-state.js";
@@ -478,6 +479,7 @@ async function enqueueWake(input: {
     .limit(1)
     .then((rows) => rows[0] ?? null);
   if (existing) return existing.id;
+  await notifyNativeStatusWakeWork(input.tx, { companyId: input.companyId });
   const inserted = await input.tx
     .insert(agentWakeupRequests)
     .values({

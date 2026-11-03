@@ -1217,6 +1217,36 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(1);
     });
 
+    it.each([400, 401, 403, 429, 500])("retains only SDK HTTP %i when failed creation cleanup is unconfirmed", async statusCode => {
+      mockCreate.mockRejectedValue(Object.assign(new Error("Bearer provider-secret-canary"), {
+        statusCode, headers: { authorization: "provider-secret-canary" },
+      }));
+      mockGet.mockRejectedValue(Object.assign(new Error("cleanup-secret-canary"), { statusCode: 503 }));
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(failure.message).toContain(`HTTP ${statusCode}`);
+      expect(failure.message).not.toContain("secret-canary");
+      expect(JSON.stringify(environmentCreationCleanupErrorData(failure, true))).not.toContain("secret-canary");
+      expect(readEnvironmentCreationCleanupError(failure)?.attemptId).toBeTruthy();
+    });
+
+    it.each([undefined, "401", -1, 600, NaN, 401.5])("omits non-HTTP statusCode %s without reading provider text", async statusCode => {
+      mockCreate.mockRejectedValue(Object.assign(new Error("HTTP 401 provider-secret-canary"), { statusCode }));
+      mockGet.mockRejectedValue(new Error("cleanup-secret-canary"));
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(failure.message).not.toContain("HTTP");
+      expect(failure.message).not.toContain("secret-canary");
+    });
+
+    it("does not invoke a provider status accessor", async () => {
+      const getter = vi.fn(() => { throw new Error("provider-secret-canary"); });
+      mockCreate.mockRejectedValue(Object.defineProperty(new Error("provider-secret-canary"), "statusCode", { get: getter }));
+      mockGet.mockRejectedValue(new Error("cleanup-secret-canary"));
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(failure.message).not.toContain("HTTP");
+      expect(failure.message).not.toContain("secret-canary");
+      expect(getter).not.toHaveBeenCalled();
+    });
+
     it("reports unconfirmed cleanup when the provider lookup fails", async () => {
       mockGet.mockRejectedValue(new Error("provider unavailable"));
       await expect(plugin.definition.onEnvironmentAcquireLease?.(params)).rejects.toThrow("cleanup could not be confirmed");
@@ -2145,6 +2175,112 @@ describe("Daytona sandbox provider plugin", () => {
         },
       },
     });
+  });
+
+  it.each([true, false])("resumes the recorded workspace cwd after workspace preparation (reuse=%s)", async reuseLease => {
+    const sandbox = createMockSandbox({ id: "sandbox-retained", state: "stopped" });
+    const allocationRoot = "/home/daytona/paperclip-workspace";
+    const workspaceId = "6028a46b-b65a-421f-952d-66b9c002b8e2";
+    const remoteCwd = `${allocationRoot}/.paperclip-workspaces/${workspaceId}`;
+    const sentinelPath = `${allocationRoot}/.paperclip-runtime/reusable-sandbox-lease.json`;
+    sandbox.process.executeCommand.mockImplementation(async command => ({ exitCode: 0,
+      result: command.startsWith("cat ") ? JSON.stringify({ token: "sentinel-token" }) : "bash" }));
+    mockGet.mockResolvedValue(sandbox);
+    const resumed = await plugin.definition.onEnvironmentResumeLease!({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1", providerLeaseId: sandbox.id,
+      config: { apiKey: "fixture-key", reuseLease }, requestedCwd: remoteCwd, leaseMetadata: { remoteCwd, remoteWorkspaceId: workspaceId,
+        sandboxId: sandbox.id, reuseLease, workspaceSentinel: { path: sentinelPath, token: "sentinel-token",
+          runId: "fixture-run", providerLeaseId: sandbox.id, result: "written" } },
+    });
+    expect(resumed).toMatchObject({ providerLeaseId: sandbox.id, metadata: {
+      remoteCwd, workspaceSentinel: { path: sentinelPath, result: "matched" } } });
+    expect(sandbox.process.executeCommand.mock.calls[0][0]).toBe(`cat '${sentinelPath}'`);
+    expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
+    expect(sandbox.fs.uploadFile).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+    expect(sandbox.delete).not.toHaveBeenCalled();
+  });
+
+  it.each([null, 7, "", "relative/workspace", "/workspace/../other", "/workspace\0other"])(
+    "rejects a malformed recorded cwd before touching the provider: %j", async remoteCwd => {
+      await expect(plugin.definition.onEnvironmentResumeLease!({ driverKey: "daytona", companyId: "company-1",
+        environmentId: "env-1", providerLeaseId: "sandbox-retained", config: { apiKey: "fixture-key" },
+        requestedCwd: remoteCwd as string, leaseMetadata: { remoteCwd },
+      })).rejects.toThrow("recorded Daytona workspace directory");
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("retains a nested workspace only after the allocation sentinel matches", async () => {
+    const sandbox = createMockSandbox({ state: "stopped" });
+    sandbox.process.executeCommand.mockResolvedValue({ exitCode: 0, result: JSON.stringify({ token: "foreign" }) });
+    mockGet.mockResolvedValue(sandbox);
+    const resumed = await plugin.definition.onEnvironmentResumeLease!({ driverKey: "daytona", companyId: "company-1",
+      environmentId: "env-1", providerLeaseId: sandbox.id, config: { apiKey: "fixture-key" },
+      requestedCwd: "/home/daytona/paperclip-workspace/.paperclip-workspaces/fixture-workspace", leaseMetadata: {
+        remoteCwd: "/home/daytona/paperclip-workspace/.paperclip-workspaces/fixture-workspace",
+        workspaceSentinel: { path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+          token: "expected", result: "written" },
+      } });
+    expect(resumed).toMatchObject({ providerLeaseId: null, metadata: { expired: true, workspaceSentinel: { result: "mismatch" } } });
+    expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
+    expect(sandbox.fs.uploadFile).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it.each(["same-workspace", "later-task-workspace"])("keeps the allocation root for ordinary %s admission", async workspaceId => {
+    const sandbox = createMockSandbox({ state: "stopped" });
+    const allocationRoot = "/home/daytona/paperclip-workspace";
+    sandbox.process.executeCommand.mockImplementation(async command => ({ exitCode: 0,
+      result: command.startsWith("cat ") ? JSON.stringify({ token: "sentinel-token" }) : "bash" }));
+    mockGet.mockResolvedValue(sandbox);
+    const resumed = await plugin.definition.onEnvironmentResumeLease!({ driverKey: "daytona", companyId: "company-1",
+      environmentId: "env-1", providerLeaseId: sandbox.id, config: { apiKey: "fixture-key" }, leaseMetadata: {
+        remoteCwd: `${allocationRoot}/.paperclip-workspaces/${workspaceId}`,
+        workspaceSentinel: { path: `${allocationRoot}/.paperclip-runtime/reusable-sandbox-lease.json`, token: "sentinel-token" },
+      } });
+    expect(resumed).toMatchObject({ providerLeaseId: sandbox.id, metadata: { remoteCwd: allocationRoot } });
+    expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null, "/home/daytona/paperclip-workspace/.paperclip-workspaces/foreign"])(
+    "rejects an export cwd without an exact recorded source: %j", async recordedCwd => {
+      await expect(plugin.definition.onEnvironmentResumeLease!({ driverKey: "daytona", companyId: "company-1",
+        environmentId: "env-1", providerLeaseId: "sandbox-retained", config: { apiKey: "fixture-key" },
+        requestedCwd: "/home/daytona/paperclip-workspace/.paperclip-workspaces/owned",
+        leaseMetadata: recordedCwd === undefined ? {} : { remoteCwd: recordedCwd },
+      })).rejects.toThrow("recorded Daytona workspace directory");
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    },
+  );
+
+  it("opens existing files in the recorded directory after a stopped sandbox resumes", async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-resume-cwd-"));
+    const allocationRoot = path.join(directory, "paperclip-workspace");
+    const remoteCwd = path.join(allocationRoot, ".paperclip-workspaces", "fixture-workspace");
+    const sentinelPath = path.join(allocationRoot, ".paperclip-runtime", "reusable-sandbox-lease.json");
+    await fs.mkdir(remoteCwd, { recursive: true });
+    await fs.mkdir(path.dirname(sentinelPath), { recursive: true });
+    await fs.writeFile(sentinelPath, JSON.stringify({ token: "file-token" }));
+    await fs.writeFile(path.join(remoteCwd, "saved.txt"), "retained work\n");
+    const sandbox = createMockSandbox({ state: "stopped", workDir: directory });
+    sandbox.process.executeCommand.mockImplementation(async command => ({ exitCode: 0,
+      result: execFileSync("sh", ["-c", command], { encoding: "utf8", cwd: directory }) }));
+    mockGet.mockResolvedValue(sandbox);
+    try {
+      const resumed = await plugin.definition.onEnvironmentResumeLease!({ driverKey: "daytona", companyId: "company-1",
+        environmentId: "env-1", providerLeaseId: sandbox.id, config: { apiKey: "fixture-key" }, requestedCwd: remoteCwd,
+        leaseMetadata: { remoteCwd, workspaceSentinel: { path: sentinelPath, token: "file-token" } } });
+      expect(await fs.readFile(path.join(resumed.metadata!.remoteCwd as string, "saved.txt"), "utf8")).toBe("retained work\n");
+      expect(sandbox.fs.createFolder).not.toHaveBeenCalled();
+      expect(sandbox.fs.uploadFile).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+      expect(sandbox.delete).not.toHaveBeenCalled();
+      expect(mockGet).toHaveBeenCalledWith(sandbox.id);
+    } finally { await fs.rm(directory, { recursive: true, force: true }); }
   });
 
   describe("missing-container resume", () => {

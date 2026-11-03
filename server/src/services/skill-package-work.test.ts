@@ -154,7 +154,7 @@ describe.skipIf(!support.supported)("automatic skill package work", () => {
     let signalStarted: () => void = () => {};
     const started = new Promise<void>(resolve => { signalStarted = resolve; });
     let pendingSignal: AbortSignal | undefined;
-    vi.spyOn(provider, method).mockImplementation(async input => {
+    vi.spyOn(provider, method).mockImplementation(async (input: { signal?: AbortSignal }) => {
       pendingSignal = input.signal;
       signalStarted();
       return new Promise<never>(() => {});

@@ -52,7 +52,7 @@ export function redactRegisteredSecretValues<T>(input: T, values: string[], cred
   if (!record) return input;
   return Object.fromEntries(
     Object.entries(record)
-      .filter(([key]) => key !== REGISTRY_KEY)
+      .filter(([key]) => key !== REGISTRY_KEY && key !== "nativeControllerRecovery" && key !== "nativeTaskSessionPublication")
       .map(([key, value]) => [key, key === "credentialAccess"
         ? (credentialConnectionName ? { connectionName: redactText(credentialConnectionName, values) } : {})
         : redactRegisteredSecretValues(value, values, credentialConnectionName)]),

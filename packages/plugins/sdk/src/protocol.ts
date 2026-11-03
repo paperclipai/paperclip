@@ -677,6 +677,7 @@ export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDri
   runId?: string;
   providerLeaseId: string;
   leaseMetadata?: Record<string, unknown>;
+  requestedCwd?: string;
 }
 
 export interface PluginEnvironmentReleaseLeaseParams extends PluginEnvironmentDriverBaseParams {
@@ -708,6 +709,7 @@ export interface PluginEnvironmentInspectLeaseParams extends PluginEnvironmentDr
 }
 
 export interface PluginEnvironmentLeaseObservation {
+  creationLease?: PluginEnvironmentLease;
   creationCleanup?: import("./environment-creation-cleanup.js").PluginEnvironmentCreationCleanup;
   providerLeaseId: string;
   state: "active" | "stopped" | "destroyed" | "unknown";

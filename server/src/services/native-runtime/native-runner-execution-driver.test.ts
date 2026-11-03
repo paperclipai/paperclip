@@ -6,9 +6,12 @@ import { prepareNativeRemoteRunner, createNativeRunnerExecutionDriver } from "./
 const transport = vi.hoisted(() => ({
   register: vi.fn(),
   connect: vi.fn(),
+  checkpoint: vi.fn(),
+  checkpointRegistration: vi.fn(),
 }));
 vi.mock("../../realtime/runner-prp-ws.js", () => ({ registerRunnerPrpAuthority: transport.register }));
 vi.mock("../../realtime/runner-prp-outbound.js", () => ({ connectRunnerPrpIngress: transport.connect }));
+vi.mock("./native-runner-checkpoint.js", () => ({ nativeRunnerCheckpointRegistration: transport.checkpointRegistration }));
 
 const binding = { companyId: "company", issueId: "issue", agentId: "agent", runId: "run-a" };
 const authority = {} as Parameters<NonNullable<ReturnType<typeof createNativeRunnerExecutionDriver>["controlPlaneRegistration"]>>[0];
@@ -30,9 +33,41 @@ beforeEach(() => {
   vi.clearAllMocks();
   transport.register.mockResolvedValue({ connectUrl: "ws://127.0.0.1/core", release: vi.fn() });
   transport.connect.mockReturnValue({ ready: Promise.resolve(), close: vi.fn(async () => {}) });
+  transport.checkpointRegistration.mockReturnValue(transport.checkpoint);
+  transport.checkpoint.mockResolvedValue(undefined);
 });
 
 describe("shared Runner execution driver", () => {
+  it("installs both staged checkpoint writers under the business lease without acquiring endpoints", async () => {
+    const prepare = vi.fn();
+    const persistence = { db: {} as never, bootId: "boot-c", authorityRunId: "run-c" };
+    const driver = createNativeRunnerExecutionDriver({ target: sandbox(), binding: { ...binding, runId: "run-c" },
+      controllerPersistence: persistence, prepareRemote: prepare });
+    const sourceIdentity = { runnerInstanceId: "runner", environmentLeaseId: "lease", normalizedSessionId: "session",
+      runId: "run-a", turnId: "turn-a", itemId: "item-a" };
+    const targetIdentity = { ...sourceIdentity, runId: "run-c", turnId: "turn-c", itemId: "item-c" };
+    await driver.onStagedRunAttachment!(authority, { sourceIdentity, targetIdentity, templateDigest: `sha256:${"a".repeat(64)}` });
+    expect(transport.checkpointRegistration).toHaveBeenCalledExactlyOnceWith({ ...persistence,
+      binding: { companyId: binding.companyId, issueId: binding.issueId, runId: "run-c" } });
+    expect(transport.checkpoint.mock.calls).toEqual([[authority, sourceIdentity], [authority, targetIdentity]]);
+    expect(prepare).not.toHaveBeenCalled();
+    expect(transport.register).not.toHaveBeenCalled();
+    expect(transport.connect).not.toHaveBeenCalled();
+  });
+
+  it("installs the target writer first when restoring an already persisted stage", async () => {
+    const sourceIdentity = { runnerInstanceId: "runner", environmentLeaseId: "lease", normalizedSessionId: "session",
+      runId: "run-a", turnId: "turn-a", itemId: "item-a" };
+    const targetIdentity = { ...sourceIdentity, runId: "run-c", turnId: "turn-c", itemId: "item-c" };
+    const restored = { store: { state: { stagedRunAttachment: { sourceIdentity, targetIdentity } } } } as unknown as typeof authority;
+    const driver = createNativeRunnerExecutionDriver({ target: sandbox(), binding: { ...binding, runId: "run-c" },
+      controllerPersistence: { db: {} as never, bootId: "boot-c", authorityRunId: "run-c" } });
+    await driver.onStagedRunAttachment!(restored, { sourceIdentity, targetIdentity, templateDigest: `sha256:${"a".repeat(64)}` });
+    expect(transport.checkpoint.mock.calls).toEqual([[restored, targetIdentity], [restored, sourceIdentity]]);
+    expect(transport.register).not.toHaveBeenCalled();
+    expect(transport.connect).not.toHaveBeenCalled();
+  });
+
   it("keeps local execution on the registered loopback route", async () => {
     const driver = createNativeRunnerExecutionDriver({ target: { kind: "local" }, binding });
     const connection = await driver.controlPlaneRegistration!(authority);

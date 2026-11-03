@@ -1,0 +1,69 @@
+name: Refresh CI test durations
+
+on:
+  schedule:
+    - cron: '41 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: refresh-ci-test-durations
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Check for an outstanding refresh
+        id: pending
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count="$(gh pr list --repo paperclipai/paperclip --state open --search 'in:title "refresh measured test durations"' --limit 100 --json headRefName --jq '[.[] | select(.headRefName | startswith("codex/refresh-ci-durations-"))] | length')"
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+      - name: Refresh from successful protected-master runs
+        if: steps.pending.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/refresh-test-durations.mjs
+      - name: Verify timing data and complete shard coverage
+        if: steps.pending.outputs.count == '0'
+        run: node --test scripts/ci/test-selection-timings.test.mjs scripts/__tests__/run-vitest-stable-shard.test.mjs
+      - name: Open a timing-only pull request
+        if: steps.pending.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet; then exit 0; fi
+          # The collector must not cause unrelated code to enter the bot PR.
+          git diff --name-only -z | node --input-type=module -e '
+            import {readFileSync} from "node:fs";
+            import assert from "node:assert/strict";
+            const allowed = new Set(["scripts/general-server-shard-durations.json", "scripts/serialized-shard-durations.json"]);
+            for (const file of readFileSync(0,"utf8").split("\0").filter(Boolean)) assert.ok(allowed.has(file), file);
+          '
+          branch="codex/refresh-ci-durations-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          git switch -c "$branch"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/general-server-shard-durations.json scripts/serialized-shard-durations.json
+          git commit -m 'chore(ci): refresh measured test durations' -m 'Co-Authored-By: Paperclip <noreply@paperclip.ing>'
+          gh auth setup-git
+          git push origin "$branch"
+          gh pr create --repo paperclipai/paperclip --base master --head "$branch" \
+            --title 'chore(ci): refresh measured test durations' --body-file .github/ci-duration-pr.md

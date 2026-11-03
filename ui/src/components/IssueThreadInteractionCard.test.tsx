@@ -1263,7 +1263,7 @@ describe("IssueThreadInteractionCard", () => {
 });
 
 describe("IssueThreadInteractionCard tool-action card", () => {
-  it("shows only the request description, app icon, and decision controls", () => {
+  it("keeps the request description and decisions primary with optional argument inspection", () => {
     const host = renderCard({ interaction: pendingToolActionWriteInteraction, onAcceptInteraction: vi.fn(), onRejectInteraction: vi.fn() });
     expect(host.textContent).toContain("Add 1 row");
     expect(host.querySelector('[role="img"]')?.getAttribute("aria-label")).toBe("Google Sheets");
@@ -1280,6 +1280,52 @@ describe("IssueThreadInteractionCard tool-action card", () => {
     interaction.payload.toolAction!.previewMarkdown = "Add a row.\n\n**Title:** Launch checklist";
     const host = renderCard({ interaction });
     expect(host.textContent).toContain("Launch checklist");
+  });
+
+  it("renders only the server-redacted proposal as plain text when inspected", async () => {
+    const interaction = structuredClone(pendingToolActionWriteInteraction);
+    interaction.payload.toolAction!.argumentsSummaryJson = JSON.stringify({ text: '<img src="x" onerror="alert(1)">', apiKey: "[redacted]" });
+    const accept = vi.fn();
+    const host = renderCard({ interaction, onAcceptInteraction: accept });
+    const details = host.querySelector("details")!;
+    expect(details.open).toBe(false);
+    await act(async () => details.querySelector("summary")!.click());
+    expect(details.open).toBe(true);
+    expect(details.querySelector("pre")?.textContent).toBe(interaction.payload.toolAction!.argumentsSummaryJson);
+    expect(details.querySelector("img")).toBeNull();
+    expect(details.textContent).toContain("[redacted]");
+    expect(accept).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, { secret: "must not render" }, "x".repeat(20_001)])("withholds missing, malformed or oversized proposal details (%#)", summary => {
+    const interaction = structuredClone(pendingToolActionWriteInteraction);
+    Object.assign(interaction.payload.toolAction!, { argumentsSummaryJson: summary });
+    const host = renderCard({ interaction });
+    expect(host.querySelector("details")).toBeNull();
+    expect(host.textContent).toContain("Request arguments are unavailable.");
+    expect(host.textContent).not.toContain("must not render");
+    expect(host.querySelector("pre")).toBeNull();
+    expect(Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Approve & run")?.disabled).toBe(true);
+  });
+
+  it.each(["argumentsSummaryJson", "argumentsHash"] as const)("rejects oversized whitespace before trimming %s", field => {
+    const interaction = structuredClone(pendingToolActionWriteInteraction);
+    const oversized = " ".repeat(field === "argumentsSummaryJson" ? 20_001 : 256);
+    interaction.payload.toolAction![field] = oversized;
+    const trim = String.prototype.trim;
+    let oversizedTrimCalls = 0;
+    const spy = vi.spyOn(String.prototype, "trim").mockImplementation(function (this: string) {
+      if (String(this) === oversized) oversizedTrimCalls++;
+      return trim.call(this);
+    });
+    try {
+      const host = renderCard({ interaction });
+      expect(host.querySelector("details")).toBeNull();
+      expect(host.textContent).toContain("Request arguments are unavailable.");
+      expect(oversizedTrimCalls).toBe(0);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("keeps the destructive request warning and approval styling", () => {

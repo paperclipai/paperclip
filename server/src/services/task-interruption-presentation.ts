@@ -2,12 +2,17 @@ import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, approvals, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
 import { unionAll } from "drizzle-orm/pg-core";
-import type { TaskInterruptionPresentation } from "@paperclipai/shared";
+import { HEARTBEAT_RUN_STATUSES, readProviderFailure, type TaskInterruptionPresentation } from "@paperclipai/shared";
+import { captureTaskInterruptionFailure } from "../sentry.js";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
 import { authorizationService } from "./authorization.js";
 import { taskWorkspaceProjectRequirements } from "./task-workspace-access.js";
+import { createRunSecretRedactionRegistry } from "./run-secret-redaction.js";
+import { instanceSettingsService } from "./instance-settings.js";
+import { redactCurrentUserText } from "../log-redaction.js";
+import { logger } from "../middleware/logger.js";
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
@@ -47,6 +52,9 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
     state: "resolved", nextRetryAt: null, canRetry: false, userAction: null,
     sourceRunIds: [run.id], observedRunId: run.id };
   if (["done", "cancelled"].includes(issue.status) || (run.status === "succeeded" && !wait)) return base;
+  const providerFailure = run.status === "failed" || run.status === "scheduled_retry"
+    ? readProviderFailure(run.resultJson?.providerFailure) : null;
+  if (providerFailure) base.providerFailure = providerFailure;
   const userAction = !issue.assigneeAgentId ? "assign_agent" : input.approval || run.errorCode === "native_provider_approval_required" ? "approval"
     : isAiAuthenticationBlocked(run) ? "reconnect"
       : run.errorCode === "native_provider_model_rejected" ? "choose_model"
@@ -77,8 +85,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
 }
 
 /** Batch list reads rather than doing seven queries per row. Keep run logs and
- * large result bodies out of this projection; only authentication evidence is
- * needed for the typed reconnect action. */
+ * large result bodies out of this projection. */
 export async function taskInterruptionPresentations(db: Db, companyId: string, input: ProjectionIssue[]) {
   const selected = input.filter(issue => issue.companyId === companyId);
   const result = new Map<string, TaskInterruptionPresentation | null>();
@@ -104,13 +111,15 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
   const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
     db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
-      agentId: heartbeatRuns.agentId,
+      agentId: heartbeatRuns.agentId, agentAdapter: agents.adapterType,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
         and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
       resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
-        'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied')`,
+        'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied',
+        'providerFailure', ${heartbeatRuns.resultJson}->'providerFailure')`,
     }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
+      .leftJoin(agents, and(eq(agents.companyId, heartbeatRuns.companyId), eq(agents.id, heartbeatRuns.agentId)))
       .orderBy(requestedIssueId),
     db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
@@ -168,14 +177,43 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   for (const issue of selected) {
     const required = requirements.get(issue.id);
     const denied = required?.projectIds.filter(projectId => currentAccess.get(`${issue.assigneeAgentId}:${projectId}`) !== true);
-    result.set(issue.id, projectTaskInterruption(issue, {
+    const presentation = projectTaskInterruption(issue, {
       run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id),
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
       workspaceSelectionAvailable: required?.available ?? false,
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
-    }));
+    });
+    result.set(issue.id, presentation);
+    const run = runMap.get(issue.id);
+    const runStatus = HEARTBEAT_RUN_STATUSES.find(status => status === run?.status);
+    if (presentation?.responsibility === "system" && presentation.state === "failed" && run && runStatus) {
+      captureTaskInterruptionFailure({ companyId, taskId: issue.id, agentId: run.agentId,
+        runId: run.id, runStatus, intentId: presentation.intentId,
+        agentAdapter: run.agentAdapter ?? "unknown" });
+    }
+  }
+  const disclosures = [...result.values()].flatMap(presentation => presentation?.providerFailure && presentation.observedRunId
+    ? [{ id: presentation.observedRunId, providerFailure: presentation.providerFailure, presentation }] : []);
+  if (disclosures.length) {
+    try {
+      const [safe, settings] = await Promise.all([
+        createRunSecretRedactionRegistry(db).redactForRuns(companyId, disclosures.map(({ id, providerFailure }) => ({ id, providerFailure }))),
+        instanceSettingsService(db).getGeneral(),
+      ]);
+      disclosures.forEach(({ presentation }, index) => {
+        const value = safe[index]?.providerFailure;
+        const message = typeof value?.message === "string"
+          ? [...redactCurrentUserText(value.message, { enabled: settings.censorUsernameInLogs })].slice(0, 4000).join("") : "";
+        const failure = readProviderFailure({ ...value, message });
+        if (failure) presentation.providerFailure = failure;
+        else delete presentation.providerFailure;
+      });
+    } catch {
+      for (const { presentation } of disclosures) delete presentation.providerFailure;
+      logger.warn({ companyId, runCount: disclosures.length }, "Could not redact provider failure display; explanations omitted");
+    }
   }
   return result;
 }
