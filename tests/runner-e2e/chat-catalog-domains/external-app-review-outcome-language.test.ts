@@ -21,6 +21,8 @@ it.each([
   "You declined. The draft is saved locally for your review.",
   "You declined. The drafts are saved locally for your review.",
   "You declined. The draft was saved (in this chat) for your review.",
+  "You declined. Nothing was saved, except a draft in this chat for your review.",
+  "You declined. In this chat, nothing was saved, except a draft for your review.",
   "Nothing was changed. You declined; you can approve a future request.",
   "You declined. If you would like the draft saved locally for your review applied, approve a new request.",
 ])("accepts a truthful declined outcome: %s", reply => {
@@ -67,4 +69,22 @@ it.each([
 
 it("still requires an actual rejection statement", () => {
   expect(reviewOutcomeReply("If you'd like it applied, approve a new request.", "rejected")).toBe(false);
+});
+
+const negations = ["No changes were saved", "Nothing was added or saved", "I applied no changes"];
+const exceptionScopes = [
+  { object: "a draft in this chat for your review", accepted: true },
+  { object: "a draft in the notes app for your review", accepted: false },
+  { object: "a draft for your review", accepted: false },
+];
+it.each(negations.flatMap(negation => exceptionScopes.map(scope => ({ negation, ...scope }))))(
+  "scopes $negation to the actual exception: $object", ({ negation, object, accepted }) => {
+    expect(reviewOutcomeReply(`You declined. ${negation}, except ${object}.`, "rejected")).toBe(accepted);
+  },
+);
+it.each(negations)("does not stop scanning after the local exception to %s", negation => {
+  expect(reviewOutcomeReply(`You declined. ${negation}, except a draft in this chat for your review. I already applied the update in the notes app.`, "rejected")).toBe(false);
+});
+it("rejects a local-looking exception that also names an external saved destination", () => {
+  expect(reviewOutcomeReply("You declined. Nothing was saved, except a draft in this chat for your review in the notes app.", "rejected")).toBe(false);
 });
