@@ -1,0 +1,11 @@
+{
+  "cwd": "/private/tmp/native-ingestion-delivery-batching",
+  "revision": "b9a66be242395a4bab671d512643e338fbac77fe",
+  "command": [
+    "/private/tmp/paperclip-event-tools/pnpm",
+    "build"
+  ],
+  "start": "2026-11-03T21:31:57.328820+00:00",
+  "exit": 0,
+  "end": "2026-11-03T21:33:05.903194+00:00"
+}

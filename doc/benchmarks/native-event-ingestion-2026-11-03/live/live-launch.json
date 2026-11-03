@@ -1,0 +1,30 @@
+{
+  "repository": "/private/tmp/native-ingestion-delivery-batching",
+  "origin": "http://127.0.0.1:3104",
+  "company": {
+    "id": "09885f08-ef5e-42e4-b87b-29575f393527",
+    "issuePrefix": "NAT"
+  },
+  "agent": {
+    "id": "41c128d6-d378-4f4c-9d68-939ac46697d7",
+    "name": "Live ingestion agent"
+  },
+  "evidenceDir": "/private/tmp/native-ingestion-live-proof-base61-b9",
+  "revision": "b9a66be242395a4bab671d512643e338fbac77fe",
+  "dataDir": "/private/tmp/paperclip-native-live-data-SJZHZZ",
+  "pid": 67350,
+  "build": {
+    "commit": "b9a66be242395a4bab671d512643e338fbac77fe",
+    "serverSha256": "7db3ab75d39e5d6a467f961a267991cc55781439572cc37e45b4599908d1e23b",
+    "uiSha256": "7b0deb598621b2d6a276263a05073eb8215008fa297ebc41975e4871b08f6529"
+  },
+  "platform": {
+    "node": "v26.4.0",
+    "os": "darwin",
+    "architecture": "arm64"
+  },
+  "provider": {
+    "kind": "opencode",
+    "model": "openrouter/deepseek/deepseek-v4-flash-0731"
+  }
+}
