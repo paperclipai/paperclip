@@ -398,7 +398,7 @@
     "packages/shared/src/types/user-profile.ts": "d961a4074852e170c4e61599bb4e293d5708ec16",
     "packages/shared/src/types/voice-sessions.ts": "95e3b62cdd51f62290e68536728ddd7297bc0459",
     "packages/shared/src/types/work-product.ts": "26f9129f606a207ce7a218ccef40f96747283086",
-    "packages/shared/src/types/work-timeline.ts": "8ebfc5cd6cb664b2944c20b7b1b947d71e4f3c46",
+    "packages/shared/src/types/work-timeline.ts": "638253d043efb735d3da1a97a67eb92dc4aed9df",
     "packages/shared/src/types/workspace-file-resource.ts": "02f1bd181300b21330933450e72092023c5fae88",
     "packages/shared/src/types/workspace-operation.ts": "8fcb52c7088ae9da4417cf01e55632897f17645e",
     "packages/shared/src/types/workspace-readiness.ts": "c979f99c3dccb684028f8a6ab07660a018a4a3ea",
