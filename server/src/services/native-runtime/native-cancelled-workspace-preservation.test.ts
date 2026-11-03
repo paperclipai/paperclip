@@ -142,9 +142,10 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
       // A no-op acknowledgement permits preservation, but cannot prove the provider stopped.
       expect(hasAcknowledgedNativeRunStopReceipt(retained)).toBe(false);
       expect(hasAcknowledgedNativeStopIntent(retained)).toBe(false);
-      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId)))[0])
-        .toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure", releasedAt: null,
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.leaseId));
+      expect(lease).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure",
           metadata: { sandboxStopAndRetain: { runId: f.runId, leaseId: f.leaseId } } });
+      expect(lease.metadata).not.toHaveProperty("remoteExecutionTermination");
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.companyId, f.companyId));
       expect((await inspectWorkspaceRecoverySource(db, { companyId: f.companyId, issueId: f.issueId,
         runId: f.runId, actionId: action.id })).sources).toHaveLength(1);
@@ -160,7 +161,7 @@ import { preserveCancelledNativeWorkspaces, preserveNativeFailedWorkspace,
     "foreign-allocation", "foreign-workspace", "foreign-cwd", "saved-reference", "unknown-reference", "running"] as const)
   ("does not admit preservation for %s", async invalid => {
     const f = await seed();
-    const intent: Record<string, unknown> = { ...f.nativeCancellation };
+    const intent: Record<string, unknown> = { ...f.nativeCancellation, dispatched: false };
     if (invalid === "pending") intent.dispatchState = "pending";
     if (invalid === "missing-dispatch") delete intent.dispatched;
     if (invalid === "invalid-dispatch") intent.dispatched = "false";
