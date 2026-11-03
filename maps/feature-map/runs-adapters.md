@@ -36,10 +36,6 @@ bindings; human authentication and raw host administration retain their gates.
 ### `run-history`
 
 Open an agent run at `/agents/:agentId/runs/:runId` from the agent or task activity.
-For native Claude through ACPX with a managed GitHub connection, verify terminal
-access separately from connector tools: run `gh api user` in the agent's shell
-and confirm the expected responsible person's login. Repeat after session reuse
-and connection revocation; unavailable access must never reuse a prior token.
 The agent header has one Run now action. Administrators can enable
 Capture raw provider traces under the agent configuration’s Debugging section
 for future runs. The header shows Raw tracing on while that setting is enabled.

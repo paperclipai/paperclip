@@ -16,13 +16,6 @@ exercise real Git with controlled broker responses; the
 exercise real local shells through a simulated sandbox transport. Neither
 qualifies live cloud execution or GitHub writes. No REST operation changes.
 
-Native Claude ACPX shell commands retain explicit managed-launcher broker
-transport through launch sanitization. Broker authority remains session-bound
-and is not persisted; raw and ambient GitHub credentials remain excluded.
-[Command controls](../../packages/paperclip-runner/src/drivers/acpx/github-launcher.test.ts)
-cover operation-time identity changes, revocation and recovery with a local broker
-and real shell/launcher subprocesses. They do not qualify a live GitHub account.
-
 Delegated native entries inherit the [native admission and work-mode limits](README.md#native-rest-transport).
 
 Review date: 2026-10-26. Source base: `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; implementation: [#17737](https://github.com/paperclipai/paperclip/pull/17737).
