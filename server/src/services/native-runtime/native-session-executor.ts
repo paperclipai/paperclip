@@ -11205,6 +11205,25 @@ function archiveExcludeArgs(entries: readonly string[]): string[] {
   return entries.map((entry) => `--exclude=./${entry}`);
 }
 
+// The provider sync-out recognizes the same tar diagnostics for a full disk.
+const SANDBOX_DISK_FULL_PATTERN =
+  /No space left on device|Disk quota exceeded|File\s?size limit exceeded|Wrote only \d+ of \d+ bytes/i;
+
+async function removeRemoteCheckpointSnapshot(
+  runner: CommandManagedRuntimeRunner,
+  snapshotPath: string,
+): Promise<void> {
+  const escapedSnapshot = snapshotPath.replaceAll("'", "'\\''");
+  await runner
+    .execute({
+      command: "sh",
+      args: ["-c", `rm -rf -- '${escapedSnapshot}'`],
+      bypassSession: true,
+      timeoutMs: 30_000,
+    })
+    .catch(() => undefined);
+}
+
 export async function stageRemoteRunnerDirectory(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
@@ -11540,6 +11559,14 @@ function assertSafeExtractedCheckpoint(root: string): void {
  * provider supplies a native syncOut implementation, create a sibling snapshot
  * first so the live runtime remains untouched and the provider's archive safety
  * checks still apply to every persisted entry.
+ *
+ * The snapshot needs free sandbox disk. When the disk is full, the provider
+ * applies the exclusions itself: its transfer can stream the directory without
+ * writing an archive into the sandbox. Provider exclusions are not anchored to
+ * the directory root, so this fallback also leaves out a nested entry that has
+ * an excluded name (for example a nested `tmp`). It never copies more than the
+ * snapshot would, and a checkpoint without those entries is more useful than
+ * no checkpoint.
  */
 export async function syncRemoteRunnerDirectoryOut(input: {
   runner: CommandManagedRuntimeRunner;
@@ -11564,6 +11591,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   if (input.runner.syncOut) {
     let syncSourcePath = input.sourcePath;
     let snapshotPath: string | null = null;
+    let providerExclude: string[] | null = null;
     if (excluded.length > 0) {
       const checkpointId = randomUUID();
       snapshotPath = posix.join(
@@ -11587,9 +11615,21 @@ export async function syncRemoteRunnerDirectoryOut(input: {
         timeoutMs: 120_000,
       });
       if (snapshotResult.exitCode !== 0 || snapshotResult.timedOut) {
-        throw new Error("runner_remote_checkpoint_snapshot_failed");
+        // A partial copy would hold sandbox disk that the next save needs.
+        await removeRemoteCheckpointSnapshot(input.runner, snapshotPath);
+        snapshotPath = null;
+        if (
+          snapshotResult.timedOut ||
+          !SANDBOX_DISK_FULL_PATTERN.test(
+            `${snapshotResult.stderr}\n${snapshotResult.stdout}`,
+          )
+        ) {
+          throw new Error("runner_remote_checkpoint_snapshot_failed");
+        }
+        providerExclude = [...excluded];
+      } else {
+        syncSourcePath = snapshotPath;
       }
-      syncSourcePath = snapshotPath;
     }
     try {
       await input.runner.syncOut([
@@ -11601,21 +11641,14 @@ export async function syncRemoteRunnerDirectoryOut(input: {
               targetPath: input.targetPath,
               kind: "directory",
               mode: input.mode,
+              ...(providerExclude ? { exclude: providerExclude } : {}),
             },
           ],
         },
       ]);
     } finally {
       if (snapshotPath) {
-        const escapedSnapshot = snapshotPath.replaceAll("'", "'\\''");
-        await input.runner
-          .execute({
-            command: "sh",
-            args: ["-c", `rm -rf -- '${escapedSnapshot}'`],
-            bypassSession: true,
-            timeoutMs: 30_000,
-          })
-          .catch(() => undefined);
+        await removeRemoteCheckpointSnapshot(input.runner, snapshotPath);
       }
     }
     return;
