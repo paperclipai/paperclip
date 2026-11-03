@@ -8160,7 +8160,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(
         mutations.find((m) => m.body.conclusion === "failure")?.body,
       ).toMatchObject({
-        name: "Paperclip Review",
+        name: f.endpoint.botLabel,
         head_sha: head,
         conclusion: "failure",
         details_url: `https://current-vanity.example/${company.issuePrefix}/issues/${conversation.issueId}`,
