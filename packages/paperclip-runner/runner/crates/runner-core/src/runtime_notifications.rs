@@ -711,7 +711,8 @@ mod tests {
 if cat "$1" >/dev/null 2>&1; then exit 71; fi
 if /bin/sh -c ': >> "$PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT"' 2>/dev/null; then exit 72; fi
 if touch "$2/probe" 2>/dev/null; then exit 75; fi
-if touch "$3/probe" 2>/dev/null; then exit 76; fi
+touch "$3/probe" || exit 76
+rm "$3/probe" || exit 76
 if /bin/sh -c ': >> "$1"' ignored "$4" 2>/dev/null; then exit 77; fi
 context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context) || exit 73
 "$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" record-activity "$context" example.runtime desktop.used || exit 74
