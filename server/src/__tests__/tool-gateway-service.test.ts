@@ -2729,6 +2729,48 @@ describeEmbeddedPostgres("tool gateway service", () => {
     })).rejects.toMatchObject({ reasonCode: "action_declined" });
   });
 
+  it.each(["issue.comment", "issue.comment.reopen"])("opens a fresh review only for a later trusted human intent after a decline (%s)", async source => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    const human = "board-user";
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: human, membershipRole: "owner" });
+    const [firstComment] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+      authorType: "user", authorUserId: human, body: "Update this note." }).returning();
+    await db.update(heartbeatRuns).set({ responsibleUserId: human, startedAt: new Date(),
+      contextSnapshot: { issueId: issue.id, source: "issue.comment", commentId: firstComment!.id } }).where(eq(heartbeatRuns.id, run.id));
+    await initializeRunIdentity(db, { companyId: company.id, runId: run.id, issueId: issue.id,
+      responsibleUserId: human, messageIds: [firstComment!.id], cause: "instruction" });
+    await db.insert(toolPolicies).values(reviewNotePolicyRow(company));
+    const gateway = createTestToolGatewayService(db);
+    const original = await gateway.createSession(runSessionInput(company, agent, run));
+    const call = { tool: "mcp-remote-fixture:update_note", parameters: { noteId: "n1", body: "same proposed write" } };
+    await expect(gateway.executeTool({ ...call, sessionToken: original.token })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [first] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
+    await gateway.declineActionRequest({ companyId: company.id, actionRequestId: first!.id, actor: { userId: human } });
+    await expect(gateway.executeTool({ ...call, sessionToken: original.token })).rejects.toMatchObject({ reasonCode: "action_declined" });
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run.id));
+    const [nextComment] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+      authorType: "user", authorUserId: human, body: "Please request my review for that update again." }).returning();
+    // Make the relevant strict ordering explicit, without timer sleeps or a new clock.
+    const rejectedAt = new Date(nextComment!.createdAt.getTime() - 1);
+    await db.update(toolActionRequests).set({ decidedAt: rejectedAt, resolvedAt: rejectedAt }).where(eq(toolActionRequests.id, first!.id));
+    const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "running",
+      responsibleUserId: human, startedAt: new Date(), invocationSource: "on_demand",
+      contextSnapshot: { issueId: issue.id, source, commentId: nextComment!.id } }).returning();
+    await initializeRunIdentity(db, { companyId: company.id, runId: nextRun!.id, issueId: issue.id,
+      responsibleUserId: human, messageIds: [nextComment!.id], cause: "instruction" });
+    const next = await gateway.createSession(runSessionInput(company, agent, nextRun!));
+    await expect(gateway.executeTool({ ...call, sessionToken: next.token })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    await expect(gateway.executeTool({ ...call, sessionToken: next.token })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const requests = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, company.id));
+    expect(requests).toHaveLength(2);
+    expect(requests.find(row => row.id === first!.id)?.status).toBe("rejected");
+    expect(requests.find(row => row.id !== first!.id)).toMatchObject({ status: "pending", requestedByAgentId: agent.id });
+    const invocations = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, company.id));
+    expect(invocations.map(row => row.status).sort()).toEqual(["awaiting_approval", "denied"]);
+    expect(await db.select().from(toolAccessAuditEvents).where(and(eq(toolAccessAuditEvents.companyId, company.id), eq(toolAccessAuditEvents.action, "tool_gateway.call_completed")))).toHaveLength(0);
+    console.info(`Verified fresh tool review after decline: ${source}`);
+  });
+
   it("expires a stale identical request and creates a fresh approval", async () => {
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values(reviewNotePolicyRow(company));
@@ -2799,7 +2841,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
   });
 
   it("marks an in-flight fictional provider outcome unknown and does not retry on cancellation", async () => {
-    const { company, agent, run } = await createRunFixture(db);
+    const { company, agent, issue, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Review destructive tools",
       policyType: "require_approval", selectors: { toolName: "fixture:delete_everything" } });
     let entered!: () => void; let resume!: () => void; let calls = 0;
@@ -2827,6 +2869,10 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(invocation.errorCode).toBe("tool_execution_outcome_unknown");
     expect(after.status).toBe("failed");
     await expect(gateway.executeTool({ ...input, approvedActionRequestId: request.id })).rejects.toThrow();
+    const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      invocationSource: "on_demand", status: "running", contextSnapshot: { issueId: issue.id } }).returning();
+    const nextSession = await gateway.createSession(runSessionInput(company, agent, nextRun!));
+    await expect(gateway.executeTool({ ...input, sessionToken: nextSession.token })).rejects.toMatchObject({ reasonCode: "tool_execution_outcome_unknown" });
     expect(calls).toBe(1);
   });
 

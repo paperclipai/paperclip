@@ -3270,9 +3270,21 @@ impl CodexProvider {
                             format!("Codex {method} returned an invalid error response"),
                         )));
                     }
-                    return Err(ProviderRequestError::Rejected(LocalRunnerError::invalid(
-                        format!("Codex {method} failed: {}", redact_text(&error.to_string())),
-                    )));
+                    return Err(ProviderRequestError::Rejected(
+                        LocalRunnerError::invalid(format!(
+                            "Codex {method} failed: {}",
+                            redact_text(&error.to_string())
+                        ))
+                        .with_provider_failure(
+                            if self.config.provider == "codex"
+                                && matches!(method, "initialize" | "thread/start" | "thread/resume")
+                            {
+                                crate::provider_failure::codex_startup_failure(error)
+                            } else {
+                                None
+                            },
+                        ),
+                    ));
                 }
                 return Ok(message.get("result").cloned().unwrap_or(Value::Null));
             }
