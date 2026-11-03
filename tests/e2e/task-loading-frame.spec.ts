@@ -149,24 +149,32 @@ test("a stalled web font does not hide an otherwise prepared conversation indefi
   }
 });
 
-for (const coordinator of [false, true]) test(`mobile chrome stays fixed when personal preferences resolve (Coordinator=${coordinator})`, async ({ page, request }, info) => {
+for (const { coordinator, sampleIntervalMs = 0 } of [
+  { coordinator: false },
+  { coordinator: true },
+  { coordinator: false, sampleIntervalMs: 120 },
+]) test(`mobile chrome stays fixed when personal preferences resolve (Coordinator=${coordinator}${sampleIntervalMs ? ", paced recorder" : ""})`, async ({ page, request }, info) => {
   await page.setViewportSize({ width: 390, height: 844 });
   const fixture = await createTask(request);
   let release!: () => void;
   const preferenceReady = new Promise<void>(resolve => { release = resolve; });
-  await page.addInitScript(() => {
+  await page.addInitScript(({ sampleIntervalMs }) => {
     const frames: number[][] = [];
-    Object.assign(window, { mobileShellFrames: frames });
-    const sample = () => {
+    const timestamps: number[] = [];
+    Object.assign(window, { mobileShellFrames: frames, mobileShellFrameTimes: timestamps });
+    let lastSampleAt = -Infinity;
+    const sample = (at: number) => {
       const shell = document.querySelector(".paperclip-app-shell");
-      if (shell && shell.getBoundingClientRect().width > 0) {
+      if (shell && shell.getBoundingClientRect().width > 0 && at - lastSampleAt >= sampleIntervalMs) {
         const rects = [".app-breadcrumb", ".mobile-bottom-nav", "#main-content"].map(selector => document.querySelector(selector)!.getBoundingClientRect());
         frames.push([innerWidth, innerHeight, scrollX, scrollY, ...rects.flatMap((rect, index) => index === 2 ? [rect.x, rect.y, rect.width] : [rect.x, rect.y, rect.width, rect.height])]);
+        timestamps.push(at);
+        lastSampleAt = at;
       }
       requestAnimationFrame(sample);
     };
     requestAnimationFrame(sample);
-  });
+  }, { sampleIntervalMs });
   try {
     await page.route("**/api/instance/settings/experimental", async route => {
       const response = await route.fetch();
@@ -184,9 +192,24 @@ for (const coordinator of [false, true]) test(`mobile chrome stays fixed when pe
     release();
     if (coordinator) await expect(page.getByTestId("task-chat-thread").locator(':scope > [aria-busy="false"]')).toBeVisible();
     else await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: fixture.title, exact: true })).toBeVisible();
-    await page.waitForTimeout(300);
-    const frames = await page.evaluate(() => (window as unknown as { mobileShellFrames: number[][] }).mobileShellFrames);
+    const observationStartedAt = await page.evaluate(() => performance.now());
+    const observations: Array<{ elapsedMs: number; frameCount: number }> = [];
+    await expect.poll(async () => {
+      const observation = await page.evaluate(startedAt => ({ elapsedMs: performance.now() - startedAt,
+        frameCount: (window as unknown as { mobileShellFrames: number[][] }).mobileShellFrames.length }), observationStartedAt);
+      observations.push(observation);
+      return observation.elapsedMs >= 300 && observation.frameCount > 5;
+    }, { message: "Observe at least 300 ms and more than five mobile chrome frames" }).toBe(true);
+    const recording = await page.evaluate(() => {
+      const source = window as unknown as { mobileShellFrames: number[][]; mobileShellFrameTimes: number[] };
+      return { frames: source.mobileShellFrames, timestamps: source.mobileShellFrameTimes, completedAt: performance.now() };
+    });
+    const { frames } = recording;
     await info.attach("mobile-preference-chrome", { body: JSON.stringify(frames), contentType: "application/json" });
+    await info.attach("mobile-preference-chrome-timing", { body: JSON.stringify({ sampleIntervalMs,
+      observationStartedAt, completedAt: recording.completedAt, timestamps: recording.timestamps, observations }), contentType: "application/json" });
+    expect(recording.completedAt - observationStartedAt).toBeGreaterThanOrEqual(300);
+    expect(recording.timestamps).toHaveLength(frames.length);
     expect(frames.length).toBeGreaterThan(5);
     for (let dimension = 0; dimension < frames[0].length; dimension++) {
       const values = frames.map(frame => frame[dimension]);
