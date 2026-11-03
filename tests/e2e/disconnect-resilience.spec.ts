@@ -1,0 +1,199 @@
+import { expect, test, type APIRequestContext, type APIResponse, type Page } from "@playwright/test";
+
+test.describe.configure({ timeout: 90_000 });
+test.use({ actionTimeout: 10_000 });
+
+async function json(response: APIResponse) {
+  expect(response.ok(), `${response.status()}: ${await response.text()}`).toBe(true);
+  return response.json();
+}
+
+async function fixture(request: APIRequestContext) {
+  const company = await json(await request.post("/api/companies", { data: { name: `Disconnect recovery ${Date.now()}` } }));
+  const issue = await json(await request.post(`/api/companies/${company.id}/issues`, {
+    data: { title: "Keep this task visible", description: "Saved task context stays visible.", status: "backlog", assigneeAgentId: null, assigneeUserId: null },
+  }));
+  return { company, issue, route: `/${company.issuePrefix}/issues/${issue.identifier}` };
+}
+
+async function outage(page: Page) {
+  const until = Date.now() + 20_000;
+  let failures = 0;
+  await page.route("**/api/**", async route => {
+    if (Date.now() >= until) return route.continue();
+    failures += 1;
+    await route.fulfill({ status: 503, json: { error: "tenant_app_unavailable" } });
+  });
+  return { until, failures: () => failures };
+}
+
+async function expectReconnecting(page: Page) {
+  await expect(page.locator('[data-connection-status="reconnecting"]')).toHaveCount(1, { timeout: 10_000 });
+  await expect(page.getByText("tenant_app_unavailable", { exact: false })).toHaveCount(0);
+  await expect(page.locator('p.text-destructive, span.text-destructive, div.text-destructive, [role="alert"]')
+    .filter({ hasNotText: /^Danger Zone$/ }).filter({ visible: true })).toHaveCount(0);
+}
+
+test("a comment typed during a 20-second outage posts once and loaded task content stays visible", async ({ page, request }) => {
+  const data = await fixture(request);
+  const body = "A comment retained through the disconnect";
+  let successfulPosts = 0;
+  page.on("response", response => {
+    if (response.request().method() === "POST" && response.url().endsWith("/comments")
+      && response.request().postDataJSON()?.body === body && response.ok()) successfulPosts += 1;
+  });
+  try {
+    await page.goto(data.route);
+    const header = page.getByTestId("issue-detail-header");
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+    await expect(header.getByRole("heading", { name: data.issue.title, exact: true })).toBeVisible();
+    await expect(page.getByText(data.issue.description, { exact: true }).first()).toBeVisible();
+    const interruption = await outage(page);
+    await page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]').fill(body);
+    await page.getByTestId("task-chat-composer-send").click();
+    await expect.poll(interruption.failures).toBeGreaterThan(0);
+    await expectReconnecting(page);
+    await expect(header.getByRole("heading", { name: data.issue.title, exact: true })).toBeVisible();
+    await expect(page.getByText(body, { exact: true }).first()).toBeVisible();
+    expect((await json(await request.get(`/api/issues/${data.issue.id}/comments`))).filter((comment: { body: string }) => comment.body === body)).toHaveLength(0);
+    await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
+    expect(Date.now()).toBeGreaterThanOrEqual(interruption.until);
+    await expect.poll(async () => (await json(await request.get(`/api/issues/${data.issue.id}/comments`)))
+      .filter((comment: { body: string }) => comment.body === body).length).toBe(1);
+    expect(successfulPosts).toBe(1);
+    await page.reload();
+    await expect(page.getByText(body, { exact: true })).toBeVisible();
+    expect((await json(await request.get(`/api/issues/${data.issue.id}`))).assigneeAgentId).toBeNull();
+  } finally {
+    await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
+  }
+});
+
+test("a queued comment survives an outage reload and sends once after session verification", async ({ page, request }) => {
+  const data = await fixture(request);
+  const body = "A pending comment retained across reload";
+  try {
+    await page.goto(data.route);
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+    await outage(page);
+    await page.getByTestId("task-chat-composer-input").locator('[contenteditable="true"]').fill(body);
+    await page.getByTestId("task-chat-composer-send").click();
+    await expectReconnecting(page);
+    await expect.poll(() => page.evaluate(text => Object.values(localStorage).some(value => value.includes(text)), body)).toBe(true);
+    await page.reload();
+    await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: data.issue.title, exact: true })).toBeVisible();
+    await expectReconnecting(page);
+    expect((await json(await request.get(`/api/issues/${data.issue.id}/comments`))).filter((comment: { body: string }) => comment.body === body)).toHaveLength(0);
+    await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
+    await expect.poll(async () => (await json(await request.get(`/api/issues/${data.issue.id}/comments`)))
+      .filter((comment: { body: string }) => comment.body === body).length).toBe(1);
+    await page.reload();
+    await expect(page.getByText(body, { exact: true })).toBeVisible();
+  } finally {
+    await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
+  }
+});
+
+test("a document edit stays visible and saves after a 20-second outage", async ({ page, request }) => {
+  const data = await fixture(request);
+  const original = "The original document body.";
+  const edited = "The document edit retained during the outage.";
+  try {
+    await json(await request.put(`/api/issues/${data.issue.id}/documents/handoff`, {
+      data: { title: "Recovery handoff", format: "markdown", body: original, baseRevisionId: null },
+    }));
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.addInitScript(() => localStorage.setItem("paperclip:panel-visible", "true"));
+    await page.goto(data.route);
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+    const panel = page.locator("aside").filter({ has: page.getByRole("button", { name: "Open a new tab", exact: true }) });
+    await panel.getByRole("tab", { name: "Artifacts", exact: true })
+      .or(panel.getByRole("button", { name: "Artifacts", exact: true })).click();
+    const document = panel.locator("#document-handoff");
+    await expect(document.getByText(original, { exact: true })).toBeVisible();
+    await document.getByRole("button", { name: "Document actions", exact: true }).click();
+    await page.getByRole("menuitem", { name: "Edit document", exact: true }).click();
+    await outage(page);
+    await document.locator('[contenteditable="true"]').fill(edited);
+    await expectReconnecting(page);
+    await expect(document.locator('[contenteditable="true"]')).toContainText(edited);
+    expect((await json(await request.get(`/api/issues/${data.issue.id}/documents/handoff`))).body).toBe(original);
+    await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
+    await expect.poll(async () => (await json(await request.get(`/api/issues/${data.issue.id}/documents/handoff`))).body).toBe(edited);
+    await page.reload();
+    await expect(page.getByText(edited, { exact: true }).first()).toBeVisible();
+  } finally {
+    await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
+  }
+});
+
+test("a reload during a 20-second outage restores settings, sidebar and a recent task", async ({ page, request }) => {
+  const data = await fixture(request);
+  try {
+    await page.goto(data.route);
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: data.issue.title, exact: true })).toBeVisible();
+    await page.getByRole("button", { name: "Open account menu", exact: true }).click();
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "General", exact: true })).toBeVisible();
+    await expect(page.locator('input[type="text"]').first()).toHaveValue(data.company.name);
+    await expect.poll(() => page.evaluate(() => Object.keys(localStorage).some(key => key.startsWith("paperclip:query-cache:v1:") && key.endsWith(":root")))).toBe(true);
+    await outage(page);
+    await page.reload();
+    await expect(page.getByRole("heading", { name: "General", exact: true })).toBeVisible();
+    await expect(page.locator('input[type="text"]').first()).toHaveValue(data.company.name);
+    await expectReconnecting(page);
+    await page.goBack();
+    await expect(page.getByRole("link").filter({ hasText: data.issue.title }).first()).toBeVisible();
+    await expect(page.getByTestId("issue-detail-header").getByRole("heading", { name: data.issue.title, exact: true })).toBeVisible();
+    await expectReconnecting(page);
+    await expect(page.getByText(data.issue.description, { exact: true }).first()).toBeVisible();
+    await expect(page.locator('[data-connection-status="back_online"]')).toBeVisible({ timeout: 35_000 });
+  } finally {
+    await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
+  }
+});
+
+for (const status of [403, 404]) test(`a genuine ${status} replaces cached task content with readable copy`, async ({ page, request }) => {
+  const data = await fixture(request);
+  try {
+    await page.goto(data.route);
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => page.evaluate(() => Object.values(localStorage).some(value => value.includes("Keep this task visible")))).toBe(true);
+    await page.route("**/api/issues/*?view=core", route => route.fulfill({ status, json: { error: status === 403 ? "forbidden" : "not_found" } }));
+    await page.reload();
+    await expect(page.getByText(status === 403 ? "You don’t have permission to do that." : "This item doesn’t exist or was moved.", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("issue-detail-header")).toHaveCount(0);
+    await expect(page.locator("[data-connection-status]")).toHaveCount(0);
+  } finally {
+    await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
+  }
+});
+
+test("signing out clears saved query data before a later outage reload", async ({ page, request }) => {
+  const data = await fixture(request);
+  let signedOut = false;
+  try {
+    await page.goto(data.route);
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+    await expect.poll(() => page.evaluate(() => Object.values(localStorage).some(value => value.includes("Keep this task visible")))).toBe(true);
+    await page.getByRole("button", { name: "Open account menu", exact: true }).click();
+    await page.getByRole("link", { name: "Settings", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "General", exact: true })).toBeVisible();
+    await outage(page);
+    await page.route("**/api/auth/get-session", route => signedOut ? route.fulfill({ status: 200, json: null }) : route.fallback());
+    await page.route("**/api/auth/sign-out", route => {
+      signedOut = true;
+      return route.fulfill({ status: 200, json: { success: true } });
+    });
+    page.once("dialog", dialog => dialog.accept());
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await expect.poll(() => signedOut).toBe(true);
+    await expect.poll(() => page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("paperclip:query-cache:v1:")).length)).toBe(0);
+    await page.goto(data.route);
+    await expect(page.getByTestId("issue-detail-header")).toHaveCount(0);
+    expect(await page.evaluate(() => Object.keys(localStorage).filter(key => key.startsWith("paperclip:query-cache:v1:")))).toEqual([]);
+  } finally {
+    await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
+  }
+});
