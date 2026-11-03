@@ -310,6 +310,8 @@ export interface ToolConnectionCapabilities {
   management?: { allowed: boolean; reason: string; operation: string };
   usage?: { allowed: boolean; reason: string; operation: string; requiresApproval?: boolean; allowedCount?: number; askFirstCount?: number };
   canConfigure: boolean;
+  /** Removal can be allowed independently of account configuration. */
+  canRemove?: boolean;
   canCreateOrganizationGrant: boolean;
   canSetCompanyInstall: boolean;
   canConnectAsCurrentUser: boolean;
