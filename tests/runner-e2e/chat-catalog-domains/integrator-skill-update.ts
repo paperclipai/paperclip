@@ -1,3 +1,4 @@
+import { readSkillVersionHistory } from "./integrator-skill-versions.js";
 import { saveSkillConversationContext } from "./integrator-skill-context.js";
 import { factualContextQueryAttachment } from "../chat-query-attachments.js";
 import { createHash } from "node:crypto";
@@ -18,7 +19,7 @@ interface UpdateObservation extends InternalObservation { upstream: CompanySkill
 async function observeUpdate(ctx: ChatCatalogContext, state: Record<string, unknown>): Promise<UpdateObservation> {
   const base = await observeInternal(ctx, state); const api = ctx.input.api; const upstream = state.upstream as CompanySkillDetail; const local = state.localFork as CompanySkillDetail;
   return { ...base, upstream: await api.get<CompanySkillDetail>(`${root(ctx)}/skills/${upstream.id}`), localFork: await api.get<CompanySkillDetail>(`${root(ctx)}/skills/${local.id}`),
-    upstreamVersions: await api.get<CompanySkillVersion[]>(`${root(ctx)}/skills/${upstream.id}/versions`), forkVersions: await api.get<CompanySkillVersion[]>(`${root(ctx)}/skills/${local.id}/versions`),
+    upstreamVersions: await readSkillVersionHistory(api, ctx.input.fixtures.company.id, upstream.id), forkVersions: await readSkillVersionHistory(api, ctx.input.fixtures.company.id, local.id),
     source: await api.get<SkillSource>(`${root(ctx)}/skill-sources/${(state.source as SkillSource).id}`), updateStatus: await api.get<UpdateObservation["updateStatus"]>(`${root(ctx)}/skills/${upstream.id}/update-status`) };
 }
 function updateObservation(value: unknown): UpdateObservation | undefined { const o = value as UpdateObservation; return observation(value) && !!o.upstream && !!o.localFork && Array.isArray(o.upstreamVersions) && Array.isArray(o.forkVersions) && !!o.source && !!o.updateStatus ? o : undefined; }
@@ -66,10 +67,10 @@ export const integratorSkillUpdateCases = [integratorDefinition("skills", "skill
   const source = await ctx.input.api.patch<SkillSource>(`${root(ctx)}/skill-sources/${imported.source.id}/settings`, { revision: imported.source.revision, automaticUpdates: false, importNewSkills: false, trackingRef: accessibilityUpdatePins.newCommit });
   if (source.lastScanCommit !== accessibilityUpdatePins.oldCommit || source.trackingRef !== accessibilityUpdatePins.newCommit || source.automaticUpdates !== false) throw new Error("Normal source settings applied an update prematurely");
   const selected = await saveSkillConversationContext(ctx, { description: `Selected upstream accessibility skill: ${upstream.name} (${upstream.id}), tracked source ${source.id}. Installed source revision ${upstream.sourceRef}; tracking reference ${source.trackingRef}. Separate editable local copy: ${localFork.name} (${localFork.id}).` });
-  return { upstream, localFork, source, factualContextAttachment: selected.factualContextAttachment, localVersions: await ctx.input.api.get<CompanySkillVersion[]>(`${root(ctx)}/skills/${localFork.id}/versions`) };
+  return { upstream, localFork, source, factualContextAttachment: selected.factualContextAttachment, localVersions: await readSkillVersionHistory(ctx.input.api, ctx.input.fixtures.company.id, localFork.id, localFork.currentVersionId) };
 }, observeUpdate, gradeIntegratorSkillUpdate, async (ctx, state) => { const skill = state.upstream as CompanySkillDetail; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name); },
 { authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), expectedRunCount: 2, expectedHumanMessageCount: 2, attemptTimeoutMs: 540_000,
-  sourceFiles: ["chat-catalog-domains/integrator-skill-update.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
+  sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-update.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
   async act(ctx, state) {
     const first = await pollUntil({ label: "actual upstream diff presented before installation", deadlineAt: Date.now() + 180_000, intervalMs: 1000, load: () => observeUpdate(ctx, state), accept: o => o.runs.length === 1 && o.runs[0]?.status === "succeeded" && ctx.issue()?.conversationState === "waiting" });
     state.reviewCheckpoint = { ...first, state: structuredClone(state) }; await ctx.input.evidence("chat-skill-source-review-before-update.json", state.reviewCheckpoint);

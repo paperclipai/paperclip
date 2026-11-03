@@ -1,3 +1,4 @@
+import { readSkillVersionHistory } from "./integrator-skill-versions.js";
 import { saveSkillConversationContext } from "./integrator-skill-context.js";
 import { factualContextQueryAttachment } from "../chat-query-attachments.js";
 import type { CompanySkillDetail, CompanySkillFileDetail, CompanySkillListItem, CompanySkillVersion } from "../../../packages/shared/src/types/company-skill.js";
@@ -14,7 +15,7 @@ async function observeImports(ctx: ChatCatalogContext, state: Record<string, unk
   const base = await observeInternal(ctx, state); const api = ctx.input.api;
   const rows = await api.get<CompanySkillListItem[]>(root(ctx));
   const skills = await Promise.all(rows.map(row => api.get<CompanySkillDetail>(`${root(ctx)}/${row.id}`)));
-  const skillVersions: Record<string, CompanySkillVersion[]> = Object.fromEntries(await Promise.all(rows.map(async row => [row.id, await api.get<CompanySkillVersion[]>(`${root(ctx)}/${row.id}/versions`)])));
+  const skillVersions: Record<string, CompanySkillVersion[]> = Object.fromEntries(await Promise.all(skills.map(async row => [row.id, await readSkillVersionHistory(api, ctx.input.fixtures.company.id, row.id, row.currentVersionId)])));
   let importedFile: CompanySkillFileDetail | undefined;
   if (ctx.scenario.id === "skills.find-and-install") {
     const imported = skills.find(row => row.sourceLocator === state.sourceURL);
@@ -86,13 +87,13 @@ function define(id: "skills.find-and-install" | "skills.fork-read-only") {
       }
       const upstream = await importReadOnlySkill(ctx); const localFork = await editableLocalNotes(ctx, upstream);
       const selected = await saveSkillConversationContext(ctx, { projectId: p.id, description: `Selected read-only checklist skill: ${upstream.name} (${upstream.id}), source ${upstream.sourceLocator}, revision ${upstream.sourceRef}. Existing editable local notes: ${localFork.name} (${localFork.id}). Our mobile checks: ${mobileChecks.join(" ")}` });
-      return { project: p, sourceURL: upstream.sourceLocator, importAllowed: true, upstreamQualified: true, upstream, localFork, factualContextAttachment: selected.factualContextAttachment, upstreamVersions: await ctx.input.api.get<CompanySkillVersion[]>(`${root(ctx)}/${upstream.id}/versions`) };
+      return { project: p, sourceURL: upstream.sourceLocator, importAllowed: true, upstreamQualified: true, upstream, localFork, factualContextAttachment: selected.factualContextAttachment, upstreamVersions: await readSkillVersionHistory(ctx.input.api, ctx.input.fixtures.company.id, upstream.id, upstream.currentVersionId) };
     } catch (error) { await closeVettedSkillSource(ctx); throw error; }
   }, observeImports, gradeIntegratorSkillImports, async (ctx, _state, value) => {
     const o = importObservation(value); const skill = o && (id === "skills.find-and-install" ? o.skills.find(row => row.sourceLocator === o.state.sourceURL) : changedFork(o));
     if (!o || !skill) throw new Error("No actual saved skill copy for browser inspection");
     await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name, resultHref(o, skill.id, "studio"));
-  }, { authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), sourceFiles: ["chat-catalog-domains/integrator-skill-imports.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-skills.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
+  }, { authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md"), sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-imports.ts", "chat-catalog-domains/integrator-skill-source.ts", "chat-catalog-domains/integrator-skills.ts", "chat-catalog-domains/integrator-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/skills.yaml"],
     async cleanup(ctx) { await closeVettedSkillSource(ctx); } });
 }
 export const integratorSkillImportCases = [define("skills.find-and-install"), define("skills.fork-read-only")];

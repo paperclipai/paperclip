@@ -1,3 +1,4 @@
+import { readSkillVersionHistory } from "./integrator-skill-versions.js";
 import { saveSkillConversationContext } from "./integrator-skill-context.js";
 import { factualContextQueryAttachment } from "../chat-query-attachments.js";
 import type { CompanySkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion } from "../../../packages/shared/src/types/company-skill.js";
@@ -28,7 +29,7 @@ async function observeSkills(ctx: ChatCatalogContext, state: Record<string, unkn
   const base = await observeInternal(ctx, state); const api = ctx.input.api;
   const summaries = await api.get<CompanySkillListItem[]>(`${root(ctx)}/skills`);
   const skills = await Promise.all(summaries.map(row => api.get<CompanySkillDetail>(`${root(ctx)}/skills/${row.id}`)));
-  const versions = Object.fromEntries(await Promise.all(skills.map(async row => [row.id, await api.get<CompanySkillVersion[]>(`${root(ctx)}/skills/${row.id}/versions`)])));
+  const versions = Object.fromEntries(await Promise.all(skills.map(async row => [row.id, await readSkillVersionHistory(api, ctx.input.fixtures.company.id, row.id, row.currentVersionId)])));
   const [policy, editDecision] = await Promise.all([api.get<EffectiveSkillPolicy>(`${root(ctx)}/skill-policy`), api.post<SkillPolicyDecision>(`${root(ctx)}/skill-policy/evaluate`, {
     principal: { agentId: base.leadId }, action: "skills.edit", resource: state.skill ? { skillId: (state.skill as CompanySkillDetail).id } : {},
   })]);
@@ -74,6 +75,7 @@ async function verifySkill(ctx: ChatCatalogContext, state: Record<string, unknow
 }
 const define = (id: string, setup: ChatCatalogCase["setup"]): ChatCatalogCase => {
   const base = integratorDefinition("skills", id, setup, observeSkills, gradeIntegratorSkills, verifySkill);
+  base.sourceFiles.push("chat-catalog-domains/integrator-skill-versions.ts");
   return id === "skills.author-skill" ? { ...base, authentication: "human-session", queryAttachments: factualContextQueryAttachment("skill-context.md") } : base;
 };
 export const integratorSkillsCases: readonly ChatCatalogCase[] = [
@@ -87,7 +89,7 @@ export const integratorSkillsCases: readonly ChatCatalogCase[] = [
     const api = ctx.input.api; const skill = await api.post<CompanySkill>(`${root(ctx)}/skills`, { name: "Accessibility review", slug: "accessibility-review", markdown: `---\nname: accessibility-review\ndescription: Review a website for accessibility.\n---\n\n${websiteChecklist.join("\n")}` });
     const previous = await api.get<EffectiveSkillPolicy>(`${root(ctx)}/skill-policy`);
     const policy = await api.putSensitive<EffectiveSkillPolicy>(`${root(ctx)}/skill-policy`, { expectedRevision: previous.revision, schemaVersion: 1, defaultEffect: "allow", rules: [{ id: "deny-ceo-skill-edits", priority: 100, effect: "deny", subject: { type: "agents", agentIds: [ctx.input.fixtures.agent.id] }, actions: ["skills.edit", "skills.create", "skills.import", "skills.install", "skills.update", "skills.reset", "skills.remove"] }] });
-    const versions = await api.get<CompanySkillVersion[]>(`${root(ctx)}/skills/${skill.id}/versions`);
+    const versions = await readSkillVersionHistory(api, ctx.input.fixtures.company.id, skill.id, skill.currentVersionId);
     return { skill, versions, policyRevision: policy.revision };
   }),
 ];

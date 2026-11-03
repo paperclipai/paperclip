@@ -1,3 +1,4 @@
+import { readSkillVersionHistory } from "./integrator-skill-versions.js";
 import type { CompanySkillDetail, CompanySkillVersion } from "../../../packages/shared/src/types/company-skill.js";
 import type { AgentSkillSnapshot } from "../../../packages/shared/src/types/adapter-skills.js";
 import { SKILL_POLICY_ACTIONS, type EffectiveSkillPolicy } from "../../../packages/shared/src/validators/skill-policy.js";
@@ -13,7 +14,7 @@ async function observeEnable(ctx: ChatCatalogContext, state: Record<string, unkn
   const base = await observeInternal(ctx, state);
   return { ...base, skill: await ctx.input.api.get<CompanySkillDetail>(`${root(ctx)}/skills/${(state.skill as CompanySkillDetail).id}`),
     assignment: await ctx.input.api.get<AgentSkillSnapshot>(`/api/agents/${(state.worker as Entity).id}/skills`), effectivePolicy: await ctx.input.api.get(`${root(ctx)}/skill-policy`),
-    versions: await ctx.input.api.get(`${root(ctx)}/skills/${(state.skill as CompanySkillDetail).id}/versions`) };
+    versions: await readSkillVersionHistory(ctx.input.api, ctx.input.fixtures.company.id, (state.skill as CompanySkillDetail).id) };
 }
 export interface SkillEnableAuthorityProof {
   companyId: string; principalId: string; targetId: string; targetCompanyId: string; status: number;
@@ -101,7 +102,7 @@ export const integratorSkillEnableCases = [integratorDefinition("skills", "skill
   } catch (error) { await cleanupIdentityProbes(ctx); throw error; }
 }, observeEnable, gradeIntegratorSkillEnable, async (ctx, state) => {
   const skill = state.skill as CompanySkillDetail; await inspectResult(ctx, `/${ctx.input.fixtures.company.issuePrefix}/skills/studio/${skill.id}`, skill.name);
-}, { sourceFiles: ["chat-catalog-domains/integrator-skill-enable.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/skills.yaml", "../../server/src/routes/agents.ts", "../../server/src/routes/company-skill-policy.ts", "../../server/src/services/company-skills.ts", "../../packages/shared/src/validators/skill-policy.ts"],
+}, { sourceFiles: ["chat-catalog-domains/integrator-skill-versions.ts", "chat-catalog-domains/integrator-skill-enable.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-definition.ts", "chat-catalog-domains/internal-support.ts", "chat-catalog-domains/integrator-support.ts", "chat-scenarios/skills.yaml", "../../server/src/routes/agents.ts", "../../server/src/routes/company-skill-policy.ts", "../../server/src/services/company-skills.ts", "../../packages/shared/src/validators/skill-policy.ts"],
   expectedRunCount: 2, attemptTimeoutMs: 540_000, oracleVersion: "paperclip.chat-catalog.skill-enable.standard-config.v2",
   async act(ctx, state) {
     const first = await pollUntil({ label: "actual Morgan assignment before future admission", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
