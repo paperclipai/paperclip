@@ -51,7 +51,9 @@ They do not qualify distinct application releases or complete webserver disk los
 database discovery, one-source import, idempotency, live-owner waiting, corrupt
 bindings and paginated inventory. `native-recovered-owner-followup.test.ts`
 admits a per-turn follow-up after recovery committed an owner that never saved
-a suspension receipt, and keeps unsettled or ambiguous owners held.
+a suspension receipt, and keeps unsettled or ambiguous owners held. It also
+retries from that owner after an earlier follow-up failed before provider work,
+and keeps any follow-up with provider or controller evidence as the source.
 `native-session-resume-projection.test.ts` retains the 32-candidate and
 newer-progress barrier checks. Snapshot transaction
 counts and stale-generation rejection are exercised by the control-plane port
