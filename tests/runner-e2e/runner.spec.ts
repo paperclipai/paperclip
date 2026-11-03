@@ -1014,7 +1014,8 @@ for (const execution of executions) {
       }
       fixtures = await withSdkCanaryPreFixture({ execution, sourceRevision: resolveRunnerE2ESource().sha,
         capture: () => captureSdkCanaryPreFixture({ execution, repositoryRoot: path.resolve(import.meta.dirname, "../.."), temporaryRoot,
-          sourceRevision: resolveRunnerE2ESource().sha, secrets }),
+          sourceRevision: resolveRunnerE2ESource().sha, secrets,
+          retainBuildObservation: proof => writeSanitizedJson(snapshotsDir, "sdk-canary-build-observation.json", proof, secrets) }),
         retain: proof => writeSanitizedJson(snapshotsDir, "sdk-canary-pre-fixture.json", proof, secrets),
         fixtures: async () => execution.task.flow === "first_task"
         ? await setupFirstTaskFixtures({ page, api, execution, nonce, credentials, daytonaImage: process.env.PAPERCLIP_E2E_DAYTONA_IMAGE, deadlineAt: startedAtMs + deadlineMs, observe: value => { fixtures = value; }, onCompanyCreated })

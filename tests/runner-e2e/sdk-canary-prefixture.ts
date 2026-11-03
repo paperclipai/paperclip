@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import path from "node:path";
 import pins from "./sdk-canary-build-pins.json" with { type: "json" };
 import inputs from "./source-sdk-public-inputs.json" with { type: "json" };
 import { verifySdkPublicSource } from "./source-sdk-public-type.js";
 import { verifyRetainedSourceSdk } from "./source-sdk-evidence.js";
+import { findSecretLeakInJsonValues } from "./redaction.js";
 import { chatCatalogCaseFingerprint, normalizedChatCatalogExecution } from "./chat-catalog-fingerprint.js";
 import { findChatCatalogCase } from "./chat-catalog-registry.js";
 import { CHAT_OPENCODE_MODEL, CHAT_OPENCODE_PROFILE, reviewedChatProfile } from "./chat-runtime-profile.js";
@@ -20,6 +22,54 @@ export interface SdkCanaryBuildObservation {
   publicInputsFileSha256: string; helperSha256: string; lockSha256: string; compilerPackageSha256: string;
   compiledFiles: number; compiledManifestSha256: string; retainedManifestSha256: string;
   certificates: typeof pins.certificates;
+}
+export interface SdkCanaryToolchainObservation {
+  nodeVersion: string; inputs: number; manifestSha256: string;
+  compiler: { version: string; packageSha256: string };
+  parser: { version: string; packageSha256: string; entrySha256: string };
+  zod: { version: string; packageSha256: string; entrySha256: string; typeGraphSha256: string };
+}
+export function closedSdkCanaryBuildObservation(build: SdkCanaryBuildObservation, toolchain: SdkCanaryToolchainObservation) {
+  const keys = (value: object, wanted: string[]) => Object.keys(value).sort().join() === [...wanted].sort().join();
+  const version = (value: unknown) => typeof value === "string" && value.length <= 96 && /^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]{1,64})?$/.test(value);
+  const fields = ["sourceRevision", "inputFiles", "gitInputFiles", "frozenInputManifestSha256", "copiedInputManifestSha256",
+    "publicInputsFileSha256", "helperSha256", "lockSha256", "compilerPackageSha256", "compiledFiles", "compiledManifestSha256", "retainedManifestSha256", "certificates"];
+  if (!keys(build, fields) || !/^[a-f0-9]{40}$/.test(build.sourceRevision) || !Number.isInteger(build.inputFiles)
+    || build.inputFiles < 2 || build.inputFiles > 4096 || build.gitInputFiles !== build.inputFiles - 1
+    || !Number.isInteger(build.compiledFiles) || build.compiledFiles < 1 || build.compiledFiles > 4096
+    || fields.filter(key => key.endsWith("Sha256")).some(key => !hex(build[key as keyof SdkCanaryBuildObservation]))
+    || build.retainedManifestSha256 !== build.compiledManifestSha256 || !Array.isArray(build.certificates)
+    || build.certificates.length !== pins.certificates.length) fail();
+  for (const [index, certificate] of build.certificates.entries()) {
+    if (!keys(certificate, ["target", "sources", "outputs", "markerSha256"]) || certificate.target !== pins.certificates[index]!.target
+      || !hex(certificate.sources) || !hex(certificate.outputs) || !hex(certificate.markerSha256)) fail();
+  }
+  if (!keys(toolchain, ["nodeVersion", "inputs", "manifestSha256", "compiler", "parser", "zod"])
+    || !version(toolchain.nodeVersion) || toolchain.inputs !== build.inputFiles || !hex(toolchain.manifestSha256)) fail();
+  for (const [kind, metadata] of Object.entries({ compiler: toolchain.compiler, parser: toolchain.parser, zod: toolchain.zod })) {
+    const wanted = kind === "compiler" ? ["version", "packageSha256"] : kind === "parser"
+      ? ["version", "packageSha256", "entrySha256"] : ["version", "packageSha256", "entrySha256", "typeGraphSha256"];
+    if (!keys(metadata, wanted) || !version(metadata.version) || Object.entries(metadata).some(([key, value]) => key !== "version" && !hex(value))) fail();
+  }
+  if (toolchain.compiler.packageSha256 !== build.compilerPackageSha256) fail();
+  const observed = structuredClone({ build, toolchain });
+  for (const certificate of observed.build.certificates) Object.freeze(certificate);
+  Object.freeze(observed.build.certificates); Object.freeze(observed.build);
+  for (const metadata of [observed.toolchain.compiler, observed.toolchain.parser, observed.toolchain.zod]) Object.freeze(metadata);
+  Object.freeze(observed.toolchain);
+  return Object.freeze({ schema: "paperclip.sdk-canary-build-observation/v1" as const, executionId: SDK_CANARY,
+    qualification: "UNQUALIFIED_OBSERVATION_ONLY" as const, doesNotAttestFeatureOutcome: true as const,
+    doesNotRenewExpectedPins: true as const, expectedPinsCanonicalSha256: hash(JSON.stringify(pins)), ...observed });
+}
+export type SdkCanaryBuildObserver = (value: ReturnType<typeof closedSdkCanaryBuildObservation>) => Promise<void>;
+async function packageVersion(file: string, name: string, expectedSha256: string) {
+  const stat = await lstat(file);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65_536) fail();
+  const bytes = await readFile(file);
+  if (bytes.length > 65_536 || hash(bytes) !== expectedSha256) fail();
+  const metadata = JSON.parse(bytes.toString("utf8"));
+  if (metadata.name !== name || typeof metadata.version !== "string" || metadata.version.length > 96 || !/^\d+\.\d+\.\d+(?:[-+][A-Za-z0-9.-]{1,64})?$/.test(metadata.version)) fail();
+  return metadata.version as string;
 }
 export function assertSdkCanaryBuild(observed: SdkCanaryBuildObservation, expected = pins) {
   if (!/^[a-f0-9]{40}$/.test(observed.sourceRevision)) fail();
@@ -41,7 +91,7 @@ export async function sdkCanaryOutputManifest(root: string) {
   for (const certificate of pins.certificates) await visit(certificate.target);
   return files.sort((a, b) => a.file.localeCompare(b.file));
 }
-export async function captureSdkCanaryBuild(input: { repositoryRoot: string; temporaryRoot: string; sourceRevision: string | null; secrets: readonly string[] }) {
+export async function captureSdkCanaryBuild(input: { repositoryRoot: string; temporaryRoot: string; sourceRevision: string | null; secrets: readonly string[]; retainBuildObservation?: SdkCanaryBuildObserver }) {
   if (!input.sourceRevision || await realpath(input.repositoryRoot) !== input.repositoryRoot) fail();
   const source = await verifySdkPublicSource(input.repositoryRoot);
   const publicInputsFileSha256 = hash(await readFile(path.join(input.repositoryRoot, "tests/runner-e2e/source-sdk-public-inputs.json")));
@@ -71,6 +121,20 @@ export async function captureSdkCanaryBuild(input: { repositoryRoot: string; tem
     lockSha256: source.identity.lockSha256, compilerPackageSha256: source.identity.compilerPackageSha256,
     compiledFiles: files.length, compiledManifestSha256: hash(JSON.stringify(files)), retainedManifestSha256: hash(JSON.stringify(retainedFiles)), certificates };
   if (retained.receipt.buildHelperSha256 !== observed.helperSha256 || retained.receipt.lockSha256 !== observed.lockSha256) fail();
+  if (input.retainBuildObservation) {
+    const identity = source.identity;
+    const zodPackage = createRequire(path.join(input.repositoryRoot, "packages/shared/package.json")).resolve("zod/package.json");
+    const toolchain: SdkCanaryToolchainObservation = { nodeVersion: process.versions.node, inputs: identity.inputs,
+      manifestSha256: identity.manifestSha256,
+      compiler: { version: await packageVersion(path.join(input.repositoryRoot, "node_modules/typescript/package.json"), "typescript", identity.compilerPackageSha256), packageSha256: identity.compilerPackageSha256 },
+      parser: { version: await packageVersion(path.join(input.repositoryRoot, "node_modules/.pnpm/@babel+parser@7.29.8/node_modules/@babel/parser/package.json"), "@babel/parser", identity.parserPackageSha256), packageSha256: identity.parserPackageSha256, entrySha256: identity.parserEntrySha256 },
+      zod: { version: await packageVersion(zodPackage, "zod", identity.zodPackageSha256), packageSha256: identity.zodPackageSha256, entrySha256: identity.zodEntrySha256, typeGraphSha256: identity.zodTypeGraphSha256 } };
+    // A closed observation is not a certificate. Retain it even when old pins
+    // reject the changed build; the unchanged assertion still fences fixtures.
+    const observation = closedSdkCanaryBuildObservation(observed, toolchain);
+    if (Buffer.byteLength(JSON.stringify(observation)) > 16_384 || findSecretLeakInJsonValues(observation, input.secrets, { includeShapes: true })) fail();
+    await input.retainBuildObservation(observation);
+  }
   assertSdkCanaryBuild(observed); return observed;
 }
 function completeFingerprint(fingerprint: Fingerprint) {
@@ -98,7 +162,7 @@ export async function withSdkCanaryPreFixture<T>(input: { execution: MatrixExecu
   fingerprints.set(input.execution, structuredClone(captured.fingerprint));
   return input.fixtures();
 }
-export async function captureSdkCanaryPreFixture(input: { execution: MatrixExecution; repositoryRoot: string; temporaryRoot: string; sourceRevision: string | null; secrets: readonly string[] }) {
+export async function captureSdkCanaryPreFixture(input: { execution: MatrixExecution; repositoryRoot: string; temporaryRoot: string; sourceRevision: string | null; secrets: readonly string[]; retainBuildObservation?: SdkCanaryBuildObserver }) {
   const build = await captureSdkCanaryBuild(input);
   const descriptor = findChatCatalogCase(input.execution.task.id);
   if (!descriptor || descriptor.expectedHumanMessageCount !== 2 || descriptor.expectedRunCount !== 2 || descriptor.attemptTimeoutMs !== 480_000) fail();
