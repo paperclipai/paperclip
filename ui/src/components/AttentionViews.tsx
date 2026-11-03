@@ -11,12 +11,15 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ATTENTION_VIEW_LABELS,
+  ATTENTION_NO_CLAIM_TEXT,
+  attentionClaimAlternative,
   attentionReceiptLine,
   attentionResponderText,
   attentionUnownedAudienceText,
   describeAttentionAudience,
   unassignedBannerText,
 } from "@/lib/attention-views";
+import { Link } from "@/lib/router";
 import { timeAgo } from "@/lib/timeAgo";
 import { cn } from "@/lib/utils";
 
@@ -125,9 +128,21 @@ export function AttentionAudienceLine({
       </div>
     );
   }
+  // Claim stores an owner only on a request; other ownerless cards point to
+  // their task, where a person can be assigned (PAP-767).
+  const alternative = onClaim ? attentionClaimAlternative(item) : null;
   return (
     <div className={base} data-attention-audience={description.kind}>
       <span>{attentionUnownedAudienceText(item, description, userLabelMap)}</span>
+      {alternative?.kind === "none" ? <span data-attention-no-claim>{ATTENTION_NO_CLAIM_TEXT}</span> : null}
+      {alternative?.kind === "assign" ? (
+        <Button asChild variant="outline" size="xs">
+          <Link to={alternative.href} disableIssueQuicklook data-attention-open-to-assign onClick={(event) => event.stopPropagation()}>
+            <UserRound className="h-3 w-3" />
+            Open to assign
+          </Link>
+        </Button>
+      ) : null}
       {description.claimable && onClaim ? (
         <Button
           type="button"

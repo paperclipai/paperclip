@@ -4,6 +4,7 @@ import {
   ATTENTION_COMPANY_AUDIENCE_TEXT,
   ATTENTION_POOL_AUDIENCE_TEXT,
   attentionAudienceLineNamesResponders,
+  attentionClaimAlternative,
   attentionItemClaimable,
   attentionReceiptLine,
   attentionResponderText,
@@ -117,6 +118,21 @@ describe("attention views (PAP-749 task 1b)", () => {
     expect(attentionAudienceLineNamesResponders(napping, "scott")).toBe(true);
     expect(attentionAudienceLineNamesResponders(napping, null)).toBe(false);
     expect(attentionAudienceLineNamesResponders(approval, "scott")).toBe(false);
+  });
+
+  it("offers the task instead of Claim on an ownerless card with no owner field (PAP-767)", () => {
+    const pool: AttentionAudience = { kind: "pool", userId: null, reason: "none" };
+    const withTask = { ...item(pool, "blocker_attention"), subject: { id: "i", kind: "issue", href: "/NEE/issues/NEE-16" } } as unknown as AttentionItem;
+    expect(attentionClaimAlternative(withTask)).toEqual({ kind: "assign", href: "/NEE/issues/NEE-16" });
+    const noTask = { ...item(pool, "approval"), relatedIssue: null } as AttentionItem;
+    expect(attentionClaimAlternative(noTask)).toEqual({ kind: "none" });
+    // Claim itself, a card for a person and a company alert need no alternative.
+    expect(attentionClaimAlternative(item(pool))).toBeNull();
+    expect(attentionClaimAlternative(item({ kind: "user", userId: "scott", reason: "addressee" }, "approval"))).toBeNull();
+    expect(attentionClaimAlternative({ ...item({ kind: "company", userId: null, reason: "none" }, "failed_run"), stale: null } as AttentionItem)).toBeNull();
+    const unowned = { ...item({ kind: "company", userId: null, reason: "none" }, "blocker_attention"), stale: { reason: "unowned" },
+      subject: { id: "i", kind: "issue", href: "/NEE/issues/NEE-9" } } as unknown as AttentionItem;
+    expect(attentionClaimAlternative(unowned)).toEqual({ kind: "assign", href: "/NEE/issues/NEE-9" });
   });
 
   it("phrases the Unassigned banner", () => {

@@ -65,6 +65,26 @@ export function attentionItemClaimable(item: AttentionItem): boolean {
   return (ATTENTION_CLAIMABLE_SOURCE_KINDS as readonly string[]).includes(item.sourceKind);
 }
 
+/**
+ * What an ownerless card offers when Claim cannot store an owner on it
+ * (PAP-767): its task, where a person can be assigned, which gives the card
+ * that owner. A card with no task (an approval no task waits on) says it
+ * cannot be claimed instead of showing nothing. `null` for a claimable card
+ * and for a company alert, which nobody owns by design.
+ */
+export type AttentionClaimAlternative = { kind: "assign"; href: string } | { kind: "none" };
+
+export function attentionClaimAlternative(item: AttentionItem): AttentionClaimAlternative | null {
+  const audience = item.audience;
+  if (!audience || audience.userId || attentionItemClaimable(item)) return null;
+  const unowned = audience.kind === "pool" || (audience.kind === "company" && item.stale?.reason === "unowned");
+  if (!unowned) return null;
+  const task = item.relatedIssue ?? (item.subject.kind === "issue" ? item.subject : null);
+  return task?.href ? { kind: "assign", href: task.href } : { kind: "none" };
+}
+
+export const ATTENTION_NO_CLAIM_TEXT = "It has no task to assign, so it can't be claimed.";
+
 export function describeAttentionAudience(
   item: AttentionItem,
   currentUserId: string | null | undefined,

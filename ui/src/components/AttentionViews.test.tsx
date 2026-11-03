@@ -3,7 +3,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AttentionAudience, AttentionItem, AttentionReceipt } from "@paperclipai/shared";
+import type { AnchorHTMLAttributes } from "react";
 import { AttentionAudienceLine, AttentionReceiptList, AttentionUnassignedBanner, AttentionViewSwitch } from "./AttentionViews";
+
+vi.mock("@/lib/router", () => ({
+  Link: ({ children, to, disableIssueQuicklook: _quicklook, ...props }: AnchorHTMLAttributes<HTMLAnchorElement> & { to: string; disableIssueQuicklook?: boolean }) => (
+    <a href={to} {...props}>{children}</a>
+  ),
+}));
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -61,6 +68,23 @@ describe("AttentionUnassignedBanner", () => {
 });
 
 describe("AttentionAudienceLine", () => {
+  it("points an ownerless card Claim cannot take to its task, or says it cannot be claimed (PAP-767)", async () => {
+    const pool: AttentionAudience = { kind: "pool", userId: null, reason: "none" };
+    // NEE-16: a blocked task with no human; its owner is whoever the task is assigned to.
+    const blocker = { ...card(pool), sourceKind: "blocker_attention", subject: { id: "issue-16", kind: "issue", title: "Run recovery", href: "/NEE/issues/NEE-16" } } as unknown as AttentionItem;
+    await act(async () => root.render(<AttentionAudienceLine item={blocker} currentUserId="scott" onClaim={() => {}} />));
+    const assign = container.querySelector<HTMLAnchorElement>("[data-attention-open-to-assign]");
+    expect(assign?.textContent).toBe("Open to assign");
+    expect(assign?.getAttribute("href")).toBe("/NEE/issues/NEE-16");
+    expect(container.textContent).not.toContain("Claim");
+
+    // The budget override approval has no task to assign.
+    const approval = { ...card(pool), sourceKind: "approval", subject: { id: "approval-1", kind: "approval", title: "budget override required", href: "/NEE/approvals/approval-1" }, relatedIssue: null } as unknown as AttentionItem;
+    await act(async () => root.render(<AttentionAudienceLine item={approval} currentUserId="scott" onClaim={() => {}} />));
+    expect(container.querySelector("[data-attention-no-claim]")?.textContent).toBe("It has no task to assign, so it can't be claimed.");
+    expect(container.querySelector("[data-attention-open-to-assign]")).toBeNull();
+  });
+
   it("answers Why me? on your own card", async () => {
     await act(async () => root.render(<AttentionAudienceLine item={card({ kind: "user", userId: "scott", reason: "reviewer" })} currentUserId="scott" />));
     expect(container.querySelector('[data-attention-audience="mine"]')?.textContent).toBe("Why me?You are the reviewer");
