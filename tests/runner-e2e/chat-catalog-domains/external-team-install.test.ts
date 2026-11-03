@@ -1,8 +1,9 @@
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import type { Agent } from "../../../packages/shared/src/types/agent.js";
 import { CHAT_OPENCODE_MODEL } from "../chat-runtime-profile.js";
+import { updateAgentPermissionsSchema } from "../../../packages/shared/src/validators/agent.js";
 import { catalogTeamInstallSchema } from "../../../packages/shared/src/validators/teams-catalog.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { teamInstallExternalCases, selectedTeamInstallRuntime, teamInstallOverrides, verifyInstalledTeamRuntime } from "./external-team-install.js";
 function valid() {
   const team = {
@@ -211,4 +212,21 @@ it("real resource counts and actor attribution cannot conceal wrong member provi
     (o: ReturnType<typeof valid>) => { o.state.runtimeReadback.memberIds = ["other", "cto"]; },
     (o: ReturnType<typeof valid>) => { o.state.selectedRuntime.model = "openrouter/other/model"; o.state.after.agents.forEach(agent => { agent.adapterConfig.model = "openrouter/other/model"; }); },
   ]) { const o = valid(); change(o); expect(teamInstallExternalCases[0]!.grade(o).passed).toBe(false); }
+});
+
+it.each([true,false])("sends the complete permission schema without changing effective assignment=%s",async canAssignTasks=>{
+ const actor={id:"ceo",companyId:"company",role:"ceo",access:{canAssignTasks}};
+ const patch=vi.fn(async(_route:string,body:unknown)=>{expect(updateAgentPermissionsSchema.parse(body)).toEqual({canCreateAgents:true,canAssignTasks});throw new Error("stop-after-validated-permission-request");});
+ const ctx={input:{fixtures:{company:{id:"company"},agent:{id:"ceo"}},api:{get:async(route:string)=>route==="/api/teams/catalog"?[{slug:"product-engineering",compatibility:"compatible"}]:actor,patch}}} as unknown as ChatCatalogContext;
+ await expect(teamInstallExternalCases[0]!.setup(ctx)).rejects.toThrow("stop-after-validated-permission-request");
+ expect(patch).toHaveBeenCalledOnce();
+});
+it.each(["foreign company","wrong agent","not CEO","missing effective assignment"])("refuses %s identity before permission mutation",async invalid=>{
+ const actor={id:"ceo",companyId:"company",role:"ceo",access:{canAssignTasks:true}};
+ if(invalid==="foreign company")actor.companyId="foreign";
+ if(invalid==="wrong agent")actor.id="other";
+ if(invalid==="not CEO")actor.role="engineer";
+ if(invalid==="missing effective assignment")delete(actor as {access?:unknown}).access;
+ const patch=vi.fn(); const ctx={input:{fixtures:{company:{id:"company"},agent:{id:"ceo"}},api:{get:async(route:string)=>route==="/api/teams/catalog"?[{slug:"product-engineering",compatibility:"compatible"}]:actor,patch}}} as unknown as ChatCatalogContext;
+ await expect(teamInstallExternalCases[0]!.setup(ctx)).rejects.toThrow("observed installer");expect(patch).not.toHaveBeenCalled();
 });

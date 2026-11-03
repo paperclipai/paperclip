@@ -7,7 +7,7 @@ import {
   gradeTeamConditions,
 } from "./external-team-conditional.js";
 import { expect } from "@playwright/test";
-import type { Agent } from "../../../packages/shared/src/types/agent.js";
+import type { Agent, AgentDetail } from "../../../packages/shared/src/types/agent.js";
 import type {
   CatalogTeam,
   CatalogTeamImportPreviewResult,
@@ -277,19 +277,22 @@ export const teamInstallExternalCases = [
         throw new Error(
           "Setup blocker: real compatible Product Engineering team catalog package is unavailable",
         );
+      const beforePermissions = await ctx.input.api.get<AgentDetail>(`/api/agents/${ctx.input.fixtures.agent.id}`);
+      if (beforePermissions.id !== ctx.input.fixtures.agent.id || beforePermissions.companyId !== ctx.input.fixtures.company.id || beforePermissions.role !== "ceo" || typeof beforePermissions.access?.canAssignTasks !== "boolean") throw new Error("Team fixture requires the independently observed installer identity and assignment authority");
       await ctx.input.api.patch(
         `/api/agents/${ctx.input.fixtures.agent.id}/permissions`,
-        { canCreateAgents: true },
+        { canCreateAgents: true, canAssignTasks: beforePermissions.access.canAssignTasks },
       );
       await ctx.input.api.patch(root(ctx), {
         requireBoardApprovalForNewAgents: false,
       });
-      const actor = await ctx.input.api.get<Agent>(
+      const actor = await ctx.input.api.get<AgentDetail>(
         `/api/agents/${ctx.input.fixtures.agent.id}`,
       );
       if (
         actor.lifecycleState !== "ready" ||
-        actor.permissions?.canCreateAgents !== true
+        actor.permissions?.canCreateAgents !== true ||
+        actor.access?.canAssignTasks !== beforePermissions.access.canAssignTasks
       )
         throw new Error(
           "Setup blocker: actual selected installer actor lacks a ready account or creation authority",
