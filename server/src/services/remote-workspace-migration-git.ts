@@ -3,8 +3,9 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { and, desc, eq, gte } from "drizzle-orm";
+import { and, desc, eq, gte, or, sql } from "drizzle-orm";
 import { executionWorkspaces, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
+import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspace-sync";
 import type { StorageService } from "../storage/types.js";
 import { createIssueGitRemoteAuthProvider } from "./git-credentials.js";
 import { applyGitRestorePointToWorktree, ensureGitRestorePointCommit, loadGitRestorePoint } from "./git-restore-point-storage.js";
@@ -44,7 +45,12 @@ export async function inspectArchivedGitMigrationSource(db: Pick<Db, "select">, 
   const [operation] = await db.select().from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
     eq(workspaceOperations.phase, "worktree_cleanup"), eq(workspaceOperations.status, "succeeded"),
-    eq(workspaceOperations.command, `git branch -d ${workspace.branchName}`), gte(workspaceOperations.startedAt, workspace.closedAt),
+    or(eq(workspaceOperations.command, `git branch -d ${workspace.branchName}`), and(
+      sql`${workspaceOperations.metadata}->>'cleanupAction' = 'branch_delete'`,
+      sql`${workspaceOperations.metadata}->>'workspaceId' = ${workspace.id}`,
+      sql`${workspaceOperations.metadata}->>'branchName' = ${workspace.branchName}`,
+      sql`${workspaceOperations.metadata}->>'workspacePath' = ${workspace.providerRef ?? workspace.cwd}`,
+    )), gte(workspaceOperations.startedAt, workspace.closedAt),
   )).orderBy(desc(workspaceOperations.startedAt), desc(workspaceOperations.id)).limit(1);
   const receipt = operation?.stdoutExcerpt?.trim(), prefix = `Deleted branch ${workspace.branchName} (was `;
   if (!operation || !receipt?.startsWith(prefix) || !receipt.endsWith(").")) return null;
@@ -122,5 +128,15 @@ export async function materializeArchivedGitMigrationSource(input: {
       return async () => { if (await fs.realpath(local) !== identity) throw unavailable(); };
     },
   });
+  // A checkout records scratch-file inode and time fields in its index. Those
+  // fields must not change the saved archive identity after an upload reply is
+  // lost. Rebuild only these reconstructed indexes from their staged trees;
+  // the original repository and unstaged files remain untouched.
+  for (const repository of [cwd, ...(source.recipe?.contents?.checkouts ?? [])
+    .map(checkout => path.join(cwd, PROJECT_REPOSITORIES_DIR, checkout.name))]) {
+    const tree = await git(repository, ["write-tree"]);
+    await git(repository, ["read-tree", "--empty"]);
+    await git(repository, ["read-tree", tree]);
+  }
   return cwd;
 }

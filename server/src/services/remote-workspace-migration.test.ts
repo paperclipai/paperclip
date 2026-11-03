@@ -20,6 +20,8 @@ import { captureTaskDirectorySnapshot, removeTaskDirectoryTree } from "./isolate
 import { captureRestorePoint, sealRestorePoint } from "./git-restore-point.js";
 import type { TaskDirectoryRestorePointRef } from "./isolated-task-directory-retention.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { cleanupExecutionWorkspaceArtifacts } from "./workspace-runtime.js";
+import { workspaceOperationService } from "./workspace-operations.js";
 
 const execute = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-C", cwd, ...args], { env: { ...process.env,
@@ -71,20 +73,32 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await db.insert(projects).values({ id: projectId, companyId: f.companyId, name: "Archived project" });
     await db.insert(projectWorkspaces).values({ id: projectWorkspaceId, companyId: f.companyId, projectId, name: "Source", cwd: base, repoUrl });
     await db.update(executionWorkspaces).set({ cwd, providerRef: cwd, projectId, projectWorkspaceId, repoUrl, baseRef: "main",
-      branchName, strategyType: "git_worktree", providerType: "git_worktree", metadata: { gitBranchOwnershipVersion: 1 } }).where(eq(executionWorkspaces.id, f.workspaceId));
+      branchName, strategyType: "git_worktree", providerType: "git_worktree", metadata: { createdByRuntime: true, gitBranchOwnershipVersion: 1 } }).where(eq(executionWorkspaces.id, f.workspaceId));
     return { ...f, cwd, base, upstream, commit, projectId, projectWorkspaceId, repoUrl, branchName };
   }
-  it("recovers an older archived Git workspace from its exact branch-deletion receipt", async () => {
+  it.each(["legacy", "verified", "retry"])("recovers an archived Git workspace from its exact branch-deletion receipt (%s)", async receiptKind => {
     const f = await gitArchiveFixture(), closedAt = new Date();
-    await git(f.base, "merge", "--ff-only", f.branchName);
-    await git(f.base, "worktree", "remove", f.cwd);
-    const receipt = await git(f.base, "branch", "-d", f.branchName);
     await db.update(executionWorkspaces).set({ status: "archived", closedAt }).where(eq(executionWorkspaces.id, f.workspaceId));
-    await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
-      phase: "worktree_cleanup", status: "succeeded", command: `git branch -d ${f.branchName}`,
-      stdoutExcerpt: receipt, startedAt: new Date(), finishedAt: new Date() });
+    if (receiptKind !== "verified") {
+      await git(f.base, "merge", "--ff-only", f.branchName);
+      await git(f.base, "worktree", "remove", f.cwd);
+      const receipt = await git(f.base, "branch", "-d", f.branchName);
+      await db.insert(workspaceOperations).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
+        phase: "worktree_cleanup", status: "succeeded", command: `git branch -d ${f.branchName}`,
+        stdoutExcerpt: receipt, startedAt: new Date(), finishedAt: new Date() });
+    } else {
+      const cleaned = await cleanupExecutionWorkspaceArtifacts({ workspace: await workspace(f.workspaceId),
+        projectWorkspace: { cwd: f.base, cleanupCommand: null }, expectedBranchHeadSha: f.commit, runCleanupCommands: false,
+        recorder: workspaceOperationService(db).createRecorder({ companyId: f.companyId, executionWorkspaceId: f.workspaceId, issueId: f.issueId }) });
+      expect(cleaned.warnings).toEqual([]);
+    }
     await fs.writeFile(path.join(f.base, "base.txt"), "newer default branch\n");
     await git(f.base, "add", "base.txt"); await git(f.base, "commit", "-qm", "new default branch work");
+    if (receiptKind === "retry") {
+      const put = storage.putFile.bind(storage); let fail = true;
+      storage.putFile = async input => { const result = await put(input); if (fail) { fail = false; throw new Error("upload reply lost"); } return result; };
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("upload reply lost");
+    }
     await migrateRemoteWorkspace({ db, storage, ...f, apply: true });
     const row = await workspace(f.workspaceId), authority = readRemoteWorkspaceAuthority(row.metadata)!;
     expect(row.status).toBe("archived"); expect(authority.source).toMatchObject({ kind: "git", ref: f.commit });
@@ -97,7 +111,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     expect(await fs.readFile(path.join(targetDir, "base.txt"), "utf8")).toBe("base\n");
     expect(await fs.readFile(path.join(targetDir, "saved.txt"), "utf8")).toBe("original saved work\n");
   });
-  it.each(["present", "pruned", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
+  it.each(["present", "pruned", "retry", "missing", "expired", "corrupt"])("preserves archived Git edits or refuses an unavailable restore point (%s)", async state => {
     const f = await gitArchiveFixture();
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "staged edit\n"); await git(f.cwd, "add", "saved.txt");
     await fs.writeFile(path.join(f.cwd, "saved.txt"), "unstaged edit\n");
@@ -137,6 +151,11 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       expect(readRemoteWorkspaceAuthority(row.metadata)).toBeNull();
       expect(await fs.stat(f.cwd).catch(() => null)).toBeNull();
       return;
+    }
+    if (state === "retry") {
+      const put = storage.putFile.bind(storage); let fail = true;
+      storage.putFile = async input => { const result = await put(input); if (fail) { fail = false; throw new Error("upload reply lost"); } return result; };
+      await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("upload reply lost");
     }
     await migrateRemoteWorkspace({ db, storage, ...f, apply: true });
     const authority = readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)!;
