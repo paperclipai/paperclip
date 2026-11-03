@@ -19,8 +19,11 @@ function allowedScope(value: unknown, agentId: unknown, read: unknown, write: un
 }
 /** A test reports an observed access result; it does not qualify a future runtime. */
 export function appTestReport(reply: string, marker: string) {
+  const deniedAccess = /\bMorgan(?:['’]s)?\b[^.!?;\n]{0,45}\b(?:cannot|can't|could not|couldn't|is unable to|was unable to|is not allowed to|does not have)\b[^.!?;\n]{0,35}\b(?:read|access)\b/i.test(reply);
+  const failedTest = /\b(?:test|read|access check)\s+(?:(?:has|had|was|is|did|returned|result|request)\s+){0,3}(?:failed|denied|unsuccessful|an? error|not succeed|not successful)\b/i.test(reply);
   return /Morgan/i.test(reply) && /read|page|launch_read/i.test(reply)
-    && (/succeed|success|passed|allowed|can read|able to read|readable|has (?:read )?access|verified|returned|retrieved|fetched/i.test(reply) || reply.includes(marker))
+    && (/succeed|success|passed|allowed|can read|able to read|readable|has (?:read )?access|verified|retrieved|fetched/i.test(reply) || reply.includes(marker))
+    && !deniedAccess && !failedTest
     && !/\b(?:all|every)\s+(?:production )?(?:agents?|runtimes?)\b[^.!?\n]{0,50}\b(?:qualified|admitted|enabled)\b/i.test(reply)
     && !/\b(?:test|result)\s+(?:proves?|guarantees?|qualifies?)\b[^.!?\n]{0,60}\bnext (?:runtime|run)\b/i.test(reply)
     && !/\bnext runtime\s+(?:is|has been)\s+(?:qualified|admitted|enabled)\b/i.test(reply);
