@@ -1187,6 +1187,8 @@ export function createToolGatewayService(
     afterToolReviewInteractionCreated?: () => Promise<void>;
     /** Test seam for cancellation just before formal approval creation. */
     beforeToolFormalApproval?: () => Promise<void>;
+    /** Test seam for cancellation after claiming a reviewed action. */
+    afterToolActionClaimed?: () => Promise<void>;
     /** Test seam for pausing a legacy approved request before its execution claim. */
     beforeLegacyApprovedActionClaim?: () => Promise<void>;
     mcpGatewayProtocolLimits?: Partial<{
@@ -10974,6 +10976,7 @@ export function createToolGatewayService(
             "action_already_consumed",
           );
         }
+        await options.afterToolActionClaimed?.();
         await reflectToolActionInteractionLifecycle({
           actionRequestId: claimed.id,
           status: "executing",
@@ -10981,15 +10984,9 @@ export function createToolGatewayService(
         invocationId = storedInvocation.id as typeof invocationId;
         effectiveParameters = storedParameters;
         effectiveArgumentsSummary = storedArgumentValidation.summary;
-        await db
-          .update(toolInvocations)
-          .set({
-            status: "executing",
-            approvalState: "approved",
-            startedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(toolInvocations.id, invocationId));
+        if (!(await startToolInvocation(db, invocationId, { actionRequestId: claimed.id, invocationId, claimedAt }))) {
+          throw new ToolGatewayHttpError(409, "Tool action execution claim is no longer current", "action_already_consumed");
+        }
       } else {
         const decisionInput = policyInputForTool({
           session,

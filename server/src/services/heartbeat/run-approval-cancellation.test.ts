@@ -1,6 +1,7 @@
 import type { Db } from "@paperclipai/db";
 import { activityLog, approvals, heartbeatRuns } from "@paperclipai/db";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
+import { terminateLocalService } from "../local-service-supervisor.js";
 import { describe, expect, it, vi } from "vitest";
 import { approvalService } from "../approvals.js";
 import { createHeartbeatRunControl } from "./run-control.js";
@@ -15,6 +16,40 @@ vi.mock("../local-service-supervisor.js", async (original) => ({
 describe.skipIf(!runControlPostgresSupport.supported)("run approval cancellation", () => {
   let db: Db;
   const { fixture, liveRun } = setupRunControlDatabase("paperclip-run-approval-cancellation", value => { db = value; });
+  it("stops an owned legacy process and releases waiters when the stop fence fails", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    await db.execute(sql`create function gateway_stop_fence_failure() returns trigger language plpgsql as $$
+      begin
+        if new.result_json->'executionCancellation'->>'state' = 'requested' then
+          raise exception 'synthetic stop fence failure';
+        end if;
+        return new;
+      end $$`);
+    await db.execute(sql`create trigger gateway_stop_fence_failure before update on heartbeat_runs
+      for each row execute function gateway_stop_fence_failure()`);
+    const deps = callbacks(db);
+    try {
+      await expect(createHeartbeatRunControl(db, deps).cancelRunInternal(run.id, "Stop")).rejects.toThrow();
+      expect(terminateLocalService).toHaveBeenCalledTimes(1);
+      expect(deps.processRunCancellationSettlements.size).toBe(0);
+      expect(await deps.getRun(run.id)).toMatchObject({ status: "running" });
+    } finally {
+      await db.execute(sql`drop trigger gateway_stop_fence_failure on heartbeat_runs`);
+      await db.execute(sql`drop function gateway_stop_fence_failure()`);
+    }
+  });
+
+  it("rejects new run-scoped approvals after stop intent commits but before final status", async () => {
+    const { company, agent } = await fixture();
+    const run = await liveRun(company.id, agent.id);
+    await db.update(heartbeatRuns).set({ resultJson: { executionCancellation: { state: "requested" } } })
+      .where(eq(heartbeatRuns.id, run.id));
+    await expect(approvalService(db).create(company.id, { type: "request_board_approval", requestedByAgentId: agent.id,
+      originRunId: run.id, payload: { summary: "Fictitious" } })).rejects.toThrow("running execution");
+    expect(await db.select().from(approvals)).toHaveLength(0);
+  });
+
   it("cancels only open approvals belonging to the stopped run", async () => {
     const { company, agent } = await fixture();
     const run = await liveRun(company.id, agent.id);

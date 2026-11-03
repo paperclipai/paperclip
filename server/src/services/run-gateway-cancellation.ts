@@ -28,7 +28,14 @@ export async function cancelGatewayActionsForRun(tx: Db, companyId: string, runI
     }
     for (const request of requests) {
       const terminal = ["succeeded", "failed", "denied", "timed_out", "rate_limited", "cancelled"].includes(invocation.status);
-      if (terminal) continue;
+      if (terminal) {
+        // A crash can leave the review row open after the invocation settled.
+        // Preserve the known outcome and remove the reusable signed payload.
+        const status = invocation.status === "succeeded" ? "executed" : invocation.status === "cancelled" ? "cancelled" : "failed";
+        await tx.update(toolActionRequests).set({ status, signedArguments: null,
+          resolvedAt: invocation.completedAt ?? new Date(), updatedAt: new Date() }).where(eq(toolActionRequests.id, request.id));
+        continue;
+      }
       const uncertain = request.status === "executing" && invocation.startedAt !== null;
       const now = new Date();
       await tx.update(toolInvocations).set({ status: uncertain ? "failed" : "cancelled",

@@ -2748,6 +2748,34 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(requests[1]?.status).toBe("pending");
   });
 
+  it("does not dispatch an approved call when cancellation wins after its claim", async () => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Review fictional tool",
+      policyType: "require_approval", selectors: { toolName: "fixture:delete_everything" } });
+    let reached!: () => void; let resume!: () => void; let calls = 0;
+    const claimed = new Promise<void>(resolve => { reached = resolve; });
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    const dispatcher = fakePluginDispatcher(); const execute = dispatcher.executeTool;
+    dispatcher.executeTool = async (...args) => { calls++; return execute(...args); };
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher,
+      afterToolActionClaimed: async () => { reached(); await gate; } });
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const input = { sessionToken: session.token, tool: "fixture:delete_everything", parameters: { target: "fictional" } };
+    await expect(gateway.executeTool(input)).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [request] = await db.select().from(toolActionRequests);
+    await db.update(issueThreadInteractions).set({ status: "accepted", resolvedByUserId: "board-user", resolvedAt: new Date() })
+      .where(eq(issueThreadInteractions.id, request.interactionId!));
+    await db.update(approvals).set({ status: "approved", decidedByUserId: "board-user", decidedAt: new Date() })
+      .where(eq(approvals.id, request.approvalId!));
+    const outcome = gateway.executeTool({ ...input, approvedActionRequestId: request.id }).then(() => null, error => error);
+    try { await claimed; await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop"); }
+    finally { resume(); }
+    expect(await outcome).toBeTruthy();
+    const [after] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, request.invocationId));
+    expect(after.status).toBe("cancelled");
+    expect(calls).toBe(0);
+  });
+
   it("retains an unknown outcome for a direct in-flight fictional plugin call", async () => {
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow fictional tool",

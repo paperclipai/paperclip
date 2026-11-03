@@ -1,3 +1,4 @@
+import { agentRunWritesRevoked } from "../agent-run-cancellation.js";
 import { notifyToolReviewChange } from "./tool-review-work-notifications.js";
 import { writeApprovalChange } from "./approval-work-notifications.js";
 import { approvalResolutionRecords, resolvableApprovalStatuses as resolvableStatuses } from "../lib/approval-records.js";
@@ -60,7 +61,7 @@ export function approvalRecords(db: Db) {
           // This row lock serializes creation with a run's terminal write.
           const [run] = await tx.select().from(heartbeatRuns)
             .where(eq(heartbeatRuns.id, data.originRunId)).for("update");
-          if (!run || run.companyId !== companyId || run.agentId !== data.requestedByAgentId || run.status !== "running") {
+          if (!run || run.companyId !== companyId || run.agentId !== data.requestedByAgentId || run.status !== "running" || agentRunWritesRevoked(run)) {
             throw unprocessable("Run-scoped approval requires its authenticated agent's running execution");
           }
         }

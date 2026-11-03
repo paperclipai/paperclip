@@ -1195,6 +1195,21 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(request.signedArguments).toBeNull();
   });
 
+  it.each([{ invocationStatus: "succeeded", expected: "executed" },
+    { invocationStatus: "failed", expected: "failed" }, { invocationStatus: "cancelled", expected: "cancelled" }] as const)(
+    "reconciles an open review after its invocation is already $invocationStatus", async ({ invocationStatus, expected }) => {
+      const { company, invocation } = await admittedRateLimitedInvocation();
+      await db.update(toolInvocations).set({ status: invocationStatus, completedAt: new Date() }).where(eq(toolInvocations.id, invocation.id));
+      const [action] = await db.insert(toolActionRequests).values({ companyId: company.id, invocationId: invocation.id,
+        status: "pending", canonicalArgumentsHash: "fictional", canonicalArgumentsSummary: { summary: "fixture", sha256: "fixture", sizeBytes: 0 } }).returning();
+      await db.transaction(async tx => {
+        await tx.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, invocation.runId!));
+        await cancelGatewayActionsForRun(tx as unknown as typeof db, company.id, invocation.runId!);
+      });
+      const [request] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, action.id));
+      expect(request.status).toBe(expected);
+    });
+
   it("does not start provider dispatch after cancellation even if admission already passed", async () => {
     const { input, invocation, svc } = await admittedRateLimitedInvocation();
     expect((await svc.admitInvocation(input, invocation.id)).allowed).toBe(true);
