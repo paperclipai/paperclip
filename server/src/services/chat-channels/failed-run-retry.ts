@@ -218,16 +218,19 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     const failedRetry = run.errorCode === "chat_failed_run_retry_not_authorized" && run.error === retryDiagnostic;
     const validation = run.resultJson?.workspaceValidation as Record<string, unknown> | undefined;
     const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
-    const workspacePreparation = allowWorkspacePreparation && run.errorCode === "workspace_validation_failed" &&
+    const workspaceValidation = run.errorCode === "workspace_validation_failed" &&
       validation?.reason === "isolated_task_directory_binding_mismatch" &&
       typeof validation.issueId === "string" && validation.issueId === run.contextSnapshot?.issueId &&
       (run.issueId === null || run.issueId === validation.issueId) &&
       (run.contextSnapshot?.taskId === undefined || run.contextSnapshot.taskId === validation.issueId) &&
-      Object.keys(validation).every(key => ["reason", "issueId"].includes(key)) &&
+      Object.keys(validation).every(key => ["reason", "issueId"].includes(key));
+    const setupPreparation = run.errorCode === "setup_failed" && typeof run.error === "string" &&
+      run.error.trim().length > 0 && validation === undefined;
+    const workspacePreparation = allowWorkspacePreparation && (workspaceValidation || setupPreparation) &&
       recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false &&
       Object.keys(recovery).every(key => ["kind", "providerWorkStarted"].includes(key)) &&
       run.resultJson?.stopReason === "adapter_failed" &&
-      Object.keys(run.resultJson).every(key => ["executionRecovery", "workspaceValidation", "stopReason",
+      Object.keys(run.resultJson).every(key => ["executionRecovery", ...(workspaceValidation ? ["workspaceValidation"] : []), "stopReason",
         "effectiveTimeoutSec", "timeoutConfigured", "timeoutFired", "timeoutSource"].includes(key));
     const diagnostic = failedRetry ? retryDiagnostic : workspacePreparation ? run.error : "reviewed_chat_execution_binding_not_authorized";
     const dispatchOnlyProfile = failedRetry || workspacePreparation;

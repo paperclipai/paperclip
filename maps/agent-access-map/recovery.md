@@ -304,8 +304,8 @@ no external inbound authority or permission to replay a terminal result; an
 uncertifiable source directs the user to send a new task message. The real
 HTTP/queue regression proves this boundary locally, not hosted provider recovery.
 
-For external chat, the same canonical Retry owner may certify the structured
-isolated-directory binding failure that occurs before environment allocation.
+For external chat, the same canonical Retry owner may certify an isolated-directory
+binding failure or a fully recorded setup failure before provider dispatch.
 It requires exact task/source authority and trusted settlement with no process,
 lease, native result or unknown execution evidence. Other validation reasons and
 the older direct chat-retry entry point remain denied. Local HTTP/dispatch proof
