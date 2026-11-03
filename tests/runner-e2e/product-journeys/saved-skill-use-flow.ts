@@ -7,7 +7,7 @@ import { createTaskThroughUi } from "../user-actions.js";
 import { validateAgentTaskState, waitFor } from "./agent-flows.js";
 import { createObservedReader } from "./observation-read.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
-import { savedSkillDocumentAttributed, savedSkillFixture, savedSkillReadReceipts, savedSkillReadRuntimeName, savedSkillSourceMatches } from "./saved-skill-use-evidence.js";
+import { savedSkillDocumentAttributed, savedSkillFixture, savedSkillReadAssignment, savedSkillReadReceipts, savedSkillReadRuntimeName, savedSkillSourceMatches } from "./saved-skill-use-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
@@ -90,7 +90,8 @@ export async function runSavedSkillUse(context: JourneyContext, session: TargetS
     const events = await collectRunEvents<Row>(
       (afterSeq, limit) => read.get(`/api/heartbeat-runs/${binding.runId}/events?afterSeq=${afterSeq}&limit=${limit}`));
     const runtimeName = savedSkillReadRuntimeName(skill, assignments, state.taskRuns[0]!);
-    const receipts = savedSkillReadReceipts(events, binding, fixture, runtimeName, skill.currentVersionId);
+    const assignment = savedSkillReadAssignment(skill, assignments, state.taskRuns[0]!);
+    const receipts = savedSkillReadReceipts(events, binding, fixture, runtimeName, assignment);
     checkpoint = { ...checkpoint, events, receipts };
     check("saved-skill-native-read-attributed", receipts.length > 0);
     const documents = await read.get<Row[]>(`${route}/documents`);

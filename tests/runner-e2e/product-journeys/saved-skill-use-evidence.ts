@@ -51,21 +51,33 @@ export function savedSkillResultMatches(body: unknown, expected: SavedSkillFixtu
   } catch { return false; }
 }
 
-/** Resolve the materialized name from both the saved assignment and admitted native input.
- * A provider-visible directory name alone cannot establish which immutable skill it holds. */
-export function savedSkillReadRuntimeName(skill: Row, assignments: Row, run: Row): string | undefined {
+export interface SavedSkillReadAssignment { key: string; versionId: string }
+
+/** All native providers share the canonical skill/version selection contract. */
+export function savedSkillReadAssignment(skill: Row, assignments: Row, run: Row): SavedSkillReadAssignment | undefined {
   const input = run.runnerProfileJson?.nativeExecutionInput;
   const assigned = Array.isArray(assignments.entries) ? assignments.entries.filter((row: Row) => row.key === skill.key) : [];
   const native = Array.isArray(input?.runtimeContext?.skills)
     ? input.runtimeContext.skills.filter((row: Row) => row.key === skill.key) : [];
-  if (input?.provider?.kind !== "opencode" || assigned.length !== 1 || native.length !== 1
+  const versions = run.contextSnapshot?.skillVersions;
+  if (typeof skill.key !== "string" || !skill.key.trim() || assigned.length !== 1 || native.length !== 1
     || typeof skill.currentVersionId !== "string" || !skill.currentVersionId
     || run.contextSnapshot?.skillSelectionSnapshot !== true
-    || run.contextSnapshot?.skillVersions?.[skill.key] !== skill.currentVersionId
-    || assigned[0].versionId !== skill.currentVersionId || native[0].versionId !== skill.currentVersionId
-    || assigned[0].runtimeName !== native[0].runtimeName
-    || typeof native[0].runtimeName !== "string" || !/^[a-z0-9][a-z0-9_-]*$/i.test(native[0].runtimeName)) return undefined;
-  return native[0].runtimeName;
+    || !versions || typeof versions !== "object" || Array.isArray(versions) || !Object.hasOwn(versions, skill.key)
+    || versions[skill.key] !== skill.currentVersionId
+    || assigned[0].versionId !== skill.currentVersionId || native[0].versionId !== skill.currentVersionId) return undefined;
+  return { key: skill.key, versionId: skill.currentVersionId };
+}
+
+/** OpenCode's file wrapper also needs the exact materialized directory identity. */
+export function savedSkillReadRuntimeName(skill: Row, assignments: Row, run: Row): string | undefined {
+  if (run.runnerProfileJson?.nativeExecutionInput?.provider?.kind !== "opencode"
+    || !savedSkillReadAssignment(skill, assignments, run)) return undefined;
+  const assigned = assignments.entries.find((row: Row) => row.key === skill.key);
+  const native = run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills.find((row: Row) => row.key === skill.key);
+  if (assigned.runtimeName !== native.runtimeName
+    || typeof native.runtimeName !== "string" || !/^[a-z0-9][a-z0-9_-]*$/i.test(native.runtimeName)) return undefined;
+  return native.runtimeName;
 }
 
 /** Core's assigned-skill read verifies the pinned manifest and returns one UTF-8 page. */
@@ -87,7 +99,7 @@ function assignedSkillReadText(output: string, binding: NativePrpRunBinding, fix
 /** Successful built-in reads and native skill loads expose the actual skill text.
  * A model claim, discovered name, shell echo, failed read or foreign run cannot qualify. */
 export function savedSkillReadReceipts(events: Row[], binding: NativePrpRunBinding, fixture: SavedSkillFixture,
-  runtimeName?: string, immutableVersionId?: string) {
+  runtimeName?: string, assignment?: SavedSkillReadAssignment) {
   const bound = events.filter(row => isBoundNativePrpEventRow(row, binding));
   return bound.filter(row => {
     const event = row.payload.prpEvent, payload = event.payload;
@@ -115,12 +127,12 @@ export function savedSkillReadReceipts(events: Row[], binding: NativePrpRunBindi
       && !wrappedPath.split("/").some(part => part === "." || part === "..")
       && wrappedPath.endsWith(`/.claude/skills/${runtimeName}/SKILL.md`);
     // The ordinary semantic tool is another native read path, not a filesystem wrapper.
-    // Its version must also have the dual assignment/admitted runtime binding above.
+    // Its canonical key/version binding does not depend on a provider's directory name.
     const assignedText = name === "paperclip_read_assigned_skill" && payload.readOnly === true && payload.target === null
       && (payload.operation === "unknown" || payload.operation === "read")
-      && typeof runtimeName === "string" && /^[a-z0-9][a-z0-9_-]*$/i.test(runtimeName)
-      && typeof immutableVersionId === "string" && immutableVersionId.trim()
-      ? assignedSkillReadText(payload.output, binding, fixture, immutableVersionId) : undefined;
+      && assignment?.key === `company/${binding.companyId}/${fixture.slug}`
+      && typeof assignment.versionId === "string" && assignment.versionId.trim()
+      ? assignedSkillReadText(payload.output, binding, fixture, assignment.versionId) : undefined;
     if (!reading && !loading && !wrappedRead && assignedText === undefined) return false;
     // File readers may prefix each source line with its line number.
     const output = (assignedText ?? (wrappedRead ? wrapped![2]! : payload.output)).split("\n").map((line: string) => line.replace(/^\s*\d+(?:[:|]|→)\s?/, "")).join("\n");

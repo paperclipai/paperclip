@@ -61,7 +61,10 @@ The first-party `paperclip_read_assigned_skill` tool can also supply the read.
 Its complete `inputText` result must contain the exact canonical skill key,
 immutable created version, `SKILL.md` path, original Markdown, byte size and
 SHA-256 checksum. `nextOffset` must be null. The same dual assignment and
-admitted runtime binding is required. A semantic read failure can have a
+admitted canonical key/version binding is required for every native provider.
+The OpenCode materialized directory name is required only for its filesystem
+wrapper; it is not a condition for the common first-party semantic read.
+A semantic read failure can have a
 completed tool status; it does not qualify. A partial page, copied tool result,
 foreign version, missing start or unbound native event also fails closed.
 

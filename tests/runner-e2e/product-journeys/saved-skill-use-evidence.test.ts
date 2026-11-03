@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { canonicalProviderEventsFromOpenCodePart } from "../../../packages/paperclip-runner/src/provider-events.js";
-import { savedSkillDocumentAttributed, savedSkillFixture, savedSkillReadReceipts, savedSkillReadRuntimeName, savedSkillResultMatches, savedSkillSourceMatches } from "./saved-skill-use-evidence.js";
+import { savedSkillDocumentAttributed, savedSkillFixture, savedSkillReadAssignment, savedSkillReadReceipts, savedSkillReadRuntimeName, savedSkillResultMatches, savedSkillSourceMatches } from "./saved-skill-use-evidence.js";
 
 type Row = Record<string, any>;
 const fixture = savedSkillFixture("campaign-id", "62ff548dfec748da8fef6d5fbf6cc23d");
 const binding = { companyId: "company", agentId: "agent", issueId: "issue", runId: "run" };
+const assignment = { key: `company/${binding.companyId}/${fixture.slug}`, versionId: "version" };
 function native(seq: number, eventType: string, payload: Row): Row {
   return { ...binding, seq, eventType, protocolSchemaVersion: 1, sourceSeq: seq, sourceInstanceId: "runner-instance", sourceEventId: `event-${seq}`,
     payload: { prpEvent: { schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceKind: "runner", runId: binding.runId,
@@ -128,12 +129,45 @@ describe("saved skill use evidence", () => {
     expect(savedSkillReadReceipts(wrappedReadEvents(), binding, fixture)).toEqual([]);
   });
   it("accepts the complete first-party assigned-skill receipt with exact immutable source identity and bytes", () => {
-    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, runtimeName, "version"))
+    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, runtimeName, assignment))
       .toEqual([{ runId: "run", executionId: "read-skill", seq: 2 }]);
-    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, undefined, "version")).toEqual([]);
+    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, undefined, assignment)).toHaveLength(1);
     expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, runtimeName)).toEqual([]);
-    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, runtimeName, "foreign")).toEqual([]);
+    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, runtimeName, { ...assignment, key: "foreign" })).toEqual([]);
+    expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, runtimeName, { ...assignment, versionId: "foreign" })).toEqual([]);
   });
+  it.each([{ kind: "codex" }, { kind: "acpx", agent: "cursor" }, { kind: "cursor_cloud" }])(
+    "binds the semantic source to common native skill entries for %j while preserving the OpenCode file guard", provider => {
+      const { skill } = source();
+      const good = () => ({ assignments: { entries: [{ key: skill.key, versionId: "version", runtimeName }] },
+        run: { contextSnapshot: { skillSelectionSnapshot: true, skillVersions: { [skill.key]: "version" } },
+          runnerProfileJson: { nativeExecutionInput: { provider,
+            runtimeContext: { skills: [{ key: skill.key, versionId: "version", runtimeName }] } } } } });
+      const valid = good(), selected = savedSkillReadAssignment(skill, valid.assignments, valid.run);
+      expect(selected).toEqual(assignment);
+      expect(savedSkillReadRuntimeName(skill, valid.assignments, valid.run)).toBeUndefined();
+      expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, undefined, selected)).toHaveLength(1);
+      expect(savedSkillReadReceipts(wrappedReadEvents(), binding, fixture, undefined, selected)).toEqual([]);
+      const changes: Array<(value: ReturnType<typeof good>) => void> = [
+        v => { v.assignments.entries = []; },
+        v => { v.assignments.entries[0]!.key = "foreign"; },
+        v => { v.assignments.entries[0]!.versionId = "foreign"; },
+        v => { v.assignments.entries.push(v.assignments.entries[0]!); },
+        v => { v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills = []; },
+        v => { v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0]!.key = "foreign"; },
+        v => { v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0]!.versionId = "foreign"; },
+        v => { v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills.push(v.run.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0]!); },
+        v => { v.run.contextSnapshot.skillSelectionSnapshot = false; },
+        v => { v.run.contextSnapshot.skillVersions = {}; },
+        v => { v.run.contextSnapshot.skillVersions[skill.key] = "foreign"; },
+      ];
+      for (const mutate of changes) {
+        const wrong = good(); mutate(wrong);
+        const selected = savedSkillReadAssignment(skill, wrong.assignments, wrong.run);
+        expect(selected).toBeUndefined();
+        expect(savedSkillReadReceipts(assignedReadEvents(), binding, fixture, undefined, selected)).toEqual([]);
+      }
+    });
   it.each([
     ["foreign canonical key", (e: Row[]) => changeAssignedResult(e, r => { r.skill = "company/foreign/skill"; })],
     ["foreign immutable version", (e: Row[]) => changeAssignedResult(e, r => { r.versionId = "foreign"; })],
@@ -165,7 +199,7 @@ describe("saved skill use evidence", () => {
     const events = assignedReadEvents(); mutate(events);
     const completed = events.find(row => row.eventType === "tool.execution.completed")!;
     completed.payload.prpEvent.payload.outputBytes = Buffer.byteLength(completed.payload.prpEvent.payload.output);
-    expect(savedSkillReadReceipts(events, binding, fixture, runtimeName, "version")).toEqual([]);
+    expect(savedSkillReadReceipts(events, binding, fixture, runtimeName, assignment)).toEqual([]);
   });
   it.each([
     ["foreign path", (e: Row[]) => { e[1]!.payload.prpEvent.payload.output = e[1]!.payload.prpEvent.payload.output.replace(runtimeName, "foreign"); }],

@@ -123,6 +123,38 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
 }
 
 describe("saved skill journey orchestration", () => {
+  it.each([{ kind: "codex" }, { kind: "acpx", agent: "cursor" }, { kind: "cursor_cloud" }])(
+    "binds a common semantic read for provider %j without an OpenCode directory", async provider => {
+      const f = await setup((kind, row) => {
+        if (kind === "run") Object.assign(row.runnerProfileJson.nativeExecutionInput.provider, provider);
+        return row;
+      }, "campaign", false, "assigned");
+      f.context.agent!.provider = provider.kind;
+      await f.run();
+      expect(f.evidence.checks).toHaveLength(7);
+      expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+      expect(f.page.reload).toHaveBeenCalledOnce();
+    });
+  it.each(["codex", "acpx", "cursor_cloud"])("rejects missing or foreign semantic assignment evidence for %s", async provider => {
+    const changes: Array<{ target: string; mutate(row: Row): void }> = [
+      { target: "assignment", mutate: row => { row.entries = []; } },
+      { target: "run", mutate: row => { row.runnerProfileJson.nativeExecutionInput.runtimeContext.skills = []; } },
+      { target: "run", mutate: row => { row.runnerProfileJson.nativeExecutionInput.runtimeContext.skills[0].versionId = "foreign"; } },
+      { target: "assigned-read", mutate: row => { row.versionId = "foreign"; } },
+    ];
+    for (const { target, mutate } of changes) {
+      const f = await setup((kind, row) => {
+        if (kind === "run") Object.assign(row.runnerProfileJson.nativeExecutionInput.provider, { kind: provider,
+          ...(provider === "acpx" ? { agent: "cursor" } : {}) });
+        if (kind === target) mutate(row);
+        return row;
+      }, "campaign", false, "assigned");
+      f.context.agent!.provider = provider;
+      await expect(f.run()).rejects.toMatchObject({ outcome: "failed", code: "saved_skill_native_read_attributed" });
+      expect(f.api.get.mock.calls.some(([route]) => route.includes("/documents"))).toBe(false);
+      expect(f.page.reload).not.toHaveBeenCalled();
+    }
+  });
   it("verifies the ordinary semantic assigned-skill read through all seven checks with Beta skills off", async () => {
     const f = await setup(undefined, "campaign", false, "assigned"); await f.run();
     expect(f.evidence.checks).toHaveLength(7);
