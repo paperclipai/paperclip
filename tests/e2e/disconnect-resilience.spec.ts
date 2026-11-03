@@ -1,7 +1,42 @@
-import { expect, test, type APIRequestContext, type APIResponse, type Page } from "@playwright/test";
+import { expect, test, type APIRequestContext, type APIResponse, type Page, type WebSocketRoute } from "@playwright/test";
 
 test.describe.configure({ timeout: 90_000 });
 test.use({ actionTimeout: 10_000 });
+
+type SocketPair = { client: WebSocketRoute; server: WebSocketRoute };
+type RealtimeControl = { until: number; sockets: Set<SocketPair> };
+const realtime = new WeakMap<Page, RealtimeControl>();
+const outageClose = { code: 1013, reason: "Simulated outage" };
+
+async function closeSockets(control: RealtimeControl) {
+  const sockets = [...control.sockets];
+  control.sockets.clear();
+  await Promise.all(sockets.flatMap(({ client, server }) => [client.close(outageClose), server.close(outageClose)]));
+}
+
+test.beforeEach(async ({ page }) => {
+  const control: RealtimeControl = { until: 0, sockets: new Set() };
+  realtime.set(page, control);
+  // Intercept before navigation, including the first connection while its
+  // server handshake is still pending. Reloads use the same outage deadline.
+  await page.routeWebSocket("**/api/companies/*/events/ws", async client => {
+    if (Date.now() < control.until) { await client.close(outageClose); return; }
+    const server = client.connectToServer();
+    const pair = { client, server };
+    control.sockets.add(pair);
+    // Custom close handlers must preserve Playwright's normal forwarding.
+    client.onClose((code, reason) => control.sockets.delete(pair) ? server.close({ code, reason }) : undefined);
+    server.onClose((code, reason) => control.sockets.delete(pair) ? client.close({ code, reason }) : undefined);
+  });
+});
+
+test.afterEach(async ({ page }) => {
+  const control = realtime.get(page);
+  if (!control) return;
+  control.until = Infinity;
+  await closeSockets(control);
+  realtime.delete(page);
+});
 
 async function json(response: APIResponse) {
   expect(response.ok(), `${response.status()}: ${await response.text()}`).toBe(true);
@@ -19,19 +54,51 @@ async function fixture(request: APIRequestContext) {
 async function outage(page: Page) {
   const until = Date.now() + 20_000;
   let failures = 0;
-  // Reloads open a new realtime connection. A healthy socket is valid
-  // reachability evidence, so it must share the simulated HTTP outage.
-  await page.routeWebSocket("**/api/companies/*/events/ws", socket => {
-    if (Date.now() < until) socket.close({ code: 1013, reason: "Simulated outage" });
-    else socket.connectToServer();
-  });
+  const control = realtime.get(page);
+  if (!control) throw new Error("Realtime interception must be installed before navigation");
+  control.until = until;
   await page.route("**/api/**", async route => {
     if (Date.now() >= until) return route.fallback();
     failures += 1;
     await route.fulfill({ status: 503, json: { error: "tenant_app_unavailable" } });
   });
+  await closeSockets(control);
   return { until, failures: () => failures };
 }
+
+test("an outage closes the first realtime socket before it can report a late recovery", async ({ page, request }) => {
+  const data = await fixture(request);
+  await page.addInitScript(() => {
+    const browser = window as typeof window & { outageSockets: WebSocket[]; initialOutageSockets: WebSocket[] };
+    browser.outageSockets = [];
+    browser.initialOutageSockets = [];
+    browser.WebSocket = class extends WebSocket {
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super(url, protocols);
+        if (new URL(url, location.href).pathname.endsWith("/events/ws")) browser.outageSockets.push(this);
+      }
+    };
+  });
+  try {
+    await page.goto(data.route);
+    // Do not wait for open or history readiness: catch the first connection
+    // as soon as the app creates it, including a pending handshake.
+    await expect.poll(() => page.evaluate(() => {
+      const browser = window as typeof window & { outageSockets: WebSocket[]; initialOutageSockets: WebSocket[] };
+      browser.initialOutageSockets = browser.outageSockets.filter(socket => socket.readyState <= WebSocket.OPEN);
+      return browser.initialOutageSockets.length;
+    })).toBeGreaterThan(0);
+    const interruption = await outage(page);
+    await expect.poll(() => page.evaluate(() => (window as typeof window & { initialOutageSockets: WebSocket[] })
+      .initialOutageSockets.every(socket => socket.readyState === WebSocket.CLOSED))).toBe(true);
+    expect(await page.evaluate(async () => (await fetch("/api/health")).status)).toBe(503);
+    await expect.poll(interruption.failures).toBeGreaterThan(0);
+    await expectReconnecting(page);
+    expect(Date.now()).toBeLessThan(interruption.until);
+  } finally {
+    await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
+  }
+});
 
 async function expectReconnecting(page: Page) {
   await expect(page.locator('[data-connection-status="reconnecting"]')).toHaveCount(1, { timeout: 10_000 });
