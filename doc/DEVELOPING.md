@@ -1800,6 +1800,13 @@ host, sandbox, or Git remote. Files changed since the last save still depend on
 the live sandbox: losing that allocation can lose those edits. There is no
 periodic workspace backup in this release.
 
+Remote workspace command timeouts report `remote_workspace_operation_timed_out`
+with the operation (`prepare`, `repository`, `archive_helper`, `capture`, `restore`,
+or `cleanup`) and its timeout in milliseconds. Command output is excluded from
+that diagnostic. A timeout does not prove the remote process stopped or that a
+save failed before publication. Reconcile the existing workspace and operation
+receipts before recovery; the transport does not automatically repeat the command.
+
 Files reads use the current committed saved version when remote authority is
 clean and has no active writer, even while its old allocation remains recorded.
 The saved loader verifies the company, workspace, snapshot, and archive before
