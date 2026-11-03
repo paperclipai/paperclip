@@ -37,7 +37,7 @@ async function cancelFailedVerification({ api, cancel, sha }, failure) {
 
 export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rerun, now = Date.now,
   sleep = ms => new Promise(resolve => setTimeout(resolve, ms)), log = console.log,
-  timeoutMs = 40 * 60_000, intervalMs = 15_000, summary = async () => {} }) {
+  timeoutMs = 40 * 60_000, intervalMs = 15_000, requireProof = false, summary = async () => {} }) {
   if (!/^[a-f0-9]{40}$/.test(sha ?? "") || !Number.isSafeInteger(runId) || runId < 1 ||
       !Number.isSafeInteger(attempt) || attempt < 1) throw new Error("Invalid release identity.");
   const deadline = now() + timeoutMs;
@@ -79,14 +79,19 @@ export async function watchReleaseSource({ sha, runId, attempt, api, cancel, rer
     }
     await sleep(Math.min(intervalMs, Math.max(0, deadline - now())));
   }
-  await cancelImageRun({ api, cancel, runId, attempt, sha });
-  throw new Error("Image build canceled because exact-source verification did not become ready in time.");
+  // This early failure observer is not the publication deadline. Healthy
+  // checks can outlive a Spot worker; the manifest's exact-source gate still
+  // waits for proof before publishing any image.
+  if (requireProof) throw new Error("Exact-source verification did not become ready before the publication deadline.");
+  await summary("Source monitoring window ended; final publication still requires exact-source verification.\n");
+  return undefined;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const token = process.env.GITHUB_TOKEN;
   if (!token || process.env.GITHUB_REPOSITORY !== repository || process.env.GITHUB_REF !== "refs/heads/master") throw new Error("Canonical master token required.");
-  await watchReleaseSource({ sha: process.env.GITHUB_SHA, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+  const requireProof = process.argv.includes("--require-proof");
+  await watchReleaseSource({ requireProof, ...(requireProof ? { timeoutMs: 60 * 60_000 } : {}), sha: process.env.GITHUB_SHA, runId: Number(process.env.GITHUB_RUN_ID), attempt: Number(process.env.GITHUB_RUN_ATTEMPT),
     api: createActionsReader({ token }),
     rerun: createReleaseRerunner(token),
     cancel: async path => {

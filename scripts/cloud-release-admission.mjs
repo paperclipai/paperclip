@@ -64,11 +64,15 @@ export async function requestDeferredProducer({ file, sha, admissionJob, api, re
   const key = `${run.id}/${run.run_attempt}`;
   if (requested.has(key)) return "pending";
   const jobs = [];
+  let total;
   for (let page = 1; page <= 10; page++) {
     const batch = await api(`/repos/${repository}/actions/runs/${run.id}/attempts/${run.run_attempt}/jobs?per_page=100&page=${page}`);
-    if (!Array.isArray(batch.jobs)) throw new Error("Invalid release producer job list.");
+    if (!Array.isArray(batch.jobs) || !Number.isSafeInteger(batch.total_count) || batch.total_count < 0) throw new Error("Invalid release producer job list.");
+    if ((total !== undefined && total !== batch.total_count) ||
+        batch.jobs.length !== Math.min(100, Math.max(0, batch.total_count - (page - 1) * 100))) throw new Error("Incomplete release producer job list.");
+    total = batch.total_count;
     jobs.push(...batch.jobs);
-    if (batch.jobs.length < 100) break;
+    if (page * 100 >= total) break;
     if (page === 10) throw new Error("Incomplete release producer job list.");
   }
   if (run.status !== "completed") {
@@ -77,7 +81,16 @@ export async function requestDeferredProducer({ file, sha, admissionJob, api, re
   if (!deferredProducer(jobs, run, admissionJob)) return "finished";
   const current = await api(`/repos/${repository}/actions/runs/${run.id}`);
   if (current.id !== run.id || !trusted(current, sha, workflow) || current.run_attempt !== run.run_attempt || current.status !== "completed" || current.conclusion !== "success") return "pending";
-  await rerun(`/repos/${repository}/actions/runs/${run.id}/rerun`);
+  try {
+    await rerun(`/repos/${repository}/actions/runs/${run.id}/rerun`);
+  } catch (error) {
+    // Docker and npm may select the same source at the same time. A rejected
+    // duplicate write is harmless only when a fresh read proves a retry began.
+    const latest = await api(`/repos/${repository}/actions/runs/${run.id}`);
+    if (latest.id !== run.id || !trusted(latest, sha, workflow) ||
+        !(latest.run_attempt > run.run_attempt || (latest.run_attempt === run.run_attempt &&
+          ["queued", "in_progress", "requested", "pending", "waiting"].includes(latest.status)))) throw error;
+  }
   requested.add(key);
   return "pending";
 }

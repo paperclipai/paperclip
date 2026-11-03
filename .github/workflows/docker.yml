@@ -334,9 +334,11 @@ jobs:
     if: ${{ !cancelled() && needs.build-and-push.result == 'success' && (needs.source_verification.result == 'success' || needs.source_verification.result == 'skipped') }}
     needs: [build-and-push, source_verification]
     runs-on: ${{ github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32') || 'ubuntu-latest' }}
-    timeout-minutes: 20
+    # The final exact-source wait may outlive the bounded Spot monitor.
+    timeout-minutes: ${{ github.ref == 'refs/heads/master' && 75 || 20 }}
     permissions:
       contents: read
+      actions: write # restart only exact-source producers deferred before admission
       packages: write
       id-token: write
       attestations: write
@@ -395,6 +397,19 @@ jobs:
           labels: |
             io.github.paperclipai.schema.last-migration=${{ steps.schema.outputs.last }}
             io.github.paperclipai.schema.migration-count=${{ steps.schema.outputs.count }}
+
+      # The Spot observer may end before healthy checks finish. This hosted
+      # gate requires proof and admitted migrator work before publishing tags.
+      - name: Setup Node.js for the final source gate
+        if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 24
+      - name: Require exact-source verification before publication
+        if: github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/watch-release-source.mjs --require-proof
 
       - name: Create manifest list and push
         working-directory: /tmp/digests

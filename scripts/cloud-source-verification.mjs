@@ -78,14 +78,15 @@ export async function readSourceVerification(sha, api, { failFast = false, onJob
   if (job?.status === "completed" || run.status === "completed") {
     const current = await api(`/repos/${repository}/actions/runs/${run.id}`);
     if (!trustedRun(current, sha, workflow.id) || current.run_attempt !== run.run_attempt) return undefined;
-    if (deferredProducer(jobs, run, sourceAdmissionJob)) throw new SourceVerificationDeferred("Source checks are deferred until release admission.");
+    if (job?.conclusion === "skipped" && current.status !== "completed") return undefined;
+    if (deferredProducer(jobs, current, sourceAdmissionJob)) throw new SourceVerificationDeferred("Source checks are deferred until release admission.");
     throw new SourceVerificationFailed(`Cloud source verification did not pass for ${sha} (run ${run.id}, attempt ${run.run_attempt}). Rerun Cloud readiness before retrying the release.`, run);
   }
   return undefined;
 }
 
 // Statuses that say "ask again", not "the answer is no". A release must not be
-// blocked because GitHub returned a gateway error during a 45-minute poll.
+// blocked because GitHub returned a gateway error during a 60-minute poll.
 const TRANSIENT_READ_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 
 // A rate-limited read also says "ask again", and GitHub reports both primary
@@ -160,7 +161,7 @@ export function createActionsReader({
 
 export async function waitForSourceVerification(sha, {
   api, now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
-  timeoutMs = 45 * 60_000, intervalMs = 30_000, log = console.log, rerun,
+  timeoutMs = 60 * 60_000, intervalMs = 30_000, log = console.log, rerun,
 } = {}) {
   assertSha(sha);
   const deadline = now() + timeoutMs;
@@ -185,7 +186,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     if (!process.env.GITHUB_TOKEN) throw new Error("GITHUB_TOKEN with Actions read access is required.");
     // One deadline for both layers: the reader stops retrying when the poll it
     // serves is out of time, instead of extending the wait past its timeout.
-    const timeoutMs = 45 * 60_000;
+    const timeoutMs = 60 * 60_000;
     const deadline = Date.now() + timeoutMs;
     const api = createActionsReader({ token: process.env.GITHUB_TOKEN, deadlineAt: () => deadline });
     const rerun = process.env.GITHUB_REPOSITORY === repository && process.env.GITHUB_REF === "refs/heads/master" ? createReleaseRerunner(process.env.GITHUB_TOKEN) : undefined;

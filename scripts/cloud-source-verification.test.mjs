@@ -66,7 +66,8 @@ test("job identities and terminal failures fail closed", async () => {
     { head_sha: "b".repeat(40) }, { run_id: 999 }, { run_attempt: 1 },
     { conclusion: "failure" }, { conclusion: "cancelled" }, { conclusion: "skipped" },
   ]) {
-    const { api } = fixture({ jobs: [{ ...baseJob, ...overrides }] });
+    const { api } = fixture({ jobs: [{ ...baseJob, ...overrides }],
+      current: overrides.conclusion === "skipped" ? { ...baseRun, status: "completed", conclusion: "success" } : baseRun });
     await assert.rejects(readSourceVerification(sha, api), /did not pass/);
   }
 });
@@ -302,12 +303,23 @@ describe("image build source monitor", () => {
     assert.deepEqual(f.cancellations, []);
   });
 
-  test("an expired source deadline cancels work and cannot authorize publication", async () => {
+  test("the observation window ends without cancelling healthy pending verification", async () => {
     const f = fixture({ missing: true });
     let time = 0;
-    await assert.rejects(watchReleaseSource({ ...f, now: () => time, sleep: async ms => { time += ms; }, timeoutMs: 20 }), /did not become ready/);
+    const proof = await watchReleaseSource({ ...f, now: () => time, sleep: async ms => { time += ms; }, timeoutMs: 20 });
+    assert.equal(proof, undefined);
     assert.equal(time, 20);
-    assert.equal(f.cancellations.length, 1);
+    assert.deepEqual(f.cancellations, []);
+    assert.ok(f.messages.some(message => message.includes("final publication still requires exact-source verification")));
+  });
+
+  test("final publication requires proof even after the early observation window ends", async () => {
+    const f = fixture({ missing: true });
+    let time = 0;
+    await assert.rejects(watchReleaseSource({ ...f, requireProof: true, now: () => time,
+      sleep: async ms => { time += ms; }, timeoutMs: 20 }), /before the publication deadline/);
+    assert.deepEqual(f.cancellations, []);
+    assert.equal((await watchReleaseSource({ ...fixture(), requireProof: true })).jobId, proof.id);
   });
 
   test("cancellation rejects another SHA, repository, ref, workflow, or attempt", async () => {
@@ -368,7 +380,8 @@ describe("release candidate admission", () => {
       const jobMatch = path.match(/\/runs\/(\d+)\/attempts\/(\d+)\/jobs\?/);
       if (jobMatch) {
         const page = Number(url.searchParams.get("page") ?? "1");
-        return { jobs: (f.jobs[Number(jobMatch[1])] ?? []).slice((page - 1) * 100, page * 100) };
+        const jobs = f.jobs[Number(jobMatch[1])] ?? [];
+        return { total_count: f.jobTotal ?? jobs.length, jobs: jobs.slice((page - 1) * 100, page * 100) };
       }
       const currentMatch = path.match(/\/runs\/(\d+)$/);
       if (currentMatch) return f.current[Number(currentMatch[1])] ?? Object.values(f.runs).flat().find(run => run.id === Number(currentMatch[1]));
@@ -465,12 +478,46 @@ describe("release candidate admission", () => {
     }
   });
 
+  test("a truncated job page cannot hide a failed check and trigger a retry", async () => {
+    const f = fixture();
+    f.jobTotal = 3;
+    await assert.rejects(requestDeferredProducer(f), /Incomplete release producer job list/);
+    assert.deepEqual(f.writes, []);
+    f.jobTotal = "2";
+    await assert.rejects(requestDeferredProducer(f), /Invalid release producer job list/);
+    assert.deepEqual(f.writes, []);
+  });
+
   test("producer retries reject arbitrary workflow and admission contracts", async () => {
     const f = fixture();
     for (const change of [{ file: "docker.yml" }, { admissionJob: migratorAdmissionJob }]) {
       await assert.rejects(requestDeferredProducer({ ...f, ...change }), /Unknown deferred/);
     }
     assert.deepEqual(f.calls, []);
+  });
+
+  test("a deferred completion racing the run listing does not become a source failure", async () => {
+    const f = fixture();
+    const completed = f.runs[f.file][0];
+    f.runs[f.file] = [{ ...completed, status: "in_progress", conclusion: null }];
+    f.current[completed.id] = completed;
+    await assert.rejects(readSourceVerification(sha, f.api), SourceVerificationDeferred);
+    delete f.current[completed.id];
+    assert.equal(await readSourceVerification(sha, f.api), undefined);
+  });
+
+  test("a competing consumer's accepted retry does not fail the losing consumer", async () => {
+    const f = fixture();
+    f.rerun = async () => {
+      f.current[1123] = run(f.file, { run_attempt: 2 });
+      throw new Error("duplicate restart rejected");
+    };
+    assert.equal(await requestDeferredProducer(f), "pending");
+    assert.equal(f.requested.size, 1);
+    const rejected = fixture();
+    rejected.rerun = async () => { throw new Error("token denied"); };
+    await assert.rejects(requestDeferredProducer(rejected), /token denied/);
+    assert.equal(rejected.requested.size, 0);
   });
 
   test("source proof waits for admission, restarts it, and accepts only the new attempt", async () => {

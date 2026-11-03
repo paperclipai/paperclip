@@ -36,7 +36,7 @@ Stable releases and candidate-branch betas still run full verification.
 The canary consumer requires the expected workflow ID and path, upstream source
 repository, master push event, full SHA, and a successful job in the latest run
 attempt. It checks the run again after reading the jobs to reject a concurrent
-rerun. Missing proof waits for up to 45 minutes; failed, skipped, cancelled,
+rerun. Missing proof waits for up to 60 minutes; failed, skipped, cancelled,
 ambiguous, or mismatched proof cannot authorize publication. API failures fail
 closed. If a source check fails, fix it and rerun Cloud readiness before retrying
 the release. Use **Re-run all jobs** when a later attempt did not rerun the source
@@ -190,7 +190,10 @@ attestation remain required. The source monitor has Actions write permission to 
 master Docker run and failed exact-source verification siblings. It never
 automatically retries a failed source check. Its guarded retry permission can
 restart only an exact-source producer deferred before full admission. It checks run, attempt, SHA,
-repository, ref, and workflow identity before cancellation. Image jobs retain
+repository, ref, and workflow identity before cancellation. Its bounded
+observation window does not cancel healthy pending checks. Final hosted
+publication still requires exact-source proof and has a separate wait budget.
+Image jobs retain
 their existing package permissions.
 
 The monitor emits an Actions warning and step summary when an image or source job waits

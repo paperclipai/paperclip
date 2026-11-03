@@ -61,6 +61,16 @@ test("Docker Hub mirrors apply to both image builders without widening publicati
     "the registry-only manifest merge does not need a Docker Hub mirror");
 });
 
+test("the hosted manifest gate requires source proof before publishing any tag", () => {
+  const workflow = readWorkflow("docker.yml");
+  const publisher = workflow.split("  merge-and-push:\n")[1].split("  promote_canary_channel:")[0];
+  const gate = publisher.indexOf("run: node scripts/watch-release-source.mjs --require-proof");
+  assert.ok(gate > 0);
+  assert.ok(gate < publisher.indexOf("- name: Create manifest list and push"));
+  assert.match(publisher, /needs: \[build-and-push, source_verification\]/);
+  assert.match(publisher, /actions: write # restart only exact-source producers deferred before admission/);
+});
+
 test("chaos verification isolates callers that verify the same source commit", () => {
   const chaosWorkflow = readWorkflow("runner-chaos-evals.yml");
   const group = chaosWorkflow.match(/^  group: (.+)$/m)?.[1];
@@ -82,11 +92,11 @@ test("chaos verification isolates callers that verify the same source commit", (
   assert.match(chaosWorkflow, /cancel-in-progress: true/);
 });
 
-test("canary reuses exact-source proof while stable keeps full verification", () => {
+test("canary can admit deferred exact-source checks while stable keeps full verification", () => {
   const releaseWorkflow = readWorkflow("release.yml");
   const canary = releaseWorkflow.match(/  verify_canary:\n[\s\S]*?(?=\n  [a-z_]+:)/)[0];
-  assert.match(canary, /github\.repository == 'paperclipai\/paperclip' && github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'/);
-  assert.match(canary, /actions: read/);
+  assert.match(canary, /github\.repository == 'paperclipai\/paperclip' && github\.repository_id == '1170821064' && github\.event_name == 'push' && github\.ref == 'refs\/heads\/master'/);
+  assert.match(canary, /actions: write # restart only an exact-source push deferred before admission/);
   assert.match(canary, /ref: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /SOURCE_SHA: \$\{\{ github\.sha \}\}/);
   assert.match(canary, /run: node scripts\/cloud-source-verification\.mjs "\$SOURCE_SHA"/);
