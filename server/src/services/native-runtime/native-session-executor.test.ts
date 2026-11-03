@@ -1,6 +1,9 @@
 import { onRetainedNativeSessionCleanupRelease } from "../retained-native-session-cleanup-notifications.js";
 import { readIdleLocalWork, markIdleStartupComplete, markIdleIngressTracked } from "../idle-local-work.js";
 import * as runnerCheckpoint from "./native-runner-checkpoint.js";
+import * as stagedAttachmentRecovery from "./native-staged-attachment-recovery.js";
+import * as controllerRecovery from "./native-controller-recovery.js";
+import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.js";
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
 import * as pluginTaskRuntime from "./plugin-runner-task.js";
@@ -18,6 +21,7 @@ import {
   chmod,
   cp,
   lstat,
+  link,
   mkdir,
   mkdtemp,
   open,
@@ -33,8 +37,11 @@ import {
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { inspect } from "node:util";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
+import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import {
+  activityLog,
+  budgetReservations,
   heartbeatRuns,
   environmentLeases,
   heartbeatRunEvents,
@@ -83,6 +90,7 @@ import {
 import * as issueServiceModule from "../issues.js";
 import * as runEventWriter from "../heartbeat-run-events.js";
 import { NativePermissionDeclinedError } from "./native-permission-decline.js";
+import { NativeExecutionContext } from "./native-execution-context.js";
 import { resolvePaperclipRunnerNativeProviderInput } from "./provider-profile.js";
 import {
   createNativeHarnessBackupStamp,
@@ -99,6 +107,10 @@ import { buildNativeHeartbeatPreparationSpans, createNativeRunTrace } from "./na
 import { NativeRunnerOwnershipUnverifiedError } from "./native-runner-ownership.js";
 import type { AdapterRuntimeEvent } from "../../adapters/index.js";
 import type { AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
+import { acknowledgedNativeStopExecutionHasStopped, isAcknowledgedNativeStop } from "../acknowledged-native-stop.js";
+import { admittedNativeProviderPack, nativeProviderPackAdmissionPending, rememberAdmittedNativeProviderPack } from "./native-provider-pack-admission.js";
+import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
+import * as providerPackAdmission from "./native-provider-pack-admission.js";
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -418,6 +430,7 @@ import {
   semanticProviderPlanMarkdown,
   sha256DirectoryTree,
   stageRemoteRunnerDirectory,
+  stageRemoteRunnerFile,
   steerNativeSession,
   syncRemoteRunnerDirectoryOut,
   verifyNativeHarnessBackup,
@@ -427,6 +440,10 @@ import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 
 beforeEach(() => {
   state.localRuntimeApiUrl.mockReset().mockReturnValue("http://127.0.0.1:43219");
+  // These transport-wiring fixtures use a partial Db double and synthetic IDs.
+  // The real selector/bootstrap proof is exercised with Postgres by the durable
+  // discovery and diskless admission suites, not by this backend unit boundary.
+  vi.spyOn(controllerRecovery, "resolveNativeControllerRecovery").mockResolvedValue({ kind: "no_prior_execution" });
   state.drainMaintenance.mockReset().mockResolvedValue(undefined);
   usageRecorder.capture.mockReset().mockImplementation(async receipt => receipt);
   usageRecorder.create.mockReset().mockResolvedValue({ capture: usageRecorder.capture,
@@ -586,7 +603,7 @@ describe("remote controller restart adoption", () => {
     ).rejects.toThrow("runner_remote_recovery_identity_mismatch");
     expect(execute).toHaveBeenCalledTimes(1);
   });
-  it("wires remote adoption when only controller state survived on the host", async () => {
+  it.each(["execution", "stop_cleanup", "invalid_cleanup"] as const)("wires remote adoption when only controller state survived on the host (%s)", async purpose => {
     const stateBase = await mkdtemp(
       join(tmpdir(), "paperclip-remote-reattach-"),
     );
@@ -614,14 +631,33 @@ describe("remote controller restart adoption", () => {
         join(root, "control-plane", "control-plane-state.json"),
         JSON.stringify(durableControlPlaneState(identity)),
       );
-      await createRunnerdBackend({
-        db: leaseDb(current),
+      const stopIntent = { startupCancellation: { beforeNativeSelection: false }, nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", scope: "run", reasonCode: "cancellation_run_only", ...current.binding,
+        intentId: `native-cancellation:${randomUUID()}`, intentAuditId: randomUUID(), dispatchState: "pending", dispatched: false,
+        effects: ["release_run_resources"],
+      } };
+      const stopDb = leaseDb(current, { leaseOwner: purpose === "invalid_cleanup" ? "another-owner" : claim.leaseOwner,
+        leaseExpiresAt: new Date(Date.now() + 60_000), controllerGeneration: 2, attempt: 1,
+        recoveryState: "awaiting_runner_reattach", recoveryHistory: [{ disposition: "reattach_remote_runner", controllerGeneration: 2, providerAttempt: 1 }],
+      }, stopIntent);
+      state.createTransport.mockClear();
+      const adopted = createRunnerdBackend({
+        db: purpose === "execution" ? leaseDb(current) : stopDb,
         execution: current,
         runnerInstanceId: "runner",
         runnerExecutionTarget: target as never,
         restartRecovery: claim,
+        ...(purpose === "execution" ? {} : { recoveryPurpose: "stop_cleanup" as const }),
       });
+      if (purpose === "invalid_cleanup") {
+        await expect(adopted).rejects.toThrow("native_cancellation_pending_recovery");
+        expect(state.createTransport).not.toHaveBeenCalled();
+        return;
+      }
+      await adopted;
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      if (purpose === "stop_cleanup") expect(state.createTransport.mock.calls.at(-1)![0]).toHaveProperty("recoveryPurpose", "stop_cleanup");
+      else expect(state.createTransport.mock.calls.at(-1)![0]).not.toHaveProperty("recoveryPurpose");
       expect(
         state.createTransport.mock.calls.at(-1)![0].adoptExistingRunner?.pid,
       ).toBe(123);
@@ -1709,7 +1745,7 @@ describe("remote provider pack manifest", () => {
     return JSON.stringify(value);
   };
 
-  it.each(["opencode", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
+  it.each(["opencode", "opencode-dirty", "opencode-diagnostics", "opencode-diagnostics-stale", "cursor", "claude-x64", "claude-arm64"] as const)("uses the bundled Linux image authority for remote %s without controller overrides", async provider => {
     const architecture = provider === "claude-arm64" ? "arm64" : "x64";
     const claude = provider.startsWith("claude-");
     const opencode = provider.startsWith("opencode");
@@ -1755,7 +1791,7 @@ describe("remote provider pack manifest", () => {
     const syncIn = vi.fn(async (_operations: { files: { kind: string }[] }[]) => undefined);
     const installed = structuredClone(manifest);
     if (opencode) {
-      installed.payload.runnerSourceRevision = "c".repeat(40);
+      installed.payload.runnerSourceRevision = "c".repeat(40) + (provider === "opencode-dirty" ? "-dirty" : "");
       installed.payload.artifacts.nodeCommand.sha256 = "sha256:" + "d".repeat(64);
       if (provider !== "opencode-diagnostics") installed.payload.artifacts.opencodeProxy.sha256 = "sha256:" + "e".repeat(64);
       installed.digest = "sha256:" + createHash("sha256").update(canonical(installed.payload)).digest("hex");
@@ -1770,6 +1806,7 @@ describe("remote provider pack manifest", () => {
       }) : "",
     }));
     try {
+      let coldAdmission: ReturnType<typeof admittedNativeProviderPack> = null;
       const prepare = createRunnerdBackend({ db: leaseDb(remoteExecution), execution: remoteExecution,
         runnerInstanceId: "bundled-image-runner", runnerIngressAuthorized: true,
         ...(opencode ? { runnerEnvironment: { ...configuredEnvironmentProjection(diagnostics ? { PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" } : {}), PAPERCLIP_NATIVE_MCP_NAME: "assigned-fixture", PAPERCLIP_NATIVE_MCP_URL: "http://127.0.0.1/mcp/gateways/assigned-fixture", PAPERCLIP_NATIVE_MCP_TOKEN: "private-fixture" } } : {}),
@@ -1781,7 +1818,7 @@ describe("remote provider pack manifest", () => {
         expect(state.createBackend).not.toHaveBeenCalled();
         return;
       }
-      await prepare;
+      const managedBackend = await prepare;
       state.createTransport.mockClear();
       state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
       const transport = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & {
@@ -1807,6 +1844,28 @@ describe("remote provider pack manifest", () => {
       expect(transport).toMatchObject({ providerPackAuthorityDigest: installed.digest,
         providerNodeCommand: "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node",
         providerNodeCommandSha256: installed.payload.artifacts.nodeCommand.sha256 });
+      if (provider === "opencode" || provider === "opencode-dirty") {
+        const identity = { ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! };
+        const session = { identity: () => identity } as never;
+        const backend = state.createBackend.mock.results.at(-1)!.value;
+        const openSession = vi.fn().mockRejectedValueOnce(new Error("provider open failed")).mockResolvedValue(session);
+        Object.assign(backend, { openSession });
+        expect(admittedNativeProviderPack(session, identity)).toBeNull();
+        await expect(managedBackend.openSession({ identity })).rejects.toThrow("provider open failed");
+        expect(admittedNativeProviderPack(session, identity)).toBeNull();
+        const opened = await managedBackend.openSession({ identity });
+        if (provider === "opencode-dirty") {
+          expect(admittedNativeProviderPack(opened, identity)).toBeNull();
+          expect(existsSync(join(transport.stateDirectory!, "provider-pack-authority.json"))).toBe(true);
+        } else expect(admittedNativeProviderPack(opened, identity)).toMatchObject({
+          schema: "paperclip.native-provider-pack-admission.v1", stage: "session_admitted", authority: "core_verified_selection",
+          companyId: identity.companyId, agentId: identity.agentId, runId: identity.runId, sessionId: identity.sessionId,
+          runnerInstanceId: transport.prpIdentity!.runnerInstanceId, runnerEnvironmentLeaseId: transport.prpIdentity!.environmentLeaseId,
+          providerPackDigest: installed.digest, opencodeProxySha256: installed.payload.artifacts.opencodeProxy.sha256,
+          sourceRevision: installed.payload.runnerSourceRevision,
+        });
+        coldAdmission = admittedNativeProviderPack(opened, identity);
+      }
       expect(execute.mock.calls.filter(([call]) => call.args?.[0] === "--build-metadata")).toHaveLength(1);
       expect(execute.mock.calls.some(([call]) => call.args?.[0] === "-e" || call.args?.[0] === "--version")).toBe(false);
       expect(syncIn.mock.calls.every(([operations]) => operations.every(operation => operation.files.every(file => file.kind === "file")))).toBe(true);
@@ -1840,7 +1899,7 @@ describe("remote provider pack manifest", () => {
             : script.includes("cat --") ? `nonce\n123\n2026-09-19T10:00:00.000Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "";
           return { stdout, stderr: "", exitCode: 0, timedOut: false };
         });
-        await createRunnerdBackend({ db: leaseDb(remoteExecution), execution: remoteExecution,
+        const recoveryInput: Parameters<typeof createRunnerdBackend>[0] = { db: leaseDb(remoteExecution), execution: remoteExecution,
           runnerInstanceId: identity.runnerInstanceId, runnerIngressAuthorized: true,
           ...(opencode ? { runnerEnvironment: configuredEnvironmentProjection({ PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" }) } : {}),
           runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
@@ -1849,10 +1908,58 @@ describe("remote provider pack manifest", () => {
           restartRecovery: { kind: "reattach_remote_runner", runId: remoteExecution.binding.runId,
             leaseOwner: "controller", controllerGeneration: 2, providerAttempt: 1, restartKind: "graceful", recoveryRequestId: null,
             remote: { providerLeaseId: "sandbox", remoteCwd: "/workspace" } },
-        });
+        };
+        const recoveredBackend = await createRunnerdBackend(recoveryInput);
         state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
         const recovered = state.createTransport.mock.calls.at(-1)![0];
         expect(recovered).toMatchObject({ providerPackAuthorityDigest: admitted.digest, runnerArtifact: artifact, adoptExistingRunner: { pid: 123 } });
+        if (provider === "opencode") {
+          const nativeIdentity = { ...remoteExecution.binding, sessionId: remoteExecution.session.normalizedSessionId! };
+          const restored = { identity: () => nativeIdentity } as never;
+          const checkpoint = { backendKind: "runner", identity: nativeIdentity, sessionId: nativeIdentity.sessionId } as never;
+          Object.assign(state.createBackend.mock.results.at(-1)!.value, {
+            recoverSession: async () => ({ recovered: true, session: restored }),
+          });
+          const result = await recoveredBackend.recoverSession!(checkpoint, { signal: new AbortController().signal });
+          expect(result.recovered).toBe(true);
+          expect(admittedNativeProviderPack(result.session!, nativeIdentity)).toBeNull();
+          const legacyBackend = await createRunnerdBackend({ ...recoveryInput,
+            controllerPersistence: { bootId: "replacement-controller", runnerArtifact: artifact } });
+          const legacy = { identity: () => nativeIdentity } as never;
+          Object.assign(state.createBackend.mock.results.at(-1)!.value, {
+            recoverSession: async () => ({ recovered: true, session: legacy }),
+          });
+          const legacyResult = await legacyBackend.recoverSession!(checkpoint, { signal: new AbortController().signal });
+          expect(legacyResult.recovered).toBe(true);
+          expect(admittedNativeProviderPack(legacyResult.session!, nativeIdentity)).toBeNull();
+          const withPrior = new Proxy(recoveryInput.db, {
+            get(target, key, receiver) {
+              if (key !== "select") return Reflect.get(target, key, receiver);
+              return (fields?: Record<string, unknown>) => fields && "receipt" in fields
+                ? { from: () => ({ where: () => ({ limit: async () => [{ receipt: coldAdmission,
+                  state: { ...nativeProviderPackAdmissionPending(randomUUID()), state: "verified" } }] }) }) }
+                : target.select(fields as never);
+            },
+          });
+          for (const pinned of [false, true]) {
+            const knownBackend = await createRunnerdBackend({ ...recoveryInput, db: withPrior,
+              ...(pinned ? { controllerPersistence: { bootId: "replacement-controller", runnerArtifact: artifact }, runnerRemoteBinaryPath: state.bundledRunnerBinary! } : {}) });
+            const known = { identity: () => nativeIdentity } as never;
+            Object.assign(state.createBackend.mock.results.at(-1)!.value, {
+              recoverSession: async () => ({ recovered: true, session: known }),
+            });
+            const knownResult = await knownBackend.recoverSession!(checkpoint, { signal: new AbortController().signal });
+            expect(knownResult.recovered).toBe(true);
+            expect(admittedNativeProviderPack(knownResult.session!, nativeIdentity)).toEqual(coldAdmission);
+            if (pinned) {
+              const replacement = { identity: () => nativeIdentity } as never;
+              Object.assign(state.createBackend.mock.results.at(-1)!.value, { openSession: async () => replacement });
+              const replaced = await knownBackend.openReplacementSession!({ identity: nativeIdentity }, checkpoint);
+              expect(replaced).toBe(replacement);
+              expect(admittedNativeProviderPack(replaced, nativeIdentity)).toBeNull();
+            }
+          }
+        }
       }
     } finally {
       state.bundledPackManifestPath = null; state.bundledRunnerBinary = null;
@@ -3395,6 +3502,70 @@ describe("remote provider checkpoint snapshots", () => {
 });
 
 describe("remote provider checkpoint restores", () => {
+  it.each(["auth.json", "config.toml"].flatMap(name => ["hard", "symbolic"].map(kind => ({ name, kind }))))("atomically stages an SSH launch file without following a retained $kind link ($name)", async ({ name, kind }) => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-ssh-stage-"));
+    try {
+      const sourcePath = join(root, "selected"), outside = join(root, "outside");
+      const targetPath = join(root, `target with 'quotes'`, name);
+      await mkdir(dirname(targetPath));
+      await writeFile(sourcePath, "selected launch file");
+      await writeFile(outside, "untouched");
+      if (kind === "hard") await link(outside, targetPath);
+      else await symlink(outside, targetPath);
+      const execute = vi.fn(async (command: { command: string; args: string[]; stdin?: string }) => {
+        const result = spawnSync(command.command, command.args, { input: command.stdin, encoding: "utf8" });
+        return { exitCode: result.status, timedOut: false, stdout: result.stdout, stderr: result.stderr };
+      });
+      await stageRemoteRunnerFile({ target: { kind: "remote", transport: "ssh", remoteCwd: root } as never,
+        runner: { execute } as never, sourcePath, targetPath, mode: 0o600 });
+      expect(await readFile(outside, "utf8")).toBe("untouched");
+      expect(await readFile(targetPath, "utf8")).toBe("selected launch file");
+      expect((await lstat(targetPath)).isSymbolicLink()).toBe(false);
+      expect((await lstat(targetPath)).nlink).toBe(1);
+      expect((await lstat(targetPath)).mode & 0o777).toBe(0o600);
+      expect(await readdir(dirname(targetPath))).toEqual([name]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("preserves the prior SSH launch file and clears temporary data after a failed transfer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-ssh-stage-failure-"));
+    try {
+      const sourcePath = join(root, "selected"), targetPath = join(root, "target", "auth.json");
+      await mkdir(dirname(targetPath));
+      await writeFile(sourcePath, "selected launch file");
+      await writeFile(targetPath, "prior launch file");
+      const execute = vi.fn(async (command: { command: string; args: string[] }) => {
+        const result = spawnSync(command.command, command.args, { input: "%%%%", encoding: "utf8" });
+        return { exitCode: result.status, timedOut: false, stdout: result.stdout, stderr: result.stderr };
+      });
+      await expect(stageRemoteRunnerFile({ target: { kind: "remote", transport: "ssh", remoteCwd: root } as never,
+        runner: { execute } as never, sourcePath, targetPath, mode: 0o600 })).rejects.toThrow("runner_remote_staging_failed");
+      expect(await readFile(targetPath, "utf8")).toBe("prior launch file");
+      expect(await readdir(dirname(targetPath))).toEqual(["auth.json"]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])("rejects an SSH file destination that resolves to a directory (linked: %s)", async linked => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-ssh-stage-directory-"));
+    try {
+      const sourcePath = join(root, "selected"), outside = join(root, "outside");
+      const targetPath = linked ? join(root, "directory-link") : outside;
+      await writeFile(sourcePath, "selected launch file");
+      await mkdir(outside);
+      await writeFile(join(outside, "keep"), "untouched");
+      if (linked) await symlink(outside, targetPath);
+      const execute = vi.fn(async (command: { command: string; args: string[]; stdin?: string }) => {
+        const result = spawnSync(command.command, command.args, { input: command.stdin, encoding: "utf8" });
+        return { exitCode: result.status, timedOut: false, stdout: result.stdout, stderr: result.stderr };
+      });
+      await expect(stageRemoteRunnerFile({ target: { kind: "remote", transport: "ssh", remoteCwd: root } as never,
+        runner: { execute } as never, sourcePath, targetPath, mode: 0o600 })).rejects.toThrow("runner_remote_staging_failed");
+      expect(await readdir(outside)).toEqual(["keep"]);
+      expect(await readFile(join(outside, "keep"), "utf8")).toBe("untouched");
+      expect((await readdir(root)).filter(name => name.startsWith(".paperclip-runner-file."))).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("stages and verifies read-only context with non-contiguous archive entries", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-readonly-restore-"));
     const sourcePath = join(root, "source");
@@ -4427,6 +4598,17 @@ describe("retained native cleanup activation", () => {
       releaseCommit = release;
     });
     const db = {
+      execute: async (query: SQL) => {
+        // Retention hints read the fixture's run/issue relationship inside the
+        // same cleanup transaction; this fixture has one issue and no ancestors.
+        const statement = new PgDialect().sqlToQuery(query);
+        expect(transactionOpen).toBe(true);
+        expect(statement.params).toContain(run.companyId);
+        if (statement.sql.includes("from heartbeat_runs")) return [{ id: run.nativeIssueId }];
+        if (statement.sql.includes("origin_kind")) return [{ id: run.nativeIssueId, originKind: null, originId: null }];
+        if (statement.sql.includes("with recursive affected")) return [{ issueId: run.nativeIssueId }];
+        throw new Error(`Unexpected cleanup fixture query: ${statement.sql}`);
+      },
       select: () => ({
         from: (table: unknown) => {
           const rows =
@@ -5228,7 +5410,10 @@ describe("retained native cleanup activation", () => {
       }
       const outcome = await pendingOutcome;
       if (mode === "legacy_busy_copy") {
-        expect(maintenanceReleased).toHaveBeenCalledExactlyOnceWith({ companyId: run.companyId, runId: run.id });
+        expect(maintenanceReleased).toHaveBeenCalledExactlyOnceWith(
+          { companyId: run.companyId, runId: run.id },
+          { companyId: run.companyId, runId: run.id },
+        );
         unsubscribeMaintenance?.();
       }
       if (canonicalSource) {
@@ -6291,6 +6476,8 @@ type LeaseCoordinator = {
   controllerBootId?: string;
   controllerPid?: number;
   controllerGeneration?: number;
+  recoveryState?: string;
+  recoveryHistory?: Array<Record<string, unknown>>;
   runId: string;
   companyId: string;
   issueId: string;
@@ -6371,6 +6558,10 @@ function leaseDb(
                     checkoutRunId: null,
                   },
                 ]
+              : table === budgetReservations
+                ? [{ id: "original-held-reservation" }]
+              : table === activityLog
+                ? [{ id: (runResultJson.nativeCancellation as Record<string, unknown> | undefined)?.intentAuditId }]
               : table === heartbeatRunEvents
                 ? priorAccountingEvents.map((event, seq) => ({ seq, eventType: event.eventType, sourceSeq: event.sourceSeq, payload: { prpEvent: event } }))
                 : [];
@@ -6524,6 +6715,122 @@ function cancellationDb(options?: {
 }
 
 describe("native startup cancellation fence", () => {
+  it.each(["deadline", "stop"])("retires a claimed warm owner when %s interrupts its reuse diagnostic", async mode => {
+    const first: NativeExecutionInputV1 = { ...execution,
+      binding: { ...execution.binding, runId: `reuse-log-first-${mode}`, executionWorkspaceId: `reuse-log-workspace-${mode}` },
+      session: { ...execution.session, normalizedSessionId: `reuse-log-session-${mode}`, lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } } };
+    const second = { ...first, binding: { ...first.binding, runId: `reuse-log-second-${mode}` } };
+    const third = { ...first, binding: { ...first.binding, runId: `reuse-log-third-${mode}` } };
+    const close = vi.fn(async () => undefined), session = { close };
+    const replacement = { close: vi.fn(async () => undefined) };
+    const result = { result: { summary: "done" }, terminal: { runTerminalState: "succeeded" }, turnId: "first",
+      normalizedSessionId: first.session.normalizedSessionId, providerSessionId: "reuse-log-provider", driverKind: "test", driverVersion: "1",
+      nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    state.execute.mockReset().mockImplementationOnce(async options => { await options.onSession(session); return result; })
+      .mockImplementationOnce(async options => {
+        expect(options.existingSession).toBeUndefined();
+        await options.onSession(replacement);
+        return { ...result, turnId: "third" };
+      });
+    await executePaperclipNativeSession({ db: leaseDb(first), execution: first, runnerInstanceId: `reuse-log-${mode}` });
+    const originalRenewal = nativeLeaseRenewal.startNativeSessionExecutionLeaseRenewal;
+    const renewal = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockImplementationOnce(input => ({
+      ...originalRenewal(input), remainingMs: () => mode === "deadline" ? 250 : 60_000,
+    }));
+    let entered!: () => void, release!: () => void;
+    const writing = new Promise<void>(resolve => { entered = resolve; });
+    const written = new Promise<void>(resolve => { release = resolve; });
+    const db = leaseDb(second);
+    try {
+      const startup = executePaperclipNativeSession({ db, execution: second, runnerInstanceId: `reuse-log-${mode}`,
+        onEvent: async event => {
+          if (event.eventType === "run.startup.reuse" && event.payload?.layer === "runner") { entered(); await written; }
+        } });
+      const failure = startup.catch(error => error);
+      await writing;
+      const stopping = mode === "stop" ? cancelNativeSession(second.binding.runId, "Stop during reuse write") : undefined;
+      expect(await failure).toMatchObject({ message: mode === "deadline" ? "native_execution_startup_expired" : "native_cancellation_pending_recovery" });
+      await stopping;
+      expect(close).toHaveBeenCalledOnce();
+      release();
+      await executePaperclipNativeSession({ db: leaseDb(third), execution: third, runnerInstanceId: `reuse-log-${mode}` });
+      expect(state.execute).toHaveBeenCalledTimes(2);
+    } finally { release(); renewal.mockRestore(); await closeIdleWarmNativeSessionsForRestart(); }
+  });
+
+  it("uses the common startup context and durable Stop fence for a retained local session", async () => {
+    const first: NativeExecutionInputV1 = { ...execution,
+      binding: { ...execution.binding, runId: "local-context-first", executionWorkspaceId: "local-context-workspace" },
+      session: { ...execution.session, normalizedSessionId: "local-context-session", lifecyclePolicy: { mode: "warm", idleTimeoutMs: 60_000 } } };
+    const second = { ...first, binding: { ...first.binding, runId: "local-context-second" } };
+    const stopped: Record<string, unknown> = {};
+    const cancel = vi.fn(() => ({ cleanup: Promise.resolve() }));
+    const session = { cancel, close: vi.fn(async () => undefined) };
+    const submit = vi.fn();
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      expect(options.startup).toBeUndefined();
+      await options.onSession(session);
+      return { result: { summary: "done" }, terminal: { runTerminalState: "succeeded" }, turnId: "first",
+        normalizedSessionId: first.session.normalizedSessionId, providerSessionId: "retained-local", driverKind: "test", driverVersion: "1",
+        nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    }).mockImplementationOnce(async options => {
+      expect(options.existingSession).toBe(session);
+      expect(options.startup).toMatchObject({ deadlineAtMs: expect.any(Number), signal: expect.any(AbortSignal) });
+      expect(options.startup.execution).toBe(second);
+      expect(Number.isSafeInteger(options.startup.deadlineAtMs)).toBe(true);
+      expect(options.startup.deadlineAtMs - Date.now()).toBeLessThanOrEqual(1_000);
+      stopped.startupCancellation = { requestedAt: new Date().toISOString() };
+      try { await options.onSession(session); submit(); }
+      finally { await options.onSession(null); }
+      throw new Error("unexpected provider dispatch");
+    });
+    await executePaperclipNativeSession({ db: leaseDb(first), execution: first, runnerInstanceId: "local-context" });
+    const createRenewal = nativeLeaseRenewal.startNativeSessionExecutionLeaseRenewal;
+    const renewal = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockImplementation(input => ({
+      ...createRenewal(input), remainingMs: () => 1_000.75,
+    }));
+    onTestFinished(() => renewal.mockRestore());
+    await expect(executePaperclipNativeSession({ db: leaseDb(second, {}, stopped), execution: second, runnerInstanceId: "local-context" }))
+      .rejects.toThrow("native_cancellation_pending_recovery");
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(submit).not.toHaveBeenCalled();
+  });
+  it.each([
+    { mode: "current", startupFence: false },
+    { mode: "stale", startupFence: false },
+    { mode: "current", startupFence: true },
+  ] as const)("reattaches a $mode remote recovery claim only to deliver an existing Stop (startup fence=$startupFence)", async ({ mode, startupFence }) => {
+    const { currentNativeControllerIdentity } = await import("./native-restart-recovery.js");
+    const controller = await currentNativeControllerIdentity();
+    const resultJson = { ...(startupFence ? { startupCancellation: { beforeNativeSelection: false,
+      requestedAt: new Date().toISOString(), errorCode: "cancelled" },
+      cancellation: { source: "operator", expected: true, initiator: { type: "user" },
+        reason: "Operator requested Stop", recordedAt: new Date().toISOString() },
+      executionCancellation: { state: "requested", requestedAt: new Date().toISOString() } } : {}),
+      nativeCancellation: { schema: "paperclip.native-cancellation.v1", scope: "run",
+      companyId: execution.binding.companyId, runId: execution.binding.runId, issueId: execution.binding.issueId,
+      dispatchState: "pending", dispatched: false, intentId: `native-cancellation:${randomUUID()}`,
+      intentAuditId: randomUUID(), reasonCode: "cancellation_run_only", effects: ["release_run_resources"] } };
+    const cancel = vi.fn(() => ({ cleanup: Promise.resolve() })), submit = vi.fn();
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      try { await options.onSession({ cancel }); submit(); }
+      finally { await options.onSession(null); }
+      throw new Error("a stopped recovery must not submit a turn");
+    });
+    const db = leaseDb(execution, { leaseOwner: "stop-recovery", controllerBootId: controller.bootId,
+      controllerPid: controller.pid, controllerGeneration: 2, attempt: 1,
+      leaseExpiresAt: new Date(Date.now() + 60_000), recoveryState: "awaiting_runner_reattach",
+      recoveryHistory: [{ disposition: "reattach_remote_runner", controllerGeneration: 2, providerAttempt: 1 }] }, resultJson);
+    await expect(executePaperclipNativeSession({ db, execution, runnerInstanceId: "recovered-stop",
+      leaseOwner: "stop-recovery", restartRecovery: { kind: "reattach_remote_runner", runId: execution.binding.runId,
+        leaseOwner: "stop-recovery", controllerGeneration: mode === "current" ? 2 : 1, providerAttempt: 1,
+        restartKind: "graceful", recoveryRequestId: null, remote: { providerLeaseId: "fixture", remoteCwd: "/workspace" } },
+    })).rejects.toThrow(mode === "current" ? "native_cancellation_pending_recovery" : "native_restart_recovery_claim_changed");
+    expect(submit).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledTimes(mode === "current" ? 1 : 0);
+    expect(state.execute).toHaveBeenCalledTimes(mode === "current" ? 1 : 0);
+  });
+
   it.each(["startupCancellation", "nativeCancellation"])("does not submit a turn when %s arrives during session opening", async (marker) => {
     const resultJson: Record<string, unknown> = {};
     const cancel = vi.fn(() => ({ cleanup: Promise.resolve() }));
@@ -6550,7 +6857,10 @@ describe("native startup cancellation fence", () => {
       })).rejects.toThrow("native_cancellation_pending_recovery");
       expect(cancel).toHaveBeenCalledOnce();
       expect(submit).not.toHaveBeenCalled();
-      expect(released).toHaveBeenCalledWith({ companyId: execution.binding.companyId, agentId: execution.binding.agentId });
+      expect(released).toHaveBeenCalledWith(
+        { companyId: execution.binding.companyId, agentId: execution.binding.agentId },
+        { companyId: execution.binding.companyId, runId: execution.binding.runId, issueId: execution.binding.issueId },
+      );
     } finally { unsubscribe(); }
   });
 });
@@ -6642,9 +6952,9 @@ describe("native startup restart detachment", () => {
   it.each(["authority", "questions"])("keeps a post-publication Stop owner through %s attachment and restart", async (seam) => {
     const restarting = structuredClone(execution);
     restarting.binding.runId = `restart-stop-after-publication-${seam}`;
-    let published!: () => void, releaseRead!: () => void, acknowledgeStop!: () => void;
+    let releaseRead!: () => void, acknowledgeStop!: () => void;
     let cleaning!: () => void, releaseCleanup!: () => void;
-    const publication = new Promise<void>(resolve => { published = resolve; });
+    const published = vi.fn();
     const read = new Promise<void>(resolve => { releaseRead = resolve; });
     const receipt = new Promise<void>(resolve => { acknowledgeStop = resolve; });
     const cleanupStarted = new Promise<void>(resolve => { cleaning = resolve; });
@@ -6654,12 +6964,20 @@ describe("native startup restart detachment", () => {
     const submit = vi.fn();
     const db = leaseDb(restarting);
     const select = db.select.bind(db);
+    let publishingSession = false;
     db.select = ((fields?: Record<string, unknown>) => {
-      if (seam === "authority" && fields && Object.keys(fields).length === 2 && "status" in fields && "resultJson" in fields) {
-        return { from: () => ({ where: () => ({ limit: () => {
-          published();
-          return read.then(() => [{ status: "running", resultJson: {} }]);
-        } }) }) };
+      if (seam === "authority" && !fields && publishingSession) {
+        const query = select();
+        return { from: (table: unknown) => {
+          const source = query.from(table as never);
+          return table === heartbeatRuns ? { where: (condition: never) => {
+            const filtered = source.where(condition);
+            return { limit: (count: number) => {
+              published();
+              return read.then(() => filtered.limit(count));
+            } };
+          } } : source;
+        } };
       }
       if (seam === "questions" && !fields) {
         const query = select();
@@ -6671,6 +6989,7 @@ describe("native startup restart detachment", () => {
     }) as typeof db.select;
     state.execute.mockReset().mockImplementationOnce(async options => {
       try {
+        publishingSession = true;
         await options.onSession({ detachControllerForRestart: detach, cancel, resolveRuntimeRequest: vi.fn() });
         submit();
       } finally {
@@ -6680,11 +6999,13 @@ describe("native startup restart detachment", () => {
       }
     });
     const outcome = executePaperclipNativeSession({ db, execution: restarting, runnerInstanceId: "runner" }).catch(error => error);
-    await publication;
-    const stopping = cancelNativeSession(restarting.binding.runId, "operator Stop after publication");
     const completed = vi.fn();
-    const shutdown = detachNativeSessionsForRestart([restarting.binding.runId]).then(completed);
+    let stopping: Promise<boolean> | undefined;
+    let shutdown: Promise<unknown> | undefined;
     try {
+      await vi.waitFor(() => expect(published).toHaveBeenCalled(), { timeout: 5_000 });
+      stopping = cancelNativeSession(restarting.binding.runId, "operator Stop after publication");
+      shutdown = detachNativeSessionsForRestart([restarting.binding.runId]).then(completed);
       releaseRead();
       await new Promise(resolve => setImmediate(resolve));
       expect(cancel).toHaveBeenCalledOnce();
@@ -7893,6 +8214,24 @@ describe("native session cancellation", () => {
     ).resolves.toBe(false);
   });
 
+  it("keeps duplicate Stop callers waiting for the same provider cleanup", async () => {
+    let releaseCleanup!: () => void;
+    state.cancel.mockReturnValue({ cleanup: new Promise<void>(resolve => { releaseCleanup = resolve; }) });
+    const running = executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner" });
+    await vi.waitFor(() => expect(state.release).toBeTypeOf("function"));
+    const first = cancelNativeSession(execution.binding.runId, "operator Stop");
+    await vi.waitFor(() => expect(state.cancel).toHaveBeenCalledOnce());
+    let acknowledged = false;
+    const duplicate = cancelNativeSession(execution.binding.runId, "duplicate Stop").then(result => { acknowledged = true; return result; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(acknowledged).toBe(false);
+      releaseCleanup();
+      expect(await Promise.all([first, duplicate])).toEqual([true, true]);
+      expect(state.cancel).toHaveBeenCalledOnce();
+    } finally { releaseCleanup(); state.release?.(); await running; }
+  });
+
   it("allows cancellation to be retried when the session dispatch fails", async () => {
     state.cancel.mockImplementationOnce(() => {
       throw new Error("transport unavailable");
@@ -7990,6 +8329,27 @@ describe("native session cancellation", () => {
     expect(state.persistActivity).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { companyId: "another-company" }, { runId: "another-run" }, { issueId: "another-issue" },
+    { scope: "issue" }, { effects: ["cancel_issue"] }, { intentAuditId: null },
+  ])("does not fence a failed retry for a foreign or stale Stop receipt %j", async changed => {
+    const intent = { schema: "paperclip.native-cancellation.v1", intentId: "native-cancellation:earlier-stop",
+      ...execution.binding, scope: "run", reasonCode: "cancellation_run_only", effects: ["release_run_resources"],
+      dispatchState: "acknowledged", dispatched: true, intentAuditId: "earlier-intent-audit",
+      acknowledgementAuditId: "earlier-ack-audit", ...changed };
+    const coordinator = { runId: execution.binding.runId, assessmentId: null, phase: "retryable_failure" };
+    const persistence = cancellationDb({ status: "failed", coordinator, resultJson: { nativeCancellation: intent } });
+    const before = structuredClone(persistence.getResultJson());
+    state.cancel.mockClear();
+    state.persistActivity.mockClear();
+    await expect(cancelNativeSession(execution.binding.runId, "retry Stop", { db: persistence.db, scope: "run" })).rejects.toThrow();
+    expect(persistence.updates).toEqual([]);
+    expect(coordinator.phase).toBe("retryable_failure");
+    expect(persistence.getResultJson()).toEqual(before);
+    expect(state.cancel).not.toHaveBeenCalled();
+    expect(state.persistActivity).not.toHaveBeenCalled();
+  });
+
   it("does not mistake a recovered running attempt for the failed retry that reserved Stop", async () => {
     const id = "11111111-1111-4111-8111-111111111111";
     const persistence = cancellationDb({ status: "running",
@@ -8013,6 +8373,39 @@ describe("native session cancellation", () => {
     await expect(cancelNativeSession(execution.binding.runId, "retry Stop", { db: persistence.db,
       scope: "run", cancellationRequestId: id })).resolves.toMatchObject({ auditId: first.auditId });
     expect(persistence.getResultJsonUpdateCount()).toBe(writes);
+  });
+
+  it("fences a failed retry whose earlier Stop is already acknowledged without changing its receipts", async () => {
+    const intent = { schema: "paperclip.native-cancellation.v1", intentId: "native-cancellation:earlier-stop",
+      ...execution.binding, scope: "run", reasonCode: "cancellation_run_only",
+      effects: ["release_run_resources"], dispatchState: "acknowledged", dispatched: true,
+      intentAuditId: "earlier-intent-audit", acknowledgementAuditId: "earlier-ack-audit",
+      acknowledgedAt: "2026-01-01T00:00:00.000Z", decisionId: null, priorCoordinatorDecisionId: null };
+    const coordinator = { runId: execution.binding.runId, assessmentId: null, phase: "retryable_failure",
+      nextAttemptAt: new Date(Date.now() + 30_000) };
+    const persistence = cancellationDb({ status: "failed", coordinator,
+      resultJson: { nativeCancellation: intent, executionCancellation: { state: "requested", requestedAt: "later-stop" } } });
+    const before = structuredClone(persistence.getResultJson());
+    state.cancel.mockClear();
+    state.persistActivity.mockClear();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await expect(cancelNativeSession(execution.binding.runId, "retry Stop", { db: persistence.db, scope: "run" }))
+        .resolves.toMatchObject({ dispatched: true, auditId: intent.intentAuditId });
+      expect(coordinator).toMatchObject({ phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null });
+      expect(persistence.getResultJson()).toEqual(before);
+    }
+    expect(persistence.updates.filter(update => update.table === nativeRunFinalizations)).toHaveLength(1);
+    expect(persistence.getResultJsonUpdateCount()).toBe(0);
+    expect(state.cancel).not.toHaveBeenCalled();
+    expect(state.persistActivity).not.toHaveBeenCalled();
+    const stopped = { id: execution.binding.runId, companyId: execution.binding.companyId,
+      nativeIssueId: execution.binding.issueId, status: "cancelled", processPid: null, processGroupId: null,
+      resultJson: { ...persistence.getResultJson(), cancelledByActorType: "user", cancelledByUserId: "operator" } };
+    const lease = { provider: "daytona", providerLeaseId: "unconfirmed-provider-resource", status: "active",
+      releasedAt: null, cleanupStatus: null, metadata: {} };
+    const leaseDb = { select: () => ({ from: () => ({ where: async () => [lease] }) }) } as unknown as Db;
+    expect(isAcknowledgedNativeStop(stopped)).toBe(true);
+    await expect(acknowledgedNativeStopExecutionHasStopped(leaseDb, stopped)).resolves.toBe(false);
   });
 
   it("uses the reserved caller UUID and permits same-intent and default retries", async () => {
@@ -8143,6 +8536,105 @@ describe("native session cancellation", () => {
 });
 
 describe("native session execution lease fencing", () => {
+  it("persists current admission from the executor callback and never writes for null publication", async () => {
+    const identity = { runId: execution.binding.runId, companyId: execution.binding.companyId, agentId: execution.binding.agentId,
+      issueId: execution.binding.issueId, sessionId: execution.session.normalizedSessionId! };
+    const session = { identity: () => identity } as never;
+    const artifact = { path: "/fixture/provider", sha256: "sha256:" + "a".repeat(64) };
+    const payload = { runnerSourceRevision: "b".repeat(40), target: { platform: "linux", architecture: "x64" },
+      pins: { opencode: "1.18.34" }, artifacts: { nodeCommand: artifact, opencodeCommand: artifact, opencodeProxy: artifact } };
+    expect(rememberAdmittedNativeProviderPack(session, { identity, runnerInstanceId: "actual-runner", environmentLeaseId: "runner-scope",
+      manifest: { schema: "paperclip-runner/remote-provider-pack/v1", payload,
+        digest: "sha256:" + createHash("sha256").update(canonicalProviderPackJson(payload)).digest("hex") } })).toBe(true);
+    const profile: Record<string, unknown> = { preserved: { value: "unchanged" } };
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const recordAdmission = vi.spyOn(providerPackAdmission, "recordNativeProviderPackAdmission");
+    let profileWrites = 0;
+    const wrap = (source: Db): Db => new Proxy(source, { get(target, key, receiver) {
+      if (key === "transaction") return (operation: (tx: Db) => Promise<unknown>) => target.transaction(tx => operation(wrap(tx as unknown as Db)) as never);
+      if (key === "select") return (fields?: Record<string, unknown>) => {
+        if (!fields || !("profile" in fields)) return target.select(fields as never);
+        const query = { where: () => query, for: () => query, limit: async () => [{ profile }] };
+        return { from: () => query };
+      };
+      if (key === "update") return (table: unknown) => ({ set: (values: Record<string, unknown>) => {
+        const update = target.update(table as never).set(values);
+        return { where: (condition: unknown) => {
+          if (table === heartbeatRuns && values.runnerProfileJson) {
+            const query = new PgDialect().sqlToQuery(values.runnerProfileJson as SQL);
+            const patch = query.params.map(value => typeof value === "string" ? (() => { try { return JSON.parse(value); } catch { return null; } })() : null)
+              .find(value => value?.nativeProviderPackAdmissionState);
+            if (patch) { Object.assign(profile, patch); profileWrites++; }
+          }
+          return update.where(condition as never);
+        } };
+      } });
+      return Reflect.get(target, key, receiver);
+    } });
+    const db = wrap(leaseDb(execution, {}, {}, updates, profile));
+    let nullWrites = -1;
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession(session);
+      const before = profileWrites;
+      await options.onSession(null);
+      nullWrites = profileWrites - before;
+      return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" }, turnId: "turn",
+        normalizedSessionId: identity.sessionId, providerSessionId: null, driverKind: "test", driverVersion: "1",
+        nativeEventCount: 0, highestContiguousSourceSeq: 0, usage: null };
+    });
+    await executePaperclipNativeSession({ db, execution, runnerInstanceId: "actual-runner" });
+    expect(profile.preserved).toEqual({ value: "unchanged" });
+    expect(profile.nativeProviderPackAdmission).toEqual(admittedNativeProviderPack(session, identity));
+    expect(profile.nativeProviderPackAdmissionState).toMatchObject({ state: "verified", admissionEpoch: expect.any(String) });
+    expect(profileWrites).toBe(2);
+    expect(nullWrites).toBe(0);
+    const claim = updates.find(update => update.table === nativeRunFinalizations && update.values.phase === "observed" && update.values.leaseOwner)!.values;
+    expect(recordAdmission).toHaveBeenCalledExactlyOnceWith(db, { session, identity,
+      admissionEpoch: (profile.nativeProviderPackAdmissionState as Record<string, unknown>).admissionEpoch,
+      claim: { leaseOwner: claim.leaseOwner, attempt: claim.attempt, controllerGeneration: claim.controllerGeneration, controllerBootId: claim.controllerBootId } });
+  });
+  it("atomically invalidates previous admission proof before provider admission", async () => {
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    let observed: Record<string, unknown> | null = null;
+    const profile = { nativeProviderPackAdmission: { historical: "preserved" },
+      nativeProviderPackAdmissionState: { ...nativeProviderPackAdmissionPending(randomUUID()), state: "verified" } };
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      const invalidation = updates.find(update => update.table === heartbeatRuns && update.values.nativePhase === "observed")!;
+      if (invalidation.values.runnerProfileJson) {
+        const query = new PgDialect().sqlToQuery(invalidation.values.runnerProfileJson as SQL);
+        observed = query.params.map(value => typeof value === "string" ? (() => { try { return JSON.parse(value); } catch { return null; } })() : null)
+          .find(value => value?.nativeProviderPackAdmissionState);
+      }
+      return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" }, turnId: "turn",
+        normalizedSessionId: "session", providerSessionId: null, driverKind: "test", driverVersion: "1",
+        nativeEventCount: 0, highestContiguousSourceSeq: 0, usage: null };
+    });
+    await executePaperclipNativeSession({ db: leaseDb(execution, {}, {}, updates, profile), execution, runnerInstanceId: "runner" });
+    expect(state.execute).toHaveBeenCalledOnce();
+    expect(observed).toEqual({ nativeProviderPackAdmissionState: { schema: "paperclip.native-provider-pack-admission-state.v1",
+      state: "pending", admissionEpoch: expect.any(String) } });
+    expect(JSON.stringify(observed)).not.toContain(profile.nativeProviderPackAdmissionState.admissionEpoch);
+    expect(profile.nativeProviderPackAdmissionState.state).toBe("verified");
+  });
+  it("does not admit a session if mandatory claim invalidation fails", async () => {
+    const source = leaseDb(execution);
+    const failed = new Error("claim profile write failed");
+    const db = new Proxy(source, { get(target, key, receiver) {
+      if (key !== "transaction") return Reflect.get(target, key, receiver);
+      return (operation: (tx: Db) => Promise<unknown>) => target.transaction(tx => operation(new Proxy(tx, { get(transaction, name, innerReceiver) {
+        if (name !== "update") return Reflect.get(transaction, name, innerReceiver);
+        return (table: unknown) => ({ set: (values: Record<string, unknown>) => {
+          if (table === heartbeatRuns && values.nativePhase === "observed" && values.runnerProfileJson) throw failed;
+          return transaction.update(table as never).set(values);
+        } });
+      } }) as unknown as Db) as never);
+    } });
+    state.execute.mockClear(); state.createBackend.mockClear(); state.createTransport.mockClear();
+    await expect(executePaperclipNativeSession({ db, execution, runnerInstanceId: "runner" })).rejects.toBe(failed);
+    expect(state.execute).not.toHaveBeenCalled();
+    expect(state.createBackend).not.toHaveBeenCalled();
+    expect(state.createTransport).not.toHaveBeenCalled();
+  });
   it("renews only when the exact fenced owner remains current", async () => {
     const returning = vi
       .fn()
@@ -9438,6 +9930,104 @@ describe("native warm session supervision", () => {
       expect(state.execute).toHaveBeenCalledTimes(2);
     });
 
+    it("claims native execution authority before retiring a superseded warm identity", async () => {
+      const { base, next, run } = fixture("identity-native-claim-order");
+      const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+      let inspected = false;
+      const close = vi.fn(async () => {
+        if (inspected) return;
+        inspected = true;
+        expect(updates.some(update => update.table === nativeRunFinalizations
+          && update.values.leaseOwner && update.values.controllerBootId)).toBe(true);
+      });
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.({ close }); return result;
+      }).mockImplementationOnce(async () => result);
+      await run(base);
+      // Normal runtime selection already converted preparation to native and
+      // inserted an unclaimed observed coordinator before calling this facade.
+      await executePaperclipNativeSession({ db: leaseDb(next, {}, {}, updates),
+        execution: next, runnerInstanceId: "runner", useRunnerd: true });
+      expect(close).toHaveBeenCalledOnce();
+      expect(state.execute).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(["cancelled", "foreign-owner"] as const)("does not retire or stage a warm successor after claim denial: %s", async denial => {
+      const { base, next, run } = fixture(`identity-native-claim-denied-${denial}`);
+      const close = vi.fn(async () => undefined);
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        options.onSession?.({ close }); return result;
+      });
+      await run(base);
+      state.stageNativeRunnerWakeAttachments.mockClear();
+      const db = leaseDb(next, denial === "foreign-owner" ? { leaseOwner: "different-controller" } : {},
+        {}, [], {}, denial === "cancelled" ? "cancelled" : "running");
+      await expect(executePaperclipNativeSession({ db, execution: next, runnerInstanceId: "runner", useRunnerd: true })).rejects.toThrow();
+      expect(close).not.toHaveBeenCalled();
+      expect(state.stageNativeRunnerWakeAttachments).not.toHaveBeenCalled();
+      expect(state.execute).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([false, true])("keeps warm owners and attachment staging untouched during exact Stop cleanup (invalidated=%s)", async invalidated => {
+      const { base, next, run } = fixture("identity-native-stop-cleanup");
+      const close = vi.fn<() => Promise<void>>(async () => { throw new Error("Stop cleanup must not retire another warm owner"); });
+      const cancel = vi.fn(() => ({ cleanup: Promise.resolve() }));
+      const originalStaging = state.stageNativeRunnerWakeAttachments.getMockImplementation()!;
+      state.execute.mockReset().mockImplementationOnce(async options => { await options.onSession?.({ close }); return result; });
+      await run(base);
+      await createRunnerdBackend({ db: leaseDb(next), execution: next, runnerInstanceId: "stop-cleanup" });
+      state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+      const root = state.createTransport.mock.calls.at(-1)![0].stateDirectory!;
+      const remoteIdentity = { runId: next.binding.runId, normalizedSessionId: next.session.normalizedSessionId!,
+        runnerInstanceId: "stop-cleanup", environmentLeaseId: next.binding.executionWorkspaceId, turnId: "stop-turn", itemId: "stop-item" };
+      const authority = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity: remoteIdentity,
+        expectedRunnerVersion: "stop-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+      await authority.flushCheckpoint();
+      await authority.stop();
+      const controller = await import("./native-restart-recovery.js").then(module => module.currentNativeControllerIdentity());
+      const owner = "exact-stop-cleanup";
+      const resultJson = { cancelledByActorType: "user", cancelledByUserId: "test-board",
+        startupCancellation: { beforeNativeSelection: false }, nativeCancellation: {
+          schema: "paperclip.native-cancellation.v1", scope: "run", reasonCode: "cancellation_run_only", ...next.binding,
+          intentId: `native-cancellation:${randomUUID()}`, intentAuditId: randomUUID(), dispatchState: "pending", dispatched: false,
+          effects: ["release_run_resources"],
+        } };
+      const db = leaseDb(next, { leaseOwner: owner, leaseExpiresAt: new Date(Date.now() + 60_000),
+        controllerBootId: controller.bootId, controllerPid: controller.pid, controllerGeneration: 2, attempt: 1,
+        recoveryState: "awaiting_runner_reattach", recoveryHistory: [{ disposition: "reattach_remote_runner", controllerGeneration: 2, providerAttempt: 1 }],
+      }, resultJson);
+      state.stageNativeRunnerWakeAttachments.mockClear().mockImplementation(async () => { throw new Error("Stop cleanup must not stage attachments"); });
+      const submit = vi.fn(() => { throw new Error("Stop cleanup cannot submit a turn"); });
+      state.execute.mockImplementationOnce(async options => {
+        if (invalidated) {
+          Reflect.deleteProperty(resultJson, "startupCancellation");
+          Reflect.deleteProperty(resultJson, "nativeCancellation");
+        }
+        try { await options.onSession?.({ cancel }); submit(); throw new Error("Stop cleanup cannot return to execution"); }
+        finally { await options.onSession?.(null); }
+      });
+      try {
+        await expect(executePaperclipNativeSession({ db, execution: next, runnerInstanceId: "stop-cleanup", useRunnerd: true,
+          backend: {} as never, runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
+            sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "existing-sandbox" }, runner: { execute: async request => ({
+              exitCode: 0, signal: null, pid: 123, startedAt: new Date().toISOString(), timedOut: false, stderr: "", stdout: request.args?.[1]?.includes("base64")
+                ? Buffer.from(JSON.stringify({ ...remoteIdentity, lifecycle: "running" })).toString("base64")
+                : request.args?.[1]?.includes("cat --") ? "nonce\n123\n2026-09-19T10:00:00.000Z\nstop-cleanup\nlinux:abcd-1234:100\n" : "",
+            }) } }, leaseOwner: owner, restartRecovery: { kind: "reattach_remote_runner", runId: next.binding.runId, leaseOwner: owner,
+            controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+            remote: { providerLeaseId: "existing-sandbox", remoteCwd: "/workspace" } },
+        })).rejects.toThrow("native_cancellation_pending_recovery");
+        expect(close).not.toHaveBeenCalled();
+        expect(state.stageNativeRunnerWakeAttachments).not.toHaveBeenCalled();
+        expect(cancel).toHaveBeenCalledTimes(invalidated ? 0 : 1);
+        expect(submit).not.toHaveBeenCalled();
+      } finally {
+        state.stageNativeRunnerWakeAttachments.mockReset().mockImplementation(originalStaging);
+        close.mockImplementation(async () => undefined);
+        await closeIdleWarmNativeSessionsForRestart();
+      }
+    });
+
     it("does not retire an active turn when a new session identity arrives", async () => {
       const { base, next, run } = fixture("identity-active");
       let finish!: () => void;
@@ -10125,9 +10715,10 @@ describe("native warm session supervision", () => {
       );
       expect(released).not.toHaveBeenCalled();
       releaseClose();
-      await vi.waitFor(() => expect(released).toHaveBeenCalledExactlyOnceWith({
-        companyId: base.binding.companyId, agentId: base.binding.agentId,
-      }));
+      await vi.waitFor(() => expect(released).toHaveBeenCalledExactlyOnceWith(
+        { companyId: base.binding.companyId, agentId: base.binding.agentId },
+        { companyId: base.binding.companyId, runId: base.binding.runId, issueId: base.binding.issueId },
+      ));
     } finally { releaseClose(); unsubscribe(); }
   });
 
@@ -10806,7 +11397,7 @@ describe("native session bounded recovery", () => {
       return query;
     });
     const stop = vi.fn(async () => undefined);
-    const renew = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockReturnValue({ stop });
+    const renew = vi.spyOn(nativeLeaseRenewal, "startNativeSessionExecutionLeaseRenewal").mockReturnValue({ stop, remainingMs: () => 60_000 });
     const releasePreparation = vi.fn(async () => {
       expect(renew).toHaveBeenCalledOnce();
       expect(stop).not.toHaveBeenCalled();
@@ -11815,8 +12406,8 @@ describe("runnerd provider runtime wiring", () => {
     };
   }
 
-  it("admits a warm follow-up after resuming a suspended plugin session", async () => {
-    const first = { ...scopedNativeExecution("plugin-cold-then-warm"),
+  it.each(["reuse", "unsettled-describe", "claim-delay", "claim-expired", "claim-rollback", "unsupported", "fallback-clear-failed", "fallback-clear-expired", "fallback-clear-stopped"])("owns retained plugin startup through %s", async mode => {
+    const first = { ...scopedNativeExecution(`plugin-cold-then-warm-${mode}`),
       schema: "paperclip.native-execution-input.v5" as const, executionMode: "default" as const,
       provider: { kind: "codex" as const, model: null, approvalPolicy: "never" as const },
       planningContext: null, runtimeContext: nativeRuntimeContextFixture(),
@@ -11836,11 +12427,34 @@ describe("runnerd provider runtime wiring", () => {
     const home = join(isolatedStateDirectory, "plugin-account");
     await mkdir(home);
     await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
-    const task = vi.fn(async (operation: any) => operation.kind === "read_state"
+    let finishWorker = () => {};
+    let finishFallbackClear = () => {};
+    let fallbackStop: Promise<unknown> | undefined;
+    let capturedContext: NativeExecutionContext | undefined;
+    const claimUpdates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const savedContext = () => {
+      const profile = claimUpdates.find(update => update.table === heartbeatRuns && update.values.runnerProfileJson)?.values.runnerProfileJson;
+      if (!profile) return undefined;
+      const query = new PgDialect().sqlToQuery(profile as SQL);
+      const value = query.params.find(value => typeof value === "string" && value.includes('"nativeStartupContext"'));
+      return value ? JSON.parse(String(value)).nativeStartupContext : undefined;
+    };
+    const task = vi.fn(async (operation: any, options?: { executionContext?: NativeExecutionContext }) => {
+      if (operation.kind === "describe" && options?.executionContext) {
+        capturedContext = options.executionContext;
+        if (mode.startsWith("claim-") || mode === "unsupported") expect(savedContext()).toMatchObject({
+          contextId: capturedContext.id, deadlineAtMs: capturedContext.deadlineAtMs, leaseId: "followup-lease" });
+      }
+      if (mode === "unsettled-describe" && operation.kind === "describe" && options?.executionContext) {
+        finishWorker = options.executionContext.trackWorker();
+        throw new Error("worker caller timeout");
+      }
+      return operation.kind === "read_state"
       ? { kind: "state", taskId: "replacement-task", state: { ...durableRunnerState(identity, "suspended"),
           outbox: [], pendingTerminalDelivery: null } }
       : { kind: "description", taskId: "replacement-task", launchPreparationVersion: 1,
-          projectAuthCheckVersion: 1, warmTaskVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } });
+          ...(mode === "claim-delay" ? { executionContextVersion: 1 } : {}), projectAuthCheckVersion: 1, warmTaskVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+    });
     const resumed = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-resumed` } };
     const followup = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-followup` } };
     const session = { close: vi.fn(async () => undefined) };
@@ -11861,7 +12475,7 @@ describe("runnerd provider runtime wiring", () => {
     const options = { runnerInstanceId: identity.runnerInstanceId, useRunnerd: true, runnerIngressAuthorized: true,
       managedAiCredentialHome: home, managedAiCredentialIdentity: "revision", managedAiAccountIdentity: "account" };
     const dbFor = (current: NativeExecutionInput, previous: NativeExecutionInput) => {
-      const db = leaseDb(current);
+      const db = leaseDb(current, {}, {}, current === followup ? claimUpdates : []);
       const select = db.select.bind(db);
       db.select = ((fields?: Record<string, unknown>) => fields?.status === heartbeatRuns.status
         && fields?.runnerProfileJson === heartbeatRuns.runnerProfileJson ? priorNativeRunDb(previous).select(fields as never)
@@ -11871,19 +12485,99 @@ describe("runnerd provider runtime wiring", () => {
     const target = { kind: "remote" as const, transport: "sandbox" as const, environmentId: "plugin-environment",
       remoteCwd: ".", leaseId: "replacement-lease", runnerTask: task,
       sandboxLeaseAcquisition: { outcome: "replacement" as const, providerLeaseId: "replacement-task" } };
+    let budget: ReturnType<typeof vi.spyOn> | undefined;
+    const finish = NativeExecutionContext.prototype.finish;
+    const finished: NativeExecutionContext[] = [];
+    const finishSpy = vi.spyOn(NativeExecutionContext.prototype, "finish").mockImplementation(function (this: NativeExecutionContext) { finished.push(this); finish.call(this); });
     try {
       await expect(executePaperclipNativeSession({ ...options, execution: resumed, db: dbFor(resumed, first),
         runnerExecutionTarget: target as never })).resolves.toMatchObject({ exitCode: 0 });
+      if (mode === "unsettled-describe") {
+        const runtime = await import("../../vendor/paperclip-runner/index.js");
+        budget = vi.spyOn(runtime, "coldAdmissionTimeoutMs").mockReturnValue(1_000);
+        await expect(executePaperclipNativeSession({ ...options, execution: followup, db: dbFor(followup, resumed),
+          runnerExecutionTarget: { ...target, leaseId: "followup-lease", sandboxLeaseAcquisition: {
+            outcome: "resumed", providerLeaseId: "replacement-task" } } as never }))
+          .rejects.toMatchObject({ message: "native_startup_cleanup_pending", requiresPreparationStop: false });
+        expect(state.execute).toHaveBeenCalledOnce();
+        expect(rebind).not.toHaveBeenCalled();
+        return;
+      }
       const checkpointReads = task.mock.calls.filter(([operation]) => operation.kind === "read_state").length;
-      await expect(executePaperclipNativeSession({ ...options, execution: followup, db: dbFor(followup, resumed),
-        runnerExecutionTarget: { ...target, leaseId: "followup-lease", sandboxLeaseAcquisition: {
-          outcome: "resumed", providerLeaseId: "replacement-task" } } as never })).resolves.toMatchObject({ exitCode: 0 });
+      const nextDb = dbFor(followup, resumed);
+      const transaction = nextDb.transaction.bind(nextDb);
+      if (mode === "claim-rollback") nextDb.transaction = (async (...args: Parameters<Db["transaction"]>) => {
+        const result = await transaction(...args);
+        if (savedContext()) throw new Error("claim rollback");
+        return result;
+      }) as Db["transaction"];
+      if (mode.startsWith("fallback-clear-")) {
+        const update = nextDb.update.bind(nextDb);
+        nextDb.update = ((table: unknown) => {
+          const builder = update(table as never);
+          return { ...builder, set: (values: Record<string, unknown>) => {
+            if (table === heartbeatRuns && values.runnerProfileJson &&
+                new PgDialect().sqlToQuery(values.runnerProfileJson as SQL).sql.includes("- 'nativeStartupContext'")) {
+              return { where: () => ({ returning: async () => {
+                if (mode === "fallback-clear-failed") return [];
+                if (mode === "fallback-clear-stopped") fallbackStop = cancelNativeSession(followup.binding.runId, "Stop during fallback clear");
+                return new Promise(resolve => { finishFallbackClear = () => resolve([{ id: followup.binding.runId }]); });
+              } }) };
+            }
+            return builder.set(values as never);
+          } };
+        }) as unknown as Db["update"];
+      }
+      if (mode.startsWith("claim-") || mode === "unsupported" || mode.startsWith("fallback-clear-")) {
+        const runtime = await import("../../vendor/paperclip-runner/index.js");
+        budget = vi.spyOn(runtime, "coldAdmissionTimeoutMs").mockReturnValue(mode === "claim-expired" ? 10 : mode === "fallback-clear-expired" ? 250 : 1_000);
+      }
+      const following = executePaperclipNativeSession({ ...options, execution: followup, db: nextDb,
+        onExecutionLeaseAcquired: async () => {
+          if (mode === "claim-delay" || mode === "claim-expired") {
+            expect(savedContext()).toMatchObject({ runId: followup.binding.runId, leaseId: "followup-lease" });
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
+        }, runnerExecutionTarget: { ...target, leaseId: "followup-lease", sandboxLeaseAcquisition: {
+          outcome: "resumed", providerLeaseId: "replacement-task" } } as never });
+      if (mode === "claim-expired" || mode === "claim-rollback") {
+        await expect(following).rejects.toThrow(mode === "claim-expired" ? "native_execution_startup_expired" : "claim rollback");
+        expect(capturedContext).toBeUndefined();
+        expect(finished).toContainEqual(expect.objectContaining({ id: savedContext().contextId }));
+        expect(finished.find(context => context.id === savedContext().contextId)?.active).toBe(false);
+        expect(state.execute).toHaveBeenCalledOnce();
+        return;
+      }
+      if (mode === "fallback-clear-expired" || mode === "fallback-clear-stopped") {
+        await expect(following).rejects.toThrow(mode === "fallback-clear-expired" ? "native_execution_startup_expired" : "native_cancellation_pending_recovery");
+        expect(state.execute).toHaveBeenCalledOnce();
+        expect(rebind).not.toHaveBeenCalled();
+        return;
+      }
+      if (mode === "fallback-clear-failed") {
+        await expect(following).rejects.toThrow("Native startup fallback lost authority");
+        expect(state.execute).toHaveBeenCalledOnce();
+        expect(rebind).not.toHaveBeenCalled();
+        return;
+      }
+      await expect(following).resolves.toMatchObject({ exitCode: 0 });
+      const clears = claimUpdates.filter(update => update.table === heartbeatRuns && update.values.runnerProfileJson &&
+        new PgDialect().sqlToQuery(update.values.runnerProfileJson as SQL).sql.includes("- 'nativeStartupContext'"));
+      expect(clears).toHaveLength(mode === "claim-delay" ? 0 : 1);
+      if (mode === "claim-delay") expect(state.execute.mock.calls[1]![0].startup).toMatchObject({
+        id: savedContext().contextId, deadlineAtMs: savedContext().deadlineAtMs });
+      if (mode === "unsupported") expect(capturedContext?.active).toBe(false);
       expect(state.execute.mock.calls[1]![0].existingSession).toBe(session);
       expect(rebind).toHaveBeenCalledOnce();
       expect(session.close).not.toHaveBeenCalled();
       expect(task.mock.calls.filter(([operation]) => operation.kind === "read_state")).toHaveLength(checkpointReads);
       expect(existsSync(receiptPath)).toBe(false);
     } finally {
+      finishWorker();
+      finishFallbackClear();
+      await fallbackStop;
+      finishSpy.mockRestore();
+      budget?.mockRestore();
       owner.mockRestore();
       resume.mockRestore();
     }
@@ -11908,6 +12602,35 @@ describe("runnerd provider runtime wiring", () => {
     state.createBackend.mock.calls[0]![1].codexTransportFactory!();
     return state.createTransport.mock.calls[0]![0].stateDirectory!;
   }
+
+  it("rejects a late backend factory after its startup context has finished", async () => {
+    const current = scopedNativeExecution("late-context-factory");
+    state.createBackend.mockClear();
+    const db = leaseDb(current), select = db.select.bind(db);
+    let release!: (value: unknown[]) => void, entered!: () => void;
+    const held = new Promise<unknown[]>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    db.select = ((fields?: Record<string, unknown>) => {
+      if (fields?.contextSnapshot !== heartbeatRuns.contextSnapshot) return select(fields as never);
+      const query = { from: () => query, where: () => query, limit: () => { entered(); return held; } };
+      return query;
+    }) as Db["select"];
+    const context = new NativeExecutionContext(current, 1_000), task = vi.fn();
+    let factory!: ReturnType<typeof createRunnerdBackend>;
+    const opening = context.wait(() => factory = createRunnerdBackend({ db, execution: current, runnerInstanceId: "late-context-runner",
+      executionContext: context, runnerIngressAuthorized: true, runnerExecutionTarget: {
+        kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "lease", runnerTask: task,
+      } }));
+    await Promise.race([started, opening]);
+    const rejected = expect(opening).rejects.toThrow("operator Stop");
+    context.abort(new Error("operator Stop"));
+    await rejected;
+    context.finish();
+    release([{ contextSnapshot: {} }]);
+    await expect(factory).rejects.toThrow("operator Stop");
+    expect(task).not.toHaveBeenCalled();
+    expect(state.createBackend).not.toHaveBeenCalled();
+  });
 
   async function writeRunnerAuthority(root: string, identity: Record<string, unknown>, lifecycle: string) {
     await mkdir(join(root, "control-plane"), { recursive: true });
@@ -12641,6 +13364,55 @@ describe("runnerd provider runtime wiring", () => {
     ).toThrow("scope_closed");
   });
 
+  it.each(["attached", "changed-admission", "changed-template", "changed-template-digest", "changed-preparation"] as const)(
+    "verifies frozen staged admission after normal wake attachment preparation: %s", async mode => {
+      const current = scopedNativeExecution(`staged-attachment-${mode}`);
+      current.task.prompt = "Inspect attachment ref:original";
+      const root = await initializeScopedRunnerRoot(current, "attachment-runner");
+      const sourceIdentity = { runnerInstanceId: "attachment-runner", environmentLeaseId: "attachment-lease",
+        runId: "attachment-source", normalizedSessionId: current.session.normalizedSessionId!, turnId: "source-turn", itemId: "source-item" };
+      const targetIdentity = { ...sourceIdentity, runId: current.binding.runId, turnId: "target-turn", itemId: "target-item" };
+      const controller = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity: sourceIdentity,
+        expectedRunnerVersion: "fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+      controller.stageRunAttachment(targetIdentity, { provider: { kind: "codex", instructions: "prepared attachment grant" } });
+      const path = join(root, "control-plane/control-plane-state.json");
+      const saved = JSON.parse(await readFile(path, "utf8"));
+      const canonicalTemplateDigest = saved.stagedRunAttachment.templateDigest;
+      if (mode === "changed-template" || mode === "changed-template-digest") {
+        saved.stagedRunAttachment.runAttachTemplate.provider.instructions = "substituted grant";
+        if (mode === "changed-template-digest") saved.stagedRunAttachment.templateDigest = `sha256:${nativeSha256(saved.stagedRunAttachment.runAttachTemplate)}`;
+        await writeFile(path, JSON.stringify(saved));
+      }
+      state.stageNativeRunnerWakeAttachments.mockImplementationOnce(async () => {
+        if (mode === "changed-preparation") current.task.prompt = "Inspect attachment ref:mutated-during-preparation";
+        return { attachments: [{ id: "attachment-original" }], cleanup: async () => undefined } as never;
+      });
+      state.renderNativeRunnerStagedAttachmentPrompt.mockReturnValueOnce("Materialized attachment: .paperclip-inbound/current/original");
+      const admission = structuredClone(current);
+      if (mode === "changed-admission") admission.task.prompt = "Inspect attachment ref:changed";
+      const reached = new Error("verified staged admission reached recheck");
+      const restore = vi.spyOn(runnerCheckpoint, "restoreNativeRunnerCheckpoint").mockResolvedValue(null);
+      const header = vi.spyOn(runnerCheckpoint, "loadNativeRunnerCheckpointHeader").mockResolvedValue("staged header");
+      const verify = vi.spyOn(stagedAttachmentRecovery, "resolveNativeStagedAttachmentRecovery")
+        .mockResolvedValueOnce({ currentExecution: admission, sourceIdentity, targetIdentity,
+          templateDigest: canonicalTemplateDigest } as never)
+        .mockRejectedValueOnce(reached);
+      try {
+        const resume = executePaperclipNativeSession({ db: leaseDb(current), execution: current, useRunnerd: true,
+          runnerInstanceId: "attachment-runner", restartRecovery: { kind: "reattach_remote_runner", runId: current.binding.runId,
+            leaseOwner: "controller", controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+            remote: { kind: "sandbox", leaseId: "attachment-lease", providerLeaseId: "sandbox", remoteCwd: "/workspace" } } as never,
+          runnerExecutionTarget: { kind: "remote", transport: "sandbox", leaseId: "attachment-lease", remoteCwd: "/workspace",
+            runner: { execute: vi.fn() }, sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "sandbox" } } as never });
+        if (mode === "attached") { await expect(resume).rejects.toBe(reached); expect(verify).toHaveBeenCalledTimes(2); }
+        else await expect(resume).rejects.toThrow(mode === "changed-template" ? "staged_attachment_binding_mismatch"
+          : mode === "changed-preparation" ? "native_attachment_admission_changed" : "staged_attachment_recovery_unproven");
+        expect(state.stageNativeRunnerWakeAttachments).toHaveBeenCalledWith(expect.objectContaining({ binding: expect.objectContaining({
+          companyId: current.binding.companyId, issueId: current.binding.issueId, agentId: current.binding.agentId, runId: current.binding.runId,
+        }) }));
+      } finally { restore.mockRestore(); header.mockRestore(); verify.mockRestore(); await controller.stop(); }
+    });
+
   it("passes the run checkpoint active turn into restart recovery", async () => {
     state.createBackend.mockClear();
     state.createTransport.mockClear();
@@ -12669,6 +13441,27 @@ describe("runnerd provider runtime wiring", () => {
         }),
       }),
     );
+  });
+
+  it.each(["warm", "per_turn"] as const)("defers a %s retained-owner wait before claiming a provider attempt", async mode => {
+    const fresh = scopedNativeExecution(`retained-owner-${mode}`);
+    fresh.session.lifecyclePolicy = mode === "warm"
+      ? { mode: "warm", idleTimeoutMs: 300_000 } : { mode: "per_turn", idleTimeoutMs: null };
+    const deadline = new Date(Date.now() + 60_000);
+    vi.mocked(controllerRecovery.resolveNativeControllerRecovery).mockResolvedValueOnce({ kind: "waiting_for_owner", deadline });
+    const defer = vi.spyOn(controllerRecovery, "deferNativeControllerRecovery").mockResolvedValueOnce();
+    const onExecutionLeaseAcquired = vi.fn();
+    const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
+    const db = leaseDb(fresh, {}, {}, updates);
+    await expect(executePaperclipNativeSession({ db, execution: fresh, runnerInstanceId: "waiting-controller",
+      useRunnerd: true, onExecutionLeaseAcquired,
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace",
+        environmentId: "retained-environment", leaseId: "retained-lease" },
+    })).rejects.toMatchObject({ name: "NativeControllerRecoveryWaitingError", retryAt: deadline });
+    expect(defer).toHaveBeenCalledWith(db, expect.objectContaining({ ...fresh.binding, retryAt: deadline }));
+    expect(onExecutionLeaseAcquired).not.toHaveBeenCalled();
+    expect(updates.some(update => update.table === nativeRunFinalizations && update.values.attempt !== undefined)).toBe(false);
+    expect(state.createBackend).not.toHaveBeenCalled();
   });
 
   it("rejects overlapping runs for the same runnerd provider session scope", async () => {
@@ -12929,7 +13722,10 @@ describe("runnerd provider runtime wiring", () => {
       releaseEnvironment();
       releaseAssigned();
       const result = await preparation;
-      expect(released).toHaveBeenCalledExactlyOnceWith({ companyId: execution.binding.companyId, agentId: execution.binding.agentId });
+      expect(released).toHaveBeenCalledExactlyOnceWith(
+        { companyId: execution.binding.companyId, agentId: execution.binding.agentId },
+        { companyId: execution.binding.companyId, runId: execution.binding.runId, issueId: execution.binding.issueId },
+      );
       if (failure !== "success") {
         expect(result).toMatchObject({ error: { message: failure === "assigned" ? "assigned failed" : "environment failed" } });
         expect(state.createBackend).not.toHaveBeenCalled();
@@ -13031,7 +13827,7 @@ describe("runnerd provider runtime wiring", () => {
     } as NativeExecutionInputV1;
     const identity = { runId: current.binding.runId, normalizedSessionId: current.session.normalizedSessionId!,
       runnerInstanceId: `admitted-${provider}`, environmentLeaseId: "admitted-lease",
-      turnId: `turn-${current.binding.runId}`, itemId: `item-${current.binding.runId}` };
+      turnId: `turn_attachment_${randomUUID()}`, itemId: `item_attachment_${randomUUID()}` };
     const root = await initializeScopedRunnerRoot(current, identity.runnerInstanceId);
     await mkdir(join(root, "control-plane"), { recursive: true });
     await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
@@ -13061,9 +13857,56 @@ describe("runnerd provider runtime wiring", () => {
       runnerArtifact: artifact, adoptExistingRunner: { pid: 123, startedAt: "2026-09-19T10:00:00.000Z" } });
     expect(state.resolveRemoteRunnerBinary).not.toHaveBeenCalled();
     expect(execute.mock.calls.some(([request]) => request.args.includes("paperclip-runner-launch") || request.args.includes("--build-metadata"))).toBe(false);
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & { prepareExternalRunnerState: () => Promise<void> };
+    await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+    expect(execute.mock.calls.some(([request]) => request.args.includes("paperclip-runner-launch")
+      || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
   });
 
-  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "local-receipt", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].map(mode => [provider, policy, mode] as const))))(
+  it.each(["verified", "no-proof", "dead", "stale"] as const)("reuses only verified idle warm process during actual remote preparation: %s", async mode => {
+    const previous = scopedNativeExecution(`warm-live-preparation-${mode}`);
+    previous.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 300_000 };
+    const current = { ...previous, binding: { ...previous.binding, runId: `${previous.binding.runId}-next` } };
+    const identity = { runId: previous.binding.runId, normalizedSessionId: previous.session.normalizedSessionId!,
+      runnerInstanceId: "retained-warm-runner", environmentLeaseId: "retained-lease", turnId: "prior-turn", itemId: "prior-item" };
+    const root = await initializeScopedRunnerRoot(previous, identity.runnerInstanceId);
+    await writeRunnerAuthority(root, identity, "suspended");
+    const projections = vi.spyOn(controllerRecovery, "resolveNativeControllerRecovery").mockResolvedValue({ kind: "no_prior_execution" });
+    onTestFinished(() => projections.mockRestore());
+    const db = leaseDb(current), ordinarySelect = db.select.bind(db);
+    db.select = ((fields?: Record<string, unknown>) => fields?.status === heartbeatRuns.status && fields?.runnerProfileJson === heartbeatRuns.runnerProfileJson
+      ? priorNativeRunDb(previous).select(fields as never) : ordinarySelect(fields as never)) as Db["select"];
+    let alive = true;
+    const execute = vi.fn(async (request: { args: string[] }) => ({ exitCode: request.args[2] === "paperclip-runner-recovery-check" && !alive ? 45 : 0,
+      timedOut: false, stderr: "", stdout: request.args[0] === "--build-metadata" ? JSON.stringify({
+        schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+        packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+        durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+      }) : request.args[0] === "--version" ? "codex-cli 0.160.0" : request.args[1]?.includes("base64")
+        ? Buffer.from(JSON.stringify({ ...identity, lifecycle: "ready", outbox: [], pendingTerminalDelivery: null })).toString("base64")
+        : request.args[1]?.includes("cat --") ? `nonce\n123\n2026-09-19T10:00:00.000Z\n${identity.runnerInstanceId}\nlinux:abcd-1234:100\n` : "" }));
+    const revalidate = vi.fn(async () => undefined);
+    const syncIn = vi.fn(async () => undefined);
+    await createRunnerdBackend({ db, execution: current, runnerInstanceId: identity.runnerInstanceId,
+      runnerIngressAuthorized: true,
+      ...(mode === "no-proof" ? {} : { remoteWarmRecovery: { identity, reuseProcess: true, previousExecution: previous,
+        checkpoint: {} as never, remote: { providerLeaseId: "retained-sandbox", remoteCwd: "/workspace" }, revalidate } }),
+      runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: "/workspace", environmentId: "environment",
+        leaseId: identity.environmentLeaseId, providerKey: "daytona", effectiveCapabilities: { runnerWebSocketIngress: true },
+        sandboxLeaseAcquisition: { outcome: "resumed", providerLeaseId: "retained-sandbox" }, runner: { execute, syncIn } } as never });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    const options = state.createTransport.mock.calls.at(-1)![0] as RunnerTransportOptions & { prepareExternalRunnerState: () => Promise<void> };
+    if (mode === "dead") alive = false;
+    if (mode === "stale") revalidate.mockRejectedValueOnce(new Error("fixture_warm_owner_changed"));
+    if (mode === "verified") await expect(options.prepareExternalRunnerState()).resolves.toBeUndefined();
+    else await expect(options.prepareExternalRunnerState()).rejects.toThrow(mode === "no-proof" ? "resumed_not_suspended"
+      : mode === "dead" ? "runner_remote_process_identity_unavailable" : "fixture_warm_owner_changed");
+    expect(syncIn).not.toHaveBeenCalled();
+    expect(execute.mock.calls.some(([request]) => request.args.includes("paperclip-runner-launch")
+      || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
+  });
+
+  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].filter(mode => policy === "per_turn" || !mode.startsWith("resumed")).map(mode => [provider, policy, mode] as const))))(
     "recovers a blocked %s %s plugin checkpoint on a replacement lease: %s", async (provider, policy, mode) => {
       const { permissionPolicy: _permissionPolicy, ...claudeProfile } = QUALIFIED_ACPX_PROFILES.claude;
       const first = { ...scopedNativeExecution(`plugin-${provider}-${policy}-${mode}`),
@@ -13111,8 +13954,13 @@ describe("runnerd provider runtime wiring", () => {
         if (mode === "no-stop-proof") throw new Error("Plugin Runner retained session is not authorized");
         return "old-task";
       });
+      let timedOut = false;
       const task = vi.fn(async (operation: any) => {
         environmentTaskOperationSchema.parse(operation);
+        if (mode === "resumed-timeout" && operation.kind === "read_state" && !timedOut) {
+          timedOut = true;
+          throw new Error("fixture_remote_state_timeout");
+        }
         if (operation.kind === "read_state") return { kind: "state", taskId: "replacement-task", state: {
           ...durableRunnerState(identity, mode === "not-suspended" ? "ready" : "suspended"),
           outbox: mode === "pending-outbox" ? [{}] : [], pendingTerminalDelivery: null,
@@ -13131,7 +13979,7 @@ describe("runnerd provider runtime wiring", () => {
           managedAiCredentialHome: home, managedAiCredentialIdentity: "revision", managedAiAccountIdentity: "account",
           runnerEnvironment: { ANTHROPIC_API_KEY: "synthetic-fixture" },
           runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "replacement-lease", runnerTask: task,
-            sandboxLeaseAcquisition: { outcome: "replacement", providerLeaseId: "replacement-task" } } as never };
+            sandboxLeaseAcquisition: { outcome: mode.startsWith("resumed") ? "resumed" : "replacement", providerLeaseId: "replacement-task" } } as never };
         if (throughExecutor) {
           const validated = validatePrpStructuredRunResult({ schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "done",
             completionClaim: { contractRevision: next.completionContract.contract.revision, objectiveSatisfied: true, criteria: [], remainingWork: [] },
@@ -13141,12 +13989,19 @@ describe("runnerd provider runtime wiring", () => {
             normalizedSessionId: next.session.normalizedSessionId, providerSessionId: "original-provider-history", driverKind: next.session.driverKind,
             driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null });
         }
+        if (mode === "resumed-timeout") {
+          await expect(createRunnerdBackend(launch)).rejects.toThrow("fixture_remote_state_timeout");
+          expect(existsSync(join(scoped, "plugin-runner-state.json"))).toBe(false);
+          expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
+        }
         const backend = throughExecutor ? executePaperclipNativeSession({ ...launch, useRunnerd: true }) : createRunnerdBackend(launch);
-        if (["canonical", "local-receipt", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
+        if (["canonical", "resumed", "resumed-timeout", "local-receipt", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
           await expect(backend).resolves.toBeDefined();
           expect(state.createBackend).toHaveBeenCalledOnce();
-          expect(owner).toHaveBeenCalledWith(expect.objectContaining({ resumeFrom: "old-task", priorIdentity: identity }));
-          expect(resume).toHaveBeenCalledWith(db, expect.objectContaining({ leaseId: "replacement-lease", priorIdentity: identity, inspectCheckpoint: true }));
+          expect(owner).toHaveBeenCalledWith(expect.objectContaining({ priorIdentity: identity,
+            ...(!mode.startsWith("resumed") ? { resumeFrom: "old-task" } : {}) }));
+          if (!mode.startsWith("resumed")) expect(resume).toHaveBeenCalledWith(db, expect.objectContaining({ leaseId: "replacement-lease", priorIdentity: identity, inspectCheckpoint: true }));
+          else expect(task).toHaveBeenCalledWith({ kind: "read_state", identity });
           expect(JSON.parse(await readFile(join(scoped, "plugin-runner-state.json"), "utf8"))).toMatchObject({ ...identity, lifecycle: "suspended" });
           expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
         } else {
@@ -14092,6 +14947,78 @@ describe("runnerd provider runtime wiring", () => {
       state.toolAuthorityDefinitions.mockReset().mockResolvedValue([]);
       restore.mockRestore();
       await controller.stop();
+    }
+  });
+
+  it.each(["settled", "pending", "current-run", "legacy-file", "binding-mismatch"] as const)("refreshes a prior warm controller projection after its same-run checkpoint advances: %s", async mode => {
+    const prior = scopedNativeExecution("warm-same-run-checkpoint-advance");
+    prior.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
+    const current = { ...prior, binding: { ...prior.binding,
+      runId: mode === "current-run" ? prior.binding.runId : `${prior.binding.runId}-next` } };
+    const identity = { runId: prior.binding.runId, normalizedSessionId: prior.session.normalizedSessionId!,
+      runnerInstanceId: "runner-warm-checkpoint-advance", environmentLeaseId: "lease-warm-checkpoint-advance",
+      turnId: "prior-turn", itemId: "prior-item" };
+    const root = await initializeScopedRunnerRoot(prior, identity.runnerInstanceId);
+    const controller = new DurablePrpControlPlane({ stateDirectory: join(root, "control-plane"), identity,
+      expectedRunnerVersion: "warm-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    controller.queueCommand("run.prepare", { provider: prior.provider });
+    const path = join(root, "control-plane/control-plane-state.json");
+    const staleProjection = await readFile(path, "utf8");
+    if (mode !== "pending") {
+      controller.store.state.commands[0]!.status = "completed";
+      controller.store.state.commands[0]!.result = { status: "completed" };
+      controller.store.state.committedEvents.push({ sourceSeq: 1, sourceEventId: "warm-terminal",
+        eventType: "run.terminal", priority: 0, envelope: { ...identity }, deliveryCount: 1, logicalEffectCount: 1 });
+      controller.store.state.ackedSourceSeq = 1;
+    }
+    controller.persistRunAttachTemplate({ provider: prior.provider, normalizedSessionId: identity.normalizedSessionId });
+    let saved!: import("../../vendor/paperclip-runner/index.js").DurablePrpCheckpoint;
+    controller.setCheckpointPersistence(async checkpoint => { saved = checkpoint; });
+    await controller.flushCheckpoint();
+    // A previous admission can leave a full local projection while the owner
+    // later commits its completed command and terminal under the same run ID.
+    await writeFile(path, staleProjection);
+    await mkdir(join(root, "runner"), { recursive: true });
+    await writeFile(join(root, "runner/runner-state.json"), JSON.stringify(durableRunnerState(identity, "suspended")));
+    const supervisorDirectory = join(resolvePaperclipInstanceRoot(), "runtime/paperclip-runner/sessions");
+    await mkdir(supervisorDirectory, { recursive: true });
+    const supervisorPath = join(supervisorDirectory, `${basename(root)}.json`);
+    await writeFile(supervisorPath, JSON.stringify({ schema: "paperclip.native-session-supervisor.v1",
+      snapshot: { identity: { ...prior.binding, sessionId: identity.normalizedSessionId } } }));
+    const restore = vi.spyOn(runnerCheckpoint, "restoreNativeRunnerCheckpoint").mockImplementation(async (_db, binding, directory, sessionId) => {
+      expect(binding).toEqual({ companyId: prior.binding.companyId, issueId: prior.binding.issueId, runId: prior.binding.runId });
+      expect(sessionId).toBe(identity.normalizedSessionId);
+      if (mode === "legacy-file") return null;
+      if (mode === "binding-mismatch") throw new Error("native_runner_checkpoint_binding_mismatch");
+      saved.restoreSessionDirectory(directory);
+      return saved;
+    });
+    const admitted = new Error("warm resume reached current tool authority");
+    state.toolAuthorityDefinitions.mockRejectedValueOnce(admitted);
+    state.createBackend.mockClear();
+    state.createTransport.mockClear();
+    try {
+      await expect(createRunnerdBackend({ db: priorNativeRunDb(prior), execution: current,
+        runnerInstanceId: "next-warm-runner", runnerExecutionTarget: { kind: "remote", transport: "sandbox",
+          remoteCwd: "/workspace", runner: { execute: vi.fn() } } as never })).rejects.toThrow(
+        mode === "binding-mismatch" ? "native_runner_checkpoint_binding_mismatch" : admitted.message);
+      const refreshed = JSON.parse(await readFile(path, "utf8"));
+      const refreshedFromDatabase = mode === "settled" || mode === "pending";
+      expect(refreshed.commands).toEqual([expect.objectContaining({ type: "run.prepare",
+        status: mode === "settled" ? "completed" : "pending" })]);
+      expect(refreshed.committedEvents).toEqual(mode === "settled"
+        ? [expect.objectContaining({ eventType: "run.terminal" })] : []);
+      expect(isSettledRemoteWarmControlState(refreshed, identity)).toBe(mode === "settled");
+      if (refreshedFromDatabase) expect(refreshed.runAttachTemplate).not.toBeNull();
+      else expect(await readFile(path, "utf8")).toBe(staleProjection);
+      expect(restore).toHaveBeenCalledTimes(mode === "current-run" ? 0 : 1);
+      expect(state.createBackend).not.toHaveBeenCalled();
+      expect(state.createTransport).not.toHaveBeenCalled();
+    } finally {
+      state.toolAuthorityDefinitions.mockReset().mockResolvedValue([]);
+      restore.mockRestore();
+      await controller.stop();
+      await rm(supervisorPath, { force: true });
     }
   });
 
@@ -16326,7 +17253,7 @@ describe("HTTP Stop during remote runner staging", () => {
     const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
     const temporary = externalUrl
       ? { connectionString: externalUrl, cleanup: () => dbModule.closeRegisteredClients(externalUrl) }
-      : await dbModule.startEmbeddedPostgresTestDatabase("remote-staging-http-");
+      : await (await import("../../__tests__/helpers/embedded-postgres.js")).startEmbeddedPostgresTestDatabase("remote-staging-http-");
     const httpDb = dbModule.createDb(temporary.connectionString);
     const localExecution = { ...execution, binding: { ...execution.binding,
       companyId: randomUUID(), agentId: randomUUID(), issueId: randomUUID(), runId: randomUUID(), executionWorkspaceId: randomUUID() },

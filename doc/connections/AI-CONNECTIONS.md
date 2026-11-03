@@ -98,6 +98,23 @@ grant through encrypted vault secret references, with existing consumer bindings
 Safe provider-reported account identity is optional; secret references, tokens,
 and authentication paths are never account labels.
 
+Permissions shows account details separately from the connection's maintenance
+controls: the provider account email and organization when available, the sign-in
+method, and personal or company-shared access. A Paperclip owner name is not
+evidence of the provider login. Anthropic setup tokens can permit inference while
+denying profile access; in that case the screen explains that Anthropic did not
+permit reading the account email. A profile denial does not mark a connected
+credential as disconnected.
+
+`GET /api/companies/:companyId/ai-connections/:connectionId/identity?grantId=...`
+checks company membership, connection-management authority, and the selected
+credential's human audience before opening the credential. The response contains
+only safe account labels and bounded status messages. The Anthropic profile read
+has a 15-second headers/body deadline and no redirects. It runs separately from
+the account/grants reads, so profile loading or failure cannot block account
+maintenance. The UI reuses an observation for five minutes, scoped to the company,
+connection, grant, and grant update time. Reconnect requires a new observation.
+
 Company-scoped `/api/companies/:companyId/ai-connections` operations provide list,
 API-key creation/reconnect, personal defaults, completed login references, and
 active-run attribution. The list includes `canManageConnections`, evaluated by

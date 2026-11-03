@@ -25,9 +25,28 @@ Agent access: [companion](../agent-access-map/recovery.md).
   Restart recovery respects live heartbeat preparation before workspace
   synchronization finishes. PostgreSQL regressions cover unchanged ownership,
   no duplicate dispatch, and later recovery after preparation leaves the registry.
+  An interrupted run with an audited pending Stop can reattach its exact remote
+  session only for cleanup. It reuses the original held reservation during a
+  budget pause and cannot start another provider turn. Local PostgreSQL
+  [Stop accounting](../../server/src/services/native-runtime/native-stop-accounting.integration.test.ts)
+  and [restart selection](../../server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts)
+  tests cover cleanup acknowledgement, fenced alternatives, and receipt debt.
+  Cleanup does not stage new attachments, retire another warm owner, or replay
+  pending semantic work. Authenticated Core intake retains that input unanswered.
+  Close still requires confirmed provider exit, durable event drain, and exact
+  runner suspension; the cleanup purpose alone cannot certify termination.
+  Hosted provider settlement remains separate acceptance.
+  An authorized fresh native retry publishes its own session for the next
+  ordinary comment or monitor. The [heartbeat regression](../../server/src/__tests__/native-session-resumption.test.ts)
+  covers fresh admission, saved session selection, and one subsequent resume.
+  Unfinished goals and unverified prior outcomes retain their recovery gates.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
 - `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.
+  The failed-attempt notice has padding, a tinted background and an error icon;
+  its message and Retry remain readable on narrow screens in both themes. Verify
+  with [the browser layout checks](../../tests/e2e/execution-recovery/failed-attempt-notice.spec.ts)
+  against an owned Storybook server using `RECOVERY_STORYBOOK_URL`.
   Internal repair stays system-owned; genuine user decisions retain their
   specific action.
 - `workspace`: `recovery/workspace` — workspace divergence/export failures show the applicable repair,
@@ -234,7 +253,7 @@ Use these checks alongside the entry-point recipes below and the operation recor
 | --- | --- | --- |
 | `recovery/diagnosis` | Open the source task and exact run; compare cause, source action, original owner, recovery owner, attempt bounds and next action after reload. | Test an unrelated/private task and a stale run notice. Read-side retirement of a stale action must not create a new attempt, participant, or permission to replay. After workspace recovery, compare task and run instructions; recovered files must not leave instructions to repair a retained sandbox. The stopped run keeps its replay hold until continuation admission. An obsolete exact-session notice retires only after terminal coordinator proof and a separate exact-run workspace hold; no new execution or file cleanup follows. |
 | `recovery/bounded-continuation` | Use a deterministic recoverable interruption and inspect the original run/session, attempt receipts, saved result and eventual useful output. | Repeat restart/receipt delivery, race Stop or a new owner, and retain unknown external outcomes. Accepted completion/finalization recovery must not start a new provider turn or repeat its side effect. |
-| `recovery/source-action` | Inspect active and retained actions, follow the repair owner, and resolve one eligible source-bound action with its exact ID. | Retry the settled resolution and reject a stale/foreign action. Recovery ownership alone cannot mutate the source task; inspect source status, audit and wake independently. |
+| `recovery/source-action` | Inspect active and retained actions, follow the repair owner, and resolve one eligible source-bound action with its exact ID. | Retry the settled resolution and reject a stale/foreign action. Recovery ownership alone cannot mutate the source task; inspect source status, audit and wake independently. A running native owner must receive a conflict when resolution would change its own task status; its task tools must remain usable so it can report through semantic completion. Unchanged-status, Board and legacy recovery retain their normal permissions. |
 | `recovery/exhaustion` | Exhaust or age a bounded fixture; use the currently offered retry once, then inspect its durable acknowledgement and actual continuation. | Reassign, pause, stop, close, add an unresolved dependency, or impose a budget hold before retry. The old notice must not reopen terminal work or run the wrong owner. |
 | `recovery/workspace` | Exercise retained-file recovery, export retry, reconstruction, branch repair/reconciliation and exact-owner finalization as distinct authorized operator paths. | Use exact source/action/run/receipt bindings and preserve existing files. Reject stale source, live/uncertain writers, unsafe archives and insufficient authority. Verify actual files and accepted result separately from queued acknowledgement. |
 | `recovery/unknown-outcome` | Inspect the provider and saved intent before recording a source-specific chat, email or governed-provider outcome. | Use performed, not-performed and unresolved cases. Wrong company/request, stale state and unauthorized resolution must fail. Unknown effects must not replay automatically. An explicit retry must record the operator’s duplicate-risk acceptance and dispatch only the authorized attempt. |
@@ -271,6 +290,15 @@ workspace references. These cases prove classification, not a live remote
 provider restart. For that journey, interrupt a disposable deployment after
 workspace preparation and before its first executor claim, then confirm one
 provider turn starts on the original run through the normal admission gates.
+
+The same suite's `diskless` and `diskless-per-turn` cases exercise three native
+controller processes with both native projections removed between completed
+turns. They check history and invocation counts through the real executor and
+admission snapshot rebinder. The workspace and sandbox remain available, and
+the processes use the same source revision. Separate Postgres tests cover
+metadata import, bounded discovery, ownership holds and incomplete-publication
+retention. These cases do not qualify full webserver disk loss, distinct releases,
+HTTP traffic continuity, or the live Daytona provider path.
 
 The [Runner transport regressions](../../packages/paperclip-runner/runner/crates/runner-core/src/durable/transport.rs)
 exercise a real WebSocket welcome delayed beyond two seconds. Authentication
@@ -415,6 +443,17 @@ and filesystem controls do not qualify a deployed provider.
 Verify saved and newer local files, one preservation receipt, and
 no additional agent turn. The PostgreSQL regression covers this boundary; the
 opt-in provider probe also uses this runtime path with the protection marker.
+
+Repeat Task Retry with a completed native result whose unfinished export uses
+the remote-workspace descriptor. Before preservation, require the original run
+to remain the only task run. After preservation, verify restored file bytes and
+Git HEAD, commitment of that same result, and an unanswered human review keeping
+the task In Review. For an action superseded by a newer failure, request exact
+historical file recovery through the board API: verify a committed snapshot,
+unchanged newer workspace binding and attention owner, no old-result commitment,
+and no provider turn. An active current writer or no explicit request keeps the
+historical source waiting. The PostgreSQL/HTTP regression is in
+[workspace recovery](../../server/src/services/workspace-recovery.test.ts).
 
 For a missing managed allocation, verify a fresh Cloud-signed absence observation
 under the exact physical recovery owner. The existing Retry may then select an

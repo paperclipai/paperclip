@@ -1,5 +1,6 @@
 import express from "express";
 import request from "supertest";
+import { isAcknowledgedNativeStop } from "../services/acknowledged-native-stop.js";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../services/activity-log.js", () => ({
@@ -334,6 +335,93 @@ describe("issue update comment wakeups", () => {
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     },
   );
+
+  it.each(["done", "cancelled"])("stops a goal-less native run before a board marks its task %s", async (status) => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null, executionRunId: SOURCE_RUN_ID });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockHeartbeatService.getRun.mockResolvedValue({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID, runtimeMode: "native", status: "running",
+      nativeIssueId: existing.id, contextSnapshot: { issueId: existing.id } });
+    const effects: string[] = [];
+    mockHeartbeatService.cancelRun.mockImplementation(async () => {
+      effects.push("stop");
+      return { id: SOURCE_RUN_ID, companyId: existing.companyId, status: "cancelled" };
+    });
+    mockIssueService.update.mockImplementation(async () => {
+      effects.push("update");
+      return { ...existing, status, executionRunId: null };
+    });
+
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send({ status });
+
+    expect(res.status).toBe(200);
+    expect(effects).toEqual(["stop", "update"]);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledOnce();
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(SOURCE_RUN_ID,
+      "Cancelled before issue terminalization", expect.objectContaining({
+        errorCode: "issue_terminalized",
+        resultJson: expect.objectContaining({ terminalizationStopConfirmed: true }),
+        eventPayload: { issueId: existing.id, status },
+      }));
+    const stopMetadata = mockHeartbeatService.cancelRun.mock.calls[0]![2].resultJson;
+    // Exercise the recovery consumer with the route's actual producer fields.
+    // A Stop receipt alone must not authorize this intentional-stop exception.
+    expect(isAcknowledgedNativeStop({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      status: "cancelled", nativeIssueId: existing.id, resultJson: { ...stopMetadata,
+        nativeCancellation: { schema: "paperclip.native-cancellation.v1", runId: SOURCE_RUN_ID,
+          companyId: existing.companyId, issueId: existing.id, scope: "run",
+          reasonCode: "cancellation_run_only", dispatchState: "acknowledged", dispatched: true,
+          intentAuditId: "stop-intent", acknowledgementAuditId: "stop-acknowledgement" },
+      } })).toBe(true);
+    expect(res.body).toMatchObject({ status, executionRunId: null });
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("keeps the task open when a goal-less native run cannot confirm its stop", async () => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null, executionRunId: SOURCE_RUN_ID });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockHeartbeatService.getRun.mockResolvedValue({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID, runtimeMode: "native", status: "running",
+      nativeIssueId: existing.id, contextSnapshot: { issueId: existing.id } });
+    mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "done", executionRunId: null });
+
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send({ status: "done" });
+
+    expect(res.status).toBe(409);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("does not inspect agent runs when closing a task without an execution owner", async () => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null, executionRunId: null });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "done" });
+
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.getActiveRunForAgent).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
+
+  it("preserves legacy completion without a native goal", async () => {
+    const existing = makeIssue({ status: "in_progress", assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null, executionRunId: SOURCE_RUN_ID });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockHeartbeatService.getRun.mockResolvedValue({ id: SOURCE_RUN_ID, companyId: existing.companyId,
+      agentId: ASSIGNEE_AGENT_ID, runtimeMode: "legacy", status: "running", contextSnapshot: { issueId: existing.id } });
+    mockIssueService.update.mockResolvedValue({ ...existing, status: "done", executionRunId: null });
+
+    const res = await request(await createApp()).patch(`/api/issues/${existing.id}`).send({ status: "done" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+  });
 
   it.each([false, true])("still wakes explicitly reopened work (reassigned: %s)", async (reassigned) => {
     const existing = makeIssue({ status: "done", assigneeAgentId: PREVIOUS_AGENT_ID, assigneeUserId: null });

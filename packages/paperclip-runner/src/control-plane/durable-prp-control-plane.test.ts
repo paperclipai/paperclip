@@ -32,6 +32,9 @@ import {
   DurablePrpControlPlane,
   decodeDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectStagedRunAttachment,
+  inspectRetainedRunInstructions,
+  inspectStagedRunAttachmentHeader,
   type DurablePrpCheckpoint,
   durableRecoveryInternals,
   SemanticToolNotDispatchedError,
@@ -52,6 +55,93 @@ const identity: DurableRecoveryIdentity = {
 };
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
+
+it("recovers only the matching run's admitted instructions from a valid checkpoint", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-retained-instructions-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  const digest = "b".repeat(64);
+  const expected = { runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, runtimeContextDigest: digest };
+  const template = { provider: { instructions: "Exact admitted instructions.\n", runtimeContext: { aggregateDigest: digest } } };
+  try {
+    core.persistRunAttachTemplate(template);
+    expect(inspectRetainedRunInstructions(core.store.state, expected)).toBe(template.provider.instructions);
+    for (const field of ["runId", "normalizedSessionId", "runtimeContextDigest"] as const) {
+      expect(inspectRetainedRunInstructions(core.store.state, { ...expected, [field]: "foreign" })).toBeNull();
+    }
+    expect(inspectRetainedRunInstructions({ ...core.store.state, commands: null }, expected)).toBeNull();
+    expect(inspectRetainedRunInstructions({ ...core.store.state, runAttachTemplate: { provider: { ...template.provider, instructions: "" } } }, expected)).toBeNull();
+    const target = { ...identity, runId: "00000000-0000-4000-8000-000000000002", turnId: "next-turn", itemId: "next-item" };
+    const targetTemplate = { provider: { instructions: "Target instructions", runtimeContext: { aggregateDigest: "c".repeat(64) } } };
+    core.stageRunAttachment(target, targetTemplate);
+    const targetExpected = { ...expected, runId: target.runId, runtimeContextDigest: "c".repeat(64) };
+    expect(inspectRetainedRunInstructions(core.store.state, targetExpected)).toBe("Target instructions");
+    expect(inspectRetainedRunInstructions(core.store.state, { ...targetExpected, runtimeContextDigest: digest })).toBeNull();
+    expect(inspectRetainedRunInstructions(core.store.state, expected)).toBe(template.provider.instructions);
+    const corrupted = structuredClone(core.store.state);
+    corrupted.stagedRunAttachment!.templateDigest = `sha256:${"f".repeat(64)}`;
+    expect(inspectRetainedRunInstructions(corrupted, targetExpected)).toBeNull();
+  } finally { await core.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
+it("persists an undispatched source-to-target attachment before bootstrap and preserves it after cache loss", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-staged-attachment-"));
+  const target = { ...identity, runId: "00000000-0000-4000-8000-000000000002", turnId: "next-turn", itemId: "next-item" };
+  const template = { provider: { provider: "codex", command: "fixture", instructions: "assigned instructions ".repeat(1_500) }, authorizedTools: {} };
+  const core = new DurablePrpControlPlane({ stateDirectory: resolve(root, "first"), identity, expectedRunnerVersion, expectedRunnerDigest });
+  let checkpoint!: DurablePrpCheckpoint, templateWrites = 0;
+  core.setCheckpointPersistence(async value => { checkpoint = value; if (value.changedRecords.has("staged-attachment-template")) templateWrites++; });
+  let restored: DurablePrpControlPlane | undefined;
+  let client: AuthenticatedClient | null = null;
+  try {
+    core.stageRunAttachment(target, template);
+    await core.flushCheckpoint();
+    expect(checkpoint.runId).toBe(target.runId);
+    expect(checkpoint.predecessor).toEqual({ runId: identity.runId, normalizedSessionId: identity.normalizedSessionId });
+    expect(checkpoint.workCommandIds).toEqual([]);
+    const proof = inspectStagedRunAttachmentHeader(checkpoint.records.get("header")!);
+    expect(proof).toMatchObject({ attachment: { sourceIdentity: identity, targetIdentity: target, commandId: null } });
+    expect(proof?.attachment).not.toHaveProperty("runAttachTemplate");
+    expect(checkpoint.records.get("header")!.length).toBeLessThan(JSON.stringify(template).length / 2);
+    expect(JSON.parse(checkpoint.records.get("staged-attachment-template")!)).toEqual(template);
+    expect(proof?.runnerVersion).toBe(expectedRunnerVersion);
+    expect(proof?.runnerDigest).toBe(expectedRunnerDigest);
+    checkpoint.restoreSessionDirectory(resolve(root, "replacement"));
+    restored = new DurablePrpControlPlane({ stateDirectory: resolve(root, "replacement", "control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest });
+    expect(inspectStagedRunAttachment(restored.store.state, target)).toMatchObject({ ...proof?.attachment, runAttachTemplate: template });
+    expect(restored.store.state.commands).toEqual([]);
+    expect(() => restored!.stageRunAttachment({ ...target, itemId: "foreign" }, template)).toThrow("conflicts");
+    expect(() => restored!.queueCommand("turn.start", {})).toThrow("maintenance only");
+    expect(() => restored!.queueCommand("run.attach", { ...template, paperclipNextAuthority: { identity: { ...target, itemId: "foreign" } } })).toThrow("conflicts");
+    const corruptedRecords = new Map(checkpoint.records);
+    corruptedRecords.set("staged-attachment-template", JSON.stringify({ provider: { command: "changed" } }));
+    expect(() => decodeDurablePrpCheckpoint(corruptedRecords)).toThrow("native_runner_checkpoint_invalid");
+    expect(inspectStagedRunAttachment(restored.store.state, { ...target, turnId: "foreign" })).toBeNull();
+    for (const field of ["runnerInstanceId", "environmentLeaseId", "normalizedSessionId"] as const) {
+      const changed = JSON.parse(checkpoint.records.get("header")!);
+      changed.state.stagedRunAttachment.targetIdentity[field] = "foreign";
+      expect(inspectStagedRunAttachmentHeader(JSON.stringify(changed))).toBeNull();
+    }
+    const downgraded = JSON.parse(checkpoint.records.get("header")!);
+    downgraded.state.schema = "paperclip.runner.durable.control-plane-state.v1";
+    expect(inspectStagedRunAttachmentHeader(JSON.stringify(downgraded))).toBeNull();
+    const beforeRetry = checkpoint;
+    core.stageRunAttachment(target, template); await core.flushCheckpoint(); expect(checkpoint).toBe(beforeRetry);
+    core.queueCommand("session.snapshot", {}); await core.flushCheckpoint();
+    expect(checkpoint.changedRecords.has("staged-attachment-template")).toBe(false);
+    await core.start(); client = await authenticate(core, core.issueBootstrapTicket());
+    expect(client).not.toBeNull();
+    core.queueCommand("run.attach", { ...template, paperclipNextAuthority: { identity: target,
+      connection: { mode: "connect", connectUrl: core.connectUrl } } }, "staged-next-attach");
+    await core.flushCheckpoint();
+    expect(templateWrites).toBe(1);
+    expect(checkpoint.records.has("staged-attachment-template")).toBe(false);
+    expect(checkpoint.removedRecords).toContain("staged-attachment-template");
+    expect(() => decodeDurablePrpCheckpoint(checkpoint.records)).not.toThrow();
+  } finally {
+    client?.socket.destroy();
+    await restored?.stop(); await core.stop(); rmSync(root, { recursive: true, force: true });
+  }
+});
 
 it("continues externally persisted commands after losing the local controller directory", async () => {
   const root = mkdtempSync(resolve(tmpdir(), "runner-external-store-"));
@@ -106,6 +196,7 @@ it("restores authentication and commands from opaque checkpoint records", async 
   try {
     const ticket = first.issueBootstrapTicket();
     first.queueCommand("session.snapshot", {}, "maintenance");
+    first.queueCommand("turn.stop", {}, "retirement-maintenance");
     first.queueCommand("turn.start", {}, "execution");
     first.persistPreparedLaunchConfiguration(identity, "retained-configuration");
     await first.flushCheckpoint();
@@ -444,6 +535,80 @@ it("rebuilds a queued checkpoint after the preceding write fails", async () => {
     expect(snapshots).toHaveLength(2);
   } finally {
     reject?.(new Error("cleanup"));
+    await core.stop();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it.each(["get_task_context", "paperclip_finish", "paperclip_block"].flatMap(operationId =>
+  [false, true].map(callbacksConfigured => ({ operationId, callbacksConfigured })),
+))(
+  "retains unseen $operationId input without dispatch or reply (callbacks: $callbacksConfigured)",
+  async ({ operationId, callbacksConfigured }) => {
+    const root = mkdtempSync(resolve(tmpdir(), "runner-cleanup-semantic-intake-"));
+    const dispatch = vi.fn(async () => ({ result: "must not dispatch" }));
+    const recover = vi.fn(async () => ({ result: "must not recover" }));
+    // Keep intake, checkpointing, and cancellation on the actual authenticated
+    // Core. Retention must suppress even accidentally configured callbacks.
+    const core = new DurablePrpControlPlane({
+      stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest,
+      semanticInputMode: "retain_only",
+      ...(callbacksConfigured ? { onSemanticToolInput: dispatch, recoverSemanticToolInput: recover } : {}),
+    });
+    let client: AuthenticatedClient | null = null;
+    try {
+      await core.start();
+      client = await authenticate(core, core.issueBootstrapTicket());
+      expect(client).not.toBeNull();
+      const event = semanticInputEvent();
+      const payload = (event.payload as Record<string, unknown>).payload as Record<string, unknown>;
+      (payload.semantic_tool as Record<string, unknown>).operationId = operationId;
+      sendSecure(client!, event);
+      expect(await receiveSecure(client!)).toMatchObject({
+        kind: "ack", payload: { ackedSourceSeq: 1 },
+      });
+      expect(core.store.state.committedEvents).toHaveLength(1);
+      expect(core.store.state.committedEvents[0]).toMatchObject({
+        eventType: "semantic_tool.input",
+        envelope: { payload: { payload: { semantic_tool: { operationId } } } },
+      });
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      expect(core.store.state.commands).toEqual([]);
+      await core.recoverPendingSemanticInputs();
+      await core.flushCheckpoint();
+      expect(core.semanticToolResultsSettled()).toBe(false);
+      expect(core.store.state.commands).toEqual([]);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(recover).not.toHaveBeenCalled();
+      core.queueCommand("turn.stop", { reason: "cleanup" }, "cleanup-stop", true);
+      // The next real wire frame must be cancellation, never a synthetic tool
+      // reply or a provider-start command that could resume execution.
+      expect(await receiveSecure(client!)).toMatchObject({
+        kind: "command", payload: { commandId: "cleanup-stop", type: "turn.stop" },
+      });
+      expect(core.store.state.commands.map(command => command.type)).toEqual(["turn.stop"]);
+    } finally {
+      client?.socket.destroy();
+      await core.stop();
+      rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
+
+it("rejects unseen semantic input without a dispatcher in the default execution mode", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-missing-semantic-dispatch-"));
+  const core = new DurablePrpControlPlane({ stateDirectory: root, identity, expectedRunnerVersion, expectedRunnerDigest });
+  let client: AuthenticatedClient | null = null;
+  try {
+    await core.start();
+    client = await authenticate(core, core.issueBootstrapTicket());
+    expect(client).not.toBeNull();
+    sendSecure(client!, semanticInputEvent());
+    expect(await receiveSecure(client!)).toBeNull();
+    expect(core.store.state.committedEvents).toEqual([]);
+    expect(core.store.state.commands).toEqual([]);
+  } finally {
+    client?.socket.destroy();
     await core.stop();
     rmSync(root, { recursive: true, force: true });
   }
@@ -2928,7 +3093,7 @@ describe("DurablePrpControlPlane", () => {
     },
   );
 
-  it("latches an authenticated semantic integrity fault without ACK or dispatch and still permits suspension", async () => {
+  it.each(["dispatch", "retain_only"] as const)("latches an authenticated semantic integrity fault without ACK or dispatch and still permits suspension (%s)", async semanticInputMode => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-integrity-"));
     const onProtocolIntegrityError = vi.fn();
     const onCommittedEvent = vi.fn(async () => undefined);
@@ -2938,6 +3103,7 @@ describe("DurablePrpControlPlane", () => {
       identity,
       expectedRunnerVersion,
       expectedRunnerDigest,
+      semanticInputMode,
       onProtocolIntegrityError,
       onCommittedEvent,
       onSemanticToolInput,

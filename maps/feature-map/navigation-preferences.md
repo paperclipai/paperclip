@@ -112,6 +112,9 @@ to the existing Agent Chat control. Hidden or Cloud-managed controls are not
 presented as editable. Disabled Chat routes link back to Experimental settings.
 Enabling the personal workspace never changes the instance capability.
 
+The Coordinator sidebar has a visible **New task** button above **Chat**. It opens
+the existing task form and retains the shortcut beside **Tasks**.
+
 Automated: [preference hook](../../ui/src/hooks/useCoordinatorWorkspaceEnabled.test.tsx),
 [prerequisite settings card](../../ui/src/components/CoordinatorWorkspaceSetting.test.tsx),
 [authorization](../../server/src/__tests__/workspace-preferences-routes.test.ts), and

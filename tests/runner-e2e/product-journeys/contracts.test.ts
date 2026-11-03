@@ -221,7 +221,7 @@ describe("deployment journey contracts", () => {
     onboarding.productJourney!.operations.modelCostUsd=null;
     expect(aggregateCampaignBilling([onboarding,result()]).observedAndEstimatedCostUsd).toBeNull();
   });
-  it.each(["task-properties", "task-create", "project-task-context"])("requires real pass evidence and forbids model work in browser-only %s passes", caseId => {
+  it.each(["inbox-triage", "task-properties", "task-create", "project-task-context"])("requires real pass evidence and forbids model work in browser-only %s passes", caseId => {
     const browser = result();
     browser.caseId = caseId;
     browser.executionId = `product-journeys.local-qa.local.${caseId}`;
@@ -232,6 +232,17 @@ describe("deployment journey contracts", () => {
     const forbidden: Array<Partial<RunnerE2EResult>> = [{ runIds: ["unexpected"] }, { provider: "openai" }, { model: "unexpected" },
       { runtimeMode: "native" }, { runtimeMode: "legacy" }];
     for (const work of forbidden) expect(()=>validateRetainedRunnerResult({ ...browser, ...work })).toThrow("result.browserOnly");
+  });
+  it("rejects collected runs and nonempty usage on a saved passing access result", () => {
+    const browser = result(); browser.caseId = "company-access-isolation";
+    browser.executionId = "product-journeys.local-qa.local.company-access-isolation";
+    browser.productJourney!.checks = journeyRequiredChecks[browser.caseId]!.map(id => ({ id, passed: true }));
+    expect(() => validateRetainedRunnerResult(browser)).not.toThrow();
+    const collected = validateJourneyCollection({ journeyId: "company-access-isolation", runIds: ["collected-run"], usage: { runs: [{ runId: "collected-run", usage: { inputTokens: 1 } }] } });
+    expect(() => validateRetainedRunnerResult({ ...browser, runIds: collected.runIds, usage: collected.usage })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, runIds: [], usage: collected.usage })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, usage: { inputTokens: 1 } })).toThrow("result.browserOnly");
+    expect(() => validateRetainedRunnerResult({ ...browser, usage: { runs: [] } })).not.toThrow();
   });
   it("keeps browser-only reporting free of invented model calls and rejects public publication", () => {
     const value=result();

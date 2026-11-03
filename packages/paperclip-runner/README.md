@@ -466,6 +466,12 @@ runner supplies the pinned executable, selected model, and assigned MCP tools.
 Provider inference and reasoning still contribute to time to first text. These
 startup settings do not disable model reasoning.
 
+An interrupted OpenCode turn does not request a replacement final answer.
+This also applies when an unanswered native question moves to a durable wait.
+The driver reports an interrupted idle as a cancelled terminal so the wait can
+settle. An abort acknowledgement alone does not prove that the provider stopped.
+A later authorized turn can use normal answer recovery.
+
 On macOS, the verified OpenCode executable keeps its private launch pathname
 until the provider process exits. Removing that pathname immediately after
 spawn can kill or stall the signed binary before its health check succeeds.
@@ -559,6 +565,12 @@ choice questions. The control plane generates legacy `questions` entries with
 stable free-text option IDs. Legacy callers remain supported. Calls that supply
 both forms must describe the same complete form; partial forms remain invalid.
 The native recovery bridge uses the same projection for answer delivery.
+
+OpenCode 1.18.34 native questions allow a written answer by default when `custom`
+is omitted. The driver preserves that default and explicit `custom:false`; the
+native flag takes precedence over the legacy `allowCustom` alias. Choice options
+remain intact. Questions without options remain text-only, without a separate
+custom-answer field. See the [pinned native question contract](https://github.com/anomalyco/opencode/blob/v1.18.34/packages/schema/src/v1/question.ts).
 
 The server validates canonical answer constraints before persistence. Regex
 matching runs in isolated workers with a one-second deadline and at most four

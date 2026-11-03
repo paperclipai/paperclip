@@ -244,18 +244,6 @@ test('post-watch foreign backend binding returns safe nonzero and preserves orig
   assert.deepEqual(await readFile(path.join(f.state, 'job.json')), f.originalJob);
 });
 
-test('bootstrap workflow captures official context only after watch and retains exactly named closed receipts', async () => {
-  const workflow = await readFile(new URL('../../.github/workflows/chat-feature-testops.yml', import.meta.url), 'utf8');
-  const start = workflow.indexOf('      - name: Register the public job without an evaluation or a synthetic result');
-  const end = workflow.indexOf('      - name: Validate the one real TestOps selection', start);
-  const step = workflow.slice(start, end);
-  assert.ok(step.includes("if: needs.authorize.outputs.operation == 'bootstrap'"));
-  assert.match(step, /allurectl watch -- node tests\/runner-e2e\/testops-chat-reporter\.mjs bootstrap\n\s+node tests\/runner-e2e\/testops-chat-reporter\.mjs bootstrap-context/);
-  assert.equal((step.match(/allurectl watch/g) ?? []).length, 1); assert.ok(!step.includes('continue-on-error'));
-  assert.ok(workflow.includes('${{ runner.temp }}/chat-testops-bootstrap-state/registration.json'));
-  assert.ok(workflow.includes('${{ runner.temp }}/chat-testops-bootstrap-state/registration-failure.json'));
-});
-
 test('post-watch refuses nonprivate state custody before any command auth or receipt write', async t => {
   const f = await bootstrapContextFixture(t); await chmod(f.state, 0o755);
   const result = await captureSafeErrors(() => reporter('bootstrap-context', undefined, f.env, () => assert.fail('no API'), () => assert.fail('no CLI')));

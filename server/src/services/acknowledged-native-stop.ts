@@ -9,7 +9,7 @@ import { nativeSha256 } from "./native-runtime/canonical.js";
 import { isConfirmedCursorCloudTerminalObservation } from "./native-runtime/cursor-cloud-runtime.js";
 
 /** A server-recorded run-only Stop must not manufacture a recovery incident. */
-function hasAcknowledgedNativeRunStopReceipt(run: {
+export function hasAcknowledgedNativeRunStopReceipt(run: {
   id: string; companyId: string; status: string; nativeIssueId: string | null;
   resultJson: Record<string, unknown> | null;
 }): boolean {
@@ -19,7 +19,8 @@ function hasAcknowledgedNativeRunStopReceipt(run: {
     intent.companyId === run.companyId && intent.issueId === run.nativeIssueId &&
     intent.scope === "run" && intent.reasonCode === "cancellation_run_only" &&
     intent.dispatchState === "acknowledged" && intent.dispatched === true &&
-    typeof intent.intentAuditId === "string" && typeof intent.acknowledgementAuditId === "string";
+    typeof intent.intentAuditId === "string" && Boolean(intent.intentAuditId) &&
+    typeof intent.acknowledgementAuditId === "string" && Boolean(intent.acknowledgementAuditId);
 }
 
 export function hasAcknowledgedNativeStopIntent(run: Parameters<typeof hasAcknowledgedNativeRunStopReceipt>[0]): boolean {

@@ -26,6 +26,15 @@ Agent access: [companion](../agent-access-map/documents-artifacts.md).
 
 Open a document from the task thread or document side panel.
 
+To create or edit a general task document, open **Open a new tab → Artifacts**
+in the task side panel, then **New document** or **Document actions → Edit
+document**. Edits use the shared versioned editor and autosave. Classic mode
+keeps that editor in the task body. Plans retain their conversation and approval
+flow and cannot be created through the general document editor.
+Unfinished new documents, including a body typed before its key, survive a tab
+switch or reload within the same account and task. Cancel removes the backup;
+a confirmed creation clears it.
+
 Select an inline image to open the document's image gallery. Use the left and
 right arrow keys or the Previous and Next buttons to move through images in
 reading order. The URL retains the document and adds a one-based `image` position,
@@ -56,6 +65,13 @@ Open `/artifacts` and its grouping, search, and media controls.
 
 The explicit `build-revise` [Product journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md) covers `documents-artifacts/attachments`: browser downloads of two ZIP versions, an independent content oracle, and preservation of the original. Its shared source is not proof of a pass on any deployed target.
 
+The explicit `task-document-persistence` journey covers `documents-artifacts/documents`:
+browser creation and editing, task reopen/reload, exact saved title/body and
+independent original/latest revision reads, board-user authorship and zero agent
+runs. The setup owns a backlog task but does not seed a document. Calibration
+rejects stale content, lost history and foreign ownership. A target needs a fresh
+live pass before adding this journey to its scheduled checks.
+
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use a task with a text document, a small attachment, and a generated work product. Use nonsensitive fixture files.
 
 ### `task-document`
@@ -77,6 +93,18 @@ Manual: Edit a paragraph, save, reload, and compare revisions. Add an annotation
 ### `task-output`
 
 Automated: [attachment routes](../../server/src/__tests__/issue-attachment-routes.test.ts) and [work products](../../server/src/__tests__/work-products.test.ts) cover data/access behavior; [artifact arrival browser suite](../../tests/e2e/artifact-tab-arrival.spec.ts) targets arrival. [Artifact uploads](../../tests/e2e/artifact-uploads.spec.ts) drives file selection/drop, filename collisions, retry, and preservation of paused/unassigned tasks.
+
+The deployment-targeted [uploaded-input journey](../../tests/runner-e2e/product-journeys/input-file-flow.ts)
+adds composer upload, real agent consumption, independent calculation, attributed
+saved output and reload checks. Registration and oracle controls do not establish
+a live pass on a deployment.
+
+[Native completion feedback](../../server/src/services/native-runtime/native-completion-feedback.test.ts)
+checks a real saved-document link alongside a verified CSV attachment, including
+attachment download query and fragment links. It rejects foreign task/company
+links, missing documents, unproven current revisions, and workspace files. The
+document alone cannot satisfy the requested file. These local tool/Postgres
+checks do not establish hosted delivery or browser rendering.
 
 Manual: Upload a small Markdown file and CSV through Artifacts. Markdown becomes
 a versioned task document; other files become attachments. Read the document,

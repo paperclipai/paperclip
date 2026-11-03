@@ -52,6 +52,17 @@ describe("intentional native Stop presentation", () => {
   });
 });
 
+it("preserves a provider explanation on a failed task without changing retry authority", () => {
+  const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+    category: "rate_limit", message: "API error: 429 This request would exceed your account's rate limit.",
+    httpStatus: 429, retryability: "unknown" };
+  const failedRun = { ...run, errorCode: "native_session_interrupted", resultJson: { providerFailure } };
+  const presentation = projectTaskInterruption(issue, { run: failedRun, agent, paused: false, approval: false });
+  expect(presentation).toMatchObject({ state: "failed", canRetry: true, providerFailure });
+  expect(projectTaskInterruption({ ...issue, status: "done" }, { run: failedRun, agent, paused: false, approval: false }))
+    .not.toHaveProperty("providerFailure");
+});
+
 describe("task project-access interruption", () => {
   it("explains a project denial without offering a futile retry", () => {
     expect(projectTaskInterruption(issue, { run, agent, paused: false, approval: false })).toMatchObject({

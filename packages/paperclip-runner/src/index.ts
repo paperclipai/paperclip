@@ -38,6 +38,10 @@ export {
   RUNNER_PRP_PROTOCOL_MIN,
   RUNNER_PRP_PROTOCOL_MAX,
   inspectWarmRunTransition,
+  inspectStagedRunAttachment,
+  inspectRetainedRunInstructions,
+  inspectStagedRunAttachmentHeader,
+  type StagedRunAttachment,
   type DurablePrpControlPlaneOptions,
   type DurablePrpCheckpoint,
   decodeDurablePrpCheckpoint,
@@ -78,6 +82,7 @@ export {
   defaultCapabilityRunnerdBinary,
   readRunnerdArtifactBinding,
   drainRetainedRunnerdMaintenanceOperations,
+  coldAdmissionTimeoutMs,
   resolveSourceCodexHome,
   settleRetainedRunnerdSession,
   retainedRunnerdCleanupProofIsCurrent,
@@ -120,3 +125,6 @@ export { CURSOR_CLOUD_DEFAULT_TIMEOUT_MS, parseNativeCursorCloudConfig, type Nat
 export { CursorCloudClient, CursorCloudClientError, isCursorCloudRunActive } from "./drivers/cursor-cloud/cloud-client.js";
 
 export { archiveCursorCloudSessionCheckpoint } from "./drivers/cursor-cloud/checkpoint.js";
+
+export { readProviderFailure, type ProviderFailure } from "./contracts/provider-failure.generated.js";
+export { providerFailureFromError } from "./drivers/provider-failure.js";

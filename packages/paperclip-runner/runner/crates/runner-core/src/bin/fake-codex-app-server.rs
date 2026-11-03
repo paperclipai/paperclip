@@ -769,8 +769,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map(|value| value.parse::<usize>())
         .transpose()?
         .unwrap_or(64);
-    if !(1..=4096).contains(&held_output_count) {
-        return Err("--held-output-count must be between 1 and 4096".into());
+    if !(1..=8192).contains(&held_output_count) {
+        return Err("--held-output-count must be between 1 and 8192".into());
     }
     let exit_after_turn_start = args.iter().any(|value| value == "--exit-after-turn-start");
     let exit_after_turn_completion = args

@@ -792,15 +792,26 @@ fn terminal_events(
     let Some(contract) = state.completion_contract.as_ref() else {
         return Vec::new();
     };
-    if rejected_completion {
+    let empty_opencode_completion = state.config.provider == "opencode"
+        && event_type == "turn.completed"
+        && state.active_provider_result_fingerprint.is_none()
+        && state
+            .last_agent_message
+            .as_deref()
+            .is_none_or(|text| text.trim().is_empty());
+    if rejected_completion || empty_opencode_completion {
         return vec![
             NormalizedProviderEvent {
                 event_type: "session.failed".to_owned(),
                 priority: EventPriority::P0,
                 payload: json!({
                     "provider": state.config.provider,
-                    "code": "semantic_completion_rejected",
-                    "message": "The turn ended without correcting its rejected completion report.",
+                    "code": if rejected_completion { "semantic_completion_rejected" } else { "opencode_empty_response" },
+                    "message": if rejected_completion {
+                        "The turn ended without correcting its rejected completion report."
+                    } else {
+                        "OpenCode ended without a final answer or an accepted completion report."
+                    },
                     "recoverable": false,
                 }),
             },
@@ -2114,6 +2125,7 @@ impl CodexCommandExecutor {
                 "failed to start {} provider: {error}",
                 state.config.provider
             ))
+            .with_provider_failure(error.provider_failure())
         })
     }
 
@@ -2261,6 +2273,7 @@ impl CodexCommandExecutor {
                 DurableRunnerError::invalid(format!(
                     "failed to resume {provider_name} provider: {error}"
                 ))
+                .with_provider_failure(error.provider_failure())
             })?;
         let admission = (|| -> Result<(), DurableRunnerError> {
             provider.enable_durable_tool_call_replays();
@@ -2787,6 +2800,7 @@ impl CodexCommandExecutor {
                 .start_observed_provider(ProviderStartupTrigger::Ensure, process_generation)
                 .map_err(|error| {
                     DurableRunnerError::invalid(format!("failed to start Codex provider: {error}"))
+                        .with_provider_failure(error.provider_failure())
                 })?;
             let admission = (|| -> Result<(), DurableRunnerError> {
                 provider.enable_durable_tool_call_replays();
@@ -6338,6 +6352,7 @@ mod tests {
     #[test]
     fn an_undeclared_finish_rejection_does_not_change_terminal_authority() {
         let mut state = opencode_result_state();
+        state.last_agent_message = Some("The requested answer is ready.".to_owned());
         state
             .admit_tool_call("undeclared-finish", "paperclip_finish", &json!({}))
             .unwrap_err();
@@ -6628,20 +6643,32 @@ mod tests {
             }),
             ProviderToolBridge::default(),
         );
-        state.last_agent_message = None;
+        state.last_agent_message = Some("The actual final answer.".to_owned());
 
         let events = terminal_events(&state, "turn.completed", None);
 
-        assert_eq!(
-            events[0].payload["summary"],
-            "OpenCode completed the requested work."
-        );
+        assert_eq!(events[0].payload["summary"], "The actual final answer.");
         assert_eq!(
             events[0].payload["evidence"][0]["ref"],
             "provider:opencode:agent-message"
         );
         assert_eq!(events[1].payload["provider"], "opencode");
         assert!(!events[0].payload.to_string().contains("Codex"));
+    }
+
+    #[test]
+    fn opencode_empty_terminal_does_not_fabricate_a_successful_answer() {
+        for message in [None, Some(" \n".to_owned())] {
+            let mut state = opencode_result_state();
+            state.last_agent_message = message;
+            let events = terminal_events(&state, "turn.completed", None);
+            assert!(!events
+                .iter()
+                .any(|event| event.event_type == "run.result.proposed"));
+            assert_eq!(events[0].event_type, "session.failed");
+            assert_eq!(events[0].payload["code"], "opencode_empty_response");
+            assert_eq!(events[1].payload["runTerminalState"], "failed");
+        }
     }
 
     #[test]

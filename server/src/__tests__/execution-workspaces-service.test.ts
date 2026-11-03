@@ -575,7 +575,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(await service.nextTerminalWorkspaceSweepAt()).toBe(sourceDone.getTime() + 7 * 86_400_000);
   });
 
-  it("does not use cached display Git state to remove a worktree", async () => {
+  it("checks current Git state before removal after a metadata read", async () => {
     const seed = await seedTerminalWorkspace({ mergedPr: true });
     await svc.getById(seed.executionWorkspaceId);
     await fs.writeFile(path.join(seed.worktreePath, "unsaved.txt"), "keep this work\n");
@@ -945,7 +945,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     expect(workspace).toMatchObject({ status: "archived", cleanupReason: "issue_terminal" });
   }, 20_000);
 
-  it("reads company-scoped execution configuration without live Git inspection", async () => {
+  it("reads workspace details and company-scoped execution configuration without live Git inspection", async () => {
     const seed = await seedAncestryTerminalWorkspace();
     const service = executionWorkspaceService(db, {
       inspectGitCloseReadiness: async () => { throw new Error("Git inspection unavailable"); },
@@ -970,7 +970,11 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     await expect(service.getStoredById(randomUUID(), seed.executionWorkspaceId))
       .rejects.toThrow("Task workspace access is no longer available");
     expect(await service.getStoredById(seed.companyId, randomUUID())).toBeNull();
-    await expect(service.getById(seed.executionWorkspaceId)).rejects.toThrow("Git inspection unavailable");
+    await expect(service.getById(seed.executionWorkspaceId)).resolves.toMatchObject({
+      id: seed.executionWorkspaceId, deliveryState: "unknown", config,
+      runtimeServices: [{ id: runtimeServiceId, status: "running" }],
+    });
+    await expect(service.getCloseReadiness(seed.executionWorkspaceId)).rejects.toThrow("Git inspection unavailable");
   });
 
   it("derives ancestry from the existing comparison and stays unknown for an invalid base", async () => {

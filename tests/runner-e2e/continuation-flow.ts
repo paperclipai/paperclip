@@ -1,6 +1,6 @@
 import { gradeNecessaryQuestion } from "./necessary-question.js";
 import { necessaryQuestionContract } from "./continuation-cases.js";
-import { validResumeQuestionForm } from "./question-resume-scoring.js";
+import { validResumeQuestionForm, validResumeReferenceForm } from "./question-resume-scoring.js";
 import { answerResumeQuestionThroughUi } from "./question-resume-ui.js";
 import { gradeLifecycleBaseline, type LifecycleCheckpoint } from "./lifecycle-baseline.js";
 import { lifecycleLiveCase, lifecycleLiveContinuation, gradeLifecycleNarrative } from "./lifecycle-live-cases.js";
@@ -220,12 +220,15 @@ export async function runContinuationFlow(input: {
     if (scenario.id === "necessary-free-text") {
       expect(validResumeQuestionForm(checkpoints[0]!, questions[0], false), "a bound text-only question").toBe(true);
     } else if (scenario.id === "question-answer-resume") {
-      expect(validResumeQuestionForm(checkpoints.at(-1)!, questions[0], !!choice), "a verified native question path and the requested form").toBe(true);
+      expect(choice ? validResumeQuestionForm(checkpoints.at(-1)!, questions[0], true)
+        : validResumeReferenceForm(checkpoints.at(-1)!, questions[0]), "a verified native question path and the requested form").toBe(true);
     } else if (scenario.id === "provider-question-bridge") {
       expect(isSingleClaudeQuestion(set.questions), "one choice question with only the optional provider Other field").toBe(true);
     } else expect(set.questions, "ask only the requested next question").toHaveLength(1);
     const before = new Set(runs.map((r) => r.id));
-    await answerResumeQuestionThroughUi(page, questions[0], choice ? { choice } : { text: scenario.answer });
+    await answerResumeQuestionThroughUi(page, questions[0], choice ? { choice } : {
+      text: scenario.answer, allowProviderCustomAnswer: scenario.id === "question-answer-resume",
+    });
     await settle(before, false, questions[0].id);
   }
   async function reply(body: string) {

@@ -1921,6 +1921,14 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json(delegation);
   });
 
+  router.get("/tool-connections/:connectionId/review-counts", managementGuard("connections:read", "GET /tool-connections/:connectionId/review-counts", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
+    const { resource } = connectionRequestContext(req)!;
+    if (!hasCompanyAccess(req, resource.companyId)) throw notFound("Tool connection not found");
+    assertCompanyAccess(req, resource.companyId);
+    res.json(await svc.getConnectionReviewCounts(resource.companyId, resource.connectionId!));
+  });
+
   router.get("/tool-connections/:connectionId/usage", managementGuard("connections:read", "GET /tool-connections/:connectionId/usage", { personal: true }), async (req, res) => {
     assertBoardOrAgent(req);
     const connection = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
@@ -2325,6 +2333,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     res.json({ profiles: await filterConnectionManagementRows(db, req, "connections:profiles", await svc.listProfiles(companyId), row => ({ profileId: row.id })) });
+  });
+
+  router.get("/tool-connections/:connectionId/profile-configuration", managementGuard("connections:profiles", "GET /tool-connections/:connectionId/profile-configuration", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    const profiles = await svc.listConnectionProfileConfiguration(existing.companyId, existing.id,
+      rows => filterConnectionManagementRows(db, req, "connections:profiles", rows, row => ({ profileId: row.id })));
+    res.json({ profiles });
   });
 
   router.get("/tool-profiles/:profileId/new-tools", managementGuard("connections:profiles", "GET /tool-profiles/:profileId/new-tools", { personal: true }), async (req, res) => {

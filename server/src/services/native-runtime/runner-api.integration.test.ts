@@ -6,6 +6,7 @@ import { and, eq } from "drizzle-orm";
 import { agents, agentWakeupRequests, assets, documents, heartbeatRuns, issues, projects, routineDocuments, routines, runnerApiResponseReservations, companySkills, companySkillVersions, companySkillTestRuns, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
 import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
+import * as nativeSetupReadiness from "./setup-readiness.js";
 import { secretService } from "../secrets.js";
 import { authorizationService } from "../authorization.js";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
@@ -23,6 +24,11 @@ import { RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 
 describe("runner API against real HTTP routes", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
+  const nativeAuthProbe = vi.fn<typeof nativeSetupReadiness.testNativeRunnerAuthentication>(async () => ({
+    adapterType: "paperclip_runner", status: "fail", testedAt: new Date().toISOString(),
+    checks: [{ code: "codex_hello_probe_auth_required", level: "error", message: "The API authority fixture has no provider credentials." }],
+  }));
+  let restoreNativeAuthProbe: (() => void) | undefined;
   const oldSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   const oldMasterKeyFile = process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
   beforeEach(() => {
@@ -31,16 +37,22 @@ describe("runner API against real HTTP routes", () => {
   });
   afterEach(() => vi.unstubAllEnvs());
   beforeAll(async () => {
+    // API authorization and replay use the real lifecycle; external model login is unavailable here.
+    const probe = vi.spyOn(nativeSetupReadiness, "testNativeRunnerAuthentication").mockImplementation(nativeAuthProbe);
+    restoreNativeAuthProbe = () => probe.mockRestore();
     process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID();
     server = await startRunnerApiTestServer();
     process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = join(server.root, "master.key");
   }, 60_000);
   afterAll(async () => {
-    await server?.close();
-    if (oldMasterKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
-    else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldMasterKeyFile;
-    if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
-    else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
+    try { await server?.close(); }
+    finally {
+      restoreNativeAuthProbe?.();
+      if (oldMasterKeyFile === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+      else process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE = oldMasterKeyFile;
+      if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
+      else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret;
+    }
   });
 
   it.each(["http_response", "runner_response"])("counts committed effects independently after losing the %s", async boundary => {
@@ -408,6 +420,12 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const call = { tool, callId: "completed-bridge-write", arguments: args };
     const result = await fixture.authority.execute(call);
     expect(result).toMatchObject({ ok: true, status: expect.any(Number), apiOperationId: expect.any(String) });
+    if (tool === "hire_agent") {
+      await expect.poll(() => nativeAuthProbe.mock.calls
+        .filter(([context]) => context.companyId === fixture.companyId)
+        .map(([context, provider]) => ({ companyId: context.companyId, provider, configProvider: context.config.provider })),
+      { timeout: 5_000 }).toEqual([{ companyId: fixture.companyId, provider: "codex", configProvider: "codex" }]);
+    }
     const reopened = new PaperclipRunnerToolAuthority(server.db, fixture.authority.binding);
     const effects = async () => {
       const snapshot = await fixture.snapshot();

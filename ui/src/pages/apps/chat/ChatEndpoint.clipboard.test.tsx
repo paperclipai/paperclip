@@ -488,6 +488,8 @@ describe("chat setup and identity-link clipboard actions", () => {
     expect(container.querySelectorAll('aside nav button')).toHaveLength(4);
     expect(container.querySelector('h1')?.textContent).toBe("Success");
     expect(container.textContent).toContain("You can now talk to Maya in Slack");
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com/client/workspace-a/DTEST");
     expect(container.querySelector('[aria-label="Maya avatar"]')).not.toBeNull();
     expect(container.querySelector('main')?.textContent ?? container.textContent).not.toContain("Save & exit");
     expect(container.textContent).not.toContain("Copy message");
@@ -505,9 +507,25 @@ describe("chat setup and identity-link clipboard actions", () => {
 
   it("keeps settings focused on channel access and the test-message action", async () => {
     mocks.tab = "settings";
-    await render("slack", true);
+    const endpoint = await render("slack", true);
     expect(container.textContent).toContain("Send me a test message");
     expect(container.textContent).toContain("Open Slack configuration");
+    expect([...container.querySelectorAll("a")].some(link => link.textContent?.trim() === "Open Slack")).toBe(false);
+    flushSync(() => client.setQueryData(queryKeys.chatEndpoints.detail(endpoint.id), {
+      ...endpoint, status: "active", providerAccountId: "workspace-a",
+      setup: { ...endpoint.setup, step: "complete", slackAccount: { externalUserId: "UPERSON", paperclipUserId: "owner-user", status: "linked", dmChannelId: "DTEST" } },
+    }));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com/client/workspace-a/DTEST");
+    flushSync(() => client.setQueryData(queryKeys.auth.session, { user: { id: "other-user" } }));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com");
+    flushSync(() => client.setQueryData(queryKeys.auth.session, null));
+    await settle();
+    expect([...container.querySelectorAll("a")].find(link => link.textContent?.trim() === "Open Slack")?.getAttribute("href"))
+      .toBe("https://app.slack.com");
     expect(container.textContent).not.toContain("Message in a channel");
     expect(container.textContent).not.toContain("Agent avatar");
     expect(container.textContent).not.toContain("Manage action permissions");

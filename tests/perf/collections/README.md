@@ -22,3 +22,46 @@ attention task index. Screenshots and failure traces stay in `test-results`.
 Request counts and row budgets are acceptance checks. They do not establish an
 end-to-end latency improvement. Measure cold, warm, and Back timings separately
 with the same fixture, assets, cache, viewport, and CPU/network settings.
+
+`parent-context.spec.ts` also covers a delayed missing-parent index response,
+reuse of an already indexed parent, and row geometry through deferred visible
+diagnostics. Parent captions retain the initial reveal boundary. Failed-run
+context and parent-to-failure cache transitions are covered by `Inbox.test.tsx`.
+
+To collect timings, serve pinned baseline and candidate production assets from
+two loopback origins that proxy the same disposable API. Then run:
+
+```sh
+INBOX_BASELINE_URL=http://127.0.0.1:<baseline-port> \
+INBOX_CANDIDATE_URL=http://127.0.0.1:<candidate-port> \
+  node --import ./server/node_modules/tsx/dist/loader.mjs \
+  tests/perf/collections/measure-mine-context.ts
+```
+
+The script retains a four-parent, 30-child fixture, archives three completed
+parents, and enables the personal Coordinator preference. It runs five alternating
+pairs by default. `INBOX_PAIRS`, `INBOX_FIXTURE_FILE`, and `INBOX_OUTPUT` override
+the count and evidence paths. Each cold sample starts with empty HTTP and query
+caches. Warm Mine navigation and task-to-Mine Back retain those caches. The report
+keeps every sample, errors, row membership/order, geometry, assets and API timings.
+Keep upstream identity/data timings as controls: a faster cold total alone does
+not attribute the gain to parent context. Use the same immutable asset cache policy
+on both origins and stop builds and suites during timing runs.
+
+Startup cases also check that shared collection controls do not require the
+task-detail bundle before reveal, even when a different organization is remembered.
+Code warms after the collection paints, or on task-link intent. A successful
+immutable response allows module preloading to compile the cached chunk without
+executing it. A failed fetch leaves the collection usable and permits navigation
+without a document reload. Direct task URLs preload their static dependencies
+while identity is pending. These cases must run with
+production assets: development modules do not exercise the bundle boundaries.
+
+The functional cases route feature settings and delayed responses. Routing
+disables browser HTTP caching. For warm-cache timings, set the real local feature
+settings and use fresh browser contexts without request interception. Keep normal
+cache writes enabled so code warmed after paint can be used on the next task open.
+Retain intercepted runs as separate diagnostic evidence.
+Match the server's hashed asset cache policy (`public, max-age=31536000, immutable`);
+Vite preview's default `no-cache` policy adds revalidation that the shipped server
+does not require. Keep HTML uncached and return 404 for missing assets.

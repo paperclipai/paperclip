@@ -52,7 +52,7 @@ const preflightProfile = sql<Run["runnerProfileJson"]>`case
       then jsonb_build_object('adapterType', field.value->'adapterType') else field.value end), '{}'::jsonb)
     from jsonb_each(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
       then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) as field(key, value)
-    where field.key in ('adapterDispatch', 'nativeWorkspaceSync')
+    where field.key in ('adapterDispatch', 'nativeWorkspaceSync', 'remoteWorkspace')
   ) end`;
 const continuationRunFields = {
   id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
@@ -475,7 +475,7 @@ export async function admitExplicitNativeContinuation(input: {
   }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.queuedCommentInterruptId),
     eq(agentWakeupRequests.agentId, agentId), eq(agentWakeupRequests.status, "deferred_issue_execution")));
   if (cancelledStartupIds.size) await db.transaction(async tx => {
-    await notifyExecutionRunWork(tx);
+    await notifyExecutionRunWork(tx, { companyId, agentId });
     for (const runId of cancelledStartupIds) {
       await tx.update(nativeRunFinalizations).set({
         phase: "terminal_failure", failureCode: "native_startup_cancelled", nextAttemptAt: null,

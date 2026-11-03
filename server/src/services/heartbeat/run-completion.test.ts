@@ -309,9 +309,16 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
   it("retains native completion metadata when reconciliation already committed the same terminal status", async () => {
     const finishedAt = new Date("2026-10-09T12:00:00Z");
     const f = await fixture({ runtimeMode: "native", status: "succeeded", finishedAt, resultJson: { durable: "accepted" }, usageJson: { durableReceipt: "native" } });
-    f.input.adapterResult.nativeFinalization = { schema: "paperclip.native-finalization.v1", runtimeMode: "native", runId: f.run.id, companyId: f.run.companyId, issueId: "unused", result: {}, terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "done" }, turnId: null, sourceInstanceId: "test", normalizedSessionId: "native-session", providerSessionId: null, driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, workspaceFinalizeStatus: "succeeded" };
+    await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, f.agent.id));
+    f.agent.adapterType = "paperclip_runner";
+    f.input.sessionCodec = getAdapterSessionCodec(f.agent.adapterType);
+    const nativeSessionId = randomUUID(), providerSessionId = randomUUID();
+    f.input.adapterResult.sessionId = nativeSessionId;
+    delete f.input.adapterResult.sessionParams;
+    f.input.adapterResult.sessionDisplayId = providerSessionId;
+    f.input.adapterResult.nativeFinalization = { schema: "paperclip.native-finalization.v1", runtimeMode: "native", runId: f.run.id, companyId: f.run.companyId, issueId: "unused", result: {}, terminal: { schema: "paperclip.prp.terminal.v1", turnTerminalState: "completed", runTerminalState: "succeeded", reportedWorkDisposition: "done" }, turnId: null, sourceInstanceId: "test", normalizedSessionId: nativeSessionId, providerSessionId, driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, workspaceFinalizeStatus: "succeeded" };
     await f.completion.completeRun(f.input);
-    expect(await read(f.run.id)).toMatchObject({ status: "succeeded", finishedAt, sessionIdAfter: "provider-session", resultJson: { durable: "accepted" }, usageJson: { durableReceipt: "native", inputTokens: 20 } });
+    expect(await read(f.run.id)).toMatchObject({ status: "succeeded", finishedAt, sessionIdAfter: providerSessionId, resultJson: { durable: "accepted" }, usageJson: { durableReceipt: "native", inputTokens: 20 } });
     expect(f.deps.updateRuntimeState).toHaveBeenCalledOnce();
   });
 
@@ -370,6 +377,20 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     expect(run.error).not.toContain("private-identity-material");
     expect((await f.deps.getTaskSession(f.agent.companyId, f.agent.id, f.agent.adapterType, "completion-task"))?.sessionDisplayId).toBe("checkpoint");
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
+  });
+
+  it.each(["execution", "setup"] as const)("retains a provider startup cause at the outer %s settlement boundary", async phase => {
+    const f = await fixture();
+    const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+      category: "rate_limit", message: "This request would exceed your account's rate limit.", httpStatus: 429, retryability: "unknown" };
+    const error = Object.assign(new Error("PRP command session.open failed"), {
+      runnerCommandResult: { result: { code: "command_execution_failed", providerFailure } },
+    });
+    f.deps.runLogStore.finalize.mockRejectedValueOnce(new Error("secondary log cleanup failure"));
+    if (phase === "setup") await f.completion.failRunSetup(f.setup(error));
+    else await f.completion.failRun(f.failure(error));
+    expect(await read(f.run.id)).toMatchObject({ status: "failed", error: "PRP command session.open failed",
+      resultJson: { providerFailure } });
   });
 
   it("still records failure and releases issue ownership when log finalization and progress flushing fail", async () => {

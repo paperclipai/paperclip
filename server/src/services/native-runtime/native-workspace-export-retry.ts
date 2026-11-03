@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
 import { randomUUID } from "node:crypto";
@@ -141,6 +142,7 @@ export async function retryNativeWorkspaceExport(input: {
         await tx.update(heartbeatRuns).set({ status: "running", finishedAt: null, error: null, errorCode: null,
           nativePhase: "result_accepted", nativePhaseUpdatedAt: now,
           resultJson: { ...current.run.resultJson, workspaceExportRetry: retry, finalizationPhase: "result_accepted", failureCode: null, originalFailureCode: null, nextAttemptAt: null }, updatedAt: now }).where(eq(heartbeatRuns.id, current.run.id));
+        await notifyStatusCardIssueChange(tx, current.run.companyId);
         await tx.update(issues).set({ executionRunId: current.run.id, updatedAt: now }).where(eq(issues.id, current.issue.id));
         // Reclaim the same lease only for control-plane copyback. The normal
         // finalization settlement will stop/retain it again on success or failure.

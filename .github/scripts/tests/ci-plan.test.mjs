@@ -294,6 +294,10 @@ test("complete merge trees handle more than 300 files, base advancement, renames
   assert.ok(result.changed.includes("ui/src/deleted.ts")); assert.ok(result.changed.includes("ui/src/renamed.ts"));
   assert.ok(!result.changed.includes(".github/workflows/unrelated.yml"));
   assert.equal(plan(result.changed).forceReason, null);
+  const shallow = path.join(directory, "shallow");
+  git("clone", "--quiet", "--depth", "2", `file://${directory}`, shallow);
+  assert.equal(execFileSync("git", ["rev-parse", "--is-shallow-repository"], { cwd: shallow, encoding: "utf8" }).trim(), "true");
+  assert.deepEqual(mergeDiff(head, prHead, shallow), result);
   assert.throws(() => mergeDiff(head, base, directory), /expected PR head/);
   assert.throws(() => mergeDiff(prHead, prHead, directory), /merge commit/);
   assert.throws(() => mergeDiff("f".repeat(40), prHead, directory));
