@@ -1,8 +1,8 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, gte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { activityLog, heartbeatRuns } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
-import { forbidden } from "../errors.js";
+import { forbidden, tooManyRequests } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 
 export const CROSS_ISSUE_INFLUENCE_LIMIT = 20;
@@ -10,6 +10,66 @@ export const CROSS_ISSUE_INFLUENCE_ENFORCE_AT = new Date("2026-08-11T00:00:00.00
 
 const CROSS_ISSUE_INFLUENCE_ACTIVITY = "issue.cross_issue_influence_observed";
 const CROSS_ISSUE_INFLUENCE_REJECTED_ACTIVITY = "issue.cross_issue_influence_cap_rejected";
+export const RUNLESS_AGENT_COMMENT_ADMISSION_ACTIVITY = "issue.runless_agent_comment_admitted";
+export const RUNLESS_AGENT_COMMENT_ADMISSION_LIMIT = 20;
+export const RUNLESS_AGENT_COMMENT_ADMISSION_WINDOW_SECONDS = 60;
+
+/**
+ * Charges one fresh keyed comment admission to a runless agent. Callers must
+ * already hold the issue lock so this advisory lock never precedes an issue lock.
+ */
+export async function admitRunlessAgentComment(
+  db: Db,
+  input: {
+    companyId: string;
+    agentId: string;
+    issueId: string;
+    responsibleUserId?: string | null;
+  },
+): Promise<void> {
+  const lockKey = `paperclip:runless-agent-comment-admission:${input.companyId}:${input.agentId}`;
+  await db.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`,
+  );
+
+  const [window] = await db
+    .select({
+      count: count(),
+      retryAfterSeconds: sql<number>`greatest(1, ceil(extract(epoch from (min(${activityLog.createdAt}) + interval '1 minute' - statement_timestamp()))))::int`,
+    })
+    .from(activityLog)
+    .where(and(
+      eq(activityLog.companyId, input.companyId),
+      eq(activityLog.agentId, input.agentId),
+      eq(activityLog.action, RUNLESS_AGENT_COMMENT_ADMISSION_ACTIVITY),
+      gte(activityLog.createdAt, sql`statement_timestamp() - interval '1 minute'`),
+    ));
+  const used = Number(window?.count ?? 0);
+  if (used >= RUNLESS_AGENT_COMMENT_ADMISSION_LIMIT) {
+    throw tooManyRequests("Runless agent comment rate limit reached", {
+      code: "runless_agent_comment_rate_limited",
+      limit: RUNLESS_AGENT_COMMENT_ADMISSION_LIMIT,
+      windowSeconds: RUNLESS_AGENT_COMMENT_ADMISSION_WINDOW_SECONDS,
+      retryAfterSeconds: Number(window?.retryAfterSeconds ?? RUNLESS_AGENT_COMMENT_ADMISSION_WINDOW_SECONDS),
+    });
+  }
+
+  await db.insert(activityLog).values({
+    companyId: input.companyId,
+    actorType: "agent",
+    actorId: input.agentId,
+    agentId: input.agentId,
+    responsibleUserId: input.responsibleUserId ?? null,
+    action: RUNLESS_AGENT_COMMENT_ADMISSION_ACTIVITY,
+    entityType: "issue",
+    entityId: input.issueId,
+    details: {
+      limit: RUNLESS_AGENT_COMMENT_ADMISSION_LIMIT,
+      windowSeconds: RUNLESS_AGENT_COMMENT_ADMISSION_WINDOW_SECONDS,
+    },
+    createdAt: sql`statement_timestamp()`,
+  });
+}
 
 /**
  * Every kind shares one per-run counter. `interaction_resolution` covers the

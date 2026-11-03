@@ -26,3 +26,22 @@ export function shouldWakeAssigneeForIssueComment(input: {
     (input.currentStatus !== "done" && input.currentStatus !== "cancelled")
   );
 }
+
+export function buildIssueCommentWakeIdempotencyKey(
+  commentId: string,
+  agentId: string,
+) {
+  return `issue-comment:${commentId}:${agentId}`;
+}
+
+export function isIssueCommentWakeIdempotencyKey(input: {
+  idempotencyKey?: string | null;
+  commentId?: string | null;
+  agentId: string;
+}) {
+  return Boolean(
+    input.commentId &&
+      input.idempotencyKey ===
+        buildIssueCommentWakeIdempotencyKey(input.commentId, input.agentId),
+  );
+}
