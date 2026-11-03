@@ -3,7 +3,7 @@ import { agents, companies, environmentLeases, heartbeatRuns, issues, nativeRunF
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
-import { readNativeControllerRecovery } from "./native-controller-recovery.js";
+import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
 
 export type RemoteWarmSessionRecovery = {
   identity: Record<string, string>;
@@ -71,11 +71,14 @@ export async function inspectRemoteWarmSessionRecovery(input: {
     .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
     .where(and(eq(heartbeatRuns.id, identity.runId), eq(heartbeatRuns.companyId, binding.companyId),
       eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId)));
-  if (!prior || prior.run.status !== "succeeded" || prior.owner.phase !== "committed" ||
-      !prior.owner.resultId || prior.owner.leaseOwner || !prior.owner.controllerPid ||
+  if (!prior || prior.run.status !== "succeeded" || !prior.owner.resultId || !prior.owner.controllerPid ||
       !prior.owner.controllerProcessStartedAt || !prior.owner.controllerBootId) return deny();
   const previous = parseNativeExecutionInput(prior.run.runnerProfileJson?.nativeExecutionInput);
   if (previous.binding.runId !== identity.runId || !input.matchesExecution(previous)) return deny();
+  if (prior.owner.leaseOwner && prior.owner.leaseExpiresAt && prior.owner.leaseExpiresAt > new Date()) {
+    throw new NativeControllerRecoveryWaitingError(prior.owner.leaseExpiresAt);
+  }
+  if (prior.owner.phase !== "committed" || prior.owner.leaseOwner) return deny();
   const checkpoint = input.loadCheckpoint(previous);
   if (!checkpoint || checkpoint.identity.runId !== identity.runId ||
       checkpoint.identity.companyId !== binding.companyId || checkpoint.identity.issueId !== binding.issueId ||
