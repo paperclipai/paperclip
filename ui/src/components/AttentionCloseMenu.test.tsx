@@ -171,12 +171,28 @@ describe("AttentionCloseMenu", () => {
 });
 
 describe("AttentionForOtherGate", () => {
-  it("hides the answer controls until the person continues", async () => {
-    await render(<AttentionForOtherGate item={card("a", { audience: forDotta })} currentUserId={SCOTT} userLabelMap={labels}><button type="button">Approve</button></AttentionForOtherGate>);
-    expect(container.textContent).toContain("This is for @Dotta. Continue?");
-    expect(buttonWithText("Approve", container)).toBeUndefined();
-    await click(buttonWithText("Continue", container));
+  it("shows the card at once and asks only when the person acts (PAP-767)", async () => {
+    const onApprove = vi.fn();
+    await render(<AttentionForOtherGate item={card("a", { audience: forDotta })} currentUserId={SCOTT} userLabelMap={labels}>
+      <h2>Ship the launch plan</h2><button type="button" onClick={onApprove}>Approve</button>
+    </AttentionForOtherGate>);
+    // The title and the controls are readable before anything is asked.
+    expect(container.textContent).toContain("Ship the launch plan");
     expect(buttonWithText("Approve", container)).toBeTruthy();
+    expect(container.textContent).not.toContain("This is for @Dotta");
+
+    await click(buttonWithText("Approve", container));
+    expect(onApprove).not.toHaveBeenCalled();
+    expect(container.querySelector("[data-attention-for-other-prompt]")?.textContent).toContain("This is for @Dotta. Continue?");
+
+    // Cancel keeps the card as it was; Continue runs the held-back Approve.
+    await click(buttonWithText("Cancel", container));
+    expect(container.querySelector("[data-attention-for-other-prompt]")).toBeNull();
+    expect(onApprove).not.toHaveBeenCalled();
+    await click(buttonWithText("Approve", container));
+    await click(buttonWithText("Continue", container));
+    expect(onApprove).toHaveBeenCalledTimes(1);
+    expect(container.querySelector("[data-attention-for-other-prompt]")).toBeNull();
   });
 
   it("shows the controls at once on your own card", async () => {

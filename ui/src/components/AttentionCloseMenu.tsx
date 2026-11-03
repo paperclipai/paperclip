@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { AlarmClock, Archive, ArrowRightLeft, Ban, ChevronDown, Clock, ExternalLink, RotateCcw, UserRound } from "lucide-react";
 import type { AttentionItem } from "@paperclipai/shared";
 import { Link } from "@/lib/router";
@@ -373,10 +373,14 @@ export function AttentionSnoozedGroup({
   );
 }
 
+/** The controls that act on a card; links only open something to read. */
+const ACTING_CONTROL_SELECTOR = 'button, [role="button"], [role="radio"], [role="checkbox"], input[type="submit"]';
+
 /**
  * Before you act on a card for a different person, the UI asks first (PAP-749
- * plan §6). The answer controls stay hidden until you continue; the server
- * still checks who may answer.
+ * plan §6). The card stays readable: its title and body show at once, and the
+ * question appears when you press one of its controls (PAP-767). Continue runs
+ * the control you pressed; the server still checks who may answer.
  */
 export function AttentionForOtherGate({
   item,
@@ -390,18 +394,50 @@ export function AttentionForOtherGate({
   children: ReactNode;
 }) {
   const [confirmed, setConfirmed] = useState(false);
+  const [pending, setPending] = useState<HTMLElement | null>(null);
   const otherUserId = attentionOtherAudienceUserId(item, currentUserId);
-  if (!otherUserId || confirmed) return <>{children}</>;
+  useEffect(() => {
+    // Run the control that was held back once the person said Continue.
+    if (!confirmed || !pending) return;
+    const control = pending;
+    setPending(null);
+    if (control.isConnected) control.click();
+  }, [confirmed, pending]);
+  if (!otherUserId) return <>{children}</>;
+  // The wrapper stays after Continue, so the card is not remounted and keeps
+  // what the person typed or picked.
   return (
     <div
-      role="group"
-      data-attention-for-other-gate
-      className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm"
+      className="space-y-4"
+      data-attention-for-other-gate={confirmed ? "confirmed" : pending ? "asking" : "waiting"}
+      onClickCapture={(event) => {
+        if (confirmed) return;
+        const target = event.target instanceof Element ? event.target.closest<HTMLElement>(ACTING_CONTROL_SELECTOR) : null;
+        if (!target || !event.currentTarget.contains(target) || target.closest("[data-attention-for-other-prompt]")) return;
+        event.preventDefault();
+        event.stopPropagation();
+        setPending(target);
+      }}
     >
-      <span>{attentionForOtherText(attentionUserLabel(otherUserId, userLabelMap), "continue")}</span>
-      <Button type="button" variant="outline" size="xs" onClick={(event) => { event.stopPropagation(); setConfirmed(true); }}>
-        Continue
-      </Button>
+      {children}
+      {pending && !confirmed ? (
+        <div
+          role="group"
+          aria-live="polite"
+          data-attention-for-other-prompt
+          className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-sm"
+        >
+          <span>{attentionForOtherText(attentionUserLabel(otherUserId, userLabelMap), "continue")}</span>
+          <span className="flex items-center gap-2">
+            <Button type="button" variant="ghost" size="xs" onClick={(event) => { event.stopPropagation(); setPending(null); }}>
+              Cancel
+            </Button>
+            <Button type="button" variant="outline" size="xs" onClick={(event) => { event.stopPropagation(); setConfirmed(true); }}>
+              Continue
+            </Button>
+          </span>
+        </div>
+      ) : null}
     </div>
   );
 }
