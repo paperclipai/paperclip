@@ -38,7 +38,7 @@ export function isNewHumanIntentAfterToolRejection(input: {
     || run.id !== session.runId || run.companyId !== session.companyId || run.agentId !== session.agentId
     || run.status !== "running" || run.responsibleUserId !== session.responsibleUserId) return false;
   const context = run.contextSnapshot;
-  if (!context || context.source !== "issue.comment" || context.commentId !== comment.id
+  if (!context || (context.source !== "issue.comment" && context.source !== "issue.comment.reopen") || context.commentId !== comment.id
     || context.issueId !== session.issueId
     || (context.taskId != null && context.taskId !== session.issueId)
     || (run.issueId != null && run.issueId !== session.issueId)

@@ -2725,7 +2725,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     })).rejects.toMatchObject({ reasonCode: "action_declined" });
   });
 
-  it("opens a fresh review only for a later trusted human intent after a decline", async () => {
+  it.each(["issue.comment", "issue.comment.reopen"])("opens a fresh review only for a later trusted human intent after a decline (%s)", async source => {
     const { company, agent, issue, run } = await createRunFixture(db);
     const human = "board-user";
     await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: human, membershipRole: "owner" });
@@ -2751,7 +2751,7 @@ describeEmbeddedPostgres("tool gateway service", () => {
     await db.update(toolActionRequests).set({ decidedAt: rejectedAt, resolvedAt: rejectedAt }).where(eq(toolActionRequests.id, first!.id));
     const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, status: "running",
       responsibleUserId: human, startedAt: new Date(), invocationSource: "on_demand",
-      contextSnapshot: { issueId: issue.id, source: "issue.comment", commentId: nextComment!.id } }).returning();
+      contextSnapshot: { issueId: issue.id, source, commentId: nextComment!.id } }).returning();
     await initializeRunIdentity(db, { companyId: company.id, runId: nextRun!.id, issueId: issue.id,
       responsibleUserId: human, messageIds: [nextComment!.id], cause: "instruction" });
     const next = await gateway.createSession(runSessionInput(company, agent, nextRun!));

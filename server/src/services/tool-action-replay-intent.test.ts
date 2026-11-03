@@ -20,6 +20,17 @@ it("distinguishes a new authenticated human request after rejection without appr
   const f = fixture(); expect(isNewHumanIntentAfterToolRejection(f)).toBe(true);
   expect(f.rejection.status).toBe("rejected");
 });
+it("accepts the ordinary direct-human reopen source with the same persisted intent checks", () => {
+  const f = fixture(); f.run.contextSnapshot.source = "issue.comment.reopen";
+  expect(isNewHumanIntentAfterToolRejection(f)).toBe(true);
+});
+it.each(["automatic", "derived", "forged comment"])("does not treat %s reopen input as a new human intent", fault => {
+  const f = fixture(); f.run.contextSnapshot.source = "issue.comment.reopen";
+  if (fault === "automatic") f.run.contextSnapshot.source = "automation.issue.comment.reopen";
+  else if (fault === "derived") Object.assign(f.comment, { derivedCreatedByRunId: "agent-run" });
+  else f.run.contextSnapshot.commentId = "unrelated-human-comment";
+  expect(isNewHumanIntentAfterToolRejection(f)).toBe(false);
+});
 const invalid: Array<[string, (f: ReturnType<typeof fixture>) => void]> = [
   ["same intent retry", f => { f.comment.createdAt = new Date(1_000); }],
   ["same run retry", f => { f.invocation.runId = f.run.id; }],
