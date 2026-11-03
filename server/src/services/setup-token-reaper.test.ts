@@ -124,6 +124,22 @@ describe("setup-token reaper", () => {
     expect(store.rows.size).toBe(0);
   });
 
+  it("removes a reapable record without a lease id without calling the lease provider", async () => {
+    // A nullable provider_lease_id from an interrupted or legacy session maps
+    // to an empty string. An environment lease id is a UUID, so no provider
+    // lease can exist for this record.
+    const store = createMemoryStore();
+    store.seed({ sessionId: "orphan-without-lease", leaseId: "", state: "failed" });
+    const leases = createFakeLeases();
+    const reaper = createSetupTokenReaper({ store, leases, now: () => NOW });
+
+    const result = await reaper.sweep();
+
+    expect(result).toEqual({ released: 1, failed: 0 });
+    expect(leases.releaseByIdCalls).toEqual([]);
+    expect(store.rows.size).toBe(0);
+  });
+
   it("reaps every reapable record in one sweep and stays idempotent on the next", async () => {
     const store = createMemoryStore();
     store.seed({ sessionId: "orphan-a", leaseId: "lease-a", state: "failed" });
