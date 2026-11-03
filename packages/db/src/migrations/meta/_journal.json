@@ -2969,6 +2969,13 @@
       "when": 1793724587619,
       "tag": "0425_awesome_living_lightning",
       "breakpoints": true
+    },
+    {
+      "idx": 426,
+      "version": "7",
+      "when": 1793733446322,
+      "tag": "0426_absent_guardian",
+      "breakpoints": true
     }
   ]
 }
