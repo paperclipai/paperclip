@@ -20,6 +20,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { linkExcludedPlugins } from "./link-plugin-dev-sdk.mjs";
 import { LOW_MEMORY_VARIABLE, runTsc } from "./run-tsc.mjs";
+import { PROJECTS } from "./typecheck-test-projects.mjs";
 
 export const PROVIDER_WORKSPACE = "scripts/typecheck-sandbox-providers";
 
@@ -50,18 +51,8 @@ export const PROGRAMS = [
   "tests/tsconfig.playwright.json",
 ];
 
-// Test files another check owns. Everything else must be in a program.
-export const CHECKED_ELSEWHERE = [
-  // server/scripts/typecheck-layers.mjs reads this tree.
-  "server/src/",
-  // These load the server source, which is too large for one program in 4 GiB.
-  // They need the layer declarations from server/scripts/typecheck-layers.mjs.
-  "server/test-baselines/",
-  "tests/e2e/",
-  "tests/lifecycle-baseline/",
-  "tests/runner-e2e/",
-  "tests/speko-native/",
-];
+// server/scripts/typecheck-layers.mjs reads this tree. Everything else must be in a program.
+export const CHECKED_ELSEWHERE = ["server/src/"];
 
 const PREPARE_STEPS = [
   ["--filter", "@paperclipai/plugin-sdk", "ensure-build-deps"],
@@ -144,7 +135,9 @@ export function checkCoverage({
 }) {
   const checkedFiles = [];
   // `pnpm build` and `typecheck:build-gaps` check each workspace's tsconfig.json.
-  for (const config of [...workspaceConfigs(root), ...programs]) {
+  // scripts/typecheck-test-projects.mjs checks these same files through tsconfig.layers.json.
+  const projectConfigs = PROJECTS.map((project) => `${project}/tsconfig.json`);
+  for (const config of [...workspaceConfigs(root), ...projectConfigs, ...programs]) {
     const listing = listFiles(config, { cwd: root, env });
     if (listing.status !== 0) {
       logError(`typecheck:test-programs: could not list the files of ${config}\n${listing.output ?? ""}`);

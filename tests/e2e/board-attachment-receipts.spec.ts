@@ -3,6 +3,7 @@ import {
   expect,
   test,
   type APIRequestContext,
+  type APIResponse,
   type Locator,
   type Page,
 } from "@playwright/test";
@@ -18,7 +19,7 @@ type Attachment = {
 type Comment = { id: string; body: string; clientRequestId?: string | null };
 
 async function body<T>(
-  response: Awaited<ReturnType<APIRequestContext["get"]>>,
+  response: Pick<APIResponse, "json" | "ok" | "status" | "text">,
 ): Promise<T> {
   expect(response.ok(), `${response.status()}: ${await response.text()}`).toBe(
     true,
