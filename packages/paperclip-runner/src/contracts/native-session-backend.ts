@@ -1,4 +1,5 @@
 import type { ProviderFailure } from "./provider-failure.generated.js";
+import type { RunnerHarnessCheckpoint } from "@paperclipai/runner-sdk/contracts";
 import type { NativeRunRuntimeGrant } from "./runtime-context.js";
 import type {
   NativeRunIdentity,
@@ -55,6 +56,7 @@ export interface PersistedNativeSession {
   providerSessionId?: string | null;
   /** Tagged provider-owned identity required for safe driver recovery. */
   providerIdentity?: PersistedHarnessProviderIdentity;
+  extensionCheckpoint?: RunnerHarnessCheckpoint;
   workingDirectory?: string;
   codexUsageBaseline?: PersistedHarnessSession["codexUsageBaseline"];
   providerRecoveryPolicy?:

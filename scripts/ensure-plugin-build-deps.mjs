@@ -16,12 +16,20 @@ const lockPollMs = 100;
 
 const buildTargets = [
   {
+    name: "@paperclipai/runner-sdk",
+    output: path.join(rootDir, "packages/runner-sdk/dist/index.js"),
+    completion: path.join(rootDir, "packages/runner-sdk/dist/.paperclip-build-complete"),
+    sourceDir: path.join(rootDir, "packages/runner-sdk/src"),
+    tsconfig: path.join(rootDir, "packages/runner-sdk/tsconfig.json"),
+    dependencies: [],
+  },
+  {
     name: "@paperclipai/shared",
     output: path.join(rootDir, "packages/shared/dist/index.js"),
     completion: path.join(rootDir, "packages/shared/dist/.paperclip-build-complete"),
     sourceDir: path.join(rootDir, "packages/shared/src"),
     tsconfig: path.join(rootDir, "packages/shared/tsconfig.json"),
-    dependencies: [],
+    dependencies: [0],
   },
   {
     name: "@paperclipai/plugin-sdk",
@@ -29,7 +37,7 @@ const buildTargets = [
     completion: path.join(rootDir, "packages/plugins/sdk/dist/.paperclip-build-complete"),
     sourceDir: path.join(rootDir, "packages/plugins/sdk/src"),
     tsconfig: path.join(rootDir, "packages/plugins/sdk/tsconfig.json"),
-    dependencies: [0],
+    dependencies: [1],
   },
 ];
 

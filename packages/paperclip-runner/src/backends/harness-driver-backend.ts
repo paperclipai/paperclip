@@ -14,6 +14,7 @@ import type {
 } from "../contracts/native-session-backend.js";
 import { NativeSessionProtocolIntegrityError } from "../contracts/native-session-backend.js";
 import type { NativeRunRuntimeGrant } from "../contracts/runtime-context.js";
+import type { NativeSessionCapabilities } from "../contracts/types.js";
 import type {
   PrpEvent,
   PrpTerminalState,
@@ -74,7 +75,9 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         .catch(() => undefined);
       throw error;
     }
-    return new HarnessNativeSession(input, session, undefined, (await this.#driver.descriptor()).capabilities.steering, this.terminalDrainTimeoutMs);
+    const descriptor = await this.#driver.descriptor();
+    return new HarnessNativeSession(input, session, undefined, descriptor.capabilities.steering, this.terminalDrainTimeoutMs,
+      descriptor.kind === "extension" ? descriptor.capabilities : undefined);
   }
 
   async recoverSession(
@@ -121,6 +124,9 @@ export class HarnessDriverBackend implements NativeSessionBackend {
       ...(snapshot.providerIdentity === undefined
         ? {}
         : { providerIdentity: structuredClone(snapshot.providerIdentity) }),
+      ...(snapshot.extensionCheckpoint === undefined
+        ? {}
+        : { extensionCheckpoint: structuredClone(snapshot.extensionCheckpoint) }),
       ...(snapshot.workingDirectory === undefined
         ? {}
         : { workingDirectory: snapshot.workingDirectory }),
@@ -179,14 +185,16 @@ export class HarnessDriverBackend implements NativeSessionBackend {
         .catch(() => undefined);
       throw error;
     }
+    const descriptor = await this.#driver.descriptor();
     return {
       recovered: true,
       session: new HarnessNativeSession(
         { identity: snapshot.identity },
         recovered.session,
         recoveredTerminal,
-        (await this.#driver.descriptor()).capabilities.steering,
+        descriptor.capabilities.steering,
         this.terminalDrainTimeoutMs,
+        descriptor.kind === "extension" ? descriptor.capabilities : undefined,
       ),
     };
   }
@@ -443,6 +451,7 @@ class HarnessNativeSession implements NativeSession {
     terminal?: PrpTerminalState | null,
     steeringSupported = false,
     private readonly terminalDrainTimeoutMs?: number,
+    private readonly admittedCapabilities?: NativeSessionCapabilities,
   ) {
     this.#steeringSupported = steeringSupported;
     this.#input = structuredClone(input);
@@ -454,9 +463,9 @@ class HarnessNativeSession implements NativeSession {
     return structuredClone(this.#input.identity);
   }
 
-  async capabilities() {
+  async capabilities(): Promise<NativeSessionCapabilities> {
     const negotiated = this.#session.turnControlCapabilities?.();
-    return {
+    const available: NativeSessionCapabilities = {
       resume: true,
       typedEvents: true,
       perTurnReasoning: this.#session.supportsTurnReasoning?.() === true,
@@ -473,6 +482,15 @@ class HarnessNativeSession implements NativeSession {
       goals: this.#session.goal !== undefined,
       threadLineage: this.#session.lineage !== undefined,
     };
+    if (this.admittedCapabilities === undefined) return available;
+    const admitted = structuredClone(this.admittedCapabilities);
+    const result = { ...available, ...admitted };
+    for (const key of Object.keys(available) as Array<keyof NativeSessionCapabilities>) {
+      if (typeof available[key] === "boolean") {
+        Object.assign(result, { [key]: available[key] === true && admitted[key] === true });
+      }
+    }
+    return result;
   }
 
   async attachRun(input: {
@@ -849,6 +867,9 @@ class HarnessNativeSession implements NativeSession {
       ...(snapshot.providerIdentity === undefined
         ? {}
         : { providerIdentity: structuredClone(snapshot.providerIdentity) }),
+      ...(snapshot.extensionCheckpoint === undefined
+        ? {}
+        : { extensionCheckpoint: structuredClone(snapshot.extensionCheckpoint) }),
       ...(snapshot.workingDirectory === undefined
         ? {}
         : { workingDirectory: snapshot.workingDirectory }),

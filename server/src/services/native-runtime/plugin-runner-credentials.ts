@@ -1,7 +1,9 @@
 import { realpath } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { copyBackCodexAuth } from "@paperclipai/adapter-codex-local/server";
 import { environmentTaskCredentialSchema, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
+import { isHarnessCredentialEnvironmentKey } from "@paperclipai/runner-sdk/contracts";
 import { readLocalAiCredentialFile } from "../local-ai-credential-file.js";
 
 interface PreparedPluginRunnerCredentials {
@@ -19,11 +21,24 @@ export async function preparePluginRunnerCredentials(input: {
   accountIdentity?: string;
   home?: string;
   environment: NodeJS.ProcessEnv;
+  extension?: { harnessId: string; credentialKeys: readonly string[] };
 }): Promise<PreparedPluginRunnerCredentials> {
   const github = input.environment.PAPERCLIP_GITHUB_BROKER_TOKEN ? { githubBroker: {
     url: input.environment.PAPERCLIP_GITHUB_BROKER_URL ?? "",
     token: input.environment.PAPERCLIP_GITHUB_BROKER_TOKEN,
   } } : {};
+  if (input.provider === "extension") {
+    const extension = input.extension;
+    if (!extension || new Set(extension.credentialKeys).size !== extension.credentialKeys.length
+      || extension.credentialKeys.some(key => !isHarnessCredentialEnvironmentKey(key))) {
+      throw new Error("Plugin Runner extension credential declaration invalid");
+    }
+    const environment = Object.fromEntries([...extension.credentialKeys].sort()
+      .flatMap(key => typeof input.environment[key] === "string" && input.environment[key] ? [[key, input.environment[key]!]] : []));
+    const credential = environmentTaskCredentialSchema.parse({ type: "harness-env", harnessId: extension.harnessId, environment });
+    const fingerprint = createHash("sha256").update(JSON.stringify(environment)).digest("hex");
+    return { ...github, accountIdentity: input.accountIdentity ?? input.identity ?? `extension:${extension.harnessId}:${fingerprint}`, credential };
+  }
   if (!input.identity) return github;
   const accountIdentity = input.accountIdentity ?? input.identity;
   if (input.provider === "codex") {

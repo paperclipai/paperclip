@@ -40,6 +40,7 @@ export function paperclipRunnerSupportsPlatform(harness: string, platform: strin
 export function agentHarnessType(adapterType: string, config: Record<string, unknown> = {}): string {
   if (adapterType !== "paperclip_runner") return adapterType;
   if (config.provider === undefined || config.provider === "codex") return "codex_local";
+  if (config.provider === "extension") return String(config.harnessId ?? "extension");
   if (config.provider === "opencode") return "opencode_local";
   if (config.provider === "acpx") {
     const agent = config.acpxAgent ?? "claude";

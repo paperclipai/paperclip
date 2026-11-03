@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { parseRunnerHarnessDeclaration } from "@paperclipai/runner-sdk/contracts";
 import {
   PLUGIN_STATUSES,
   PLUGIN_CATEGORIES,
@@ -51,6 +52,16 @@ export const jsonSchemaSchema = z.record(z.string(), z.unknown()).refine(
   },
   { message: "Must be a valid JSON Schema object (requires at least a 'type', '$ref', or composition keyword)" },
 );
+
+/** Keep package declarations identical to the standalone native Runner contract. */
+export const pluginRunnerHarnessDeclarationSchema = z.unknown().transform((value, ctx) => {
+  try {
+    return parseRunnerHarnessDeclaration(value);
+  } catch (error) {
+    ctx.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid Runner harness declaration" });
+    return z.NEVER;
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Manifest sub-type schemas
@@ -831,6 +842,7 @@ export const pluginManifestV1Schema = z.object({
   database: pluginDatabaseDeclarationSchema.optional(),
   apiRoutes: z.array(pluginApiRouteDeclarationSchema).optional(),
   environmentDrivers: z.array(pluginEnvironmentDriverDeclarationSchema).optional(),
+  runnerHarnesses: z.array(pluginRunnerHarnessDeclarationSchema).min(1).max(32).optional(),
   agents: z.array(pluginManagedAgentDeclarationSchema).optional(),
   projects: z.array(pluginManagedProjectDeclarationSchema).optional(),
   routines: z.array(pluginManagedRoutineDeclarationSchema).optional(),
@@ -907,6 +919,14 @@ export const pluginManifestV1Schema = z.object({
   }
 
   // environment drivers require environment.drivers.register
+  if (manifest.runnerHarnesses?.length && !manifest.capabilities.includes("runner.harnesses.register")) {
+    ctx.addIssue({ code: "custom", message: "runner.harnesses.register is required when runnerHarnesses are declared", path: ["capabilities"] });
+  }
+  const harnessKeys = manifest.runnerHarnesses?.map(harness => harness.harnessKey) ?? [];
+  if (new Set(harnessKeys).size !== harnessKeys.length) {
+    ctx.addIssue({ code: "custom", message: "Runner harness keys must be unique within the plugin", path: ["runnerHarnesses"] });
+  }
+
   if (manifest.environmentDrivers && manifest.environmentDrivers.length > 0) {
     if (!manifest.capabilities.includes("environment.drivers.register")) {
       ctx.addIssue({

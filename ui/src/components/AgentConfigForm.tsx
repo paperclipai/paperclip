@@ -1,7 +1,8 @@
 import { ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS, isAccountBoundAcpxAgent } from "@/lib/native-model-catalog";
 import { useConnectionModels } from "./ai-connections/useConnectionModels";
 import { agentHarnessType, agentRunner, paperclipRunnerProfileForHarness, normalizeClaudeRunnerOptions, type AgentRunnerChoice } from "@paperclipai/shared";
-import { adaptersApi } from "../api/adapters";
+import { adaptersApi, type RunnerHarnessInfo } from "../api/adapters";
+import { JsonSchemaForm } from "./JsonSchemaForm";
 import { canQualifyRunnerEnvironment, qualifyRunnerEnvironment } from "../lib/qualify-claude-setup";
 import { AgentRunnerSelect } from "./AgentRunnerSelect";
 import { aiRoutingHarness } from "@paperclipai/shared";
@@ -636,6 +637,13 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
     ? props.values.adapterType
     : overlay.adapterType ?? props.agent.adapterType;
   const effectiveConfig = isCreate ? props.values.adapterSchemaValues ?? {} : { ...config, ...overlay.adapterConfig };
+  const isHarnessExtension = adapterType === "paperclip_runner" && effectiveConfig.provider === "extension";
+  const harnessExtensions = useQuery({
+    queryKey: ["runner-harnesses", selectedCompanyId],
+    queryFn: () => adaptersApi.runnerHarnesses(selectedCompanyId!),
+    enabled: Boolean(selectedCompanyId && (isHarnessExtension || experimentalSettings?.enableNativeRunner === true)),
+  });
+  const extensionHarness = harnessExtensions.data?.find(harness => harness.harnessId === effectiveConfig.harnessId);
   const harnessType = agentHarnessType(adapterType, effectiveConfig);
   const isCodexHarness = harnessType === "codex_local";
   const runnerProfile = paperclipRunnerProfileForHarness(harnessType);
@@ -693,7 +701,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const showAdapterTestEnvironmentButton = !isGrokBotRunner && (props.showAdapterTestEnvironmentButton ?? true);
   const showInlineAdapterTestEnvironmentButton =
     showAdapterTestEnvironmentButton && !props.onTestActionChange && !props.compactTestFeedback;
-  const isLocal = !isExternalRunner && (adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt);
+  const isLocal = isHarnessExtension || !isExternalRunner && (adapterCaps.supportsInstructionsBundle || adapterCaps.supportsSkills || adapterCaps.supportsLocalAgentJwt);
   
   // The legacy working directory is an absolute path on the host, so the
   // managed-sandbox-only policy hides it. A stored value stays untouched; it is
@@ -1041,7 +1049,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const modelAiBinding = aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data;
   const accountBoundCatalog = isAccountBoundAcpxAgent(runnerAcpxAgent);
   const modelCacheIdentity = accountBoundCatalog ? `${modelProvider}:${runnerAcpxAgent}:${isCreate ? "new" : props.agent.id}:${JSON.stringify(modelAiBinding ?? null)}` : runnerAcpxAgent ? `${modelProvider}:${runnerAcpxAgent}` : modelProvider;
-  const connectionModels = useConnectionModels(isExternalRunner ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
+  const connectionModels = useConnectionModels(isExternalRunner || isHarnessExtension ? null : selectedCompanyId, isCreate ? undefined : modelAiBinding, aiRoutingHarness(adapterType, runnerProvider, runnerAcpxAgent));
   // Fetch adapter models for the effective provider, including unsaved changes.
   const modelAdapterType = accountBoundCatalog ? "paperclip_runner" : isRunnerHarness ? harnessType : adapterType;
   const modelQueryKey = selectedCompanyId
@@ -1062,7 +1070,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       agentId: isCreate ? undefined : props.agent.id,
     }),
     ...(accountBoundCatalog ? ACCOUNT_BOUND_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
-    enabled: Boolean(selectedCompanyId) && !isExternalRunner && !connectionModels,
+    enabled: Boolean(selectedCompanyId) && !isExternalRunner && !isHarnessExtension && !connectionModels,
   });
   const accountModelScope = accountBoundCatalog ? JSON.stringify(modelQueryKey) : null;
   useEffect(() => {
@@ -1070,8 +1078,8 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   }, [accountModelScope, selectedCompanyId, isExternalRunner, connectionModels, refreshConnectionModels]);
   const [refreshModelsError, setRefreshModelsError] = useState<string | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
-  const models = connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
-  const modelError = connectionModels ? connectionModels.error : fetchedModelsError;
+  const models = isHarnessExtension ? [] : connectionModels?.models ?? fetchedModels ?? externalModels ?? [];
+  const modelError = isHarnessExtension ? null : connectionModels ? connectionModels.error : fetchedModelsError;
   const adapterCommandField = "command";
   const {
     data: detectedModelData,
@@ -1127,7 +1135,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   const [runPolicyAdvancedOpen, setRunPolicyAdvancedOpen] = useState(false);
   const [configurationAdvancedOpen, setConfigurationAdvancedOpen] = useState(false);
   const configSchema = useConfigSchema(adapterType);
-  const renderAdapterFields = (section: AdapterConfigSection) => (
+  const renderAdapterFields = (section: AdapterConfigSection) => isHarnessExtension ? (
+    section === "adapter" && extensionHarness ? <JsonSchemaForm
+      schema={extensionHarness.configSchema}
+      values={asObject(effectiveConfig.extensionConfig)}
+      onChange={extensionConfig => isCreate
+        ? set!({ adapterSchemaValues: { ...effectiveConfig, extensionConfig } })
+        : mark("adapterConfig", "extensionConfig", extensionConfig)}
+    /> : null
+  ) : (
     <>
       {adapterType === "claude_local" && <ClaudeLocalAdvancedFields {...adapterFieldProps} section={section} />}
       <fieldsUiAdapter.ConfigFields {...adapterFieldProps} section={section} hideModel={isLocal} />
@@ -1820,12 +1836,27 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           {showAdapterTypeField && !isGrokBotRunner && (
             <Field label="Harness" hint={help.adapterType}>
               <AdapterTypeDropdown
-                value={isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType}
+                value={isHarnessExtension ? String(effectiveConfig.harnessId ?? "") : isDotRunner ? "openai_dot" : isMuseRunner ? "muse" : isRunnerHarness ? harnessType : adapterType}
+                harnessExtensions={harnessExtensions.data}
                 disabledTypes={adapterPickerDisabledTypes}
                 openAiDotEnabled={experimentalSettings?.enableOpenAiDot === true}
                 nativeRunnerEnabled={experimentalSettings?.enableNativeRunner === true}
                 museEnabled={experimentalSettings?.enableMuse === true && experimentalSettings?.enableNativeRunner === true}
                 onChange={(choice) => {
+                  const extension = harnessExtensions.data?.find(harness => harness.harnessId === choice);
+                  if (extension) {
+                    const extensionConfig = { provider: "extension", harnessId: extension.harnessId, extensionConfig: {}, env: {}, lifecycleMode: "per_turn" };
+                    if (isCreate) {
+                      const { adapterType: _type, ...defaults } = defaultCreateValues;
+                      set!({ ...defaults, adapterType: "paperclip_runner", runner: "paperclip", model: "", adapterSchemaValues: extensionConfig });
+                    } else {
+                      setOverlay(prev => ({ ...prev, adapterType: "paperclip_runner", runner: "paperclip",
+                        adapterConfig: { ...extensionConfig, model: "" },
+                        runtime: { ...prev.runtime, runtimeConfig: { ...runtimeConfig, aiConnection: undefined } },
+                      }));
+                    }
+                    return;
+                  }
                   const dot = choice === "openai_dot";
                   const muse = choice === "muse";
                   const external = dot || muse;
@@ -1893,7 +1924,10 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
             </Field>
           )}
 
-          {!isExternalRunner && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
+          {harnessExtensions.error ? <p role="alert" className="text-sm text-destructive">{harnessExtensions.error instanceof Error ? harnessExtensions.error.message : "Could not load installed harnesses."}</p> : null}
+          {isHarnessExtension && !extensionHarness && !harnessExtensions.isLoading ? <p role="alert" className="text-sm text-destructive">This harness is unavailable. Install and enable its package before testing or running this agent.</p> : null}
+          {isHarnessExtension && extensionHarness?.credentials?.length ? <p className="text-sm text-muted-foreground">Configure {extensionHarness.credentials.map(credential => credential.key).join(", ")} in Environment variables using saved secrets.</p> : null}
+          {!isExternalRunner && !isHarnessExtension && !isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={aiRoutingHarness(adapterType, eff("adapterConfig", "provider", config.provider), eff("adapterConfig", "acpxAgent", config.acpxAgent))}
             routerAdapterType={adapterType} value={aiRuntimeConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => {
@@ -1980,7 +2014,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                 onOpenChange={setModelOpen}
                 defaultLabel={adapterType === "claude_local" ? `Default (${DEFAULT_CLAUDE_LOCAL_MODEL})` : undefined}
                 allowDefault={adapterType !== "opencode_local" && adapterType !== "pi_local" && adapterType !== "paperclip_runner" && !isCursorCloudRunner}
-                required={adapterType === "opencode_local" || adapterType === "pi_local" || isCursorCloudRunner || runnerAcpxAgent === "antigravity"}
+                required={isHarnessExtension || adapterType === "opencode_local" || adapterType === "pi_local" || isCursorCloudRunner || runnerAcpxAgent === "antigravity"}
                 groupByProvider={!connectionModels && (adapterType === "opencode_local" || adapterType === "pi_local")}
                 preserveOrder={Boolean(connectionModels) || adapterCuratesModelOrder(adapterType)}
                 creatable
@@ -1993,7 +2027,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       return result.data?.model ?? null;
                     }}
                 onRefreshModels={
-                  connectionModels ? connectionModels.refreshModels : accountBoundCatalog || supportsAdapterModelRefresh(adapterType)
+                  isHarnessExtension ? undefined : connectionModels ? connectionModels.refreshModels : accountBoundCatalog || supportsAdapterModelRefresh(adapterType)
                     ? handleRefreshModels
                     : undefined
                 }
@@ -2390,7 +2424,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         <RuntimeTestCard
           tone={panels ? "tile" : "card"}
           variant={isExternalRunner ? "prerequisites" : "connection"}
-          metadataOnly={accountBoundCatalog}
+          metadataOnly={accountBoundCatalog || isHarnessExtension}
           state={testActionPending ? "running" : testActionError || testEnvironment.error ? "fail" : testResult?.status ?? "idle"}
           result={testResult ?? null}
           error={testActionError ?? (testEnvironment.error instanceof Error ? testEnvironment.error.message : null)}
@@ -3904,6 +3938,7 @@ export function AdapterTypeDropdown({
   openAiDotEnabled = false,
   museEnabled = false,
   nativeRunnerEnabled = false,
+  harnessExtensions = [],
 }: {
   value: string;
   onChange: (type: string) => void;
@@ -3911,19 +3946,21 @@ export function AdapterTypeDropdown({
   openAiDotEnabled?: boolean;
   museEnabled?: boolean;
   nativeRunnerEnabled?: boolean;
+  harnessExtensions?: Pick<RunnerHarnessInfo, "harnessId" | "displayName">[];
 }) {
   const selectedDisplay = getAdapterDisplay(value);
   const adapterList = useMemo(() =>
     [...listAdapterOptions(type => adapterLabels[type] ?? getAdapterLabel(type)),
       ...(openAiDotEnabled ? [{ value: "openai_dot", label: "OpenAI Dot", experimental: true, comingSoon: false }] : []),
       ...(museEnabled ? [{ value: "muse", label: "Muse — Personal agent", experimental: true, comingSoon: false }] : []),
+      ...(nativeRunnerEnabled && !disabledTypes.has("paperclip_runner") ? harnessExtensions.map(harness => ({ value: harness.harnessId, label: harness.displayName, experimental: false, comingSoon: false })) : []),
     ].filter(item => !item.comingSoon && (item.value !== "paperclip_runner" || nativeRunnerEnabled) && !disabledTypes.has(item.value))
       .sort((a, b) => Number(a.value === "paperclip_runner") - Number(b.value === "paperclip_runner")),
-    [disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled]);
+    [disabledTypes, openAiDotEnabled, nativeRunnerEnabled, museEnabled, harnessExtensions]);
   return <SelectPopover aria-label="Harness" value={value} onValueChange={onChange}
     displayValue={<span className="inline-flex min-w-0 items-center gap-1.5">
       <span aria-hidden="true" className="inline-flex shrink-0"><AdapterMark type={value} className="size-4" /></span>
-      <span className="truncate">{adapterLabels[value] ?? getAdapterLabel(value)}</span>
+      <span className="truncate">{harnessExtensions.find(harness => harness.harnessId === value)?.displayName ?? adapterLabels[value] ?? getAdapterLabel(value)}</span>
       {selectedDisplay.experimental && <ExperimentalBadge />}
     </span>}
     options={adapterList.map(item => ({ value: item.value,

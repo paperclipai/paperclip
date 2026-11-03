@@ -221,7 +221,7 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   isSameTaskScope: (left: string | null, right: string | null) => boolean;
   runTaskKey: (run: HeartbeatRun) => string | null;
   filterZombieCoalesceTarget: <T extends { id: string; status: string }>(run: T | null, live: { has(id: string): boolean }) => T | null;
-  getSchedulingSuppression: () => Promise<{ suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | "task_drain" | null }>;
+  getSchedulingSuppression: (fresh?: boolean) => Promise<{ suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | "task_drain" | null }>;
   canStartNewExternalBotWork: (agent: typeof agents.$inferSelect) => Promise<boolean>;
   executeRun: (runId: string) => Promise<void>;
   releaseIssueExecutionAndPromote: (run: Pick<HeartbeatRun, "id" | "companyId">, options?: { suppressImmediateRecovery?: boolean; resumeStrandedQueue?: boolean; deferredPostCommitEffects?: WakeQueuePostCommitEffect[] }) => Promise<unknown>;
@@ -2001,7 +2001,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   // Release admission promptly without first scanning unrelated recovery work.
   // Every run still passes the ordinary per-agent claim and dispatch gates.
   async function resumeQueuedRunsAfterDrain(scope?: { companyId: string }) {
-    if ((await getSchedulingSuppression()).suppressed) return;
+    if ((await getSchedulingSuppression(true)).suppressed) return;
     const cutoff = await getWorktreeExecutionCutoff();
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
@@ -2062,7 +2062,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
-    if ((await getSchedulingSuppression()).suppressed) return [];
+    if ((await getSchedulingSuppression(true)).suppressed) return [];
     const cutoff = await getWorktreeExecutionCutoff();
     // Cancelled after the start lock is released: cancelRunInternal promotes the
     // agent's next queued run, which takes this same lock.
@@ -2597,7 +2597,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
     };
 
-    const schedulingSuppression = await getSchedulingSuppression();
+    // Admission can permanently skip a wake. Permission must reflect a settings
+    // commit immediately, rather than a value cached by earlier background work.
+    const schedulingSuppression = await getSchedulingSuppression(true);
     // A task drain holds ADMISSION, not the request. The drain is a
     // process-local pre-restart hold, so a wake that arrives while it is
     // active still names real work that must run once the process comes

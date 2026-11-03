@@ -74,6 +74,14 @@ Paperclip supports several ways to run an agent's heartbeat:
 3. **Fire and forget a request** — Paperclip sends a webhook/API call to an externally running agent. The heartbeat is "notify this agent to wake up." OpenClaw-style hooks work this way.
 4. **External adapter plugins** — Paperclip loads adapter packages through the plugin/adapter flow so self-hosted installs can add runtimes without hardcoding them in core.
 
+Installed plugins can also provide native Paperclip Runner harnesses. Instance
+administrators install the independent package, and companies select its harness,
+model and credential bindings through agent settings. These packages retain the
+normal Runner lifecycle and control-plane permissions. External provider code and
+dependencies are absent from default checkouts, installs and images; managed
+Cloud requires an operator-selected optional image. See [native harness
+packages](plugins/PLUGIN_RUNNER_HARNESSES.md).
+
 Agent runs can use project and execution workspaces, managed runtime services such as preview/dev servers, adapter-specific session state, and HTTP/webhook-style execution. We provide sensible defaults, but the adapter is still the boundary: if a runtime can be invoked, observed, and authorized, Paperclip can coordinate it.
 
 ### Task Management

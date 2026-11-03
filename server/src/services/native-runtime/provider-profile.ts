@@ -1,3 +1,4 @@
+import { parseHarnessReleaseIdentity, type HarnessReleaseIdentity } from "@paperclipai/runner-sdk/contracts";
 import { resolveGrokDisableWebSearch } from "../../vendor/paperclip-runner/index.js";
 import { agentHarnessType, normalizeClaudeRunnerOptions } from "@paperclipai/shared";
 import { resolveClaudeEffort, resolveGrokEffort, resolveQualifiedAcpxProfile } from "../../vendor/paperclip-runner/index.js";
@@ -43,6 +44,7 @@ export type QualifiedPaperclipRunnerAcpxAgent =
 type AdmittedPaperclipRunnerAcpxAgent = QualifiedPaperclipRunnerAcpxAgent | AcpxQualificationCandidate | "antigravity";
 
 export type PaperclipRunnerProviderProfile =
+  | { provider: "extension"; backend: "extension"; harnessId: string; model: string }
   | { provider: "cursor_cloud"; backend: "cursor_cloud_api"; model: string }
   | { provider: "muse"; backend: "muse_external"; model: null; museBindingId: string }
   | { provider: "grok_bot"; backend: "grok_bot_mcp"; model: null; externalBindingId: string }
@@ -79,6 +81,7 @@ export type PaperclipRunnerProviderProfile =
     };
 
 export type PaperclipRunnerNativeProviderInput =
+  | { provider: "extension"; model: string; harnessId: string; extensionRelease: HarnessReleaseIdentity; extensionConfig: Record<string, unknown>; extensionCapabilities: Record<string, boolean> }
   | { provider: "cursor_cloud"; model: string; cursorCloud: NativeCursorCloudConfig }
   | { provider: "muse"; model: null; museBinding: import("../../vendor/paperclip-runner/index.js").MuseBindingSnapshot }
   | { provider: "grok_bot"; model: null; dotBinding: import("../../vendor/paperclip-runner/index.js").DotBindingSnapshot }
@@ -452,6 +455,20 @@ export function resolvePaperclipRunnerProviderProfile(
 ): PaperclipRunnerProviderProfile {
   const config = asRecord(adapterConfig);
   const candidate = config.provider ?? "codex";
+  if (candidate === "extension") {
+    const harnessId = optionalString(config.harnessId);
+    const model = optionalString(config.model);
+    if (!harnessId || !/^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/.test(harnessId) || !model) {
+      throw new PaperclipRunnerProviderProfileError("runner_extension_config_invalid", "Choose an installed harness and an explicit model.");
+    }
+    if (config.homeMode !== undefined && config.homeMode !== "isolated") {
+      throw new PaperclipRunnerProviderProfileError("runner_extension_home_invalid", "External harnesses require an isolated home.");
+    }
+    if (config.lifecycleMode !== undefined && config.lifecycleMode !== "per_turn") {
+      throw new PaperclipRunnerProviderProfileError("runner_extension_lifecycle_unsupported", "External harness protocol v1 supports per-turn execution.");
+    }
+    return { provider: "extension", backend: "extension", harnessId, model };
+  }
   if (!isPaperclipRunnerProvider(candidate)) {
     throw new PaperclipRunnerProviderProfileError(
       "paperclip_runner_provider_unsupported",
@@ -670,6 +687,8 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
   adapterConfig: unknown;
   /** Verified image CLI version for a fresh remote Codex run only. */
   codexCliVersion?: string | null;
+  extensionRelease?: HarnessReleaseIdentity;
+  extensionCapabilities?: Record<string, boolean>;
   museBinding?: import("../../vendor/paperclip-runner/index.js").MuseBindingSnapshot;
   dotBinding?: import("../../vendor/paperclip-runner/index.js").DotBindingSnapshot;
   managedProfile?: {
@@ -708,6 +727,12 @@ export function resolvePaperclipRunnerNativeProviderInput(input: {
       "paperclip_runner_provider_changed",
       "Paperclip Runner provider changed after this run selected its native backend.",
     );
+  }
+  if (profile.provider === "extension") {
+    const release = parseHarnessReleaseIdentity(input.extensionRelease);
+    if (release.harnessId !== profile.harnessId) throw new PaperclipRunnerProviderProfileError("runner_extension_identity_mismatch", "The admitted harness package changed.");
+    return { provider: "extension", model: profile.model, harnessId: profile.harnessId,
+      extensionRelease: release, extensionConfig: asRecord(config.extensionConfig), extensionCapabilities: input.extensionCapabilities ?? {} };
   }
   if (profile.provider === "cursor_cloud") {
     return { provider: "cursor_cloud", model: profile.model, cursorCloud: resolvePaperclipRunnerCursorCloudConfig(config) };

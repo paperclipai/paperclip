@@ -32,6 +32,10 @@ import type { Agent } from "./agent.js";
 import type { CompanySkill } from "./company-skill.js";
 import type { Project } from "./project.js";
 import type { Routine, RoutineTrigger, RoutineVariable } from "./routine.js";
+import type { RunnerHarnessDeclaration } from "@paperclipai/runner-sdk/contracts";
+
+/** A native Runner harness supplied entirely by an installed plugin package. */
+export type PluginRunnerHarnessDeclaration = RunnerHarnessDeclaration;
 
 // ---------------------------------------------------------------------------
 // JSON Schema placeholder – plugins declare config schemas as JSON Schema
@@ -754,6 +758,8 @@ export interface PaperclipPluginManifestV1 {
   apiRoutes?: PluginApiRouteDeclaration[];
   /** Environment drivers this plugin contributes. Requires `environment.drivers.register` capability. */
   environmentDrivers?: PluginEnvironmentDriverDeclaration[];
+  /** Native harnesses supplied by this package. Requires runner.harnesses.register. */
+  runnerHarnesses?: PluginRunnerHarnessDeclaration[];
   /** Suggested company-scoped agents this plugin can provision and resolve by stable key. */
   agents?: PluginManagedAgentDeclaration[];
   /** Suggested company-scoped projects this plugin can provision and resolve by stable key. */

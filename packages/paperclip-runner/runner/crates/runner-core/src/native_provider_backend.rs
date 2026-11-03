@@ -8,6 +8,9 @@ use crate::durable::{
     Command, CommandExecution, CommandExecutor, DurableRunnerConfig, DurableRunnerError,
     PolledEvent, TerminalDeliveryReconciliation,
 };
+use crate::extension_provider_backend::{
+    ExtensionCommandExecutor, ExtensionLaunchProfile, EXTENSION_PROVIDER_STATE_FILE,
+};
 use crate::external_provider_backend::{
     ExternalCommandExecutor, ExternalProviderCodec, DOT_PROVIDER_STATE_FILE,
     MUSE_PROVIDER_STATE_FILE,
@@ -20,6 +23,7 @@ use crate::provider_backend::{CodexCommandExecutor, CODEX_PROVIDER_STATE_FILE};
 enum SelectedExecutor {
     LocalFacade(CodexCommandExecutor),
     Acpx(AcpxCommandExecutor),
+    Extension(ExtensionCommandExecutor),
     Managed(ManagedProviderCommandExecutor),
     Dot(ExternalCommandExecutor),
 }
@@ -29,6 +33,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.can_reconcile_result_delivery(),
             Self::Acpx(executor) => executor.can_reconcile_result_delivery(),
+            Self::Extension(executor) => executor.can_reconcile_result_delivery(),
             Self::Managed(executor) => executor.can_reconcile_result_delivery(),
             Self::Dot(executor) => executor.can_reconcile_result_delivery(),
         }
@@ -38,6 +43,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.retained_events(),
             Self::Acpx(executor) => executor.retained_events(),
+            Self::Extension(executor) => executor.retained_events(),
             Self::Managed(executor) => executor.retained_events(),
             Self::Dot(executor) => executor.retained_events(),
         }
@@ -46,6 +52,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.execute(command),
             Self::Acpx(executor) => executor.execute(command),
+            Self::Extension(executor) => executor.execute(command),
             Self::Managed(executor) => executor.execute(command),
             Self::Dot(executor) => executor.execute(command),
         }
@@ -55,6 +62,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.poll_events(),
             Self::Acpx(executor) => executor.poll_events(),
+            Self::Extension(executor) => executor.poll_events(),
             Self::Managed(executor) => executor.poll_events(),
             Self::Dot(executor) => executor.poll_events(),
         }
@@ -64,6 +72,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.rotate_authority(config),
             Self::Acpx(executor) => executor.rotate_authority(config),
+            Self::Extension(executor) => executor.rotate_authority(config),
             Self::Managed(executor) => executor.rotate_authority(config),
             Self::Dot(executor) => executor.rotate_authority(config),
         }
@@ -73,6 +82,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.maintain_backpressured_provider(),
             Self::Acpx(executor) => executor.maintain_backpressured_provider(),
+            Self::Extension(executor) => executor.maintain_backpressured_provider(),
             Self::Managed(executor) => executor.maintain_backpressured_provider(),
             Self::Dot(executor) => executor.maintain_backpressured_provider(),
         }
@@ -82,6 +92,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.acknowledge_events(count),
             Self::Acpx(executor) => executor.acknowledge_events(count),
+            Self::Extension(executor) => executor.acknowledge_events(count),
             Self::Managed(executor) => executor.acknowledge_events(count),
             Self::Dot(executor) => executor.acknowledge_events(count),
         }
@@ -93,6 +104,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.reconcile_terminal_delivery(),
             Self::Acpx(executor) => executor.reconcile_terminal_delivery(),
+            Self::Extension(executor) => executor.reconcile_terminal_delivery(),
             Self::Managed(executor) => executor.reconcile_terminal_delivery(),
             Self::Dot(executor) => executor.reconcile_terminal_delivery(),
         }
@@ -102,6 +114,7 @@ impl CommandExecutor for SelectedExecutor {
         match self {
             Self::LocalFacade(executor) => executor.shutdown(),
             Self::Acpx(executor) => executor.shutdown(),
+            Self::Extension(executor) => executor.shutdown(),
             Self::Managed(executor) => executor.shutdown(),
             Self::Dot(executor) => executor.shutdown(),
         }
@@ -117,6 +130,7 @@ pub struct NativeProviderCommandExecutor {
     selected: Option<SelectedExecutor>,
     recovery_checked: bool,
     credentials: CredentialObserver,
+    extension_profile: Result<Option<ExtensionLaunchProfile>, DurableRunnerError>,
 }
 
 impl NativeProviderCommandExecutor {
@@ -129,6 +143,7 @@ impl NativeProviderCommandExecutor {
             selected: None,
             recovery_checked: false,
             credentials,
+            extension_profile: ExtensionLaunchProfile::from_environment(),
         }
     }
 
@@ -147,6 +162,7 @@ impl NativeProviderCommandExecutor {
             && [
                 CODEX_PROVIDER_STATE_FILE,
                 ACPX_PROVIDER_STATE_FILE,
+                EXTENSION_PROVIDER_STATE_FILE,
                 MANAGED_PROVIDER_STATE_FILE,
                 DOT_PROVIDER_STATE_FILE,
                 MUSE_PROVIDER_STATE_FILE,
@@ -169,7 +185,8 @@ impl NativeProviderCommandExecutor {
         let managed = self.state_dir.join(MANAGED_PROVIDER_STATE_FILE).exists();
         let dot = self.state_dir.join(DOT_PROVIDER_STATE_FILE).exists();
         let muse = self.state_dir.join(MUSE_PROVIDER_STATE_FILE).exists();
-        if [codex, acpx, managed, dot, muse]
+        let extension = self.state_dir.join(EXTENSION_PROVIDER_STATE_FILE).exists();
+        if [codex, acpx, managed, dot, muse, extension]
             .into_iter()
             .filter(|present| *present)
             .count()
@@ -179,7 +196,15 @@ impl NativeProviderCommandExecutor {
                 "runner state contains conflicting provider authorities",
             ));
         }
-        self.selected = if muse {
+        self.selected = if extension {
+            Some(SelectedExecutor::Extension(
+                ExtensionCommandExecutor::with_launch_profile(
+                    &self.state_dir,
+                    &self.config,
+                    self.extension_profile.clone()?,
+                ),
+            ))
+        } else if muse {
             Some(SelectedExecutor::Dot(ExternalCommandExecutor::with_codec(
                 &self.state_dir,
                 &self.config,
@@ -243,6 +268,13 @@ impl NativeProviderCommandExecutor {
                 .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
         }
         self.selected = Some(match kind {
+            "extension" => {
+                SelectedExecutor::Extension(ExtensionCommandExecutor::with_launch_profile(
+                    &self.state_dir,
+                    &self.config,
+                    self.extension_profile.clone()?,
+                ))
+            }
             "muse" => SelectedExecutor::Dot(ExternalCommandExecutor::with_codec(
                 &self.state_dir,
                 &self.config,

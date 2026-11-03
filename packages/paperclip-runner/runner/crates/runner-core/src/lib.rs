@@ -19,6 +19,7 @@ mod credential_observer;
 mod cursor_cloud_proxy;
 pub mod dot_provider_backend;
 pub mod durable;
+pub mod extension_provider_backend;
 pub mod external_provider_backend;
 pub mod fake_harness;
 mod generated_acpx_profiles;

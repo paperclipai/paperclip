@@ -1,3 +1,4 @@
+import { parseRunnerHarnessLaunchProfile, sameRunnerHarnessRelease, type RunnerHarnessLaunchProfile } from "@paperclipai/runner-sdk/contracts";
 import { createHash } from "node:crypto";
 import { parseNativeRuntimeContext, retargetNativeSystemInstructions } from "../contracts/runtime-context.js";
 import { resolve } from "node:path";
@@ -23,10 +24,11 @@ export interface RunnerProviderLaunchRequirements {
   model: string | null;
   approvalPolicy: "never" | "on-request" | "untrusted";
   readOnly: boolean;
+  collaborationMode?: "default" | "plan";
   preparedConversation: boolean;
   includeCollaborationModeInstructions: boolean;
   settings: Pick<CapabilityRunnerdCodexTransportOptions,
-    "acpxAgent" | "acpxMode" | "acpxPermissionMode" | "acpxPermissionModePinned" |
+    "extensionRelease" | "extensionConfig" | "extensionCapabilities" | "extensionCheckpoint" | "extensionCredentialIdentity" | "acpxAgent" | "acpxMode" | "acpxPermissionMode" | "acpxPermissionModePinned" |
     "piThinkingLevel" | "claudeEffort" | "grokEffort" | "grokDisableWebSearch" | "managedProfile" | "agentCoreProfile" | "opencodePermissionMode" | "disableCodexWebSearch" | "disableCodexProjectInstructions">;
   instructions: string;
   runtimeContext: NativeRuntimeContextSnapshot | null;
@@ -37,6 +39,7 @@ export interface PreparedRunnerProviderLaunch {
   configurationId: string;
   requirementsDigest: string;
   provider: Record<string, unknown>;
+  extensionLaunchProfile?: RunnerHarnessLaunchProfile;
 }
 
 export type RunnerLaunchPreparer = (
@@ -57,6 +60,7 @@ export function runnerProviderLaunchRequirements(
     model: typeof params.model === "string" ? params.model : null,
     instructions, runtimeContext,
     settings: {
+      extensionRelease: options.extensionRelease, extensionConfig: options.extensionConfig, extensionCapabilities: options.extensionCapabilities, extensionCheckpoint: options.extensionCheckpoint, extensionCredentialIdentity: options.extensionCredentialIdentity,
       acpxAgent: options.acpxAgent, acpxMode: options.acpxMode,
       acpxPermissionMode: options.acpxPermissionMode,
       acpxPermissionModePinned: options.acpxPermissionModePinned,
@@ -69,6 +73,7 @@ export function runnerProviderLaunchRequirements(
     approvalPolicy: params.approvalPolicy === "on-request" || params.approvalPolicy === "untrusted"
       ? params.approvalPolicy : "never",
     readOnly: params.permissions === "paperclip-runner-workspace-read-only",
+    ...(options.provider === "extension" ? { collaborationMode: params.paperclipExecutionMode === "plan" ? "plan" as const : "default" as const } : {}),
     preparedConversation: params.conversationMode === "prepared",
     includeCollaborationModeInstructions: (params.config as Record<string, unknown> | undefined)?.include_collaboration_mode_instructions !== false,
   };
@@ -129,6 +134,10 @@ export function validatePreparedRunnerLaunch(
       && (arg === "--search" || arg.startsWith("--search=")))) || (commandIndex >= 0 && commandIndex !== args.length - 1)
       || JSON.stringify(args.slice(boundary - policy.length, boundary)) !== JSON.stringify(policy)) reject();
   }
+  if (requirements.provider === "extension") {
+    const profile = parseRunnerHarnessLaunchProfile(prepared.extensionLaunchProfile);
+    if (!requirements.settings.extensionRelease || !sameRunnerHarnessRelease(profile.identity, requirements.settings.extensionRelease)) reject();
+  }
   if (requirements.provider === "acpx") {
     const policy = descriptor.providerPolicy as Record<string, unknown> | undefined;
     if (descriptor.agent !== (requirements.settings.acpxAgent ?? "codex")
@@ -143,9 +152,11 @@ export function validatePreparedRunnerLaunch(
     providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "", codexCommand: "",
   });
   const hostFields = new Set(["command", "args", "sidecarCommand", "sidecarArgs", "runtimeDirectory", "cwd",
-    "preconfiguredHome", "externallySandboxed", "runtimeContext", "instructions"]);
+    "preconfiguredHome", "externallySandboxed", "runtimeContext", "instructions", "runtimeRoot"]);
   for (const [key, value] of Object.entries(expected)) {
-    if (!hostFields.has(key) && JSON.stringify(value) !== JSON.stringify(descriptor[key])) reject();
+    if (!hostFields.has(key) && (requirements.provider === "extension"
+      ? canonicalLaunchValue(value) !== canonicalLaunchValue(descriptor[key])
+      : JSON.stringify(value) !== JSON.stringify(descriptor[key]))) reject();
   }
   if ("cwd" in expected) {
     try { validatePreparedLaunchWorkingDirectory(descriptor.cwd); }
@@ -177,7 +188,7 @@ export function preparedRunnerLaunchWorkingDirectory(
 /** Locations and provider settings resolved by the built-in execution environment. */
 export interface RunnerProviderLaunchEnvironment {
   options: Pick<CapabilityRunnerdCodexTransportOptions,
-    "acpxRuntimeDirectory" | "homeMode" | "environment" | "codexArgs" |
+    "extensionRuntimeDirectory" | "extensionRuntimeRoot" | "acpxRuntimeDirectory" | "homeMode" | "environment" | "codexArgs" |
     "runnerFilesystemRoot" | "disableCodexProjectInstructions" | "externallySandboxed">;
   root: string;
   cwd: string;
@@ -194,6 +205,18 @@ export function createRunnerProviderLaunch(
   input: RunnerProviderLaunchEnvironment,
 ): Record<string, unknown> {
   const { identity, instructions: baseInstructions, runtimeContext, settings, provider } = requirements;
+  if (provider === "extension") {
+    const release = settings.extensionRelease;
+    if (!release || !requirements.model) throw new Error("runner_extension_release_required");
+    return { kind: "extension", harnessId: release.harnessId, release, model: requirements.model,
+      config: settings.extensionConfig ?? {}, capabilities: settings.extensionCapabilities ?? {}, readOnly: requirements.readOnly, approvalPolicy: requirements.approvalPolicy, mode: requirements.collaborationMode ?? "default", runId: identity.runId,
+      normalizedSessionId: identity.normalizedSessionId, cwd: input.cwd,
+      runtimeDirectory: settings.extensionCheckpoint?.runtimeDirectory ?? input.options.extensionRuntimeDirectory ?? resolve(input.options.runnerFilesystemRoot ?? input.root, "extension"),
+      ...(input.options.extensionRuntimeRoot ? { runtimeRoot: input.options.extensionRuntimeRoot } : {}),
+      ...(settings.extensionCredentialIdentity ? { credentialIdentity: settings.extensionCredentialIdentity } : {}),
+      instructions: baseInstructions, runtimeContext,
+      ...(settings.extensionCheckpoint ? { checkpoint: settings.extensionCheckpoint } : {}) };
+  }
   if (provider === "cursor_cloud") {
     if (input.options.runnerFilesystemRoot || !requirements.model || requirements.readOnly) {
       throw new Error("cursor_cloud_local_controller_required: experimental Cursor Cloud supports standard tasks with a local controller");
@@ -480,4 +503,9 @@ export function createRunnerdCodexAppServerArgs(input: {
       ...(input.disableWebSearch ? ["-c", 'web_search="disabled"'] : []));
   }
   return args;
+}
+
+function canonicalLaunchValue(value: unknown): string | undefined {
+  return JSON.stringify(value, (_key, entry: unknown) => entry && typeof entry === "object" && !Array.isArray(entry)
+    ? Object.fromEntries(Object.entries(entry).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)) : entry);
 }

@@ -1,4 +1,5 @@
 import { readCodexThreadState, readCodexTurnMetadata, readCodexTurnItems } from "./codex-history.js";
+import { parseRunnerHarnessCheckpoint } from "@paperclipai/runner-sdk/contracts";
 import { codexRunUsage, observeCodexUsage } from "./codex-usage-baseline.js";
 import { randomUUID } from "node:crypto";
 import { NativeProviderTerminalFailure } from "../../contracts/native-session-backend.js";
@@ -813,6 +814,12 @@ export class CodexHarnessSession
 
   async snapshot(): Promise<PersistedHarnessSession> {
     this.assertProtocolIntegrity();
+    const portableCheckpoint = this.driverKind === "extension"
+      ? (await this.transport.request("paperclip/harnessCheckpoint", {})).checkpoint
+      : undefined;
+    // Live bookkeeping is valid even while a turn cannot export a portable
+    // native checkpoint. Never invent resumability for that active state.
+    const extensionCheckpoint = portableCheckpoint == null ? undefined : parseRunnerHarnessCheckpoint(portableCheckpoint);
     return {
       driverKind: this.driverKind,
       workingDirectory: this.opened.context.workingDirectory,
@@ -821,6 +828,7 @@ export class CodexHarnessSession
       ...(this.opened.providerIdentity === undefined
         ? {}
         : { providerIdentity: structuredClone(this.opened.providerIdentity) }),
+      ...(extensionCheckpoint === undefined ? {} : { extensionCheckpoint }),
       runId: this.runId,
       normalizedSessionId: this.normalizedSessionId,
       activeTurnId: this.activeTurnId,

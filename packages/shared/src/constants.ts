@@ -1420,6 +1420,7 @@ export const PLUGIN_CAPABILITIES = [
   "http.outbound",
   "secrets.read-ref",
   "environment.drivers.register",
+  "runner.harnesses.register",
   "local.folders",
   // Agent Tools
   "agent.tools.register",

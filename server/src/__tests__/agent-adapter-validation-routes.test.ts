@@ -5,6 +5,7 @@ import { readFile } from "node:fs/promises";
 import request from "supertest";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
+import type { ResolvedRunnerHarness } from "../services/runner-harness-registry.js";
 
 const mockAgentService = vi.hoisted(() => ({
   create: vi.fn(),
@@ -80,6 +81,7 @@ const mockRemoteAgentProfileService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockRunnerHarnessRegistry = vi.hoisted(() => ({ list: vi.fn(), resolve: vi.fn() }));
 const mockAntigravityModels = vi.hoisted(() => vi.fn());
 vi.mock("../services/antigravity-connection-models.js", () => ({ antigravityConnectionModels: mockAntigravityModels }));
 
@@ -117,6 +119,10 @@ vi.mock("../services/remote-agent-profiles.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/runner-harness-registry.js", async importOriginal => ({
+    ...await importOriginal<typeof import("../services/runner-harness-registry.js")>(),
+    runnerHarnessRegistry: () => mockRunnerHarnessRegistry,
+  }));
   vi.doMock("../services/antigravity-connection-models.js", () => ({ antigravityConnectionModels: mockAntigravityModels }));
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
@@ -177,7 +183,7 @@ const externalAdapter: ServerAdapterModule = {
 
 const missingAdapterType = "missing_adapter_validation_test";
 
-async function createApp(actorOverride: Record<string, unknown> = {}) {
+async function createApp(actorOverride: Record<string, unknown> = {}, options: Parameters<typeof import("../routes/agents.js").agentRoutes>[1] = {}) {
   const [{ agentRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
@@ -207,7 +213,7 @@ async function createApp(actorOverride: Record<string, unknown> = {}) {
       })),
     })),
   };
-  app.use("/api", agentRoutes(db as any));
+  app.use("/api", agentRoutes(db as any, options));
   app.use(errorHandler);
   return app;
 }
@@ -251,9 +257,12 @@ describe("agent routes adapter validation", () => {
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
+    vi.doUnmock("../services/agent-environment-test.js");
     vi.doUnmock("../routes/agents.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockRunnerHarnessRegistry.list.mockResolvedValue([]);
+    mockRunnerHarnessRegistry.resolve.mockRejectedValue(new Error("Harness unavailable"));
     mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
     mockCompanySkillService.listRuntimeSkillEntries.mockResolvedValue([]);
     mockCompanySkillService.resolveRequestedSkillKeys.mockResolvedValue([]);
@@ -370,6 +379,113 @@ describe("agent routes adapter validation", () => {
     expect(JSON.stringify(saved.body)).not.toContain("private-metadata-fixture");
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "agent.updated" }));
   });
+
+  function availableHarness() {
+    const resolved: ResolvedRunnerHarness = {
+      pluginId: "plugin", pluginKey: "example.native", packageRoot: "/installed/example", entrypoint: "/installed/example/runtime.js",
+      release: { harnessId: "example.native/coding", packageName: "@example/plugin-coding", version: "1.0.0",
+        integrity: `sha256-${Buffer.alloc(32, 1).toString("base64")}`, protocolVersion: 1, runtimeDigest: `sha256:${"a".repeat(64)}` },
+      declaration: { harnessKey: "coding", displayName: "Example harness", platforms: ["linux-x64"], capabilities: {},
+        configSchema: { type: "object", properties: { mode: { enum: ["coding", "review"] } }, required: ["mode"], additionalProperties: false },
+        runtime: { entrypoint: "runtime.js", sha256: `sha256:${"a".repeat(64)}` },
+        credentials: [{ key: "EXAMPLE_API_KEY", displayName: "API key", required: true }] },
+    };
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    mockRunnerHarnessRegistry.list.mockResolvedValue([{ harnessId: resolved.release.harnessId }]);
+    mockRunnerHarnessRegistry.resolve.mockResolvedValue(resolved);
+    return { provider: "extension", harnessId: resolved.release.harnessId, model: "selected-native-model", lifecycleMode: "per_turn",
+      extensionConfig: { mode: "coding" }, env: { EXAMPLE_API_KEY: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222" } } };
+  }
+
+  it("creates and updates an installed native harness without built-in provider defaults", async () => {
+    const config = availableHarness();
+    const app = await createApp();
+    const created = await requestApp(app, base => request(base).post("/api/companies/company-1/agents")
+      .send({ name: "Installed harness", adapterType: "paperclip_runner", adapterConfig: config }));
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(mockAgentService.create.mock.calls.at(-1)?.[1]).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: config });
+    expect(mockRunnerHarnessRegistry.resolve).toHaveBeenCalledWith("company-1", config.harnessId);
+    const agent = { ...(await mockAgentService.getById()), adapterType: "paperclip_runner", adapterConfig: config };
+    mockAgentService.getById.mockResolvedValue(agent);
+    const updatedConfig = { ...config, extensionConfig: { mode: "review" } };
+    const updated = await requestApp(app, base => request(base).patch(`/api/agents/${agent.id}`)
+      .send({ adapterConfig: updatedConfig, replaceAdapterConfig: true }));
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toMatchObject({ adapterConfig: updatedConfig });
+  });
+
+  it.each(["create", "update", "test"])("rejects invalid external harness settings before resolving secrets or starting a package (%s)", async operation => {
+    const config = { ...availableHarness(), extensionConfig: { mode: "not-declared" } };
+    const probe = vi.fn();
+    const app = await createApp({}, { testRunnerHarness: probe });
+    const response = await requestApp(app, base => operation === "create"
+      ? request(base).post("/api/companies/company-1/agents").send({ name: "Invalid", adapterType: "paperclip_runner", adapterConfig: config })
+      : operation === "update"
+        ? request(base).patch("/api/agents/11111111-1111-4111-8111-111111111111").send({ adapterType: "paperclip_runner", adapterConfig: config, replaceAdapterConfig: true })
+        : request(base).post("/api/companies/company-1/adapters/paperclip_runner/test-environment").send({ adapterConfig: config }));
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.details?.code).toBe("runner_harness_config_invalid");
+    expect(mockSecretService.normalizeAdapterConfigForPersistence).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("rejects undeclared credential keys and disabled harnesses before admission", async () => {
+    const config = { ...availableHarness(), env: { NODE_OPTIONS: "--require=untrusted" } };
+    const app = await createApp();
+    const unsafe = await requestApp(app, base => request(base).post("/api/companies/company-1/agents")
+      .send({ name: "Unsafe", adapterType: "paperclip_runner", adapterConfig: config }));
+    expect(unsafe.status, JSON.stringify(unsafe.body)).toBe(422);
+    expect(unsafe.body.details?.code).toBe("runner_harness_credentials_invalid");
+    mockRunnerHarnessRegistry.list.mockResolvedValue([]);
+    mockRunnerHarnessRegistry.resolve.mockClear();
+    const disabled = await requestApp(app, base => request(base).post("/api/companies/company-1/agents")
+      .send({ name: "Disabled", adapterType: "paperclip_runner", adapterConfig: { ...config, env: {} } }));
+    expect(disabled.status, JSON.stringify(disabled.body)).toBe(422);
+    expect(disabled.body.details?.code).toBe("runner_harness_unavailable");
+    expect(mockRunnerHarnessRegistry.resolve).not.toHaveBeenCalled();
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it.each(["create", "test"])("keeps external harness credentials separate from built-in AI account bindings (%s)", async operation => {
+    const config = availableHarness();
+    const binding = { mode: "responsible_user", provider: "openai", method: "api_key" };
+    const probe = vi.fn();
+    const app = await createApp({}, { testRunnerHarness: probe });
+    const response = await requestApp(app, base => operation === "create"
+      ? request(base).post("/api/companies/company-1/agents").send({ name: "Bound", adapterType: "paperclip_runner", adapterConfig: config, runtimeConfig: { aiConnection: binding } })
+      : request(base).post("/api/companies/company-1/adapters/paperclip_runner/test-environment").send({ adapterConfig: config, aiConnection: binding }));
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.error).toContain("declared environment variables");
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(probe).not.toHaveBeenCalled();
+  });
+
+  it("retains an external harness probe lease until its native cleanup owner proves retirement", async () => {
+    const config = availableHarness();
+    const release = vi.fn(async () => {});
+    vi.doMock("../services/agent-environment-test.js", () => ({ agentEnvironmentTestService: () => ({
+      resolveAdapterTestEnvironmentId: async () => null,
+      resolveAdapterTestExecutionContext: async () => ({ executionTarget: null, environmentName: null, fallbackChecks: [], release }),
+    }) }));
+    const { NativeEnvironmentProbeCleanupError } = await import("../vendor/paperclip-runner/index.js");
+    let confirmRetirement!: () => void;
+    const retired = new Promise<void>(resolveRetirement => { confirmRetirement = resolveRetirement; });
+    const failure = new NativeEnvironmentProbeCleanupError(retired, new Error("Synthetic cleanup pending"), [], async () => retired);
+    const probe = vi.fn(async () => { throw failure; });
+    try {
+      const app = await createApp({}, { testRunnerHarness: probe });
+      const response = await requestApp(app, base => request(base).post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
+        .send({ adapterConfig: config }));
+      expect(response.status, JSON.stringify(response.body)).toBe(422);
+      expect(response.body.details?.code).toBe("native_probe_cleanup_pending");
+      expect(probe).toHaveBeenCalledOnce();
+      expect(release).not.toHaveBeenCalled();
+      confirmRetirement();
+      await vi.waitFor(() => expect(release).toHaveBeenCalledExactlyOnceWith("failed"));
+    } finally { confirmRetirement(); vi.doUnmock("../services/agent-environment-test.js"); }
+  }, 60_000);
 
   it("rejects stale and unauthorized YAML saves before calling the update service", async () => {
     const existing = await mockAgentService.getById();

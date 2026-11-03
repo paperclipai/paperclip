@@ -57,6 +57,27 @@ describe("producer-owned native usage", () => {
     return { input, source, report, done };
   };
 
+  it("accounts an installed harness's authenticated USD receipt once without built-in repricing", async () => {
+    const base = await seed();
+    const harnessId = "fixture.package/native";
+    const input = { ...base, provider: { kind: "extension" as const, harnessId, model: "exact-external-model", config: {}, capabilities: { usage: true },
+      release: { harnessId, packageName: "@fixture/plugin-native", version: "1.0.0", protocolVersion: 1 as const,
+        integrity: "sha256-" + "A".repeat(43) + "=", runtimeDigest: "sha256:" + "a".repeat(64) } },
+      billing: { provider: harnessId, biller: "unknown", billingType: "unknown" as const } };
+    await db.update(heartbeatRuns).set({ runnerInstanceId: input.runnerInstanceId }).where(eq(heartbeatRuns.id, input.runId));
+    const delivery = await createNativeUsageDelivery(db, input);
+    const report = event(input, 1, "usage.reported");
+    await delivery.capture(report);
+    await delivery.capture(report);
+    await delivery.capture(event(input, 2, "turn.completed"));
+    await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, input.runId));
+    expect(await accountRunCost(db, input.runId)).toBe(true);
+    expect(await accountRunCost(db, input.runId)).toBe(false);
+    const costs = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId));
+    expect(costs).toHaveLength(1);
+    expect(costs[0]).toMatchObject({ provider: harnessId, biller: "unknown", model: "exact-external-model", costCents: 25 });
+  });
+
   it("continues exact finalized source receipts without acquiring ownership or resetting accounting", async () => {
     const { input, source, report, done } = await finalizedSource();
     const before = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));

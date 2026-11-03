@@ -1,4 +1,5 @@
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
+import { runnerHarnessRegistry, validateRunnerHarnessConfiguration } from "../runner-harness-registry.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { museRunnerBroker } from "../muse-runner-broker.js";
 import { assertEphemeralNativeLifecycle, readRemoteWorkspaceAuthority } from "../remote-workspaces.js";
@@ -740,7 +741,11 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
             managedAiRuntime ? readNonEmptyString(resolvedConfig.model) ?? undefined : undefined,
           )
         : agent.adapterConfig;
+      const extensionHarness = nativeRuntimeResolution.profile.backend === "extension"
+        ? await runnerHarnessRegistry(db).resolve(agent.companyId, String(parseObject(nativeProviderConfig).harnessId)) : undefined;
+      if (extensionHarness) validateRunnerHarnessConfiguration(extensionHarness, parseObject(nativeProviderConfig));
       const requestedNativeProvider = resolvePaperclipRunnerNativeProviderInput({
+        extensionRelease: extensionHarness?.release, extensionCapabilities: extensionHarness?.declaration.capabilities,
         companyId: agent.companyId,
         backend: nativeRuntimeResolution.profile.backend,
         adapterConfig: nativeProviderConfig, managedProfile, agentCoreProfile, dotBinding, museBinding,

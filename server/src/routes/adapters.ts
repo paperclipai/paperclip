@@ -57,6 +57,7 @@ import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 import { agentRunnerAvailability, type RunnerTarget } from "../services/agent-runner-selection.js";
 import type { AgentRunnerAvailability } from "@paperclipai/shared";
 import { resolveAntigravityCandidateAdmission } from "../services/native-runtime/acpx-qualification.js";
+import type { RunnerHarnessRegistry } from "../services/runner-harness-registry.js";
 
 const execFileAsync = promisify(execFile);
 let warnedMalformedAntigravityAdmission = false;
@@ -254,9 +255,18 @@ export function adapterRoutes(options: {
   getNativeRunnerEnabled?: () => Promise<boolean>;
   getOpenAiDotEnabled?: () => Promise<boolean>;
   resolveRunnerTarget?: (companyId: string, environmentId?: string) => Promise<RunnerTarget>;
+  runnerHarnesses?: Pick<RunnerHarnessRegistry, "list">;
 } = {}) {
   const router = Router();
   const settings = adapterSettingsService(options.db);
+
+  router.get("/companies/:companyId/runner-harnesses", async (req, res) => {
+    assertBoardOrgAccess(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    if (!options.runnerHarnesses) throw badRequest("Runner harness discovery is unavailable.");
+    res.json(await options.runnerHarnesses.list(companyId));
+  });
 
   /**
    * GET /api/adapters

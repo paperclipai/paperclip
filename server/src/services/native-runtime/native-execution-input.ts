@@ -1,3 +1,4 @@
+import type { HarnessReleaseIdentity } from "@paperclipai/runner-sdk/contracts";
 import type { PaperclipTurnContext } from "@paperclipai/adapter-utils/server-utils";
 import { resolvePaperclipRunnerCursorMode, resolvePaperclipRunnerPiThinkingLevel } from "@paperclipai/adapter-utils";
 import { createHash } from "node:crypto";
@@ -19,6 +20,7 @@ import type {
   NativeExecutionInputV8,
   NativeExecutionInputV9,
   NativeExecutionInputV10,
+  NativeExecutionInputV11,
   MuseBindingSnapshot,
   DotBindingSnapshot,
   NativeExecutionInputV7,
@@ -96,7 +98,11 @@ export interface BuildNativeExecutionInput {
     branchName: string | null;
   };
   normalizedSessionId: string | null;
-  provider?: "cursor_cloud" | "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx" | "openai_dot" | "grok_bot" | "muse";
+  extensionRelease?: HarnessReleaseIdentity;
+  harnessId?: string;
+  extensionConfig?: Record<string, unknown>;
+  extensionCapabilities?: Record<string, boolean>;
+  provider?: "extension" | "cursor_cloud" | "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx" | "openai_dot" | "grok_bot" | "muse";
   museBinding?: MuseBindingSnapshot;
   dotBinding?: DotBindingSnapshot;
   acpxAgent?: NativeAcpxAgent;
@@ -140,11 +146,12 @@ export interface BuildNativeExecutionInput {
   };
   runtimeContext: NativeRuntimeContextSnapshot;
 }
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider: "extension" }): NativeExecutionInputV11;
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider: "muse"; museBinding: MuseBindingSnapshot }): NativeExecutionInputV8;
 export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider: "openai_dot" | "grok_bot"; dotBinding: DotBindingSnapshot }): NativeExecutionInputV6;
-export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider?: Exclude<BuildNativeExecutionInput["provider"], "openai_dot" | "grok_bot" | "muse"> }): NativeExecutionInputV5 | NativeExecutionInputV7 | NativeExecutionInputV9 | NativeExecutionInputV10;
-export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
-export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 {
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput & { provider?: Exclude<BuildNativeExecutionInput["provider"], "openai_dot" | "grok_bot" | "muse" | "extension"> }): NativeExecutionInputV5 | NativeExecutionInputV7 | NativeExecutionInputV9 | NativeExecutionInputV10;
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 | NativeExecutionInputV11;
+export function buildNativeExecutionInput(input: BuildNativeExecutionInput): NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 | NativeExecutionInputV11 {
   if (input.issue.workMode !== "standard" && input.issue.workMode !== "planning" && input.issue.workMode !== "ask" && input.issue.workMode !== "skill_test") {
     throw new Error("native_execution_input_invalid: issue work mode must be standard, planning, ask, or skill_test");
   }
@@ -258,10 +265,10 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
   const workflowCase = input.caseContext && previousCaseProjection
     ? projectCaseContinuation(input.caseContext, previousCaseProjection) : null;
   const prepared = {
-    schema: input.grokEffort !== undefined || input.grokDisableWebSearch !== undefined ? "paperclip.native-execution-input.v10"
+    schema: input.provider === "extension" ? "paperclip.native-execution-input.v11" : input.grokEffort !== undefined || input.grokDisableWebSearch !== undefined ? "paperclip.native-execution-input.v10"
       : input.claudeEffort !== undefined ? "paperclip.native-execution-input.v9"
       : input.homeMode === "preconfigured" ? "paperclip.native-execution-input.v7" : "paperclip.native-execution-input.v5",
-    ...(input.grokEffort !== undefined || input.grokDisableWebSearch !== undefined || input.claudeEffort !== undefined || input.homeMode === "preconfigured" ? { homeMode: input.homeMode ?? "isolated" } : {}),
+    ...(input.provider === "extension" || input.grokEffort !== undefined || input.grokDisableWebSearch !== undefined || input.claudeEffort !== undefined || input.homeMode === "preconfigured" ? { homeMode: input.homeMode ?? "isolated" } : {}),
     ...((input.initialCommunicationGuidance || input.freshSessionHandoff) ? {
       initialCommunicationGuidance: [input.initialCommunicationGuidance, input.freshSessionHandoff].filter(Boolean).join("\n\n"),
     } : {}),
@@ -310,7 +317,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     },
     session: {
       normalizedSessionId: input.normalizedSessionId,
-      driverKind: input.provider === "cursor_cloud" ? "cursor_cloud_api" : input.provider === "opencode"
+      driverKind: input.provider === "extension" ? "extension" : input.provider === "cursor_cloud" ? "cursor_cloud_api" : input.provider === "opencode"
         ? "opencode_server"
         : input.provider === "claude_managed"
           ? "claude_managed_agents_api"
@@ -322,7 +329,8 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
       protocolVersion: 1,
       lifecyclePolicy: input.lifecyclePolicy ?? { mode: "per_turn", idleTimeoutMs: null },
     },
-    provider: input.provider === "cursor_cloud" ? { kind: "cursor_cloud", model: input.model, cursorCloud: input.cursorCloud } : input.provider === "claude_managed"
+    provider: input.provider === "extension" ? { kind: "extension", harnessId: input.harnessId,
+      model: input.model, release: input.extensionRelease, config: input.extensionConfig ?? {}, capabilities: input.extensionCapabilities ?? {} } : input.provider === "cursor_cloud" ? { kind: "cursor_cloud", model: input.model, cursorCloud: input.cursorCloud } : input.provider === "claude_managed"
       ? {
           kind: "claude_managed",
           model: input.model,
@@ -397,7 +405,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
     schema: "paperclip.native-execution-input.v6", provider: { kind: input.provider, model: null, binding: input.dotBinding },
     workspace: { access: "none", cwd: null, repoUrl: null, repoRef: null, branchName: null },
     session: { ...prepared.session, driverKind: input.provider === "grok_bot" ? "grok_bot_mcp" : "openai_dot_mcp", lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } }
-  } : prepared) as NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
+  } : prepared) as NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10 | NativeExecutionInputV11;
 }
 
 

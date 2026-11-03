@@ -3,6 +3,15 @@
  */
 
 import { api } from "./client";
+import type { PluginRunnerHarnessDeclaration } from "@paperclipai/shared";
+
+export interface RunnerHarnessInfo extends Omit<PluginRunnerHarnessDeclaration, "harnessKey" | "runtime"> {
+  harnessId: string;
+  pluginKey: string;
+  packageName: string;
+  version: string;
+  protocolVersion: 1;
+}
 
 /**
  * The safe scalar login fields the server projects for an adapter that declares
@@ -66,6 +75,7 @@ export interface AdapterInstallResult {
 }
 
 export const adaptersApi = {
+  runnerHarnesses: (companyId: string) => api.get<RunnerHarnessInfo[]>(`/companies/${companyId}/runner-harnesses`),
   /** List all registered adapters (built-in + external). */
   list: (context?: { companyId: string; environmentId?: string | null }) => {
     const query = new URLSearchParams();

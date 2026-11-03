@@ -16,14 +16,20 @@ import { museRunnerBroker } from "./muse-runner-broker.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { LifecycleAgent } from "../modules/agent-lifecycle/index.js";
+import { runnerHarnessRegistry, validateRunnerHarnessConfiguration } from "./runner-harness-registry.js";
+import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
+import { reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "./retained-ai-credential-cleanup.js";
 
-export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult) {
+export function assertHarnessTestPassed(result: AdapterEnvironmentTestResult, harnessExtension = false) {
+  const extensionVerified = result.adapterType === "paperclip_runner" && result.status === "pass"
+    && result.checks.some(check => check.level === "info" && check.code === "runner_extension_probe_passed");
   const verified = result.checks.some(check => check.level === "info" &&
     (/hello_probe_(passed|succeeded)$/.test(check.code) || check.code === "ai_connection_api_key_reverified" || check.code === "copilot_metadata_verified"
-      || (result.adapterType === "paperclip_runner" && check.code === "cursor_cloud_account_ready")));
+      || (result.adapterType === "paperclip_runner" && check.code === "cursor_cloud_account_ready"))) || extensionVerified;
   const authenticationFailed = result.checks.some(check =>
     check.code === ADAPTER_AUTH_MISSING_CHECK_CODE || check.code === "COPILOT_AUTH_REQUIRED" || /_hello_probe_auth_required$/.test(check.code));
-  const incomplete = !verified && (result.status === "warn" || result.checks.some(check => check.code.includes("hello_probe")));
+  const incomplete = (harnessExtension && !extensionVerified)
+    || !verified && (result.status === "warn" || result.checks.some(check => check.code.includes("hello_probe")));
   if (result.status === "fail" || authenticationFailed || incomplete) {
     const has = (suffix: string) => result.checks.some(check => check.code.endsWith(suffix));
     const code = result.checks.some(check => check.level === "error" && check.retryable === true) ? "test_environment_unavailable"
@@ -45,6 +51,15 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
   async function verify(snapshot: LifecycleAgent): Promise<"complete" | "pending"> {
     const [agent] = await db.select().from(agents).where(and(eq(agents.id, snapshot.id), eq(agents.lifecycleVersion, snapshot.lifecycleVersion)));
     if (!agent) return "pending";
+    const harnessExtension = agent.adapterType === "paperclip_runner" && agent.adapterConfig.provider === "extension";
+    const cleanupScope = { companyId: agent.companyId, accountKey: JSON.stringify(["lifecycle-harness-probe", agent.id]) };
+    await reconcileRetainedAiCleanup(cleanupScope);
+    if (harnessExtension) {
+      if (agent.runtimeConfig.aiConnection) throw Object.assign(new Error("Configure the harness's declared environment credentials instead of a built-in AI account"), { code: "harness_auth_failed" });
+      if (typeof agent.adapterConfig.model !== "string" || !agent.adapterConfig.model.trim()) throw Object.assign(new Error("Choose an explicit harness model"), { code: "harness_model_unavailable" });
+      const resolved = await runnerHarnessRegistry(db).resolve(agent.companyId, String(agent.adapterConfig.harnessId));
+      validateRunnerHarnessConfiguration(resolved, agent.adapterConfig);
+    }
     if (agent.adapterType === "paperclip_runner" && ["openai_dot", "grok_bot"].includes(String(agent.adapterConfig.provider))) {
       const binding = await dotRunnerBroker(db).bindingForAgent(agent.companyId, agent.id);
       return binding?.status === "ready" && binding.wakeVerified && binding.id === agent.adapterConfig[agent.adapterConfig.provider === "grok_bot" ? "externalBindingId" : "dotBindingId"] ? "complete" : "pending";
@@ -89,17 +104,26 @@ export function agentHarnessVerificationService(db: Db, manager: PluginWorkerMan
       ? { executionTarget: null, environmentName: null, fallbackChecks: [], release: async (_status?: "released" | "failed") => {} }
       : await tests.resolveAdapterTestExecutionContext({ agentId: agent.id, companyId: agent.companyId, adapterType: agent.adapterType, environmentId });
     let status: "released" | "failed" = "failed";
+    let retainedTarget = false;
     try {
       if (target.fallbackChecks.length) throw Object.assign(new Error("The test environment is unavailable"), { code: "test_environment_unavailable" });
       const input = { companyId: agent.companyId, adapterType: agent.adapterType, config,
         executionTarget: target.executionTarget, environmentName: target.environmentName };
-      const result = binding ? await withManagedAiProbe(db, { ...input, agentId: agent.id, responsibleUserId, binding },
+      const result = harnessExtension ? await (await import("./native-runtime/extension-runtime.js")).probeInstalledRunnerHarness(db, input)
+        : binding ? await withManagedAiProbe(db, { ...input, agentId: agent.id, responsibleUserId, binding },
         managed => tests.testManagedEnvironment(agent.adapterType, { ...input, config: managed.config }, binding!, managed, agent.id))
         : await requireServerAdapter(agent.adapterType).testEnvironment(input);
-      assertHarnessTestPassed(result);
+      assertHarnessTestPassed(result, harnessExtension);
       status = "released";
       return "complete";
-    } finally { await target.release(status); }
+    } catch (error) {
+      if (harnessExtension && error instanceof NativeEnvironmentProbeCleanupError) {
+        retainedTarget = true;
+        retainAiCredentialCleanup({ scope: cleanupScope, cleanup: () => target.release("failed"), retired: error.retired,
+          ...(error.retryCleanup ? { retryRetirement: error.retryCleanup } : {}) });
+      }
+      throw error;
+    } finally { if (!retainedTarget) await target.release(status); }
   }
   return { verify };
 }

@@ -115,6 +115,21 @@ class WarmAttachTransport extends FakeCodexTransport {
 }
 
 describe("Codex app-server Codex driver", () => {
+  it.each(["extension", "codex_app_server"])("reports unavailable goals for the selected %s driver", async kind => {
+    const driver = makeDriver([new FakeCodexTransport()], {
+      driverIdentity: { kind, displayName: "Fixture", version: "1" }, capabilities: { goals: false },
+    });
+    const session = await driver.openSession({ runId: "goal-provider", normalizedSessionId: "goal-provider", workingDirectory: WORKSPACE });
+    const events = session.events()[Symbol.asyncIterator]();
+    await events.next();
+    expect((await events.next()).value).toMatchObject({ eventType: "session.capabilities.updated", payload: {
+      sessionGoals: kind === "extension"
+        ? { reasonCode: "harness_goal_api_unavailable", reason: "This harness does not expose session goals." }
+        : { reasonCode: "codex_goal_api_unavailable", reason: "This Codex app-server does not expose thread goals." },
+    } });
+    await session.close({ reason: "test complete" });
+  });
+
   it.each(["codex_app_server", "acpx_runtime"])("keeps startup provider evidence for the selected %s driver", async kind => {
     const transport = new FakeCodexTransport();
     transport.rejectMethods.set("thread/start", new CodexRpcError(JSON.stringify({ error: {

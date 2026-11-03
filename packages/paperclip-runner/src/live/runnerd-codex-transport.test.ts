@@ -117,6 +117,8 @@ const defaultCapabilityRunnerdBinary = () =>
 
 it("attributes opened candidate sessions to the harness biller instead of the model vendor", () => {
   const provider = runnerdLaunchProfileInternals.openedThreadModelProvider;
+  expect(provider("extension", "codex", "fixture-exact-model", "fixture.native/native")).toBe("extension:fixture.native/native");
+  expect(provider("extension", "codex", "fixture-exact-model")).toBe("extension");
   for (const model of ["gpt-5.6-luna[context=272k,reasoning=medium,fast=false]", "claude-sonnet-5"]) {
     expect(provider("acpx", "cursor", model)).toBe("cursor");
     expect(provider("acpx", "copilot", model)).toBe("github");

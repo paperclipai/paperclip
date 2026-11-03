@@ -32,6 +32,8 @@ export interface CodexAppServerDriverOptions {
   skillInputs?: readonly import("../../contracts/runtime-context.js").NativeSkillInput[];
   conversationMode?: "task" | "direct" | "prepared";
   requestedCollaborationMode?: "default" | "plan";
+  /** Enforce read-only workspace permissions independently of a native plan preset. */
+  readOnly?: boolean;
   /**
    * Include Codex's built-in collaboration instructions. Defaults to true so
    * interactive runs receive native commentary/preambles. Deterministic evals
@@ -46,6 +48,7 @@ export interface CodexAppServerDriverOptions {
       | "providerSessionId"
       | "providerIdentity"
       | "activeTurnId"
+      | "extensionCheckpoint"
     >;
   }) => CodexAppServerTransport;
   /** Additional control-plane tools exposed to the provider for this run. */

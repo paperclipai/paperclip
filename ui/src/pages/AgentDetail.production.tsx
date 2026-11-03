@@ -1637,7 +1637,7 @@ export function ConfigurationTab({
         ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", agent.adapterType],
     queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider }),
-    enabled: Boolean(companyId) && content === "configuration",
+    enabled: Boolean(companyId) && content === "configuration" && catalogProvider !== "extension",
   });
 
   const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";

@@ -85,7 +85,10 @@ vi.mock("../api/grokBot", () => ({
   },
 }));
 
-const mockAdaptersApi = vi.hoisted(() => ({ list: vi.fn(async () => [{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]) }));
+const mockAdaptersApi = vi.hoisted(() => ({
+  list: vi.fn(async () => [{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]),
+  runnerHarnesses: vi.fn(async (): Promise<import("../api/adapters").RunnerHarnessInfo[]> => []),
+}));
 vi.mock("../api/adapters", () => ({ adaptersApi: mockAdaptersApi }));
 
 vi.mock("../api/environments", () => ({
@@ -720,6 +723,35 @@ describe("AgentConfigForm environment selector", () => {
     await flushReact();
     await clickByText(result.container, "Save");
     expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed Cody" });
+  });
+
+  it("reopens installed harness settings and saves the package-owned configuration", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    mockAdaptersApi.runnerHarnesses.mockResolvedValue([{
+      harnessId: "example.harness/synthetic", pluginKey: "example.harness", packageName: "@example/plugin-harness",
+      version: "1.0.0", displayName: "Synthetic Harness", protocolVersion: 1, platforms: ["linux-x64"], capabilities: { interruption: true },
+      configSchema: { type: "object", properties: { mode: { type: "string", title: "Execution mode" } } },
+      credentials: [{ key: "SYNTHETIC_API_KEY", displayName: "API key", required: true }],
+    }]);
+    try {
+      const modelRequests = mockAgentsApi.adapterModels.mock.calls.length;
+      const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: {
+        provider: "extension", harnessId: "example.harness/synthetic", model: "selected-model", extensionConfig: { mode: "coding" },
+      } }, { showAdapterTypeField: true });
+      roots.push(result.root);
+      await vi.waitFor(() => expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain("Synthetic Harness"));
+      expect(result.container.querySelector('[aria-label="Model"]')?.textContent).toContain("selected-model");
+      expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(modelRequests);
+      expect(result.container.textContent).toContain("SYNTHETIC_API_KEY");
+      const field = result.container.querySelector<HTMLInputElement>('input[value="coding"]');
+      expect(field).not.toBeNull();
+      await act(async () => setInputValue(field!, "review"));
+      await flushReact();
+      await clickByText(result.container, "Save");
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({ extensionConfig: { mode: "review" } }) }));
+    } finally {
+      mockAdaptersApi.runnerHarnesses.mockResolvedValue([]);
+    }
   });
 
   it.each([

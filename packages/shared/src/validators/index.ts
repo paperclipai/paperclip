@@ -795,6 +795,7 @@ export {
   pluginWebhookDeclarationSchema,
   pluginToolDeclarationSchema,
   pluginEnvironmentDriverDeclarationSchema,
+  pluginRunnerHarnessDeclarationSchema,
   sandboxProviderCapabilitiesSchema,
   pluginUiSlotDeclarationSchema,
   pluginLauncherActionDeclarationSchema,

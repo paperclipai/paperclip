@@ -1,3 +1,4 @@
+import { parseRunnerHarnessLaunchProfile } from "@paperclipai/runner-sdk/contracts";
 import { AGENT_OBSERVABILITY_ENV_KEYS } from "../drivers/agent-observability.js";
 import { configuredEnvironment } from "../configured-environment.js";
 import { spawn } from "node:child_process";
@@ -4202,6 +4203,14 @@ function runnerEnvironment(
     for (const key of [...runnerExplicitProviderEnvironmentKeys, ...AGENT_OBSERVABILITY_ENV_KEYS]) {
       const value = explicitSource[key];
       if (value !== undefined) environment[key] = value;
+    }
+    const extensionProfile = explicitSource.PAPERCLIP_RUNNER_EXTENSION_PROFILE;
+    if (extensionProfile !== undefined) {
+      const profile = parseRunnerHarnessLaunchProfile(JSON.parse(extensionProfile));
+      environment.PAPERCLIP_RUNNER_EXTENSION_PROFILE = JSON.stringify(profile);
+      for (const name of profile.environmentKeys) {
+        if (explicitSource[name] !== undefined) environment[name] = explicitSource[name];
+      }
     }
     if (explicitSource.CLAUDE_CODE_USE_BEDROCK === "1") {
       for (const key of ["AWS_BEARER_TOKEN_BEDROCK"] as const) {

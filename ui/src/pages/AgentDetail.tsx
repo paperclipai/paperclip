@@ -1650,7 +1650,7 @@ export function ConfigurationTab({
         ? queryKeys.agents.adapterModels(companyId, agent.adapterType, null, catalogProvider)
         : ["agents", "none", "adapter-models", agent.adapterType],
     queryFn: () => agentsApi.adapterModels(companyId!, agent.adapterType, { provider: catalogProvider }),
-    enabled: Boolean(companyId) && content === "runtime" && !["openai_dot", "grok_bot", "muse"].includes(catalogProvider ?? ""),
+    enabled: Boolean(companyId) && content === "runtime" && !["openai_dot", "grok_bot", "muse", "extension"].includes(catalogProvider ?? ""),
   });
 
   const lowTrustSelected = getTrustPreset(agent.permissions) === "low_trust_review";
