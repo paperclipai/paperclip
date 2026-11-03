@@ -72,14 +72,18 @@ describe("deferred receipt durable dispatch", () => {
     // during actual process execution; accelerated steps only settle idle work.
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     heartbeat = heartbeatService(db);
-    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !drain, canReconcile: () => true,
+    coordinator = createCoordinator();
+  });
+  function createCoordinator() {
+    const worker = createDeliveryWorkCoordinator({ owner: db, canRun: () => !drain, canReconcile: () => true,
       onError: error => { errors.push(error); errorTimes.push(Date.now()); } });
-    const register = coordinator.register.bind(coordinator);
-    coordinator.register = (queue, task) => register(queue, { ...task, run: signal => {
+    const register = worker.register.bind(worker);
+    worker.register = (queue, task) => register(queue, { ...task, run: signal => {
       const pass = Promise.resolve(task.run(signal)); passes.add(pass);
       void pass.then(() => passes.delete(pass), () => passes.delete(pass)); return pass;
     } });
-  });
+    return worker;
+  }
   afterEach(async () => {
     await coordinator.stop(); await heartbeat.drainActiveRunExecutions();
     for (const stop of extraStops.splice(0)) await stop();
@@ -178,8 +182,8 @@ describe("deferred receipt durable dispatch", () => {
   });
   it("dispatches task Retry past a repeatedly invalidated backlog into real process output", async () => {
     const f = await fixture();
-    // Keep real execution behind occupied capacity while the queue clock is
-    // accelerated. Release it before starting a process with a wall-time lease.
+    // Hold executor capacity while queue time advances; reconstruct the saved
+    // run with fresh workers at PostgreSQL time before real process execution.
     const [occupant] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
       status: "running", startedAt: new Date() }).returning();
     await db.update(agents).set({ runtimeConfig: { heartbeat: { enabled: true, intervalSec: 0,
@@ -205,7 +209,13 @@ describe("deferred receipt durable dispatch", () => {
     const receipt = await read();
     expect(receipt.runId).toBeTruthy();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, receipt.runId!)))[0].status).toBe("queued");
+    await coordinator.stop();
+    await heartbeat.drainActiveRunExecutions();
     vi.setSystemTime(vi.getRealSystemTime());
+    heartbeat = heartbeatService(db);
+    coordinator = createCoordinator();
+    await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
+    await heartbeat.registerScheduledRetryCancellationWork(coordinator, () => !drain).ready;
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, occupant.id));
     await heartbeat.registerRunDispatchWork(coordinator, () => !drain).ready;
     await waitForReal(async () => {
