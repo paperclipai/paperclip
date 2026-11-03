@@ -1,5 +1,6 @@
 import { dehydrate, hashKey, hydrate, type DehydratedState, type Query, type QueryClient } from "@tanstack/react-query";
 import { classifyError, isTransientError } from "@/api/errors";
+import { detachInflightGets } from "@/api/client";
 import { markCachedSession, verifyCachedSession, hasUnverifiedSession } from "./cached-session";
 import { queryKeys } from "./queryKeys";
 
@@ -113,6 +114,7 @@ export function persistedQueryScope(key: readonly unknown[], data: unknown, user
 }
 
 function clearAccountData(client: QueryClient) {
+  detachInflightGets();
   const keep = (query: Query) => hashKey(query.queryKey) === hashKey(queryKeys.health) || hashKey(query.queryKey) === hashKey(queryKeys.auth.session);
   void client.cancelQueries({ predicate: query => !keep(query) }, { revert: false });
   for (const query of client.getQueryCache().getAll()) {
@@ -164,6 +166,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
   };
   const cancelTimer = () => { if (timer !== undefined) clearTimeout(timer); timer = undefined; };
   const clear = () => {
+    detachInflightGets();
     sessionEpoch += 1;
     cancelTimer();
     const previous = owner ?? userIdOf(client.getQueryData(queryKeys.auth.session));

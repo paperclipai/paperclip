@@ -128,7 +128,7 @@ function OwnedInlineEditor({
       await onSave(next);
     },
   });
-  const { markDirty, reset, run: runAutosave } = autosave;
+  const { markDirty, clearDirty, reset, run: runAutosave } = autosave;
   const runInlineAutosave = useCallback((next: string) => {
     const restored = restoredBaseRef.current;
     const readCurrent = readCurrentValueRef.current;
@@ -372,9 +372,8 @@ function OwnedInlineEditor({
     const trimmed = draft.trim();
     // Nullable: empty draft can still be a real edit (clearing); only skip debounce when unchanged or empty is invalid.
     if (trimmed === value || (!trimmed && !nullable)) {
-      if (autosaveStateRef.current !== "saved") {
-        reset();
-      }
+      if (autosaveStateRef.current === "saved") clearDirty();
+      else reset();
       return;
     }
     markDirty();
@@ -390,7 +389,7 @@ function OwnedInlineEditor({
         clearTimeout(autosaveDebounceRef.current);
       }
     };
-  }, [commit, draft, markDirty, multiline, multilineFocused, nullable, reset, value]);
+  }, [clearDirty, commit, draft, markDirty, multiline, multilineFocused, nullable, reset, value]);
 
   if (multiline) {
     const previewValue = autosaveState === "saved" || autosaveState === "idle" ? draft : value;

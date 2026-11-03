@@ -4,6 +4,7 @@ import { act, forwardRef, useImperativeHandle, useRef, type ReactNode } from "re
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { hasPendingWrites } from "../lib/reload-safety";
 import { markCachedSession } from "../lib/cached-session";
 import { startPersistedQueryCache } from "../lib/persisted-query-cache";
 import { queryKeys } from "../lib/queryKeys";
@@ -469,6 +470,30 @@ describe("InlineEditor", () => {
     act(() => {
       root.unmount();
     });
+  });
+
+  it("releases update blocking when a newer multiline edit is undone after an older save completes", async () => {
+    vi.useFakeTimers();
+    const root = createRoot(container);
+    let complete!: () => void;
+    const onSave = vi.fn().mockImplementationOnce(() => new Promise<void>(resolve => { complete = resolve; }));
+    try {
+      await act(async () => root.render(<InlineEditor value="Original" multiline defaultEditing onSave={onSave} />));
+      const textarea = container.querySelector<HTMLTextAreaElement>("textarea")!;
+      act(() => { textarea.focus(); setNativeTextareaValue(textarea, "First edit"); });
+      await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+      expect(onSave).toHaveBeenCalledWith("First edit");
+      act(() => setNativeTextareaValue(textarea, "Newer edit"));
+      await act(async () => { complete(); await Promise.resolve(); });
+      expect(container.textContent).toContain("Saved");
+      expect(hasPendingWrites()).toBe(true);
+      act(() => setNativeTextareaValue(textarea, "Original"));
+      expect(container.textContent).toContain("Saved");
+      expect(hasPendingWrites()).toBe(false);
+      await act(async () => { await vi.advanceTimersByTimeAsync(2000); });
+      expect(onSave).toHaveBeenCalledTimes(1);
+      expect(container.textContent).not.toContain("Saved");
+    } finally { act(() => root.unmount()); vi.useRealTimers(); }
   });
 
   it("multiline nullable clear uses autosave path (shows Saved after blur)", async () => {

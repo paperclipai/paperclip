@@ -39,7 +39,7 @@ import type {
   AgentApiKeyScope,
 } from "@paperclipai/shared";
 import { isUuidLike, normalizeAgentUrlKey } from "@paperclipai/shared";
-import { ApiError, api } from "./client";
+import { ApiError, api, type RequestOptions } from "./client";
 
 export interface AgentKey {
   id: string;
@@ -127,9 +127,9 @@ export const agentsApi = {
   org: (companyId: string) => api.get<OrgNode[]>(`/companies/${companyId}/org`),
   listConfigurations: (companyId: string) =>
     api.get<Record<string, unknown>[]>(`/companies/${companyId}/agent-configurations`),
-  get: async (id: string, companyId?: string) => {
+  get: async (id: string, companyId?: string, options?: RequestOptions) => {
     try {
-      return await api.get<AgentDetail>(agentPath(id, companyId));
+      return await api.get<AgentDetail>(agentPath(id, companyId), options);
     } catch (error) {
       // Backward-compat fallback: if backend shortname lookup reports ambiguity,
       // resolve using company agent list while ignoring terminated agents.
@@ -145,12 +145,12 @@ export const agentsApi = {
       const urlKey = normalizeAgentUrlKey(id);
       if (!urlKey) throw error;
 
-      const agents = await api.get<Agent[]>(`/companies/${companyId}/agents`);
+      const agents = await api.get<Agent[]>(`/companies/${companyId}/agents`, options);
       const matches = agents.filter(
         (agent) => agent.status !== "terminated" && normalizeAgentUrlKey(agent.urlKey) === urlKey,
       );
       if (matches.length !== 1) throw error;
-      return api.get<AgentDetail>(agentPath(matches[0]!.id, companyId));
+      return api.get<AgentDetail>(agentPath(matches[0]!.id, companyId), options);
     }
   },
   getConfiguration: (id: string, companyId?: string) =>

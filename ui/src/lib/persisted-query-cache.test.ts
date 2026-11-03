@@ -1,7 +1,7 @@
 import { QueryClient, QueryObserver } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError } from "@/api/client";
+import { ApiError, api, detachInflightGets } from "@/api/client";
 import { bindAccount } from "./account-scope";
 import { hasUnverifiedSession, markCachedSession } from "./cached-session";
 import { queryKeys } from "./queryKeys";
@@ -200,6 +200,38 @@ describe("persisted read cache", () => {
     expect(readComposerRunSettings(task.assigneeAdapterOverrides, "codex_local")).toEqual({ model: "display-model", effort: "high", fast: true });
     expect(task.assigneeAdapterOverrides.adapterConfig).not.toHaveProperty("command");
     expect(task.assigneeAdapterOverrides.adapterConfig).not.toHaveProperty("env");
+  });
+
+  it.each(["account-switch", "sign-out"])("does not share or persist another account's pending private-project request after %s", async boundary => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    let finishAlice!: (value: Response) => void;
+    const bobProjects = [{ id: "project-bob", companyId: "company-one", name: "Bob project" }];
+    const fetch = vi.fn().mockImplementationOnce(() => new Promise<Response>(resolve => { finishAlice = resolve; }))
+      .mockResolvedValue(new Response(JSON.stringify(bobProjects), { headers: { "Content-Type": "application/json" } }));
+    vi.stubGlobal("fetch", fetch);
+    try {
+      const key = queryKeys.projects.list("company-one");
+      const path = "/companies/company-one/projects";
+      // Match sidebar reads that do not forward React Query's AbortSignal.
+      const oldRead = first.client.fetchQuery({ queryKey: key, queryFn: () => api.get(path) }).catch(() => undefined);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      if (boundary === "sign-out") { clearPersistedQueryCache(first.client); first.client.clear(); }
+      await first.client.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: async () => session("bob"), staleTime: 0 });
+      seed(first.client, "bob");
+      const currentRead = first.client.fetchQuery({ queryKey: key, queryFn: () => api.get(path) });
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await expect(currentRead).resolves.toEqual(bobProjects);
+      finishAlice(new Response(JSON.stringify([{ id: "project-alice", companyId: "company-one", name: "Alice private project" }]), { headers: { "Content-Type": "application/json" } }));
+      await oldRead;
+      await Promise.resolve();
+      first.handle.flush();
+      expect(first.client.getQueryData(key)).toEqual(bobProjects);
+      expect([...first.storage.values.values()].join(" ")).not.toContain("Alice private project");
+      expect(setup(first.storage).client.getQueryData(key)).toEqual(bobProjects);
+    } finally {
+      finishAlice?.(new Response("[]", { headers: { "Content-Type": "application/json" } }));
+      detachInflightGets(); vi.unstubAllGlobals();
+    }
   });
 
   it("preserves another account published while this tab is flushing", () => {
