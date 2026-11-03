@@ -23,6 +23,7 @@ import { buildDocumentAnnotationHash, parseDocumentAnnotationHash } from "../lib
 import type { CompanyUserProfile } from "../lib/company-members";
 import { queryKeys } from "../lib/queryKeys";
 import { isGeneralTaskDocumentKey } from "../lib/issue-artifacts";
+import { captureBrowserException } from "../lib/sentry";
 import { useDraftOwner } from "../hooks/useDraftOwner";
 import { cn, relativeTime } from "../lib/utils";
 import { FoldCurtain } from "./FoldCurtain";
@@ -275,6 +276,32 @@ function toDocumentSummary(document: IssueDocument) {
   };
 }
 
+function hasDocumentKey(document: unknown): document is IssueDocument {
+  return Boolean(document)
+    && typeof document === "object"
+    && typeof (document as { key?: unknown }).key === "string"
+    && (document as { key: string }).key.length > 0;
+}
+
+/** Report document rows missing a key; they cannot be rendered or addressed. */
+function reportKeylessDocument(subjectId: string, document: unknown, source: string) {
+  const id = document && typeof document === "object" ? (document as { id?: unknown }).id : undefined;
+  captureBrowserException(new Error(
+    `Issue document without key (${source}; subject ${subjectId}; document ${String(id ?? "unknown")})`,
+  ));
+}
+
+/** Drop rows without a key from a documents list, reporting each one. */
+function selectKeyedDocuments(subjectId: string, documents: IssueDocument[] | undefined): IssueDocument[] | undefined {
+  if (!Array.isArray(documents)) return documents;
+  const keyed = documents.filter((document) => {
+    if (hasDocumentKey(document)) return true;
+    reportKeylessDocument(subjectId, document, "list");
+    return false;
+  });
+  return keyed.length === documents.length ? documents : keyed;
+}
+
 function makeIssueDocumentSubject(issue: Issue): DocumentSubjectConfig {
   return {
     id: issue.id,
@@ -421,6 +448,7 @@ function AccountIssueDocumentsSection({
   const { data: documents } = useQuery({
     queryKey: documentSubject.documentsQueryKey,
     queryFn: documentSubject.listDocuments,
+    select: (data) => selectKeyedDocuments(documentSubject.id, data),
   });
 
   const { data: activeDocumentRevisions, isFetching: isFetchingDocumentRevisions, isError: revisionsQueryFailed } = useQuery({
@@ -452,6 +480,10 @@ function AccountIssueDocumentsSection({
   }, [documentSubject, queryClient]);
 
   const syncDocumentCaches = useCallback((document: IssueDocument) => {
+    if (!hasDocumentKey(document)) {
+      reportKeylessDocument(documentSubject.id, document, "cache-sync");
+      return;
+    }
     if (documentSubject.hideSystemDocuments && isSystemIssueDocumentKey(document.key)) return;
     queryClient.setQueryData<IssueDocument[] | undefined>(
       documentSubject.documentsQueryKey,
