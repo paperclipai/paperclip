@@ -8,7 +8,7 @@ import { gradeConnectionGuidanceDecline, hasConnectionGuidanceDeclineReply, expl
 import { expect, type Page } from "@playwright/test";
 import { runnerApiToolsEnabled } from "../../server/src/services/native-runtime/runner-api-rollout.js";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -25,7 +25,12 @@ import { waitForTaskChatRendered, waitForTaskIdentity } from "./continuation-scr
 import { hasPersistedSource, isSavedSourceCheckpoint } from "./everyday-interruption.js";
 import { collectRunEvents } from "./run-observations.js";
 import { gradeRemoteRestart, observeRemoteRestartBoundary, projectRemoteRestartEvents, projectRemoteRestartRun, waitForRemoteRestartBoundary, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
-import { controllerOutageForExecution, type ControllerOutageReceipt } from "./controller-outage.js";
+import { controllerOutageForExecution } from "./controller-outage.js";
+import type { ControllerReplacementReceipt } from "./controller-replacement.js";
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
+import { gradeRemoteWorkspaceStorage, isRemoteWorkspaceStorageExecution, readRemoteWorkspaceStorageCheckpoint,
+  REMOTE_WORKSPACE_PROOF_FILE, type RemoteWorkspaceStorageEvidence } from "./remote-workspace-storage.js";
+import { gradeRetainedControllerContinuation, retainedControllerRun, retainedControllerFollowupTransport, submitRetainedControllerComment, onePersistedRetainedControllerComment } from "./retained-controller-continuation.js";
 import { setupAggregatorFixture } from "./aggregator-fixture.js";
 import { gradeProviderChoice, gradeProviderOutcome, requireProviderAccessCard } from "./connection-routing-evidence.js";
 import { setupConnectionReview } from "./connection-reviews.js";
@@ -44,6 +49,8 @@ import {
   storyLifecycleChecks,
   storyRepliesConsumed,
   storyHasAgentReply,
+  storyAgentReplyMatches,
+  retainedControllerReplyMatcher,
   storyHasPendingHumanInteraction,
   storyReviewContinuationTimeoutDetail,
   storyHasStrandedBlockedLeaf,
@@ -59,6 +66,7 @@ import {
   type StoryCheck,
   type StoryIssue,
   type StoryRun,
+  type StoryReplyExpectation,
 } from "./everyday-observations.js";
 
 type Row = Record<string, any>;
@@ -84,6 +92,7 @@ export interface EverydayEvidence {
   downloads: Row[];
   allowedInterruptedRuns: string[];
   remoteRestart?: RemoteRestartEvidence;
+  remoteWorkspaceStorage?: RemoteWorkspaceStorageEvidence;
 }
 interface Input {
   page: Page;
@@ -95,7 +104,7 @@ interface Input {
   privateDir: string;
   deadlineAt: number;
   restartCount?: number;
-  restart(binding?: import("./controller-recovery-observer.js").RecoveryBinding, controllerDowntimeMs?: number): Promise<ControllerOutageReceipt | void>;
+  restart(binding?: import("./controller-recovery-observer.js").RecoveryBinding, controllerDowntimeMs?: number): Promise<ControllerReplacementReceipt | void>;
   observe(issue: StoryIssue, runs: StoryRun[]): void;
   capture(id: string, label: string, file: string): Promise<void>;
   evidence(name: string, value: unknown): Promise<void>;
@@ -174,7 +183,10 @@ export async function runEverydayFlow(input: Input) {
   let review: Awaited<ReturnType<typeof setupConnectionReview>> | undefined;
   let project = fixtures.project;
   const caseId = execution.task.id;
-  const requireRemoteRestart = controllerOutageForExecution(execution, process.env) !== undefined;
+  const controllerOutage = controllerOutageForExecution(execution, process.env);
+  const requireRemoteRestart = controllerOutage !== undefined || isRollingWebDeployment(execution);
+  const remoteWorkspaceStorage = isRemoteWorkspaceStorageExecution(execution);
+  if (remoteWorkspaceStorage) ev.remoteWorkspaceStorage = { browserReadPhases: [] };
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";
   const nativeProviderCase = caseId === "provider-native";
   let aggregatorFixture: Awaited<ReturnType<typeof setupAggregatorFixture>> | undefined;
@@ -187,6 +199,8 @@ export async function runEverydayFlow(input: Input) {
   let providerAccessDecision: { id: string; connectionId: string } | undefined;
   let stoppedWorkspace: Record<string, string> | undefined;
   let settledAgentReply: Row | undefined;
+  let postControllerApiFollowup = false;
+  let retainedFollowupCommentId: string | undefined;
   let reviewHandoffBoundary: {
     childId: string;
     assigneeAgentId: string | null | undefined;
@@ -280,7 +294,7 @@ export async function runEverydayFlow(input: Input) {
       ),
     ];
   }
-  async function reply(message: string, target: StoryIssue = parent!) {
+  async function reply(message: string, target: StoryIssue = parent!, transport: "browser" | "task_comment_api" = "browser") {
     const priorFailures = ev.checks.filter((c) => !c.passed);
     if (priorFailures.length)
       throw new Error(
@@ -288,7 +302,9 @@ export async function runEverydayFlow(input: Input) {
       );
     const before = await api.get<Row[]>(`/api/issues/${target.id}/comments`);
     lastSubmissionAt = Date.now();
-    await submitTaskReply(page, message);
+    const submitted = transport === "task_comment_api"
+      ? await submitRetainedControllerComment(api, target.id, message, randomUUID())
+      : (await submitTaskReply(page, message), undefined);
     const after = await pollUntil({
       label: "one persisted user reply",
       deadlineAt: Date.now() + 30_000,
@@ -303,11 +319,12 @@ export async function runEverydayFlow(input: Input) {
     );
     check(
       `reply-${ev.timeline.length}-stored-once`,
-      added.length === 1,
-      "A composer submission creates exactly one user message.",
+      transport === "task_comment_api" ? onePersistedRetainedControllerComment({ added, commentId: submitted?.id ?? "", body: message }) : added.length === 1,
+      transport === "task_comment_api" ? "The production comment API creates exactly one matching user message." : "A composer submission creates exactly one user message.",
     );
     submittedCommentIds.push(...added.map((c) => c.id));
-    note("composer-message-persisted", {
+    if (submitted) retainedFollowupCommentId = submitted.id;
+    note(transport === "task_comment_api" ? "task-api-message-persisted" : "composer-message-persisted", {
       issueId: target.id,
       commentIds: added.map((c) => c.id),
     });
@@ -324,7 +341,7 @@ export async function runEverydayFlow(input: Input) {
       sameConnections: false,
     };
   }
-  async function settled(expectedAgentReply?: string) {
+  async function settled(expectedAgentReply?: StoryReplyExpectation, readback: "browser" | "api" = "browser") {
     const settledState = await pollUntil({
       label: `everyday ${caseId} settled`,
       deadlineAt: input.deadlineAt,
@@ -389,16 +406,14 @@ export async function runEverydayFlow(input: Input) {
     if (expectedAgentReply) {
       const issue = settledState.issues.find((candidate) => candidate.id === parent?.id);
       const reply = issue?.comments?.find(
-        (comment) =>
-          comment.authorAgentId === fixtures.agent.id &&
-          String(comment.body ?? "").includes(expectedAgentReply),
+        (comment) => storyAgentReplyMatches(comment, fixtures.agent.id, expectedAgentReply),
       );
       if (reply) {
         // Keep the exact snapshot that satisfied the readiness predicate. A
         // later refresh may return a newer projection and must not change the
         // evidence used by the assertion below.
         settledAgentReply = { ...reply };
-        note("expected-agent-reply-visible-at-settlement", {
+        note(readback === "api" ? "expected-agent-reply-persisted-at-settlement" : "expected-agent-reply-visible-at-settlement", {
           issueId: issue?.id,
           commentId: reply.id,
           authorAgentId: reply.authorAgentId,
@@ -407,14 +422,16 @@ export async function runEverydayFlow(input: Input) {
         });
       }
     }
-    await openParent();
-    await expect(
-      page.getByTestId("issue-detail-header").getByRole("button", {
-        name: "Change status (current: Done)",
-        exact: true,
-      }),
-    ).toBeVisible();
-    note("all-tasks-done");
+    if (readback === "browser") {
+      await openParent();
+      await expect(
+        page.getByTestId("issue-detail-header").getByRole("button", {
+          name: "Change status (current: Done)",
+          exact: true,
+        }),
+      ).toBeVisible();
+    }
+    note("all-tasks-done", { readback });
   }
   async function downloadDelegated(
     mode: "base" | "separator" | "max-length",
@@ -541,6 +558,25 @@ export async function runEverydayFlow(input: Input) {
     return observeRemoteRestartBoundary(run, rows, leases, { companyId: fixtures.company.id,
       agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id }, recovered);
   }
+  async function remoteWorkspaceStorageCheckpoint(phase: "initial" | "final") {
+    const point = await pollUntil({
+      label: `remote workspace ${phase} saved version`, deadlineAt: input.deadlineAt,
+      load: () => readRemoteWorkspaceStorageCheckpoint({ api, companyId: fixtures.company.id,
+        agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id }),
+      accept: observed => Boolean(observed.point),
+    });
+    ev.remoteWorkspaceStorage![phase] = point.point!;
+    await input.evidence(`remote-workspace-${phase}.json`, point.point);
+    const browserPhase = phase === "initial" ? "before-restart" : "after-restart";
+    await page.goto(`${taskUrl(parent!)}?browse=1&q=${REMOTE_WORKSPACE_PROOF_FILE}`);
+    await expect(page.getByRole("combobox", { name: "Search workspace files" })).toBeVisible();
+    await expect(page.getByLabel("Workspace file source", { exact: true })).toHaveText("Live workspace");
+    await page.getByRole("treeitem").filter({ hasText: REMOTE_WORKSPACE_PROOF_FILE }).last().click();
+    await expect(page.getByText(point.content!.trim(), { exact: true })).toBeVisible();
+    await input.capture(`remote-workspace-${browserPhase}`, `Remote workspace file ${browserPhase}`, `remote-workspace-${browserPhase}.png`);
+    ev.remoteWorkspaceStorage!.browserReadPhases.push(browserPhase);
+    await openParent();
+  }
   async function prepareStopBoundary() {
     // Providers can finish a short first turn before the browser can click
     // Stop. If that happens, submit one ordinary user follow-up through the
@@ -574,7 +610,11 @@ export async function runEverydayFlow(input: Input) {
       "everyday-delivery.ts",
       "everyday-observations.ts",
       "everyday-remote-restart.ts",
+      "retained-controller-continuation.ts",
       "controller-outage.ts",
+      "controller-rolling-deployment.ts",
+      "controller-replacement.ts",
+      "rolling-deployment-supervisor.ts",
       "controller-recovery-observer.ts",
       "upgrade-artifacts.ts",
       "server.ts",
@@ -590,6 +630,7 @@ export async function runEverydayFlow(input: Input) {
       "live-fixtures.ts",
       "connection-reviews.ts",
       "catalog.ts",
+      "remote-workspace-storage.ts",
     ];
     if (execution.suite.id === CONNECTION_GUIDANCE_SUITE) {
       harnessFiles.push("connection-guidance-cases.ts", "connection-guidance-evidence.ts");
@@ -629,7 +670,18 @@ export async function runEverydayFlow(input: Input) {
         throw new Error(`Artifact sandbox qualification failed before task creation: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
       }
     }
-    if (!project && !caseId.startsWith("service-") && !decliningConnection && !providerChoice) {
+    if (remoteWorkspaceStorage) {
+      if (project) throw new Error("Remote workspace storage qualification requires a projectless task");
+      const settings = await api.get<Row>("/api/instance/settings/experimental");
+      check("remote-workspace-feature-enabled", settings.remoteWorkspaceStorageEnabled === true,
+        "The ordinary instance settings API resolves remote workspace storage as enabled by default before task creation.");
+      if (settings.remoteWorkspaceStorageEnabled !== true) throw new Error("Remote workspace storage was not enabled by default");
+      const viewer = await api.patch<Row>("/api/instance/settings/experimental", { enableExperimentalFileViewer: true });
+      const viewerReady = viewer.enableExperimentalFileViewer === true && viewer.remoteWorkspaceStorageEnabled === true;
+      check("remote-workspace-file-viewer-enabled", viewerReady, "The ordinary instance API enables the existing Files viewer while remote storage uses its default setting.");
+      if (!viewerReady) throw new Error("Remote workspace Files viewer prerequisite did not retain the storage default");
+    }
+    if (!remoteWorkspaceStorage && !project && !caseId.startsWith("service-") && !decliningConnection && !providerChoice) {
       project = await api.post(
         `/api/companies/${fixtures.company.id}/projects`,
         {
@@ -879,6 +931,7 @@ export async function runEverydayFlow(input: Input) {
         // A completed, downloaded first version is an observable remote persistence checkpoint.
         await settled();
         await download(parent!.id, "base", "before-restart");
+        if (remoteWorkspaceStorage) await remoteWorkspaceStorageCheckpoint("initial");
         if (!ev.downloads.length || ev.checks.some((c) => !c.passed))
           throw new Error(
             "Remote fault boundary unexercised: no verified saved project",
@@ -932,7 +985,15 @@ export async function runEverydayFlow(input: Input) {
             ev.remoteRestart ??= { before, expectedReplacements: input.restartCount ?? 1, replacements: [] };
             await input.evidence(`remote-restart-${restartIndex + 1}-before.json`, before);
           } else ev.allowedInterruptedRuns.push(active.id);
-          const outage = await input.restart(requireRemoteRestart ? { companyId: fixtures.company.id, issueId: parent!.id, runId: active.id } : undefined, requireRemoteRestart ? 125_000 : undefined);
+          if (remoteWorkspaceStorage && restartIndex === 0) {
+            const probe = await api.get<{ upgradeReadiness: NonNullable<RemoteWorkspaceStorageEvidence["upgradeReadiness"]> }>("/api/instance/task-drain?upgradeReadiness=1");
+            const { version, activeRuns, recoverableRuns, truncated } = probe.upgradeReadiness;
+            ev.remoteWorkspaceStorage!.upgradeReadiness = { version, activeRuns, recoverableRuns, truncated };
+            await input.evidence("remote-workspace-upgrade-readiness.json", ev.remoteWorkspaceStorage!.upgradeReadiness);
+            const upgrade = gradeRemoteWorkspaceStorage(ev.remoteWorkspaceStorage!).find(item => item.id === "remote-workspace-upgrade-recoverable")!;
+            if (!upgrade.passed) throw new Error(upgrade.detail);
+          }
+          const outage = await input.restart(requireRemoteRestart ? { companyId: fixtures.company.id, issueId: parent!.id, runId: active.id } : undefined, controllerOutage?.holdMs);
           if (requireRemoteRestart) ev.remoteRestart!.outage = outage || undefined;
           note("controller-restarted");
           await openParent();
@@ -1440,13 +1501,42 @@ export async function runEverydayFlow(input: Input) {
           artifactGradeModeForPhase("reviewed-delivery"),
           "reviewed-delivery",
         );
-    } else if (caseId === "recover-controller")
+    } else if (caseId === "recover-controller") {
       await download(
         parent!.id,
         artifactGradeModeForPhase("recovered-delivery"),
         "recovered-delivery",
       );
-    else if (caseId === "stop-redirect")
+      if (execution.suite.definitionMetadata?.retainedControllerContinuation === true) {
+        const prior = ev.runs.filter(run => run.status === "succeeded" && run.agentId === fixtures.agent.id)
+          .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];
+        if (!prior) throw new Error("Retained continuation requires a completed source run");
+        const before = retainedControllerRun(prior), priorIds = new Set(ev.runs.map(run => run.id));
+        const outage = await input.restart();
+        const followupTransport = retainedControllerFollowupTransport(execution);
+        postControllerApiFollowup = followupTransport === "task_comment_api";
+        if (!postControllerApiFollowup) await openParent();
+        note("retained-controller-followup-entry", { transport: followupTransport,
+          browserNavigationVerified: !postControllerApiFollowup });
+        const requestedAt = new Date().toISOString(), marker = `CONTINUED_${nonce}`;
+        const expectedReply = retainedControllerReplyMatcher(marker);
+        const reportInstruction = remoteWorkspaceStorage
+          ? `Reply with exactly one plain-text line: ${marker} followed by one space and the command's actual output. Add no Markdown, code fences, punctuation, labels, or explanatory prose.`
+          : `Report its output after the marker ${marker}.`;
+        await reply(`Run the existing delivered slugify.py on "  Queue--Ready!!  " with --separator _ and --max-length 7. ${reportInstruction} Use the saved project; do not rebuild it.`, parent!, followupTransport);
+        await settled(expectedReply, postControllerApiFollowup ? "api" : "browser");
+        const after = ev.runs.filter(run => !priorIds.has(run.id) && run.status === "succeeded" && run.agentId === fixtures.agent.id)
+          .sort((a, b) => Date.parse(b.finishedAt ?? "") - Date.parse(a.finishedAt ?? ""))[0];
+        if (!after) throw new Error("Retained continuation produced no new successful run");
+        const events = await collectRunEvents<Row>((afterSeq, limit) => api.get(`/api/heartbeat-runs/${after.id}/events?afterSeq=${afterSeq}&limit=${limit}`));
+        const evidence = { before, after: retainedControllerRun(after), outage: outage || undefined, requestedAt,
+          followupTransport, followupCommentId: retainedFollowupCommentId,
+          completedTool: events.some(row => row.payload?.prpEvent?.eventType === "tool.execution.completed" && row.payload.prpEvent.payload?.status === "completed"),
+          usefulReply: storyAgentReplyMatches(settledAgentReply, fixtures.agent.id, expectedReply) };
+        ev.checks.push(...gradeRetainedControllerContinuation(evidence));
+        await input.evidence("retained-controller-continuation.json", evidence);
+      }
+    } else if (caseId === "stop-redirect")
       check(
         "new-direction-delivered",
         settledAgentReply?.authorAgentId === fixtures.agent.id &&
@@ -1480,7 +1570,7 @@ export async function runEverydayFlow(input: Input) {
         ev.issues.find((i) => i.id === parent!.id)!.documents = bodies;
       }
     }
-    await page.reload();
+    if (!postControllerApiFollowup) await page.reload();
     await refresh();
     check(
       "submitted-replies-consumed",
@@ -1557,6 +1647,11 @@ export async function runEverydayFlow(input: Input) {
             && !gradeRemoteRestart({ ...ev.remoteRestart, final })[1]!.passed ? "Original remote turn completed with failed tools or conflicting/repeated execution receipts" : undefined });
       await input.evidence("remote-restart-final.json", final);
     }
+    if (remoteWorkspaceStorage) {
+      await remoteWorkspaceStorageCheckpoint("final");
+      ev.checks.push(...gradeRemoteWorkspaceStorage(ev.remoteWorkspaceStorage!));
+      await input.evidence("remote-workspace-storage.json", ev.remoteWorkspaceStorage);
+    }
     ev.checks.push(
       ...storyLifecycleChecks({
         issues: ev.issues as StoryIssue[],
@@ -1575,25 +1670,30 @@ export async function runEverydayFlow(input: Input) {
       ),
       "No completion confirmation or unanswered interaction remains.",
     );
-    if (providerChoice || nativeProviderCase) await openParent();
-    else {
-      await waitForTaskIdentity(page, taskUrl(parent!), parent!.identifier ?? parent!.id);
-      await waitForTaskChatRendered(page);
+    if (!postControllerApiFollowup) {
+      if (providerChoice || nativeProviderCase) await openParent();
+      else {
+        await waitForTaskIdentity(page, taskUrl(parent!), parent!.identifier ?? parent!.id);
+        await waitForTaskChatRendered(page);
+      }
+      const latestAgentComment = ev.issues
+        .find((i) => i.id === parent!.id)
+        ?.comments?.filter((c: Row) => c.authorAgentId)
+        .at(-1);
+      if (latestAgentComment && !providerChoice && !nativeProviderCase) {
+        const response = page.locator(`[id="comment-${latestAgentComment.id}"]`);
+        await expect(response).toBeVisible();
+        await response.scrollIntoViewIfNeeded();
+      }
+      await input.capture(
+        "final-state",
+        "Finished everyday workflow",
+        "final-state.png",
+      );
+    } else {
+      note("final-state-api-readback", { browserNavigationVerified: false, renderedStatusVerified: false });
+      await input.capture("final-state", "Browser state retained after API-verified native continuation; browser reconnection unqualified", "final-state.png");
     }
-    const latestAgentComment = ev.issues
-      .find((i) => i.id === parent!.id)
-      ?.comments?.filter((c: Row) => c.authorAgentId)
-      .at(-1);
-    if (latestAgentComment && !providerChoice && !nativeProviderCase) {
-      const response = page.locator(`[id="comment-${latestAgentComment.id}"]`);
-      await expect(response).toBeVisible();
-      await response.scrollIntoViewIfNeeded();
-    }
-    await input.capture(
-      "final-state",
-      "Finished everyday workflow",
-      "final-state.png",
-    );
     const failed = ev.checks.filter((c) => !c.passed);
     if (failed.length)
       throw new Error(

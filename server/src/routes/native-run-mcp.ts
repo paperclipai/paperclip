@@ -7,7 +7,14 @@ export function nativeRunMcpRoutes() {
   router.all("/mcp/native-runs/:runId", async (req, res, next) => {
     try {
       if (req.method !== "POST") { res.setHeader("Allow", "POST"); res.sendStatus(405); return; }
-      const result = await forwardRemoteMcpRequest({ runId: String(req.params.runId), authorization: req.headers.authorization, scopeAuthorization: typeof req.headers[RUNNER_TOOL_SCOPE_TOKEN_HEADER] === "string" ? req.headers[RUNNER_TOOL_SCOPE_TOKEN_HEADER] : undefined, body: req.body, mcpSessionId: typeof req.headers["mcp-session-id"] === "string" ? req.headers["mcp-session-id"] : undefined });
+      const scopeAuthorization = req.headers[RUNNER_TOOL_SCOPE_TOKEN_HEADER];
+      const result = await forwardRemoteMcpRequest({
+        runId: String(req.params.runId),
+        authorization: req.headers.authorization,
+        scopeAuthorization: typeof scopeAuthorization === "string" ? scopeAuthorization : undefined,
+        body: req.body,
+        mcpSessionId: typeof req.headers["mcp-session-id"] === "string" ? req.headers["mcp-session-id"] : undefined,
+      });
       res.setHeader("Cache-Control", "no-store");
       if (result.mcpSessionId) res.setHeader("Mcp-Session-Id", result.mcpSessionId);
       res.setHeader("X-Content-Type-Options", "nosniff");

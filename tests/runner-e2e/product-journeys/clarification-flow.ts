@@ -91,7 +91,7 @@ export async function runClarificationJourney(context: JourneyContext, session: 
     await session.own({ kind: "issue", name: title, id: created.issueId, journeyId: "question-answer-resume" });
     issue = await context.api.get<Row>(`/api/issues/${created.issueId}`);
     let state = await settle();
-    for (const [index, input] of [{ choice: "Afternoon" }, { text: scenario.answer }].entries()) {
+    for (const [index, input] of [{ choice: "Afternoon" }, { text: scenario.answer, allowProviderCustomAnswer: true }].entries()) {
       const point = await snapshot(index === 0 ? "initial" : "answered", state);
       const question = state.interactions.find(i => i.kind === "ask_user_questions" && i.status === "pending")!;
       const questionFailure = clarificationQuestionFailure(point, question, index === 0);

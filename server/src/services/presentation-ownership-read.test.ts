@@ -10,6 +10,7 @@ import { getConversationOwnershipBlocker } from "./conversation-continuation.js"
 import { isExternalChatPresentationContext } from "./heartbeat-run-summary.js";
 import { finalizeNativeRun, recoverCommittedNativeChatResponse, repairCommittedNativeChatResponse } from "./native-runtime/native-run-finalizer.js";
 import { nativeResponsePresentationWork } from "./native-runtime/native-response-presentation-work.js";
+import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 
 import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 
@@ -24,10 +25,12 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  async function fixture(patch: Partial<typeof heartbeatRuns.$inferInsert> = {}) {
-    const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
-    await db.insert(companies).values({ id: companyId, name: "Read fixture", issuePrefix: companyId.slice(0, 8) });
-    await db.insert(agents).values({ id: agentId, companyId, name: "Read agent", adapterType: "codex_local" });
+  async function fixture(patch: Partial<typeof heartbeatRuns.$inferInsert> = {}, identity?: { companyId: string; agentId: string }) {
+    const companyId = identity?.companyId ?? randomUUID(), agentId = identity?.agentId ?? randomUUID(), issueId = randomUUID();
+    if (!identity) {
+      await db.insert(companies).values({ id: companyId, name: "Read fixture", issuePrefix: companyId.slice(0, 8) });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Read agent", adapterType: "codex_local" });
+    }
     await db.insert(issues).values({ id: issueId, companyId, title: "Read task", status: "blocked", assigneeAgentId: agentId });
     const payload = randomBytes(128 * 1024).toString("base64");
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: issueId,
@@ -138,10 +141,10 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
     expect(await repairCommittedNativeChatResponse(db, { companyId: f.companyId, issueId: other.id, runId: f.run.id })).toBe(false);
   });
 
-  async function unpublishedAcceptedReply() {
+  async function unpublishedAcceptedReply(id?: string, identity?: { companyId: string; agentId: string }) {
     const payload = randomBytes(128 * 1024).toString("base64");
-    const f = await fixture({ runtimeMode: "native", status: "running", finishedAt: null,
-      contextSnapshot: { source: "internal", prompt: payload, paperclipWake: { prompt: payload } } });
+    const f = await fixture({ id, runtimeMode: "native", status: "running", finishedAt: null,
+      contextSnapshot: { source: "internal", prompt: payload, paperclipWake: { prompt: payload } } }, identity);
     const [contract] = await db.insert(completionContracts).values({ companyId: f.companyId, issueId: f.issueId,
       revision: 1, schemaVersion: "paperclip.completion-contract.v1", policyVersion: "test", risk: "standard",
       completionAuthority: "server_arbiter", incompleteCriteriaPolicy: "preserve_non_terminal",
@@ -172,6 +175,40 @@ describe.skipIf(!support.supported)("presentation and ownership PostgreSQL read 
     expect(before.resultJson?.presentationDecision).toBeUndefined();
     return { ...f, before, reply };
   }
+
+  it("saves an independent task reply while an earlier task waits for its database lock", async () => {
+    const suffix = randomUUID().replaceAll("-", "").slice(0, 12);
+    const first = await unpublishedAcceptedReply(`00000000-0000-4000-8000-${suffix}`);
+    const second = await unpublishedAcceptedReply(`00000000-0000-4001-8000-${suffix}`, first);
+    let release!: () => void;
+    let locked!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; });
+    const acquired = new Promise<void>(resolve => { locked = resolve; });
+    const blocker = db.transaction(async tx => {
+      await tx.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, first.run.id)).for("update");
+      locked(); await hold;
+    });
+    await Promise.race([acquired, blocker]);
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const worker = nativeResponsePresentationWork(db).register(coordinator, () => true);
+    try {
+      await vi.waitFor(async () => {
+        const rows = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, second.run.id));
+        expect(rows).toHaveLength(1);
+        expect(rows[0].body).toBe(second.reply);
+      }, { timeout: 5000 });
+      expect(await db.select().from(issueComments).where(eq(issueComments.createdByRunId, first.run.id))).toHaveLength(0);
+    } finally {
+      release(); await blocker; await worker.ready; worker.stop(); await coordinator.stop();
+    }
+    for (const f of [first, second]) {
+      const rows = await db.select().from(issueComments).where(eq(issueComments.createdByRunId, f.run.id));
+      expect(rows).toHaveLength(1);
+      expect(rows[0].body).toBe(f.reply);
+    }
+    expect(onError).not.toHaveBeenCalled();
+  });
 
   async function repairFixture(patch: Partial<typeof heartbeatRuns.$inferInsert>) {
 

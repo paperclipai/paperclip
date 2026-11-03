@@ -4,6 +4,7 @@ import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
 import { livenessRoutes } from "../routes/liveness.js";
+import { readinessRoutes } from "../routes/ready.js";
 import { healthRoutes } from "../routes/health.js";
 import { privateHostnameGuard } from "../middleware/private-hostname-guard.js";
 import { cloudRuntimeIdentityMiddleware } from "../middleware/cloud-runtime-identity.js";
@@ -28,6 +29,7 @@ function fixture(standby = false) {
   app.use(privateHostnameGuard({ enabled: true, allowedHostnames: ["allowed.example"], bindHost: "0.0.0.0" }));
   app.use(cloudRuntimeIdentityMiddleware(db));
   app.use("/api/liveness", livenessRoutes());
+  app.use("/api/ready", readinessRoutes());
   app.use(cloudWarmStandbyMiddleware(() => standby, health));
   app.use(auth);
   app.use("/api/health", health);
@@ -38,6 +40,24 @@ function fixture(standby = false) {
 }
 
 describe("database-free process liveness", () => {
+  it.each([false, true])("gates deployment readiness on bootstrap and drain without waking SQL (standby: %s)", async standby => {
+    const f = fixture(standby);
+    const before = idleWorkSnapshot();
+    startTaskDrain({ purpose: "idle", ttlMs: 60_000 });
+    for (const phase of ["starting", "recovering", "ready", "draining"] as const) {
+      setStartupRecoveryPhase(phase);
+      const status = phase === "ready" ? 200 : 503;
+      const response = await f.http.get("/api/ready").set("authorization", "Bearer invalid-fixture").expect(status);
+      expect(response.body).toEqual({ status: phase });
+      expect(response.headers["cache-control"]).toBe("no-store");
+      await f.http.head("/api/ready").expect(status);
+    }
+    await f.http.post("/api/ready").expect(503);
+    await f.http.get("/api/ready/details").expect(503);
+    expect(f.auth).not.toHaveBeenCalled();
+    expect(f.db.execute).not.toHaveBeenCalled();
+    expect(idleWorkSnapshot()).toEqual(before);
+  });
   it.each([false, true])("does not resolve auth or query SQL with an unavailable database (standby: %s)", async standby => {
     const f = fixture(standby);
     for (let i = 0; i < 3; i++) {

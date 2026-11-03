@@ -176,6 +176,22 @@ describe("runner API catalog", () => {
     ).toContain("search_tasks");
     expect(searchRunnerApi({ query: "nothing-zzzzzzzzzz" }).total).toBe(0);
   });
+  it("finds the actual instance-restart operation and explains its authority boundary", () => {
+    const operation = searchRunnerApi({ query: "restart instance", limit: 1 }).results[0]!;
+    expect(operation.operationId).toBe("POST /api/health/dev-server/restart");
+    expect(operation.authorization.actor).toBe("board");
+    expect(operation.description).toMatch(/authenticated.*board/i);
+    expect(operation.description).toMatch(/agent credential/i);
+    expect(operation.description).toMatch(/supervisor/i);
+  });
+  it("discovers where to save project defaults without rewriting existing tasks", () => {
+    const operation = searchRunnerApi({ query: "save project defaults", limit: 1 }).results[0]!;
+    expect(operation.operationId).toBe("PATCH /api/projects/{id}");
+    expect(operation.description).toContain("goalIds");
+    expect(operation.description).toContain("description");
+    expect(operation.description).toMatch(/existing tasks/i);
+    expect(operation.requestBody?.content["application/json"].schema.properties).toHaveProperty("goalIds");
+  });
   it("paginates without duplicates and rejects stale or mismatched cursors", () => {
     const first = searchRunnerApi({ query: "project", limit: 1 });
     const second = searchRunnerApi({

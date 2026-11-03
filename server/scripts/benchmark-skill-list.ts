@@ -16,7 +16,7 @@ import { authUsers, companies, companyMemberships, companySkills, companySkillSo
   projectSkillSources, projects, applyPendingMigrations, closeRegisteredClients, createDb,
   startEmbeddedPostgresTestDatabase } from "../../packages/db/src/index.js";
 import * as schema from "../../packages/db/src/schema/index.js";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "../../packages/db/src/response-capture.js";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../src/__tests__/helpers/full-database-response-capture.js";
 import { withRunExecutionTiming } from "../src/services/execution-preparation-timing.js";
 
 const argument = (name: string) => process.argv.find(value => value.startsWith(`${name}=`))?.slice(name.length + 1);
@@ -195,7 +195,7 @@ try {
   };
   const first = await request(); assert.ok(first.etag);
   const events: Array<Record<string, unknown>> = [], now = Date.now();
-  const capture = captureValues ? createDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event)) : undefined;
+  const capture = captureValues ? createFullDatabaseResponseCapture({ start: now - 1, end: now + 59_000 }, event => events.push(event)) : undefined;
   if (capture) installDatabaseResponseCapture(db, schema, capture);
   const samples = [];
   try {
@@ -213,7 +213,7 @@ try {
   } finally { capture?.flush(); }
   assert.equal(await sourceHash(), measuredSourceHash, "Source changed during measurement");
   const timings = samples.map(sample => sample.elapsedMs).sort((a, b) => a - b);
-  const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1");
+  const summary = events.find(event => event.event === "paperclip.test_db_response_capture.summary.v1");
   if (capture) assert.ok(summary && summary.inFlightAtEnd === 0 && summary.overflowCalls === 0);
   const rowCount = (await db.select().from(companySkills).where(eq(companySkills.companyId, companyId))).length;
   console.log(JSON.stringify({ schema: "paperclip.skill-list-benchmark.v1", sourceRevision, measuredSourceHash,

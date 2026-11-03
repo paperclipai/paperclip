@@ -83,6 +83,7 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<typeof registerSkillVersionRetentionWork> | undefined;
   let admitted = true;
+  const passes = new Set<Promise<unknown>>();
   afterEach(async () => {
     worker?.unsubscribe();
     await coordinator?.stop();
@@ -160,12 +161,20 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
   async function startRetention(
     graceMs = 20_000,
     service = skillVersionRetentionService(db, { graceMs }),
-    advanceAutomatically = true,
+    clock: boolean | { shouldAdvanceTime?: boolean; now?: number } = true,
   ) {
+    const clockOptions = typeof clock === "boolean" ? { shouldAdvanceTime: clock } : clock;
+    const advanceAutomatically = clockOptions.shouldAdvanceTime ?? true;
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select 1`)));
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: advanceAutomatically });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: advanceAutomatically, ...clockOptions });
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => true,
       onError: error => { throw error; } });
+    const register = coordinator.register.bind(coordinator);
+    coordinator.register = (queue, task) => register(queue, { ...task, run: signal => {
+      const pass = task.run(signal); passes.add(pass);
+      void pass.then(() => passes.delete(pass), () => passes.delete(pass));
+      return pass;
+    } });
     worker = registerSkillVersionRetentionWork(coordinator, service, () => admitted);
     if (advanceAutomatically) await worker.ready;
     else await waitForIo(worker.ready);
@@ -194,6 +203,7 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
     for (;;) {
       if (process.hrtime.bigint() >= deadline) throw new Error("Retention work did not settle within 10000ms");
       if (idleWorkSnapshot().active > 0) {
+        if (passes.size) await waitForIo(Promise.all([...passes]));
         await vi.advanceTimersByTimeAsync(0);
         await realDelay(0);
         continue;
@@ -631,7 +641,6 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
   it("keeps directory pages moving while another company's grace deadline is due", async () => {
     const dueCompany = await createCompany(), pagedCompany = await createCompany();
     const dueSkill = await createSkill(dueCompany, 2), pagedSkill = await createSkill(pagedCompany, 1);
-    const expiring = await writeSnapshot(dueCompany, dueSkill.skillId, dueSkill.versionIds[0]!, 0);
     const parent = path.join(resolveCompanySkillVersionsRoot(pagedCompany), pagedSkill.skillId);
     await fs.mkdir(parent, { recursive: true });
     for (let index = 0; index < 410; index++) await fs.mkdir(path.join(parent, `operator-${index}`));
@@ -642,7 +651,13 @@ describeEmbeddedPostgres("skill version snapshot retention", () => {
       if (id === pagedCompany) pageTimes.push(Date.now());
       return prune(id, options);
     };
-    await startRetention(5000, service, false); await settledAtDeadlines();
+    const expiring = await writeSnapshot(dueCompany, dueSkill.skillId, dueSkill.versionIds[0]!, 0);
+    const accessedAt = (await lastUsedAt(skillVersionCachePaths(dueCompany, dueSkill.skillId, dueSkill.versionIds[0]!).access))!;
+    await startRetention(5000, service, { shouldAdvanceTime: false, now: accessedAt });
+    expect(await exists(expiring)).toBe(true);
+    // Keep virtual time fixed during real I/O; measure scheduler fairness,
+    // independent of filesystem latency and CI CPU scheduling.
+    await settledAtDeadlines();
     expect(pageTimes.length).toBeGreaterThan(5);
     expect(Math.max(...pageTimes.slice(1).map((at, index) => at - pageTimes[index]!))).toBeLessThan(3000);
     expect(await exists(expiring)).toBe(false); await quiet();

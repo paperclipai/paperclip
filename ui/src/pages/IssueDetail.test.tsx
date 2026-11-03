@@ -16,6 +16,7 @@ import type {
   IssueTreeControlPreview,
   IssueTreeHold,
   IssueWorkProduct,
+  Project,
 } from "@paperclipai/shared";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
 import type {
@@ -1562,7 +1563,10 @@ describe("IssueDetail", () => {
     await act(async () => renderIssueView());
     await flushReact();
     expect(mockIssueChatThreadRender).not.toHaveBeenCalled();
-    expect(container.querySelector('[data-testid="issue-detail-header"]')?.textContent).toContain(createIssue().title);
+    expect(container.querySelector('[data-testid="task-detail-presentation-loading"]')).not.toBeNull();
+    expect(container.querySelector('[data-task-chat-shell]')).toBeNull();
+    expect(container.querySelector('[data-testid="issue-detail-header"]')).toBeNull();
+    expect(mockOpenPanel).not.toHaveBeenCalled();
     coordinatorPreference.loaded = true;
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect(mockIssueChatThreadRender).toHaveBeenCalled());
@@ -1731,6 +1735,14 @@ describe("IssueDetail", () => {
     await waitForAssertion(() => expect(container.querySelector('[data-testid="task-chat-thread"]')).not.toBeNull());
     expect(container.querySelector('[data-testid="issue-chat-thread"]')).toBeNull();
     await waitForAssertion(() => expect(mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props).toMatchObject({ accountScope: "coordinator:user-1" }));
+    const editor = mockOpenPanel.mock.calls.at(-1)?.[0]?.props.children?.props.documentEditor;
+    expect(editor).toMatchObject({ mentions: expect.any(Array), imageUploadHandler: expect.any(Function), onVote: expect.any(Function) });
+    mockIssuesApi.uploadAttachment.mockResolvedValue(createAttachment({ id: "document-image" }));
+    const image = new File(["image"], "document.png", { type: "image/png" });
+    let uploaded: string | undefined;
+    await act(async () => { uploaded = await editor.imageUploadHandler(image); });
+    expect(uploaded).toBe(createAttachment({ id: "document-image" }).contentPath);
+    expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith(createIssue().companyId, createIssue().id, image);
     coordinatorPreference.enabled = false;
     await act(async () => renderIssueView());
     await waitForAssertion(() => expect(container.querySelector('[data-testid="issue-chat-thread"]')).not.toBeNull());
@@ -1748,6 +1760,8 @@ describe("IssueDetail", () => {
     expect(mockIssuesApi.listComments).not.toHaveBeenCalled();
     expect(mockActivityApi.forIssue).not.toHaveBeenCalled();
     expect(mockActivityApi.runsForIssue).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-task-chat-shell]')).toBeNull();
+    expect(container.querySelector('[data-testid="task-detail-presentation-loading"]')).not.toBeNull();
 
     Object.assign(coordinatorPreference, { enabled: true, loaded: true });
     await act(async () => renderIssueView());
@@ -3273,6 +3287,32 @@ describe("IssueDetail", () => {
 
     pendingListRequest.resolve([]);
     await flushReact();
+  });
+
+  it.each([false, true])("keeps the panel stable while projects are still loading (Classic: %s)", async classic => {
+    const pendingProjects = createDeferred<Project[]>();
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableClassicTaskInterface: classic });
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+    mockProjectsApi.list.mockReturnValue(pendingProjects.promise);
+    const renderDetail = () => <QueryClientProvider client={queryClient}><IssueDetail /></QueryClientProvider>;
+    try {
+      await act(async () => root.render(renderDetail()));
+      await flushReact();
+      await flushReact();
+      const panelOpenCount = mockOpenPanel.mock.calls.length;
+      expect(panelOpenCount).toBeGreaterThan(0);
+      await act(async () => root.render(renderDetail()));
+      await flushReact();
+      expect(mockOpenPanel).toHaveBeenCalledTimes(panelOpenCount);
+    } finally {
+      const beforeCompletion = mockOpenPanel.mock.calls.length;
+      pendingProjects.resolve([]);
+      await waitForAssertion(() => expect(mockOpenPanel.mock.calls.length).toBeGreaterThan(beforeCompletion));
+    }
+    const settledCount = mockOpenPanel.mock.calls.length;
+    await act(async () => root.render(renderDetail()));
+    await flushReact();
+    expect(mockOpenPanel).toHaveBeenCalledTimes(settledCount);
   });
 
   it("does not load or render decision sections in the issue header", async () => {

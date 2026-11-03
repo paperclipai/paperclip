@@ -123,6 +123,7 @@ export interface WakeQueueTransaction {
   cancelDeferredWake(input: {
     companyId: string;
     wakeId: string;
+    agentId: string;
     reason: string;
     now: Date;
   }): Promise<boolean>;
@@ -135,7 +136,7 @@ export interface WakeQueueTransaction {
     now: Date;
   }): Promise<DeferredWakeCandidate | null>;
   /** Sets `status = 'failed'` guarded by the current `deferred_issue_execution` status. */
-  failDeferredWake(input: { companyId: string; wakeId: string; now: Date }): Promise<boolean>;
+  failDeferredWake(input: { companyId: string; wakeId: string; agentId: string; now: Date }): Promise<boolean>;
   getPauseHoldFacts(input: {
     companyId: string;
     issueId: string;

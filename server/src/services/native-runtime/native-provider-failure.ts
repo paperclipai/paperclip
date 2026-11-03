@@ -1,4 +1,5 @@
 import type { PrpEvent, PrpTerminalState } from "../../vendor/paperclip-runner/index.js";
+import { readProviderFailure, type ProviderFailure } from "@paperclipai/shared";
 
 export const NATIVE_MODEL_REJECTION_MESSAGE =
   "The selected model is not supported by the current ChatGPT connection. Choose a supported model or a compatible AI connection.";
@@ -184,8 +185,14 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
   let rejectedTurnId: string | null = null;
   let overloadedTurnId: string | null = null;
   const failedTurns = new Map<string, NativeTurnFailureDiagnostic>();
+  const providerFailures = new Map<string, ProviderFailure>();
   return {
     observe(event: PrpEvent) {
+      if (event.sourceKind === "runner" && event.eventType === "turn.failed" && event.turnId
+        && event.payload.status === "failed") {
+        const failure = readProviderFailure(record(event.payload.error).providerFailure);
+        if (failure && !providerFailures.has(event.turnId)) providerFailures.set(event.turnId, failure);
+      }
       if ((provider.kind !== "codex" && provider.kind !== "opencode") ||
           event.sourceKind !== "runner" || event.eventType !== "turn.failed" || !event.turnId) return;
       const payload = record(event.payload);
@@ -218,6 +225,10 @@ export function createNativeProviderFailureObservation(provider: { kind: string;
       if (response.type !== "error" || response.status !== 400 || error.type !== "invalid_request_error" ||
           error.message !== `The '${provider.model}' model is not supported when using Codex with a ChatGPT account.`) return;
       rejectedTurnId = event.turnId;
+    },
+    providerFailureForTerminal(turnId: string | null | undefined, terminal: PrpTerminalState) {
+      if (!turnId || terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed") return null;
+      return providerFailures.get(turnId) ?? null;
     },
     forTerminal(turnId: string | null | undefined, terminal: PrpTerminalState) {
       if (!turnId || terminal.turnTerminalState !== "failed" || terminal.runTerminalState !== "failed") return null;

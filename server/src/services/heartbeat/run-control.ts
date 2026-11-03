@@ -1,3 +1,6 @@
+import { instanceSettingsService } from "../instance-settings.js";
+import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
+import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { observeStoppedWorkspaceRecovery } from "../workspace-recovery.js";
 import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
 import { notifyChatInboundWakeNotices } from "../chat-inbound-wake-notice-notifications.js";
@@ -120,7 +123,8 @@ import {
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
-import { isNativeRunnerOwnershipHeld } from "../native-runtime/native-runner-ownership.js";
+import { isNativeRunnerOwnershipHeld, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
+import { readNativeStartupCleanup, acknowledgeNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import {
   withCurrentBudgetEnforcement,
   type BudgetEnforcementScope,
@@ -174,6 +178,7 @@ export interface HeartbeatRunControlDependencies extends Pick<ReturnType<typeof 
   Pick<ReturnType<typeof createHeartbeatLifecycle>,
     "mergeRunStopMetadataForAgent" | "setRunStatusFromLive" | "setRunStatus" | "setWakeupStatus" | "appendRunEvent">,
   Pick<HeartbeatRetryDependencies, "finalizeAgentStatus"> {
+  verifyStartupCleanup?: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>;
   options: {
     closeWarmNativeSessionsForRun?: (input: {
       runId: string;
@@ -616,12 +621,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           onBlocked: (reason, message) => { wait = { reason, message }; },
         });
         if (!admitted) {
-          await db.update(agentWakeupRequests).set({
-            payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}',
-              coalesce(${agentWakeupRequests.payload}->'executionWait', '{}'::jsonb) || ${JSON.stringify(wait)}::jsonb)`,
-            updatedAt: new Date(),
-          }).where(and(eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, run.companyId),
-            eq(agentWakeupRequests.status, "deferred_issue_execution")));
+          await writeDeferredExecutionWait(db, { companyId: run.companyId, requestId: wake.id }, wait);
           continue;
         }
       }
@@ -765,6 +765,10 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       eq(agentWakeupRequests.requestedByActorType, "user"),
     ));
     const intent = readTaskRetryIntent(wake?.payload);
+    if (intent?.queuedChatRequestId) {
+      await reconcileTaskChatRetryReceipts(db, { companyId, requestId });
+      return;
+    }
     if (!wake || !intent || intent.chatActionId || intent.canonicalIntentId || intent.generationId !== wake.id ||
         intent.actorId !== wake.requestedByActorId) return;
     const issueId = readNonEmptyString(wake.payload?.issueId);
@@ -777,21 +781,32 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       idempotencyKey: `task-retry-dispatch:${wake.id}` }, wake.id);
   }
 
-  async function resumeExecutionWaitComments() {
+  async function resumeExecutionWaitComments(scope: DeferredReceiptRecoveryOptions = {}) {
     if ((await getSchedulingSuppression()).suppressed) return;
-    await reconcileTaskChatRetryReceipts(db);
-    const retries = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
+    await reconcileTaskChatRetryReceipts(db, scope);
+    const retries = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId,
+      conversationAgentId: issues.conversationAgentId })
       .from(agentWakeupRequests).innerJoin(issues, and(eq(issues.companyId, agentWakeupRequests.companyId),
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
         eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
-      .where(and(eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+        eq(agentWakeupRequests.reason, "task_retry"), eq(agentWakeupRequests.status, "deferred_issue_execution"),
         sql`${agentWakeupRequests.payload}->'taskRetry'->>'chatActionId' is null`,
+        sql`${agentWakeupRequests.payload}->'taskRetry'->>'queuedChatRequestId' is null`,
         notInArray(issues.status, ["done", "cancelled"])))
       .orderBy(asc(agentWakeupRequests.updatedAt)).limit(50);
+    const chatEnabled = !retries.some(retry => retry.conversationAgentId)
+      || (await instanceSettingsService(db).getExperimental()).enableAgentChat;
     for (const retry of retries) {
+      // Accepted chat work waits for the flag's committed eligibility signal.
+      // Public Retry still rejects new requests while the feature is disabled.
       await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(eq(agentWakeupRequests.id, retry.id));
-      await resumeTaskRetry(retry.companyId, retry.id).catch(err => logger.warn({ err, requestId: retry.id }, "Task retry dispatch deferred"));
+      if (retry.conversationAgentId && !chatEnabled) continue;
+      await resumeTaskRetry(retry.companyId, retry.id).catch(err => {
+        scope.onError?.(err); logger.warn({ err, requestId: retry.id }, "Task retry dispatch deferred");
+      });
     }
     const waits = await db.select({ wake: agentWakeupRequests })
       .from(agentWakeupRequests)
@@ -799,7 +814,9 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         sql`${issues.id}::text = ${agentWakeupRequests.payload}->>'issueId'`,
         eq(issues.assigneeAgentId, agentWakeupRequests.agentId)))
       .innerJoin(companies, and(eq(companies.id, issues.companyId), eq(companies.status, "active")))
-      .where(and(exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+      .where(and(scope.companyId ? eq(agentWakeupRequests.companyId, scope.companyId) : undefined,
+        scope.requestId ? eq(agentWakeupRequests.id, scope.requestId) : undefined,
+        exists(db.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
         eq(issueRecoveryActions.companyId, issues.companyId), eq(issueRecoveryActions.sourceIssueId, issues.id),
         executionBlockerPredicate(),
       ))), eq(agentWakeupRequests.status, "deferred_issue_execution"),
@@ -831,11 +848,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       if (!run || run.companyId !== wake.companyId || run.agentId !== wake.agentId) continue;
       if (canContinueCancelledRun(run)) {
         await resumeSavedComments(wake.companyId, wake.id).catch(err => {
+          scope.onError?.(err);
           logger.warn({ err, runId: run.id }, "failed to resume saved input after provider cancellation");
         });
         continue;
       }
       await resumeRemoteStopComments(run, wake.id).catch(err => {
+        scope.onError?.(err);
         logger.warn({ err, runId: run.id }, "failed to resume saved execution-wait message");
       });
     }
@@ -1237,18 +1256,19 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     // under lock, and the final CAS requires its own unchanged acknowledged
     // retry fence. Re-reading only retryable_failure here would strand replay.
     const pendingNativeRetry =
-      run.runtimeMode === "native" && run.status === "failed" && (
+      run.runtimeMode === "native" && run.status === "failed" && Boolean(run.nativeIssueId) && (
         caseHandoffRetryClaimed || Boolean(options.cancellationRequestId) || await db
-          .select({ runId: nativeRunFinalizations.runId })
+          .select({ phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
           .from(nativeRunFinalizations)
           .where(
             and(
               eq(nativeRunFinalizations.runId, run.id),
               eq(nativeRunFinalizations.companyId, run.companyId),
-              eq(nativeRunFinalizations.phase, "retryable_failure"),
+              eq(nativeRunFinalizations.issueId, run.nativeIssueId!),
             ),
           )
-          .then((rows) => rows.length > 0)
+          .then(([coordinator]) => nativeRetryCancellationEligible({ runId: run!.id, companyId: run!.companyId,
+            issueId: run!.nativeIssueId!, resultJson: run!.resultJson }, coordinator))
       );
     if (
       !pendingNativeRetry &&
@@ -1381,13 +1401,19 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           }
           let terminationSettled = false;
           try {
-            await cancelHeartbeatNativeRun({
-              db,
-              runId: run.id,
-              reason,
-              runtimeMode: run.runtimeMode,
-              ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
-            });
+            const startupCleanupRun = run.runtimeMode === "native" ? await getRun(run.id) : null;
+            if (startupCleanupRun && readNativeStartupCleanup(startupCleanupRun) && !control && !running && !activeRunExecutions.has(run.id)) {
+              if (!dependencies.verifyStartupCleanup) throw conflict("Native startup cleanup worker unavailable");
+              await dependencies.verifyStartupCleanup(startupCleanupRun);
+            } else {
+              await cancelHeartbeatNativeRun({
+                db,
+                runId: run.id,
+                reason,
+                runtimeMode: run.runtimeMode,
+                ...(options.cancellationRequestId ? { cancellationRequestId: options.cancellationRequestId } : {}),
+              });
+            }
             if (running) {
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
@@ -1448,12 +1474,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           }
 
           const finishedAt = new Date();
-          const persistedCancellationResult =
-            run.runtimeMode === "native"
-              ? await getRun(run.id).then((current) =>
-                  parseObject(current?.resultJson),
-                )
-              : {};
+          let persistedCancellationRun = run.runtimeMode === "native" ? await getRun(run.id) : null;
+          if (persistedCancellationRun && readNativeStartupCleanup(persistedCancellationRun)) {
+            if (!dependencies.verifyStartupCleanup) throw conflict("Native startup cleanup worker unavailable");
+            await dependencies.verifyStartupCleanup(persistedCancellationRun);
+            persistedCancellationRun = await getRun(run.id);
+          }
+          const persistedCancellationResult = parseObject(persistedCancellationRun?.resultJson);
           return await setRunStatusFromLive(
             run.id,
             "cancelled",
@@ -1502,12 +1529,18 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                               persistedCancellationResult.nativeCancellation,
                           }
                         : {}),
+                      ...(Object.hasOwn(persistedCancellationResult, "nativeStartupCleanup")
+                        ? { nativeStartupCleanup: persistedCancellationResult.nativeStartupCleanup } : {}),
                     },
                   }
                 : {}),
             },
             undefined,
-            pendingNativeRetry ? nativeRetryCancellationCommitCondition(persistedCancellationResult) : undefined,
+            and(pendingNativeRetry ? nativeRetryCancellationCommitCondition(persistedCancellationResult)
+              : persistedCancellationRun && readNativeStartupCleanup(persistedCancellationRun) ? and(nativeRunnerOwnershipNotHeldCondition(),
+                sql`not exists (select 1 from ${nativeRunFinalizations} where ${nativeRunFinalizations.runId} = ${run.id} and ${nativeRunFinalizations.resultId} is not null)`)
+                : undefined,
+              run.runtimeMode === "native" ? sql`coalesce(${heartbeatRuns.resultJson}->'nativeStartupCleanup'->>'state', '') <> 'pending'` : undefined),
           );
         } catch (error) {
           if (processCancellationSettlement) {
@@ -1539,6 +1572,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       const cancelled = cancellation.run;
 
       if (cancellation.updated && cancelled) {
+        if (readNativeStartupCleanup(cancelled)) await acknowledgeNativeStartupCleanup(db, { companyId: cancelled.companyId, runId: cancelled.id });
         await setWakeupStatus(run.wakeupRequestId, "cancelled", {
           finishedAt: cancelled.finishedAt ?? new Date(),
           error: reason,

@@ -4,6 +4,8 @@ import { buildSlackAppManifest, defaultSlackAppConfiguration } from "@paperclipa
 import { SlackAppDetails, SlackSetupAdvanced } from "./SlackAppDetails";
 import { SlackSetup } from "./slack/SlackSetup";
 import { isProvisionedSlackSetup, slackSetupState } from "./slack/setup-state";
+import { slackConversationUrl } from "./slack/conversation-url";
+import { useAccountIdentity } from "@/api/companies-query";
 import { defaultSlackAppName } from "./slack-app-name";
 import { GitHubChatSetup } from "./GitHubChatSetup";
 import { GitHubAgentTrustWarning } from "@/components/GitHubAgentTrustWarning";
@@ -175,6 +177,7 @@ export function ChatEndpointSetup() {
 }
 
 function ChatSdkEndpointSetup() {
+  const { userId, settled: identitySettled } = useAccountIdentity();
   const [params, setParams] = useSearchParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -666,6 +669,7 @@ function ChatSdkEndpointSetup() {
                 <span>You can now talk to {selectedAgent?.name ?? endpoint.assignedAgentName} in Slack</span>
                 <img src="/brands/apps/slack.svg" alt="" aria-hidden="true" className="size-6" />
               </p>
+              <Button asChild variant="link"><a href={slackConversationUrl(endpoint, identitySettled ? userId : null)} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button>
             </div>
             <Button disabled={testConnection.isPending} onClick={() => testConnection.mutate()}>
               {testConnection.isPending && <Loader2 className="size-4 animate-spin" />}Done
@@ -749,6 +753,7 @@ function ProviderConnectStep({
     values?: Record<string, string>,
   ) => void;
 }) {
+  const { userId, settled: identitySettled } = useAccountIdentity();
   const { pushToast } = useToast();
   const navigate = useNavigate();
   const slackBotToken = (credentials.botToken ?? "").trim();
@@ -1538,7 +1543,7 @@ function ProviderConnectStep({
           <h1 className="text-xl font-bold">{automaticSlack ? "Send a message to your agent" : "Verify Slack connection"}</h1>
           {!automaticSlack && <p className="mt-1 text-sm text-muted-foreground">Slack needs to confirm that it can reach your Paperclip instance.</p>}
         </div>
-        {automaticSlack ? <Button asChild variant="outline"><a href={endpoint.setup?.slackAccount?.dmChannelId && endpoint.providerAccountId ? `https://app.slack.com/client/${encodeURIComponent(endpoint.providerAccountId)}/${encodeURIComponent(endpoint.setup.slackAccount.dmChannelId)}` : endpoint.setup?.providerUrl ?? "https://app.slack.com"} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button> : slackRequestUrlInstructions}
+        {automaticSlack ? <Button asChild variant="outline"><a href={slackConversationUrl(endpoint, identitySettled ? userId : null)} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button> : slackRequestUrlInstructions}
         {endpoint.setup?.webhookVerifiedAt ? (
           <p role="status" className="flex items-center gap-2 text-sm">
             <CheckCircle2 className="size-4 text-(--status-task-done)" />

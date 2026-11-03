@@ -1,8 +1,25 @@
 import fs from "node:fs/promises";
 import { expect, type APIRequestContext, type Page } from "@playwright/test";
 
-export type CollectionFixture = { company: { id: string; issuePrefix: string }; taskIds: string[] };
+export type CollectionFixture = { company: { id: string; issuePrefix: string }; taskIds: string[]; otherCompanyId?: string };
 export const fixturePath = "test-results/collections/fixture.json";
+async function retainOtherCompany(request: APIRequestContext, fixture: CollectionFixture): Promise<CollectionFixture> {
+  const response = await request.get("/api/companies");
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const companies = await response.json() as Array<{ id: string; name: string; status: string }>;
+  const other = companies.find(company => company.id === fixture.otherCompanyId && company.id !== fixture.company.id && company.status !== "archived")
+    ?? companies.find(company => company.name === "Other collection organization" && company.id !== fixture.company.id && company.status !== "archived");
+  let otherCompanyId = other?.id;
+  if (!otherCompanyId) {
+    const created = await request.post("/api/companies", { data: { name: "Other collection organization" } });
+    expect(created.ok(), await created.text()).toBeTruthy();
+    otherCompanyId = (await created.json()).id;
+  }
+  const retained = { ...fixture, otherCompanyId };
+  await fs.mkdir("test-results/collections", { recursive: true });
+  await fs.writeFile(fixturePath, JSON.stringify(retained));
+  return retained;
+}
 export async function collectionFixture(request: APIRequestContext): Promise<CollectionFixture> {
   const saved = await fs.readFile(fixturePath, "utf8").then(JSON.parse).catch(error => {
     if (error.code !== "ENOENT") throw error;
@@ -10,7 +27,7 @@ export async function collectionFixture(request: APIRequestContext): Promise<Col
   });
   if (saved) {
     const existing = await request.get(`/api/companies/${saved.company.id}`);
-    if (existing.ok()) return saved;
+    if (existing.ok()) return retainOtherCompany(request, saved);
     expect(existing.status(), await existing.text()).toBe(404);
   }
   const created = await request.post("/api/companies", { data: { name: "Collection performance fixture" } });
@@ -34,9 +51,7 @@ export async function collectionFixture(request: APIRequestContext): Promise<Col
     expect(response.ok(), await response.text()).toBeTruthy();
   }));
   const fixture = { company, taskIds };
-  await fs.mkdir("test-results/collections", { recursive: true });
-  await fs.writeFile(fixturePath, JSON.stringify(fixture));
-  return fixture;
+  return retainOtherCompany(request, fixture);
 }
 export async function coordinatorPreference(page: Page, streamlined = true) {
   await page.route("**/api/workspace-preferences/me", async route => {

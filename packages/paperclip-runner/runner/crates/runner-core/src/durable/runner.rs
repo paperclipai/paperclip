@@ -1919,13 +1919,14 @@ fn process_command<E: CommandExecutor>(
                 "{} command failed: {message}",
                 command.command_type
             ));
-            let result = state.fail_command(
-                command,
-                json!({
-                    "code": "command_execution_failed",
-                    "message": message,
-                }),
-            )?;
+            let mut failure = json!({
+                "code": "command_execution_failed",
+                "message": message,
+            });
+            if let Some(provider_failure) = error.provider_failure() {
+                failure["providerFailure"] = provider_failure;
+            }
+            let result = state.fail_command(command, failure)?;
             store.save(state)?;
             return Ok((result, CommandLifecycle::for_terminal(command)));
         }

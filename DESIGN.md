@@ -44,8 +44,10 @@ footer: do not render Save & exit in a separate parent block below it. Check thi
 alignment in every step and conditional state, not just the first screen.
 
 Completed Slack setup is a success view: show the full agent avatar, success message,
-and one centered Done action. Omit Save & exit after the connection has been
-confirmed. The shared footer rule applies to its unfinished setup steps.
+and one centered Done action. Retain an Open Slack link in the success message
+and on the completed connection page so automatic completion does not remove
+the way to use the bot. Omit Save & exit after the connection has been confirmed.
+The shared footer rule applies to its unfinished setup steps.
 
 The New task form opens immediately. Load its code with the board and fill
 agent and project choices in place as their requests finish. Keep text entered
@@ -116,6 +118,9 @@ an answer fallback only after the run ends and its final transcript fetch
 completes without a provider reply. Preserve the reply through persistence.
 
 Task chat shows execution errors and waits only while they remain relevant.
+Exhausted attempts use a padded, rounded notice with a destructive-tinted background,
+an error icon, and foreground text. A wrapper adds top padding above the tinted
+surface. Automatic retry countdowns keep their quieter inline styling.
 Completing or cancelling a task hides its old execution notices. A newer attempt by
 the same agent or an explicit successor supersedes earlier run notices; an
 unresolved execution hold remains visible. Historical turns keep their responses,

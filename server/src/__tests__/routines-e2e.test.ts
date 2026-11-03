@@ -439,6 +439,47 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     },
   );
 
+  it("accepts Sentry alert HTTP deliveries once per failed run and rejects repair-task recursion", async () => {
+    vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
+    vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const created = await request(board).post(`/api/companies/${companyId}/routines`).send({ projectId,
+      assigneeAgentId: agentId, title: "Repair {{task_identifier}}", description: "Run {{run_id}} on {{task_id}}",
+      concurrencyPolicy: "always_enqueue" });
+    expect(created.status).toBe(201);
+    const routineId = created.body.id;
+    const configured = await request(board).post(`/api/routines/${routineId}/triggers`).send({ kind: "webhook", signingMode: "bearer" });
+    expect(configured.status).toBe(201);
+    const { trigger, secretMaterial } = configured.body;
+    const path = `/api/routine-triggers/public/${trigger.publicId}/sentry-run-failures`;
+    const publicApp = await createApp({ type: "none" });
+    const [source] = await db.insert(issues).values({ companyId, projectId, title: "Source failure", status: "blocked" }).returning();
+    const [failedRun] = await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: source!.id, status: "failed" }).returning();
+    const event = (taskId: string, runId: string) => ({ action: "triggered", data: { event: { tags: [
+      ["event_kind", "run_failure"], ["task_id", taskId], ["run_id", runId],
+    ] } } });
+    const deliver = (payload: unknown, secret = secretMaterial.webhookSecret) => request(publicApp).post(path)
+      .set("Authorization", `Bearer ${secret}`).send(payload);
+    expect((await deliver(event(source!.id, failedRun!.id), "invalid")).status).toBe(401);
+    expect((await deliver({ action: "triggered", data: { event: {} } })).body).toMatchObject({ status: "ignored", routineStarted: false });
+    const first = await deliver(event(source!.id, failedRun!.id));
+    expect(first.status, JSON.stringify(first.body)).toBe(202);
+    expect(first.body.status).toBe("issue_created");
+    const replay = await deliver(event(source!.id, failedRun!.id));
+    expect(replay.body.id).toBe(first.body.id);
+    const [ownFailure] = await db.insert(heartbeatRuns).values({ companyId, agentId,
+      nativeIssueId: first.body.linkedIssueId, status: "failed" }).returning();
+    const recursive = await deliver(event(first.body.linkedIssueId, ownFailure!.id));
+    expect(recursive.status).toBe(202);
+    expect(recursive.body).toMatchObject({ status: "ignored", routineStarted: false });
+    const history = await request(board).get(`/api/routines/${routineId}/runs`);
+    expect(history.body).toHaveLength(1);
+    expect(history.body[0].triggerPayload).toMatchObject({ source: "sentry_run_failure", taskId: source!.id, runId: failedRun!.id });
+    await request(board).patch(`/api/routines/${routineId}`).send({ status: "paused" });
+    expect((await deliver(event(source!.id, failedRun!.id))).status).toBe(409);
+  });
+
   it("keeps setup deliveries out of runs, persists test receipts, and restores removed triggers", async () => {
     vi.stubEnv("PAPERCLIP_API_URL", "http://localhost:3100");
     vi.stubEnv("PAPERCLIP_IN_WORKTREE", "false");

@@ -9,6 +9,7 @@ import type {
   NativeExecutionInput,
   NativeSessionExecutionResult,
 } from "./contracts/native-execution.js";
+import { readProviderFailure } from "./contracts/provider-failure.generated.js";
 import {
   buildNativeModelEnvelope,
   parseNativeExecutionInput,
@@ -213,6 +214,7 @@ export interface ExecuteNativeSessionOptions {
   turnTimeoutMs?: number;
   /** Abort admission while waiting for prior cleanup in the same domain. */
   signal?: AbortSignal;
+  startup?: { deadlineAtMs: number; signal: AbortSignal };
   /** Internal test seam; production bounds checkpoint persistence to 30 seconds. */
   checkpointTimeoutMs?: number;
   /** Internal test seam; production uses the fixed 120-second platform policy. */
@@ -393,12 +395,29 @@ async function runAbortableOperationWithin<T>(input: {
   timeoutError?: () => Error;
   operation: (signal: AbortSignal) => Promise<T>;
   onLateResolution?: (value: T) => Promise<void> | void;
+  signal?: AbortSignal;
 }): Promise<T> {
+  input.signal?.throwIfAborted();
+  if (input.timeoutMs <= 0) throw input.timeoutError?.() ?? new Error(input.timeoutMessage);
   const operationAbort = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   let timeoutError: Error | undefined;
-  const operation = input.operation(operationAbort.signal);
+  let removeAbort = () => {};
+  const cancelled = input.signal ? new Promise<never>((_resolve, reject) => {
+    const abort = () => {
+      timedOut = true;
+      timeoutError = input.signal!.reason instanceof Error ? input.signal!.reason : new Error("native session startup cancelled");
+      reject(timeoutError);
+      operationAbort.abort(timeoutError);
+    };
+    input.signal!.addEventListener("abort", abort, { once: true });
+    removeAbort = () => input.signal!.removeEventListener("abort", abort);
+  }) : undefined;
+  const operation = Promise.resolve().then(() => {
+    input.signal?.throwIfAborted();
+    return input.operation(operationAbort.signal);
+  });
   // The timeout path deliberately stops awaiting an uncooperative adapter.
   // Keep its eventual settlement observed after mutation authority is revoked.
   void operation.catch(() => undefined);
@@ -416,6 +435,7 @@ async function runAbortableOperationWithin<T>(input: {
   try {
     const value = await Promise.race([
       operation,
+      ...(cancelled ? [cancelled] : []),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
           const error =
@@ -435,6 +455,7 @@ async function runAbortableOperationWithin<T>(input: {
     return value;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    removeAbort();
   }
 }
 
@@ -1096,6 +1117,7 @@ async function consumeTurn(
           typeof failure.code === "string" ? failure.code : "provider_session_failed",
           failure.recoverable === true || payload.recoverable === true,
           typeof failure.message === "string" ? failure.message : undefined,
+          readProviderFailure(failure.providerFailure),
         );
       }
       const request =
@@ -2049,12 +2071,23 @@ export async function executeNativeSession(
     // state). Prove the provider attachment before opening durable
     // control-plane state because ControlPlanePort has no rollback operation.
     try {
-      await options.existingSession.attachRun({ identity,
+      const attach = async (signal?: AbortSignal) => {
+        signal?.throwIfAborted();
+        await options.existingSession!.attachRun!({ identity,
         ...(input.provider.kind === "acpx" && input.provider.agent === "copilot"
           ? { currentRunGrant: { runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
               instructions: nativeSystemInstructions(input) } }
           : {}),
+        });
+        signal?.throwIfAborted();
+      };
+      if (options.startup) await runAbortableOperationWithin({
+        timeoutMs: Math.max(0, options.startup.deadlineAtMs - Date.now()),
+        timeoutMessage: "native_execution_startup_expired",
+        signal: options.startup.signal,
+        operation: attach,
       });
+      else await attach();
     } catch (error) {
       // attachRun has no transactional guarantee: a provider may bind the new
       // run before reporting a later failure. Conservatively quarantine the
@@ -2173,7 +2206,7 @@ export async function executeNativeSession(
     // A fresh provider session is part of admission. Prove that it exists
     // before opening durable run state because ControlPlanePort intentionally
     // exposes no rollback for an admitted run.
-    const bootstrapTimeoutMs = options.timeoutMs ?? 900_000;
+    const bootstrapTimeoutMs = options.startup ? Math.max(0, options.startup.deadlineAtMs - Date.now()) : options.timeoutMs ?? 900_000;
     const bootstrapInput = {
       identity,
       workingDirectory: input.workspace.cwd ?? undefined,
@@ -2181,6 +2214,7 @@ export async function executeNativeSession(
     session = await runAbortableOperationWithin({
       timeoutMs: bootstrapTimeoutMs,
       timeoutMessage: `native session bootstrap timed out after ${bootstrapTimeoutMs}ms`,
+      signal: options.startup?.signal,
       operation: (signal) =>
         options.backend.openSession({
           ...bootstrapInput,
@@ -2709,6 +2743,7 @@ export async function executeNativeSession(
               modelRejected
                 ? `native_provider_model_rejected: ${message}`
                 : message,
+              readProviderFailure(failure.providerFailure),
             );
           }
           if (settledCompletion === null && options.resolveMissingResult) {

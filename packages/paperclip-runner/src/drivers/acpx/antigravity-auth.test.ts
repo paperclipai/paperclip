@@ -47,9 +47,9 @@ reader.on('line', line => {
   if(mode==='early-url') { process.stderr.write('Open the following link to authenticate the ACP server: '+${JSON.stringify(authorizationUrl())}+'\\n'); return; }
   process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,result:{protocolVersion:1,agentInfo:{name:'antigravity-acp',version:'1.4.3'},agentCapabilities:{_meta:{antigravity:{paperclipAdmission:1}}},authMethods:[{id:'oauth-personal'}]}})+'\\n');
  } else if(request.method==='authenticate') {
-  const url = mode==='bad-url'||mode==='late-bad-url' ? 'https://example.invalid/steal' : ${JSON.stringify(authorizationUrl())};
+  const url = mode.startsWith('bad-url')||mode==='late-bad-url' ? 'https://example.invalid/steal' : ${JSON.stringify(authorizationUrl())};
   const message='Open the following link to authenticate the ACP server: '+url+'\\n';
-  if(['result-first','late-bad-url','late-duplicate-url'].includes(mode)) deferredAuthorization=message+(mode==='late-duplicate-url'?message:'');
+  if(['result-first','late-bad-url','late-duplicate-url'].includes(mode)||mode.endsWith('url-after-result')) deferredAuthorization=message+(mode==='late-duplicate-url'?message:'');
   else {process.stderr.write(message.slice(0,42));process.stderr.write(message.slice(42));}
   if(mode==='blocked' || mode==='bad-url' || mode==='stubborn' || mode==='retained') return;
   if(mode==='error') {process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:request.id,error:{code:-32000,message:'do not expose fixture-refresh-token'}})+'\\n');return;}
@@ -59,6 +59,7 @@ reader.on('line', line => {
  } else {throw new Error('inference/session request forbidden');}
 });
 reader.on('close',()=> {
+ // EOF proves the client received the authenticate result before this stderr.
  if(deferredAuthorization) process.stderr.write(deferredAuthorization,()=>process.exit(0));
  else if(mode==='stubborn'||mode==='retained') setInterval(()=>{},1000);
  else process.exit(0);
@@ -100,7 +101,9 @@ describe("Antigravity setup-only Google authentication", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["success", "result-first"])("performs native authenticate, retires it, verifies identity, and preserves refresh rotation without repeated status network calls (%s)", async mode => {
+  // The login predicate keeps its five-second bound. Allow ten more seconds
+  // for fixture startup and the durable mocked credential checks on a busy CI worker.
+  it.each(["success", "result-first", "url-after-result"])("performs native authenticate, retires it, verifies identity, and preserves refresh rotation without repeated status network calls (%s)", async mode => {
     const home = await fixture(mode), fetch = googleIdentity(); vi.stubGlobal("fetch", fetch);
     const login = startAntigravityBrowserLogin(home);
     await vi.waitFor(() => expect(login.outcome).toBeDefined(), { timeout: 5_000 });
@@ -124,13 +127,13 @@ describe("Antigravity setup-only Google authentication", () => {
     expect(fetch).toHaveBeenCalledTimes(6);
   }, 15_000);
 
-  it.each(["error", "bad-url", "early-url", "late-bad-url", "late-duplicate-url"])("rejects %s without leaking provider text or calling Google", async mode => {
+  it.each(["error", "bad-url", "early-url", "late-bad-url", "late-duplicate-url", "bad-url-after-result"])("rejects %s without leaking provider text or calling Google", async mode => {
     const home = await fixture(mode), fetch = vi.fn(); vi.stubGlobal("fetch", fetch);
     const login = startAntigravityBrowserLogin(home);
     await vi.waitFor(() => expect(login.outcome).toBe("failure"), { timeout: 5_000 });
     await vi.waitFor(() => expect(setup.close).toHaveBeenCalledOnce(), { timeout: 5_000 });
     expect(login.error).not.toContain("fixture");
-    if (["bad-url", "early-url", "late-bad-url"].includes(mode)) expect(login.authorizationUrl).toBeUndefined();
+    if (mode.startsWith("bad-url") || ["early-url", "late-bad-url"].includes(mode)) expect(login.authorizationUrl).toBeUndefined();
     expect(fetch).not.toHaveBeenCalled();
   });
 
