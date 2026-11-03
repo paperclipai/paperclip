@@ -12922,7 +12922,7 @@ async function createRunnerdBackendWithinSessionClaim(
         runId: prior.runId, normalizedSessionId: prior.normalizedSessionId,
         turnId: prior.turnId ?? "", itemId: prior.itemId ?? "",
       } : undefined), projectAuthCheckVersion: description.projectAuthCheckVersion, task: pluginTask, projectIds: remoteTarget.runnerTaskProjectIds ?? [],
-      harness: provider.kind === "acpx" ? provider.agent : provider.kind, resumeFrom, priorIdentity: prior ? {
+      harness: provider.kind === "extension" ? provider.harnessId : provider.kind === "acpx" ? provider.agent : provider.kind, resumeFrom, priorIdentity: prior ? {
         runnerInstanceId: prior.runnerInstanceId, environmentLeaseId: prior.environmentLeaseId,
         runId: prior.runId, normalizedSessionId: prior.normalizedSessionId,
         turnId: typeof prior.turnId === "string" ? prior.turnId : "",

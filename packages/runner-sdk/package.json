@@ -28,8 +28,8 @@
   },
   "files": ["dist", "protocol", "README.md"],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "node ../../scripts/ensure-plugin-build-deps.mjs --sdk-only",
+    "typecheck": "node ../../scripts/ensure-plugin-build-deps.mjs --sdk-only && tsc -p tsconfig.json --noEmit",
     "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {

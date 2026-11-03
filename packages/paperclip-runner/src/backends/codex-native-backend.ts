@@ -264,6 +264,8 @@ function createTransportBackedNativeSessionBackend(
       let checkpoint;
       try { checkpoint = parseRunnerHarnessCheckpoint(snapshot.extensionCheckpoint); }
       catch { return { recovered: false, reason: "extension checkpoint is invalid" }; }
+      const workingDirectory = options.workingDirectoryAuthority === "runner_prepared_launch"
+        ? snapshot.workingDirectory : input.workspace.cwd;
       if (snapshot.driverKind !== "extension" || snapshot.backendKind !== "runner" ||
           snapshot.identity.companyId !== input.binding.companyId || snapshot.identity.agentId !== input.binding.agentId ||
           snapshot.identity.issueId !== input.binding.issueId ||
@@ -271,7 +273,7 @@ function createTransportBackedNativeSessionBackend(
           checkpoint.normalizedSessionId !== input.session.normalizedSessionId ||
           !sameRunnerHarnessRelease(checkpoint.identity, extension.release) || checkpoint.model !== extension.model ||
           canonicalExtensionConfig(checkpoint.config) !== canonicalExtensionConfig(extension.config) ||
-          checkpoint.cwd !== input.workspace.cwd || snapshot.workingDirectory !== input.workspace.cwd ||
+          !workingDirectory || checkpoint.cwd !== workingDirectory || snapshot.workingDirectory !== workingDirectory ||
           !snapshot.sessionId || !snapshot.providerSessionId) {
         return { recovered: false, reason: "extension checkpoint does not match the admitted native session" };
       }
@@ -284,7 +286,7 @@ function createTransportBackedNativeSessionBackend(
       });
       const session = await restoredBackend.openSession({
         identity: { ...snapshot.identity, runId: input.binding.runId },
-        workingDirectory: input.workspace.cwd,
+        workingDirectory,
         signal: recoveryOptions.signal,
       });
       const abortRecovery = () => { void session.close({ reason: "extension checkpoint recovery aborted" }).catch(() => undefined); };
@@ -293,7 +295,8 @@ function createTransportBackedNativeSessionBackend(
       try {
         const restored = await session.snapshot();
         if (recoveryOptions.signal.aborted) throw recoveryOptions.signal.reason ?? new Error("extension checkpoint recovery aborted");
-        if (restored.sessionId !== snapshot.sessionId || restored.providerSessionId !== snapshot.providerSessionId) {
+        if (restored.sessionId !== snapshot.sessionId || restored.providerSessionId !== snapshot.providerSessionId ||
+            restored.workingDirectory !== workingDirectory) {
           await session.close({ reason: "extension checkpoint restored a different native conversation" });
           return { recovered: false, reason: "extension checkpoint restored a different native conversation" };
         }

@@ -123,7 +123,7 @@
     "check:package-boundaries": "node scripts/check-package-boundaries.mjs",
     "check:clean-consumers": "node scripts/check-clean-consumers.mjs",
     "check:eval-kernel": "pnpm --filter @paperclipai/paperclip-eval-kernel test",
-    "ensure:eval-build-deps": "pnpm --filter @paperclipai/paperclip-eval-kernel build",
+    "ensure:eval-build-deps": "node ../../scripts/ensure-plugin-build-deps.mjs --sdk-only && pnpm --filter @paperclipai/paperclip-eval-kernel build",
     "generate:capability-inventory": "node scripts/generate-capability-inventory.mjs",
     "generate:protocol-coverage": "pnpm run build:typescript && node scripts/generate-protocol-coverage.mjs",
     "check:protocol-coverage": "node scripts/generate-protocol-coverage.mjs --check",

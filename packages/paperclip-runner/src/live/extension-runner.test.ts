@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
 import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,6 +7,7 @@ import { expect, it } from "vitest";
 import type { HarnessReleaseIdentity, RunnerHarnessCheckpoint } from "@paperclipai/runner-sdk/contracts";
 import { createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary, probeNativeRunnerEnvironment, runnerdRecoveryInternals } from "./runnerd-codex-transport.js";
 import { createRunnerdNativeSessionBackend } from "../backends/codex-native-backend.js";
+import { createRunnerProviderLaunch, runnerLaunchRequirementsDigest } from "./runner-provider-launch.js";
 import { parseNativeExecutionInput, type NativeExecutionInputV11 } from "../contracts/native-execution.js";
 import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXECUTION_PROMPT_REVISION,
   canonicalNativeRuntimeContextDigest, nativeRuntimePromptDigest } from "../contracts/runtime-context.js";
@@ -13,7 +15,7 @@ import { NATIVE_RUNTIME_ASSET_SCHEMA, PAPERCLIP_EXECUTION_PROMPT, PAPERCLIP_EXEC
 const runnerBinary = process.env.PAPERCLIP_EXTENSION_TEST_RUNNERD ?? defaultCapabilityRunnerdBinary();
 const digest = (bytes: string | Uint8Array) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
-async function fixture(mode: "complete" | "hold" | "requests" | "plan" | "core-completion-only" | "one-shot" = "complete") {
+async function fixture(mode: "complete" | "hold" | "requests" | "plan" | "core-completion-only" | "one-shot" = "complete", environmentPrepared = false) {
   const root = await realpath(await mkdtemp(join(tmpdir(), "runner-native-extension-")));
   const source = await realpath(process.execPath);
   const command = join(root, "node");
@@ -43,7 +45,7 @@ async function fixture(mode: "complete" | "hold" | "requests" | "plan" | "core-c
   const input = parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v11", homeMode: "isolated", provider,
     binding: { companyId: "fixture_company", agentId: "fixture_agent", issueId: "fixture_issue", runId: "fixture_run", executionWorkspaceId: "fixture_workspace" },
     task: { identifier: "FIX-1", title: "Exercise independent native harness", description: null, prompt: "Produce the fixture file", workMode: mode === "plan" ? "planning" : "standard" },
-    workspace: { cwd: root, repoUrl: null, repoRef: null, branchName: null },
+    workspace: { cwd: environmentPrepared ? "/controller/workspace" : root, repoUrl: null, repoRef: null, branchName: null },
     session: { normalizedSessionId: "fixture_session", driverKind: "extension", protocolVersion: 1, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
     completionContract: { id: "fixture_contract", sha256: "fixture-digest", schemaVersion: "1",
       contract: { revision: "1", objective: "Produce the fixture file", criteria: [{ id: "objective", requirement: "A file contains the controller-supplied value" }] } },
@@ -52,10 +54,26 @@ async function fixture(mode: "complete" | "hold" | "requests" | "plan" | "core-c
     runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
   }) as NativeExecutionInputV11;
   const bundles: ReturnType<typeof createCapabilityRunnerdCodexTransport>[] = [];
-  const createBundle = (checkpoint?: RunnerHarnessCheckpoint, runId = input.binding.runId) => {
+  const runnerArtifact = environmentPrepared ? { version: "0.3.0", digest: digest(await readFile(runnerBinary)) } : undefined;
+  const createBundle = (checkpoint?: RunnerHarnessCheckpoint, runId = input.binding.runId, launchCwd = root) => {
   const bundle = createCapabilityRunnerdCodexTransport({ provider: "extension", extensionRelease: identity,
     extensionConfig: provider.config, extensionCapabilities: provider.capabilities, extensionLaunchProfile: profile,
     extensionCheckpoint: checkpoint,
+    ...(environmentPrepared ? {
+      runnerArtifact,
+      prepareLaunch: async requirements => ({ configurationId: `fixture-${runId}`,
+        requirementsDigest: runnerLaunchRequirementsDigest(requirements), extensionLaunchProfile: profile,
+        provider: createRunnerProviderLaunch(requirements, { options: {}, root: join(root, runId), cwd: launchCwd,
+          codexHome: "", providerNodeCommand: "", opencodeProxyPath: "", acpxSidecarPath: "" }) }),
+      controlPlaneRegistration: async controlPlane => { await controlPlane.start(); return { release: () => undefined }; },
+      runnerProcessLauncher: spec => {
+        const child = spawn(runnerBinary, [...spec.args], { env: spec.environment, stdio: "ignore" });
+        return { child, completion: new Promise((resolveExit, reject) => {
+          child.once("error", reject);
+          child.once("exit", (code, signal) => resolveExit({ code, signal, stdout: "", stderr: "" }));
+        }) };
+      },
+    } : {}),
     runnerBinary, stateDirectory: join(root, runId), sourceCodexHome: "", environment: {},
     prpIdentity: { runnerInstanceId: `fixture_runner_${runId}`, environmentLeaseId: "fixture_lease", runId,
       normalizedSessionId: "fixture_session", turnId: `fixture_turn_${runId}`, itemId: `fixture_item_${runId}` },
@@ -100,11 +118,12 @@ it("verifies the installed native extension model with a real read-only admissio
   }
 }, 30_000);
 
-it("runs an independent harness through real runnerd, semantic tool replies and the native backend", async () => {
-  const f = await fixture();
+it.each(["local_filesystem", "runner_prepared_launch"] as const)("runs an independent harness through real runnerd, semantic replies and %s cold recovery", async workingDirectoryAuthority => {
+  const f = await fixture("complete", workingDirectoryAuthority === "runner_prepared_launch");
   const nonce = randomUUID();
   const calls: string[] = [];
   const backend = createRunnerdNativeSessionBackend(f.input, {
+    workingDirectoryAuthority,
     retainedSystemInstructions: "Pinned instructions for the native harness",
     dynamicTools: [{ name: "get_fixture_value", description: "Read the unpredictable fixture value", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
     dynamicToolHandler: async call => { calls.push(call.tool); return { value: nonce }; },
@@ -128,7 +147,8 @@ it("runs an independent harness through real runnerd, semantic tool replies and 
     expect(eventTypes).toContain("turn.started");
     expect(eventTypes).toContain("turn.completed");
     const checkpoint = await session.snapshot();
-    expect(checkpoint.extensionCheckpoint).toMatchObject({ identity: f.input.provider.release,
+    expect(checkpoint.workingDirectory).toBe(f.root);
+    expect(checkpoint.extensionCheckpoint).toMatchObject({ cwd: f.root, identity: f.input.provider.release,
       normalizedSessionId: "fixture_session", model: "fixture-exact-model", providerState: { turns: 1 } });
     await session.close({ reason: "fixture complete" }).catch(error => {
       throw new Error(`Extension close failed: ${JSON.stringify({ settlement: error.settlement, evidence: f.bundle.evidence() })}`, { cause: error });
@@ -139,14 +159,44 @@ it("runs an independent harness through real runnerd, semantic tool replies and 
     const resumedInput = { ...f.input, binding: { ...f.input.binding, runId: "fixture_run_2" } };
     const resumedNonce = randomUUID();
     const resumedBackend = createRunnerdNativeSessionBackend(resumedInput, {
+      workingDirectoryAuthority,
       retainedSystemInstructions: "Current pinned instructions for the resumed native harness",
       dynamicTools: [{ name: "get_fixture_value", description: "Read the current unpredictable fixture value", inputSchema: { type: "object", properties: {}, additionalProperties: false } }],
       dynamicToolHandler: async () => ({ value: resumedNonce }),
-      transportFactory: context => f.createBundle(context?.persistedSession?.extensionCheckpoint, resumedInput.binding.runId).transport,
+      transportFactory: context => {
+        expect(context?.checkpointSourceRunId).toBe(f.input.binding.runId);
+        return f.createBundle(context?.persistedSession?.extensionCheckpoint, resumedInput.binding.runId).transport;
+      },
     });
     expect(await resumedBackend.recoverSession!({ ...checkpoint, extensionCheckpoint: undefined },
       { signal: new AbortController().signal })).toMatchObject({ recovered: false, reason: "extension checkpoint is invalid" });
     expect(f.bundles).toHaveLength(1);
+    for (const invalid of [
+      { ...checkpoint, workingDirectory: join(f.root, "other-workspace") },
+      { ...checkpoint, extensionCheckpoint: { ...checkpoint.extensionCheckpoint!, cwd: join(f.root, "other-workspace") } },
+    ]) {
+      expect(await resumedBackend.recoverSession!(invalid, { signal: new AbortController().signal }))
+        .toMatchObject({ recovered: false, reason: "extension checkpoint does not match the admitted native session" });
+      expect(f.bundles).toHaveLength(1);
+    }
+    if (workingDirectoryAuthority === "local_filesystem") {
+      const changedLocal = createRunnerdNativeSessionBackend({ ...resumedInput, workspace: { ...resumedInput.workspace, cwd: join(f.root, "other-workspace") } }, {
+        transportFactory: () => { throw new Error("mismatched local workspace must not launch"); },
+      });
+      expect(await changedLocal.recoverSession!(checkpoint, { signal: new AbortController().signal }))
+        .toMatchObject({ recovered: false, reason: "extension checkpoint does not match the admitted native session" });
+    }
+    if (workingDirectoryAuthority === "runner_prepared_launch") {
+      const changedCwd = join(f.root, "other-workspace");
+      await mkdir(changedCwd);
+      const changedLaunch = createRunnerdNativeSessionBackend({ ...resumedInput, binding: { ...resumedInput.binding, runId: "fixture_wrong_directory" } }, {
+        workingDirectoryAuthority,
+        transportFactory: context => f.createBundle(context?.persistedSession?.extensionCheckpoint, "fixture_wrong_directory", changedCwd).transport,
+      });
+      await expect(changedLaunch.recoverSession!(checkpoint, { signal: new AbortController().signal })).rejects.toThrow(/checkpoint/u);
+      expect(() => process.kill(pid, 0)).toThrow();
+      expect(await readFile(join(f.root, "output.json"), "utf8")).toContain(nonce);
+    }
     const resumed = await resumedBackend.recoverSession!(checkpoint, { signal: new AbortController().signal });
     expect(resumed.recovered).toBe(true);
     const resumedSession = resumed.session!;
@@ -154,6 +204,7 @@ it("runs an independent harness through real runnerd, semantic tool replies and 
     const restored = await resumedSession.snapshot();
     expect(restored.sessionId).toBe(checkpoint.sessionId);
     expect(restored.providerSessionId).toBe(checkpoint.providerSessionId);
+    expect(restored.workingDirectory).toBe(f.root);
     expect(restored.extensionCheckpoint?.providerState).toEqual(checkpoint.extensionCheckpoint?.providerState);
     await resumedSession.startTurn({ message: { role: "user", text: "Continue the existing native conversation." }, continuation: true });
     for await (const event of resumedSession.events()) if (event.eventType === "turn.completed") break;
@@ -168,6 +219,7 @@ it("runs an independent harness through real runnerd, semantic tool replies and 
     expect(() => process.kill(resumedPid, 0)).toThrow();
 
     const mismatchBackend = createRunnerdNativeSessionBackend({ ...f.input, binding: { ...f.input.binding, runId: "fixture_run_3" } }, {
+      workingDirectoryAuthority,
       transportFactory: context => f.createBundle(context?.persistedSession?.extensionCheckpoint, "fixture_run_3").transport,
     });
     const mismatch = await mismatchBackend.recoverSession!({ ...nextCheckpoint, providerSessionId: "unrelated-native-session" }, { signal: new AbortController().signal });
