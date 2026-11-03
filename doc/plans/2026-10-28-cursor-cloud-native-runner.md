@@ -15,6 +15,36 @@ and dependent [product PR #18069](https://github.com/paperclipai/paperclip/pull/
 Neither PR is merged. Product PR #18069's Verification section owns the latest
 candidate, check status and final acceptance decision.
 
+## Hosted placement correction — 2026-10-30
+
+Native Cursor Cloud uses a provider API controller. Cursor hosts the model and
+commands; Paperclip runs only its qualified API client and bounded private artifact
+stager. This placement has no Paperclip Computer, lease, task checkout or host
+provisioning command. It is derived from the validated native Cursor profile and
+persisted with the admitted run; recovery retains that backend and placement.
+Earlier Cursor profiles retain their admitted workspace binding as identity;
+recovery does not reopen that workspace or allocate a Computer. Known backend
+and driver contradictions fail closed, while historical missing driver values
+remain recoverable.
+The generic managed-sandbox-only policy and local Computer denial stay intact.
+Kubernetes-only execution remains unsupported in save, Test, inventory and run
+admission. An unavailable Computer does not advertise local Legacy execution.
+Legacy direct agents retain their existing selection and execution behavior.
+
+Ordinary native setup clears the Computer binding and explains Cursor's hosted
+environment. Save/reopen and Test use the same account/configuration contract as
+run admission. The Cloud front door must pass the exact authenticated native-run
+callback to the tenant; Core still enforces live run authority and per-turn scope.
+
+The ordinary Cloud card is available only with native rollout and a qualified
+controller. A server-held new setup draft can use that managed API default before
+model selection. It keeps its setup hold and does not inherit another harness's
+model or permissions. Unsaved automatic Test uses the advertised native default;
+saved Legacy agents still require an explicit conversion.
+
+This correction requires fresh hosted acceptance on its final image. Local and
+synthetic checks do not qualify that deployed journey or erase prior failures.
+
 ## Review correction checkpoint — 2026-10-29 20:25 UTC
 
 All six original acceptance gates have passed on their recorded candidates;

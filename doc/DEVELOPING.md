@@ -151,19 +151,26 @@ New workflow versions merged into master then receive runner access without a
 separate SHA allowlist update. Dependabot leaves this first-party reference on
 master.
 
-Runner selection calls `ci-routing.yml@master` on a GitHub-hosted runner. It
-verifies authorization before allocating any AWS capacity and never checks out
-or executes PR code. The author, event sender and rerun actor must each be both
+Runner selection calls `ci-routing.yml@master`. Allowlisted maintainers use the
+reserved `paperclip-ci-routing-x64` AWS fleet for this bounded metadata job;
+other callers use GitHub-hosted capacity. The gate never checks out or executes
+PR code. The author, event sender and rerun actor must each be both
 in `AWS_CI_TRUSTED_USER_IDS` and a current owner of `.github/**` in CODEOWNERS.
 The resolver and CODEOWNERS are read from the same protected master revision;
 PR edits cannot change the trusted owner list. Documentation-only owners,
 unsupported owner rules and failed identity lookups do not authorize AWS.
-Repository, head and merge validation also apply. Missing or malformed settings
+Repository, head and merge validation also apply. The gate validates this run's
+immutable event merge, including its PR head and a base snapshot between the
+event's base and the current branch tip. Normal base advancement and regeneration
+of GitHub's live merge ref do not move an authorized run to GitHub-hosted CI.
+Stacked synthetic bases must contain a validated base snapshot. Rewritten base
+history, changed PR heads and unverifiable ancestry still deny AWS execution.
+Missing or malformed settings
 and unverifiable authorization use GitHub-hosted runners. A maintainer rerunning
 an outside contributor's PR does not grant it AWS access.
 Authorized test jobs and the final `verify` and `e2e` aggregates use the selected
-AWS fleet. The metadata authorization job remains hosted even for maintainers,
-so stale admission snapshots cannot allocate an AWS runner before verification.
+AWS fleet. A stale admission roster can allocate only the short metadata gate;
+the fresh CODEOWNERS check still denies PR execution for a removed owner.
 
 The routing workflow also selects the CI scope. Middle PRs in a stack and PRs
 whose diff changes only release notes (`releases/v*.md` or
@@ -343,10 +350,16 @@ explicit. When changing shard layout, update `.github/ci-task-matrix.json` and
 the full fallback matrices in `pr-trusted.yml`; the contract tests require them
 to agree. Add new cache-affecting environment settings to `globalEnv`.
 
-The former reserved routing Fleet is no longer selected by this workflow.
-Keep its existing authorization until older assigned jobs finish. A manual
-dispatch of `ci-routing.yml` on master exercises the hosted metadata job without
-launching the test matrix; its non-PR event returns the hosted test-runner output.
+The `paperclip-ci-routing` runner group must allow
+`paperclipai/paperclip/.github/workflows/ci-routing.yml@refs/heads/master`.
+Keep `AWS_CI_ROUTING_USER_IDS_SOURCE` equal to the exact JSON value of
+`AWS_CI_TRUSTED_USER_IDS` and `AWS_CI_ROUTING_USER_IDS` as its delimiter-wrapped
+numeric IDs (for example, `|34892728|139239|`). Missing or mismatched admission
+settings use GitHub-hosted capacity for the gate. Current CODEOWNERS remain
+authoritative for PR execution regardless of these admission settings.
+A maintainer's manual dispatch of `ci-routing.yml` on master exercises the AWS
+metadata gate without launching the test matrix; its non-PR event returns the
+hosted test-runner output.
 
 Keep the `.github/**` rule in `.github/CODEOWNERS` and the active master ruleset's
 code-owner review requirement enabled. This covers the caller, the trusted
@@ -372,6 +385,13 @@ two independent partitions, each with its own embedded PostgreSQL, home and
 config; an explicit shared test database retains one partition per job.
 The Runner transport lease-expiry and cold-admission regressions live in their
 own file so those real-clock waits overlap other files in the existing pool.
+
+Exact-source release verification uses the post-merge AWS fleet on the first
+attempt. Reruns of its verification and chaos jobs use GitHub-hosted runners.
+Exact-source cloud-migrator planning and package builds use the same policy.
+This gives interrupted jobs an independent recovery path. It keeps the same
+source, commands, assertions and required gates. A failed test still needs a fix;
+a successful rerun does not explain an earlier failure.
 
 The two PR Runner Vitest jobs separate package tests from native server tests.
 The first runs the complete package inventory; the second runs the complete
@@ -1192,6 +1212,34 @@ slows `tsc` by up to 20 times when the live heap goes above the limit.
 Docker image sets `PAPERCLIP_TSC_EMIT_ONLY=1` for that build, which emits
 JavaScript without checks or declarations.
 
+Test projects outside `pnpm -r` import server source through relative paths. Each
+project's `tsconfig.layers.json` reads that source as layer declarations. This
+command builds the declarations and then checks every project:
+
+```sh
+node scripts/typecheck-test-projects.mjs
+```
+
+Name a project to check only that project. `pnpm test:e2e:runner:typecheck` and
+`pnpm test:lifecycle-baseline:typecheck` do this for their projects. If the memory
+available to the task is limited, add `--low-memory`, or set
+`PAPERCLIP_TYPECHECK_LOW_MEMORY=1` for the pnpm commands.
+
+The command fails if a project loads server source, because that is what makes
+these programs large. It does not limit memory. CI runs it with
+`--reuse-declarations` straight after the server typecheck, so it does not build
+the declarations again. Do not use that option when the declarations can be stale.
+
+Add each new test project that imports server source to `PROJECTS` in
+`scripts/typecheck-test-projects.mjs`.
+
+Keep the project references out of each project's `tsconfig.json`. Vitest reads
+that file, and it fails when a referenced config does not exist yet. The
+`tsconfig.json` files remain single programs for editors, and
+`tests/runner-e2e/native-completion-checks.mjs` still checks that project as one
+program. That program peaks at about 15 GiB at default settings and about 8 GiB on
+one thread.
+
 #### Reused Runner build in the server build
 
 The server build vendors `packages/paperclip-runner/dist`, so its
@@ -1833,6 +1881,22 @@ atomically activates remote authority. Active execution, unresolved operations
 or recovery, unsafe paths, and explicitly concurrent shared writers block
 import. An interrupted apply retains its journal and admission hold; retry the
 same command to reconcile it before starting another writer.
+
+An import preserves the workspace's lifecycle state and the task's current
+workspace binding. It can import an archived or superseded workspace without
+reopening the task or selecting that older workspace for future turns. A changed
+task binding during the import blocks publication.
+
+If an archived folder has already been removed, the importer can reconstruct it
+in private scratch space from its encrypted task-directory restore point or
+validated Git restoration recipe. For older Git workspaces without a recipe,
+it requires a successful branch-deletion receipt and the exact saved commit in
+the verified source repository. It never substitutes today's default branch.
+Git restore points retain unpushed history and staged and unstaged edits, even
+when the source repository has pruned the saved branch. Missing, expired,
+corrupt, or unbound sources block the import. Publication still requires an
+independent download and restore of the new encrypted snapshot. The old folder
+remains absent, and the importer does not change the original restore point.
 
 Supported sources include empty task folders, repository URLs, and managed
 mutable repositories. Authorized mentioned projects attach all their configured

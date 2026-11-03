@@ -134,6 +134,7 @@ interface TaskChatComposerProps {
   };
   confirmedSubmissionIds?: ReadonlySet<string>;
   onStop?: () => Promise<void>;
+  confirmedStoppedRunIds?: ReadonlySet<string>;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
   workMode: IssueWorkMode;
@@ -389,6 +390,7 @@ export function TaskChatComposer({
   creation,
   confirmedSubmissionIds,
   onStop,
+  confirmedStoppedRunIds,
   stopPending = false,
   workMode,
   onWorkModeChange,
@@ -423,7 +425,7 @@ export function TaskChatComposer({
   onRunnerGoalReassign,
 }: TaskChatComposerProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
-  const stopControl = useComposerStop(onStop, stopPending);
+  const stopControl = useComposerStop(onStop, stopPending, confirmedStoppedRunIds);
   const [localBody, setBody] = useState(() => (draftKey ? loadDraft(draftKey) : ""));
   const body = creation ? creation.value : localBody;
   const [submitting, setSubmitting] = useState(false);
