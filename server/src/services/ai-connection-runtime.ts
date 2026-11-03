@@ -636,7 +636,7 @@ export async function withManagedAiProbe<T>(
       // retired and completed its refresh handoff. HTTP need not wait for it.
       retained = true;
       const retryCleanup = (error as { retryCleanup?: () => Promise<void> }).retryCleanup;
-      retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope!, cleanup: runtime.cleanup, retired: error.retired,
+      retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope!, home: runtime.home && path.join(runtime.home, "provider"), cleanup: runtime.cleanup, retired: error.retired,
         ...(typeof retryCleanup === "function" ? { retryRetirement: () => retryCleanup.call(error) } : {}) });
       throw unprocessable("The native account test is still cleaning up. Retry after runtime cleanup completes.", { code: "native_probe_cleanup_pending" });
     }
@@ -646,7 +646,7 @@ export async function withManagedAiProbe<T>(
       try { await runtime.cleanup(); }
       catch (error) {
         if (runtime.retainedCleanupScope && !(error instanceof RetiredCredentialRecoveryError)) {
-          retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope, cleanup: runtime.cleanup });
+          retainAiCredentialCleanup({ scope: runtime.retainedCleanupScope, home: runtime.home && path.join(runtime.home, "provider"), cleanup: runtime.cleanup });
         }
         throw error;
       }
