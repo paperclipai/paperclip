@@ -80,8 +80,27 @@ fn launch_flag_sets_the_runner_score() {
     assert_eq!(score.trim(), "9");
 }
 
+// Lowering is refused without privilege, and that must not stop the run.
 #[test]
-fn launch_flag_rejects_a_score_it_cannot_apply() {
+fn launch_flag_starts_without_the_privilege_to_apply_it() {
+    let directory = private_directory();
+    let reservation = TcpListener::bind("0.0.0.0:0").unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    drop(reservation);
+    let mut runner = listener_runner(&directory, port, &["--oom-score-adj", "-1"])
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    thread::sleep(Duration::from_millis(500));
+    let status = runner.try_wait().unwrap();
+    let _ = runner.kill();
+    let _ = runner.wait();
+    let _ = fs::remove_dir_all(&directory);
+    assert_eq!(status, None);
+}
+
+#[test]
+fn launch_flag_rejects_an_invalid_score() {
     let directory = private_directory();
     for flag in [
         &["--oom-score-adj", "low"][..],

@@ -460,9 +460,11 @@ fn apply_oom_score_adj(args: &[String]) -> Result<(), LocalRunnerError> {
     let score = parse_oom_score_adj(&value).ok_or_else(|| {
         LocalRunnerError::invalid("invalid --oom-score-adj: expected -1000..=1000")
     })?;
-    set_own_oom_score_adj(score).map_err(|error| {
-        LocalRunnerError::invalid(format!("failed to set --oom-score-adj: {error}"))
-    })
+    // Without the privilege, Runner is only less protected than requested.
+    if let Err(error) = set_own_oom_score_adj(score) {
+        eprintln!("paperclip-runnerd: failed to set --oom-score-adj: {error}");
+    }
+    Ok(())
 }
 
 fn run(args: &[String]) -> Result<(), LocalRunnerError> {

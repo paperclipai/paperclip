@@ -12,7 +12,8 @@ pub fn parse_oom_score_adj(value: &str) -> Option<i16> {
 }
 
 /// Each environment decides how much Runner is worth protecting, so Runner has
-/// no default. A negative value needs privilege or a floor set by the launcher.
+/// no default. A negative value needs privilege or a floor set by the launcher;
+/// callers treat a failure as non-fatal because it only leaves Runner killable.
 pub fn set_own_oom_score_adj(score: i16) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     {
