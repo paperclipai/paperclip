@@ -38,11 +38,20 @@ pub fn redact_diagnostic_text(input: &str) -> String {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DurableRunnerError(String);
+pub struct DurableRunnerError(String, Option<serde_json::Value>);
 
 impl DurableRunnerError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self(message.into(), None)
+    }
+
+    pub fn with_provider_failure(mut self, value: Option<serde_json::Value>) -> Self {
+        self.1 = crate::provider_failure::validated_provider_failure(value);
+        self
+    }
+
+    pub fn provider_failure(&self) -> Option<serde_json::Value> {
+        self.1.clone()
     }
 }
 

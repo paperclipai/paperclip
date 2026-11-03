@@ -29,9 +29,7 @@ Open `/routines`, create one, and inspect `/routines/:routineId` and its edit se
 ### `trigger-history`
 
 Use the routine's trigger controls and Runs/Recent Runs/Audit links; lists also
-offer Run now. **View all tasks** opens the Tasks list with **Routine tasks**
-selected, using `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc`. Uncheck the
-filter to return to other tasks. **History** records configuration versions, not executions.
+offer Run now. **History** records configuration versions, not executions.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -53,6 +51,12 @@ complete the generated task or establish a useful task output.
 Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWizard.test.tsx) is component coverage; [routine integration](../../server/src/__tests__/routines-e2e.test.ts) is server integration rather than a provider-wide browser proof.
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
+
+A webhook-triggered routine can receive Sentry run-failure alerts through
+`/api/routine-triggers/public/:publicId/sentry-run-failures`. Configure bearer
+authentication, send an alert for an accessible task in the same company, and
+verify one repair task for the failed run. Failures from the repair routine
+and its descendants must not trigger another repair. See the [routine API](../../docs/api/routines.md).
 
 ## Gotchas
 

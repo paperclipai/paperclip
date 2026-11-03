@@ -1,3 +1,4 @@
+import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
@@ -5966,7 +5967,10 @@ async function restoreWarmRunnerdController(input: {
       issueId = prior.issueId;
     }
   }
-  if (identity?.runId !== runId) {
+  // A prior admission can leave a full projection before later commits under
+  // the same run ID. Without a retained owner, refresh it from its canonical
+  // checkpoint; current-run state still belongs to the active controller.
+  if (identity?.runId !== runId || (!retainedRunId && runId !== input.execution.binding.runId)) {
     const restored = await restoreNativeRunnerCheckpoint(input.db,
       { companyId: input.execution.binding.companyId, issueId, runId }, root, nativeSessionKey(input.execution));
     // A legacy file-backed root still follows its existing prior-owner checks.
@@ -10217,6 +10221,7 @@ async function executePaperclipNativeSessionWithinScope(
       const { exhausted } = recoveryProjection;
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
+      const providerFailure = providerFailureFromError(error);
       const message = redactIdentityText(
         error instanceof Error ? error.message : String(error),
       ).slice(0, 2_000);
@@ -10256,6 +10261,7 @@ async function executePaperclipNativeSessionWithinScope(
             failureCode,
             failureDetail: identityRedactor.redact({
               message,
+              ...(providerFailure ? { providerFailure } : {}),
               ...(remoteRunnerRecovery ? { remoteRunnerRecovery } : {}),
               originalFailureCode:
                 error instanceof NativeProviderTerminalFailure
@@ -10387,7 +10393,9 @@ async function executePaperclipNativeSessionWithinScope(
             nativePhase: phase,
             nativePhaseUpdatedAt: now,
             error: message,
-            resultJson: sql`(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) - 'remoteRunnerRecovery') || ${JSON.stringify(remoteRunnerRecovery ? { remoteRunnerRecovery } : {})}::jsonb`,
+            resultJson: sql`(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) - 'remoteRunnerRecovery')
+              || ${JSON.stringify(remoteRunnerRecovery ? { remoteRunnerRecovery } : {})}::jsonb
+              || ${providerFailure ? sql`jsonb_build_object('providerFailure', coalesce(${heartbeatRuns.resultJson}->'providerFailure', ${JSON.stringify(providerFailure)}::jsonb))` : sql`'{}'::jsonb`}`,
             errorCode: ownershipUnverified
               ? NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE
               : sourceFailureCode,
@@ -10668,6 +10676,7 @@ async function executePaperclipNativeSessionWithinScope(
     if (collectInstructions && !collectedByOwner) await timeController("instruction_collection", () => instructionCopy!.collectStopped());
   }
   const providerFailure = providerFailureObservation.forTerminal(native.turnId, native.terminal);
+  const providerExplanation = providerFailureObservation.providerFailureForTerminal(native.turnId, native.terminal);
   // Keep the generic failure behavior, but record why the turn failed.
   const unclassifiedTurnFailure = providerFailureObservation.unclassifiedTurnFailure(native.turnId, native.terminal);
   const adapterResult: AdapterExecutionResult = {
@@ -10685,6 +10694,7 @@ async function executePaperclipNativeSessionWithinScope(
       ...((input.execution.schema === "paperclip.native-execution-input.v6" || input.execution.schema === "paperclip.native-execution-input.v8") ? { providerAccounting: { usage: null, cost: null, externallyBilled: true }, externalStopConfirmed: false } : {}),
       ...(providerFailure ? { nativeProviderFailure: providerFailure.diagnostic } : {}),
       ...(unclassifiedTurnFailure ? { nativeTurnFailure: unclassifiedTurnFailure } : {}),
+      ...(providerExplanation ? { providerFailure: providerExplanation } : {}),
       ...(native.goalRolloverRequired ? { goalRolloverRequired: true } : {}),
       planSynchronizations,
     },
@@ -11195,6 +11205,25 @@ function archiveExcludeArgs(entries: readonly string[]): string[] {
   return entries.map((entry) => `--exclude=./${entry}`);
 }
 
+// The provider sync-out recognizes the same tar diagnostics for a full disk.
+const SANDBOX_DISK_FULL_PATTERN =
+  /No space left on device|Disk quota exceeded|File\s?size limit exceeded|Wrote only \d+ of \d+ bytes/i;
+
+async function removeRemoteCheckpointSnapshot(
+  runner: CommandManagedRuntimeRunner,
+  snapshotPath: string,
+): Promise<void> {
+  const escapedSnapshot = snapshotPath.replaceAll("'", "'\\''");
+  await runner
+    .execute({
+      command: "sh",
+      args: ["-c", `rm -rf -- '${escapedSnapshot}'`],
+      bypassSession: true,
+      timeoutMs: 30_000,
+    })
+    .catch(() => undefined);
+}
+
 export async function stageRemoteRunnerDirectory(input: {
   target: Extract<AdapterExecutionTarget, { kind: "remote" }>;
   runner: CommandManagedRuntimeRunner;
@@ -11530,6 +11559,14 @@ function assertSafeExtractedCheckpoint(root: string): void {
  * provider supplies a native syncOut implementation, create a sibling snapshot
  * first so the live runtime remains untouched and the provider's archive safety
  * checks still apply to every persisted entry.
+ *
+ * The snapshot needs free sandbox disk. When the disk is full, the provider
+ * applies the exclusions itself: its transfer can stream the directory without
+ * writing an archive into the sandbox. Provider exclusions are not anchored to
+ * the directory root, so this fallback also leaves out a nested entry that has
+ * an excluded name (for example a nested `tmp`). It never copies more than the
+ * snapshot would, and a checkpoint without those entries is more useful than
+ * no checkpoint.
  */
 export async function syncRemoteRunnerDirectoryOut(input: {
   runner: CommandManagedRuntimeRunner;
@@ -11554,6 +11591,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   if (input.runner.syncOut) {
     let syncSourcePath = input.sourcePath;
     let snapshotPath: string | null = null;
+    let providerExclude: string[] | null = null;
     if (excluded.length > 0) {
       const checkpointId = randomUUID();
       snapshotPath = posix.join(
@@ -11577,9 +11615,21 @@ export async function syncRemoteRunnerDirectoryOut(input: {
         timeoutMs: 120_000,
       });
       if (snapshotResult.exitCode !== 0 || snapshotResult.timedOut) {
-        throw new Error("runner_remote_checkpoint_snapshot_failed");
+        // A partial copy would hold sandbox disk that the next save needs.
+        await removeRemoteCheckpointSnapshot(input.runner, snapshotPath);
+        snapshotPath = null;
+        if (
+          snapshotResult.timedOut ||
+          !SANDBOX_DISK_FULL_PATTERN.test(
+            `${snapshotResult.stderr}\n${snapshotResult.stdout}`,
+          )
+        ) {
+          throw new Error("runner_remote_checkpoint_snapshot_failed");
+        }
+        providerExclude = [...excluded];
+      } else {
+        syncSourcePath = snapshotPath;
       }
-      syncSourcePath = snapshotPath;
     }
     try {
       await input.runner.syncOut([
@@ -11591,21 +11641,14 @@ export async function syncRemoteRunnerDirectoryOut(input: {
               targetPath: input.targetPath,
               kind: "directory",
               mode: input.mode,
+              ...(providerExclude ? { exclude: providerExclude } : {}),
             },
           ],
         },
       ]);
     } finally {
       if (snapshotPath) {
-        const escapedSnapshot = snapshotPath.replaceAll("'", "'\\''");
-        await input.runner
-          .execute({
-            command: "sh",
-            args: ["-c", `rm -rf -- '${escapedSnapshot}'`],
-            bypassSession: true,
-            timeoutMs: 30_000,
-          })
-          .catch(() => undefined);
+        await removeRemoteCheckpointSnapshot(input.runner, snapshotPath);
       }
     }
     return;
