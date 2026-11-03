@@ -97,6 +97,40 @@ it("uses shared streaming and retains fallback reads until negotiation", async (
   expect(messages.at(-1)?.runIds).toEqual([]);
 });
 
+it("catches persisted log output on a brief reconnect and resync without waiting for a poll", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const row = (seq: number, chunk: string) => JSON.stringify({ seq, ts: "2025-01-01T00:00:00Z", stream: "stdout", chunk }) + "\n";
+  let saved = row(1, "Initial output");
+  log.mockImplementation(async (_runId, offset) => ({ content: saved.slice(offset), nextOffset: saved.length }));
+  const run = { id: "run-1", companyId: "company-1", agentId: "agent-1", status: "running", logRef: "log" } as HeartbeatRun;
+  const transcripts = new LiveTranscriptInterests();
+  const messages: Array<{ revision?: number }> = [];
+  const connect = () => {
+    transcripts.open({ send: text => messages.push(JSON.parse(text)) });
+    transcripts.receive({ type: "live.capabilities", version: 1, capabilities: ["run-interests"] });
+    transcripts.receive({ type: "live.subscribed", version: 1, revision: messages.at(-1)?.revision });
+  };
+  const subscription = { companyId: run.companyId, transcripts, subscribe: () => () => {} };
+  const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={run} adapterType="codex_local" /></LiveEventSubscriptionContext.Provider>));
+    await act(async () => connect());
+    expect(container.textContent).toContain("Initial output");
+    saved += row(2, "Output missed during reconnect");
+    await act(async () => { transcripts.close(); connect(); });
+    expect(container.textContent).toContain("Output missed during reconnect");
+    saved += row(3, "Output recovered by resync");
+    await act(async () => {
+      transcripts.receive({ type: "live.resync", version: 1, revision: messages.at(-1)?.revision });
+      transcripts.receive({ type: "live.subscribed", version: 1, revision: messages.at(-1)?.revision });
+    });
+    expect(container.textContent).toContain("Output recovered by resync");
+  } finally { await act(async () => root.unmount()); }
+});
+
 it("re-enables cancelled history paging after hiding and showing a completed run", async () => {
   const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
   log.mockResolvedValue({ content: "", nextOffset: 0 });

@@ -183,6 +183,7 @@ export function SummarySlotCard({
     refetchInterval: (query) => query.state.data?.slot?.status === "generating" ? 3_000 : false,
   });
   const slotView = useQueryView(slotQuery);
+  const slotReady = slotView.kind === "ready" || slotView.kind === "stale";
 
   const revisionsQuery = useQuery({
     queryKey: revisionsQueryKey,
@@ -367,7 +368,7 @@ export function SummarySlotCard({
         />
       ) : null}
 
-      {!slotQuery.isError && generationFailed ? ( // query-error-ok: generation-mode gate;cached slot content stays visible
+      {slotReady && generationFailed ? (
         <InlineBanner
           tone="danger"
           title="Summary generation failed"
@@ -386,7 +387,7 @@ export function SummarySlotCard({
         </InlineBanner>
       ) : null}
 
-      {!slotQuery.isError && isGenerating && generatingIssue ? ( // query-error-ok: generation-mode gate;cached slot content stays visible
+      {slotReady && isGenerating && generatingIssue ? (
         <div className="flex items-start gap-3 text-sm">
           <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
           <div className="min-w-0 space-y-1">
@@ -430,7 +431,7 @@ export function SummarySlotCard({
         </div>
       ) : null}
 
-      {!slotQuery.isError && !latestDocument && !isGenerating && !generationFailed && canGenerateFirstSummary ? ( // query-error-ok: generation-mode gate;cached slot content stays visible
+      {slotReady && !latestDocument && !isGenerating && !generationFailed && canGenerateFirstSummary ? (
         <div className="flex flex-col items-start gap-3 rounded-lg border border-border bg-muted/30 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-1 text-sm">
             <p className="font-medium text-foreground">No summary yet</p>
