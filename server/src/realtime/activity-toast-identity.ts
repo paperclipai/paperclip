@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { agents, authUsers, companyMemberships, issues, type Db } from "@paperclipai/db";
+import { logger } from "../middleware/logger.js";
 
 const TOAST_ACTIONS = new Set(["issue.created", "issue.updated", "issue.comment_added"]);
 
@@ -16,12 +17,20 @@ export async function activityToastIdentity(
 
   const issueId = payload.entityType === "issue" && typeof payload.entityId === "string"
     ? payload.entityId : null;
-  const [issue] = issueId ? await db
-    .select({ identifier: issues.identifier })
-    .from(issues)
-    .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
-    .limit(1) : [];
-  const identity = { ...actorIdentity, ...(issueId ? { issueIdentifier: issue?.identifier ?? null } : {}) };
+  let issueIdentifier: string | null = null;
+  if (issueId) {
+    try {
+      const [issue] = await db
+        .select({ identifier: issues.identifier })
+        .from(issues)
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)))
+        .limit(1);
+      issueIdentifier = issue?.identifier ?? null;
+    } catch (err) {
+      logger.warn({ err, companyId, issueId }, "task toast identifier lookup failed");
+    }
+  }
+  const identity = { ...actorIdentity, ...(issueId ? { issueIdentifier } : {}) };
   if (!actorId) return identity;
 
   if (actorType === "agent") {

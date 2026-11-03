@@ -39,6 +39,60 @@ function database(onPredicate: (kind: "where" | "join", condition: SQL) => void 
   } };
 }
 describe("authenticated activity notifications", () => {
+  it.each(["local_trusted", "authenticated"] as const)("keeps authorized notifications when optional identifier reads fail (%s)", async deploymentMode => {
+    const db = database();
+    const select = db.select;
+    const identifierRead = vi.fn();
+    db.select = fields => {
+      if (fields.identifier) {
+        identifierRead();
+        if (identifierRead.mock.calls.length <= 3) throw new Error("Identifier lookup unavailable");
+      }
+      return select(fields);
+    };
+    const server = createServer();
+    setupLiveEventsWebSocketServer(server, db as never, { deploymentMode,
+      resolveCloudActor: async () => ({ userId: "viewer", companyIds: ["company"] }) });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const socket = new WebSocket(`ws://127.0.0.1:${(server.address() as { port: number }).port}/api/companies/company/events/ws`);
+    try {
+      await once(socket, "open");
+      const messages: Array<{ payload: Record<string, unknown> }> = [];
+      const delivered = new Promise<void>(resolve => socket.on("message", data => {
+        const event = JSON.parse(data.toString());
+        messages.push(event);
+        if (event.payload.entityId === "after-failure") resolve();
+      }));
+      const activity = (entityId: string, actorType: string) => publishLiveEvent({
+        companyId: "company", type: "activity.logged", payload: {
+          action: "issue.updated", entityType: "issue", entityId, actorType,
+          actorId: actorType === "user" ? "viewer" : actorType === "agent" ? "agent" : null,
+          issueIdentifier: "SPOOF-1", details: { secret: "private task details" },
+        },
+      });
+      if (deploymentMode === "authenticated") activity("hidden", "system");
+      for (const actorType of ["system", "agent", "user"]) {
+        activity("visible", actorType);
+      }
+      activity("after-failure", "system");
+      await delivered;
+      expect(messages).toHaveLength(4);
+      expect(identifierRead).toHaveBeenCalledTimes(4);
+      for (const [index, actorType] of ["system", "agent", "user"].entries()) {
+        const event = messages[index];
+        expect(event.payload).toMatchObject({ entityId: "visible", actorType, issueIdentifier: null });
+        if (actorType === "agent") expect(event.payload.actorName).toBe("Coder");
+        if (actorType === "user") expect(event.payload.actorName).toBe("Alex Example");
+        if (deploymentMode === "authenticated") expect(event.payload).not.toHaveProperty("details");
+      }
+      expect(messages[3].payload.issueIdentifier).toBe("PAP-1234");
+    } finally {
+      socket.terminate();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+
   it("preserves only an authorized handoff task identity for empty case-panel refresh", async () => {
     const server = createServer();
     setupLiveEventsWebSocketServer(server, database() as never, { deploymentMode: "authenticated",
