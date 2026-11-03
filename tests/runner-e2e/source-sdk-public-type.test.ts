@@ -73,6 +73,24 @@ it("rejects changed source and unknown source initializers", async () => {
   const scanner = createSdkArtifactScanner(root, [], expectations); expect(await scanner.scan(file, Buffer.from(declaration))).toBe(false);
   const other = createSdkArtifactScanner(root, [], await fixture(source.replace("z.string().min(1)", "privateFactory()"))); expect(await other.scan(file, Buffer.from(declaration))).toBe(false);
 });
+it("keeps stale, missing and extra source graph inputs ineligible after pin synchronization", async () => {
+  const expectations = await fixture();
+  const missing = { ...expectations.inputs }; delete missing[inputFile];
+  for (const inputs of [{ ...expectations.inputs, [inputFile]: "0".repeat(40) }, missing]) {
+    const scanner = createSdkArtifactScanner(root, [], { ...expectations, inputs });
+    expect(await scanner.scan(file, Buffer.from(declaration))).toBe(false);
+    expect((await scanner.audit()).publicSource).toBeNull();
+  }
+  const extra = path.join(root, "packages/shared/src/unpinned-synthetic.ts");
+  try {
+    await writeFile(extra, "export const synthetic = true;");
+    const scanner = createSdkArtifactScanner(root, [], expectations);
+    expect(await scanner.scan(file, Buffer.from(declaration))).toBe(false);
+    expect((await scanner.audit()).publicSource).toBeNull();
+  } finally { await rm(extra, { force: true }); }
+  const scanner = createSdkArtifactScanner(root, [], expectations);
+  expect(await scanner.scan(file, Buffer.from(declaration))).toBe(true);
+});
 it("keeps shape overflow blocked with bounded retained observations", async () => {
   const scanner = createSdkArtifactScanner(root, [], await fixture()); expect(await scanner.scan(file, Buffer.from((declaration+'\n').repeat(40)))).toBe(false);
   const audit = await scanner.audit(); expect(audit.bounded).toBe(false); expect(audit.observations).toHaveLength(32);
