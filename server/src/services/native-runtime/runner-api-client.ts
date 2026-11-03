@@ -89,7 +89,7 @@ export function localRunnerApiUrl(
 
     const local = new URL(resolveLocalUrl());
     if (local.protocol !== "http:" || local.username || local.password
-      || local.pathname !== "/" || local.search || local.hash || !local.port) return url;
+      || local.pathname !== "/" || local.search || local.hash) return url;
 
     const basePath = configured.pathname.replace(/\/+$/, "").replace(/\/api$/, "");
     const path = basePath && url.pathname.startsWith(basePath + "/api/")

@@ -10,6 +10,7 @@ describe("localRunnerApiUrl", () => {
     ["reverse proxy base prefix", "https://example.test/paperclip/api/x", "https://example.test/paperclip/", "http://127.0.0.1:3100", "http://127.0.0.1:3100/api/x"],
     ["direct API path with configured prefix", "https://example.test/api/x", "https://example.test/paperclip/api", "http://127.0.0.1:3100", "http://127.0.0.1:3100/api/x"],
     ["custom IPv4 bind", "https://example.test/api/x", "https://example.test", "http://192.0.2.15:3200", "http://192.0.2.15:3200/api/x"],
+    ["default HTTP listener port", "https://example.test/api/x", "https://example.test", "http://127.0.0.1:80", "http://127.0.0.1/api/x"],
     ["IPv6-only bind", "https://example.test/api/x", "https://example.test", "http://[2001:db8::2]:3200", "http://[2001:db8::2]:3200/api/x"],
     ["IPv6 wildcard bind", "https://example.test/api/x", "https://example.test", "http://[::1]:3200", "http://[::1]:3200/api/x"],
     ["already at verified listener", "http://127.0.0.1:3100/api/x", "http://127.0.0.1:3100", "http://127.0.0.1:3100", "http://127.0.0.1:3100/api/x"],
