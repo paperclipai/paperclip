@@ -4142,6 +4142,9 @@ export function environmentRuntimeService(
             config: stripSandboxProviderEnvelope(resolved), providerLeaseId: operation.id,
             creationOperation: { id: operation.id, runId: operation.runId },
           });
+        }, operation => {
+          const contextId = operation.metadata.runnerTaskCreationContextId;
+          if (typeof contextId === "string") options.pluginWorkerManager?.recoverStartupAcquisition?.(contextId, operation.id);
         });
         return flushDeferredEnvironmentCleanup(db, Array.from(drivers.values())
           .flatMap(driver => driver.flushDeferredOrphanCleanups ? [driver.flushDeferredOrphanCleanups] : []));

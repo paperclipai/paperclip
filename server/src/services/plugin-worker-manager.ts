@@ -683,6 +683,7 @@ interface ExecuteLogRoute {
 export interface PluginWorkerHandle {
   hasStartupWork?(): boolean;
   drainStartup?(contextId: string): Promise<void>;
+  recoverStartupAcquisition?(contextId: string, creationOperationId: string): void;
   retireStartup?(contextId: string): Promise<void>;
   prepareIdleSleep?(hold: { ownerId: string; expiresAt: number }): Promise<"none" | "present" | "unknown">;
   releaseIdleSleep?(): void;
@@ -807,6 +808,7 @@ export interface WorkerDiagnostics {
  */
 export interface PluginWorkerManager {
   drainStartup?(contextId: string): Promise<void>;
+  recoverStartupAcquisition?(contextId: string, creationOperationId: string): void;
   retireStartup?(contextId: string): Promise<void>;
   /** Subscribe after a worker successfully applies live company configuration. */
   onConfigApplied(listener: () => void): () => void;
@@ -918,6 +920,7 @@ export function createPluginWorkerHandle(
   const unsettledCalls = new Map<string | number, () => void>();
   const observedResults = new Map<string | number, {
     contextId: string; response?: JsonRpcResponse; running?: Promise<void>;
+    creationOperationId?: string; track: () => void;
     observe: (result: unknown) => Promise<void>; finish: () => void;
   }>();
   const startupCalls = new Map<string, Set<() => void>>();
@@ -935,7 +938,7 @@ export function createPluginWorkerHandle(
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        Promise.all([...startupHostHandlers.get(contextId)!]),
+        (async () => { while (startupHostHandlers.get(contextId)?.size) await Promise.all([...startupHostHandlers.get(contextId)!]); })(),
         new Promise<never>((_resolve, reject) => { timer = setTimeout(() => reject(new Error("Task cleanup is still pending")), 15_000); timer.unref?.(); }),
       ]);
     } finally { clearTimeout(timer); }
@@ -1201,6 +1204,7 @@ export function createPluginWorkerHandle(
     const observer = observedResults.get(id);
     if (observer) {
       if (observer.response) return;
+      observer.track();
       observer.response = response;
       void processObservedResult(id).catch(() => log.warn({ id }, "plugin result recording will retry during cleanup"));
       return;
@@ -3524,17 +3528,25 @@ export function createPluginWorkerHandle(
         if (method === "environmentInspectLease") unsettledInspections.add(finish);
       }
       if (observeResult && startupContextId) {
-        let finish!: () => void;
-        const processing = new Promise<void>(resolve => { finish = resolve; });
-        let handlers = startupHostHandlers.get(startupContextId);
-        if (!handlers) { handlers = new Set(); startupHostHandlers.set(startupContextId, handlers); }
-        handlers.add(processing);
-        observedResults.set(id, { contextId: startupContextId, observe: observeResult as (result: unknown) => Promise<void>, finish: () => {
-          startupHostHandlers.get(startupContextId)?.delete(processing);
-          if (startupHostHandlers.get(startupContextId)?.size === 0) startupHostHandlers.delete(startupContextId);
-          finish();
-          onStartupWorkChanged?.();
-        } });
+        let processing: Promise<void> | undefined, finish!: () => void;
+        const track = () => {
+          if (processing) return;
+          processing = new Promise<void>(resolve => { finish = resolve; });
+          let handlers = startupHostHandlers.get(startupContextId);
+          if (!handlers) { handlers = new Set(); startupHostHandlers.set(startupContextId, handlers); }
+          handlers.add(processing);
+        };
+        track();
+        observedResults.set(id, { contextId: startupContextId,
+          creationOperationId: method === "environmentAcquireLease" && isRecord(params) ? readNonEmptyString((params as Record<string, unknown>).creationOperationId) ?? undefined : undefined,
+          track, observe: observeResult as (result: unknown) => Promise<void>, finish: () => {
+            if (!processing) return;
+            startupHostHandlers.get(startupContextId)?.delete(processing);
+            if (startupHostHandlers.get(startupContextId)?.size === 0) startupHostHandlers.delete(startupContextId);
+            processing = undefined;
+            finish();
+            onStartupWorkChanged?.();
+          } });
       }
       const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
@@ -3689,6 +3701,11 @@ export function createPluginWorkerHandle(
       await startInternal();
     },
     hasStartupWork() { return startupCalls.size > 0 || startupHostHandlers.size > 0 || startupRetirements.size > 0; },
+    recoverStartupAcquisition(contextId: string, creationOperationId: string) {
+      for (const observer of observedResults.values()) {
+        if (observer.contextId === contextId && observer.creationOperationId === creationOperationId && !observer.response) observer.finish();
+      }
+    },
     async drainStartup(contextId: string) {
       revokeStartupInvocations(contextId);
       for (const [id, observer] of observedResults) if (observer.contextId === contextId) void processObservedResult(id).catch(() => undefined);
@@ -4042,6 +4059,9 @@ export function createPluginWorkerManager(
     },
     async retireStartup(contextId: string) {
       await Promise.all([...startupWorkers()].map(worker => worker.retireStartup?.(contextId)));
+    },
+    recoverStartupAcquisition(contextId: string, creationOperationId: string) {
+      for (const worker of startupWorkers()) worker.recoverStartupAcquisition?.(contextId, creationOperationId);
     },
     async drainStartup(contextId: string) {
       await Promise.all([...startupWorkers()].map(worker => worker.drainStartup?.(contextId)));

@@ -2067,7 +2067,11 @@ optional `creationLease` recovers identity and binding for the requested
 requires this field; a generic sandbox cleanup envelope is not a substitute.
 The existing exact-task Stop, status and completion receipts still gate ownership release. Older journal
 entries without the recorded opt-in do not infer a resource identity from the
-creation operation ID.
+creation operation ID. Once recovered identity is durably queued for cleanup,
+Core can discharge that acquisition's missing-response placeholder. Accepted
+host handlers and received result observations still drain before verified
+retirement; a late reply re-enters observation tracking without restoring the
+worker's expired invocation authority.
 
 Cancellation records a preparation fence while holding the run row lock. Native
 runtime selection checks that fence, the running status, and the current startup

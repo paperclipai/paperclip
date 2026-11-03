@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { agents, environmentLeases, environments, heartbeatRuns, issues, nativeRunFinalizations, plugins, sandboxCreationOperations, type Db } from "@paperclipai/db";
 import type { PluginEnvironmentLease } from "@paperclipai/plugin-sdk";
-import { setupRunControlDatabase, callbacks } from "../services/heartbeat/__tests__/run-control-fixtures.js";
+import { setupRunControlDatabase, callbacks, runControlPostgresSupport } from "../services/heartbeat/__tests__/run-control-fixtures.js";
 import { createHeartbeatRecovery, type HeartbeatRecoveryDependencies } from "../services/heartbeat/recovery.js";
 import { createHeartbeatRunControl } from "../services/heartbeat/run-control.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
@@ -12,13 +15,14 @@ import { NativeExecutionContext } from "../services/native-runtime/native-execut
 import { requestNativeStartupCleanup, verifyNativeStartupCleanup } from "../services/native-runtime/native-startup-cleanup.js";
 import { prepareNativeHeartbeatRun } from "../services/native-runtime/prepare-native-run.js";
 import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "../services/remote-execution-termination.js";
-import type { PluginWorkerHandle, PluginWorkerManager } from "../services/plugin-worker-manager.js";
+import { createPluginWorkerManager, type PluginWorkerHandle, type PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 
 vi.mock("../services/local-service-supervisor.js", async importOriginal => ({
   ...await importOriginal<typeof import("../services/local-service-supervisor.js")>(), terminateLocalService: vi.fn(),
 }));
 
+describe.skipIf(!runControlPostgresSupport.supported)("task creation recovery", () => {
 let db: Db;
 const database = setupRunControlDatabase("task-creation-recovery-", value => { db = value; });
 
@@ -60,7 +64,7 @@ async function fixture(version = true, inspector = true) {
   const replacementAcquire = vi.fn(async () => ({ providerLeaseId: randomUUID() }));
   const oldWorker = { supportedMethods: ["environmentTask", "environmentAcquireLease"], call: replacementAcquire } as unknown as PluginWorkerHandle;
   let currentWorker = originalWorker;
-  const workers = { getWorker: () => currentWorker, isRunning: () => true, drainStartup: vi.fn(async () => {}), retireStartup: vi.fn(async () => {}),
+  const workers = { getWorker: () => currentWorker, isRunning: () => true, drainStartup: vi.fn(async () => {}), retireStartup: vi.fn(async () => {}), recoverStartupAcquisition: vi.fn(),
     call: vi.fn(async (_plugin: string, method: string, params: any, ...rest: any[]) => {
       calls.push(method === "environmentTask" ? params.operation.kind : method);
       if (method === "environmentAcquireLease") return currentWorker.call(method, params, ...rest as []);
@@ -99,7 +103,7 @@ async function fixture(version = true, inspector = true) {
   const recovery = createHeartbeatRecovery(db, { ...deps, environmentRuntime: runtime, environmentsSvc: environmentService(db),
     runtimeEnv: {}, activeRunExecutionPromises: new Set<Promise<void>>(), acknowledgeRemoteStop: async () => {},
     resumeRemoteStopComments: async () => {} } as unknown as HeartbeatRecoveryDependencies);
-  return { companyId, runId, context, calls, acquired: () => acquiredId, binding, creation, start, request, runtime, recovery, control,
+  return { companyId, pluginId, deps, runId, context, calls, acquired: () => acquiredId, binding, creation, start, request, runtime, recovery, control,
     reload, owner, originalWorker, replacementAcquire, acquire, workers,
     succeed: () => { acquireSuccess = true; }, replaceWorker: () => { currentWorker = oldWorker; },
     mismatch: () => { mismatched = true; }, unknown: () => { inspectUnknown = true; },
@@ -123,6 +127,7 @@ it.each(["pending", "needs_reconciliation", "late_first", "inspection_first"])("
     await restartedRuntime.flushDeferredOrphanCleanups();
     if (mode === "inspection_first") await f.lateReply();
     const creation = await f.creation();
+    if (mode !== "late_first") expect(f.workers.recoverStartupAcquisition).toHaveBeenCalledWith(f.context.id, creation.id);
     expect(creation.state).toBe("cleanup_pending");
     expect(await db.select().from(environmentLeases).where(and(eq(environmentLeases.heartbeatRunId, f.runId),
       eq(environmentLeases.providerLeaseId, f.acquired())))).toHaveLength(1);
@@ -135,6 +140,47 @@ it.each(["pending", "needs_reconciliation", "late_first", "inspection_first"])("
     expect(await nextEnvironmentCleanupAt(db)).toBeNull();
   } finally { f.context.finish(); }
 });
+
+it("cancels through actual worker IPC after reconstructing an acquire that never replies", async () => {
+  const f = await fixture(), manager = createPluginWorkerManager();
+  const directory = await mkdtemp(path.join(tmpdir(), "task-creation-recovery-ipc-")), entrypointPath = path.join(directory, "worker.cjs");
+  await writeFile(entrypointPath, `
+const readline = require("node:readline");
+const send = (id, result) => process.stdout.write(JSON.stringify({jsonrpc:"2.0",id,result})+"\\n");
+readline.createInterface({input:process.stdin,crlfDelay:Infinity}).on("line", line => {
+  const {id,method,params:p} = JSON.parse(line);
+  if (method === "initialize") send(id,{ok:true,supportedMethods:["environmentTask","environmentAcquireLease","environmentReleaseLease","environmentInspectLease"]});
+  else if (method === "environmentAcquireLease") return;
+  else if (method === "environmentInspectLease") send(id,{providerLeaseId:p.creationOperation.id,state:"unknown",creationLease:{providerLeaseId:p.creationOperation.id,metadata:{...p.leaseMetadata.providerMetadata,runId:p.creationOperation.runId}}});
+  else if (method === "environmentTask") send(id,p.operation.kind === "status" ? {kind:"status",taskId:p.taskId,phase:"cancelled",executionStopped:true} : {kind:"accepted",taskId:p.taskId});
+  else if (method === "shutdown") {send(id,{});setImmediate(()=>process.exit(0));}
+  else send(id,{});
+});
+`);
+  try {
+    const handle = await manager.startWorker(f.pluginId, { entrypointPath, manifest: { id: f.pluginId, apiVersion: 1, version: "1.0.0",
+      displayName: "Recovery fixture", description: "Recovery fixture", author: "Paperclip", categories: ["automation"], capabilities: [],
+      entrypoints: { worker: "worker.cjs" } }, config: {}, instanceInfo: { instanceId: "fixture", hostVersion: "1.0.0" }, apiVersion: 1,
+      hostHandlers: {}, autoRestart: false });
+    const call = handle.call.bind(handle);
+    vi.spyOn(handle, "call").mockImplementation(((method: string, params: unknown, timeout: number, ...rest: unknown[]) =>
+      (call as (...args: unknown[]) => Promise<unknown>)(method, params, method === "environmentAcquireLease" ? 10 : timeout, ...rest)) as typeof handle.call);
+    Object.assign(f.workers, { getWorker: manager.getWorker.bind(manager), isRunning: manager.isRunning.bind(manager),
+      call: manager.call.bind(manager), drainStartup: manager.drainStartup!.bind(manager), retireStartup: manager.retireStartup!.bind(manager),
+      recoverStartupAcquisition: manager.recoverStartupAcquisition!.bind(manager) });
+    f.deps.verifyStartupCleanup = run => verifyNativeStartupCleanup(db, run, async () => manager.retireStartup!(f.context.id));
+    await expect(f.start()).rejects.toThrow("reconcile the same task");
+    expect(handle.call).toHaveBeenCalledWith("environmentAcquireLease", expect.anything(), 30_000, undefined, expect.any(Function), f.context.id, expect.any(Function));
+    await f.request();
+    await f.runtime.flushDeferredOrphanCleanups();
+    expect((await f.creation()).state).toBe("cleanup_pending");
+    expect((await f.recovery.sweepPendingCleanupLeases({ backoffMs: 0 })).destroyed).toBe(1);
+    expect(await f.control.cancelRunInternal(f.runId, "Startup cleanup retry")).toMatchObject({ status: "cancelled" });
+    expect((await f.owner()).leaseOwner).toBeNull();
+    expect((await f.creation()).state).toBe("resolved");
+    expect(handle.status).toBe("running");
+  } finally { f.context.finish(); await manager.stopAll(); await rm(directory, { recursive: true, force: true }); }
+}, 25_000);
 
 it.each(["legacy", "manifest_only"])("does not infer a deterministic identity for %s task creation", async mode => {
   const f = await fixture(mode !== "legacy", false);
@@ -196,4 +242,6 @@ it("pins the opted-in acquisition worker across the journal commit", async () =>
     expect(result).toMatchObject({ kind: "description", taskId: f.acquired() });
     expect((await f.creation()).state).toBe("attached");
   } finally { spy.mockRestore(); f.context.finish(); }
+});
+
 });

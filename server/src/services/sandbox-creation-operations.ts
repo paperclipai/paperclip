@@ -150,6 +150,7 @@ export async function queueSandboxCreationCleanup(db: Db, input: {
 
 export async function recoverSandboxCreations(db: Db,
   inspect: (operation: SandboxCreationOperation) => Promise<PluginEnvironmentLeaseObservation | null>,
+  onTaskRecovered?: (operation: SandboxCreationOperation) => void | Promise<void>,
 ): Promise<void> {
   const due = await db.select().from(sandboxCreationOperations).where(and(
     recoverableSandboxCreationCondition(), lte(sandboxCreationOperations.nextAttemptAt, new Date()),
@@ -160,6 +161,7 @@ export async function recoverSandboxCreations(db: Db,
           typeof candidate.metadata.creationProviderLeaseId === "string") {
         await queueSandboxCreationCleanup(db, { id: candidate.id, companyId: candidate.companyId,
           environmentId: candidate.originalEnvironmentId, providerLeaseId: candidate.metadata.creationProviderLeaseId });
+        if (recoverableTaskCreation(candidate)) await onTaskRecovered?.(candidate);
         continue;
       }
       const [existingCompany] = await db.select({ id: companies.id }).from(companies).where(eq(companies.id, candidate.companyId)).limit(1);
@@ -174,6 +176,7 @@ export async function recoverSandboxCreations(db: Db,
           providerLeaseId: lease.providerLeaseId, providerMetadata: lease.metadata };
         await recordSandboxCreationResource(db, identity);
         await queueSandboxCreationCleanup(db, identity);
+        await onTaskRecovered?.(candidate);
         continue;
       }
       if (existingCompany && recoverableTaskCreation(candidate)) throw new Error("Task creation identity is not available yet");
