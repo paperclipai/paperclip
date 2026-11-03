@@ -54,6 +54,19 @@ d("heartbeat context_snapshot expression index migration", () => {
     const taskKeyText = taskKeyPlan.map((r) => Object.values(r)[0]).join("\n");
     expect(taskKeyText).toContain("heartbeat_runs_company_ctx_taskkey_created_idx");
 
+    // latestRecoveryActionRun: without this index the lookup walks every company
+    // run newest-first and detoasts each snapshot (8.6 s at 7k runs). An empty
+    // table may plan any company-prefix index, so check the built index itself:
+    // valid (a cancelled CONCURRENTLY build is not) and keyed on recoveryActionId.
+    const [recoveryIndex] = await sql`
+      SELECT i.indisvalid AS valid, pg_get_indexdef(i.indexrelid) AS def
+      FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid
+      WHERE c.relname = 'heartbeat_runs_company_ctx_recovery_action_created_idx'`;
+    expect(recoveryIndex?.valid).toBe(true);
+    expect(recoveryIndex?.def).toContain("company_id");
+    expect(recoveryIndex?.def).toContain("'recoveryActionId'");
+    expect(recoveryIndex?.def).toContain("created_at DESC");
+
     // An empty table can use any company-prefix index for the OR. Check the
     // new branch directly here; the populated benchmark proves BitmapOr use.
     const redactionPlan = await sql.unsafe(

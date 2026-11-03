@@ -3487,6 +3487,13 @@
       "when": 1795048062306,
       "tag": "0499_numerous_whizzer",
       "breakpoints": true
+    },
+    {
+      "idx": 500,
+      "version": "7",
+      "when": 1795190130574,
+      "tag": "0500_magenta_lady_bullseye",
+      "breakpoints": true
     }
   ]
 }
