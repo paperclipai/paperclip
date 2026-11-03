@@ -19,6 +19,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { SelectPopover } from "../ui/select";
+import { randomId } from "@/lib/random-id";
 import {
   Dialog,
   DialogContent,
@@ -62,7 +63,7 @@ export function AgentBasicsDialog({
   const { selectedCompanyId: companyId } = useCompany();
   const cache = useQueryClient();
   const appearanceDraft = useAgentAppearanceDraft(`${companyId}:new-agent`);
-  const setupId = useRef(setupAgentId ?? crypto.randomUUID());
+  const setupId = useRef(setupAgentId ?? randomId());
   const saved = useRef<Agent | null>(null);
   const busy = useRef(false);
   const active = useRef(true);

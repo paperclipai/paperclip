@@ -1,6 +1,7 @@
 import type { voiceSessionsApi } from "@/api/voiceSessions";
 import { ApiError } from "@/api/client";
 import { VoiceSessionStartError } from "./voice-session-controller";
+import { randomId } from "./random-id";
 
 type StartInput = Parameters<typeof voiceSessionsApi.start>[1];
 export interface VoiceCallAttempt { request: StartInput; sessionId?: string }
@@ -40,7 +41,7 @@ export function createVoiceCallAttempt(companyId: string, client: typeof voiceSe
       if (!attempt) {
         attempt = journal?.read();
         recovering = Boolean(attempt);
-        attempt ??= { request: { ...input, idempotencyKey: crypto.randomUUID() } };
+        attempt ??= { request: { ...input, idempotencyKey: randomId() } };
       }
       // A storage failure must occur before the provider can open a call.
       journal?.write(attempt);

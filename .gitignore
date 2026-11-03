@@ -103,3 +103,7 @@ test-results/
 
 # Content-addressed CI task results
 .turbo/
+
+# Worktrees (managed by wt — see /home/pc/environments/worktrees/WORKTREE.md)
+.worktree/
+.worktree_registry

@@ -10,6 +10,7 @@ import { SetupWizardFooter } from "@/components/SetupWizard";
 import type { OwnSlackAppSetup } from "./OwnSlackAppSetup";
 import { prepareOAuthNavigation, savePendingCloudHandoff } from "@/lib/oauthHandoff";
 import { sanitizedSetupErrorMessage } from "../chat-setup-error";
+import { randomId } from "@/lib/random-id";
 
 export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, onBusy, onSaveExit, autoStart = false, reconnect = false }: ComponentProps<typeof OwnSlackAppSetup> & { autoStart?: boolean; reconnect?: boolean }) {
   const choices = useQuery({ queryKey: ["slack-managed-workspaces", endpoint.companyId], queryFn: () => chatEndpointsApi.slackSetupOptions(endpoint.companyId), retry: false });
@@ -18,7 +19,7 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState(false);
   const inFlight = useRef(false);
-  const requestId = useRef(crypto.randomUUID());
+  const requestId = useRef(randomId());
   const registration = endpoint.setup?.slackRegistration;
   const started = Boolean(registration);
   const workspaces = choices.data?.workspaces ?? [];
@@ -44,7 +45,7 @@ export function ManagedSlackSetup({ endpoint, disabled, saveDetails, onSaved, on
       await authorize(); return;
     }
     if (!started) await saveDetails();
-    if (confirmed || registration?.status === "failed") requestId.current = crypto.randomUUID();
+    if (confirmed || registration?.status === "failed") requestId.current = randomId();
     const input = { requestId: requestId.current, grantId, ...(reconnect ? { reconnect: true } : {}), ...(confirmed ? { confirmedNoAppCreated: true } : {}) };
     setConfirmed(false);
     const result = await chatEndpointsApi.provisionManagedSlack(endpoint.id, input);

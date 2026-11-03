@@ -72,6 +72,7 @@ import {
   type SettledTurnMergeMeta,
 } from "@/components/task-chat/transcript-adapter";
 import { TaskChatDescriptionBubble } from "@/components/task-chat/TaskChatDescriptionBubble";
+import { randomId } from "@/lib/random-id";
 import {
   TaskChatLiveRunPill,
   toolCountSummaryFromEntries,
@@ -2798,7 +2799,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   const hasAgentAssignee = Boolean(submissionAgentId ?? issueAssigneeAgentId);
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
-      args[4] ??= crypto.randomUUID();
+      args[4] ??= randomId();
       const attempt = beginSubmission(args[4], args[2] ? {
         agentId: args[2].assigneeAgentId,
         agent: agentMap?.get(args[2].assigneeAgentId ?? ""),

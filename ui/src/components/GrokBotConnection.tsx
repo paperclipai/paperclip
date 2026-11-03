@@ -8,6 +8,7 @@ import { CopyText } from "./CopyText";
 import { Button, buttonVariants } from "./ui/button";
 import { Input } from "./ui/input";
 import { queryKeys } from "@/lib/queryKeys";
+import { randomId } from "@/lib/random-id";
 
 /** Configuration writes update the authoritative binding, never an unsaved agent form. */
 export function GrokBotConnection({ companyId, agentId }: { companyId?: string; agentId?: string }) {
@@ -35,7 +36,7 @@ export function GrokBotConnection({ companyId, agentId }: { companyId?: string; 
   }, onSuccess: refresh, gcTime: 0 });
   const verify = useMutation({ mutationFn: async () => {
     if (["rejected", "cancelled"].includes(exchange?.status ?? "")) verifyRequest.current = null;
-    verifyRequest.current ??= crypto.randomUUID();
+    verifyRequest.current ??= randomId();
     await grokBotApi.verify(companyId!, agentId!, binding!.id, verifyRequest.current);
   }, onSuccess: refresh, gcTime: 0 });
   const retryDelivery = useMutation({ mutationFn: (correlationId: string) => grokBotApi.retry(companyId!, agentId!, correlationId), onSuccess: refresh });

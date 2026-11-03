@@ -14,6 +14,7 @@ import {
   type SendOutcome,
 } from "@/lib/pending-send";
 import { useDraftOwner } from "./useDraftOwner";
+import { randomId } from "@/lib/random-id";
 
 export interface AutoResendOptions {
   /** Distinct per surface instance; the connection banner counts one pending write per source. */
@@ -261,7 +262,7 @@ export function useDurableSubmit<T, R>(options: DurableSubmitOptions<T, R>): Dur
     async (payload: T, submitOptions: { idempotencyKey?: string } = {}): Promise<DurableSubmitResult<R>> => {
       if (pendingRef.current) return { kind: "pending", error: null };
       const record: PendingSend<T> = {
-        idempotencyKey: submitOptions.idempotencyKey ?? crypto.randomUUID(),
+        idempotencyKey: submitOptions.idempotencyKey ?? randomId(),
         payload,
         createdAt: Date.now(),
       };

@@ -11,6 +11,7 @@ import type {
   BrowserUseViewportState,
 } from "@paperclipai/shared";
 import { browserUseApi } from "@/api/browser-use";
+import { randomId } from "@/lib/random-id";
 
 // Network scheduling, not animation timing. During a drag the existing frame scales.
 const DEBOUNCE_MS = 250;
@@ -44,7 +45,7 @@ export function useBrowserViewport({
   active: boolean;
   frameRef: RefObject<HTMLIFrameElement | null>;
 }) {
-  const [viewerId] = useState(() => crypto.randomUUID());
+  const [viewerId] = useState(() => randomId());
   const [state, setState] = useState<BrowserUseViewportState>({
     preset: "fit",
   });

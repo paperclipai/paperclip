@@ -4,6 +4,7 @@ import type { Issue } from "@paperclipai/shared";
 import { ApiError } from "../api/client";
 import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
+import { randomId } from "@/lib/random-id";
 
 export function useTaskRetry(issue: Issue | undefined) {
   const queryClient = useQueryClient();
@@ -55,7 +56,7 @@ export function useTaskRetry(issue: Issue | undefined) {
   return { retry: () => {
     if (!issue) return;
     mutation.reset();
-    request.current ??= { issueId: issue.id, idempotencyKey: crypto.randomUUID(),
+    request.current ??= { issueId: issue.id, idempotencyKey: randomId(),
       observedRunId: issue.interruption?.observedRunId ?? issue.executionBlocker?.runId ?? null };
     setOptimistic(true);
     setTakingLonger(false);

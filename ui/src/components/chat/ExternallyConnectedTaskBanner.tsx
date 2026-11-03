@@ -39,6 +39,7 @@ import {
 } from "./board-send-draft";
 
 import { LegacyBoardSendNotice } from "./LegacyBoardSendNotice";
+import { randomId } from "@/lib/random-id";
 
 const providerNames: Record<ChatProvider, string> = {
   speko: "Speko",
@@ -934,7 +935,7 @@ function ConnectedTaskComposer({
                   autoResend.resendNow();
                   return;
                 }
-                idempotencyKey.current ??= crypto.randomUUID();
+                idempotencyKey.current ??= randomId();
                 const input = retainedSend.current ?? {
                   attachmentIds: selectedAttachmentIds,
                   attachmentNames: selectedAttachmentIds.map((id) => ({

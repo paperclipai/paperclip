@@ -5,6 +5,7 @@ import { authApi } from "@/api/auth";
 import { documentAnnotationsApi, type DocumentAnnotationTarget } from "@/api/document-annotations";
 import { queryKeys } from "@/lib/queryKeys";
 import type { PendingAnchor } from "@/components/DocumentAnnotationLayer";
+import { randomId } from "@/lib/random-id";
 
 interface MutationOptions {
   target: DocumentAnnotationTarget;
@@ -118,7 +119,7 @@ export function useDocumentAnnotationMutations(options: MutationOptions) {
 }
 
 function messageFor(error: unknown, fallback: string) { return error instanceof Error && error.message ? error.message : fallback; }
-function optimisticId(prefix: string) { return `${prefix}-${typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`}`; }
+function optimisticId(prefix: string) { return `${prefix}-${typeof crypto !== "undefined" && randomId ? randomId() : `${Date.now()}-${Math.random()}`}`; }
 function buildOptimisticComment(body: string, threadId: string, target: DocumentAnnotationTarget, userId: string | null): DocumentAnnotationComment {
   const now = new Date();
   return { id: optimisticId("optimistic-comment"), companyId: "", threadId, issueId: target.kind === "issue" ? target.issueId : null, routineId: target.kind === "routine" ? target.routineId : null, caseId: target.kind === "case" ? target.caseId : null, documentId: "", body, authorType: "user", authorAgentId: null, authorUserId: userId, createdByRunId: null, issueCommentId: null, createdAt: now, updatedAt: now };

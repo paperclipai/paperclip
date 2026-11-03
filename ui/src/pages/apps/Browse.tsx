@@ -74,6 +74,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { randomId } from "@/lib/random-id";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -1183,7 +1184,7 @@ export function ConnectorCard({
             if (row.aggregatorApp && isInstalled(row)) onManageAggregator?.(row.aggregatorApp, row.upstreamApps?.find(app => app.accounts.length > 0)?.connectionId);
             else if (row.aggregatorApp) onConnectAggregator?.(row.aggregatorApp);
             else if (action.href) onNavigate(row.slug === "agentmail"
-              ? `${action.href}&setupId=${crypto.randomUUID()}` : action.href);
+              ? `${action.href}&setupId=${randomId()}` : action.href);
           }}
           aria-label={`${action.label} ${row.name}`}
         >

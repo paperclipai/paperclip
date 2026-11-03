@@ -67,6 +67,7 @@ import {
 } from "../hooks/usePaperclipIssueRuntime";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
+import { randomId } from "@/lib/random-id";
 import {
   loadDraft,
   loadDraftIfAvailable,
@@ -5130,7 +5131,7 @@ const IssueChatComposer = forwardRef<
         setBody(trimmed);
         return;
       }
-      attemptId = crypto.randomUUID();
+      attemptId = randomId();
       if (requestOwner === undefined) markRequestUnbound(attemptId);
       // The exact request is stored before it is sent, so a lost response or
       // an outage can resend it with the same ID instead of losing it.
@@ -6175,7 +6176,7 @@ export function IssueChatThread({
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      clientRequestId ??= crypto.randomUUID();
+      clientRequestId ??= randomId();
       const attempt = beginSubmission(clientRequestId);
       try {
         await (runSettings

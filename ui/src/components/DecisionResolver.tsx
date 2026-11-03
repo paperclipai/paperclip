@@ -7,6 +7,7 @@ import { issuesApi } from "../api/issues";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
 import { DecisionCard, type DecisionIssueRef } from "./DecisionCard";
+import { randomId } from "@/lib/random-id";
 
 interface DecisionResolverProps {
   companyId: string;
@@ -208,7 +209,7 @@ export function DecisionResolver({ companyId, decisionId, originIssue, agentMap,
       }
       busy={busy}
       errorMessage={errorMessage}
-      onDecide={(optionId, inputValues) => decideMutation.mutate({ optionId, inputValues, idempotencyKey: crypto.randomUUID() })}
+      onDecide={(optionId, inputValues) => decideMutation.mutate({ optionId, inputValues, idempotencyKey: randomId() })}
       onDismiss={(reason) => dismissMutation.mutate(reason)}
     />
   );

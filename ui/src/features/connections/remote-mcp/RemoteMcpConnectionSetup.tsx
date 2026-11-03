@@ -17,6 +17,7 @@ import {
 } from "../ConnectionSetupFlow";
 import type { RemoteMcpProvider } from "./providers";
 import type { RemoteMcpSetupActions, RemoteMcpSetupState } from "./types";
+import { randomId } from "@/lib/random-id";
 
 /**
  * PAP-659 C0: the connect path is one screen. `access` is still a real screen,
@@ -185,7 +186,7 @@ export function RemoteMcpConnectionSetup({ provider, state: s, actions: a, agent
                       <div className="min-w-0 flex-1 space-y-2"><Label htmlFor={`${uid}-${header.id}-value`}>Header {index + 1} value</Label><Input id={`${uid}-${header.id}-value`} type="password" autoComplete="off" value={header.value} onChange={(event) => change({ headers: s.headers.map((h) => h.id === header.id ? { ...h, value: event.target.value } : h) })} /></div>
                       <Button type="button" variant="ghost" size="icon" aria-label={`Remove header ${index + 1}`} onClick={() => change({ headers: s.headers.filter((h) => h.id !== header.id) })}><Trash2 className="size-4" /></Button>
                     </div>)}
-                    <Button type="button" variant="outline" size="sm" onClick={() => change({ headers: [...s.headers, { id: crypto.randomUUID(), name: "", value: "" }] })}><Plus className="size-4" />Add header</Button>
+                    <Button type="button" variant="outline" size="sm" onClick={() => change({ headers: [...s.headers, { id: randomId(), name: "", value: "" }] })}><Plus className="size-4" />Add header</Button>
                   </div>}
                 </div>)}
             </fieldset>

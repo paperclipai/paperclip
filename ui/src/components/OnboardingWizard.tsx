@@ -78,6 +78,7 @@ import { issuesApi } from "../api/issues";
 import { projectsApi } from "../api/projects";
 import { environmentsApi } from "../api/environments";
 import { instanceSettingsApi } from "../api/instanceSettings";
+import { randomId } from "@/lib/random-id";
 import {
   resolveAdapterTestEnvironmentId,
   resolveLocalDefaultEnvironmentId,
@@ -1286,7 +1287,7 @@ function OnboardingWizardInner({
       || (!sourceSelected && setupNameConflict === JSON.stringify([createdCompanyId, agentName.trim().toLowerCase()]))) return;
     const companyId = createdCompanyId;
     preparingSetup.current.add(companyId);
-    const id = setupAgentId ?? crypto.randomUUID();
+    const id = setupAgentId ?? randomId();
     let restoring = Boolean(setupAgentId);
     void (async () => {
       if (!setupAgentId) {

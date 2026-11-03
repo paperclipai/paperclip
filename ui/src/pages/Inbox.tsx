@@ -78,6 +78,7 @@ import {
 } from "../lib/inboxArchiveCache";
 import { EmptyState } from "../components/EmptyState";
 import { CollectionToolbar, type CollectionToolbarProps } from "../components/CollectionToolbar";
+import { randomId } from "@/lib/random-id";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { PageSkeleton } from "../components/PageSkeleton";
 import {
@@ -1915,7 +1916,7 @@ function StreamlinedInbox({
       if (issueId) {
         let idempotencyKey = retryRequestKeys.current.get(run.id);
         if (!idempotencyKey) {
-          idempotencyKey = crypto.randomUUID();
+          idempotencyKey = randomId();
           retryRequestKeys.current.set(run.id, idempotencyKey);
         }
         const result = await issuesApi.retryTask(issueId, { idempotencyKey, observedRunId: run.id }).catch(error => {

@@ -5,6 +5,7 @@ import { grokBotApi } from "@/api/grokBot";
 import { agentsApi } from "@/api/agents";
 import { queryKeys } from "@/lib/queryKeys";
 import { GrokBotSetupContent, type GrokSetupStep } from "./GrokBotSetupContent";
+import { randomId } from "@/lib/random-id";
 
 export function GrokBotSetup({ companyId, companyName, onBack, onClose }: {
   companyId: string; companyName: string; onBack: () => void; onClose: () => void;
@@ -61,7 +62,7 @@ export function GrokBotSetup({ companyId, companyName, onBack, onClose }: {
   }, gcTime: 0 });
   const verify = useMutation({ mutationFn: async () => {
     if (["rejected", "cancelled"].includes(binding?.routine?.lastExchange?.status ?? "")) verifyRequest.current = null;
-    verifyRequest.current ??= crypto.randomUUID();
+    verifyRequest.current ??= randomId();
     await grokBotApi.verify(companyId, invitation!.agent.id, binding!.id, verifyRequest.current);
     await connection.refetch();
   }, gcTime: 0 });

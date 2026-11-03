@@ -4,6 +4,7 @@ import { isUuidLike } from "@paperclipai/shared";
 import { emailApi } from "@/api/email";
 import { Button } from "@/components/ui/button";
 import { AgentMailCredentialField } from "./AgentMailCredentialField";
+import { randomId } from "@/lib/random-id";
 
 interface InlineEmailDraft {
   setupRequestId: string;
@@ -52,7 +53,7 @@ export function AgentMailIntentSetup({ companyId, agentId, requestId, savedCrede
       if (pending) await emailApi.control(pending.id, "remove");
     },
     onSuccess: () => {
-      setSetupRequestId(crypto.randomUUID());
+      setSetupRequestId(randomId());
       setCredentialId(null);
       setSelectedCredentialId("");
       setApiKey("");
