@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, ne, sql } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, workspaceOperations, type Db } from "@paperclipai/db";
 import type { StorageService } from "../storage/types.js";
@@ -13,6 +14,29 @@ export type ImportedWorkspaceChild = {
 };
 const overlaps = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`);
 const rootOf = (workspace: Pick<Workspace, "cwd" | "providerRef">) => workspace.cwd ?? workspace.providerRef;
+
+// Missing historical paths still resolve through their nearest surviving
+// parent, so a symlinked ancestor cannot hide an alias from the writer fence.
+async function physicalPath(value: string): Promise<string> {
+  let current = path.resolve(value); const missing: string[] = [];
+  for (;;) {
+    try { return path.join(await fs.realpath(current), ...missing.reverse()); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT" || current === path.dirname(current)) throw error;
+      missing.push(path.basename(current)); current = path.dirname(current);
+    }
+  }
+}
+
+export function validateImportedWorkspaceChildren(raw: unknown): ImportedWorkspaceChild[] {
+  if (!Array.isArray(raw) || raw.some(child => !child || typeof child !== "object"
+    || typeof child.relativePath !== "string" || !child.relativePath.startsWith(".paperclip/worktrees/")
+    || child.relativePath.split("/").some((part: string) => !part || part === "." || part === "..")
+    || !/^[a-f0-9-]{36}$/.test(child.workspaceId) || !/^[a-f0-9-]{36}$/.test(child.snapshotId)
+    || !/^[a-f0-9-]{36}$/.test(child.operationId) || !/^[a-f0-9]{64}$/.test(child.manifestDigest)))
+    throw new Error("nested_workspace_coverage_invalid");
+  return raw;
+}
 
 export async function offlineWorkspaceMigrationBlockers(db: ReadDb) {
   if (process.env.PAPERCLIP_EPHEMERAL_MIGRATION !== "true") return ["offline_maintenance_required"];
@@ -32,15 +56,16 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
     eq(executionWorkspaces.companyId, workspace.companyId), ne(executionWorkspaces.id, workspace.id),
     inArray(executionWorkspaces.providerType, ["local_fs", "git_worktree"]),
   ));
-  if (local.some(row => rootOf(row) && overlaps(path.resolve(cwd), path.resolve(rootOf(row)!)))) {
+  const root = await physicalPath(cwd);
+  for (const row of local) if (rootOf(row) && overlaps(root, await physicalPath(rootOf(row)!)))
     return ["overlapping_workspace_requires_maintenance"];
-  }
   const migrated = await db.select({ cwd: workspaceOperations.cwd }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.phase, "remote_workspace_migration"),
     eq(workspaceOperations.status, "succeeded"), ne(workspaceOperations.executionWorkspaceId, workspace.id),
   ));
-  return migrated.some(row => row.cwd && path.resolve(row.cwd).startsWith(`${path.resolve(cwd)}/.paperclip/worktrees/`))
-    ? ["overlapping_workspace_requires_maintenance"] : [];
+  for (const row of migrated) if (row.cwd && (await physicalPath(row.cwd)).startsWith(`${root}/.paperclip/worktrees/`))
+    return ["overlapping_workspace_requires_maintenance"];
+  return [];
 }
 
 /** Runtime-created nested task folders can be omitted only after an exact
@@ -48,9 +73,12 @@ export async function workspaceMigrationLayoutBlockers(db: ReadDb, workspace: Wo
  * the parent archive. The snapshot owner retains the resulting dependencies. */
 export async function prepareNestedWorkspaceImports(input: {
   db: Db; storage: StorageService; workspace: Workspace; scratch: string; signal?: AbortSignal;
+  recordedChildren?: ImportedWorkspaceChild[];
 }): Promise<ImportedWorkspaceChild[]> {
-  const root = rootOf(input.workspace);
-  if (!root) return [];
+  const sourceRoot = rootOf(input.workspace);
+  if (!sourceRoot) return [];
+  if (input.recordedChildren && !input.recordedChildren.length) return [];
+  const root = await physicalPath(sourceRoot);
   const rows = await input.db.select({ operation: workspaceOperations, snapshot: executionWorkspaceSnapshots })
     .from(workspaceOperations).innerJoin(executionWorkspaceSnapshots, and(
       eq(executionWorkspaceSnapshots.companyId, workspaceOperations.companyId),
@@ -61,21 +89,27 @@ export async function prepareNestedWorkspaceImports(input: {
       eq(workspaceOperations.status, "succeeded"), inArray(executionWorkspaceSnapshots.status, ["committed", "superseded"]),
       sql`${workspaceOperations.metadata}->>'snapshotId' = ${executionWorkspaceSnapshots.id}::text`,
     ));
-  const candidates = rows.filter(row => row.operation.cwd && path.resolve(row.operation.cwd).startsWith(`${path.resolve(root)}/.paperclip/worktrees/`))
-    .sort((a, b) => a.operation.cwd!.length - b.operation.cwd!.length || a.operation.id.localeCompare(b.operation.id));
+  const located = [];
+  for (const row of rows) {
+    if (!row.operation.cwd || input.recordedChildren && !input.recordedChildren.some(child => child.operationId === row.operation.id)) continue;
+    located.push({ ...row, sourcePath: await physicalPath(row.operation.cwd) });
+  }
+  const candidates = located.filter(row => row.sourcePath.startsWith(`${root}/.paperclip/worktrees/`))
+    .sort((a, b) => a.sourcePath.length - b.sourcePath.length || a.operation.id.localeCompare(b.operation.id));
   const covered: ImportedWorkspaceChild[] = [];
-  for (const { operation, snapshot } of candidates) {
+  for (const { operation, snapshot, sourcePath } of candidates) {
     input.signal?.throwIfAborted();
-    const relativePath = path.relative(root, operation.cwd!).split(path.sep).join("/");
+    const relativePath = path.relative(root, sourcePath).split(path.sep).join("/");
     if (covered.some(item => relativePath === item.relativePath || relativePath.startsWith(`${item.relativePath}/`))) continue;
-    const entry = await fs.lstat(operation.cwd!).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
-    if (!entry) continue;
+    const entry = await fs.lstat(sourcePath).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return null; throw error; });
+    if (!entry) { if (input.recordedChildren) throw new Error("nested_workspace_source_changed"); continue; }
     if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("nested_workspace_source_changed");
-    await verifyCoveredWorkspace({ ...input, sourcePath: operation.cwd!, snapshot, operationId: operation.id,
+    await verifyCoveredWorkspace({ ...input, sourcePath, snapshot, operationId: operation.id,
       expectedDigest: operation.metadata?.manifestDigest, depth: 0 });
     covered.push({ workspaceId: snapshot.executionWorkspaceId, snapshotId: snapshot.id, operationId: operation.id,
       relativePath, manifestDigest: snapshot.manifestDigest! });
   }
+  if (input.recordedChildren && !isDeepStrictEqual(covered, input.recordedChildren)) throw new Error("nested_workspace_scope_changed");
   return covered;
 }
 
@@ -90,15 +124,7 @@ async function verifyCoveredWorkspace(input: {
     workspaceId: snapshot.executionWorkspaceId, snapshotId: snapshot.id });
   if (!reference || reference.manifestDigest !== input.expectedDigest || snapshot.sourceOperationId !== input.operationId)
     throw new Error("nested_workspace_snapshot_changed");
-  const raw = snapshot.metadata?.importedWorkspaceChildren;
-  if (raw !== undefined && (!Array.isArray(raw) || raw.some(child => !child || typeof child !== "object"
-    || typeof child.relativePath !== "string" || !child.relativePath.startsWith(".paperclip/worktrees/")
-    || child.relativePath.split("/").some((part: string) => !part || part === "." || part === "..")
-    || !/^[a-f0-9-]{36}$/.test(child.workspaceId) || !/^[a-f0-9-]{36}$/.test(child.snapshotId)
-    || !/^[a-f0-9-]{36}$/.test(child.operationId) || !/^[a-f0-9]{64}$/.test(child.manifestDigest)))) {
-    throw new Error("nested_workspace_coverage_invalid");
-  }
-  const children = (raw ?? []) as ImportedWorkspaceChild[];
+  const children = validateImportedWorkspaceChildren(snapshot.metadata?.importedWorkspaceChildren ?? []);
   const area = await fs.mkdtemp(path.join(input.scratch, "covered-"));
   for (const child of children) {
     const [saved] = await input.db.select({ operation: workspaceOperations, snapshot: executionWorkspaceSnapshots })
@@ -109,7 +135,7 @@ async function verifyCoveredWorkspace(input: {
         eq(workspaceOperations.status, "succeeded"), eq(workspaceOperations.phase, "remote_workspace_migration"),
         inArray(executionWorkspaceSnapshots.status, ["committed", "superseded"])));
     const sourcePath = path.join(input.sourcePath, child.relativePath);
-    if (!saved || saved.operation.cwd !== sourcePath) throw new Error("nested_workspace_coverage_invalid");
+    if (!saved?.operation.cwd || await physicalPath(saved.operation.cwd) !== sourcePath) throw new Error("nested_workspace_coverage_invalid");
     await verifyCoveredWorkspace({ ...input, sourcePath, snapshot: saved.snapshot, operationId: child.operationId,
       expectedDigest: child.manifestDigest, scratch: area, depth: input.depth + 1 });
   }

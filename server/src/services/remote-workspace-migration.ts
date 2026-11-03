@@ -17,7 +17,7 @@ import { notifyRemoteWorkspaceSnapshots } from "./remote-workspace-snapshot-rete
 import { materializeTaskDirectorySnapshot, removeTaskDirectoryTree } from "./isolated-task-directory-snapshot.js";
 import { loadTaskDirectoryRestorePoint, mayBeIsolatedTaskDirectoryWorkspace, readTaskDirectoryRetention, validateTaskDirectoryRestorePointRef } from "./isolated-task-directory-retention.js";
 import { inspectArchivedGitMigrationSource, materializeArchivedGitMigrationSource, type ArchivedGitMigrationSource } from "./remote-workspace-migration-git.js";
-import { prepareNestedWorkspaceImports, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
+import { prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
 
 const SCHEMA = "paperclip.remote-workspace-migration.v1";
 type Workspace = typeof executionWorkspaces.$inferSelect;
@@ -186,6 +186,7 @@ export async function migrateRemoteWorkspace(input: {
       const [operation] = await tx.insert(workspaceOperations).values({ companyId: workspace.companyId, executionWorkspaceId: workspace.id,
         issueId: workspace.sourceIssueId, cwd: workspace.cwd ?? workspace.providerRef, phase: "remote_workspace_migration", status: "running",
         metadata: { schema: SCHEMA, sourceFingerprint, source, sourceIssueBinding: current.issueBinding,
+          nestedWorkspaceScope: { version: 1, state: "pending" },
           ...(current.archivedGitSource ? { archivedGitSource: gitSourceProof(current.archivedGitSource) } : {}),
           ...(current.retainedDirectory ? { retainedDirectory: { restorePointId: current.retainedDirectory.restorePoint.id,
             generation: current.retainedDirectory.generation, digest: current.retainedDirectory.restorePoint.digest } } : {}) } }).returning();
@@ -196,7 +197,7 @@ export async function migrateRemoteWorkspace(input: {
       return { workspace, authority: null, operation: operation!, source, sourceFingerprint, issueBinding: current.issueBinding, retainedDirectory: current.retainedDirectory, archivedGitSource: current.archivedGitSource };
     });
     if (reserved.authority) return { ...await inventoryRemoteWorkspaceMigration(input.db, input), applied: true, replayed: true };
-    const operation = reserved.operation!;
+    let operation = reserved.operation!;
     const snapshot = await beginWorkspaceSnapshot(input.db, { companyId: input.companyId, workspaceId: input.workspaceId,
       operationId: operation.id, generation: 1, epoch: 1 });
     const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-migration-"));
@@ -208,8 +209,23 @@ export async function migrateRemoteWorkspace(input: {
         target: path.join(scratch, "retained-source"), expectedDigest: retained.digest,
       }) : reserved.archivedGitSource ? await materializeArchivedGitMigrationSource({ db: input.db, storage: input.storage,
         workspace: reserved.workspace, source: reserved.archivedGitSource, scratch }) : reserved.workspace.cwd ?? reserved.workspace.providerRef!;
+      const scope = object(operation.metadata?.nestedWorkspaceScope);
+      if (operation.metadata?.nestedWorkspaceScope !== undefined && (scope.version !== 1 || !["pending", "fixed"].includes(String(scope.state))))
+        throw new Error("nested_workspace_scope_invalid");
+      // Journals predating scoped captures included every child. Preserve that
+      // archive identity even if a later batch has already imported the leaves.
+      const recordedChildren = scope.state === "fixed" ? validateImportedWorkspaceChildren(scope.children)
+        : scope.state === "pending" ? undefined : [];
       const nested = input.writersStopped && !retained && !reserved.archivedGitSource
-        ? await prepareNestedWorkspaceImports({ ...input, workspace: reserved.workspace, scratch }) : [];
+        ? await prepareNestedWorkspaceImports({ ...input, workspace: reserved.workspace, scratch, recordedChildren }) : [];
+      if (scope.state === "pending") {
+        const [saved] = await input.db.update(workspaceOperations).set({ metadata: { ...operation.metadata,
+          nestedWorkspaceScope: { version: 1, state: "fixed", children: nested } }, updatedAt: new Date() })
+          .where(and(eq(workspaceOperations.companyId, input.companyId), eq(workspaceOperations.id, operation.id),
+            eq(workspaceOperations.status, "running"))).returning();
+        if (!saved) throw new Error("remote_workspace_migration_operation_changed");
+        operation = saved;
+      }
       const exclude = nested.map(child => child.relativePath);
       const archivePath = path.join(scratch, "workspace.pcws");
       const captured = await captureRemoteWorkspaceDirectory({ cwd: sourceRoot, archivePath, exclude, signal: input.signal });
@@ -223,7 +239,7 @@ export async function migrateRemoteWorkspace(input: {
       if (current.manifestDigest !== captured.manifestDigest) throw new Error("remote_workspace_migration_source_changed");
       if (nested.length) {
         const verifyScratch = path.join(scratch, "verify-nested"); await fs.mkdir(verifyScratch);
-        const verified = await prepareNestedWorkspaceImports({ ...input, workspace: reserved.workspace, scratch: verifyScratch });
+        const verified = await prepareNestedWorkspaceImports({ ...input, workspace: reserved.workspace, scratch: verifyScratch, recordedChildren: nested });
         if (canonical(verified) !== canonical(nested)) throw new Error("nested_workspace_source_changed");
       }
       input.signal?.throwIfAborted();

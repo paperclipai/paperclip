@@ -115,6 +115,31 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
       .rejects.toThrow("active_execution_requires_drain");
     expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
   });
+  it("detects overlapping folders reached through symlinked parent directories", async () => {
+    const f = await seed(), alias = path.join(root, "alias"); await fs.symlink(root, alias);
+    await db.insert(executionWorkspaces).values({ companyId: f.companyId, name: "Physical alias", mode: "isolated_workspace",
+      strategyType: "project_primary", providerType: "local_fs", cwd: path.join(alias, "original") });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("overlapping_workspace_requires_maintenance");
+  });
+  it.each(["current", "legacy"])("keeps the parent capture scope when children migrate between retries (%s)", async journal => {
+    const { parent, child } = await nestedFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const put = storage.putFile.bind(storage); let fail = true;
+    storage.putFile = async input => { const saved = await put(input); if (fail) { fail = false; throw new Error("upload reply lost"); } return saved; };
+    await expect(migrateRemoteWorkspace({ db, storage, ...parent, apply: true, writersStopped: true })).rejects.toThrow("upload reply lost");
+    if (journal === "legacy") {
+      const [operation] = await db.select().from(workspaceOperations).where(eq(workspaceOperations.executionWorkspaceId, parent.workspaceId));
+      const metadata = { ...operation!.metadata }; delete metadata.nestedWorkspaceScope;
+      await db.update(workspaceOperations).set({ metadata }).where(eq(workspaceOperations.id, operation!.id));
+    }
+    await migrateRemoteWorkspace({ db, storage, ...child, apply: true, writersStopped: true });
+    await migrateRemoteWorkspace({ db, storage, ...parent, apply: true, writersStopped: true });
+    const authority = readRemoteWorkspaceAuthority((await workspace(parent.workspaceId)).metadata)!;
+    const reference = await getWorkspaceSnapshot(db, { ...parent, snapshotId: authority.snapshotId! });
+    const archivePath = path.join(root, "retried-parent.pcws"), targetDir = path.join(root, "retried-parent");
+    await loadWorkspaceSnapshotArchive({ storage, reference: reference!, targetPath: archivePath });
+    await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: reference!.manifestDigest });
+    expect(await fs.readFile(path.join(targetDir, ".paperclip/worktrees/child/child.txt"), "utf8")).toBe("saved child edits\n");
+  });
   it("blocks distinct legacy records that alias the same folder", async () => {
     const f = await seed(), id = randomUUID();
     await db.insert(executionWorkspaces).values({ id, companyId: f.companyId, name: "Historical alias", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: f.cwd });
