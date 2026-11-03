@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { JourneyContext, JourneyEvidence, TargetSession } from "./types.js";
-import { chatContinuityFixture } from "./chat-continuity.test-fixture.js";
+import { chatContinuityFixture, compactChatContinuityFixture } from "./chat-continuity.test-fixture.js";
 
 const mocks = vi.hoisted(() => ({ send: vi.fn(), reply: vi.fn(), capture: vi.fn() }));
 vi.mock("../chat-flow.js", () => ({ sendChatMessage: mocks.send }));
@@ -22,8 +22,10 @@ afterEach(async () => {
   vi.resetAllMocks();
   for (const directory of directories.splice(0)) await rm(directory, { recursive: true, force: true });
 });
-async function fixture(options: { preexisting?: boolean; intentFails?: boolean; sendFails?: boolean; foreignRun?: boolean } = {}) {
-  const f = chatContinuityFixture(), directory = await mkdtemp(path.join(os.tmpdir(), "chat-continuity-flow-"));
+async function fixture(options: { preexisting?: boolean; intentFails?: boolean; sendFails?: boolean; foreignRun?: boolean;
+  compactRuns?: boolean; unrelatedActivity?: number; ignoreActivityScope?: boolean; priorAgentStatus?: string; mixedAgentHistory?: boolean } = {}) {
+  const f = options.compactRuns ? compactChatContinuityFixture() : chatContinuityFixture();
+  const directory = await mkdtemp(path.join(os.tmpdir(), "chat-continuity-flow-"));
   directories.push(directory);
   let stage = options.preexisting ? 0 : -1;
   const messages: string[] = [], actions: string[] = [];
@@ -31,14 +33,28 @@ async function fixture(options: { preexisting?: boolean; intentFails?: boolean; 
   vi.spyOn(globalThis, "setTimeout").mockImplementation(((callback: (...args: unknown[]) => void, delay?: number, ...args: unknown[]) =>
     realTimeout(callback, delay === 1000 ? 0 : delay, ...args)) as typeof setTimeout);
   const current = () => f.points[stage]!;
+  const companyActivity = Array.from({ length: options.unrelatedActivity ?? 0 }, (_, index) => ({ id: `unrelated-${index}`,
+    companyId: f.scope.companyId, agentId: "other-agent", runId: "other-run", action: "project.created", entityType: "project", entityId: `other-project-${index}` }));
+  const companyRuns = Array.from({ length: options.unrelatedActivity ?? 0 }, (_, index) => ({ id: `unrelated-run-${index}`,
+    companyId: f.scope.companyId, agentId: "other-agent", status: "succeeded" }));
+  if (options.priorAgentStatus) companyRuns.push({ id: "prior-owned-run", companyId: f.scope.companyId, agentId: f.scope.agentId, status: options.priorAgentStatus });
   const get = vi.fn(async (route: string) => {
     if (route === "/api/instance/settings/experimental") return { enableAgentChat: true };
+    if (route === "/api/companies/company/heartbeat-runs?agentId=agent&limit=1&summary=true") {
+      actions.push("history");
+      if (options.mixedAgentHistory) return [{ id: "foreign-run", companyId: "foreign-company", agentId: "other-agent", status: "running" }];
+      return companyRuns.filter(run => run.agentId === f.scope.agentId).slice(0, 1);
+    }
     if (route === "/api/companies/company/chats/agent") return stage < 0 ? null : structuredClone(current().chat);
-    if (route === "/api/issues/chat/runs") return current().runs.map(run => ({ runId: run.id }));
+    if (route === "/api/issues/chat/runs") return current().runs.map(run => ({ runId: run.id, agentId: run.agentId, status: run.status,
+      contextIssueId: run.contextSnapshot.issueId, wakeCommentId: run.contextSnapshot.wakeCommentId,
+      resultJson: run.contextSnapshot.conversationReset ? { conversationReset: true } : {} }));
     if (route === "/api/issues/chat/comments?order=asc") return structuredClone(current().comments);
     if (route === "/api/companies/company/issues?view=index&assigneeAgentId=agent&includeAgentCreatedTasks=true&limit=2") return [];
-    if (route === "/api/companies/company/activity?agentId=agent&limit=500") return [];
-    if (/\/api\/heartbeat-runs\/run-\d\/events\?/.test(route)) return [];
+    if (route === "/api/companies/company/activity?agentId=agent&limit=500") {
+      return (options.ignoreActivityScope ? companyActivity : companyActivity.filter(row => row.agentId === f.scope.agentId)).slice(0, 500);
+    }
+    if (/\/api\/heartbeat-runs\/run-\d\/events\?/.test(route)) return structuredClone(current().events ?? []);
     const id = route.match(/^\/api\/heartbeat-runs\/(run-\d)$/)?.[1];
     if (id) {
       const run = structuredClone(current().runs.find(row => row.id === id)!);
@@ -83,6 +99,7 @@ describe("chat continuity journey controls", () => {
     await f.run();
     expect(f.messages).toEqual([f.scenario.remember, f.scenario.recall, "/new", f.scenario.fresh]);
     expect(f.actions.indexOf("intent")).toBeLessThan(f.actions.indexOf("send"));
+    expect(f.actions.indexOf("history")).toBeLessThan(f.actions.indexOf("intent"));
     expect(f.own).toHaveBeenCalledTimes(2);
     expect(f.own.mock.calls[0]![0]).toMatchObject({ journeyId: "chat-continuity", freshChat: { absent: true, userId: f.scope.userId } });
     expect(f.own.mock.calls[1]![0]).toMatchObject({ id: "chat", journeyId: "chat-continuity" });
@@ -94,6 +111,33 @@ describe("chat continuity journey controls", () => {
     const saved = JSON.parse(await readFile(path.join(f.directory, "chat-continuity.json"), "utf8"));
     expect(saved.points.map((point: { phase: string }) => point.phase)).toEqual(["initial", "returned", "recalled", "reset", "fresh", "reopened"]);
     expect(saved.checks.every((check: { passed: boolean }) => check.passed)).toBe(true);
+  });
+  it("accepts compact details with original reset summaries despite more than 500 unrelated company events", async () => {
+    const f = await fixture({ compactRuns: true, unrelatedActivity: 750 });
+    await f.run();
+    expect(f.evidence.checks.every(check => check.passed)).toBe(true);
+    const saved = JSON.parse(await readFile(path.join(f.directory, "chat-continuity.json"), "utf8"));
+    expect(saved.points.every((point: { activity: unknown[] }) => point.activity.length === 0)).toBe(true);
+    expect(saved.points[5].resetReceipts[0]).toMatchObject({ source: "issue-runs", runId: "run-2", agentId: f.scope.agentId,
+      contextIssueId: "chat", wakeCommentId: "user-2", resultJson: { conversationReset: true } });
+    expect(saved.points[5].runs[2].resultJson).toBeNull();
+  });
+  it.each([1, 750])("rejects an ignored agent filter instead of filtering %s unrelated global activity rows", async unrelatedActivity => {
+    const f = await fixture({ unrelatedActivity, ignoreActivityScope: true });
+    await expect(f.run()).rejects.toThrow("chat_continuity_observation_incomplete");
+    expect(f.messages).toEqual([f.scenario.remember]);
+  });
+  it.each(["succeeded", "running", "queued", "failed"])("rejects prior %s work on a reused agent before any send", async priorAgentStatus => {
+    const f = await fixture({ priorAgentStatus, unrelatedActivity: 750 });
+    await expect(f.run()).rejects.toThrow("fresh_chat_agent_required");
+    expect(f.messages).toEqual([]);
+    expect(f.own).not.toHaveBeenCalled();
+  });
+  it("rejects mixed or foreign agent history before any send", async () => {
+    const f = await fixture({ mixedAgentHistory: true });
+    await expect(f.run()).rejects.toThrow("chat_continuity_agent_history_scope_mismatch");
+    expect(f.messages).toEqual([]);
+    expect(f.own).not.toHaveBeenCalled();
   });
   it.each(["preexisting", "intentFails"] as const)("does not dispatch model work when %s rejects ownership", async option => {
     const f = await fixture({ [option]: true });

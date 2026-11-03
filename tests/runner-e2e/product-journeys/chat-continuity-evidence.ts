@@ -22,12 +22,19 @@ export function chatContinuityScenario(campaignId: string) {
 export interface ChatContinuityScope {
   companyId: string; userId: string; agentId: string; agentName: string;
   environmentId: string; provider: string; model: string; campaignId: string;
+  agentHistory?: { source: "company-agent-runs"; companyId: string; agentId: string; limit: 1; runIds: string[]; observedBeforeSend: true };
+}
+export interface ChatContinuityResetReceipt {
+  source: "issue-runs"; companyId: string; issueId: string;
+  runId: string; agentId: string; status: string; contextIssueId: string; wakeCommentId: string;
+  resultJson: { conversationReset: true };
 }
 export interface ChatContinuityPoint {
   phase: "initial" | "returned" | "recalled" | "reset" | "fresh" | "reopened";
   chat: Row; runs: Row[]; comments: Row[]; tasks: Row[]; activity: Row[];
   reply?: TaskReplyObservation & { runId: string; agentId: string; observedAfterReload: boolean };
   events?: Row[];
+  resetReceipts: ChatContinuityResetReceipt[];
 }
 const nonempty = (value: unknown): value is string => typeof value === "string" && value.length > 0;
 export const chatContinuityResetRun = (run: Row) => run.contextSnapshot?.conversationReset === true || run.resultJson?.conversationReset === true;
@@ -42,17 +49,40 @@ const commentContent = (row: Row) => [row.id, row.companyId, row.issueId, row.bo
 const sameRows = (left: Row[], right: Row[]) => left.every(row => right.some(other => other.id === row.id
   && JSON.stringify(commentContent(other)) === JSON.stringify(commentContent(row))));
 
+export function chatContinuityActivityComplete(scope: Pick<ChatContinuityScope, "companyId" | "agentId">, rows: Row[]): boolean {
+  return Array.isArray(rows) && rows.length < 500 && new Set(rows.map(row => row?.id)).size === rows.length
+    && rows.every(row => row && nonempty(row.id) && row.companyId === scope.companyId && row.agentId === scope.agentId
+      && nonempty(row.action) && nonempty(row.entityType) && nonempty(row.entityId));
+}
+
+export function chatContinuityResetReceiptMatches(scope: Pick<ChatContinuityScope, "companyId" | "agentId">,
+  chatId: string, run: Row, receipt: ChatContinuityResetReceipt): boolean {
+  const fullResult = run.resultJson;
+  const optionalFlagValid = fullResult == null || typeof fullResult === "object" && !Array.isArray(fullResult)
+    && (!Object.hasOwn(fullResult, "conversationReset") || fullResult.conversationReset === true);
+  return receipt?.source === "issue-runs" && receipt.companyId === scope.companyId && receipt.issueId === chatId
+    && receipt.runId === run.id && receipt.agentId === scope.agentId && receipt.status === "succeeded"
+    && receipt.contextIssueId === chatId && nonempty(receipt.wakeCommentId)
+    && receipt.wakeCommentId === run.contextSnapshot?.wakeCommentId && receipt.resultJson?.conversationReset === true
+    && run.companyId === scope.companyId && run.agentId === scope.agentId && chatContinuityIssueId(run) === chatId
+    && run.status === "succeeded" && run.contextSnapshot?.conversationReset === true && optionalFlagValid
+    && !run.runnerProfileJson?.nativeExecutionInput && !run.nativeSessionId;
+}
+
 export function gradeChatContinuity(scope: ChatContinuityScope, points: ChatContinuityPoint[]) {
   const scenario = chatContinuityScenario(scope.campaignId);
   const phases = ["initial", "returned", "recalled", "reset", "fresh", "reopened"] as const;
   const complete = points.length === phases.length && points.every((point, index) => point?.phase === phases[index]
-    && point.chat && [point.runs, point.comments, point.tasks, point.activity].every(rows => Array.isArray(rows)
+    && point.chat && [point.runs, point.comments, point.tasks, point.activity, point.resetReceipts].every(rows => Array.isArray(rows)
       && rows.every(row => row && typeof row === "object" && !Array.isArray(row))));
   if (!complete) return CHAT_CONTINUITY_CHECKS.map(id => ({ id, passed: false }));
   const [initial, returned, recalled, reset, fresh, reopened] = complete ? points : [];
   const chatId = initial?.chat?.id;
   const scoped = complete && [scope.companyId, scope.userId, scope.agentId, scope.agentName, scope.environmentId,
     scope.provider, scope.model, scope.campaignId].every(nonempty) && nonempty(chatId)
+    && scope.agentHistory?.source === "company-agent-runs" && scope.agentHistory.companyId === scope.companyId
+    && scope.agentHistory.agentId === scope.agentId && scope.agentHistory.limit === 1 && scope.agentHistory.observedBeforeSend === true
+    && Array.isArray(scope.agentHistory.runIds) && scope.agentHistory.runIds.length === 0
     && points.every(point => point.chat?.id === chatId && point.chat.companyId === scope.companyId
       && point.chat.assigneeAgentId === scope.agentId && point.chat.conversationAgentId === scope.agentId
       && point.chat.conversationUserId === scope.userId && point.chat.createdByUserId === scope.userId
@@ -72,13 +102,14 @@ export function gradeChatContinuity(scope: ChatContinuityScope, points: ChatCont
     const provider = run.runnerProfileJson?.nativeExecutionInput?.provider;
     return run.runtimeMode === "native" && provider?.kind === scope.provider && provider?.model === scope.model
       && run.contextSnapshot?.paperclipEnvironment?.id === scope.environmentId
-      && run.nativePhase === "committed" && run.resultJson?.finalizationPhase === "committed"
+      && run.nativePhase === "committed"
       && nonempty(run.nativeSessionId);
   });
   const expectedCounts = [1, 1, 2, 3, 4, 4];
   const exactTurns = runBinding && providerBinding && resetRuns.length === 1 && runs.length === 4 && new Set(runs.map(run => run.id)).size === 4
-    && resetRuns.every(run => run.contextSnapshot?.conversationReset === true && run.resultJson?.conversationReset === true
-      && !run.runnerProfileJson?.nativeExecutionInput && !run.nativeSessionId)
+    && points.every(point => point.resetReceipts.length === point.runs.filter(chatContinuityResetRun).length
+      && point.runs.filter(chatContinuityResetRun).every(run => point.resetReceipts
+        .filter(receipt => chatContinuityResetReceiptMatches(scope, chatId, run, receipt)).length === 1))
     && points.every((point, index) => point.runs.length === expectedCounts[index]
       && point.runs.every(run => runs.some(final => final.id === run.id && final.status === run.status)))
     && runs.every(run => {
@@ -118,9 +149,8 @@ export function gradeChatContinuity(scope: ChatContinuityScope, points: ChatCont
     && sameRows(initial!.comments, reopened!.comments) && sameRows(recalled!.comments, reopened!.comments)
     && sameRows(fresh!.comments, reopened!.comments));
   const noWork = scoped && points.every(point => Array.isArray(point.tasks) && point.tasks.length === 0
-    && Array.isArray(point.activity) && point.activity.length < 500
-    && !point.activity.some(row => row.companyId === scope.companyId
-      && runs.some(run => run.id === row.runId) && ["issue.created", "issue.child_created", "project.created", "agent.created", "agent.hire_created"].includes(row.action)));
+    && chatContinuityActivityComplete(scope, point.activity)
+    && !point.activity.some(row => ["issue.created", "issue.child_created", "project.created", "agent.created", "agent.hire_created"].includes(row.action)));
   const values = [scoped, userMessages, recall, boundary, freshAnswer, history, noWork, exactTurns, providerBinding];
   return CHAT_CONTINUITY_CHECKS.map((id, index) => ({ id, passed: Boolean(values[index]) }));
 }

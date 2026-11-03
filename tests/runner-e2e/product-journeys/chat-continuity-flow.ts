@@ -4,8 +4,9 @@ import { expect } from "@playwright/test";
 import { sendChatMessage } from "../chat-flow.js";
 import { readBoundTaskFinalReply } from "../native-task-reply.js";
 import { collectRunEvents } from "../run-observations.js";
-import { chatContinuityIssueId, chatContinuityResetRun, chatContinuityScenario, gradeChatContinuity,
-  type ChatContinuityPoint, type ChatContinuityScope } from "./chat-continuity-evidence.js";
+import { chatContinuityActivityComplete, chatContinuityIssueId, chatContinuityResetReceiptMatches,
+  chatContinuityResetRun, chatContinuityScenario, gradeChatContinuity,
+  type ChatContinuityPoint, type ChatContinuityScope, type ChatContinuityResetReceipt } from "./chat-continuity-evidence.js";
 import { createObservedReader } from "./observation-read.js";
 import { captureProductScreenshot } from "./product-screenshot.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
@@ -54,12 +55,13 @@ export async function runChatContinuity(context: JourneyContext, session: Target
       reader.get<Row[]>(`/api/companies/${scope.companyId}/issues?view=index&assigneeAgentId=${agent.id}&includeAgentCreatedTasks=true&limit=2`),
       reader.get<Row[]>(`/api/companies/${scope.companyId}/activity?agentId=${agent.id}&limit=500`),
     ]);
-    if (![summaries, comments, tasks, activity].every(Array.isArray) || summaries.length > 4 || activity.length >= 500
+    if (![summaries, comments, tasks, activity].every(Array.isArray) || summaries.length > 4 || !chatContinuityActivityComplete(scope, activity)
       || new Set(summaries.map(row => row.runId)).size !== summaries.length) {
       throw new JourneyError("failed", "chat_continuity_observation_incomplete");
     }
     const runs = await Promise.all(summaries.map(async row => {
       if (typeof row.runId !== "string" || !row.runId) throw new JourneyError("failed", "chat_continuity_run_mismatch");
+      if (row.agentId !== agent.id || row.contextIssueId !== chat.id) throw new JourneyError("failed", "chat_continuity_summary_scope_mismatch");
       const run = await reader.get<Row>(`/api/heartbeat-runs/${row.runId}`);
       if (run.id !== row.runId || run.companyId !== scope.companyId || run.agentId !== agent.id
         || chatContinuityIssueId(run) !== chat.id || !["queued", "running", "succeeded"].includes(run.status)) {
@@ -67,7 +69,12 @@ export async function runChatContinuity(context: JourneyContext, session: Target
       }
       return run;
     }));
-    return { chat, runs, comments, tasks, activity };
+    const resetReceipts: ChatContinuityResetReceipt[] = summaries.flatMap(summary => summary.resultJson?.conversationReset === true ? [{
+      source: "issue-runs" as const, companyId: scope.companyId, issueId: chat.id,
+      runId: summary.runId, agentId: summary.agentId, status: summary.status,
+      contextIssueId: summary.contextIssueId, wakeCommentId: summary.wakeCommentId, resultJson: { conversationReset: true as const },
+    }] : []);
+    return { chat, runs, comments, tasks, activity, resetReceipts };
   };
   const wait = async (providerCount: number, resetCount: number) => {
     let stable = "";
@@ -79,7 +86,8 @@ export async function runChatContinuity(context: JourneyContext, session: Target
         if (providerRuns.length > providerCount || resetRuns.length > resetCount) throw new JourneyError("failed", "chat_continuity_extra_run");
         const ready = providerRuns.length === providerCount && resetRuns.length === resetCount
           && state.runs.every(run => run.status === "succeeded")
-          && providerRuns.every(run => run.nativePhase === "committed" && run.resultJson?.finalizationPhase === "committed")
+          && providerRuns.every(run => run.nativePhase === "committed")
+          && resetRuns.every(run => state.resetReceipts.filter(receipt => chatContinuityResetReceiptMatches(scope, state.chat.id, run, receipt)).length === 1)
           && state.chat.status === "in_review" && state.chat.conversationState === "waiting"
           && !state.chat.executionRunId && !state.chat.scheduledRetry && !state.chat.activeRecoveryAction;
         const key = ready ? JSON.stringify([state.chat.id, state.chat.conversationSessionGeneration,
@@ -121,6 +129,12 @@ export async function runChatContinuity(context: JourneyContext, session: Target
   try {
     const settings = await reader.get<Row>("/api/instance/settings/experimental");
     if (settings.enableAgentChat !== true) throw new JourneyError("unsupported", "agent_chat_required");
+    const history = await reader.get<Row[]>(`/api/companies/${scope.companyId}/heartbeat-runs?agentId=${agent.id}&limit=1&summary=true`);
+    if (!Array.isArray(history) || history.some(run => !run || run.companyId !== scope.companyId || run.agentId !== agent.id)) {
+      throw new JourneyError("failed", "chat_continuity_agent_history_scope_mismatch");
+    }
+    if (history.length) throw new JourneyError("unsupported", "fresh_chat_agent_required");
+    scope.agentHistory = { source: "company-agent-runs", companyId: scope.companyId, agentId: agent.id, limit: 1, runIds: [], observedBeforeSend: true };
     if (await reader.get(chatPath) !== null) throw new JourneyError("unsupported", "fresh_agent_chat_required");
     await session.own({ kind: "issue", name: `Chat with ${agent.name}`, journeyId: "chat-continuity", freshChat });
     await context.page.goto(chatUrl, { waitUntil: "domcontentloaded", timeout: remaining() });

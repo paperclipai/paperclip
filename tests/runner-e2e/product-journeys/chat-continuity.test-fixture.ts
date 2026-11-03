@@ -3,7 +3,8 @@ import { chatContinuityScenario, type ChatContinuityPoint, type ChatContinuitySc
 type Row = Record<string, any>;
 export function chatContinuityFixture() {
   const scope: ChatContinuityScope = { companyId: "company", userId: "board", agentId: "agent", agentName: "Owned agent",
-    environmentId: "environment", provider: "opencode", model: "configured-model", campaignId: "synthetic-continuity-123" };
+    environmentId: "environment", provider: "opencode", model: "configured-model", campaignId: "synthetic-continuity-123",
+    agentHistory: { source: "company-agent-runs", companyId: "company", agentId: "agent", limit: 1, runIds: [], observedBeforeSend: true } };
   const scenario = chatContinuityScenario(scope.campaignId);
   const user = (id: string, body: string, generation: number) => ({ id, body, authorUserId: scope.userId,
     authorAgentId: null, companyId: scope.companyId, issueId: "chat", conversationSessionGeneration: generation });
@@ -36,11 +37,30 @@ export function chatContinuityFixture() {
   const makePoint = (phase: ChatContinuityPoint["phase"], count: number, commentCount: number, generation: number, replyIndex?: number): ChatContinuityPoint => {
     const reply = replyIndex === undefined ? undefined : replies[replyIndex]!;
     return structuredClone({ phase, chat: { ...chat, conversationSessionGeneration: generation }, runs: runs.slice(0, count),
-      comments: comments.slice(0, commentCount), tasks: [], activity: [], events: [],
+      comments: comments.slice(0, commentCount), tasks: [], activity: [], events: [], resetReceipts: count < 3 ? [] : [{
+        source: "issue-runs", companyId: scope.companyId, issueId: "chat", runId: "run-2", agentId: scope.agentId,
+        status: "succeeded", contextIssueId: "chat", wakeCommentId: "user-2", resultJson: { conversationReset: true },
+      }],
       ...(reply ? { reply: { runId: reply.createdByRunId, agentId: scope.agentId, observedAfterReload: true,
         body: reply.body, anchor: reply.id, visible: true, settled: true, nativeFinal: false } } : {}) });
   };
   const points = [makePoint("initial", 1, 2, 0, 0), makePoint("returned", 1, 2, 0, 0), makePoint("recalled", 2, 4, 0, 1),
     makePoint("reset", 3, 5, 1), makePoint("fresh", 4, 7, 1, 2), makePoint("reopened", 4, 7, 1, 2)];
   return { scope, scenario, points };
+}
+
+export function compactChatContinuityFixture() {
+  const fixture = chatContinuityFixture();
+  for (const point of fixture.points) {
+    for (const run of point.runs) run.resultJson = null;
+    if (!point.reply) continue;
+    point.reply.anchor = `${point.reply.runId}:turn`;
+    point.reply.nativeFinal = true;
+    point.events = [{ seq: 1, runId: point.reply.runId, companyId: fixture.scope.companyId, agentId: fixture.scope.agentId,
+      eventType: "item.completed", protocolSchemaVersion: 1, sourceEventId: "event", sourceInstanceId: "instance", sourceSeq: 1,
+      payload: { prpEvent: { schema: "paperclip.prp.event.v1", schemaVersion: 1, runId: point.reply.runId, sourceKind: "runner",
+        eventType: "item.completed", sourceEventId: "event", sourceInstanceId: "instance", sourceSeq: 1,
+        payload: { kind: "agentMessage", channel: "final", text: point.reply.body } } } }];
+  }
+  return fixture;
 }
