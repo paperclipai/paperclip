@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { __liveUpdatesTestUtils, type CompanyLiveEventHandler } from "../context/LiveUpdatesProvider";
 import { LiveTranscriptInterests } from "../lib/live-transcript-interests";
 import { ApiError } from "../api/client";
+import { ConnectivityProvider, createConnectivityStore } from "../lib/connectivity";
 import { LogViewer } from "../components/run-log/LogViewer";
 
 const { log, events, empty } = vi.hoisted(() => ({ log: vi.fn(), events: vi.fn(async (_runId?: string, _cursor?: number, _limit?: number, _options?: { signal?: AbortSignal }): Promise<import("@paperclipai/shared").HeartbeatRunEvent[]> => []), empty: [] }));
@@ -530,4 +531,46 @@ it.each([429, 503])("keeps completed event-only history pending after an initial
     await act(async () => vi.advanceTimersByTimeAsync(90_000));
     expect(events).toHaveBeenCalledTimes(2);
   } finally { await act(async () => root.unmount()); }
+});
+
+
+it("retries an unfilled legacy log gap on a healthy stream and stops after it is persisted", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+  const row = (seq: number, chunk: string) => JSON.stringify({ seq, ts: "2025-01-01T00:00:00Z", stream: "stdout", chunk }) + "\n";
+  const store = createConnectivityStore({ browserOnline: true, probe: async () => ({ reachable: true, retryAfterMs: null }) });
+  const prefix = row(1, "Retained prefix");
+  let history = prefix;
+  log.mockImplementation(async () => ({ content: history }));
+  const run = { id: "run-gap", companyId: "company-1", agentId: "agent-1", status: "running", logRef: "log" } as HeartbeatRun;
+  const transcripts = new LiveTranscriptInterests();
+  const listeners = new Set<CompanyLiveEventHandler>();
+  const messages: Array<{ revision?: number }> = [];
+  const subscription = { companyId: run.companyId, transcripts,
+    subscribe(fn: CompanyLiveEventHandler) { listeners.add(fn); return () => { listeners.delete(fn); }; } };
+  const container = document.createElement("div"), root = createRoot(container);
+  const { LiveEventSubscriptionContext } = __liveUpdatesTestUtils;
+  try {
+    await act(async () => root.render(<ConnectivityProvider store={store}><LiveEventSubscriptionContext.Provider value={subscription}><LogViewer run={run} adapterType="paperclip_runner" /></LiveEventSubscriptionContext.Provider></ConnectivityProvider>));
+    await act(async () => {
+      transcripts.open({ send: text => messages.push(JSON.parse(text)) });
+      transcripts.receive({ type: "live.capabilities", version: 1, capabilities: ["run-interests"] });
+      transcripts.receive({ type: "live.subscribed", version: 1, revision: messages.at(-1)?.revision });
+    });
+    await act(async () => {
+      for (const listener of listeners) listener({ id: 2, companyId: run.companyId, type: "heartbeat.run.log", createdAt: new Date().toISOString(),
+        payload: { runId: run.id, agentId: run.agentId, logRef: "log", seq: 2, truncated: true } });
+    });
+    const staleReads = log.mock.calls.length;
+    expect(container.textContent).toContain("Retained prefix");
+    await act(async () => vi.advanceTimersByTimeAsync(1999));
+    expect(log).toHaveBeenCalledTimes(staleReads);
+    history = prefix + row(2, "Recovered missing chunk");
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(log).toHaveBeenCalledTimes(staleReads + 1);
+    expect(container.textContent).toContain("Recovered missing chunk");
+    expect(container.textContent?.match(/Retained prefix/g)).toHaveLength(1);
+    await act(async () => vi.advanceTimersByTimeAsync(60_000));
+    expect(log).toHaveBeenCalledTimes(staleReads + 1);
+  } finally { await act(async () => root.unmount()); store.dispose(); }
 });
