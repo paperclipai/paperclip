@@ -160,6 +160,21 @@ remaining operations before qualifying the whole capability.
 Gaps: Environment test path checks creation/configuration policy; missing provider auth
 must use its owner setup flow.
 
+Scoped experimental Cursor Cloud native support uses the existing configuration
+and environment-test APIs with an explicit `cursor_cloud` Runner provider. Legacy
+records retain their runtime. Native admission requires a local controller,
+per-turn lifecycle, exact model, selected `CURSOR_API_KEY`, and repository or named
+Cloud environment. Hosted semantic calls use
+`POST /mcp/native-runs/{runId}` with a separate expiring run capability. The relay
+checks the current source company/agent/task/run and authority epoch, then forwards
+to the provider bridge and normal PRP/Core tool policy. It grants no board or
+cross-company access. Source/control evidence:
+[runtime helper](../../server/src/services/native-runtime/cursor-cloud-runtime.ts),
+[relay regressions](../../server/src/services/native-runtime/remote-mcp-relay.test.ts)
+and [provider client](../../packages/paperclip-runner/src/drivers/cursor-cloud/cloud-client.test.ts).
+Live provider authorization and task qualification remain `not-run`; see the
+[acceptance ledger](../../doc/plans/2026-10-28-cursor-cloud-native-runner.md).
+
 Scoped source-only Claude CLI preparation: both the selected environment test
 and normal CLI execution use
 [versioned sandbox preparation](../../packages/adapters/claude-local/src/server/sandbox-cli-version.ts).
