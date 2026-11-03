@@ -19,6 +19,12 @@ async function fixture(request: APIRequestContext) {
 async function outage(page: Page) {
   const until = Date.now() + 20_000;
   let failures = 0;
+  // Reloads open a new realtime connection. A healthy socket is valid
+  // reachability evidence, so it must share the simulated HTTP outage.
+  await page.routeWebSocket("**/api/companies/*/events/ws", socket => {
+    if (Date.now() < until) socket.close({ code: 1013, reason: "Simulated outage" });
+    else socket.connectToServer();
+  });
   await page.route("**/api/**", async route => {
     if (Date.now() >= until) return route.fallback();
     failures += 1;
