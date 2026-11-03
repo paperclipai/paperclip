@@ -9,9 +9,9 @@ import { appReviewExternalCases } from "./external-app-review.js";
 afterEach(()=>vi.restoreAllMocks());
 function fixture(fault?:"wrong preview"|"missing takeover"|"wrong app"|"wrong action"){
  let opened=false,declined=false;const events:string[]=[];
- const action={connectionId:"connection",actionRequestId:"action",invocationId:"invocation",appDisplayName:"Synthetic Launch Notes",toolName:"launch_update",toolDisplayName:"Update launch page",risk:"write",rememberActionScope:"Same agent, action, connection and project",previewMarkdown:"The public launch is November 8, 2030."};
+ const action={connectionId:"connection",actionRequestId:"action",invocationId:"invocation",appDisplayName:"Synthetic Launch Notes",toolName:"launch_update",toolDisplayName:"Update launch page",risk:"write",rememberActionScope:"Same agent, action, connection and project",previewMarkdown:"The public launch is November 8, 2030.\n\nUpdate launch page"};
  const card={id:"selected",kind:"request_confirmation",status:"pending",sourceRunId:"source-native",payload:{toolAction:action}};
- const timeline={visible:()=>fault!=="wrong preview",text:"Update launch page",getByRole:(_role:string,opts:{name:string})=>({click:async()=>{
+ const timeline={visible:()=>fault!=="wrong preview",text:action.previewMarkdown.split(/\n\s*\n/)[0],getByRole:(_role:string,opts:{name:string})=>({click:async()=>{
   if(opts.name!=="Review request")throw Error("Timeline preview has no decision controls");events.push("open exact review");opened=true;
  }})};
  const review={visible:()=>opened&&fault!=="missing takeover",text:fault==="wrong action"?"Read launch page":"Update launch page",getByRole:(role:string,opts:{name:string})=>role==="img"?{visible:()=>opened&&fault!=="wrong app"&&opts.name===action.appDisplayName}:{click:async()=>{

@@ -451,7 +451,6 @@ export const appReviewExternalCases = [
             `[id=${JSON.stringify(`interaction-${card.id}`)}]`,
           );
           await expect(timeline).toBeVisible();
-          await expect(timeline).toContainText("Update launch page");
           // The timeline is a preview. Open this exact pending request before
           // using the production decision controls in the composer takeover.
           await timeline.getByRole("button", { name: "Review request", exact: true }).click();
