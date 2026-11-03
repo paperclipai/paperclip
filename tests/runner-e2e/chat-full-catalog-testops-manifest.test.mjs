@@ -22,9 +22,13 @@ test('the manifest joins all244 source YAML scenarios without importing a domain
   assert.deepEqual(fullCatalogCases.map(value => value.key).sort(), scenarios.map(value => value.id).sort());
   for (const scenario of scenarios) {
     const actual = row(scenario.id);
-    assert.equal(actual.originalQuery, scenario.query);
+    const override = field => manifest.source.repairMetadata.changedFields.find(change => change.key === scenario.id && change.field === field);
+    for (const [field, original] of [['originalQuery', scenario.query], ['expectedOutcome', scenario.expected_outcome]]) {
+      const change = override(field);
+      if (change) { assert.equal(change.previous, original); assert.equal(actual[field], change.current); }
+      else assert.equal(actual[field], original);
+    }
     assert.equal(actual.originalContext, scenario.context);
-    assert.equal(actual.expectedOutcome, scenario.expected_outcome);
     assert.ok(!Object.hasOwn(actual, 'status') && !Object.hasOwn(actual, 'passed'));
   }
 });
@@ -96,23 +100,46 @@ test('foreign identity, duplicated case and changed run-bound metadata are rejec
 });
 
 
-test('repair source metadata preserves original definitions and declares scoped observer and oracle changes', () => {
+test('repair source metadata binds the corrected candidate and explicit changed definitions', () => {
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
-  assert.equal(manifest.targetSha, '9ab0f951a5b5990c266ef4456610e0a0775aa334');
+  assert.equal(repair.previousTargetSha, '9ab0f951a5b5990c266ef4456610e0a0775aa334');
+  assert.equal(manifest.targetSha, '36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
+  assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
+  const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
+  assert.equal(createHash('sha256').update(descriptorBytes).digest('hex'), repair.candidateDescriptorSha256);
+  const declarations = JSON.parse(descriptorBytes);
+  assert.equal(declarations.length, 242);
+  assert.equal(new Set(declarations.map(value => value.scenarioId)).size, 242);
   assert.deepEqual(repair.changedFields.map(value => [value.key, value.field]), [
+    ['agents.choose-primary', 'sourceFiles'],
     ['companies.agent-observability', 'sourceFiles'], ['companies.configure-decision-model', 'sourceFiles'],
-    ['companies.fast-responses', 'sourceFiles'], ['companies.prompt-injection-guard', 'sourceFiles'],
+    ['companies.fast-responses', 'sourceFiles'], ['companies.fast-responses', 'originalQuery'],
+    ['companies.prompt-injection-guard', 'sourceFiles'],
+    ['goals.create-goal-tree', 'oracleVersion'], ['goals.create-goal-tree', 'expectedOutcome'],
+    ['questions-and-approvals.duplicate-answer', 'oracleVersion'], ['questions-and-approvals.multi-part-question', 'oracleVersion'],
     ['secrets.configure-company-secret', 'oracleVersion'],
+    ['skills.author-skill', 'sourceFiles'], ['skills.author-skill', 'oracleVersion'], ['skills.author-skill', 'expectedOutcome'],
+    ['skills.enable-for-agent', 'sourceFiles'], ['skills.explicit-restriction', 'sourceFiles'],
+    ['skills.find-and-install', 'sourceFiles'], ['skills.fork-read-only', 'sourceFiles'], ['skills.review-update', 'sourceFiles'],
   ]);
   for (const change of repair.changedFields) {
     assert.deepEqual(row(change.key)[change.field], change.current);
-    if (change.field === 'sourceFiles') {
-      assert.deepEqual(change.current.filter(value => value !== 'chat-catalog-domains/identity-company-observer.ts'), change.previous);
-    } else {
-      assert.equal(change.previous, 'paperclip.chat-catalog.external.v1');
-      assert.equal(change.current, 'paperclip.chat-catalog.company-secret-controller-baseline.v2');
-    }
+    assert.notDeepEqual(change.current, change.previous);
   }
+  assert.equal(repair.descriptorChanges.length, 19);
+  assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 18);
+  assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['oracleVersion', 'setupPolicy', 'sourceFiles']);
+  for (const change of repair.descriptorChanges) {
+    assert.notDeepEqual(change.current, change.previous);
+    const declaration = declarations.find(value => value.scenarioId === change.key);
+    assert.ok(declaration);
+    assert.deepEqual(change.current, declaration[change.field]);
+    if (Object.hasOwn(row(change.key), change.field)) assert.deepEqual(row(change.key)[change.field], change.current);
+  }
+  assert.deepEqual(repair.changedDefinitionFiles.map(value => value.path), [
+    'tests/runner-e2e/chat-scenarios/companies.yaml', 'tests/runner-e2e/chat-scenarios/goals.yaml', 'tests/runner-e2e/chat-scenarios/skills.yaml',
+  ]);
+  assert.ok(repair.changedDefinitionFiles.every(value => /^[a-f0-9]{64}$/.test(value.sha256)));
 });
