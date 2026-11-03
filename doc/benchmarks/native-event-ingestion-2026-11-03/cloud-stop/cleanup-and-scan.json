@@ -1,0 +1,59 @@
+{
+  "status": "passed",
+  "providerAndCredentialScan": {
+    "status": "passed",
+    "checkedAt": "2026-11-03T23:14:03.153Z",
+    "providerApiOperations": "get only; no resource mutations",
+    "providerStates": [
+      {
+        "id": "61ea5024-e513-4234-8925-22109c3e9649",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      },
+      {
+        "id": "3f713f74-c3d8-49e3-9e84-807192c6ea0e",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      },
+      {
+        "id": "d61aec89-e2c4-4cc7-aaf3-6b7d2bf04c5e",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      },
+      {
+        "id": "cbf9f558-49f2-4b84-bbe1-ea651502a6bb",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      },
+      {
+        "id": "19e2daa7-e0fa-4427-988b-de136dd1b2b0",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      }
+    ],
+    "exactCredentialKinds": [
+      "Daytona API key",
+      "1Password service-account token"
+    ],
+    "knownPreviewTokens": 0,
+    "scannedFilesAndDecompressedEntries": 3084,
+    "matches": []
+  },
+  "localCleanup": {
+    "status": "passed",
+    "checkedAt": "2026-11-03T23:10:48.163Z",
+    "ownedControllerProcessGone": true,
+    "ownedHttpPortClosed": true,
+    "ownedDatabasePortClosed": true,
+    "postmasterPidFileGone": true,
+    "credentialBearingDataRemoved": true,
+    "initialRemovalFailure": "EACCES unlink readonly skill bundle; retained as cleanup failure before bounded repair",
+    "ownedDirectoriesMadeWritable": 143,
+    "followedSymlinks": false
+  }
+}
