@@ -35,7 +35,7 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
     env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
   // A transport timeout does not establish whether the remote command stopped.
   // Keep its stage and deadline, without exposing command output or retrying it.
-  if (result.timedOut) throw new Error(`remote_workspace_operation_timed_out: ${operation} exceeded ${timeoutMs}ms`);
+  if (result.timedOut) throw new Error(`remote_workspace_operation_timed_out: ${operation} (configured timeout ${timeoutMs}ms)`);
   if (result.exitCode !== 0) {
     const gitOperation = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
     const reported = result.stderr.trim();

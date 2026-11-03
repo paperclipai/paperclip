@@ -308,7 +308,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       .rejects.toThrow(/^remote_workspace_operation_failed$/);
     execute.mockResolvedValueOnce({ ...failure, timedOut: true, stderr: gitOperation });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
-      .rejects.toThrow(/^remote_workspace_operation_timed_out: archive_helper exceeded 300000ms$/);
+      .rejects.toThrow(/^remote_workspace_operation_timed_out: archive_helper \(configured timeout 300000ms\)$/);
   });
 
   it.each([
@@ -358,7 +358,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     await expect(prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: path.join(workspace, "clone"),
       source: { kind: "git", repoUrl: "https://example.invalid/source.git", ref: null },
       preparationIdentity: "a".repeat(64), resolveGitAuth }))
-      .rejects.toThrow(/^remote_workspace_operation_timed_out: prepare exceeded 300000ms$/);
+      .rejects.toThrow(/^remote_workspace_operation_timed_out: prepare \(configured timeout 300000ms\)$/);
     expect(execute).toHaveBeenCalledTimes(2);
     expect(resolveGitAuth).toHaveBeenCalledTimes(1);
     expect(await fs.readdir(workspace)).toEqual([]);
@@ -371,7 +371,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       timedOut: true, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
 
     await expect(cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
-      .rejects.toThrow(/^remote_workspace_operation_timed_out: cleanup exceeded 10000ms$/);
+      .rejects.toThrow(/^remote_workspace_operation_timed_out: cleanup \(configured timeout 10000ms\)$/);
     expect(execute).toHaveBeenCalledTimes(1);
     expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("preserve the workspace\n");
   });
