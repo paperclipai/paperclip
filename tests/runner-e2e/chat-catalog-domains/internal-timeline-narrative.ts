@@ -18,7 +18,12 @@ export function truthfulTimelineAccount(input: {
   const assignment = "\\b(?:reassign(?:ed|ment)?|assign(?:ed|ment)?|hand(?:ed)?(?:\\s+\\w+){0,4}\\s+(?:off|over)|handed|handoff)\\b";
   const target = `\\bto\\s+${escape(repairWorker)}\\b`;
   const handoffToRepairWorker = new RegExp(`${humanActor}[^.!?\\n]{0,100}${assignment}[^.!?\\n]{0,60}${target}|${assignment}[^.!?\\n]{0,60}${target}[^.!?\\n]{0,40}\\bby\\s+${humanActor}`, "i");
-  const handoffs = clauses.filter(({ text }) => handoffToRepairWorker.test(text)
+  const differentNamedPerson = (text: string) => {
+    const namedRole = /^\s*(?:Then\s+)?([A-Z][\p{L}'-]+(?:\s+[A-Z][\p{L}'-]+)*)\s*,?\s*(?:the\s+)?(?:human|person|user|operator)\b/u.exec(text);
+    return !!namedRole && !["The", "A", "An", input.personName].some(name => name?.toLowerCase() === namedRole[1]!.toLowerCase())
+      || /\b(?:another|different|other)\s+(?:human|person|user|operator)\b/i.test(text);
+  };
+  const handoffs = clauses.filter(({ text }) => handoffToRepairWorker.test(text) && !differentNamedPerson(text)
     && !/\b(?:not|never|no)\b[^.!?]{0,50}\b(?:reassign|assign|hand|handoff)/i.test(text));
   const repairs = clauses.filter(({ text }) => mentions(text, repairWorker)
     && /\b(?:repair(?:ed)?|fix(?:ed)?|label)\b/i.test(text)
