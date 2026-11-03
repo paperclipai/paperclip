@@ -157,6 +157,13 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     vi.doUnmock("../routes/authz.js");
     vi.doUnmock("../middleware/index.js");
     registerRoutineServiceMock();
+    vi.doMock("../services/index.js", async () => {
+      const [{ accessService }, { documentAnnotationService }, { logActivity }, { routineService }] = await Promise.all([
+        import("../services/access.js"), import("../services/document-annotations.js"),
+        import("../services/activity-log.js"), import("../services/routines.js"),
+      ]);
+      return { accessService, documentAnnotationService, logActivity, routineService };
+    });
     vi.doMock("../routes/authz.js", async () => vi.importActual("../routes/authz.js"));
     vi.clearAllMocks();
   });
@@ -173,6 +180,19 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     app.use("/api", routineRoutes(db));
     app.use(errorHandler);
     return app;
+  }
+
+  async function createAuthenticatedApp() {
+    const { actorMiddleware } = await import("../middleware/auth.js");
+    const { routineRoutes } = await import("../routes/routines.js");
+    const { errorHandler } = await import("../middleware/index.js");
+    const resolveSession = vi.fn(async () => null);
+    const app = express();
+    app.use(express.json());
+    app.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession }));
+    app.use("/api", routineRoutes(db));
+    app.use(errorHandler);
+    return { app, resolveSession };
   }
 
   async function postRoutineRun(
@@ -457,15 +477,7 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     const [source] = await db.insert(issues).values({ companyId, title: "Caller source", createdByUserId: userId }).returning();
     const [caller] = await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: source!.id, status: "running" }).returning();
     const token = createLocalAgentJwt(agentId, companyId, "codex_local", caller!.id)!;
-    const { actorMiddleware } = await import("../middleware/auth.js");
-    const { routineRoutes } = await import("../routes/routines.js");
-    const { errorHandler } = await import("../middleware/index.js");
-    const resolveSession = vi.fn(async () => null);
-    const publicApp = express();
-    publicApp.use(express.json());
-    publicApp.use(actorMiddleware(db, { deploymentMode: "authenticated", resolveSession }));
-    publicApp.use("/api", routineRoutes(db));
-    publicApp.use(errorHandler);
+    const { app: publicApp, resolveSession } = await createAuthenticatedApp();
     const delivery = (config: typeof a.body, scope = "routine") => request(publicApp)
       .post(new URL(config.secretMaterial.webhookUrl).pathname)
       .set("Authorization", `Bearer ${config.secretMaterial.webhookSecret}`)
@@ -485,6 +497,32 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     expect(await db.select().from(routineRuns)).toHaveLength(1);
     const removedPath = new URL(a.body.secretMaterial.webhookUrl).pathname.replace(/\/fire$/, "/sentry-run-failures");
     expect((await request(publicApp).post(removedPath).send({})).status).toBe(404);
+  });
+
+  it("preserves the authenticated caller and upstream routine through the routine HTTP API", async () => {
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", randomUUID().repeat(2));
+    const { companyId, agentId, projectId, userId } = await seedFixture();
+    const board = await createApp({ type: "board", source: "local_implicit", userId, isInstanceAdmin: true });
+    const create = (title: string) => request(board).post(`/api/companies/${companyId}/routines`)
+      .send({ projectId, assigneeAgentId: agentId, title });
+    const upstream = await create("Upstream routine"), downstream = await create("API consumer");
+    expect(upstream.status).toBe(201); expect(downstream.status).toBe(201);
+    const source = await request(board).post(`/api/routines/${upstream.body.id}/run`).send({});
+    expect(source.status, JSON.stringify(source.body)).toBe(202);
+    const [task] = await db.select().from(issues).where(eq(issues.id, source.body.linkedIssueId));
+    const [caller] = await db.update(heartbeatRuns).set({ status: "running" })
+      .where(eq(heartbeatRuns.id, task!.executionRunId!)).returning();
+    const { app } = await createAuthenticatedApp();
+    const token = createLocalAgentJwt(agentId, companyId, "codex_local", caller!.id)!;
+    const response = await request(app).post(`/api/routines/${downstream.body.id}/run`)
+      .set("Authorization", `Bearer ${token}`).send({ source: "api" });
+    expect(response.status, JSON.stringify(response.body)).toBe(202);
+    expect(response.body.createdByRunId).toBe(caller!.id);
+    const [receipt] = await db.select().from(routineRuns).where(eq(routineRuns.id, response.body.id));
+    expect(receipt?.createdByRunId).toBe(caller!.id);
+    const { readTaskCreationProvenance } = await import("../services/task-creation-provenance.js");
+    expect(await readTaskCreationProvenance(db, companyId, response.body.linkedIssueId))
+      .toEqual({ status: "complete", routineIds: [upstream.body.id, downstream.body.id].sort(), shareable: true });
   });
 
   it("keeps setup deliveries out of runs, persists test receipts, and restores removed triggers", async () => {
