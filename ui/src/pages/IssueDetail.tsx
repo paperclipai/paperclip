@@ -6758,6 +6758,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const loadOlderComments = useCallback(() => paginatedConversation
     ? earlierChatComments.load() : fetchOlderComments(), [paginatedConversation, earlierChatComments.load, fetchOlderComments]);
   const refetchLatestComments = useCallback(async () => {
+    // Submission reconciliation needs the current admission receipt as well as comments.
+    void refetchIssueDetail();
     if (paginatedConversation) {
       await recentComments.refetch();
       return;
@@ -6791,7 +6793,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }
       window.requestAnimationFrame(() => resolve());
     });
-  }, [issueId, queryClient, refetchComments, paginatedConversation, recentComments.refetch]);
+  }, [issueId, queryClient, refetchIssueDetail, refetchComments, paginatedConversation, recentComments.refetch]);
   useEffect(() => {
     if (
       !shouldPrefetchOlderComments &&

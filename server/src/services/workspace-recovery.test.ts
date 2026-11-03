@@ -27,7 +27,7 @@ import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { workspaceOperationService } from "./workspace-operations.js";
 import { instanceSettingsService } from "./instance-settings.js";
-import { projectTaskInterruption } from "./task-interruption-presentation.js";
+import { projectTaskInterruption, taskInterruptionPresentation } from "./task-interruption-presentation.js";
 import * as nativeWorkspaceSync from "./native-runtime/native-workspace-sync.js";
 import { GitShallowMetadataError } from "@paperclipai/adapter-utils/git-workspace-sync";
 import { readSystemRecovery } from "./system-recovery-state.js";
@@ -1672,6 +1672,66 @@ describe("automatic retained workspace recovery", () => {
       if (mode === "native_snapshot") expect((await run(f.runId)).runnerProfileJson?.nativeWorkspaceSync)
         .toMatchObject({ state: "prepared", finalHostSha256: null });
     }
+  }, 30_000);
+
+  it.each(["stopped", "unverified_stop"])("retries a recovered snapshot with sibling holds once: %s", async state => {
+    const f = await seed("native", false);
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { nativeWorkspaceSync: {
+      schema: "paperclip.native-workspace-sync/v3", state: "prepared", descriptorSha256: "a".repeat(64),
+      baselineSha256: "b".repeat(64), finalHostSha256: null, workspaceId: f.issueId,
+      leaseId: f.lease.id, providerLeaseId: f.providerLeaseId, remoteCwd: f.remote, resourceDisposition: "keep_running",
+    } } }).where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", status: "resolved", ownerType: "board", outcome: "blocked",
+      cause: "provider_failure_meaning_unverified", fingerprint: randomUUID(), nextAction: "Inspect original failure",
+      evidence: { runId: f.runId, automaticRecovery: { replay: "blocked" } } });
+    const source = await run(f.runId);
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: source.agentId, status: "running" });
+    await recoverRetainedWorkspace(f.input);
+    const recovered = readSystemRecovery((await action(f.actionId)).evidence)!;
+    expect(recovered.state).toBe("complete");
+    expect(recovered.intentId).toBeNull();
+    if (state === "unverified_stop") await db.update(environmentLeases).set({ metadata: f.lease.metadata })
+      .where(eq(environmentLeases.id, f.lease.id));
+    const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
+      actorId: "board", actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+    const service = heartbeatService(db);
+    await Promise.all([service.resumeTaskRetry(f.companyId, receipt.requestId!), service.resumeTaskRetry(f.companyId, receipt.requestId!)]);
+    const turns = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+    if (state === "unverified_stop") {
+      expect(turns).toHaveLength(0);
+      const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      expect(wake.payload?.executionWait).toMatchObject({ reason: "remote_cleanup" });
+      const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true,
+        retryWait: { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." } });
+      const commentId = randomUUID(), messageWakeId = randomUUID();
+      await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
+        authorType: "user", authorUserId: "board", body: "Keep my saved message while the previous environment stops." });
+      await db.insert(agentWakeupRequests).values({ id: messageWakeId, companyId: f.companyId, agentId: wake.agentId,
+        source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: "board", requestedAt: new Date(wake.requestedAt.getTime() + 1),
+        payload: { issueId: f.issueId, commentId } });
+      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ intentId: messageWakeId,
+        retryWait: { reason: "remote_cleanup" } });
+      await db.update(agentWakeupRequests).set({ status: "coalesced" }).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      const newInput = await taskInterruptionPresentation(db, task);
+      expect(newInput).toMatchObject({ state: "working", intentId: messageWakeId });
+      expect(newInput).not.toHaveProperty("retryWait");
+      return;
+    }
+    expect(turns).toHaveLength(1);
+    expect(turns[0].contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: f.runId, taskRetryRequestId: receipt.requestId });
+    expect(await readFreshWorkspaceReadiness(db, turns[0])).toMatchObject({ mode: "fresh_isolated_workspace", sourceRunId: f.runId });
+    const fresh = path.join(root, randomUUID()); await mkdir(fresh);
+    const attached = await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: f.issueId,
+      sourceRunIds: [turns[0].id], cwd: fresh });
+    expect(await readFile(path.join(attached[0].path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
+    const final = readSystemRecovery((await action(f.actionId)).evidence)!;
+    expect(final).toMatchObject({ generationId: recovered.generationId, attempts: recovered.attempts,
+      retriesUsed: recovered.retriesUsed, preservationOperationIds: recovered.preservationOperationIds, intentId: receipt.requestId });
+    expect((await run(f.runId)).status).toBe("failed");
   }, 30_000);
 
   it.each(["copyback_unknown", "source_unavailable", "executor_unknown"])("ordinary task Retry evaluates fresh isolation independently: %s", async failure => {

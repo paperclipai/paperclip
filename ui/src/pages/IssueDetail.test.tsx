@@ -2131,6 +2131,23 @@ describe("IssueDetail", () => {
     });
   });
 
+  it.each([false, true])("refreshes admission with latest comments (compact chat: %s)", async compact => {
+    const interruption: NonNullable<Issue["interruption"]> = { intentId: "retry", responsibility: "system", state: "failed",
+      nextRetryAt: null, canRetry: true, userAction: null, sourceRunIds: ["failed-run"], observedRunId: "failed-run",
+      retryWait: { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." } };
+    let saved = createIssue({ status: "blocked", assigneeAgentId: "agent-1", interruption,
+      ...(compact ? { conversationAgentId: "agent-1", conversationUserId: "user-1" } : {}) });
+    mockIssuesApi.get.mockImplementation(async () => saved);
+    await act(async () => renderIssueView());
+    const props = () => mockIssueChatThreadRender.mock.calls.at(-1)?.[0];
+    await waitForAssertion(() => expect(props()?.interruption).toMatchObject({ intentId: "retry" }));
+    saved = { ...saved, interruption: { ...interruption, intentId: "new-message-receipt" } };
+    await act(async () => { await props().onRefreshLatestComments(); });
+    await waitForAssertion(() => expect(props()?.interruption).toMatchObject({
+      intentId: "new-message-receipt", retryWait: interruption.retryWait,
+    }));
+  });
+
   it("opens chats compactly and pages backward without expanding all history", async () => {
     queryClient.setQueryData(["issues", "history-expanded", "PAP-1"], false);
     const chat = createIssue({ conversationAgentId: "agent-1", conversationUserId: "user-1" });
