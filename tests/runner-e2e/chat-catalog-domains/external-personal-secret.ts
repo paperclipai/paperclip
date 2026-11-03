@@ -1,6 +1,6 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { expect } from "@playwright/test";
-import type { ChatCatalogContext } from "../chat-catalog-contract.js";
+import { chatCatalogAgentIsReady, type ChatCatalogContext } from "../chat-catalog-contract.js";
 import type {
   CompanySecret,
   UserSecretDefinition,
@@ -13,6 +13,7 @@ import {
   openStandingChat,
   probeAgentPermission,
   waitForReply,
+  remainingIdentityObservationBudget,
 } from "./identity-support.js";
 import {
   createAuthenticatedPerson,
@@ -47,6 +48,43 @@ interface PrivateFixture {
   endpoint: Awaited<ReturnType<typeof secretTestEndpoint>>;
 }
 const fixtures = new WeakMap<ChatCatalogContext, PrivateFixture>();
+interface PersonalSetupAgent { id: string; companyId: string; lifecycleState: string; status: string; lifecycleError?: string | null; lifecycleHolds: string[]; adapterType: string; adapterConfig: Record<string, unknown> }
+const missingBindingLifecycleError = "Execution configuration check failed. Paperclip could not complete this step. It will retry automatically. If this continues, contact your instance administrator.";
+export function personalSecretUnboundConfigHash(config: Record<string, unknown>): string {
+  const env = { ...(config.env as Record<string, unknown> | undefined) }; delete env.PUBLISHING_API_KEY;
+  return createHash("sha256").update(JSON.stringify({ ...config, env })).digest("hex");
+}
+/** A configured worker must be healthy before introducing the intentional missing value. */
+export async function preparePersonalSecretWorker(ctx: ChatCatalogContext, id: string): Promise<PersonalSetupAgent> {
+  const deadlineAt = Date.now() + Math.min(45_000, remainingIdentityObservationBudget(ctx));
+  const agent = await pollUntil<PersonalSetupAgent>({ label: "personal-secret worker ready before required binding", deadlineAt, intervalMs: 500,
+    load: () => ctx.input.api.get(`/api/agents/${id}`),
+    accept: value => chatCatalogAgentIsReady(value), reject: value => value.lifecycleError ? "Personal-secret worker has an unrelated setup failure before its required binding" : undefined });
+  remainingIdentityObservationBudget(ctx);
+  if (agent.id !== id || agent.companyId !== ctx.input.fixtures.company.id || agent.adapterType !== "paperclip_runner" || Object.hasOwn(agent.adapterConfig.env ?? {}, "PUBLISHING_API_KEY")) throw new Error("Personal-secret prerequisite worker identity or initial binding differs");
+  return agent;
+}
+/** This is a prospective saved-config resolution check. The exact missing user
+ * secret response is raised before adapter execution or environment acquisition. */
+export async function provePersonalSecretMissingBoundary(ctx: ChatCatalogContext, state: Record<string, unknown>, agent: PersonalSetupAgent): Promise<void> {
+  remainingIdentityObservationBudget(ctx);
+  const lead = await ctx.input.api.get<PersonalSetupAgent>(`/api/agents/${ctx.input.fixtures.agent.id}`);
+  if (!chatCatalogAgentIsReady(lead) || lead.id !== ctx.input.fixtures.agent.id || lead.companyId !== ctx.input.fixtures.company.id || lead.lifecycleError) throw new Error("Personal-secret CEO must remain independently ready");
+  const ref = (agent.adapterConfig.env as Record<string, unknown> | undefined)?.PUBLISHING_API_KEY as { type?: string; key?: string; required?: boolean; allowMissingOverride?: boolean } | undefined;
+  if (!["ready", "preparing", "verifying", "pausing"].includes(agent.lifecycleState) || !Array.isArray(agent.lifecycleHolds) || agent.lifecycleHolds.some(hold => hold !== "setup") || state.morganReadyBeforeRequiredBinding !== true || agent.id !== state.morganId || agent.companyId !== ctx.input.fixtures.company.id || agent.adapterType !== "paperclip_runner" || personalSecretUnboundConfigHash(agent.adapterConfig) !== state.morganUnboundConfigHash || ref?.type !== "user_secret_ref" || ref.key !== "PERSONAL_PUBLISHING_KEY" || ref.required !== true || ref.allowMissingOverride !== false || (agent.lifecycleError && agent.lifecycleError !== missingBindingLifecycleError)) throw new Error("Personal-secret worker has an unrelated lifecycle or configuration failure");
+  const origin = ctx.input.api.baseURL, cookies = await ctx.input.page.context().cookies(origin);
+  if (!cookies.length) throw new Error("Personal-secret setup probe requires the real current-person session");
+  const response = await fetch(new URL(`/api/companies/${ctx.input.fixtures.company.id}/adapters/paperclip_runner/test-environment`, origin), { method: "POST", redirect: "error", signal: AbortSignal.timeout(Math.min(15_000, remainingIdentityObservationBudget(ctx))), headers: { "content-type": "application/json", Origin: origin, Cookie: cookies.map(cookie => `${cookie.name}=${cookie.value}`).join("; ") }, body: JSON.stringify({ agentId: agent.id, adapterConfig: agent.adapterConfig }) });
+  try {
+    let body: { code?: string; details?: { code?: string; definitionId?: string; responsibleUserId?: string } };
+    try { body = await response.json(); } catch { throw new Error("Personal-secret setup response could not be verified; contents withheld"); }
+    if (!body || typeof body !== "object" || response.status !== 422 || body.code !== "user_secret_missing" || body.details?.code !== "user_secret_missing" || body.details.definitionId !== state.definitionId || body.details.responsibleUserId !== state.currentPersonId) throw new Error("Personal-secret setup did not prove the exact current-person missing binding");
+  } finally { if (!response.bodyUsed) await response.body?.cancel(); }
+  remainingIdentityObservationBudget(ctx);
+  state.currentOwnerMissingBindingVerified = true;
+  await ctx.input.evidence("personal-secret-missing-binding-prerequisite.json", { agentId: agent.id, definitionId: state.definitionId, responsibleUserId: state.currentPersonId, status: 422, code: "user_secret_missing", unchangedWorkerConfiguration: true, controllerReady: true, prospectiveResolutionOnly: true });
+}
+
 export function personalSecretGuidance(reply: string) {
   return (
     /personal|your own|my secrets/i.test(reply) &&
@@ -235,9 +273,7 @@ export const personalSecretExternalCases = [
             "Personal publishing definition must initially lack the current person's value",
           );
         const morgan = await identityWorker(ctx),
-          agent = await ctx.input.api.get<{
-            adapterConfig: Record<string, unknown>;
-          }>(`/api/agents/${morgan.id}`);
+          agent = await preparePersonalSecretWorker(ctx, morgan.id);
         await ctx.input.api.patch(`/api/agents/${morgan.id}`, {
           adapterConfig: {
             ...agent.adapterConfig,
@@ -277,6 +313,8 @@ export const personalSecretExternalCases = [
           description: `This request concerns publishing task ${task.identifier ?? task.id}, assigned to Morgan. It is in backlog because the current responsible person has not set the required Personal publishing credential definition ${definition.id} (PERSONAL_PUBLISHING_KEY). Morgan's required PUBLISHING_API_KEY user-secret reference is already configured. Riley is another company member with their own separate personal value.`,
         });
         return {
+          morganReadyBeforeRequiredBinding: true,
+          morganUnboundConfigHash: personalSecretUnboundConfigHash(agent.adapterConfig),
           definitionId: definition.id,
           currentPersonId: session.user.id,
           otherPersonId: other.id,
@@ -307,6 +345,7 @@ export const personalSecretExternalCases = [
     gradePersonalSecret,
     {
       authentication: "human-session",
+      setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["current-owner-missing-required-personal-value"] },
       expectedRunCount: 3,
       minimumRunCount: 3,
       expectedHumanMessageCount: 2,
@@ -340,9 +379,7 @@ export const personalSecretExternalCases = [
           session = await ctx.input.api.get<{ user: { id: string } }>(
             "/api/auth/get-session",
           ),
-          agent = await ctx.input.api.get<{
-            adapterConfig: { env?: Record<string, unknown> };
-          }>(`/api/agents/${state.morganId}`),
+          agent = await ctx.input.api.get<PersonalSetupAgent>(`/api/agents/${state.morganId}`),
           ref = agent.adapterConfig.env?.PUBLISHING_API_KEY as
             | {
                 type?: string;
@@ -351,6 +388,7 @@ export const personalSecretExternalCases = [
                 allowMissingOverride?: boolean;
               }
             | undefined;
+        await provePersonalSecretMissingBoundary(ctx, state, agent);
         state.requiredReferenceBefore =
           ref?.type === "user_secret_ref" &&
           ref.key === "PERSONAL_PUBLISHING_KEY" &&
