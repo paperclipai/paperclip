@@ -414,6 +414,16 @@ describe("attentionDetailLine (§7)", () => {
     expect(line).toContain("exit code 1");
   });
 
+  it("shows budget amounts as dollars, not cents (PAP-767)", () => {
+    const line = attentionDetailLine(
+      buildItem({
+        sourceKind: "budget_alert",
+        detail: { kind: "budget", observedPercent: 100, amountObserved: 10000, amountLimit: 10000, images: [] },
+      }),
+    );
+    expect(line).toBe("100% of budget used ($100.00 / $100.00)");
+  });
+
   it("returns null when there is no detail block", () => {
     expect(attentionDetailLine(buildItem({ detail: null }))).toBeNull();
   });
