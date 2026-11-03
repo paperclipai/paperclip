@@ -36,7 +36,14 @@ export function truthfulTimelineAccount(input: {
       return !prefix || ["The", "A", "An", "Then", input.personName].some(name => name?.toLowerCase() === prefix[1]!.toLowerCase());
     }).map(match => ({ at: at + match.index }));
   });
-  const repairAction = new RegExp(`\\b${escape(repairWorker)}\\b(?:\\s+(?:then|later|now|personally|explicitly|actually|had|has|have|also|who)){0,3}\\s+\\b(?:repair(?:ed)?|fix(?:ed)?)\\b|\\b(?:was|got|had been|has been)\\s+(?:repaired|fixed)\\b[^.!?\\n]{0,40}\\bby\\s+${escape(repairWorker)}\\b`, "gi");
+  const repairGap = "(?:\\s+|\\s*[,:—–-]\\s*)";
+  const repairModifier = "(?:then|later|now|personally|explicitly|actually|had|has|have|also|who|successfully|finally|subsequently|after\\s+the\\s+handoff)";
+  const repairVerb = [
+    "repair(?:ed)?|fix(?:ed)?",
+    "(?:completed|finished|performed|applied|implemented)\\s+(?:(?:a|the|needed|required|label|accessibility)\\s+){0,4}(?:repairs?|fix(?:es)?)",
+    "(?:added|inserted|supplied|provided|restored)\\s+(?:(?:a|the|missing|real|email|input|proper|accessible)\\s+){0,5}label",
+  ].join("|");
+  const repairAction = new RegExp(`\\b${escape(repairWorker)}\\b(?:${repairGap}${repairModifier}){0,3}${repairGap}(?:${repairVerb})\\b|\\b(?:was|got|had been|has been)\\s+(?:repaired|fixed|completed|added|inserted|supplied|provided|restored)\\b[^.!?\\n]{0,40}\\bby\\s+${escape(repairWorker)}\\b`, "gi");
   const repairSuccess = /\b(?:pass(?:ed)?|succeed(?:ed)?|exit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*0)\b/i;
   const repairs = clauses.flatMap(({ text, at }) => [...text.matchAll(repairAction)]
     .filter(match => repairSuccess.test(text.slice(match.index + match[0].length)))

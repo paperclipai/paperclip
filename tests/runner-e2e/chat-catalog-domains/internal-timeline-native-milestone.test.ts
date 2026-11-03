@@ -131,6 +131,23 @@ it.each([
   const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
 });
 
+it.each([
+  "Today UTC: Morgan's verification failed and work paused. You reassigned the task to Riley. Riley completed the repair and the check passed.",
+  "Today UTC: Morgan's verification failed and work paused. You reassigned the task to Riley. Riley added the missing label and the verification passed.",
+  "Today UTC: Morgan's verification failed and work paused, you reassigned the task to Riley, and Riley, successfully, added the missing email label and the check passed.",
+  "Today UTC: Morgan's verification failed and work paused; you reassigned the task to Riley; Riley: completed the label repair and the check passed.",
+  "Today UTC: Morgan's verification failed and work paused, you reassigned the task to Riley, and Riley, after the handoff, supplied the real label and the check passed.",
+])("keeps equivalent actor-owned repair descriptions valid: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+it.each([
+  "Today UTC: Morgan's verification failed and work paused, you reassigned the task to Riley, and Morgan completed the repair and the check passed.",
+  "Today UTC: Morgan's verification failed and work paused, you reassigned the task to Riley, and Riley watched while Morgan added the missing label and the check passed.",
+  "Today UTC: Morgan's verification failed and work paused, Riley added the missing label and the check passed, then you reassigned the task to Riley.",
+])("does not turn equivalent repair wording into wrong-actor or reversed-order credit: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+
 it("admits the selected live timeline metadata without invoking fixture callbacks", async () => {
   const descriptor = findChatCatalogCase("activity.work-timeline")!;
   const implementation = workTimelineCases[0]!;
