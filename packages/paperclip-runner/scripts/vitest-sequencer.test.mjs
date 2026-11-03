@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { test } from "vitest";
 import { BaseSequencer } from "vitest/node";
-import { RunnerSequencer } from "../../../packages/paperclip-runner/scripts/vitest-sequencer.mjs";
+import { RunnerSequencer } from "./vitest-sequencer.mjs";
 
 const project = { name: "runner", config: { isolate: true, sequence: { groupOrder: 0 } } };
 const files = [

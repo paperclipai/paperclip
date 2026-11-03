@@ -29,6 +29,7 @@ export default defineConfig({
       "examples/scenario-explorer/src/**/*.test.tsx",
       "scripts/local-runner-browser-server.test.mjs",
       "scripts/live-console-browser-server.test.mjs",
+      "scripts/vitest-sequencer.test.mjs",
     ],
   },
 });
