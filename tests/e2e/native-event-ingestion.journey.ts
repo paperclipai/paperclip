@@ -85,6 +85,8 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
   const report: Record<string, unknown> = {
     dependency: "Deterministic Codex app-server fixture; real application/runtime/port/PostgreSQL/live WebSocket/shipped UI",
     variant: process.env.PAPERCLIP_INGESTION_VARIANT ?? "unlabelled", qualificationOnly: smoke,
+    diagnosticOnly: Boolean(process.env.PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_DIR),
+    performanceAcceptanceEligible: !process.env.PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_DIR,
     startedAtMs: Date.now(),
     emittedClock: "Provider process epoch; original schedule retained even if stdout backpressures",
     observedClock: "Browser epoch after a DOM update and one paint opportunity",

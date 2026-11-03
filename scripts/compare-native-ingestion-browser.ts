@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { noiseExceedingPairedWins } from "./native-ingestion-performance-gates.mjs";
 
 // Each manifest entry points at native-ingestion-evidence JSON attachments
 // from two isolated compiled-app runs. Run the variants in alternating order;
@@ -22,6 +23,8 @@ const first = pairs[0];
 for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) {
   const report = pair[arm];
   assert.equal(report.complete, true); assert.equal(report.qualificationOnly, false, "Smoke cannot qualify performance");
+  assert.notEqual(report.diagnosticOnly, true, "Diagnostic profiles cannot qualify unprofiled performance");
+  assert.notEqual(report.performanceAcceptanceEligible, false, "Profile-only evidence cannot qualify performance");
   assert.equal(report.serverArtifact, "compiled", "Performance acceptance requires the compiled server and shipped UI");
   assert.ok(report.serverEntrySha256 && report.measurementSha256);
   assert.equal(report.compiledBuildRevision, report.sourceRevision, "Compiled build stamp does not match the measured revision");
@@ -55,7 +58,7 @@ const measurements = names.flatMap(name => {
       const baseline = metric(pair.baseline.cases.find((item: any) => item.name === name), key);
       const candidate = metric(pair.candidate.cases.find((item: any) => item.name === name), key);
       assert.ok(Number.isFinite(baseline) && baseline > 0 && Number.isFinite(candidate) && candidate >= 0, `Invalid latency ${name}.${key}`);
-      return { baseline, candidate, improvementRelative: 1 - candidate / baseline };
+      return { baseline, candidate, improvementRelative: (baseline - candidate) / baseline };
     });
     return { name, metric: key, baselineMedianMs: median(samples.map(sample => sample.baseline)),
       candidateMedianMs: median(samples.map(sample => sample.candidate)),
@@ -69,6 +72,8 @@ const result: Record<string, any> = {
   scope: "Compiled-app deterministic-provider/browser acceptance; live-provider qualification remains separate",
   phase, expectation, pairCount: pairs.length, baselineRevision: first.baseline.sourceRevision,
   candidateRevision: first.candidate.sourceRevision, measurementSha256: first.baseline.measurementSha256,
+  gatesSha256: createHash("sha256").update(await readFile(new URL("./native-ingestion-performance-gates.mjs", import.meta.url))).digest("hex"),
+  comparatorSha256: createHash("sha256").update(await readFile(new URL(import.meta.url))).digest("hex"),
   manifestSha256: createHash("sha256").update(await readFile(manifestPath)).digest("hex"), measurements,
   primaryLoadedWorkload: "burst512", complete: true,
 };
@@ -77,6 +82,8 @@ if (phase === "compare") {
   const noise = JSON.parse(await readFile(arg("noise-report")!, "utf8"));
   assert.equal(noise.phase, "aa"); assert.equal(noise.complete, true);
   assert.equal(noise.baselineRevision, result.baselineRevision); assert.equal(noise.measurementSha256, result.measurementSha256);
+  assert.equal(noise.gatesSha256, result.gatesSha256, "Acceptance gates changed after A/A calibration");
+  assert.equal(noise.comparatorSha256, result.comparatorSha256, "Comparator changed after A/A calibration");
   assert.ok(noise.pairCount >= 5);
   result.gates = measurements.map(item => {
     const control = noise.measurements.find((entry: any) => entry.name === item.name && entry.metric === item.metric);
@@ -84,9 +91,11 @@ if (phase === "compare") {
     const improvementRequired = expectation === "improvement" && item.name === "burst512"
       && ["emissionToVisible.p95Ms", "intendedToVisible.p95Ms", "drainThroughTerminalMs"].includes(item.metric);
     const noRegression = -item.medianPairedImprovementRelative <= control.aaNoiseEnvelopeRelative;
-    const improvement = item.candidateWins >= Math.ceil(pairs.length * 0.8)
+    const paired = noiseExceedingPairedWins(item.samples.map(sample => sample.improvementRelative), control.aaNoiseEnvelopeRelative);
+    const improvement = paired.pairedWinRequirementPassed
       && item.medianPairedImprovementRelative > control.aaNoiseEnvelopeRelative;
     return { name: item.name, metric: item.metric, improvementRequired, noiseEnvelopeRelative: control.aaNoiseEnvelopeRelative,
+      noiseExceedingPairedWins: paired.noiseExceedingPairedWins, requiredPairedWins: paired.requiredPairedWins,
       passed: improvementRequired ? improvement : noRegression };
   });
   result.acceptancePassed = result.gates.every((entry: any) => entry.passed);
