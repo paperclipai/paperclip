@@ -2415,10 +2415,10 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     }
   });
 
-  async function sentryFailureFixture() {
+  async function sentryFailureFixture(setupPending = false) {
     const fixture = await seedFixture();
     await fixture.svc.update(fixture.routine.id, { concurrencyPolicy: "always_enqueue" }, {});
-    const created = await fixture.svc.createTrigger(fixture.routine.id, { kind: "webhook", signingMode: "bearer" }, {});
+    const created = await fixture.svc.createTrigger(fixture.routine.id, { kind: "webhook", signingMode: "bearer", setupPending }, {});
     const [sourceTask] = await db.insert(issues).values({
       companyId: fixture.companyId, projectId: fixture.projectId, title: "Failed source task", status: "blocked",
     }).returning();
@@ -2515,6 +2515,23 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await expect(f.svc.firePublicTrigger(trigger.trigger.publicId!, { ...f.delivery(repair!.id, failure!.id),
       authorizationHeader: `Bearer ${trigger.secretMaterial!.webhookSecret}` })).resolves.toMatchObject({ status: "ignored" });
     expect(await f.svc.listRuns(other.id)).toEqual([]);
+  });
+
+  it.each([false, true])("never promotes a Sentry setup receipt into work after activation (generic ingress: %s)", async (genericIngress) => {
+    const f = await sentryFailureFixture(true);
+    const delivery = { ...f.delivery(), idempotencyKey: "sentry-connection-test" };
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, { ...delivery, sentryRunFailure: !genericIngress }))
+      .resolves.toMatchObject({ status: "test_received" });
+    await f.svc.updateTrigger(f.trigger.id, { setupPending: false }, {});
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, delivery)).resolves.toMatchObject({ status: "test_received" });
+    if (!genericIngress) await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery()))
+      .resolves.toMatchObject({ status: "test_received" });
+    expect(await f.svc.listRuns(f.routine.id)).toEqual([]);
+    expect(f.wakeups).toEqual([]);
+    const [another] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.sourceTask.id, status: "failed" }).returning();
+    await expect(f.svc.firePublicTrigger(f.trigger.publicId!, f.delivery(f.sourceTask.id, another!.id)))
+      .resolves.toMatchObject({ status: "issue_created" });
   });
 
   it.each(["pairs", "objects", "dictionary"])("accepts Sentry %s tags and rejects a different company", async (format) => {

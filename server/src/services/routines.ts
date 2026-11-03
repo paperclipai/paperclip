@@ -2972,9 +2972,9 @@ export function routineService(
           await recordDelivery("rejected");
           return { routine, trigger, hmacReplayKey, testReceived: false, error };
         }
-        const sentryDelivery = input.sentryRunFailure && !trigger.setupPending
+        const sentryDelivery = input.sentryRunFailure
           ? await prepareSentryRunFailureWebhook(txDb, routine, input.payload) : null;
-        if (appDelivery?.ignored || sentryDelivery?.ignored) {
+        if (appDelivery?.ignored || (!trigger.setupPending && sentryDelivery?.ignored)) {
           await logActivity(txDb, {
             companyId: routine.companyId, actorType: "system", actorId: "routine-webhook",
             action: "routine.webhook_ignored", entityType: "routine", entityId: routine.id,
@@ -2986,15 +2986,21 @@ export function routineService(
           : hmacReplayKey ?? appDelivery?.idempotencyKey ?? input.idempotencyKey;
         const payload: Record<string, unknown> | null | undefined = sentryDelivery && !sentryDelivery.ignored
           ? sentryDelivery.payload : appDelivery?.payload ?? input.payload;
-        const deliveryKeyHash = deliveryKey ? crypto.createHash("sha256").update(deliveryKey).digest("hex") : null;
+        // Preserve both identities across setup completion. A test accepted by
+        // the generic ingress can later arrive at the Sentry-specific route.
+        const testReceiptKeys = [...new Set([deliveryKey, ...(input.sentryRunFailure ? [input.idempotencyKey] : [])]
+          .filter((key): key is string => typeof key === "string" && key.length > 0))];
+        const deliveryKeyHashes = testReceiptKeys.map(key => crypto.createHash("sha256").update(key).digest("hex"));
         if (trigger.setupPending) {
-          if (deliveryKeyHash) await txDb.insert(routineWebhookTestReceipts).values({ companyId: routine.companyId, triggerId: trigger.id, deliveryKeyHash }).onConflictDoNothing();
+          if (deliveryKeyHashes.length) await txDb.insert(routineWebhookTestReceipts).values(deliveryKeyHashes.map(deliveryKeyHash => ({
+            companyId: routine.companyId, triggerId: trigger.id, deliveryKeyHash,
+          }))).onConflictDoNothing();
           await recordDelivery("received");
           return { routine, trigger, hmacReplayKey, deliveryKey, payload, testReceived: true };
         }
-        if (deliveryKeyHash) {
+        if (deliveryKeyHashes.length) {
           const receipt = await txDb.select({ id: routineWebhookTestReceipts.id }).from(routineWebhookTestReceipts)
-            .where(and(eq(routineWebhookTestReceipts.triggerId, trigger.id), eq(routineWebhookTestReceipts.deliveryKeyHash, deliveryKeyHash))).limit(1);
+            .where(and(eq(routineWebhookTestReceipts.triggerId, trigger.id), inArray(routineWebhookTestReceipts.deliveryKeyHash, deliveryKeyHashes))).limit(1);
           if (receipt.length) return { routine, trigger, hmacReplayKey, deliveryKey, payload, testReceived: true };
         }
         await recordDelivery("received");
