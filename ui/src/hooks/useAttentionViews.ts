@@ -8,6 +8,7 @@ import { useOptionalToastActions } from "@/context/ToastContext";
 import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
 import { attentionAlreadyClosedText, attentionUserLabel, readAttentionAlreadyClosed } from "@/lib/attention-close";
 import { EMPTY_ATTENTION_VIEW_COUNTS, attentionEveryoneViewAllowed } from "@/lib/attention-views";
+import { invalidateAttentionRecordViews } from "@/lib/attention-record-views";
 import { coordinatorAttentionQueryKey } from "@/lib/coordinator-attention";
 import { queryKeys } from "@/lib/queryKeys";
 
@@ -65,7 +66,10 @@ export function useAttentionEveryoneView(companyId: string | null | undefined) {
   return boardAccess.data?.userId === userId && attentionEveryoneViewAllowed(companyId, boardAccess.data);
 }
 
-/** Claim an ownerless card; every attention list refetches afterwards. */
+/**
+ * Claim an ownerless card. Every attention list refetches afterwards, and so
+ * do task detail and chat, whose audience line names the new owner.
+ */
 export function useClaimAttentionItem(companyId: string | null | undefined) {
   const queryClient = useQueryClient();
   const toasts = useOptionalToastActions();
@@ -85,8 +89,8 @@ export function useClaimAttentionItem(companyId: string | null | undefined) {
         tone: "error",
       });
     },
-    onSettled: () => {
-      if (companyId) void queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+    onSettled: (_result, _error, item) => {
+      if (companyId) invalidateAttentionRecordViews(queryClient, companyId, item);
     },
   });
 }
@@ -244,7 +248,11 @@ export function useAttentionCloseActions(
     onError: (error) => {
       toasts?.pushToast({ title: "Could not transfer this card", body: errorBody(error), tone: "error" });
     },
-    onSettled: invalidate,
+    onSettled: (_result, _error, { item }) => {
+      invalidate();
+      // Task detail and chat name the new owner too.
+      if (companyId) invalidateAttentionRecordViews(queryClient, companyId, item);
+    },
   });
 
   /**

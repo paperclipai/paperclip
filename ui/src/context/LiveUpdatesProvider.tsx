@@ -1589,6 +1589,11 @@ function invalidateActivityQueries(
             ...invalidationOptions,
           });
         }
+        if (action === "attention.claimed" || action === "attention.transferred") {
+          // A claim or transfer stores a new addressee (PAP-749), so the
+          // audience line in task detail, chat and the card resolver changes.
+          queryClient.invalidateQueries({ queryKey: queryKeys.issues.interactions(ref) });
+        }
         if (
           action?.startsWith("issue.thread_interaction_") ||
           ((action === "issue.updated" ||

@@ -27,6 +27,32 @@ describe("LiveUpdatesProvider issue invalidation", () => {
     }
     client.clear();
   });
+  describe("one record, many views (PAP-771)", () => {
+    // Signed-in sessions get only action, entityType and entityId; the
+    // server strips `details` from activity events.
+    const seed = (client: QueryClient, keys: ReadonlyArray<readonly unknown[]>) => {
+      for (const key of keys) client.setQueryData(key, { cached: true });
+    };
+    const invalidated = (client: QueryClient, key: readonly unknown[]) => client.getQueryState(key)?.isInvalidated === true;
+
+    it.each(["attention.claimed", "attention.transferred"])("refreshes the task's interactions after %s", action => {
+      const client = new QueryClient();
+      client.setQueryData(queryKeys.issues.detail("issue-1"), { id: "issue-1", identifier: "NEE-39" });
+      const feed = [...queryKeys.attention("company-1"), "user-2", "mine", "coordinator", "pending"];
+      seed(client, [queryKeys.issues.interactions("issue-1"), queryKeys.issues.interactions("NEE-39"), queryKeys.issues.interactions("issue-2"), feed]);
+      __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+        entityType: "issue", entityId: "issue-1", action,
+      }, { userId: "user-2", agentId: null });
+      expect(invalidated(client, queryKeys.issues.interactions("issue-1"))).toBe(true);
+      expect(invalidated(client, queryKeys.issues.interactions("NEE-39"))).toBe(true);
+      expect(invalidated(client, feed)).toBe(true);
+      expect(invalidated(client, queryKeys.issues.interactions("issue-2"))).toBe(false);
+      client.clear();
+    });
+
+
+
+  });
   it("drops cached decision content when its access is revoked", () => {
     const client = new QueryClient();
     const receiptKey = ["issues", "decision-receipts", "chat-1", "user-1"];
