@@ -6,6 +6,7 @@ import type { SandboxManagedRuntimeAssetProvision } from "@paperclipai/adapter-u
 import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { buildCodexAuthInboundProvision, CODEX_AUTH_MERGE_EXTRACT_SCRIPT_NAME } from "./codex-auth-merge-scripts.js";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import { CODEX_MANAGED_MCP_STARTUP_TIMEOUT_SEC, withCodexMcpStartupWait } from "@paperclipai/adapter-utils/codex-mcp-startup";
 import { isCodexAuthCachePath, readSubscriptionAccountId } from "./codex-auth-cache.js";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
@@ -357,6 +358,7 @@ function buildManagedMcpBlock(input: {
       `[mcp_servers.${tomlString(managedName)}]`,
       `url = ${tomlString(url)}`,
       `http_headers = { Authorization = ${tomlString(`Bearer ${gateway.bearerToken}`)} }`,
+      `startup_timeout_sec = ${CODEX_MANAGED_MCP_STARTUP_TIMEOUT_SEC}`,
     );
   });
   lines.push(MANAGED_MCP_BLOCK_END);
@@ -374,7 +376,7 @@ export async function writeManagedCodexMcpConfig(input: {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "";
     throw error;
   });
-  const unmanagedConfig = stripManagedMcpBlock(existing);
+  const unmanagedConfig = withCodexMcpStartupWait(stripManagedMcpBlock(existing), input.gateways.length > 0).trimEnd();
   const { block, warnings } = buildManagedMcpBlock({
     gateways: input.gateways,
     apiBaseUrl: input.apiBaseUrl,
