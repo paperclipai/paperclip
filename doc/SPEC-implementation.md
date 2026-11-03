@@ -1374,6 +1374,13 @@ Invites tab does not hide this Cloud action.
 
 ## 10.3 Agents
 
+Saving an existing agent's configuration with a healthy saved AI account checks
+current account access, installation, provider/model compatibility, and environment
+selection without allocating a computer or running a provider hello test. Use
+**Test** to verify the runtime. Unverified legacy-account adoption, task connection
+adoption, and Copilot's account-specific model checks retain their live validation.
+A configuration save confirms persistence; it does not certify runtime readiness.
+
 The Harness / Runtime configuration page offers **Upgrade runner** for existing
 legacy Claude, Codex, and Grok Build agents when the target environment selects Paperclip
 Runner by default. The action uses the normal authorized agent PATCH with
