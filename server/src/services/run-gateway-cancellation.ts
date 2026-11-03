@@ -36,7 +36,7 @@ export async function cancelGatewayActionsForRun(tx: Db, companyId: string, runI
           resolvedAt: invocation.completedAt ?? new Date(), updatedAt: new Date() }).where(eq(toolActionRequests.id, request.id));
         continue;
       }
-      const uncertain = request.status === "executing" && invocation.startedAt !== null;
+      const uncertain = invocation.startedAt !== null;
       const now = new Date();
       await tx.update(toolInvocations).set({ status: uncertain ? "failed" : "cancelled",
         errorCode: uncertain ? "tool_execution_outcome_unknown" : "originating_run_cancelled",

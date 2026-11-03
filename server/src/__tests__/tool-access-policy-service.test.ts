@@ -1179,6 +1179,8 @@ describeEmbeddedPostgres("tool access policy service", () => {
     { requestStatus: "approved", started: false, expectedRequest: "cancelled", expectedInvocation: "cancelled", error: "originating_run_cancelled" },
     { requestStatus: "executing", started: false, expectedRequest: "cancelled", expectedInvocation: "cancelled", error: "originating_run_cancelled" },
     { requestStatus: "executing", started: true, expectedRequest: "failed", expectedInvocation: "failed", error: "tool_execution_outcome_unknown" },
+    { requestStatus: "approved", started: true, expectedRequest: "failed", expectedInvocation: "failed", error: "tool_execution_outcome_unknown" },
+    { requestStatus: "pending", started: true, expectedRequest: "failed", expectedInvocation: "failed", error: "tool_execution_outcome_unknown" },
   ] as const)("settles $requestStatus actions on cancellation, started=$started", async ({ requestStatus, started, expectedRequest, expectedInvocation, error }) => {
     const { company, invocation } = await admittedRateLimitedInvocation();
     await db.update(toolInvocations).set({ status: started ? "executing" : "awaiting_approval", startedAt: started ? new Date() : null }).where(eq(toolInvocations.id, invocation.id));
