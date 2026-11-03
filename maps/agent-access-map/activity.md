@@ -202,7 +202,7 @@ them.
 Evidence: `source-only` — [route](../../server/src/routes/companies.ts) and
 [assignment projection](../../server/src/services/work-timeline.ts).
 Ordinary `issue.updated` assignment fields preserve recorded human or agent
-attribution and time. Status-only, null and unchanged owners remain distinct.
+attribution and time. The saved PATCH change receipt excludes repeated owner fields. Status-only, null and unchanged owners remain distinct.
 [Local route tests](../../server/src/__tests__/work-timeline-service.test.ts)
 exercise these cases separately from live agent access.
 

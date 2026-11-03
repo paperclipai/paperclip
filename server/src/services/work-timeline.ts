@@ -735,11 +735,26 @@ export function workTimelineService(db: Db) {
         ? row.details as Record<string, unknown> : {};
       const previous = details._previous && typeof details._previous === "object" && !Array.isArray(details._previous)
         ? details._previous as Record<string, unknown> : {};
-      const changed = ["assigneeAgentId", "assigneeUserId"].some((key) =>
-        Object.hasOwn(details, key) && (!Object.hasOwn(previous, key) || details[key] !== previous[key]));
+      const changes = row.action === "issue.updated" && details.changes && typeof details.changes === "object" && !Array.isArray(details.changes)
+        ? details.changes as Record<string, unknown> : null;
+      const changeFor = (key: string) => {
+        const value = changes?.[key];
+        return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+      };
+      // PATCH payload fields include repeated values; its saved change receipt
+      // alone identifies actual changes. Older records retain their prior shape.
+      const changed = ["assigneeAgentId", "assigneeUserId"].some((key) => {
+        if (changes) {
+          const change = changeFor(key);
+          return Object.hasOwn(change, "from") && Object.hasOwn(change, "to") && change.from !== change.to;
+        }
+        return Object.hasOwn(details, key) && (!Object.hasOwn(previous, key) || details[key] !== previous[key]);
+      });
       if (!row.action.includes("assign") && !(row.action === "issue.updated" && changed)) return [];
-      const targetAgentId = readString(details.assigneeAgentId) ?? readString(details.toAgentId);
-      const targetUserId = readString(details.assigneeUserId) ?? readString(details.toUserId);
+      const targetAgentId = changes ? readString(changeFor("assigneeAgentId").to)
+        : readString(details.assigneeAgentId) ?? readString(details.toAgentId);
+      const targetUserId = changes ? readString(changeFor("assigneeUserId").to)
+        : readString(details.assigneeUserId) ?? readString(details.toUserId);
       return [{ row, toActorId: targetAgentId ? actorId("agent", targetAgentId)
         : targetUserId ? actorId("user", targetUserId) : null }];
     });
