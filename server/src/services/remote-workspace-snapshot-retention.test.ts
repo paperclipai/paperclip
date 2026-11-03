@@ -13,13 +13,15 @@ import { createStorageService } from "../storage/service.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageService } from "../storage/types.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "./task-admission.js";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { notifyRemoteWorkspaceSnapshots, registerRemoteWorkspaceSnapshotRetentionWork, remoteWorkspaceSnapshotRetentionService } from "./remote-workspace-snapshot-retention.js";
 
-const url = process.env.PAPERCLIP_TEST_DATABASE_URL;
-if (url && !/^remote_workspace_[a-z_]*test$/.test(new URL(url).pathname.slice(1))) throw new Error("Disposable remote_workspace_*test database required");
+const historyUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
+const url = historyUrl ?? process.env.PAPERCLIP_TEST_DATABASE_URL;
+if (!historyUrl && url && !/^remote_workspace_[a-z_]*test$/.test(new URL(url).pathname.slice(1))) throw new Error("Disposable remote_workspace_*test database required");
 const support = url ? { supported: true } : await getEmbeddedPostgresTestSupport();
 
 async function versionedS3Fixture() {
@@ -95,7 +97,8 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   const now = new Date("2026-10-30T12:00:00Z");
   beforeAll(async () => {
-    if (url) { await applyPendingMigrations(url); db = createDb(url); }
+    if (historyUrl) db = createDb(historyUrl, { maxConnections: 4 });
+    else if (url) { await applyPendingMigrations(url); db = createDb(url); }
     else { temporary = await startEmbeddedPostgresTestDatabase("workspace-snapshot-retention-"); db = createDb(temporary.connectionString); }
   }, 90_000);
   afterAll(async () => { if (url) await closeRegisteredClients(url, { scope: "database" }); else await temporary?.cleanup(); });
@@ -320,6 +323,13 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
     await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId, kind: "active_run_watchdog",
       ownerType: "board", cause: "workspace_recovery", fingerprint: randomUUID(), nextAction: "Recover saved files" });
     const owner = service(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+    const remove = storage.deleteObject.bind(storage);
+    let secondDeleteHeld = false, releaseSecondDelete!: () => void;
+    const secondDeleteReleased = new Promise<void>(resolve => { releaseSecondDelete = resolve; });
+    storage.deleteObject = async (...args) => {
+      if (args[1] === f.keys[1]) { secondDeleteHeld = true; await secondDeleteReleased; }
+      await remove(...args);
+    };
     const worker = registerRemoteWorkspaceSnapshotRetentionWork(coordinator, owner, () => {});
     try {
       await worker.ready;
@@ -328,8 +338,23 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
       const resolved = await issueRecoveryActionService(db).resolveActiveForIssue({ companyId: f.companyId, sourceIssueId: f.issueId,
         status: "resolved", outcome: "restored", resolutionNote: "Verified saved files" });
       expect(resolved?.status).toBe("resolved");
-      await vi.waitFor(async () => expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false));
-      expect(await owner.nextDeadlineAt()).toBeNull();
-    } finally { await worker.stop(); await coordinator.stop(); }
+      try {
+        await vi.waitFor(() => expect(secondDeleteHeld).toBe(true));
+        expect((await storage.headObject(f.companyId, f.keys[0]!)).exists).toBe(false);
+        expect((await storage.headObject(f.companyId, f.keys[1]!)).exists).toBe(true);
+        expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id)))[0])
+          .toMatchObject({ id: f.row.id, status: "delete_requested", deleteAfter: now });
+        expect(await owner.nextDeadlineAt()).toBe(now.getTime());
+        expect(idleWorkSnapshot().active).toBeGreaterThan(0);
+      } finally { releaseSecondDelete(); }
+      await vi.waitFor(async () => {
+        for (const key of f.keys) expect((await storage.headObject(f.companyId, key)).exists).toBe(false);
+        expect((await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, f.row.id)))[0])
+          .toMatchObject({ id: f.row.id, status: "deleted", deleteAfter: null });
+        expect(await owner.nextDeadlineAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      });
+    } finally { releaseSecondDelete(); await worker.stop(); await coordinator.stop(); }
   });
 });
