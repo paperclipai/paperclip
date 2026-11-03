@@ -21,8 +21,9 @@ import { runAgentSettings } from "./agent-settings-flow.js";
 const directories: string[] = [];
 afterEach(async () => { await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 
-async function fixture(nativeFailure = false, unscopedActivity = false) {
+async function fixture(nativeFailure = false, unscopedActivity = false, delayedRestore = false) {
   let f = settingsEvidenceFixture(), content = f.original, rendered = content, draft = content, dirty = false, dispatched = false;
+  let pendingContent: string | undefined;
   const saves: string[] = [], owns: any[] = [], apiWrites: string[] = [], activityReads: string[] = [];
   const unrelatedActivity = Array.from({ length: 600 }, (_, index) => ({ id: `unrelated-${index}`,
     companyId: f.scope.companyId, entityType: "agent", entityId: "another-agent", details: {} }));
@@ -33,12 +34,17 @@ async function fixture(nativeFailure = false, unscopedActivity = false) {
   const raw = { visible: true, async textContent() { return rendered; } };
   const edit = { visible: true, async click() { draft = content; } };
   const save = { enabled: () => dirty, async click() {
-    content = draft; saves.push(content); dirty = false;
-    const nonce = /reference equal to ([a-f0-9]+),/.exec(content)?.[1];
+    saves.push(draft); dirty = false;
+    if (delayedRestore && saves.length === 2) pendingContent = draft;
+    else content = draft;
+    const nonce = /reference equal to ([a-f0-9]+),/.exec(draft)?.[1];
     if (nonce) f = settingsEvidenceFixture(nonce);
   } };
   const document = { visible: true, async textContent() { return f.evidence.task!.document.body; } };
-  const page = { async goto() { rendered = content; }, async reload() { rendered = content; },
+  const page = { async goto() {
+    if (pendingContent !== undefined) throw new Error("navigation_before_save_committed");
+    rendered = content;
+  }, async reload() { rendered = content; },
     getByTestId(id: string) { expect(id).toBe("instructions-raw-source"); return raw; },
     getByRole(role: string, options: { name: string }) {
       if (role === "button" && options.name === "Edit AGENTS.md") return edit;
@@ -49,7 +55,10 @@ async function fixture(nativeFailure = false, unscopedActivity = false) {
   const api = { origin: "https://qa.example.test", async get(route: string) {
     if (route === "/api/agents/agent") return structuredClone(current().agent);
     if (route === "/api/agents/agent/instructions-bundle") return structuredClone(current().bundle);
-    if (route === "/api/agents/agent/instructions-bundle/file?path=AGENTS.md") return structuredClone(current().file);
+    if (route === "/api/agents/agent/instructions-bundle/file?path=AGENTS.md") {
+      if (pendingContent !== undefined) { content = pendingContent; pendingContent = undefined; }
+      return structuredClone(current().file);
+    }
     if (route.includes("/heartbeat-runs?agentId=agent")) return structuredClone(current().runs);
     if (route.startsWith("/api/companies/company/activity?")) {
       activityReads.push(route);
@@ -110,6 +119,12 @@ describe("agent settings production-surface orchestration", () => {
     const f = await fixture(false, true);
     await expect(runAgentSettings(f.context, f.session, "campaign-1", f.evidence, f.options)).rejects.toThrow("agent_settings_read_coverage_unavailable");
     expect(f.saves).toEqual([]); expect(f.owns).toEqual([]);
+  });
+  it("confirms a delayed restore audit and bytes before navigating away from the editor", async () => {
+    const f = await fixture(false, false, true);
+    await runAgentSettings(f.context, f.session, "campaign-1", f.evidence, f.options);
+    expect(f.saves).toHaveLength(2); expect(f.currentContent()).toBe(f.original);
+    expect(f.evidence.checks.every(row => row.passed)).toBe(true);
   });
   it("requires scoped settings-write capability before any configuration edit", async () => {
     const f = await fixture(); f.context.capabilities = ["company", "board-user", "task-write", "agent"];

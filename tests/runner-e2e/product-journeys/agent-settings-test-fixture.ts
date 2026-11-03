@@ -1,9 +1,8 @@
 import { instructionDigest, settingsInstructionContent, settingsDocumentKey, settingsTaskPrompt, type AgentSettingsEvidence, type AgentSettingsScope } from "./agent-settings-evidence.js";
 
-export function settingsEvidenceFixture(reference = "1a2b3c4d5e6f") {
+export function settingsEvidenceFixture(reference = "1a2b3c4d5e6f", original = "# Ordinary instructions\nFollow the assigned task.\n") {
   const scope: AgentSettingsScope = { campaignId: "campaign-1", companyId: "company", userId: "user", agentId: "agent",
     agentName: "Owned agent campaign-1", environmentId: "environment", provider: "opencode", model: "model", reference };
-  const original = "# Ordinary instructions\nFollow the assigned task.\n";
   const saved = settingsInstructionContent(original, scope.reference);
   const run = { id: "run", companyId: scope.companyId, agentId: scope.agentId, nativeIssueId: "task", status: "succeeded",
     runtimeMode: "native", nativePhase: "committed", resultJson: { finalizationPhase: "committed" },

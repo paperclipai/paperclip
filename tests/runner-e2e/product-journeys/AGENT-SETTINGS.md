@@ -3,7 +3,13 @@
 `agent-settings-persistence` verifies an ordinary instruction edit on an owned
 native agent and the result of its next task. It has one provider work run and
 requires the `agent-settings-write` target capability. The target provider grants
-that capability only for the current campaign's disposable agent. The journey
+that capability only for a fresh disposable agent dedicated to this case. Its
+exact name must match the prepared context and contain the current campaign ID.
+It must have no previous work runs or QA settings proof block. The name is an
+additional fixture binding; the target's capability grant establishes ownership.
+Target configuration rejects campaigns that combine this case with another paid
+journey before acquiring a target. Browser-only journeys may share the campaign.
+The journey
 does not edit the shared source agent, provider, model, accounts, or feature flags.
 
 1. Read the original managed instruction entry, exact bytes, content hash, and
@@ -11,6 +17,8 @@ does not edit the shared source agent, provider, model, accounts, or feature fla
 2. Open Instructions, select **Edit** for the entry, change the **Instruction
    file editor**, and use **Save changes**. The new procedure contains a fresh
    synthetic reference that does not occur in the task request.
+   Confirm persisted bytes and the new save audit before navigating away. The
+   same confirmation applies when restoring the original instructions.
 3. Reload Instructions. Require the exact saved bytes in both the browser and
    the normal read API. Verify a new `agent.files_updated` audit event with the
    signed-in user, exact owned agent, entry path, and content hash.

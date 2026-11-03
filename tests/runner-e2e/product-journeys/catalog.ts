@@ -2,7 +2,7 @@ import { agentJourneyRuns } from "./success-contract.js";
 export { agentJourneyRuns, agentJourneyRunCountValid } from "./success-contract.js";
 import type { JourneyId, TargetConfig } from "./types.js";
 export const productJourneys = [
-  { id: "agent-settings-persistence", label: "Save agent instructions and verify the next task uses them", requires: ["company", "board-user", "task-write", "agent", "agent-settings-write"], capabilities: ["agents/instructions", "tasks/completion"], paid: true },
+  { id: "agent-settings-persistence", label: "Save a fresh dedicated agent's instructions and verify its first task", requires: ["company", "board-user", "task-write", "agent", "agent-settings-write"], capabilities: ["agents/instructions", "tasks/completion"], paid: true },
   { id: "company-access-isolation", label: "Switch QA workspaces and verify restricted agent isolation", requires: ["company", "board-user", "task-write", "company-access"], capabilities: ["companies/selection", "access/resources"], paid: false },
   { id: "repository-continuation", label: "Continue repository work with the same saved workspace", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["projects/task-context", "documents-artifacts/attachments"], paid: true },
   { id: "routine-scheduled-run", label: "Run a scheduled routine once and verify pause and saved history", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["routines/definition", "routines/triggers", "routines/history", "routines/management"], paid: true },
@@ -57,6 +57,8 @@ export function parseTargetConfig(value: unknown): TargetConfig {
   if (c.adapterModule !== undefined && (typeof c.adapterModule !== "string" || !c.adapterModule)) throw new Error("invalid_adapter_module");
   if (c.adapterConfig !== undefined && !object(c.adapterConfig)) throw new Error("invalid_adapter_configuration");
   if (c.modelProfileId !== undefined && !["runner-codex", "runner-codex-mini"].includes(c.modelProfileId)) throw new Error("unsupported_model_profile");
+  if (c.journeys.includes("agent-settings-persistence") && c.journeys.some(id => id !== "agent-settings-persistence"
+    && productJourneys.find(journey => journey.id === id)!.paid)) throw new Error("agent_settings_requires_dedicated_campaign");
   if (c.mode === "new-cloud" && c.journeys[0] !== "cloud-onboarding") throw new Error("new_cloud_requires_onboarding_first");
   if (c.mode === "new-cloud" && c.baseline.connections.length) throw new Error("onboarding_requires_ui_connection_setup");
   if (c.mode !== "new-cloud" && c.journeys.includes("cloud-onboarding")) throw new Error("onboarding_requires_fresh_cloud_workspace");

@@ -7,7 +7,7 @@ import { waitFor } from "./agent-flows.js";
 import { createObservedReader } from "./observation-read.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
 import { AGENT_SETTINGS_CHECKS, gradeAgentSettings, instructionDigest, matchedBoardSaveAudit, settingsInstructionContent,
-  settingsDocumentKey, settingsTaskPrompt, type AgentSettingsEvidence, type AgentSettingsScope,
+  settingsDocumentKey, settingsProofHeading, settingsTaskPrompt, type AgentSettingsEvidence, type AgentSettingsScope,
   type SettingsSnapshot } from "./agent-settings-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
@@ -49,7 +49,8 @@ export async function runAgentSettings(context: JourneyContext, session: TargetS
     if (await raw.textContent() !== expectedContent) throw new JourneyError("failed", "agent_settings_rendered_source_mismatch");
     return { edit, raw };
   };
-  const saveThroughUi = async (entry: string, before: string, content: string) => {
+  const saveThroughUi = async (beforePoint: SettingsSnapshot, content: string) => {
+    const entry = beforePoint.bundle.entryFile, before = beforePoint.file.content;
     const { edit } = await openInstructions(entry, before);
     await edit.click();
     const editor = context.page.getByRole("textbox", { name: "Instruction file editor", exact: true });
@@ -59,6 +60,10 @@ export async function runAgentSettings(context: JourneyContext, session: TargetS
     await expect(save).toBeEnabled();
     await save.click();
     await expect(save).toBeDisabled({ timeout: 30_000 });
+    // Disabled can also mean saving. Confirm persisted bytes and the new audit
+    // before navigating, including during restoration.
+    return waitFor(options.deadlineAt, snapshot, point => point.file.content === content
+      && Boolean(matchedBoardSaveAudit(point, beforePoint, scope)), "agent_settings_save_not_persisted");
   };
   const check = (name: typeof AGENT_SETTINGS_CHECKS[number]) => {
     const result = gradeAgentSettings(scope, observations).find(row => row.id === name)!;
@@ -73,12 +78,12 @@ export async function runAgentSettings(context: JourneyContext, session: TargetS
       || !agent.name.includes(campaignId) || original.agent.adapterType !== "paperclip_runner"
       || original.agent.adapterConfig?.provider !== agent.provider || original.agent.adapterConfig?.model !== agent.model
       || original.bundle.mode !== "managed" || original.bundle.editable !== true || original.file.editable !== true
-      || typeof original.file.content !== "string" || original.file.content.includes("\r") || original.runs.length !== 0) {
+      || typeof original.file.content !== "string" || original.file.content.includes("\r")
+      || original.file.content.includes(settingsProofHeading) || original.runs.length !== 0) {
       throw new JourneyError("failed", "agent_settings_fixture_not_fresh_owned");
     }
     const edited = settingsInstructionContent(original.file.content, scope.reference);
-    await saveThroughUi(entry, original.file.content, edited);
-    observations.saved = await waitFor(options.deadlineAt, snapshot, point => point.file.content === edited, "agent_settings_save_not_persisted");
+    observations.saved = await saveThroughUi(original, edited);
     check("agent-settings-browser-save");
     const reopenedSource = await openInstructions(entry, edited);
     await context.page.reload();
@@ -119,7 +124,7 @@ export async function runAgentSettings(context: JourneyContext, session: TargetS
     observations.task.renderedReference = (await displayed.textContent())?.includes(scope.reference) ? scope.reference : undefined;
     check("agent-settings-result-reopened");
 
-    await saveThroughUi(entry, edited, original.file.content);
+    await saveThroughUi(observations.afterWork, original.file.content);
     await openInstructions(entry, original.file.content);
     observations.restored = { ...await snapshot(), renderedContent: await context.page.getByTestId("instructions-raw-source").textContent() ?? undefined };
     check("agent-settings-original-restored");

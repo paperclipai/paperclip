@@ -1,9 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_SETTINGS_CHECKS, gradeAgentSettings, settingsTaskPrompt, settingsResultMatches } from "./agent-settings-evidence.js";
+import { AGENT_SETTINGS_CHECKS, gradeAgentSettings, settingsProofHeading, settingsTaskPrompt, settingsResultMatches } from "./agent-settings-evidence.js";
 import { settingsEvidenceFixture } from "./agent-settings-test-fixture.js";
 import { agentJourneyRunCountValid, journeyRequiredChecks } from "./success-contract.js";
+import { parseTargetConfig } from "./catalog.js";
 
 describe("saved agent settings independent evidence", () => {
+  it.each([["ask-question", "agent-settings-persistence"], ["agent-settings-persistence", "ask-question"]])(
+    "rejects a shared paid campaign before target acquisition: %j", (...journeys) => {
+      expect(() => parseTargetConfig({ version: 1, id: "settings-target", mode: "managed-self-hosted", journeys,
+        executionEnvironment: "local", baseline: { features: {}, connections: [] },
+        limits: { durationMs: 30000, modelBudgetCents: 500, maxRuns: 2 } })).toThrow("agent_settings_requires_dedicated_campaign");
+    });
+  it("permits browser-only journeys with the dedicated settings campaign", () => {
+    expect(parseTargetConfig({ version: 1, id: "settings-target", mode: "managed-self-hosted",
+      journeys: ["task-create", "agent-settings-persistence"], executionEnvironment: "local",
+      baseline: { features: {}, connections: [] }, limits: { durationMs: 30000, modelBudgetCents: 500, maxRuns: 1 } }).journeys)
+      .toEqual(["task-create", "agent-settings-persistence"]);
+  });
   it("requires every independent check and exactly one work run in retained results", () => {
     expect(journeyRequiredChecks["agent-settings-persistence"]).toEqual(AGENT_SETTINGS_CHECKS);
     expect(agentJourneyRunCountValid("agent-settings-persistence", 1)).toBe(true);
@@ -27,9 +40,13 @@ describe("saved agent settings independent evidence", () => {
     delete (f.run as Record<string, unknown>).resultJson;
     expect(gradeAgentSettings(f.scope, f.evidence).every(row => row.passed)).toBe(true);
   });
+  it("rejects an internally consistent baseline containing a previous QA proof block", () => {
+    const f = settingsEvidenceFixture(undefined, `# Agent\n${settingsProofHeading}\nStale previous reference\n`);
+    expect(gradeAgentSettings(f.scope, f.evidence).every(row => row.passed)).toBe(false);
+  });
   const changes: Array<[string, (f: ReturnType<typeof settingsEvidenceFixture>) => void]> = [
     ["foreign company", f => { f.evidence.original!.agent.companyId = "foreign"; }],
-    ["unowned agent", f => { f.scope.agentName = "Shared source agent"; f.evidence.original!.agent.name = f.scope.agentName; }],
+    ["missing campaign-bearing target name", f => { f.scope.agentName = "Agent without campaign name"; f.evidence.original!.agent.name = f.scope.agentName; }],
     ["past work", f => { f.evidence.original!.runs.push(f.run); }],
     ["wrong instruction entry", f => { f.evidence.saved!.bundle.entryFile = "OTHER.md"; }],
     ["false content hash", f => { f.evidence.saved!.file.contentHash = "0".repeat(64); }],

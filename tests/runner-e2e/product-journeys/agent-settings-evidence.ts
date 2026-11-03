@@ -7,10 +7,11 @@ export const AGENT_SETTINGS_CHECKS = [
   "configured-model-and-environment",
 ] as const;
 export const settingsDocumentKey = "settings-proof";
+export const settingsProofHeading = "## QA settings persistence proof";
 export const settingsTaskPrompt = "Follow the QA settings proof procedure in your saved agent instructions. Save the requested task document, then finish the task. No other tasks or agents are needed. Do not change your instruction files.";
 export const instructionDigest = (content: string) => createHash("sha256").update(content).digest("hex");
 export function settingsInstructionContent(original: string, reference: string) {
-  return original + `\n\n## QA settings persistence proof\nWhen a task asks for the QA settings proof, save a task document with key ${settingsDocumentKey} and title Settings proof. Its body must be JSON with exactly two fields: reference equal to ${reference}, and settingsSaved equal to true. Keep these instructions unchanged.\n`;
+  return original + `\n\n${settingsProofHeading}\nWhen a task asks for the QA settings proof, save a task document with key ${settingsDocumentKey} and title Settings proof. Its body must be JSON with exactly two fields: reference equal to ${reference}, and settingsSaved equal to true. Keep these instructions unchanged.\n`;
 }
 export function settingsResultMatches(body: unknown, reference: string) {
   if (typeof body !== "string") return false;
@@ -77,7 +78,8 @@ export function gradeAgentSettings(scope: AgentSettingsScope, value: AgentSettin
   const scoped = [scope.campaignId, scope.companyId, scope.userId, scope.agentId, scope.agentName,
     scope.provider, scope.model, scope.environmentId, scope.reference].every(present)
     && scope.agentName.includes(scope.campaignId) && snapshotBound(original, scope)
-    && original!.runs.length === 0 && !original!.file.content.includes(scope.reference);
+    && original!.runs.length === 0 && !original!.file.content.includes(scope.reference)
+    && !original!.file.content.includes(settingsProofHeading);
   const expected = scoped ? settingsInstructionContent(original!.file.content, scope.reference) : undefined;
   const save = scoped && snapshotBound(saved, scope, entry) && saved!.file.content === expected
     && revisionId(saved) !== revisionId(original) && matchedBoardSaveAudit(saved, original, scope) && saved!.runs.length === 0;
