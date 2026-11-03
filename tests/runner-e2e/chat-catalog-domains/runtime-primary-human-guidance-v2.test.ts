@@ -11,7 +11,7 @@ function observed(reply: string) {
       beforeHumanPrimary: ceoId, replacementConfirmed: true, agentWriteStatus: 403, otherPersonBefore: other, otherPersonAfter: { ...other },
       otherCompanyBefore: { companyId: "other-company", primaryAgentId: null }, otherCompanyAfter: { companyId: "other-company", primaryAgentId: null },
       reopenedRecentAgent: ceoId, runsAfterNavigation: 1, chatCountBeforeNavigation: 1, chatCountAfterNavigation: 1 },
-    agents: [], tasks: [], links: [], activity: [], runs: [], humanQueries: [], reply };
+    agents: [{ id: ceoId, name: "CEO" }, { id: morganId, name: "Morgan" }], tasks: [], links: [], activity: [], runs: [], humanQueries: [], reply };
 }
 it("accepts supported human profile guidance with explicit unchanged language rather than a false completed claim", () => {
   expect(gradePrimary(observed(profile + " I changed nothing else: the current primary preference is untouched.")).passed).toBe(true);
@@ -45,4 +45,19 @@ it.each(["before-human-write", "no-confirmation", "foreign-owner", "extra-run"])
   else if (fault === "foreign-owner") o.state.primaryAfter.userId = "other-person";
   else o.state.runsAfterNavigation = 2;
   expect(gradePrimary(o).passed).toBe(false);
+});
+
+it.each([
+  "Open another agent's profile and confirm replacing your primary with that agent.",
+  "Open their profile, choose Set as my primary and confirm the replacement.",
+  "Keep CEO as the old preference until you confirm replacing it. " + profile,
+])("accepts generic profile procedure grounded by the requested target without requiring its literal name: %s", reply => {
+  expect(gradePrimary(observed(reply)).passed).toBe(true);
+});
+it.each([
+  "Open CEO's agent profile and confirm replacing your primary.",
+  "Open the current CEO profile instead of Morgan and confirm replacing your primary.",
+  `Open [CEO](/RUN/agents/${ceoId}) in the agent profile and confirm replacing your primary.`,
+])("rejects an explicitly different known profile target despite a hardcoded successful human act: %s", reply => {
+  expect(gradePrimary(observed(reply)).passed).toBe(false);
 });
