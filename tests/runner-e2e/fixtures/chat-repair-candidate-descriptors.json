@@ -249,14 +249,16 @@
       "chat-catalog-domains/internal-activity.ts",
       "chat-scenarios/activity.yaml",
       "chat-catalog-domains/internal-work-timeline.ts",
+      "chat-catalog-domains/internal-timeline-narrative.ts",
       "chat-catalog-domains/internal-timeline-verifier.ts",
       "chat-catalog-domains/internal-privacy.ts",
       "chat-catalog-domains/identity-auth.ts",
       "chat-catalog-domains/internal-routine-audit.ts",
       "../e2e/fetch-allowed-port.ts",
-      "../../server/src/services/native-runtime/status-decision-committer.ts"
+      "../../server/src/services/native-runtime/status-decision-committer.ts",
+      "../../server/src/services/work-timeline.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.internal.v1",
+    "oracleVersion": "paperclip.chat-catalog.work-timeline.v2",
     "coverageGaps": [],
     "expectedRunCount": 3,
     "minimumRunCount": 3,
@@ -804,6 +806,9 @@
     "scenarioId": "app-permissions.ask-before-action",
     "sourceFiles": [
       "chat-catalog-domains/external-app-review.ts",
+      "chat-catalog-domains/external-app-review-outcomes.ts",
+      "chat-catalog-domains/external-app-review-probe.ts",
+      "../../packages/shared/src/validators/issue.ts",
       "chat-catalog-domains/external-provider.ts",
       "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/external-secret-scan.ts",
@@ -824,7 +829,7 @@
       "../../ui/src/components/task-chat/TaskChatComposer.tsx",
       "chat-scenarios/app-permissions.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.app-review.v2",
+    "oracleVersion": "paperclip.chat-catalog.app-review.v3",
     "expectedRunCount": 6,
     "expectedHumanMessageCount": 3,
     "minimumRunCount": 6,

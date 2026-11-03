@@ -1010,10 +1010,15 @@ a new terminal run transition. The event keeps the actual observed run status,
 the adapter and the company, agent, task and run references. It uses fixed error
 text and includes no message bodies, prompts or raw run diagnostics. Working,
 scheduled-retry, resolved and user-action states do not produce this event.
-Repeated reads of the same company/task/run/intent are suppressed by a bounded
-process-local cache of the latest 1,000 reports. A server restart or cache eviction
-can report an old failure again. This task-state event can accompany a separate
-terminal run-failure report; the `failure_source` tag distinguishes them.
+Repeated reads of the same company/task/run/intent are suppressed after the SDK
+receives a successful HTTP delivery response. The process retains the latest
+1,000 confirmed reports. An SDK capture ID alone does not confirm delivery:
+processing backpressure, network errors and rate limits can discard the event.
+Unconfirmed captures wait 60 seconds before a later task read can try again;
+this pending cache also holds at most 1,000 entries and starts no background
+timer. A server restart or cache eviction can report an old failure again.
+This task-state event can accompany a separate terminal run-failure report;
+the `failure_source` tag distinguishes them.
 
 The versioned `paperclip` context supplies company and agent IDs and relative
 API paths for the saved run, events, log, and optional task. A valid HTTP(S)

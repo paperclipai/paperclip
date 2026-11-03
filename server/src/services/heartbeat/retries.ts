@@ -428,8 +428,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
     }
     const now = opts?.now ?? new Date();
-    const retryReason =
-      opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
+    const preparationRecovery = parseObject(run.resultJson?.executionRecovery);
+    const retryReason = opts?.retryReason ??
+      (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted" &&
+        preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false
+        ? "interrupted_preparation" : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const maxAttempts = Math.max(
@@ -567,6 +570,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         : baseSchedule;
 
     const requiresIssueGate =
+      (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") ||
       isTransientWorkspacePreparationCode(run.errorCode) ||
       hasConversationContinuationPolicy(run.resultJson) ||
       (retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) ||

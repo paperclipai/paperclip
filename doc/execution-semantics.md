@@ -966,6 +966,18 @@ A new user message can continue a terminal native run whose process fields were 
 
 The task thread exposes the guarded Retry action for failed or timed-out conversation runs and native preparation cancelled before provider startup when the never-started proof is verified. The server projects this eligibility on the recovery notice and rechecks it on Retry. Cleanup quarantine retains its inspection path, and non-conversation reconciliation gates remain enforced. Pending decisions, active execution, pause, budget, dependency, and ownership gates remain in force. A refused Retry reports its reason inline and remains available for another attempt. When a newer linked-human GitHub message was saved but its admission was skipped by a budget or agent-availability gate, ordinary task Retry selects that unstarted message before considering the older failed run. The existing chat task-Retry owner snapshots the complete pending batch, including eligible skipped input, into a new admission generation bound to the canonical processed deliveries, comments, principal, session generation, admitted instruction snapshots, and task Retry intent. It retains the original skipped receipt and failed result unchanged. A terminal failed publication of that old result also remains history for a distinct selected request; pending or uncertain publication still holds work, and the old output is never replayed. Board Retry refusals expose only stable allowlisted authority categories, never source payloads, identifiers, or credential fingerprints. Admission rechecks source integrity and current access, then uses the normal new-user-turn continuation proof: a committed failed result can remain history only after controller, successor, process, workspace, and exact remote-termination guards pass. Unknown ownership stays deferred; Retry cannot certify it. The existing chat retry queue owns delivery and bounded infrastructure retries; a committed receipt settles a lost acknowledgment without another execution. An accepted saved-input receipt discharges only its matching unadmitted-input gate, allowing later genuine conversation or tree-resume wakes without replaying the skipped request.
 
+A deliberate Retry also binds an already completed file-preservation record to
+that intent. Other recovery holds for the same source run can then use its saved
+snapshot when selecting a fresh workspace. This binding preserves the recovery
+generation, attempt budget, saved files, and stop checks; it does not repeat file
+recovery or replay the failed turn. An accepted Retry that remains deferred shows
+its persisted admission reason through a fixed public message. The task view
+performs bounded follow-up reads after the click so asynchronous admission can
+explain its wait without a page reload or idle polling.
+Newer saved input keeps its own receipt while the existing Retry explanation stays
+visible. Terminal waits direct the user to send new input and hide the Retry action
+that cannot continue that attempt.
+
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
 Other legacy queued-run gate cancellations also stay out of unknown-action reconciliation when the terminal run has no retained execution authority, session, workspace recovery, resources, or execution events. The same proof removes the effect of an old false recovery hold only for its exact company, task, and run; the audit row remains. Started or conflicting work retains its hold. Review waits retain their guarded Retry path. New work still passes the current approval, dependency, budget, pause, and ownership gates.
@@ -1666,6 +1678,23 @@ resumed sandbox, a warm session, a plugin task, a restart claim, or any
 missing proof keeps the existing `prior_owner_terminal_state_indeterminate`
 rejection.
 
+Resume source selection skips a failed follow-up that never started provider
+work. Such a run holds only the provider checkpoint that it inherited. Without
+the skip, a retry selects it, and controller recovery fails with
+`native_controller_recovery_unsupported:metadata_format` because the run has no
+controller checkpoint. The skip requires all of these:
+
+- The run failed with a bootstrap receipt that says provider work did not start.
+- Its coordinator is `terminal_failure`, with no result, lease owner, or
+  controller process.
+- It has no process identity, provider event, controller checkpoint, run
+  result, or controller recovery pointer.
+- Its checkpoint is bound to this run and session and has no cursor.
+- Its checkpoint names the same provider session as the next selected source.
+
+Otherwise, the run stays a progress barrier. Runtime selection and controller
+recovery use the same selector, so both then use the last committed owner.
+
 A repository-free fresh plugin task directory remains the task's directory on
 ordinary follow-ups. Reuse requires its exact company, task, workspace, provider
 owner, fresh-attempt identity and path. Mode-only isolation settings do not turn
@@ -1805,6 +1834,19 @@ An interrupted conversation does not permanently block its task. For local conve
 
 Shutdown, process loss, and provider failure use the existing durable failure retry counter and delay. Ordinary failure recovery permits at most two automatic retries in a failure chain. Accepted-interaction infrastructure recovery retains its existing bounded policy. Repeated scheduler visits reuse the same successor; restarting the server does not reset the counter. After exhaustion, automatic attempts stop. A new explicit user message can start a fresh run and failure budget. Productive max-turn continuation and confirmed workspace waits keep their separate existing semantics.
 
+If shutdown interrupts Paperclip Runner preparation before native execution was
+selected, recovery verifies that no provider, process launch, native result or
+coordinator exists. The previous controller must have settled or lost its lease.
+Required workspace recovery must have an exact saved-file receipt and stopped
+leases before the task can continue. Once these checks pass, the server retires
+its own unchanged bootstrap-failure block and schedules one bounded retry.
+Startup also discovers this obligation when file recovery completed before the
+restart. A pending Retry or saved message owns its continuation instead of
+starting a competing automatic attempt. Retry uses the same preparation proof
+and preserves the recovered workspace. Current task ownership, human blocks,
+pauses, approvals, budgets and the existing retry limit remain effective.
+Operator Stops retain their explicit continuation requirements.
+
 Graceful shutdown interrupts an owned legacy adapter through its cancellation
 control, then waits within one shared 30-second window for provider stop and
 adapter settlement across all affected runs. A run that exceeds that wait stays
@@ -1915,6 +1957,20 @@ Real gates still apply: company and task ownership, active provider ownership, b
 A source that already stopped and was released remains fenced until its export settles; restart reconciliation scans these released sources too. Both provider reuse and destruction check the physical allocation for a shutdown fence or file-repair pin, including historical lease rows.
 
 An operator Stop waits for provider termination. Remote sandbox providers may return a stopped/deleted receipt after their control-plane operation completes. Paperclip binds that receipt to the company, run, and exact lease; successful file cleanup, a terminal run row, or an in-sandbox shutdown event is not sufficient. Legacy conversational runs and native runs with an audited run-only Stop receive their shared cancellation acknowledgement after all remote leases have confirmed termination. A native interrupt acknowledgement alone does not establish containment. Workspace preservation remains a separate obligation and its recovery hold survives this acknowledgement. Stop alone never creates a continuation. A user message queued during remote cleanup is reconsidered when the provider confirms termination; it still passes normal admission and adopts pending comment IDs in order. Once stopped, the next explicit wake uses the same queue. A compatible saved ACP session can resume, and an unavailable or incompatible session can start fresh with the full task context. Run credentials and scratch paths remain scoped to the new run. A subtree pause requires Resume; a message does not bypass it.
+
+Native workspace finalization can complete after an operator Stop has cancelled
+its run. The accepted provider result and saved-file receipts remain available,
+but late finalization preserves the run's cancellation status, finish time and
+errors, together with its cancelled source wake. Retry exhaustion has the same
+rule: workspace or status-decision failures retain cancellation while recording
+their bounded finalization failure and existing file-recovery obligations.
+Failure metadata merges into the current run without replacing concurrent
+cancellation or accounting receipts. Task status remains a separate
+server-arbiter decision over the accepted result. A valid completed result can
+finish the task after run-only Stop; failed or incomplete work keeps its normal
+nonterminal disposition. Stop does not reopen an already committed task. This
+does not restore the cancelled run's API write authority. Finalization starts no
+second provider execution and does not replace termination or accounting receipts.
 
 Cancelled runs and runs with a recorded pending stop lose run-scoped API write authority, while reads remain available for diagnostics. This applies to ordinary tasks as well as conversations. Task and interaction mutations recheck that authority in the write transaction, so a cancelled run cannot overwrite a recovery disposition with a late Done or resolve an interaction after revocation. A task handoff that intentionally stops its own run can commit only with a server receipt tied to that exact request. Direct sandbox CLI adapters such as Grok register cancellation before preparation and keep ownership until host-owned termination is verified, including a sandbox acquired before adapter registration. A failed stop does not acknowledge cancellation or abandon an outstanding remote command. Interrupted workspace restore failures remain recorded for recovery; a stop receipt proves termination, not successful file restoration.
 
@@ -2402,6 +2458,15 @@ pending and continue to block a new run; a longer wait does not certify an outco
 The one-hour client deadline does not renew with the Runner lease. If the client
 deadline expires while Runner still owns a call, its effect remains unknown
 until authoritative reconciliation. Expiry permits neither replay nor attachment.
+The OpenCode bridge emits a closed finish-input diagnostic through its existing
+optional diagnostic sink. It records the effective offered schema's SHA-256 and,
+for at most eight rejected inputs per bridge, the argument root and continuation
+presence/type enums. A SHA-256 of the existing call identity permits correlation;
+a closed root/continuation/other category distinguishes the failing boundary.
+It records no raw call identity, argument values, field names, schema text or
+validator messages. A failed sink does not change admission or cancellation.
+These facts distinguish a schema/input-shape rejection from a pending MCP call;
+they do not identify the submitted value in older attempts without that evidence.
 An adopted transport can receive authenticated queued semantic calls before
 the driver publishes its recovered session and tool handler. It holds those
 calls until the handler is installed, then rechecks the original authority and

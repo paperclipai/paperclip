@@ -32,6 +32,9 @@ available tools and records before asking the user for missing information:
 - Which endpoint is authorized: verified fix and green PR, or also rollout and
   recovery. Preserve the requested work and success criteria throughout.
 
+Use the [bounded run diagnostics reference](../../../skills/paperclip/references/run-diagnostics.md)
+for the repository's existing run, event, log, and recovery reads.
+
 Use authorized diagnostic access. If company scoping blocks a read, use an
 already-authorized diagnostic path or label the missing evidence; do not bypass
 the boundary.
@@ -110,6 +113,10 @@ can be observed, report that gap and keep working on reproduction. Do not claim
 red-green proof from a test that was first run after the fix.
 
 ## 4. Repair the cause and prove the safety assumptions
+
+Before changing a failing guard, name the invariant it protects. If existing runtime
+checks already establish compatibility, remove redundant prerequisites instead of
+adding qualification machinery; retain authority and integrity checks.
 
 Fix the responsible producer or shared transition at the narrowest correct scope.
 Check sibling callers/adapters that share that contract; generalize only as far as

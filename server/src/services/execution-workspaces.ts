@@ -272,7 +272,7 @@ function preserveWorkspaceMetadataForPatch(
       if (patch[key] !== undefined && patch[key] !== current[key]) throw conflict("Remote workspace coordinates belong to its sandbox storage");
     }
   }
-  const remoteAuthorityKeys = ["remoteWorkspace", "remoteWorkspaceMigration", "remoteWorkspaceRecoverySourceRunIds", "remoteWorkspaceRecoveredFiles"] as const;
+  const remoteAuthorityKeys = ["remoteWorkspace", "remoteWorkspaceMigration", "remoteWorkspaceRecoverySourceRunIds", "remoteWorkspaceRecoveredFiles", "legacyWorkspaceRecoveryMigration"] as const;
   if (patch.metadata !== undefined && remoteAuthorityKeys.some(key => current.metadata?.[key] !== undefined || patch.metadata?.[key] !== undefined)) {
     nextPatch.metadata = { ...patch.metadata };
     for (const key of remoteAuthorityKeys) {

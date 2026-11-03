@@ -70,6 +70,17 @@ describe("ordinary task interruption", () => {
     await render({ ...failed, workspaceFailure, state: "working" });
     expect(container.textContent).toBe("");
   });
+  it("shows why an accepted Retry is waiting and keeps another attempt available", async () => {
+    const retryWait = { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." };
+    await render({ ...failed, retryWait });
+    expect(container.textContent).toContain(retryWait.message);
+    expect(container.textContent).not.toContain("Couldn’t finish this attempt.");
+    await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
+    expect(retry).toHaveBeenCalledOnce();
+    await render({ ...failed, retryWait }, { canRetry: false });
+    expect(container.textContent).toContain(retryWait.message);
+    expect(container.querySelector("button")).toBeNull();
+  });
   it("shows an unknown provider's original explanation as text and preserves read-only access", async () => {
     const providerFailure = { schema: "paperclip.provider-failure.v1" as const, provider: "new-provider", phase: "startup" as const,
       category: "unknown" as const, retryability: "unknown" as const, httpStatus: 429,
