@@ -1,5 +1,5 @@
 {
-  "id": "ecddf6e1-b7e6-4b93-aecf-5238948438ee",
+  "id": "a1fcb4c6-40e7-47a6-b3f2-c43cd9bf332b",
   "prevId": "8d9f4abf-57c7-443a-aa8b-3e3fd4f09dae",
   "version": "7",
   "dialect": "postgresql",
@@ -28825,6 +28825,327 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
+    "public.execution_admission_project_charges": {
+      "name": "execution_admission_project_charges",
+      "schema": "",
+      "columns": {
+        "admission_id": {
+          "name": "admission_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        }
+      },
+      "indexes": {
+        "execution_admission_project_charges_project_idx": {
+          "name": "execution_admission_project_charges_project_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "project_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "execution_admission_project_charges_company_admission_fk": {
+          "name": "execution_admission_project_charges_company_admission_fk",
+          "tableFrom": "execution_admission_project_charges",
+          "tableTo": "execution_admissions",
+          "columnsFrom": [
+            "company_id",
+            "admission_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        },
+        "execution_admission_project_charges_company_project_fk": {
+          "name": "execution_admission_project_charges_company_project_fk",
+          "tableFrom": "execution_admission_project_charges",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "company_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "execution_admission_project_charges_admission_id_project_id_pk": {
+          "name": "execution_admission_project_charges_admission_id_project_id_pk",
+          "columns": [
+            "admission_id",
+            "project_id"
+          ]
+        }
+      },
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
+      "isRLSEnabled": false
+    },
+    "public.execution_admissions": {
+      "name": "execution_admissions",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "attempt": {
+          "name": "attempt",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "primary_project_id": {
+          "name": "primary_project_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "context_revision": {
+          "name": "context_revision",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "settlement_id": {
+          "name": "settlement_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "settled_at": {
+          "name": "settled_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "execution_admissions_company_id_uq": {
+          "name": "execution_admissions_company_id_uq",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "execution_admissions_run_attempt_uq": {
+          "name": "execution_admissions_run_attempt_uq",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "attempt",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "execution_admissions_live_run_uq": {
+          "name": "execution_admissions_live_run_uq",
+          "columns": [
+            {
+              "expression": "run_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"execution_admissions\".\"settled_at\" is null",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "execution_admissions_company_id_companies_id_fk": {
+          "name": "execution_admissions_company_id_companies_id_fk",
+          "tableFrom": "execution_admissions",
+          "tableTo": "companies",
+          "columnsFrom": [
+            "company_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "execution_admissions_run_id_heartbeat_runs_id_fk": {
+          "name": "execution_admissions_run_id_heartbeat_runs_id_fk",
+          "tableFrom": "execution_admissions",
+          "tableTo": "heartbeat_runs",
+          "columnsFrom": [
+            "run_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "no action",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "execution_admissions_attempt_check": {
+          "name": "execution_admissions_attempt_check",
+          "value": "\"execution_admissions\".\"attempt\" > 0"
+        },
+        "execution_admissions_settlement_check": {
+          "name": "execution_admissions_settlement_check",
+          "value": "(\"execution_admissions\".\"settlement_id\" is null) = (\"execution_admissions\".\"settled_at\" is null)"
+        }
+      },
+      "isRLSEnabled": false
+    },
+    "public.project_task_execution_policies": {
+      "name": "project_task_execution_policies",
+      "schema": "",
+      "columns": {
+        "project_id": {
+          "name": "project_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "max_concurrent_tasks": {
+          "name": "max_concurrent_tasks",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "project_task_execution_policies_company_project_fk": {
+          "name": "project_task_execution_policies_company_project_fk",
+          "tableFrom": "project_task_execution_policies",
+          "tableTo": "projects",
+          "columnsFrom": [
+            "company_id",
+            "project_id"
+          ],
+          "columnsTo": [
+            "company_id",
+            "id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {
+        "project_task_execution_policies_maximum_check": {
+          "name": "project_task_execution_policies_maximum_check",
+          "value": "\"project_task_execution_policies\".\"max_concurrent_tasks\" is null or \"project_task_execution_policies\".\"max_concurrent_tasks\" > 0"
+        }
+      },
+      "isRLSEnabled": false
+    },
     "public.execution_workspace_repositories": {
       "name": "execution_workspace_repositories",
       "schema": "",
@@ -33458,168 +33779,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.heartbeat_run_event_cursors": {
-      "name": "heartbeat_run_event_cursors",
-      "schema": "",
-      "columns": {
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_instance_id": {
-          "name": "source_instance_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "contiguous_source_seq": {
-          "name": "contiguous_source_seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "pending_range_count": {
-          "name": "pending_range_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "heartbeat_run_event_cursors_company_id_companies_id_fk": {
-          "name": "heartbeat_run_event_cursors_company_id_companies_id_fk",
-          "tableFrom": "heartbeat_run_event_cursors",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "heartbeat_run_event_cursors_run_id_heartbeat_runs_id_fk": {
-          "name": "heartbeat_run_event_cursors_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "heartbeat_run_event_cursors",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "heartbeat_run_event_cursors_company_id_run_id_source_instance_id_pk": {
-          "name": "heartbeat_run_event_cursors_company_id_run_id_source_instance_id_pk",
-          "columns": [
-            "company_id",
-            "run_id",
-            "source_instance_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "heartbeat_run_event_cursors_nonnegative": {
-          "name": "heartbeat_run_event_cursors_nonnegative",
-          "value": "\"heartbeat_run_event_cursors\".\"contiguous_source_seq\" >= 0 and \"heartbeat_run_event_cursors\".\"pending_range_count\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.heartbeat_run_event_source_ranges": {
-      "name": "heartbeat_run_event_source_ranges",
-      "schema": "",
-      "columns": {
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_instance_id": {
-          "name": "source_instance_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "start_seq": {
-          "name": "start_seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "end_seq": {
-          "name": "end_seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "heartbeat_run_event_source_ranges_cursor_fk": {
-          "name": "heartbeat_run_event_source_ranges_cursor_fk",
-          "tableFrom": "heartbeat_run_event_source_ranges",
-          "tableTo": "heartbeat_run_event_cursors",
-          "columnsFrom": [
-            "company_id",
-            "run_id",
-            "source_instance_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "run_id",
-            "source_instance_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "heartbeat_run_event_source_ranges_company_id_run_id_source_instance_id_start_seq_pk": {
-          "name": "heartbeat_run_event_source_ranges_company_id_run_id_source_instance_id_start_seq_pk",
-          "columns": [
-            "company_id",
-            "run_id",
-            "source_instance_id",
-            "start_seq"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "heartbeat_run_event_source_ranges_positive": {
-          "name": "heartbeat_run_event_source_ranges_positive",
-          "value": "\"heartbeat_run_event_source_ranges\".\"start_seq\" >= 1 and \"heartbeat_run_event_source_ranges\".\"end_seq\" >= \"heartbeat_run_event_source_ranges\".\"start_seq\""
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.heartbeat_run_events": {
       "name": "heartbeat_run_events",
       "schema": "",
@@ -34338,20 +34497,6 @@
           "notNull": true,
           "default": 1
         },
-        "event_cursor_projection_seq": {
-          "name": "event_cursor_projection_seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "event_cursor_rebuild_pending": {
-          "name": "event_cursor_rebuild_pending",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "native_phase": {
           "name": "native_phase",
           "type": "text",
@@ -34778,28 +34923,6 @@
           ],
           "isUnique": true,
           "where": "\"heartbeat_runs\".\"scheduled_retry_reason\" = 'native_safe_replacement'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_event_cursor_rebuild_idx": {
-          "name": "heartbeat_runs_event_cursor_rebuild_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"heartbeat_runs\".\"event_cursor_rebuild_pending\" = true",
           "concurrently": false,
           "method": "btree",
           "with": {}
