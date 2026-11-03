@@ -1,0 +1,37 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { defineConfig, type ReporterDescription } from "@playwright/test";
+import base from "./playwright.config";
+
+const server = base.webServer as Exclude<typeof base.webServer, unknown[]>;
+const evidence = process.env.PAPERCLIP_INGESTION_EVIDENCE_DIR;
+const appRoot = path.resolve(process.env.PAPERCLIP_INGESTION_APP_ROOT ?? path.resolve(import.meta.dirname, "../.."));
+const command = process.env.PAPERCLIP_INGESTION_SERVER_COMMAND ?? server?.command;
+const compiled = Boolean(command?.includes("server/dist/index.js") && !command.includes("server/src/index") && !/onboard[^;&]*--run/.test(command));
+if (process.env.PAPERCLIP_INGESTION_SMOKE !== "1" && !compiled) {
+  throw new Error("Full ingestion measurements require a compiled server/dist/index.js command; source CLI is qualification smoke only");
+}
+process.env.PAPERCLIP_INGESTION_SERVER_ARTIFACT = compiled ? "compiled" : "source-qualification";
+const providerHome = fs.mkdtempSync(path.join(os.tmpdir(), "ingestion-provider-"));
+export default defineConfig({
+  ...base,
+  testMatch: "native-event-ingestion.journey.ts",
+  timeout: 600_000,
+  ...(evidence ? { outputDir: path.join(evidence, "test-results"),
+    reporter: [["list"], ["json", { outputFile: path.join(evidence, "playwright.json") }]] as ReporterDescription[] } : {}),
+  use: { ...base.use, trace: "retain-on-failure", actionTimeout: 20_000 },
+  webServer: {
+    ...server,
+    cwd: appRoot,
+    command,
+    timeout: 240_000,
+    env: {
+      ...server?.env,
+      PAPERCLIP_STOP_CODEX_COMMAND: path.resolve(import.meta.dirname, "fixtures/native-ingestion-bin/codex"),
+      CODEX_HOME: providerHome,
+      OPENAI_API_KEY: "ingestion-fixture-key",
+      NODE_OPTIONS: `${server?.env?.NODE_OPTIONS ?? ""} --import=${path.resolve(import.meta.dirname, "fixtures/composer-stop-codex-loader.mjs")}`,
+    },
+  },
+});
