@@ -822,7 +822,7 @@
       "../../ui/src/components/task-chat/TaskChatComposer.tsx",
       "chat-scenarios/app-permissions.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.external.v1",
+    "oracleVersion": "paperclip.chat-catalog.app-review.v2",
     "expectedRunCount": 6,
     "expectedHumanMessageCount": 3,
     "minimumRunCount": 6,
@@ -956,7 +956,7 @@
       "../../server/src/services/tool-approval-execution.ts",
       "chat-scenarios/app-permissions.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.app-test.v2",
+    "oracleVersion": "paperclip.chat-catalog.app-test.v3",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
@@ -1823,9 +1823,13 @@
       "chat-catalog-domains/privileged-cli.ts",
       "chat-scenarios/cli-operations.yaml",
       "chat-catalog-domains/privileged-cli-support.ts",
-      "../../cli/src/index.ts"
+      "../../cli/src/index.ts",
+      "../../cli/src/commands/client/context.ts",
+      "../../cli/src/commands/client/company.ts",
+      "../../cli/src/commands/client/auth.ts",
+      "../../cli/src/client/context.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.privileged.v1",
+    "oracleVersion": "paperclip.chat-catalog.cli-context.v2",
     "coverageGaps": [],
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
