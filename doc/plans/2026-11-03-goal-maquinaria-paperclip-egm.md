@@ -256,31 +256,93 @@ se puede verificar, no está hecho.
 ### Verificacion de aceptacion (un solo comando)
 
 `scripts/egm-acceptance.sh` (instalado en `/home/paperclip/egm-acceptance.sh`) prueba
-las seis condiciones de hecho y sale con codigo != 0 si algo falla:
+las seis condiciones de hecho **y los tres criterios que quedaban abiertos** (PR del
+fix del 403, clean-room del runbook, handoff de hoke). Sale con codigo != 0 si algo
+falla. Salida literal de la ultima corrida:
 
 ```
-=== Aceptacion Paperclip + EGM — 2026-11-03T06:41Z ===
+=== Aceptación Paperclip + EGM — 2026-11-03T07:22:21+00:00 ===
   PASS  health de la instancia y de cada proyecto
   PASS  9 proyectos con perilla EGM (full|gate|off) verificada
   PASS  8 agentes opencode idle (asignables, sin polling)
-  PASS  8 agentes en litellm/clusty
-  PASS  0 referencias al agentId de handoff muerto en las instrucciones vivas
+  PASS  9 agentes en litellm/clusty
+  PASS  0 referencias al agentId de handoff muerto en las instrucciones vivas (11 copias historicas de run, sin efecto)
   PASS  OMA-594 cerrada (status=done)
   PASS  documento plan con diseño+síntesis (15268 bytes)
-  PASS  veredicto EGM en el plan: full — ... nueve bloqueantes ...
-  PASS  último run: 7 revisores de oro despachados
+  PASS  veredicto EGM en el plan: full — el diseño es sano y la política elegida es defendible, pero el docume...
+  PASS  run del ciclo (OMA-594): 7 revisores de oro despachados
   PASS  guardia de silencio activa (timer 2 min)
   PASS  sin llamadas repetidas en el último run
-  PASS  puente fixdrop: 3/1 (reportes/respondidos)
+  PASS  puente fixdrop: 4/1 (reportes/respondidos)
   PASS  hoke operativo: opencode_local/litellm/clusty
   PASS  runbook de replicación en el host
-RESULTADO: 14 PASS · 0 FAIL
+  PASS  PR del fix del 403 abierto en el upstream (estado: open)
+  PASS  script de re-aplicado post-update instalado
+  PASS  runbook ejecutado de cero en HOME limpio -> health sano
+  PASS  hoke respondio el handoff OMA-602 (2 comentario/s suyo/s)
+
+RESULTADO: 18 PASS · 0 FAIL
 ```
 
-En esta ronda se corrigieron ademas las **instrucciones de los 7 agentes**, que
-seguian declarando el modelo viejo (`litellm/bosgame`, `litellm/gx10-nothink`)
-mientras corren en `litellm/clusty`: las instrucciones mienten sobre su propio
-modelo y el agente se auto-limitaba ("tu carril es local") sin necesidad.
+### El clean-room del runbook (E.1), salida literal
+
+`scripts/egm-cleanroom-check.sh` ejecuta los pasos del runbook en un HOME **nuevo**
+(clon del repo de EGM, instalador oficial, config desde el doc, regla, health):
+
+```
+=== clean room: /tmp/egm-clean (HOME=/tmp/egm-clean/home) ===
+--- pasos 1 a 4 del runbook (instalador consolidado) ---
+  1) clonando https://github.com/google/elephant-goldfish-model
+     commit: 5ba5afa03f62627639fa4f71b7ac3bd4d8d07e24
+  2) instalando el bundle
+  3) config escrito: /tmp/egm-clean/home/.config/opencode/opencode.json (8 agentes, oro en pool/clusty-nothink)
+  4) regla copiada: /tmp/egm-clean/home/.config/opencode/AGENTS.md (10307 bytes)
+     artefactos: /tmp/egm-clean/artifacts
+  5) verificando con opencode debug config
+     agentes: egm-codebase-details, egm-comprehension, egm-design, egm-implementation-readiness, egm-structural, egm-style, egm-zoom-out, egm
+     oro: 7 revisores | modelo: pool/clusty-nothink
+     external_directory del oro: {"*":"deny","/tmp/egm-clean/home/egm-opencode-v1/bundle/**":"allow","/tmp/egm-clean/artifacts/**":"allow","/tmp/egm-clean/projects/**":"allow"}
+     default_agent: (ausente, correcto)
+  OK
+--- paso 5: health check contra el HOME limpio ---
+  ok    AGENTS.md global presente (10307 bytes)
+  ok    regla contiene: EGM-off
+  ok    regla contiene: EGM-lite
+  ok    regla contiene: EGM-full
+  ok    regla contiene: Perilla por proyecto
+  ok    regla contiene: Anti-loop
+  ok    bundle con 7 skills
+  ok    egm primary registrado
+  ok    7 revisores registrados
+  ok    oro en sesión nueva (subagent)
+  ok    oro en jaula read-only
+  ok    oro NO puede escribir
+  ok    oro puede leer los artefactos
+  ok    oro puede leer el bundle
+  ok    oro en el lane barato (sin thinking)
+  ok    small_model barato
+  ok    skills.paths declarado
+  ok    provider pool disponible
+  ok    sin default_agent secuestrando los runs
+  ok    regla global NO duplicada en instructions
+  ok    los 7 SKILL.md son legibles en disco
+  ok    runtime anuncia skills egm-* (mejor muestra: 7; no determinista)
+
+RESULTADO: sano
+```
+
+La primera ejecución del clean-room **falló** y por eso valió: encontró que el health
+check tenía el path de artefactos hardcodeado (rompía en cualquier host que no
+fuese éste) y que la plantilla de config del runbook no reproducía una instalación
+válida. Los dos están corregidos (`egm-install-config.js` + checks portables).
+
+### El fix del 403, durable (A.1)
+
+- PR upstream: **https://github.com/paperclipai/paperclip/pull/18743** (fork
+  `josedaoua/paperclip`, rama `fix/issue-write-denial-run-context-loop`).
+- Mientras no entre en un release, cada `paperclipai update` pisa el módulo
+  publicado: `scripts/apply-403-patch.js` lo re-aplica (idempotente, verifica el
+  copy) y el runbook documenta el paso + el restart del servicio.
 
 ### Definición #3 PROBADA (2026-11-03 06:38Z)
 
