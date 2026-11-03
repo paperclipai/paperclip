@@ -131,6 +131,24 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
     for (const key of f.keys) expect((await storage.headObject(f.companyId, key)).exists).toBe(false);
     expect(await owner.nextDeadlineAt()).toBeNull();
   });
+  it("pins imported child bytes until the covering parent snapshot is deleted", async () => {
+    const child = await seed(), parentId = randomUUID(), workspaceId = randomUUID();
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: child.companyId, name: "Imported parent", mode: "isolated_workspace", strategyType: "project_primary",
+      metadata: { remoteWorkspace: { snapshotId: parentId } } });
+    await db.insert(executionWorkspaceSnapshots).values({ id: parentId, companyId: child.companyId, executionWorkspaceId: workspaceId,
+      sourceOperationId: randomUUID(), generation: 1, epoch: 1, status: "committed",
+      metadata: { importedWorkspaceChildren: [{ workspaceId: child.workspaceId, snapshotId: child.row.id }] } });
+    const owner = service();
+    expect(await owner.tick()).toMatchObject({ pinned: 1, deleted: 0 });
+    expect(await owner.nextDeadlineAt()).toBeNull();
+    expect((await storage.headObject(child.companyId, child.keys[0]!)).exists).toBe(true);
+    await db.update(executionWorkspaces).set({ metadata: {} }).where(eq(executionWorkspaces.id, workspaceId));
+    await db.update(executionWorkspaceSnapshots).set({ status: "superseded", deleteAfter: new Date(now.getTime() - 1) })
+      .where(eq(executionWorkspaceSnapshots.id, parentId));
+    await owner.tick(); await owner.tick();
+    expect((await storage.headObject(child.companyId, child.keys[0]!)).exists).toBe(false);
+    expect(await owner.nextDeadlineAt()).toBeNull();
+  });
   it("purges exact-key S3 versions and delete markers before settling retention", async () => {
     const s3 = await versionedS3Fixture();
     try {

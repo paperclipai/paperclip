@@ -8,13 +8,14 @@ import { createServer, type Server } from "node:http";
 import { pathToFileURL } from "node:url";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { activityLog, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
+import { activityLog, agents, heartbeatRuns, applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
   executionWorkspaceRuntimeLeases, executionWorkspaces, issues, projects, projectWorkspaces, workspaceOperations, workspaceRuntimeServices } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { createStorageService } from "../storage/service.js";
 import type { StorageService } from "../storage/types.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { migrateWorkspaceTrees } from "./remote-workspace-migration-batch.js";
 import { inventoryRemoteWorkspaceMigration, migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 import { getWorkspaceSnapshot, loadWorkspaceSnapshotArchive } from "./remote-workspace-snapshot-storage.js";
 import { restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
@@ -50,7 +51,7 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await Promise.all(servers.splice(0).map(server => new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))));
     vi.unstubAllEnvs(); await db.delete(activityLog); await db.delete(workspaceOperations); await db.delete(executionWorkspaceSnapshots);
     await db.delete(workspaceRuntimeServices); await db.delete(executionWorkspaceRuntimeLeases);
-    await db.delete(issues); await db.delete(executionWorkspaces); await db.delete(projectWorkspaces); await db.delete(projects);
+    await db.delete(heartbeatRuns); await db.delete(agents); await db.delete(issues); await db.delete(executionWorkspaces); await db.delete(projectWorkspaces); await db.delete(projects);
     await db.delete(companies); await fs.rm(root, { recursive: true, force: true });
   });
   async function seed() {
@@ -64,6 +65,108 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     return { companyId, workspaceId, issueId: issue!.id, cwd };
   }
   async function workspace(id: string) { return (await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, id)))[0]!; }
+  async function nestedFixture() {
+    const parent = await seed(), workspaceId = randomUUID();
+    const cwd = path.join(parent.cwd, ".paperclip", "worktrees", "child");
+    await fs.mkdir(cwd, { recursive: true }); await fs.writeFile(path.join(cwd, "child.txt"), "saved child edits\n");
+    const [issue] = await db.insert(issues).values({ companyId: parent.companyId, title: "Nested task" }).returning();
+    await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: parent.companyId, sourceIssueId: issue!.id,
+      name: "Child workspace", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd, providerRef: cwd });
+    await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, issue!.id));
+    return { parent, child: { companyId: parent.companyId, workspaceId, issueId: issue!.id, cwd } };
+  }
+  it("requires offline maintenance for overlapping physical workspace paths", async () => {
+    const { parent, child } = await nestedFixture();
+    await expect(migrateRemoteWorkspace({ db, storage, ...child, apply: true })).rejects.toThrow("overlapping_workspace_requires_maintenance");
+    await expect(migrateRemoteWorkspace({ db, storage, ...parent, apply: true })).rejects.toThrow("overlapping_workspace_requires_maintenance");
+    expect(await fs.readFile(path.join(child.cwd, "child.txt"), "utf8")).toBe("saved child edits\n");
+  });
+  it("imports nested task files before their parent and retains independently restorable copies", async () => {
+    const { parent, child } = await nestedFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await migrateRemoteWorkspace({ db, storage, ...child, apply: true, writersStopped: true });
+    await migrateRemoteWorkspace({ db, storage, ...parent, apply: true, writersStopped: true });
+    await fs.rm(parent.cwd, { recursive: true });
+    for (const [name, fixture] of [["parent", parent], ["child", child]] as const) {
+      const authority = readRemoteWorkspaceAuthority((await workspace(fixture.workspaceId)).metadata)!;
+      const ref = await getWorkspaceSnapshot(db, { ...fixture, snapshotId: authority.snapshotId! });
+      const archivePath = path.join(root, `${name}.pcws`), targetDir = path.join(root, `restored-${name}`);
+      await loadWorkspaceSnapshotArchive({ storage, reference: ref!, targetPath: archivePath });
+      await restoreRemoteWorkspaceArchive({ archivePath, targetDir, expectedManifestDigest: ref!.manifestDigest });
+      expect(await fs.readFile(path.join(targetDir, name === "parent" ? "saved.txt" : "child.txt"), "utf8"))
+        .toBe(name === "parent" ? "original saved work\n" : "saved child edits\n");
+      if (name === "parent") {
+        expect(await fs.stat(path.join(targetDir, ".paperclip", "worktrees", "child")).catch(() => null)).toBeNull();
+        const [snapshot] = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.id, ref!.id));
+        expect(snapshot.metadata?.importedWorkspaceChildren).toEqual([expect.objectContaining({ workspaceId: child.workspaceId,
+          relativePath: ".paperclip/worktrees/child" })]);
+      }
+    }
+  });
+  it("requires the offline entry point even when a caller asserts writers stopped", async () => {
+    const { parent } = await nestedFixture();
+    await expect(migrateRemoteWorkspace({ db, storage, ...parent, apply: true, writersStopped: true })).rejects.toThrow("offline_maintenance_required");
+    await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).rejects.toThrow("offline_maintenance_required");
+  });
+  it.each(["running", "queued"])("refuses offline archived imports while any execution is %s", async status => {
+    const f = await seed(); await retainDirectory(f); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const [agent] = await db.insert(agents).values({ companyId: f.companyId, name: "Unrelated writer" }).returning();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: agent!.id, status });
+    await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} }))
+      .rejects.toThrow("active_execution_requires_drain");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+  });
+  it("blocks distinct legacy records that alias the same folder", async () => {
+    const f = await seed(), id = randomUUID();
+    await db.insert(executionWorkspaces).values({ id, companyId: f.companyId, name: "Historical alias", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: f.cwd });
+    await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("overlapping_workspace_requires_maintenance");
+  });
+  it.each(["changed", "corrupt", "late-change", "abort"])("keeps the parent local when nested coverage is unsafe (%s)", async mode => {
+    const { parent, child } = await nestedFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await migrateRemoteWorkspace({ db, storage, ...child, apply: true, writersStopped: true });
+    const authority = readRemoteWorkspaceAuthority((await workspace(child.workspaceId)).metadata)!;
+    const reference = await getWorkspaceSnapshot(db, { ...child, snapshotId: authority.snapshotId! });
+    const controller = new AbortController();
+    if (mode === "changed") await fs.writeFile(path.join(child.cwd, "child.txt"), "changed child bytes");
+    if (mode === "corrupt") await storage.deleteObject(child.companyId, reference!.objectKey);
+    if (mode === "late-change" || mode === "abort") {
+      const put = storage.putFile.bind(storage); let once = true;
+      storage.putFile = async input => { const result = await put(input); if (once) { once = false;
+        if (mode === "abort") controller.abort(); else await fs.writeFile(path.join(child.cwd, "child.txt"), "changed during upload");
+      } return result; };
+    }
+    await expect(migrateRemoteWorkspace({ db, storage, ...parent, apply: true, writersStopped: true, signal: controller.signal })).rejects.toThrow();
+    expect(readRemoteWorkspaceAuthority((await workspace(parent.workspaceId)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(parent.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+    if (mode === "abort") {
+      await migrateRemoteWorkspace({ db, storage, ...parent, apply: true, writersStopped: true });
+      expect(readRemoteWorkspaceAuthority((await workspace(parent.workspaceId)).metadata)?.snapshotId).toBeTruthy();
+    }
+  });
+  it("resumes an interrupted maintenance batch in leaf-first order without duplicating imports", async () => {
+    const { parent, child } = await nestedFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const seen: string[] = [], controller = new AbortController();
+    await expect(migrateWorkspaceTrees(db, { storage, signal: controller.signal, phase: name => {
+      seen.push(name); if (name === `workspace:${parent.workspaceId}`) controller.abort();
+    } })).rejects.toThrow();
+    expect(seen).toEqual([`workspace:${child.workspaceId}`, `workspace:${parent.workspaceId}`]);
+    const childAuthority = readRemoteWorkspaceAuthority((await workspace(child.workspaceId)).metadata);
+    expect(await migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).toBe(1);
+    expect(await migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} })).toBe(0);
+    expect(readRemoteWorkspaceAuthority((await workspace(child.workspaceId)).metadata)).toEqual(childAuthority);
+  });
+  it("checks transitive nested coverage before omitting a child tree", async () => {
+    const { parent, child } = await nestedFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const id = randomUUID(), cwd = path.join(child.cwd, ".paperclip", "worktrees", "grandchild");
+    await fs.mkdir(cwd, { recursive: true }); await fs.writeFile(path.join(cwd, "deep.txt"), "deep work");
+    const [issue] = await db.insert(issues).values({ companyId: parent.companyId, title: "Grandchild task" }).returning();
+    await db.insert(executionWorkspaces).values({ id, companyId: parent.companyId, sourceIssueId: issue!.id,
+      name: "Grandchild", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd });
+    await migrateRemoteWorkspace({ db, storage, companyId: parent.companyId, workspaceId: id, apply: true, writersStopped: true });
+    await migrateRemoteWorkspace({ db, storage, ...child, apply: true, writersStopped: true });
+    await fs.writeFile(path.join(cwd, "deep.txt"), "new deep work");
+    await expect(migrateRemoteWorkspace({ db, storage, ...parent, apply: true, writersStopped: true })).rejects.toThrow("nested_workspace_source_changed");
+    expect(readRemoteWorkspaceAuthority((await workspace(parent.workspaceId)).metadata)).toBeNull();
+  });
   async function gitArchiveFixture(repoUrl = "https://example.invalid/repository.git") {
     const f = await seed(), projectId = randomUUID(), projectWorkspaceId = randomUUID(), branchName = "saved-task";
     vi.stubEnv("PAPERCLIP_HOME", root); vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");

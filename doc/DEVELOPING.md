@@ -1894,6 +1894,18 @@ corrupt, or unbound sources block the import. Publication still requires an
 independent download and restore of the new encrypted snapshot. The old folder
 remains absent, and the importer does not change the original restore point.
 
+Shared physical folders require Cloud's offline enrollment maintenance process.
+A task-level hold cannot fence another workspace record pointing at the same
+folder. Maintenance verifies that legacy deployments have stopped and that no
+runs are active or queued, then imports nested task directories before parent
+roots. A parent can omit a runtime-created nested task folder only after an
+independent restore and source comparison prove that its committed snapshot
+covers those bytes. The parent snapshot records that dependency, and retention
+pins the child snapshot until the parent is deleted. Changed or unavailable
+nested data blocks publication. Ordinary user folders remain in the archive.
+Interrupted maintenance resumes the same import journals; completed records
+leave the pending set. Original folders remain on the retained volume.
+
 Supported sources include empty task folders, repository URLs, and managed
 mutable repositories. Authorized mentioned projects attach all their configured
 Git repositories as writable copies under `.paperclip-repositories/` in the task
