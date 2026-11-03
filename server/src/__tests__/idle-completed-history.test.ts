@@ -517,6 +517,176 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     }
   }, 60_000);
 
+  async function abandonedMcpBacklog() {
+    const { createPublicMcpTransfers } = await import("../services/public-mcp/file-transfers.js");
+    const { default: express } = await import("express");
+    const { default: request } = await import("supertest");
+    const f = await seed(), p = await connectedMcp(f), other = await seed(), q = await connectedMcp(other);
+    try {
+      const principal = await p.oauth.authenticate(p.token), unrelated = await q.oauth.authenticate(q.token);
+      const hooks: { afterRead?: () => void } = {};
+      const api: typeof p.api = async (...args) => { const result = await p.api(...args); hooks.afterRead?.(); return result; };
+      const transfers = createPublicMcpTransfers(db, p.oauth, api, p.storage);
+      const app = express(); app.use(transfers.router);
+      const bytes = Buffer.from("real abandoned upload bytes");
+      const args = (owner: typeof f) => ({ companyId: owner.companyId, taskId: owner.issueId, requestId: randomUUID(),
+        filename: "retained.txt", contentType: "text/plain", byteSize: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex") });
+      const anchorArgs = args(other), link = await transfers.getUploadUrl(unrelated, anchorArgs);
+      if (!("url" in link)) throw new Error("Expected a new anchor upload link");
+      const url = new URL(String(link.url));
+      const uploaded = await request(app).put(url.pathname + url.search).set("Content-Type", "text/plain").send(bytes)
+        .timeout({ response: 5000, deadline: 10_000 });
+      expect(uploaded.status).toBe(200);
+      for (let index = 0; index < 22; index++) {
+        const allocated = await transfers.getUploadUrl(principal, args(f));
+        if (!("uploadId" in allocated)) throw new Error("Expected a new abandoned upload identity");
+        const [upload] = await db.select().from(tables.mcpAttachmentUploads)
+          .where(eq(tables.mcpAttachmentUploads.id, String(allocated.uploadId)));
+        await p.storage.putFile({ companyId: f.companyId, namespace: "mcp-transfers", objectKey: upload.objectKey,
+          originalFilename: upload.originalFilename, contentType: upload.contentType, body: bytes });
+      }
+      await db.update(tables.mcpAttachmentUploads).set({ expiresAt: new Date(0) })
+        .where(eq(tables.mcpAttachmentUploads.companyId, f.companyId));
+      const read = () => db.select().from(tables.mcpAttachmentUploads)
+        .where(eq(tables.mcpAttachmentUploads.companyId, f.companyId)).orderBy(tables.mcpAttachmentUploads.id);
+      const uploads = await read(); expect(uploads).toHaveLength(22);
+      const trigger = (kind: "upload" | "download", owner = transfers) => kind === "upload"
+        ? owner.getUploadUrl(unrelated, anchorArgs)
+        : owner.getDownloadUrl(unrelated, uploaded.body.attachment.id);
+      return { f, p, q, unrelated, api, hooks, transfers, createPublicMcpTransfers, trigger, uploads, read,
+        cleanup: async () => { await p.cleanup(); await q.cleanup(); } };
+    } catch (error) { await p.cleanup(); await q.cleanup(); throw error; }
+  }
+
+  it.each(["delete_failed", "object_survived", "head_failed"] as const)("advances bounded MCP cleanup through failed rows and retries after wrap: %s", async failure => {
+    const b = await abandonedMcpBacklog();
+    const originalDelete = b.p.storage.deleteObject, originalHead = b.p.storage.headObject;
+    const good = b.uploads.at(-1)!, failed = b.uploads.slice(0, -1);
+    const failedKeys = new Set(failed.map(upload => upload.objectKey));
+    const idsByKey = new Map(b.uploads.map(upload => [upload.objectKey, upload.id]));
+    const attempted: string[] = [];
+    try {
+      b.p.storage.deleteObject = async (companyId, objectKey) => {
+        attempted.push(idsByKey.get(objectKey)!);
+        if (failedKeys.has(objectKey)) {
+          if (failure === "delete_failed") throw new Error("controlled backlog DELETE failure");
+          if (failure === "object_survived") return;
+        }
+        return originalDelete(companyId, objectKey);
+      };
+      b.p.storage.headObject = async (companyId, objectKey) => {
+        if (failedKeys.has(objectKey) && failure === "head_failed") throw new Error("controlled backlog HEAD failure");
+        return originalHead(companyId, objectKey);
+      };
+      for (const kind of ["upload", "download"] as const) {
+        const before = attempted.length;
+        await b.trigger(kind);
+        expect(attempted.length - before).toBeLessThanOrEqual(20);
+      }
+      expect(new Set(attempted)).toEqual(new Set(b.uploads.map(upload => upload.id)));
+      const after = await b.read();
+      expect(after.find(upload => upload.id === good.id)).toMatchObject({ cleanedAt: expect.any(Date), cleanupVerifiedAt: expect.any(Date) });
+      expect(after.filter(upload => upload.id !== good.id)).toEqual(failed);
+      expect(await originalHead(b.f.companyId, good.objectKey)).toEqual({ exists: false });
+      expect(await blocked("mcp_attachment_uploads")).toBe(true);
+      // Restore the same storage owner. Future real calls must wrap and retry
+      // every failed identity; cursor movement alone cannot complete a row.
+      b.p.storage.deleteObject = async (companyId, objectKey) => { attempted.push(idsByKey.get(objectKey)!); return originalDelete(companyId, objectKey); };
+      b.p.storage.headObject = originalHead;
+      for (const kind of ["download", "upload"] as const) {
+        const before = attempted.length;
+        await b.trigger(kind);
+        expect(attempted.length - before).toBeLessThanOrEqual(20);
+      }
+      for (const upload of await b.read()) {
+        expect(upload).toMatchObject({ cleanedAt: expect.any(Date), cleanupVerifiedAt: expect.any(Date) });
+        expect(await originalHead(b.f.companyId, upload.objectKey)).toEqual({ exists: false });
+      }
+      expect(await blocked("mcp_attachment_uploads")).toBe(false);
+    } finally { b.p.storage.deleteObject = originalDelete; b.p.storage.headObject = originalHead; await b.cleanup(); }
+  }, 60_000);
+
+  it("coalesces concurrent MCP cleanup and revisits a locked row after wrap", async () => {
+    const b = await abandonedMcpBacklog(), lockedUpload = b.uploads[0]!;
+    const originalDelete = b.p.storage.deleteObject, originalHead = b.p.storage.headObject;
+    let releaseLock!: () => void, enteredLock!: () => void, releaseStorage!: () => void, enteredStorage!: () => void;
+    const locked = new Promise<void>(resolve => { enteredLock = resolve; });
+    const unlock = new Promise<void>(resolve => { releaseLock = resolve; });
+    const storageEntered = new Promise<void>(resolve => { enteredStorage = resolve; });
+    const continueStorage = new Promise<void>(resolve => { releaseStorage = resolve; });
+    let first: Promise<unknown> | undefined, second: Promise<unknown> | undefined;
+    const lock = db.transaction(async tx => {
+      await tx.select().from(tables.mcpAttachmentUploads).where(eq(tables.mcpAttachmentUploads.id, lockedUpload.id)).for("update");
+      enteredLock(); await unlock;
+    });
+    const attempted: string[] = [];
+    try {
+      await locked;
+      b.p.storage.deleteObject = async (companyId, objectKey) => {
+        attempted.push(objectKey);
+        if (attempted.length === 1) { enteredStorage(); await continueStorage; }
+        return originalDelete(companyId, objectKey);
+      };
+      first = b.trigger("download"); await storageEntered;
+      let secondAuthorized!: () => void;
+      const authorized = new Promise<void>(resolve => { secondAuthorized = resolve; });
+      b.hooks.afterRead = secondAuthorized;
+      second = b.trigger("upload"); await authorized;
+      // Authority has returned. Drain its promise continuations before
+      // releasing the real storage operation; this is not a wall-clock wait.
+      await new Promise<void>(resolve => setImmediate(resolve));
+      releaseStorage(); await Promise.all([first, second]);
+      expect(attempted).toHaveLength(20);
+      const pending = (await b.read()).filter(upload => !upload.cleanupVerifiedAt);
+      expect(pending).toHaveLength(2);
+      expect(pending).toContainEqual(lockedUpload);
+      expect(await originalHead(b.f.companyId, lockedUpload.objectKey)).toMatchObject({ exists: true });
+      expect(await blocked("mcp_attachment_uploads")).toBe(true);
+      releaseLock(); await lock;
+      await b.trigger("download"); await b.trigger("upload");
+      expect((await b.read()).every(upload => upload.cleanupVerifiedAt !== null)).toBe(true);
+      expect(await originalHead(b.f.companyId, lockedUpload.objectKey)).toEqual({ exists: false });
+      expect(await blocked("mcp_attachment_uploads")).toBe(false);
+    } finally {
+      releaseStorage(); releaseLock(); await Promise.allSettled([lock, first, second]);
+      b.p.storage.deleteObject = originalDelete; await b.cleanup();
+    }
+  }, 60_000);
+
+  it("retries the same MCP cleanup batch after its real transaction rolls back", async () => {
+    const b = await abandonedMcpBacklog();
+    const originalDelete = b.p.storage.deleteObject;
+    let rejectCommit = true;
+    const transaction: typeof db.transaction = (callback, config) => db.transaction(async tx => {
+      const result = await callback(tx);
+      if (rejectCommit) { rejectCommit = false; throw new Error("controlled cleanup transaction rollback"); }
+      return result;
+    }, config);
+    const faultDb = new Proxy(db, { get(target, property, receiver) {
+      if (property === "transaction") return transaction;
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    } });
+    const transfers = b.createPublicMcpTransfers(faultDb, b.p.oauth, b.api, b.p.storage);
+    const attempted: string[] = [];
+    try {
+      b.p.storage.deleteObject = async (companyId, objectKey) => { attempted.push(objectKey); return originalDelete(companyId, objectKey); };
+      await expect(b.trigger("download", transfers)).rejects.toThrow("controlled cleanup transaction rollback");
+      expect(attempted).toHaveLength(20);
+      expect(await b.read()).toEqual(b.uploads);
+      expect(await blocked("mcp_attachment_uploads")).toBe(true);
+      const abortedBatch = attempted.slice();
+      await b.trigger("upload", transfers);
+      expect(attempted.slice(abortedBatch.length)).toEqual(abortedBatch);
+      expect((await b.read()).filter(upload => upload.cleanupVerifiedAt !== null)).toHaveLength(20);
+      expect(await blocked("mcp_attachment_uploads")).toBe(true);
+      await b.trigger("download", transfers);
+      expect((await b.read()).every(upload => upload.cleanupVerifiedAt !== null)).toBe(true);
+      expect(await blocked("mcp_attachment_uploads")).toBe(false);
+    } finally { b.p.storage.deleteObject = originalDelete; await b.cleanup(); }
+  }, 60_000);
+
   it.each(["delete_failed", "object_survived", "head_failed"] as const)("retains MCP cleanup uncertainty after actual attachment removal: %s", async failure => {
     const { createPublicMcpTransfers } = await import("../services/public-mcp/file-transfers.js");
     const { default: express } = await import("express");
