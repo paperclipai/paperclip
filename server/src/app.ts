@@ -1,4 +1,5 @@
 import { registerRunObserverScheduler } from "./services/run-observer-delivery.js";
+import { nativeRunMcpRoutes } from "./routes/native-run-mcp.js";
 import { connectionEventWakeRoutes } from "./routes/connection-event-wake.js";
 import { registerGitHubReviewProjectionWork } from "./services/chat-channels/github/review-projection-work.js";
 import { finishServiceShutdown } from "./shutdown.js";
@@ -557,6 +558,7 @@ export async function createApp(
   // must be reachable by remote adapters that intentionally do not receive an
   // agent API key. Every request revalidates the active heartbeat row.
   app.use(runtimeConnectionIntentRoutes(db));
+  app.use(nativeRunMcpRoutes());
   const hostServicesDisposers = new Map<string, () => void>();
   let lifecyclePluginsReady = false;
   const agentLifecycle = startAgentLifecycle(db, createLifecycleDriver(db, workerManager), () => lifecyclePluginsReady && !isWarmStandby() && !isIdleTaskDrainActive());

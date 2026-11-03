@@ -542,6 +542,21 @@ describe("HarnessDriverBackend", () => {
     expect(session.identity()).toEqual({ ...originalIdentity, runId: "run-2" });
   });
 
+  it.each([undefined, 30_000])("preserves the cancellation terminal bound through open and recovery (%s)", async bound => {
+    const harness = new FakeHarnessSession();
+    const backend = new HarnessDriverBackend({ ...driver, async openSession() { return harness; }, async recoverSession() { return { recovered: true, session: harness }; } }, undefined, bound);
+    const identity = { companyId: "company-1", agentId: "agent-1", issueId: "issue-1", runId: "run-1", sessionId: "session-1" };
+    const opened = await backend.openSession({ identity });
+    const snapshot = await opened.snapshot({ signal: new AbortController().signal });
+    const recovered = await backend.recoverSession(snapshot, { signal: new AbortController().signal });
+    expect(recovered.recovered).toBe(true);
+    for (const session of [opened, recovered.session!]) {
+      const cancellation = session.cancel!({ reason: "durable wait", signal: new AbortController().signal });
+      expect(cancellation.terminalDrainTimeoutMs).toBe(bound);
+      await cancellation.cleanup;
+    }
+  });
+
   it("restores a persisted terminal before the recovered stream is consumed", async () => {
     const recoveryDriver: HarnessDriver = {
       ...driver,

@@ -476,6 +476,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
     #[cfg(unix)]
     let mut notifications =
         crate::runtime_notifications::RuntimeNotifications::bind(&config.state_dir).ok();
+    let mut task_memory = crate::task_memory::TaskMemoryMonitor::new();
     // Bind listener mode or resolve dial mode before processing commands. Dial
     // reconnects retain the same validated addresses so DNS cannot redirect a
     // retry after the trust decision.
@@ -886,6 +887,9 @@ pub fn run_durable_runner<E: CommandExecutor>(
             #[cfg(unix)]
             if let Some(notifications) = notifications.as_mut() {
                 notifications.poll(&config, &mut state, &store);
+            }
+            if let Some(task_memory) = task_memory.as_mut() {
+                task_memory.poll(&config, &mut state, &store);
             }
             let now = current_unix_ms()?;
             if welcome.lease_renewal_version == Some(1) && now >= next_lease_renewal {
@@ -1394,6 +1398,7 @@ fn wait_for_old_authority_outbox_ack(
     )?;
     let target = state.highest_source_seq();
     let deadline = Instant::now() + TERMINAL_RESULT_ACK_TIMEOUT;
+    let mut ack_persistence = CumulativeAckPersistence::default();
     while state.acked_source_seq < target {
         if Instant::now() >= deadline {
             return Err(DurableRunnerError::invalid(
@@ -1410,8 +1415,10 @@ fn wait_for_old_authority_outbox_ack(
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
-                state.apply_ack(acked, connection.protocol_version)?;
-                store.save(state)?;
+                // As in normal ingress, checkpoint cumulative ACK bursts
+                // without fsyncing every prefix inside the delivery deadline.
+                // The final empty-outbox ACK is always persisted.
+                ack_persistence.apply(state, store, acked, connection.protocol_version)?;
             }
             Some("ping") => transport.send_json(&control_envelope(
                 state,
@@ -2546,6 +2553,7 @@ mod tests {
             runner_digest: "sha256:test".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 64 * 1024,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,

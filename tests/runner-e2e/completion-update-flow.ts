@@ -1,11 +1,11 @@
 import { expect, type Page } from "@playwright/test";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { resolveManagedProjectWorkspaceDir, resolveDefaultAgentWorkspaceDir } from "../../server/src/home-paths.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { sendChatMessage, readChatOutputDocument, collectChatRunEvidence, type ChatFlowInput, type ChatRun } from "./chat-flow.js";
 import { arm as armDocumentGate, clear as clearDocumentGate, release as releaseDocumentGate, waitUntilHeld } from "./context-comment-gate.js";
-import { prepareChatBrief } from "./chat-stories.js";
+import { prepareChatBrief, publishChatBrief } from "./chat-stories.js";
 import { completionDelivery, completionOutputUsesReleasedBrief, type CompletionObservation } from "./completion-updates.js";
 
 type Row = Record<string, any>;
@@ -190,7 +190,7 @@ export async function runChatCompletionUpdate(context: {
       expect(reference.body).toContain(`REFERENCE${marker}`);
       await input.evidence("completion-busy-document-gate.json", { sourceRun: busyRun, document: reference, responseHeld: true });
     }
-    await writeFile(wait.gate, brief);
+    await publishChatBrief(wait.gate, brief);
     await pollUntil({ label: "delegated welcome note completed", deadlineAt: Date.now() + 180_000, intervalMs: 1000,
       load: () => api.get<Row>(`/api/issues/${task!.id}`), accept: t => t.status === "done" });
     if (busyRun) {
@@ -227,7 +227,7 @@ export async function runChatCompletionUpdate(context: {
       // neither task records nor completion events are fabricated by the fixture.
       await input.evidence("completion-restart-boundary.json", { worker: await api.get(`/api/issues/${task!.id}`), runs: reportingRun.runs, sourceReferenceGateReady: true });
       await input.restart();
-      await writeFile(completionWait!.gate, "The organizer is ready to receive the saved result. Report the completed work now.");
+      await publishChatBrief(completionWait!.gate, "The organizer is ready to receive the saved result. Report the completed work now.");
       await page.goto(`/${f.company.issuePrefix}/chats/${f.agent.id}`, { waitUntil: "commit" });
     }
     for (const [index, item] of delegated.entries()) {
@@ -253,9 +253,9 @@ export async function runChatCompletionUpdate(context: {
       expect(replies, `one correlated completion reply for ${item.id}`).toHaveLength(1);
     }
   } finally {
-    await writeFile(wait.gate, `Reference: ${reference}`);
+    await publishChatBrief(wait.gate, `Reference: ${reference}`);
     if (busy) await releaseDocumentGate(context.issue().id);
-    if (completionWait) await writeFile(completionWait.gate, "The organizer is ready to receive the saved result.");
+    if (completionWait) await publishChatBrief(completionWait.gate, "The organizer is ready to receive the saved result.");
     await context.refreshIssue();
   }
 }

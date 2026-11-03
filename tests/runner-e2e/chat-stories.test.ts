@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { assertInterruptedChat, prepareChatBrief } from "./chat-stories.js";
+import { describe, expect, it, vi } from "vitest";
+import { assertInterruptedChat, prepareChatBrief, publishChatBrief } from "./chat-stories.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -7,6 +7,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { runnerMatrix } from "./catalog.js";
 import { buildRunnerE2EProcessEnvironment } from "./harness-env.js";
+
+vi.mock("node:fs/promises", async importOriginal => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, writeFile: vi.fn(actual.writeFile) };
+});
 
 const run = { id: "run", companyId: "company", agentId: "agent", status: "succeeded", runtimeMode: "native", contextSnapshot: { issueId: "chat" } };
 const valid = {
@@ -26,7 +31,7 @@ describe("active chat follow-up oracle", () => {
       try {
         await expect.poll(() => readFile(ready, "utf8").catch(() => "")).toBe("waiting");
       } finally {
-        await writeFile(gate, "BRIEF fixture result");
+        await publishChatBrief(gate, "BRIEF fixture result");
         expect((await command).stdout.trim()).toBe("BRIEF fixture result");
       }
     } finally {
@@ -74,6 +79,41 @@ describe("active chat follow-up oracle", () => {
 
 
 describe("bounded chat brief fixture", () => {
+  it("publishes the complete brief atomically while a real worker is waiting", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "chat-brief-atomic-"));
+    const actual = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
+    let releaseWrite!: () => void;
+    const pausedWrite = new Promise<void>(resolve => { releaseWrite = resolve; });
+    let exposedEmptyWrite!: (file: Parameters<typeof writeFile>[0]) => void;
+    const emptyWrite = new Promise<Parameters<typeof writeFile>[0]>(resolve => { exposedEmptyWrite = resolve; });
+    let running: Promise<{ stdout: string; stderr: string }> | undefined;
+    let publishing: Promise<void> | undefined;
+    try {
+      const brief = await prepareChatBrief(directory, "atomic", 5_000);
+      running = promisify(execFile)(process.execPath, [brief.scriptPath]);
+      await expect.poll(() => readFile(brief.ready, "utf8").catch(() => "")).toBe("waiting");
+      vi.mocked(writeFile).mockImplementationOnce(async (file, data, options) => {
+        await actual.writeFile(file, "");
+        exposedEmptyWrite(file);
+        await pausedWrite;
+        await actual.writeFile(file, data, typeof options === "object" ? { ...options, flag: "w" } : options);
+      });
+      publishing = publishChatBrief(brief.gate, "A complete multiword brief.");
+      const stagedFile = await emptyWrite;
+      expect(await readFile(stagedFile, "utf8")).toBe("");
+      await expect(readFile(brief.gate, "utf8")).rejects.toHaveProperty("code", "ENOENT");
+      releaseWrite();
+      await publishing;
+      expect((await running).stdout.trim()).toBe("A complete multiword brief.");
+    } finally {
+      releaseWrite();
+      await publishing;
+      await running?.catch(() => undefined);
+      vi.mocked(writeFile).mockImplementation(actual.writeFile);
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
   it("releases a waiting worker and rejects an unbounded wait", async () => {
     const directory = await mkdtemp(path.join(tmpdir(), "chat-brief-bounded-"));
     try {
@@ -82,7 +122,7 @@ describe("bounded chat brief fixture", () => {
       const brief = await prepareChatBrief(directory, "release", 2_000);
       const running = promisify(execFile)(process.execPath, [brief.scriptPath]);
       await expect.poll(() => readFile(brief.ready, "utf8").catch(() => "")).toBe("waiting");
-      await writeFile(brief.gate, "Meet at half past ten.");
+      await publishChatBrief(brief.gate, "Meet at half past ten.");
       expect((await running).stdout.trim()).toBe("Meet at half past ten.");
       const expires = await prepareChatBrief(directory, "expires", 1);
       await expect(promisify(execFile)(process.execPath, [expires.scriptPath])).rejects.toMatchObject({ code: 1 });

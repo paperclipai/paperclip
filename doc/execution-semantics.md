@@ -299,6 +299,20 @@ purpose alone cannot certify termination. Ordinary execution retains its existin
 semantic dispatcher requirement. Missing usage remains pending accounting debt;
 a complete receipt settles the original reservation and charge once.
 
+A recovery setup failure does not establish that the original execution never
+started. A same-run, company- and issue-bound coordinator attempt proves that
+native execution or result finalization was entered; selected input alone does
+not. Setup-failure writes lock that coordinator before the run, so a concurrently
+committed claim cannot be missed. Current Stop metadata survives configuration
+failure, including an acknowledgement committed while the terminal write waits.
+Only the bounded run-Stop fields, including intentional handoff, are retained;
+stale result projections are replaced. Normal Stop writes can still advance
+delivery metadata. Missing usage keeps its existing hold and accounting debt. Fresh setup
+that genuinely never dispatched can still settle without a provider receipt.
+Account-identity checks continue to reject incompatible execution; preserving
+cleanup obligations does not authorize a new provider turn or repair historical
+state that was already overwritten.
+
 ## 4. Agent-Owned vs User-Owned Execution
 
 The execution model differs depending on assignee type.
@@ -1668,6 +1682,19 @@ indefinitely for an export that has no owner. A live executor or finalizer, acce
 remains protected. Cleanup never interprets this registration as a stop receipt
 or permission to replay provider work. Repeated cleanup visits register the source
 once; settled sources add no continuing discovery or new maintenance timer.
+
+Retry and authenticated new messages also inspect the task's bound remote
+workspace for its exact failed writer. A newer setup failure cannot hide that
+writer's file obligation. A released reusable source can register preservation
+when its prepared descriptor, current workspace authority, and dedicated stop
+receipts agree. Registration keeps the lease's policy, release state, and stop
+receipts. The existing worker verifies allocation ownership before file-only
+resume. It saves the files before ordinary continuation admission; repeated
+requests do not create another recovery generation or replay provider work.
+If Retry names a newer failed preparation, continuation separately verifies that
+it never reached provider dispatch. Contradictory execution evidence keeps the
+hold. After preservation, the accepted continuation selects the bound saved
+workspace through its verified repair receipt instead of discarding its files.
 
 Every continuation carries the triggering request, ordered user direction, interaction outcomes, completed work, and explicit history coverage. A delivered message remains part of the task's request after its connection or approval resolves. The original title is background; a completed Notion read does not satisfy a later Gmail request. Author and source-trust boundaries survive rendering into both native and legacy prompts. Missing required history must be fetched before dispatch rather than described as complete.
 

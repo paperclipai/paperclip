@@ -321,6 +321,17 @@ function loadSpecRoutes() {
 }
 
 describe("openapi routes", () => {
+  it("documents generic webhook provenance headers and accepted responses without a provider-specific endpoint", () => {
+    const spec = buildOpenApiSpec();
+    const operation = spec.paths["/api/routine-triggers/public/{publicId}/fire"].post;
+    expect(operation.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ in: "header", name: "X-Paperclip-Source-Run-Token", required: false }),
+      expect.objectContaining({ in: "header", name: "X-Paperclip-Idempotency-Scope", required: false }),
+    ]));
+    for (const status of ["202", "400", "401", "404", "409", "415", "422"]) expect(operation.responses).toHaveProperty(status);
+    expect(operation.requestBody.content).toHaveProperty("application/json");
+    expect(spec.paths).not.toHaveProperty("/api/routine-triggers/public/{publicId}/sentry-run-failures");
+  });
   it.each(["summary", "tasks"])("documents the board-only compact attention %s contract", projection => {
     const spec = buildOpenApiSpec() as any;
     const operation = spec.paths[`/api/companies/{companyId}/attention/${projection}`].get;
