@@ -311,6 +311,8 @@ it.each(["no visible full proposal", "wrong displayed body", "wrong canonical ha
 
 it.each([
   ["You declined. If you'd like it applied, approve a new request.", true],
+  ["You declined. Once approved, the update will be applied.", true],
+  ["You declined. Nothing was added or saved.", true],
   ["You declined. If you want the edit I already applied, approve a new request.", false],
   ["You declined. If you would like the proposal I have written for your review, approve a new request.", true],
   ["You declined. If you would like the draft I have saved in the notes app, approve a new request.", false],
