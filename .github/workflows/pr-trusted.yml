@@ -370,7 +370,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -784,7 +784,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -1035,7 +1035,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
@@ -1376,7 +1376,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Mirror the master writer: these also feed the cache key.
           cache-workspace-crates: false
           cache-bin: false
