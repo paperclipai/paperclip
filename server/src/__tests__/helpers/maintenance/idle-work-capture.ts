@@ -112,6 +112,9 @@ export async function installMaintenanceIdleWorkCapture() {
 
 /** Reuse existing settle-loop observations. No extra poll, timer, SQL or raw stack per sample. */
 export function createSettledWorkSamples(sourceCatalog: () => Array<{ id: number; callers: string[] }>) {
+  // Finite longest setup observation at the existing 25ms cadence, plus its
+  // terminal sample. Overflow still makes diagnostic completion fail closed.
+  const sampleLimit = Math.ceil(61_000 / 25) + 1;
   const samples: Array<{ id: number; at: number; queryTotal: number; queryDelta: number; pending: number;
     idle: { active: number; generation: number }; activeIds: number[] }> = [];
   let previous: number | undefined, overflowSamples = 0, lastCapture: IdleWorkCaptureSnapshot | undefined;
@@ -119,12 +122,12 @@ export function createSettledWorkSamples(sourceCatalog: () => Array<{ id: number
   return {
     sample(snapshot: { now: number; idle: { active: number; generation: number }; workCapture?: IdleWorkCaptureSnapshot }, queryTotal: number, pending: number) {
       lastCapture = snapshot.workCapture;
-      if (samples.length < 1200) samples.push({ id: samples.length + 1, at: snapshot.now, queryTotal,
+      if (samples.length < sampleLimit) samples.push({ id: samples.length + 1, at: snapshot.now, queryTotal,
         queryDelta: previous === undefined ? 0 : queryTotal - previous, pending, idle: { ...snapshot.idle }, activeIds: lastCapture?.active.map(entry => entry.id) ?? [] });
       else overflowSamples++;
       previous = queryTotal;
     },
-    report() { return { startedAt, finishedAt: Date.now(), settleDeadlineMs: 30_000, sampleLimit: 1200, overflowSamples,
+    report() { return { startedAt, finishedAt: Date.now(), settleDeadlineMs: 30_000, sampleLimit, overflowSamples,
       samples, sourceCatalog: sourceCatalog(), lastCapture }; },
     assertComplete() {
       if (!lastCapture || overflowSamples || lastCapture.overflow || lastCapture.sourceOverflow || lastCapture.missingCallsites

@@ -273,10 +273,10 @@ export async function startMaintenanceServer(databaseUrl: string, options: Maint
       freeze: () => request<Snapshot>("freeze"),
       get output() { return output; },
       async settled(quietMs = 500, deferredStartupHolds = 0, settleOptions: { managedSetupRecovery?: true } = {}) {
-        // Actual managed recovery reconstructs scoped writes on its existing 30s
-        // cadence. Setup needs that interval + 500ms quiet + 500ms observation
-        // margin; this option does not alter worker timing or idle admission.
-        const settleTimeoutMs = settleOptions.managedSetupRecovery ? 31_000 : 30_000;
+        // A successful managed health check self-notifies, then reconciles its
+        // future deadline on the next existing 30s pass. Observe both passes +
+        // 500ms quiet + 500ms margin without changing worker timing/admission.
+        const settleTimeoutMs = settleOptions.managedSetupRecovery ? 61_000 : 30_000;
         const diagnostic = options.captureIdleWork ? (await import('./idle-work-capture.js')).createSettledWorkSamples(
           () => [...captureSources!].map(([id, callers]) => ({ id, callers }))) : undefined;
         const diagnosticId = diagnostic ? ++settledDiagnosticId : undefined;

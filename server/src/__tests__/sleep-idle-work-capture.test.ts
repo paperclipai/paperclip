@@ -70,8 +70,8 @@ it('bounds settle samples and stores callsites once, while missing paths forbid 
   const actual = original(), capture = createMaintenanceIdleWorkCapture(actual, { stack }); const finish = capture.beginIdleTrackedWork();
   const state = capture.snapshot(), catalog = state.newSources;
   const samples = createSettledWorkSamples(() => catalog);
-  for (let i = 0; i < 1201; i++) samples.sample({ now: 1000 + i, idle: actual.idleWorkSnapshot(), workCapture: state }, 20 + i, 0);
-  const report = samples.report(); expect(report.samples).toHaveLength(1200); expect(report.overflowSamples).toBe(1);
+  for (let i = 0; i < 2442; i++) samples.sample({ now: 1000 + i, idle: actual.idleWorkSnapshot(), workCapture: state }, 20 + i, 0);
+  const report = samples.report(); expect(report.samples).toHaveLength(2441); expect(report.sampleLimit).toBe(2441); expect(report.overflowSamples).toBe(1);
   expect(report.samples[1]!.queryDelta).toBe(1); expect(report.sourceCatalog).toHaveLength(1);
   expect(JSON.stringify(report.samples)).not.toContain('owned-work'); expect(() => samples.assertComplete()).toThrow('incomplete');
   finish();
