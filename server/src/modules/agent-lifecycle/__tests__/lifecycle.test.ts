@@ -12,6 +12,7 @@ import { approvalService } from "../../../services/approvals.js";
 import { updateAgentConfigurationInTransaction } from "../../../services/agent-configuration-transaction.js";
 import { agentService as agentConfiguration } from "../../../services/agents.js";
 import { readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import express from "express";
 import request from "supertest";
 import { agentRoutes } from "../../../routes/agents.js";
@@ -412,6 +413,34 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(0) }).where(eq(nativeRunFinalizations.runId, run.id));
     expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0]).toMatchObject({ leaseOwner: null, leaseExpiresAt: null });
+  });
+
+  it("treats a live pid that started after the run finished as reused when no start time was recorded", async () => {
+    const agent = await hire();
+    const finishedAt = new Date("2020-01-01T00:00:00.000Z");
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "failed",
+      invocationSource: "on_demand", runtimeMode: "legacy", startedAt: finishedAt, finishedAt,
+      processPid: process.pid }).returning();
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, run.id));
+    expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("treats a live process group whose leader started after the run finished as reused", async () => {
+    const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { detached: true, stdio: "ignore" });
+    try {
+      await new Promise<void>((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+      const agent = await hire();
+      const finishedAt = new Date("2020-01-01T00:00:00.000Z");
+      const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, status: "failed",
+        invocationSource: "on_demand", runtimeMode: "legacy", startedAt: finishedAt, finishedAt,
+        processPid: 2_000_000_000, processGroupId: child.pid! }).returning();
+      expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(true);
+      await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, run.id));
+      expect(await agentExecutionsHaveStopped(db, [agent.id])).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+    }
   });
 
   it("releases an expired native owner whose renewed lease expiry has microsecond precision", async () => {

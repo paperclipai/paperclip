@@ -6,6 +6,12 @@ import { hasNativeLocalProcessStop } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
 
+const PROCESS_START_CLOCK_TOLERANCE_MS = 1_000;
+
+function startedAfterRunFinished(observedAt: number, finishedAt: Date | null) {
+  return finishedAt !== null && observedAt > finishedAt.getTime() + PROCESS_START_CLOCK_TOLERANCE_MS;
+}
+
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
 export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
   if (!agentIds.length) return true;
@@ -42,12 +48,20 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
     }
     let processAlive = Boolean(run.processPid && !absent(run.processPid));
     let groupAlive = Boolean(run.processGroupId && !absent(-run.processGroupId));
-    if (processAlive && run.processStartedAt) {
+    if (processAlive) {
       const observed = await readProcessStartedAt(run.processPid!).catch(() => null);
-      if (observed && new Date(observed).getTime() !== run.processStartedAt.getTime()) {
+      const observedAt = observed ? new Date(observed).getTime() : null;
+      const reused = observedAt !== null && (run.processStartedAt
+        ? observedAt !== run.processStartedAt.getTime()
+        : startedAfterRunFinished(observedAt, run.finishedAt));
+      if (reused) {
         processAlive = false;
         if (run.processGroupId === run.processPid) groupAlive = false;
       }
+    }
+    if (groupAlive && run.processGroupId !== run.processPid && !absent(run.processGroupId!)) {
+      const observed = await readProcessStartedAt(run.processGroupId!).catch(() => null);
+      if (observed && startedAfterRunFinished(new Date(observed).getTime(), run.finishedAt)) groupAlive = false;
     }
     if (processAlive || groupAlive) return false;
     if (run.status !== "cancelled" || !run.startedAt) continue;
