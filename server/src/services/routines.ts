@@ -83,7 +83,6 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { runtimePublicOrigin } from "./cloud-runtime-identity.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
-const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
@@ -303,9 +302,9 @@ function isSubHourlyCronExpression(expression: string, timeZone: string, after: 
 
 function nextResultText(status: string, issueId?: string | null) {
   if (status === "issue_created" && issueId) return `Created execution issue ${issueId}`;
-  if (status === "coalesced") return "Coalesced into an existing live execution issue";
+  if (status === "coalesced") return "Coalesced into an existing outstanding execution issue";
   if (status === "skipped_paused") return "Skipped because the project is paused";
-  if (status === "skipped") return "Skipped because a live execution issue already exists";
+  if (status === "skipped") return "Skipped because an outstanding execution issue already exists";
   if (status === "completed") return "Execution issue completed";
   if (status === "failed") return "Execution failed";
   return status;
@@ -1146,23 +1145,29 @@ export function routineService(
     return map;
   }
 
-  // Join condition for "this heartbeat run holds this issue". Either pointer
-  // counts: `execution_run_id` is the routine-coalescing slot, but a run denied
-  // that slot by a sibling row still holds the issue through `checkout_run_id`
-  // alone (see executionSlotStamp in services/issues.ts). Testing only the
-  // execution pointer made such an issue invisible here, which let the next
-  // trigger skip coalescing and mint a duplicate open issue for the routine —
-  // the single-flight guarantee this lookup exists to provide.
-  function liveRunHoldsIssueCondition() {
-    return or(
-      eq(heartbeatRuns.id, issues.executionRunId),
-      eq(heartbeatRuns.id, issues.checkoutRunId),
-    );
-  }
-
-  async function listLiveIssueByRoutineIds(companyId: string, routineIds: string[]) {
+  // CRE-4157: "active" for concurrency purposes means OUTSTANDING, not merely
+  // "currently being executed." A prior fix (5fee484e85, "Fix routine
+  // coalescing for idle execution issues") narrowed this to require a live
+  // heartbeat run (queued/running/scheduled_retry) holding the issue via
+  // execution_run_id or checkout_run_id. That made a dispatched-but-unpicked-up
+  // issue — one still sitting in `todo` with no run ever attached, e.g.
+  // because every candidate assignee was offline or paused — invisible to the
+  // concurrency guard. skip_if_active and coalesce_if_active both key off this
+  // lookup, so neither ever fired for that issue: every subsequent trigger
+  // created another `todo` issue instead, and the queue grew without bound
+  // (measured: 21-24 queued firings per routine across 16 routines).
+  //
+  // The guard's job is "is the previous firing still unresolved," which is a
+  // property of the ISSUE (open, visible, matching origin + fingerprint), not
+  // of whether a heartbeat run currently happens to be attached to it. Any
+  // open, non-hidden issue for this origin counts as outstanding regardless of
+  // execution liveness; `hasLiveRun` on the client independently queries
+  // live heartbeat runs for the active issue to decide whether to render a
+  // "running" indicator, so dropping the liveness requirement here does not
+  // make an idle issue look like it is executing.
+  async function listOutstandingIssueByRoutineIds(companyId: string, routineIds: string[]) {
     if (routineIds.length === 0) return new Map<string, RoutineListItem["activeIssue"]>();
-    const executionBoundRows = await db
+    const rows = await db
       .selectDistinctOn([issues.originId], {
         originId: issues.originId,
         id: issues.id,
@@ -1173,13 +1178,6 @@ export function routineService(
         updatedAt: issues.updatedAt,
       })
       .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          liveRunHoldsIssueCondition(),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-        ),
-      )
       .where(
         and(
           eq(issues.companyId, companyId),
@@ -1191,52 +1189,8 @@ export function routineService(
       )
       .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
 
-    const rowsByOriginId = new Map<string, (typeof executionBoundRows)[number]>();
-    for (const row of executionBoundRows) {
-      if (!row.originId) continue;
-      rowsByOriginId.set(row.originId, row);
-    }
-
-    const missingRoutineIds = routineIds.filter((routineId) => !rowsByOriginId.has(routineId));
-    if (missingRoutineIds.length > 0) {
-      const legacyRows = await db
-        .selectDistinctOn([issues.originId], {
-          originId: issues.originId,
-          id: issues.id,
-          identifier: issues.identifier,
-          title: issues.title,
-          status: issues.status,
-          priority: issues.priority,
-          updatedAt: issues.updatedAt,
-        })
-        .from(issues)
-        .innerJoin(
-          heartbeatRuns,
-          and(
-            eq(heartbeatRuns.companyId, issues.companyId),
-            inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
-          ),
-        )
-        .where(
-          and(
-            eq(issues.companyId, companyId),
-            eq(issues.originKind, "routine_execution"),
-            inArray(issues.originId, missingRoutineIds),
-            inArray(issues.status, OPEN_ISSUE_STATUSES),
-            visibleIssueCondition(),
-          ),
-        )
-        .orderBy(issues.originId, desc(issues.updatedAt), desc(issues.createdAt));
-
-      for (const row of legacyRows) {
-        if (!row.originId) continue;
-        rowsByOriginId.set(row.originId, row);
-      }
-    }
-
     const map = new Map<string, RoutineListItem["activeIssue"]>();
-    for (const row of rowsByOriginId.values()) {
+    for (const row of rows) {
       if (!row.originId) continue;
       map.set(row.originId, {
         id: row.id,
@@ -1525,7 +1479,15 @@ export function routineService(
     );
   }
 
-  async function findLiveExecutionIssue(
+  // CRE-4157: counts an issue as outstanding (= active for concurrency
+  // purposes) the moment it is open and visible, independent of whether a
+  // heartbeat run is currently attached to it. See the comment on
+  // listOutstandingIssueByRoutineIds for why a liveness requirement here is
+  // wrong — it is what let skip_if_active / coalesce_if_active never fire for
+  // a dispatched-but-unpicked-up issue, so every trigger of an unstaffed
+  // routine minted another open issue instead of coalescing into the one
+  // already waiting.
+  async function findOutstandingExecutionIssue(
     routine: typeof routines.$inferSelect,
     executor: Db = db,
     dispatchFingerprint?: string | null,
@@ -1534,42 +1496,9 @@ export function routineService(
     const fingerprintCondition = routineExecutionFingerprintCondition(dispatchFingerprint);
     const originKind = origin?.kind ?? "routine_execution";
     const originId = origin?.id ?? routine.id;
-    const executionBoundIssue = await executor
-      .select()
-      .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          liveRunHoldsIssueCondition(),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-        ),
-      )
-      .where(
-        and(
-          eq(issues.companyId, routine.companyId),
-          eq(issues.originKind, originKind),
-          eq(issues.originId, originId),
-          inArray(issues.status, OPEN_ISSUE_STATUSES),
-          visibleIssueCondition(),
-          ...(fingerprintCondition ? [fingerprintCondition] : []),
-        ),
-      )
-      .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
-      .limit(1)
-      .then((rows) => rows[0]?.issues ?? null);
-    if (executionBoundIssue) return executionBoundIssue;
-
     return executor
       .select()
       .from(issues)
-      .innerJoin(
-        heartbeatRuns,
-        and(
-          eq(heartbeatRuns.companyId, issues.companyId),
-          inArray(heartbeatRuns.status, LIVE_HEARTBEAT_RUN_STATUSES),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = cast(${issues.id} as text)`,
-        ),
-      )
       .where(
         and(
           eq(issues.companyId, routine.companyId),
@@ -1582,7 +1511,7 @@ export function routineService(
       )
       .orderBy(desc(issues.updatedAt), desc(issues.createdAt))
       .limit(1)
-      .then((rows) => rows[0]?.issues ?? null);
+      .then((rows) => rows[0] ?? null);
   }
 
   async function finalizeRun(runId: string, patch: Partial<typeof routineRuns.$inferInsert>, executor: Db = db) {
@@ -1886,7 +1815,7 @@ export function routineService(
 
       let createdIssue: Awaited<ReturnType<typeof issueSvc.create>> | null = null;
       try {
-        const activeIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+        const activeIssue = await findOutstandingExecutionIssue(input.routine, txDb, dispatchFingerprint, {
           kind: issueOriginKind,
           id: issueOriginId,
         });
@@ -1953,7 +1882,7 @@ export function routineService(
             throw error;
           }
 
-          const existingIssue = await findLiveExecutionIssue(input.routine, txDb, dispatchFingerprint, {
+          const existingIssue = await findOutstandingExecutionIssue(input.routine, txDb, dispatchFingerprint, {
             kind: issueOriginKind,
             id: issueOriginId,
           });
@@ -2082,7 +2011,7 @@ export function routineService(
       const [triggersByRoutine, latestRunByRoutine, activeIssueByRoutine, managedByRoutine] = await Promise.all([
         listTriggersForRoutineIds(companyId, routineIds),
         listLatestRunByRoutineIds(companyId, routineIds),
-        listLiveIssueByRoutineIds(companyId, routineIds),
+        listOutstandingIssueByRoutineIds(companyId, routineIds),
         listManagedRoutineMetadata(routineIds),
       ]);
       return rows.map((row) => ({
@@ -2188,7 +2117,7 @@ export function routineService(
                 : null,
             })),
           ),
-        findLiveExecutionIssue(row),
+        findOutstandingExecutionIssue(row),
         listManagedRoutineMetadata([row.id]),
       ]);
 
