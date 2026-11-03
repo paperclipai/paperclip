@@ -5032,7 +5032,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       if (runSettings && issue?.conversationAgentId) {
         // Persisted task data contains display fields only. Read the complete
         // overrides before replacing them so unrelated options survive a send.
-        const freshIssue = await issuesApi.getCore(writableIssueId, { cache: "no-store" });
+        const freshIssue = await issuesApi.getCore(writableIssueId, { cache: "no-store", fresh: true });
         assertCurrentAccount();
         const updated = await issuesApi.update(writableIssueId, {
           assigneeAdapterOverrides: mergeComposerRunSettings(
@@ -5447,7 +5447,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       runSettings?: ComposerRunSettings;
     }, { assertCurrentAccount }) => {
       const freshIssue = runSettings && !reassignment
-        ? await issuesApi.getCore(issueId!, { cache: "no-store" })
+        ? await issuesApi.getCore(issueId!, { cache: "no-store", fresh: true })
         : issue;
       assertCurrentAccount();
       return issuesApi.update(issueId!, {
@@ -7378,7 +7378,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             onSave={(title) => updateIssue.mutateAsync({ title })}
             onEditingChange={handleLoadingTitleEditingChange}
             draftKey={`issue:${issue.id}:title`}
-            readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store" })).title}
+            readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store", fresh: true })).title}
             as="h2"
             className="text-xl font-semibold leading-normal"
           />
@@ -7589,7 +7589,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               value={issue.title}
               onSave={(title) => updateIssue.mutateAsync({ title })}
               draftKey={`issue:${issue.id}:title`}
-              readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store" })).title}
+              readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store", fresh: true })).title}
               as="h2"
               className={cn(
                 "min-w-0 text-balance",
@@ -8012,7 +8012,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           value={issue.title}
           onSave={(title) => updateIssue.mutateAsync({ title })}
           draftKey={`issue:${issue.id}:title`}
-          readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store" })).title}
+          readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store", fresh: true })).title}
           as="h2"
           className={
             taskChatShellEnabled
@@ -8041,7 +8041,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           value={issue.description ?? ""}
           onSave={(description) => updateIssue.mutateAsync({ description })}
           draftKey={`issue:${issue.id}:description`}
-          readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store" })).description ?? ""}
+          readCurrentValue={async () => (await issuesApi.getCore(issue.id, { cache: "no-store", fresh: true })).description ?? ""}
           as="p"
           className="text-sm leading-7 text-foreground"
           placeholder="Add a description..."
