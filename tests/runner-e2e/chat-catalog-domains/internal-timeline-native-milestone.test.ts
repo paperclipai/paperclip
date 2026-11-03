@@ -2,7 +2,9 @@ import { expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 vi.mock("../codex-subscription-fixture.js", () => ({ codexSubscriptionAgentConfig: (value: unknown) => value }));
-import { gradeWorkTimeline } from "./internal-work-timeline.js";
+import { validateChatCatalogConsistency } from "../chat-catalog-consistency.js";
+import { findChatCatalogCase } from "../chat-catalog-registry.js";
+import { gradeWorkTimeline, workTimelineCases } from "./internal-work-timeline.js";
 
 function producer(status: "blocked" | "done", runId: string, decisionId: string) {
   const source = readFileSync(new URL("../../../server/src/services/native-runtime/status-decision-committer.ts", import.meta.url), "utf8");
@@ -104,4 +106,18 @@ it.each(["missing link", "hidden work", "source mutation", "wrong command", "wro
   if (fault === "wrong run") o.verification[0]!.runId = "foreign";
   if (fault === "empty hash") o.verification[0]!.sha256 = "";
   expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+
+it("admits the selected live timeline metadata without invoking fixture callbacks", async () => {
+  const descriptor = findChatCatalogCase("activity.work-timeline")!;
+  const implementation = workTimelineCases[0]!;
+  const callbacks = ["setup", "observe", "grade", "verifyResult"] as const;
+  const spies = callbacks.map(key => vi.spyOn(implementation, key));
+  try {
+    expect(await validateChatCatalogConsistency([descriptor])).toEqual({ descriptorCount: 1, fixtureCallbacksInvoked: 0 });
+    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v2");
+    expect(descriptor.sourceFiles).toEqual(implementation.sourceFiles);
+    expect(descriptor).toMatchObject({ expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000 });
+    for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+  } finally { for (const spy of spies) spy.mockRestore(); }
 });
