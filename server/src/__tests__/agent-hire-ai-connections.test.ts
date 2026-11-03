@@ -599,7 +599,9 @@ describe("hired agents sharing a subscription", () => {
       expect(completed?.errorCode).toBeNull();
       await waitForPendingRunFailureReports();
       expect(captureRunFailure.mock.calls.filter(([report]) => report.runId === run!.id)).toHaveLength(0);
-      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id))).toEqual([]);
+      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.retryOfRunId, run!.id), eq(heartbeatRuns.scheduledRetryReason, "ai_connection_busy"),
+      ))).toEqual([]);
       expect(execute).toHaveBeenCalledOnce();
       expect(lock).not.toHaveBeenCalled();
       expect(await aiConnectionService(db).list(f.companyId, f.userId)).toEqual([expect.objectContaining({ status: "connected" })]);
