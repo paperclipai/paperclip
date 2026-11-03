@@ -46,7 +46,7 @@ it.skipIf(!linuxCi)("attests real OpenCode client acceptance through runnerd, pr
           let size = 0; const chunks: Buffer[] = [];
           for await (const chunk of request) { size += chunk.length; if (size > 1024 * 1024) throw new Error("diagnostic_body_bound"); chunks.push(chunk); }
           const scripted = identityResponse(JSON.parse(Buffer.concat(chunks).toString("utf8")), negative, justIssued);
-          justIssued = scripted.delta.tool_calls?.[0]?.id;
+          if (!scripted.auxiliary) justIssued = scripted.delta.tool_calls?.[0]?.id;
           for (const id of scripted.accepted) accepted.add(id);
           negativeObserved ||= scripted.negativeObserved;
           response.writeHead(200, { "Content-Type": "text/event-stream" });

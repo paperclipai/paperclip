@@ -1,8 +1,8 @@
 import { expect, it } from "vitest";
-import { acceptedIdentityIds, diagnosticChildEnvironment, diagnosticIdentity, failedIdentity, identityAcceptanceComplete, identityCallIds, identityResponse } from "../../test-support/opencode-identity-script.js";
+import { acceptedIdentityIds, diagnosticChildEnvironment, diagnosticIdentity, diagnosticPrompt, failedIdentity, identityAcceptanceComplete, identityCallIds, identityResponse } from "../../test-support/opencode-identity-script.js";
 const message = (id: string, value: unknown = diagnosticIdentity) => ({ role: "tool", tool_call_id: id,
   content: JSON.stringify({ type: "inputText", text: JSON.stringify(value) }) });
-const body = (messages: unknown[]) => ({ model: "protocol-diagnostic", stream: true, messages,
+const body = (messages: unknown[]) => ({ model: "protocol-diagnostic", stream: true, messages: [{ role: "user", content: diagnosticPrompt }, ...messages],
   tools: [{ type: "function", function: { name: "paperclip_get_identity" } }] });
 it("requires all five distinct client-forwarded IDs and valid identity results in subsequent provider requests", () => {
   const messages: unknown[] = [];
@@ -36,4 +36,13 @@ it("rejects a dropped immediate result rather than retrying the same logical cal
   expect(() => identityResponse(body([]), false, issued)).toThrow("diagnostic_next_result_missing");
   expect(identityResponse(body([message(issued)]), false, issued).accepted).toEqual([issued]);
   expect(identityResponse(body([message(issued, failedIdentity)]), true, issued).negativeObserved).toBe(true);
+});
+
+it("does not mistake auxiliary title requests for the next relevant main-provider request", () => {
+  const issued = identityResponse(body([])).delta.tool_calls![0]!.id;
+  const title = identityResponse({ model: "protocol-diagnostic", stream: true, messages: [{ role: "user", content: "Create a title" }] }, false, issued);
+  expect(title.auxiliary).toBe(true);
+  expect(title.accepted).toEqual([]);
+  expect(() => identityResponse(body([]), false, issued)).toThrow("diagnostic_next_result_missing");
+  expect(identityResponse(body([message(issued)]), false, issued).accepted).toEqual([issued]);
 });

@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { dynamicToolResponse } from "../src/drivers/codex/codex-driver-values.js";
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../src/live/runnerd-codex-transport.js";
-import { diagnosticIdentity, failedIdentity } from "./opencode-identity-script.js";
+import { diagnosticIdentity, diagnosticPrompt, failedIdentity } from "./opencode-identity-script.js";
 if (process.platform !== "linux" || process.env.PAPERCLIP_NATIVE_PROTOCOL_DIAGNOSTIC !== "1") throw new Error("diagnostic_linux_ci_only");
 const config = JSON.parse(process.argv[2]!);
 const hash = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
@@ -33,7 +33,7 @@ try {
     }
     throw new Error("diagnostic_notifications_ended");
   })();
-  await transport.request("turn/start", { input: [{ type: "text", text: "Run the synthetic identity protocol diagnostic." }] });
+  await transport.request("turn/start", { input: [{ type: "text", text: diagnosticPrompt }] });
   let timer: ReturnType<typeof setTimeout> | undefined;
   try { await Promise.race([done, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("diagnostic_timeout")), 35_000); })]); }
   finally { if (timer) clearTimeout(timer); }

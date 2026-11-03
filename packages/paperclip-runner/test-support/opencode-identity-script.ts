@@ -1,4 +1,5 @@
 /** Synthetic protocol data only. Never use this fixture to grade a product task. */
+export const diagnosticPrompt = "Run the synthetic identity protocol diagnostic.";
 export const identityCallIds = Array.from({ length: 5 }, (_, index) => `diagnostic-identity-${index + 1}`);
 export const diagnosticIdentity = { ok: true, identity: { agentId: "synthetic-agent", companyId: "synthetic-company" } };
 export const failedIdentity = { ok: false, code: "CONTROLLED_IDENTITY_FAILURE" };
@@ -30,22 +31,27 @@ export function identityAcceptanceComplete(messages: unknown): boolean {
 export function identityResponse(body: unknown, negative = false, expectedPreviousId?: string) {
   const b = row(body);
   if (b.model !== "protocol-diagnostic" || b.stream !== true || !Array.isArray(b.messages)) throw new Error("diagnostic_request_invalid");
+  const tools = Array.isArray(b.tools) ? b.tools.map(value => row(row(value).function)) : [];
+  const tool = tools.filter(value => /(?:^|_)get_identity$/.test(String(value.name)));
+  const hasMainPrompt = b.messages.some(value => row(value).role === "user" && (JSON.stringify(row(value).content) ?? "").includes(diagnosticPrompt));
+  // OpenCode may ask the same small model for a title. Such requests do not
+  // consume the pending main-call response or advance the identity script.
+  if (tool.length === 0) return { accepted: [], negativeObserved: false, auxiliary: true,
+    delta: { role: "assistant", content: "Protocol diagnostic" }, finish: "stop" };
+  if (tool.length !== 1 || !hasMainPrompt) throw new Error("diagnostic_main_request_invalid");
   if (expectedPreviousId && (!identityCallIds.includes(expectedPreviousId)
     || !b.messages.some(value => row(value).role === "tool" && row(value).tool_call_id === expectedPreviousId)))
     throw new Error("diagnostic_next_result_missing");
-  const tools = Array.isArray(b.tools) ? b.tools.map(value => row(row(value).function)) : [];
-  const tool = tools.filter(value => /(?:^|_)get_identity$/.test(String(value.name)));
-  if (tool.length !== 1) throw new Error("diagnostic_tool_missing");
   let accepted: string[];
   try { accepted = acceptedIdentityIds(b.messages); }
   catch (error) {
     const first = b.messages.find(value => row(value).role === "tool" && row(value).tool_call_id === identityCallIds[0]);
     if (!negative || JSON.stringify(identityValue(row(first).content)) !== JSON.stringify(failedIdentity)) throw error;
-    return { accepted: [], negativeObserved: true, delta: { role: "assistant", content: "Controlled negative completed." }, finish: "stop" };
+    return { accepted: [], negativeObserved: true, auxiliary: false, delta: { role: "assistant", content: "Controlled negative completed." }, finish: "stop" };
   }
-  if (accepted.length === identityCallIds.length) return { accepted, negativeObserved: false,
+  if (accepted.length === identityCallIds.length) return { accepted, negativeObserved: false, auxiliary: false,
     delta: { role: "assistant", content: "Protocol diagnostic completed." }, finish: "stop" };
-  return { accepted, negativeObserved: false, delta: { role: "assistant", tool_calls: [{ index: 0,
+  return { accepted, negativeObserved: false, auxiliary: false, delta: { role: "assistant", tool_calls: [{ index: 0,
     id: identityCallIds[accepted.length], type: "function", function: { name: tool[0]!.name, arguments: "{}" } }] }, finish: "tool_calls" };
 }
 export function diagnosticChildEnvironment(path: string): NodeJS.ProcessEnv {
