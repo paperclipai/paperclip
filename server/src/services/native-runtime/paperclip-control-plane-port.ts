@@ -27,7 +27,7 @@ import {
   validatePrpEvent,
   validatePrpStructuredRunResult,
 } from "../../vendor/paperclip-runner/index.js";
-import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
+import { appendHeartbeatRunEvent, appendHeartbeatRunEvents, type AppendHeartbeatRunEventResult } from "../heartbeat-run-events.js";
 import { publishLiveEvent } from "../live-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { redactRunnerApiEvent, redactRunnerApiPayloads } from "./runner-api-log-redaction.js";
@@ -324,9 +324,7 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
   }
 
-  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal }) {
-    const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
-    this.#assertActive(options);
+  #prepareEvent(value: NativeRunEvent | PrpEvent): PrpEvent {
     if (!isPrpEvent(value)) throw new Error("native_legacy_event_not_supported");
     const validated = validatePrpEvent(value);
     if (!validated.ok) throw new Error(`native_event_schema_invalid:${validated.issues[0]?.message ?? "unknown"}`);
@@ -371,10 +369,33 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
         }
       }
     }
-    event = redactRunnerApiEvent(event);
-    const persisted = await this.#db.transaction(async tx => {
+    return redactRunnerApiEvent(event);
+  }
+
+  async appendEvent(value: NativeRunEvent | PrpEvent, options?: { signal: AbortSignal }) {
+    return (await this.#appendEventBatch([value], options))[0]!;
+  }
+
+  async appendEvents(values: readonly PrpEvent[], options?: { signal: AbortSignal }) {
+    if (values.length === 0) return [];
+    if (values.length > 64 || values.reduce((bytes, event) => bytes + Buffer.byteLength(JSON.stringify(event)), 0) > 64 * 1024
+      || values.some(event => event.sourceKind !== "runner" || event.eventType !== "item.delta" || event.priority === 0
+        || !["agentMessage", "reasoning"].includes(String(event.payload.kind))
+        || typeof event.payload.text !== "string")) {
+      throw new Error("native_event_batch_invalid");
+    }
+    return this.#appendEventBatch(values, options);
+  }
+
+  async #appendEventBatch(values: readonly (NativeRunEvent | PrpEvent)[], options?: { signal: AbortSignal }) {
+    const persistenceStartedAt = Date.now(), persistenceClock = performance.now();
+    this.#assertActive(options);
+    // Redaction is stateful across deltas. Prepare strictly in source order,
+    // retaining the same replay window and lossless envelope as singleton calls.
+    const events = values.map(value => this.#prepareEvent(value));
+    const receipts = await this.#db.transaction(async tx => {
       this.#assertActive(options);
-      const receipt = await appendHeartbeatRunEvent(tx as unknown as Db, {
+      const inputs = events.map(event => ({
         companyId: this.#binding.companyId,
         runId: this.#binding.runId,
         agentId: this.#binding.agentId,
@@ -389,14 +410,47 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
           protocolSchemaVersion: event.schemaVersion,
           canonicalPayload: event as unknown as Record<string, unknown>,
         },
-      });
-      // The nested append has no publication side effects. Revocation rolls
-      // back its event and sequence allocation before the outer commit.
+      }));
+      // Redaction can release a held prefix or add digest metadata. Bound
+      // prepared envelopes too, without rejecting valid raw-sized batches.
+      // Every subgroup remains inside this same outer transaction.
+      const appended: AppendHeartbeatRunEventResult[] = [];
+      let pending: typeof inputs = [], pendingBytes = 0;
+      const flush = async () => {
+        if (pending.length === 0) return;
+        appended.push(...(pending.length === 1
+          ? [await appendHeartbeatRunEvent(tx as unknown as Db, pending[0]!)]
+          : await appendHeartbeatRunEvents(tx as unknown as Db, pending)));
+        pending = []; pendingBytes = 0;
+      };
+      for (let index = 0; index < inputs.length; index += 1) {
+        const bytes = Buffer.byteLength(JSON.stringify(events[index]!));
+        if (pending.length > 0 && pendingBytes + bytes > 64 * 1024) await flush();
+        pending.push(inputs[index]!); pendingBytes += bytes;
+        if (bytes > 64 * 1024) await flush();
+      }
+      await flush();
+      // Revocation before the outer commit rolls back the entire batch,
+      // including sequence reservations and transaction-aware notifications.
       this.#assertActive(options);
-      return receipt;
+      return appended;
     });
+    const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;
     this.#assertActive(options);
-    try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceStartedAt + performance.now() - persistenceClock); } catch {}
+    for (let index = 0; index < events.length; index += 1) {
+      this.#assertActive(options);
+      await this.#publishEventReceipt(events[index]!, receipts[index]!, persistenceStartedAt, persistenceEndedAt);
+    }
+    return receipts.map(persisted => ({
+      cursor: persisted.row.seq,
+      highestContiguousSourceSeq: persisted.highestContiguousSourceSeq,
+      disposition: persisted.disposition,
+    }));
+  }
+
+  async #publishEventReceipt(event: PrpEvent, persisted: AppendHeartbeatRunEventResult,
+    persistenceStartedAt: number, persistenceEndedAt: number): Promise<void> {
+    try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
     if (persisted.disposition === "committed") {
       try {
         publishLiveEvent({
@@ -423,11 +477,6 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       // returns to its synchronous governed-wait boundary.
       await this.#onDuplicateEvent?.(event, persisted.row.seq);
     }
-    return {
-      cursor: persisted.row.seq,
-      highestContiguousSourceSeq: persisted.highestContiguousSourceSeq,
-      disposition: persisted.disposition,
-    };
   }
 
   async replayEvents(input: ReplayControlPlaneEventsInput) {
