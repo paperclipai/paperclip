@@ -13,6 +13,8 @@ const tscCliPath = path.join(rootDir, "node_modules", "typescript", "bin", "tsc"
 const lockDir = path.join(rootDir, "node_modules", ".cache", "paperclip-plugin-build-deps.lock");
 const lockTimeoutMs = 60_000;
 const lockPollMs = 100;
+const sdkOnly = process.argv.length === 3 && process.argv[2] === "--sdk-only";
+if (process.argv.length > 2 && !sdkOnly) throw new Error("Expected no arguments or --sdk-only");
 
 const sharedDependencies = JSON.parse(fs.readFileSync(path.join(rootDir, "packages/shared/package.json"), "utf8")).dependencies ?? {};
 const pluginDependencies = JSON.parse(fs.readFileSync(path.join(rootDir, "packages/plugins/sdk/package.json"), "utf8")).dependencies ?? {};
@@ -45,7 +47,7 @@ const pluginSdkTarget = {
     ...(pluginUsesRunnerSdk ? [runnerSdkTarget] : []),
   ],
 };
-const buildTargets = [
+const buildTargets = sdkOnly ? [runnerSdkTarget] : [
   ...(sharedUsesRunnerSdk || pluginUsesRunnerSdk ? [runnerSdkTarget] : []),
   sharedTarget, pluginSdkTarget,
 ];
@@ -234,7 +236,7 @@ async function build(target) {
   return code;
 }
 
-if (allOutputsCurrent() && !fs.existsSync(lockDir)) {
+if (allOutputsCurrent() && (sdkOnly || !fs.existsSync(lockDir))) {
   process.exit(0);
 }
 

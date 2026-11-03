@@ -19,6 +19,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 const target = path.dirname(process.argv[3]);
 const manifest = JSON.parse(fs.readFileSync(path.join(target, "package.json"), "utf8"));
+if (process.env.CHECK_SDK_REENTRY === "true" && target.endsWith(path.join("packages", "shared"))) {
+  const result = require("node:child_process").spawnSync(process.execPath, ["scripts/ensure-plugin-build-deps.mjs", "--sdk-only"], {
+    cwd: process.cwd(), timeout: 2000, encoding: "utf8",
+  });
+  if (result.status !== 0) process.exit(44);
+}
 for (const [name, directory] of [["@paperclipai/runner-sdk", "packages/runner-sdk"], ["@paperclipai/shared", "packages/shared"]]) {
   if (Object.hasOwn(manifest.dependencies ?? {}, name)
     && !fs.existsSync(path.resolve(directory, "dist/complete"))) process.exit(43);
@@ -46,8 +52,8 @@ setTimeout(() => {
     fs.writeFileSync(path.join(root, target, "package.json"), JSON.stringify({ dependencies }));
   }
   const lock = path.join(root, "node_modules/.cache/paperclip-plugin-build-deps.lock");
-  const launch = (env = {}) => {
-    const child = spawn(process.execPath, ["scripts/ensure-plugin-build-deps.mjs"], {
+  const launch = (env = {}, args = []) => {
+    const child = spawn(process.execPath, ["scripts/ensure-plugin-build-deps.mjs", ...args], {
       cwd: root, env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
@@ -293,4 +299,72 @@ test("a direct plugin SDK dependency builds the SDK without invalidating indepen
   assert.match(next.output, /Building @paperclipai\/plugin-sdk/);
   assert.doesNotMatch(next.output, /Building @paperclipai\/shared/);
   assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 5);
+});
+
+
+test("SDK-only preparation builds and caches only the SDK without a shared consumer", async t => {
+  const f = fixture(t, { sharedUsesSdk: false, pluginUsesSdk: false });
+  const first = await f.launch({}, ["--sdk-only"]).done;
+  assert.equal(first.code, 0, first.output);
+  assert.deepEqual(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n"), [path.join(fs.realpathSync(f.root), "packages/runner-sdk")]);
+  assert.equal(fs.existsSync(path.join(f.root, "packages/shared/dist/index.js")), false);
+  fs.appendFileSync(path.join(f.root, "packages/shared/src/index.ts"), "export const unrelated = true;\n");
+  const cached = await f.launch({}, ["--sdk-only"]).done;
+  assert.equal(cached.code, 0, cached.output);
+  assert.doesNotMatch(cached.output, /Building/);
+});
+
+test("default and SDK-only prerequisites serialize incomplete SDK output and compile once", async t => {
+  const f = fixture(t);
+  const first = f.launch({ BUILD_DELAY: "200" }, ["--sdk-only"]);
+  await until(() => fs.existsSync(path.join(f.root, "packages/runner-sdk/dist/index.js")));
+  const results = await Promise.all([first.done, f.launch().done, f.launch({}, ["--sdk-only"]).done]);
+  for (const result of results) assert.equal(result.code, 0, result.output);
+  assert.match(results[2].output, /Waiting for another workspace build/);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 3);
+});
+
+test("a certified SDK prerequisite can reenter while its shared consumer owns the build lock", async t => {
+  const f = fixture(t);
+  const result = await f.launch({ CHECK_SDK_REENTRY: "true" }).done;
+  assert.equal(result.code, 0, result.output);
+  assert.equal(fs.readFileSync(path.join(f.root, "builds"), "utf8").trim().split("\n").length, 3);
+  assert.equal(fs.existsSync(f.lock), false);
+});
+
+
+test("clean Shared and Runner consumers resolve emitted SDK declarations after the cached prerequisite", async t => {
+  const f = fixture(t);
+  const repository = path.resolve(import.meta.dirname, "../..");
+  const compiler = fs.realpathSync(path.join(repository, "node_modules/typescript"));
+  fs.rmSync(path.join(f.root, "node_modules/typescript"), { recursive: true });
+  fs.symlinkSync(compiler, path.join(f.root, "node_modules/typescript"), "junction");
+  fs.mkdirSync(path.join(f.root, "node_modules/@types"));
+  fs.symlinkSync(fs.realpathSync(path.join(repository, "packages/runner-sdk/node_modules/@types/node")), path.join(f.root, "node_modules/@types/node"), "junction");
+  fs.copyFileSync(path.join(repository, "tsconfig.base.json"), path.join(f.root, "tsconfig.base.json"));
+  for (const entry of ["src", "package.json", "tsconfig.json"]) fs.cpSync(path.join(repository, "packages/runner-sdk", entry), path.join(f.root, "packages/runner-sdk", entry), { recursive: true });
+  fs.mkdirSync(path.join(f.root, "node_modules/@paperclipai"));
+  fs.symlinkSync(path.join(f.root, "packages/runner-sdk"), path.join(f.root, "node_modules/@paperclipai/runner-sdk"), "junction");
+  const consumers = ["packages/shared", "packages/paperclip-runner"];
+  for (const consumer of consumers) {
+    const directory = path.join(f.root, consumer);
+    fs.mkdirSync(path.join(directory, "src"), { recursive: true });
+    fs.writeFileSync(path.join(directory, "package.json"), JSON.stringify({ type: "module", dependencies: { "@paperclipai/runner-sdk": "workspace:*" } }));
+    fs.writeFileSync(path.join(directory, "src/index.ts"), `import { HARNESS_PROTOCOL_SCHEMA, parseHarnessRequest } from "@paperclipai/runner-sdk/contracts";
+export const request = parseHarnessRequest({ schema: HARNESS_PROTOCOL_SCHEMA, id: 1, method: "snapshot", params: {} });
+`);
+    fs.writeFileSync(path.join(directory, "tsconfig.json"), JSON.stringify({ extends: "../../tsconfig.base.json", compilerOptions: { rootDir: "src", outDir: "dist" }, include: ["src"] }));
+    const cold = spawnSync(process.execPath, [path.join(compiler, "bin/tsc"), "-p", path.join(directory, "tsconfig.json"), "--noEmit"], { encoding: "utf8" });
+    assert.notEqual(cold.status, 0);
+    assert.match(cold.stdout + cold.stderr, /Cannot find module '@paperclipai\/runner-sdk\/contracts'/);
+  }
+  const prepared = await f.launch({}, ["--sdk-only"]).done;
+  assert.equal(prepared.code, 0, prepared.output);
+  for (const consumer of consumers) {
+    const checked = spawnSync(process.execPath, [path.join(compiler, "bin/tsc"), "-p", path.join(f.root, consumer, "tsconfig.json"), "--noEmit"], { encoding: "utf8" });
+    assert.equal(checked.status, 0, checked.stdout + checked.stderr);
+  }
+  const cached = await f.launch({}, ["--sdk-only"]).done;
+  assert.equal(cached.code, 0, cached.output);
+  assert.doesNotMatch(cached.output, /Building/);
 });
