@@ -111,6 +111,10 @@ export async function connectionContinuationPendingResponse(db: Db, task: Task, 
       && "connectionId" in interaction.result && typeof interaction.result.connectionId === "string";
     if (interaction.status !== "pending" && !retired) continue;
     if (retired && (interaction.payload as { requestingAgentId?: string }).requestingAgentId !== task.assigneeAgentId) continue;
+    const payload = connectionIntentPayloadSchema.safeParse(interaction.payload).data;
+    if (retired && payload?.purpose === "ai" && await connectionIntentService(db).aiRequestHasSupersededProvider(
+      task.companyId, payload.requestingAgentId, payload.serviceSlug,
+    )) continue;
     if (interaction.addresseeUserId !== responsibleUserId) return "interaction";
     const connection = await findAvailableConnection(db, task, { ...interaction, status: "pending" }, policyRunId);
     // Historical system retirements describe a service need, not a permanent

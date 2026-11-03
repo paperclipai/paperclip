@@ -94,6 +94,31 @@ describePostgres("already available connection requests", () => {
     expect((await db.select().from(connectionIntentDeliveries))[0].deliveredAt).not.toBeNull();
   });
 
+  it("does not let a retired provider request block recovery after a provider change", async () => {
+    const f = await seedAi();
+    await retry(f);
+    const wakeup = vi.fn(async () => null);
+    const worker = connectionIntentDeliveryService(db, { wakeup });
+    await worker.sweepPending();
+    expect(wakeup).toHaveBeenCalledOnce();
+    await db.update(agents).set({ adapterType: "codex_local", runtimeConfig: {
+      aiConnection: { provider: "openai", method: "api_key", mode: "responsible_user" },
+    } }).where(eq(agents.id, f.agentId));
+    const [current] = await db.insert(issueThreadInteractions).values({ companyId: f.companyId, issueId: f.issueId,
+      kind: "connection_intent", status: "pending", addresseeUserId: "connection-owner",
+      payload: { ...f.intent.payload, serviceSlug: "openai", serviceName: "OpenAI" } }).returning();
+    expect(await connectionContinuationPendingResponse(db, f.task, "connection-owner")).toBe("interaction");
+    await db.update(toolConnections).set({ config: { ai: { provider: "openai", method: "api_key" } } })
+      .where(eq(toolConnections.id, f.connection.id));
+    await db.update(aiProviderDefaults).set({ provider: "openai" }).where(eq(aiProviderDefaults.companyId, f.companyId));
+    await worker.sweepPending();
+    expect(wakeup).toHaveBeenCalledTimes(2);
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, current!.id)))[0].status).toBe("expired");
+    expect(await connectionContinuationPendingResponse(db, f.task, "connection-owner")).toBeNull();
+    await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, f.grant.id));
+    expect(await connectionContinuationPendingResponse(db, f.task, "connection-owner")).toBe("interaction");
+  });
+
   it("rechecks repaired AI authority before queued execution and native response projection", async () => {
     const f = await seedAi();
     const run = await retry(f);
@@ -307,7 +332,9 @@ describePostgres("already available connection requests", () => {
     });
     const service = connectionIntentDeliveryService(db, { wakeup });
     const errors: unknown[] = [];
-    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { errors.push(error); } });
+    let draining = false;
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
+      onError: error => { errors.push(error); } });
     let sawPassive!: () => void, sawDelivered!: () => void;
     const passive = new Promise<void>(resolve => { sawPassive = resolve; });
     const delivered = new Promise<void>(resolve => { sawDelivered = resolve; });
@@ -318,9 +345,9 @@ describePostgres("already available connection requests", () => {
       await new Promise<void>(resolve => setImmediate(resolve));
     };
     try {
-      await coordinator.register(DELIVERY_QUEUES.connection, { retryMs: 5000, run: () => service.sweepPending(),
+      await coordinator.register(DELIVERY_QUEUES.connection, { retryMs: 5000, pausePassiveMaintenance: true, run: () => service.sweepPending(),
         hasPending: async () => { const pending = await service.hasPending();
-          if (!pending && service.nextRunAt() !== null) sawPassive();
+          if (!pending && service.nextRunAt() !== null) { draining = true; sawPassive(); }
           if (!pending && wakeup.mock.calls.length > 0) sawDelivered();
           return pending;
         }, nextRunAt: service.nextRunAt,
@@ -335,9 +362,11 @@ describePostgres("already available connection requests", () => {
       const now = Date.now(), ownerId = randomUUID();
       const drain = (): IdleSleepDrainStatus => ({ ownerId, draining: true, startedAt: new Date(now - 1000),
         expiresAt: new Date(now + 60_000), activeRuns: 0, pendingWakes: 0 });
+      // Match the host drain: passive maintenance cannot enter the safety scan.
       expect(await readIdleSleepSafety(db, drain, Date.now, ownerId, async () => "none", undefined, undefined, true, true)).toMatchObject({ backgroundWork: "none" });
       // This mutation has no queue notification: awake-only maintenance must
       // still discover new access; after sleep startup performs the same scan.
+      draining = false;
       await db.update(toolConnections).set({ status: "active", enabled: true }).where(eq(toolConnections.id, f.connection.id));
       await wait(delivered);
       expect(errors).toEqual([]); expect(wakeup).toHaveBeenCalledOnce();

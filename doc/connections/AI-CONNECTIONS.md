@@ -31,6 +31,9 @@ credential, grant, default or agent binding. A resumed run uses a fresh provider
 session and normal task admission. Separate questions and approvals still block
 continuation. Manual blocks, closed tasks, and reassignment remain protected.
 Accounts that still need explicit adoption retain their setup request.
+After an explicit provider change, an expired request for the old provider does
+not constrain the new selection. Pending requests and access checks for the
+current provider still block continuation when required.
 
 Database fixture coverage is in `satisfied-connection-intents.test.ts`. It covers
 repair, permission failures, separate review gates, duplicate delivery and

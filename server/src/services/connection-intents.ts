@@ -1289,6 +1289,14 @@ export function connectionIntentService(db: Db) {
   return {
     validate: loadRunContext,
     usableConnectionForAgent,
+    // Historical AI requests cannot constrain an explicitly selected new provider.
+    // A missing/invalid binding or a router still needs its normal readiness check.
+    async aiRequestHasSupersededProvider(companyId: string, agentId: string, serviceSlug: string) {
+      const [agent] = await db.select({ runtimeConfig: agents.runtimeConfig }).from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.id, agentId)));
+      const saved = aiConnectionBindingSchema.safeParse(agent?.runtimeConfig.aiConnection).data;
+      return !!saved && saved.provider !== serviceSlug;
+    },
     search,
     request,
     requestChatHandoff,
