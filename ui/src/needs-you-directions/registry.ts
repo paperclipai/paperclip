@@ -8,7 +8,7 @@ export const registry = defineLab({
   capabilities: ["inbox-search/triage", "inbox-search/decisions"],
   publicUrl: "https://paperclip-needs-you-directions.vercel.app",
   surfaces: [
-    { id: "landing", label: "Landing", width: 896, nav: "other" },
+    { id: "landing", label: "Landing", width: 1040, nav: "other" },
     { id: "card", label: "Card", width: 640, nav: "other" },
     { id: "panel", label: "Review-panel", width: 434, nav: "other" },
   ],

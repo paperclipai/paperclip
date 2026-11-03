@@ -9,6 +9,7 @@ import {
   Inbox,
   LayoutDashboard,
   LifeBuoy,
+  ListChecks,
   Package,
   Repeat,
   Search,
@@ -33,6 +34,7 @@ const TOP: NavEntry[] = [
   { label: "Search", icon: Search },
   { label: "Dashboard", icon: LayoutDashboard },
   { label: "Inbox", icon: Inbox },
+  { label: "Decisions", icon: ListChecks },
 ];
 const WORK: NavEntry[] = [
   { label: "Tasks", icon: CircleCheck, nav: "tasks" },
@@ -82,7 +84,7 @@ function Section({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function Sidebar({ active }: { active: ShellNav }) {
+function Sidebar({ active, activeLabel }: { active: ShellNav; activeLabel?: string }) {
   return (
     <aside className="flex w-60 shrink-0 flex-col primary-sidebar-surface" aria-label="Primary">
       <div className="flex h-(--sz-60px) shrink-0 items-center gap-1 px-3">
@@ -102,7 +104,7 @@ function Sidebar({ active }: { active: ShellNav }) {
       <nav className="flex min-h-0 flex-1 flex-col gap-4 px-3 py-2">
         <div className="flex flex-col gap-0.5">
           {TOP.map((entry) => (
-            <NavItem key={entry.label} {...entry} />
+            <NavItem key={entry.label} {...entry} active={entry.label === activeLabel} />
           ))}
         </div>
         <Section label="Work">
@@ -146,11 +148,11 @@ export function SupportButton() {
   );
 }
 
-export function AppShell({ active, children }: { active: ShellNav; children: ReactNode }) {
+export function AppShell({ active, activeLabel, children }: { active: ShellNav; activeLabel?: string; children: ReactNode }) {
   return (
     <div className="bg-background text-foreground flex min-h-225 flex-col">
       <div className="flex min-h-0 flex-1">
-        <Sidebar active={active} />
+        <Sidebar active={active} activeLabel={activeLabel} />
         <div className="flex min-w-0 flex-1 flex-col">{children}</div>
       </div>
     </div>

@@ -7,20 +7,15 @@ const SURFACE = surfaceOf("card");
 
 export function CardFrame({ kit }: { kit: DirectionKit }) {
   return (
-    <AppShell active={SURFACE.nav}>
-      <div className="relative flex h-(--sz-60px) shrink-0 items-center border-b border-border px-4 md:px-6">
-        <span className="min-w-0 truncate font-semibold uppercase tracking-wider text-muted-foreground">{SURFACE.label}</span>
+    <AppShell active={SURFACE.nav} activeLabel="Decisions">
+      <div className="relative flex h-(--sz-60px) shrink-0 items-center gap-2 border-b border-border px-4 md:px-6">
+        <span className="min-w-0 truncate text-sm font-medium text-foreground">Decisions</span>
+        <span className="text-muted-foreground">/</span>
+        <span className="min-w-0 truncate text-sm text-muted-foreground">Card structure</span>
         <SupportButton />
       </div>
-      <main className="flex-1 p-4 md:p-6">
-        <div
-          data-lab-stub="frame-card"
-          className="mx-auto flex w-full flex-col gap-3 rounded-md border border-dashed border-border p-4"
-          style={{ maxWidth: SURFACE.width }}
-        >
-          <p className="font-mono text-(length:--text-micro) uppercase tracking-(--tracking-label) text-muted-foreground">
-            Frame · {SURFACE.label} · {SURFACE.width}px · draw the product chrome here
-          </p>
+      <main className="flex-1 bg-muted/30 p-4 md:p-8">
+        <div className="mx-auto w-full" style={{ maxWidth: SURFACE.width }}>
           <Slot kit={kit}>
             <kit.CardBody items={CARD_ITEMS} />
           </Slot>
