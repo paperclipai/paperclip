@@ -647,7 +647,18 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     ? targetWorkspaceRealization.authoritativeRoot
     : useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
-  const envConfig = parseObject(config.env);
+  const suppliedEnvConfig = parseObject(config.env);
+  // The server injects host-local scratch and git metadata into the adapter
+  // config. They are not meaningful in an independently owned remote home.
+  // Drop them before any consumer can forward or interpret their values.
+  const ignoredRemoteHostEnv = new Set([
+    "PAPERCLIP_RUNNER_NETWORK_ROOTS", "PAPERCLIP_GITHUB_HOST_HOME", "GH_CONFIG_DIR",
+    "PAPERCLIP_RUN_SCRATCH_DIR", "PAPERCLIP_TASK_SCRATCH_DIR", "PAPERCLIP_SCRATCH_DIR",
+    "PAPERCLIP_TMPDIR", "TMPDIR", "TEMP", "TMP", "PAPERCLIP_GIT_METADATA_ROOTS",
+  ]);
+  const envConfig = externalHome
+    ? Object.fromEntries(Object.entries(suppliedEnvConfig).filter(([key]) => !ignoredRemoteHostEnv.has(key)))
+    : suppliedEnvConfig;
   const executionTargetIsRemote = adapterExecutionTargetIsRemote(executionTarget);
   let configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0

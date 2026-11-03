@@ -410,6 +410,17 @@ describe("codex remote execution", () => {
           CODEX_HOME: codexHomeDir,
           PAPERCLIP_GITHUB_AUTH_MODE: "none",
           PAPERCLIP_RUNNER_NETWORK_ACCESS: "disabled",
+          PAPERCLIP_RUNNER_NETWORK_ROOTS: "HOST_ONLY_RUNTIME_MARKER",
+          PAPERCLIP_GITHUB_HOST_HOME: "HOST_ONLY_RUNTIME_MARKER",
+          GH_CONFIG_DIR: "HOST_ONLY_RUNTIME_MARKER",
+          PAPERCLIP_RUN_SCRATCH_DIR: "HOST_ONLY_RUNTIME_MARKER",
+          PAPERCLIP_TASK_SCRATCH_DIR: "HOST_ONLY_RUNTIME_MARKER",
+          PAPERCLIP_SCRATCH_DIR: "HOST_ONLY_RUNTIME_MARKER",
+          PAPERCLIP_TMPDIR: "HOST_ONLY_RUNTIME_MARKER",
+          TMPDIR: "HOST_ONLY_RUNTIME_MARKER",
+          TEMP: "HOST_ONLY_RUNTIME_MARKER",
+          TMP: "HOST_ONLY_RUNTIME_MARKER",
+          PAPERCLIP_GIT_METADATA_ROOTS: "HOST_ONLY_RUNTIME_MARKER",
         },
       },
       context: {
@@ -449,7 +460,11 @@ describe("codex remote execution", () => {
     expect(resolveCommandForLogs).toHaveBeenCalled();
     for (const call of resolveCommandForLogs.mock.calls as unknown as Array<[unknown, unknown, Record<string, string>]>) {
       expect(call[2].PAPERCLIP_FIXTURE_HOST_SECRET).toBeUndefined();
+      expect(Object.values(call[2])).not.toContain("HOST_ONLY_RUNTIME_MARKER");
     }
+    expect(runChildProcess).toHaveBeenCalled();
+    const child = runChildProcess.mock.calls.at(-1) as unknown as [unknown, unknown, unknown, { env: Record<string, string> }];
+    expect(Object.values(child[3].env)).not.toContain("HOST_ONLY_RUNTIME_MARKER");
     vi.unstubAllEnvs();
 
     // The staged temp dir is removed after execute completes (cleanup on teardown).
