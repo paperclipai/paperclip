@@ -76,6 +76,9 @@ export const heartbeatRuns = pgTable(
     completionContractId: uuid("completion_contract_id"),
     completionContractSha256: text("completion_contract_sha256"),
     nextEventSeq: bigint("next_event_seq", { mode: "number" }).notNull().default(1),
+    // Disposable source-cursor projection, valid only through this global seq.
+    eventCursorProjectionSeq: bigint("event_cursor_projection_seq", { mode: "number" }).notNull().default(0),
+    eventCursorRebuildPending: boolean("event_cursor_rebuild_pending").notNull().default(false),
     nativePhase: text("native_phase"),
     nativePhaseUpdatedAt: timestamp("native_phase_updated_at", { withTimezone: true }),
     sessionIdBefore: text("session_id_before"),
@@ -156,6 +159,8 @@ export const heartbeatRuns = pgTable(
       table.nativeIssueId,
       table.id,
     ),
+    eventCursorRebuildIdx: index("heartbeat_runs_event_cursor_rebuild_idx")
+      .on(table.companyId, table.id).where(sql`${table.eventCursorRebuildPending} = true`),
     companyNativeIssueRunContractUq: unique(
       "heartbeat_runs_company_native_issue_contract_id_uq",
     ).on(

@@ -184,8 +184,13 @@ readers of the whole payload must apply `decodeRunEventPayload`. The column
 remains JSONB and requires no schema migration.
 
 The writer locks the native `heartbeat_runs` row and allocates the existing
-per-run `seq` cursor. A byte-equivalent retry reuses the first row; a changed
-retry or source-sequence gap is rejected. Company, issue, agent, run, session,
+per-run `seq` cursor. A byte-equivalent retry with both matching source identities
+reuses the first row; changed identities or payloads fail closed. Shared ingestion
+can retain out-of-order source events but acknowledges only the contiguous prefix.
+The strict PRP coordinator rejects new source gaps. Transactional source cursors
+and received-range metadata avoid repeated history scans. A stale projection
+uses the retained-event calculation while bounded rebuild work catches up; it
+cannot over-acknowledge from partial state. Company, issue, agent, run, session,
 and runner-source bindings must match the persisted native run. Bootstrap
 tickets, reconnect leases, authentication proofs, encryption keys, and raw
 credential material are never written to the run log.
