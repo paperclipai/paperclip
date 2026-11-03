@@ -15,6 +15,7 @@ import { installDatabaseWorkSignals } from "../packages/db/src/work-signals.js";
 import type { AppendHeartbeatRunEventInput, AppendHeartbeatRunEventResult } from "../server/src/services/heartbeat-run-events.js";
 import { resolveExternalTestDatabaseUrl } from "../server/src/__tests__/helpers/external-test-database.js";
 import { nativeSha256 } from "../server/src/services/native-runtime/canonical.js";
+import { evaluateServiceRepeatability, noiseExceedingPairedWins } from "./native-ingestion-performance-gates.mjs";
 
 // This measures the real database owner, not browser delivery or a provider.
 // The assembled application/browser acceptance is a separate required layer.
@@ -45,6 +46,9 @@ if (arg("validate-report")) {
   if (process.argv.includes("--require-acceptance")) {
     assertServiceAcceptance(recorded);
   }
+  if (process.argv.includes("--require-repeatability")) {
+    assert.equal(evaluateServiceRepeatability(recorded).passed, true, "A/A repeatability gate failed; retain evidence and diagnose before candidate measurements");
+  }
   console.log(JSON.stringify({ valid: true, phase: recorded.phase, baselineRevision: recorded.baselineRevision,
     candidateRevision: recorded.candidateRevision, scope: recorded.scope }));
   process.exit(0);
@@ -52,6 +56,7 @@ if (arg("validate-report")) {
 const quick = process.argv.includes("--quick");
 const phase = arg("phase") ?? "compare";
 assert.ok(["aa", "compare", "batch"].includes(phase), "--phase must be aa, compare, or batch");
+if (process.argv.includes("--require-repeatability")) assert.equal(phase, "aa", "Repeatability requires the A/A phase");
 const baselineRef = arg("baseline-ref");
 assert.ok(baselineRef, "Pass a pinned --baseline-ref=<commit>");
 const baselineRevision = git(["rev-parse", "--verify", `${baselineRef}^{commit}`]).trim();
@@ -107,6 +112,7 @@ const report: Record<string, unknown> = {
   environment: { node: process.version, platform: process.platform, architecture: process.arch, cpus: availableParallelism(), loadBefore },
   results: [], incomplete: true, cleanupComplete: false,
 };
+let calibratedNoise: any;
 
 async function save() {
   if (output) await fs.writeFile(output, JSON.stringify(report, null, 2));
@@ -216,13 +222,24 @@ try {
   report.effectiveCandidateRevision = phase === "aa" ? baselineRevision : candidateRevision;
   if (phase === "batch") assert.equal(typeof candidate.appendHeartbeatRunEvents, "function", "Batch phase requires appendHeartbeatRunEvents");
   report.candidateSourceSha256 = createHash("sha256").update(await fs.readFile(path.join(root, sourcePath))).digest("hex");
-  const proofFiles = [...new Set([sourcePath, "scripts/benchmark-native-event-ingestion.ts",
+  const proofFiles = [...new Set([sourcePath, "scripts/benchmark-native-event-ingestion.ts", "scripts/native-ingestion-performance-gates.mjs",
     ...git(["diff", "--name-only", baselineRevision, "--", "server/src/services", "packages/db/src/schema"]).trim().split("\n"),
     ...git(["ls-files", "--others", "--exclude-standard", "--", "server/src/services", "packages/db/src/schema"]).trim().split("\n"),
-  ])].filter(file => file.endsWith(".ts") && !file.endsWith(".test.ts"));
+  ])].filter(file => /\.(?:ts|mjs)$/.test(file) && !file.endsWith(".test.ts"));
   report.candidateSourceHashes = Object.fromEntries(await Promise.all(proofFiles.map(async file => [file,
     createHash("sha256").update(await fs.readFile(path.join(root, file))).digest("hex")])));
   report.candidateDirtyDiff = git(["diff", "HEAD", "--", sourcePath, "server/src/services/heartbeat", "packages/db/src/schema"]);
+  if (arg("noise-report")) {
+    calibratedNoise = JSON.parse(await fs.readFile(arg("noise-report")!, "utf8"));
+    assert.equal(calibratedNoise.phase, "aa"); assert.equal(calibratedNoise.incomplete, false);
+    assert.equal(calibratedNoise.baselineRevision, baselineRevision); assert.equal(calibratedNoise.workloadSha256, workloadSha256);
+    for (const file of ["scripts/benchmark-native-event-ingestion.ts", "scripts/native-ingestion-performance-gates.mjs"]) {
+      assert.equal(calibratedNoise.candidateSourceHashes[file], (report.candidateSourceHashes as Record<string, string>)[file],
+        "Measurement protocol or acceptance gates changed after A/A calibration; rerun calibration");
+    }
+    assert.equal(evaluateServiceRepeatability(calibratedNoise).passed, true,
+      "A/A repeatability must pass before candidate measurements start");
+  }
   if (!externalUrl) database = await startEmbeddedPostgresTestDatabase("native-event-ingestion-benchmark-");
   if (externalUrl) await applyPendingMigrations(externalUrl);
   db = createDb(externalUrl ?? database!.connectionString, { maxConnections: 1 });
@@ -413,20 +430,18 @@ try {
   report.incomplete = false;
   report.acceptance = phase === "aa" ? "Baseline repeatability only; this does not establish an improvement" : "Compare against the frozen same-workload A/A report; throughput improvement needs at least four of five paired wins beyond baseline noise. Browser, control and full-app gates remain separate.";
   if (arg("noise-report")) {
-    const noise = JSON.parse(await fs.readFile(arg("noise-report")!, "utf8"));
-    assert.equal(noise.phase, "aa"); assert.equal(noise.incomplete, false);
-    assert.equal(noise.baselineRevision, baselineRevision); assert.equal(noise.workloadSha256, workloadSha256);
-    assert.equal(noise.candidateSourceHashes["scripts/benchmark-native-event-ingestion.ts"],
-      (report.candidateSourceHashes as Record<string, string>)["scripts/benchmark-native-event-ingestion.ts"],
-      "Measurement protocol changed after A/A calibration; rerun calibration rather than reuse its noise envelope");
+    const noise = calibratedNoise;
     report.noiseReport = arg("noise-report");
     report.comparison = (report.results as any[]).map(result => {
       const control = noise.results.find((row: any) => row.history === result.history && row.scenario === result.scenario);
       assert.ok(control);
-      const improvement = 1 - result.candidate.medianMs / result.baseline.medianMs;
-      const improvedBeyondNoise = result.pairedCandidateWins >= Math.ceil(pairs * 0.8) && improvement > control.aaNoiseEnvelopeRelative;
+      const improvement = (result.baseline.medianMs - result.candidate.medianMs) / result.baseline.medianMs;
+      const paired = noiseExceedingPairedWins(result.baseline.samples.map((sample: Sample, index: number) =>
+        (sample.elapsedMs - result.candidate.samples[index].elapsedMs) / sample.elapsedMs), control.aaNoiseEnvelopeRelative);
+      const improvedBeyondNoise = paired.pairedWinRequirementPassed && improvement > control.aaNoiseEnvelopeRelative;
       const noRegressionBeyondNoise = -improvement <= control.aaNoiseEnvelopeRelative;
       return { history: result.history, scenario: result.scenario, pairedCandidateWins: result.pairedCandidateWins,
+        noiseExceedingPairedWins: paired.noiseExceedingPairedWins, requiredPairedWins: paired.requiredPairedWins,
         latencyGate: result.latencyGate,
         improvementRelative: improvement, noiseEnvelopeRelative: control.aaNoiseEnvelopeRelative,
         improvedBeyondNoise, noRegressionBeyondNoise,
@@ -458,5 +473,12 @@ try {
   report.cleanupComplete = true;
   await save();
 }
+if (phase === "aa") {
+  report.repeatability = evaluateServiceRepeatability(report);
+  await save();
+}
 console.log(JSON.stringify(report, null, 2));
 if (process.argv.includes("--require-acceptance")) assertServiceAcceptance(report);
+if (process.argv.includes("--require-repeatability")) {
+  assert.equal(evaluateServiceRepeatability(report).passed, true, "A/A repeatability gate failed; retain evidence and diagnose before candidate measurements");
+}

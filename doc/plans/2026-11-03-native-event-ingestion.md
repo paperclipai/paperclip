@@ -81,8 +81,8 @@ has cursor projections is prepared with its own pinned rebuild helper. Both
 optimized arms must have current projections before steady-state timing.
 
 ```sh
-EVENT_BASELINE_REF=2e37c73c05fe84aead1883b72fdf6b1653b58c2a
-node --import ./server/node_modules/tsx/dist/loader.mjs scripts/benchmark-native-event-ingestion.ts --baseline-ref="$EVENT_BASELINE_REF" --phase=aa --output=/private/tmp/native-event-aa.json
+EVENT_BASELINE_REF=83b5f7d486e70e484acd9a41bc957054f4e10175
+node --import ./server/node_modules/tsx/dist/loader.mjs scripts/benchmark-native-event-ingestion.ts --baseline-ref="$EVENT_BASELINE_REF" --phase=aa --output=/private/tmp/native-event-aa.json --require-repeatability
 node --import ./server/node_modules/tsx/dist/loader.mjs scripts/benchmark-native-event-ingestion.ts --baseline-ref="$EVENT_BASELINE_REF" --phase=compare --noise-report=/private/tmp/native-event-aa.json --output=/private/tmp/native-event-cursor.json --require-acceptance
 ```
 
@@ -93,6 +93,35 @@ sample, and ordered/replay/late-gap/warm-source-suffix cases at all three histor
 sizes. Warm suffixes start above source sequence 1 and retain a contiguous cursor
 of zero. Report the actual history before and after each sample; the size label
 is the seeded history, not an assertion that appended rows do not accumulate.
+
+Fresh B0 is the exact unoptimized parent of B1, currently
+`83b5f7d486e70e484acd9a41bc957054f4e10175`. The initially pinned
+`2e37c73c05fe84aead1883b72fdf6b1653b58c2a` remains historical calibration/smoke
+evidence. Aligning the control removes intervening unrelated recovery, GitHub,
+CI and idle-history changes from application comparisons; it changes no
+workload, durability, cache or acceptance contract. Pin the final B1/B2 commits
+and matching compiled build stamps before fresh measurements.
+
+The lead approved explicit A/A repeatability limits before any revised timings:
+every ordered/replay/warm-suffix case at each history size must have maximum
+absolute paired relative latency difference **≤20%** and absolute median-arm
+drift **≤10%**. All nine timing cases must pass; late-gap timing stays structural
+only. `--require-repeatability` records these gates from raw samples and exits
+unsuccessfully for failure, smoke, insufficient pairs, a missing matrix or
+unfinished evidence/cleanup. It can also check an existing report with
+`--validate-report=<file> --require-repeatability`. A comparison validates this
+calibration before starting candidate database work. Failed calibration stops
+the sequence; preserve evidence and diagnose without weakening the limits.
+
+Improvement additionally requires at least four of five **individual paired
+improvements to exceed the observed A/A noise**, plus median improvement beyond
+that noise. Four merely positive changes do not suffice: with 10% noise,
+`[30%, 30%, 30%, 1%, -1%]` fails. Shared gates and browser CLI rejection of
+smoke/source/profile evidence are checked by:
+
+```sh
+node --test scripts/native-ingestion-performance-gates.test.mjs
+```
 
 Setup, projection rebuild, warmup, and independent verification stay outside the
 timed append interval. Post-sample reads verify durable count, global sequence,
@@ -232,7 +261,7 @@ node scripts/compare-native-ingestion-browser.ts --pairs=/private/tmp/browser-ab
 
 The preregistered primary loaded case is `burst512`: p95 emission/intended-to-
 visible latency and drainage through terminal settlement must improve beyond
-A/A noise in at least four of five pairs. Other case metrics are nonregression
+A/A noise in at least four of five individual pairs. Other case metrics are nonregression
 controls. Use `--expect=nonregression` for the cursor-only application control;
 the combined change still requires the loaded improvement. Comparison rejects
 smoke, source-server evidence, mismatched artifacts/protocols, missing background
