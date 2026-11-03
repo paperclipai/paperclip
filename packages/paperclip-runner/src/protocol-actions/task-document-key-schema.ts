@@ -1,5 +1,3 @@
-// Matches documents.ts trim().toLowerCase() followed by issueDocumentKeySchema.
-// U+212A (Kelvin sign) lowercases to ASCII k; the whitespace set is ECMAScript trim.
 const trimWhitespace = String.raw`[\u0009-\u000d\u0020\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]*`;
 
 export const taskDocumentKeySchema = {
