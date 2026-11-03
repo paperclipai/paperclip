@@ -102,8 +102,8 @@ test('foreign identity, duplicated case and changed run-bound metadata are rejec
 test('repair source metadata binds the corrected candidate and explicit changed definitions', () => {
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
-  assert.equal(repair.previousTargetSha, '43c44ccc823a8c972b247fa7159281887e6f5255');
-  assert.equal(manifest.targetSha, '51ef450754370c8a8f2cbe4bd18e1536bbc93966');
+  assert.equal(repair.previousTargetSha, '51ef450754370c8a8f2cbe4bd18e1536bbc93966');
+  assert.equal(manifest.targetSha, '40f4215186b59dd8703792d9caa9bc9d0e4eace8');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
@@ -214,6 +214,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   ],
   [
     "secrets.configure-company-secret",
+    "sourceFiles"
+  ],
+  [
+    "secrets.configure-company-secret",
     "oracleVersion"
   ],
   [
@@ -273,7 +277,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     assert.deepEqual(row(change.key)[change.field], change.current);
     assert.notDeepEqual(change.current, change.previous);
   }
-  assert.equal(repair.descriptorChanges.length, 38);
+  assert.equal(repair.descriptorChanges.length, 39);
   assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 27);
   assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['expectedRunCount', 'minimumRunCount', 'oracleVersion', 'setupPolicy', 'sourceFiles']);
   for (const change of repair.descriptorChanges) {
