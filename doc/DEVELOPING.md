@@ -353,11 +353,11 @@ When changing the workflow path or branch, authorize the new reference before
 updating the caller. Retain older authorized SHA references while queued runs or
 supported reruns still use them.
 
-General server shards run at most two test files at a time in separate Vitest
+General server shards run at most three test files at a time in separate Vitest
 forks. Each file retains its own home, config and process state, and its test
 cases run serially. An explicit `PAPERCLIP_*_TEST_DATABASE_URL`, including
 `PAPERCLIP_TEST_DATABASE_URL`, keeps those shards serial because the database
-is shared. Native Runner suites also use two isolated file workers. Their long
+is shared. Native Runner suites use four isolated file workers. Their long
 lease, preparation, disk-loss and checkpoint tests have separate files so real
 observation windows can overlap. Issue recovery suites split by producer and
 recovery behavior for the same reason. Unsharded local tests and route/authz
@@ -368,6 +368,22 @@ two independent partitions, each with its own embedded PostgreSQL, home and
 config; an explicit shared test database retains one partition per job.
 The Runner transport lease-expiry and cold-admission regressions live in their
 own file so those real-clock waits overlap other files in the existing pool.
+
+The two PR Runner Vitest jobs separate package tests from native server tests.
+The first runs the complete package inventory; the second runs the complete
+native server group. The existing `--shard=1/2` and `--shard=2/2` commands route
+through `run-pr-vitest-lane.mjs` for compatibility with the master-pinned
+workflow. Other workflow names and shard counts keep their existing coverage.
+Both jobs still prepare debug binaries. A separate exact-key debug cache holds
+the workspace library and every Cargo binary target. Its key includes source,
+protocol and fixture content, Cargo configuration, compiler flags, toolchain
+and checkout path. Only the Rust lane of a verified master push saves it.
+PR jobs only restore it; a missing or incomplete entry rebuilds normally.
+
+Affected-test selection treats Vite's exact `?raw` imports as file inputs.
+Changing that file selects its consumers. Generated/untracked files and unknown
+query loaders retain their consumers conservatively. Other filesystem, process
+and network effects keep their existing fallback.
 
 For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
