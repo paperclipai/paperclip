@@ -1,3 +1,4 @@
+import { verifiedIdleCapabilities } from "../middleware/cloud-control.js";
 import { trackIdleWork } from "../services/task-admission.js";
 import { Router, type Request } from "express";
 import { companies, type Db } from "@paperclipai/db";
@@ -336,7 +337,8 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
         typeof req.query.ownerId === "string" ? req.query.ownerId : undefined,
         diagnostic => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup), diagnostic }),
         pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors,
-        ...(req.query.idleSleepDiagnostics === "1" ? [{ collectDiagnostics: true }] as const : [] as const));
+        { incomingWake: verifiedIdleCapabilities(req), deadlineCapability: verifiedIdleCapabilities(req),
+          ...(req.query.idleSleepDiagnostics === "1" ? { collectDiagnostics: true } : {}) });
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;
     }

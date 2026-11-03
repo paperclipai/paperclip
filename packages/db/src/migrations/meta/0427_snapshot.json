@@ -1,5 +1,5 @@
 {
-  "id": "4ba28e58-e0f2-4428-bb78-857d5542659a",
+  "id": "dd860bff-55de-4849-8787-58b9de729258",
   "prevId": "a1fcb4c6-40e7-47a6-b3f2-c43cd9bf332b",
   "version": "7",
   "dialect": "postgresql",
@@ -5847,12 +5847,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "origin_run_id": {
-          "name": "origin_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
         "status": {
           "name": "status",
           "type": "text",
@@ -5900,21 +5894,6 @@
         }
       },
       "indexes": {
-        "approvals_origin_run_idx": {
-          "name": "approvals_origin_run_idx",
-          "columns": [
-            {
-              "expression": "origin_run_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "approvals_pending_retention_idx": {
           "name": "approvals_pending_retention_idx",
           "columns": [
@@ -5990,19 +5969,6 @@
             "id"
           ],
           "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "approvals_origin_run_id_heartbeat_runs_id_fk": {
-          "name": "approvals_origin_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "approvals",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "origin_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
@@ -30353,6 +30319,22 @@
           "isUnique": false,
           "concurrently": false,
           "method": "btree",
+          "with": {}
+        },
+        "execution_workspace_snapshots_imported_children_idx": {
+          "name": "execution_workspace_snapshots_imported_children_idx",
+          "columns": [
+            {
+              "expression": "(\"metadata\"->'importedWorkspaceChildren') jsonb_path_ops",
+              "asc": true,
+              "isExpression": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"execution_workspace_snapshots\".\"metadata\" ? 'importedWorkspaceChildren'",
+          "concurrently": false,
+          "method": "gin",
           "with": {}
         }
       },

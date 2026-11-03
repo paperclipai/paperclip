@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import type { LiveEvent } from "@paperclipai/shared";
 import { createLiveEventDelivery, LIVE_DELIVERY_MAX_BYTES, LIVE_DELIVERY_MAX_ITEMS } from "./live-event-delivery.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const event = (seq = 1, runId = "run-1"): LiveEvent => ({ id: seq, companyId: "company", type: "heartbeat.run.log",
   createdAt: "2026-10-24T00:00:00Z", payload: { runId, agentId: "agent", seq, chunk: "output" } });
@@ -116,7 +117,7 @@ it.each([false, true])("preserves the overflow deadline across resubscription un
     await vi.advanceTimersByTimeAsync(1_000);
     if (settled) expect(f.socket.close).not.toHaveBeenCalled();
     else expect(f.socket.close).toHaveBeenCalledWith(1013, "persistent event backlog");
-  } finally { f.delivery.dispose(); }
+  } finally { f.delivery.dispose(); release(event()); await settle(); }
   expect(vi.getTimerCount()).toBe(0);
 });
 it("recovers failed delivery reads through resync rather than silently claiming healthy streaming", async () => {
@@ -146,6 +147,7 @@ it("rejects unbounded interest sets and stale revision commands", () => {
 it.each([false, true].flatMap(negotiated => ["authorize", "decorate"].map(stage => ({ negotiated, stage }))))(
   "closes a stalled $stage read below the queue bound (negotiated=$negotiated)", async ({ negotiated, stage }) => {
     vi.useFakeTimers();
+    const baseline = idleWorkSnapshot().active;
     let release!: (value: LiveEvent) => void;
     const pending = new Promise<LiveEvent>(resolve => { release = resolve; });
     const f = fixture(stage === "authorize" ? vi.fn(() => pending) : undefined);
@@ -168,11 +170,13 @@ it.each([false, true].flatMap(negotiated => ["authorize", "decorate"].map(stage 
       expect(f.socket.close).toHaveBeenCalledWith(1013, "persistent event backlog");
       expect(f.delivery.metrics().retainedItems).toBe(1);
       expect(vi.getTimerCount()).toBe(0);
+      expect(idleWorkSnapshot().active).toBe(baseline + 1);
       release(source); await settle();
+      expect(idleWorkSnapshot().active).toBe(baseline);
       expect(f.delivery.metrics()).toMatchObject({ retainedItems: 0, retainedBytes: 0 });
       expect(f.frames.filter(frame => frame.type.startsWith("heartbeat."))).toEqual([]);
       expect(f.authorize).toHaveBeenCalledOnce();
-    } finally { f.delivery.dispose(); other.delivery.dispose(); }
+    } finally { f.delivery.dispose(); other.delivery.dispose(); release(event()); await settle(); }
   });
 
 it.each(["resolve", "dispose"])("clears a pending-read deadline on %s without idle work", async ending => {

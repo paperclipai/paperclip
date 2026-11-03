@@ -10,3 +10,6 @@ export function wakeConnectionEvents(owner: object): boolean {
   wake();
   return true;
 }
+
+/** Inspection never emits a wake or polls the broker. */
+export const hasConnectionEventWakeReceiver = (owner: object): boolean => receivers.has(owner);
