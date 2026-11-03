@@ -1,6 +1,10 @@
-import { describe,expect,it } from "vitest";
-import { companySecretExternalCases,deploymentSecretGuidance } from "./external-company-secret.js";
-function valid(){return {scenarioId:"secrets.configure-company-secret",companyId:"company",leadId:"ceo",reply:"The deployment key reference is now bound for Morgan. This confirms configuration, not a runtime delivery test.",phaseReplies:[{runId:"first",body:"Use secure secret settings for the deployment key, then bind its reference in Morgan's environment variables. Do not paste the key here."},{runId:"second",body:"The deployment key reference is now bound for Morgan. This confirms configuration, not a runtime delivery test."}],runs:[{id:"first",status:"succeeded"},{id:"second",status:"succeeded"}],connections:[],profiles:[],secrets:[{id:"secret",name:"Deployment API key",status:"active"}],endpoints:[],interactions:[],activity:[{entityId:"secret",action:"secret.created",actorType:"user"}],links:[],humanQueries:[],state:{initialRunId:"first",agentCreateStatus:403,secretCountBeforeHuman:0,operatorChannel:"private-browser-company-secret-and-public-browser-binding",secretUiVisible:true,humanSubmittedSecurely:true,storageClean:true,secureBrowserUntraced:true,secretId:"secret",morganId:"morgan",bindings:[{targetType:"agent",targetId:"morgan",configPath:"env.DEPLOYMENT_API_KEY",versionSelector:"latest"}],savedReferenceMatches:true,morganBindingVisible:true,bindingHumanAttributed:true,secretScanComplete:true,secretLeaked:false}};}
+import { describe,expect,it,vi } from "vitest";
+vi.mock("./identity-support.js", async importOriginal => ({ ...await importOriginal<typeof import("./identity-support.js")>(), identityWorker: vi.fn(async () => ({id:"morgan"})), probeAgentPermission: vi.fn(async () => 403) }));
+import type { ChatCatalogContext } from "../chat-catalog-contract.js";
+import { companySecretExternalCases,deploymentSecretGuidance,companySecretControllerBaseline,companySecretControllersUnchanged } from "./external-company-secret.js";
+const controller={id:"controller",companyId:"company",scope:"company",ownerUserId:null,userSecretDefinitionId:null,key:"OPENROUTER_API_KEY",name:"Runner E2E controller",provider:"local_encrypted",status:"active",managedMode:"paperclip_managed",latestVersion:1};
+const controllerRefs={OPENROUTER_API_KEY:{type:"secret_ref",secretId:"controller",version:"latest"}} as const;
+function valid(){return {scenarioId:"secrets.configure-company-secret",companyId:"company",leadId:"ceo",reply:"The deployment key reference is now bound for Morgan. This confirms configuration, not a runtime delivery test.",phaseReplies:[{runId:"first",body:"Use secure secret settings for the deployment key, then bind its reference in Morgan's environment variables. Do not paste the key here."},{runId:"second",body:"The deployment key reference is now bound for Morgan. This confirms configuration, not a runtime delivery test."}],runs:[{id:"first",status:"succeeded"},{id:"second",status:"succeeded"}],connections:[],profiles:[],secrets:[{id:"secret",name:"Deployment API key",status:"active"}],endpoints:[],interactions:[],activity:[{entityId:"secret",action:"secret.created",actorType:"user"}],links:[],humanQueries:[],state:{initialRunId:"first",agentCreateStatus:403,secretCountBeforeHuman:1,controllerSecretBaseline:[controller],controllerSecretsPreserved:true,operatorChannel:"private-browser-company-secret-and-public-browser-binding",secretUiVisible:true,humanSubmittedSecurely:true,storageClean:true,secureBrowserUntraced:true,secretId:"secret",morganId:"morgan",bindings:[{targetType:"agent",targetId:"morgan",configPath:"env.DEPLOYMENT_API_KEY",versionSelector:"latest"}],savedReferenceMatches:true,morganBindingVisible:true,bindingHumanAttributed:true,secretScanComplete:true,secretLeaked:false}};}
 describe("secure company credential and Morgan-only binding",()=>{
  const definition=companySecretExternalCases[0]!;
  it("accepts actual human UI entry/reference binding and a separate metadata confirmation",()=>expect(definition.grade(valid()).passed).toBe(true));
@@ -12,7 +16,7 @@ describe("secure company credential and Morgan-only binding",()=>{
  it("rejects untraced-claim-only, wrong reference/consumer/version and incomplete/leaking outcomes",()=>{
   for(const mutate of [
    (o:ReturnType<typeof valid>)=>{o.state.agentCreateStatus=201;},
-   (o:ReturnType<typeof valid>)=>{o.state.secretCountBeforeHuman=1;},
+   (o:ReturnType<typeof valid>)=>{o.state.secretCountBeforeHuman=2;},
    (o:ReturnType<typeof valid>)=>{o.state.operatorChannel="opened-ui-then-hidden-api";},
    (o:ReturnType<typeof valid>)=>{o.state.bindings[0]!.targetId="ceo";},
    (o:ReturnType<typeof valid>)=>{o.state.bindings[0]!.versionSelector="1";},
@@ -24,4 +28,29 @@ describe("secure company credential and Morgan-only binding",()=>{
   ]){const o=valid();mutate(o);expect(definition.grade(o).passed).toBe(false);}
   expect(definition.grade(undefined).passed).toBe(false);
  });
+});
+
+it("admits only exact controller-bootstrap secrets while leaving deployment entry uncompleted",async()=>{
+ const api={get:vi.fn(async(route:string)=>route.endsWith("/secret-providers")?[{id:"local_encrypted",configured:true}]:[controller])};
+ const ctx={input:{api,privateSecrets:[],fixtures:{company:{id:"company"},secretRefs:controllerRefs}}} as unknown as ChatCatalogContext;
+ const state=await companySecretExternalCases[0]!.setup(ctx);
+ expect(state).toMatchObject({morganId:"morgan",agentCreateStatus:403,controllerSecretBaseline:[controller]});
+ expect(state.secretId).toBeUndefined();
+});
+
+it("rejects extra, foreign, personal, duplicated or precompleted deployment secrets in the controller baseline",()=>{
+ const baseline=[controller] as Parameters<typeof companySecretControllerBaseline>[0];
+ expect(companySecretControllerBaseline(baseline,"company",controllerRefs)).toEqual([controller]);
+ for(const rows of [[...baseline,{...controller,id:"extra"}], [{...controller,companyId:"foreign"}], [{...controller,scope:"user",ownerUserId:"person"}], [{...controller,key:"DEPLOYMENT_API_KEY",name:"Deployment API key"}], [{...controller,id:"foreign"}], [...baseline,...baseline]]) expect(()=>companySecretControllerBaseline(rows as typeof baseline,"company",controllerRefs)).toThrow();
+ expect(()=>companySecretControllerBaseline(baseline,"company",{})).toThrow();
+ expect(()=>companySecretControllerBaseline(baseline,"company",{...controllerRefs,OPENAI_API_KEY:controllerRefs.OPENROUTER_API_KEY})).toThrow();
+});
+it("requires the original controller metadata and version before and after secure human entry",()=>{
+ const baseline=[controller] as Parameters<typeof companySecretControllerBaseline>[0];
+ expect(companySecretControllersUnchanged(baseline,baseline)).toBe(true);
+ for(const change of [{latestVersion:2},{companyId:"foreign"},{scope:"user"},{ownerUserId:"person"},{status:"revoked"},{provider:"other"},{name:"Changed"},{key:"OTHER"}]) expect(companySecretControllersUnchanged([{...controller,...change}] as typeof baseline,baseline)).toBe(false);
+ expect(companySecretControllersUnchanged([],baseline)).toBe(false);
+ expect(companySecretControllersUnchanged([...baseline,...baseline],baseline)).toBe(false);
+ const o=valid();o.state.controllerSecretsPreserved=false;expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
+ const missing=valid();missing.state.controllerSecretBaseline=[];expect(companySecretExternalCases[0]!.grade(missing).passed).toBe(false);
 });
