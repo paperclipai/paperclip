@@ -1587,7 +1587,7 @@ describe("IssueDetail", () => {
     const key = `paperclip:inline-draft:v2:${owner}:issue:${issue.id}:title`;
     localStorage.setItem(key, JSON.stringify({ version: 1, draft: "Restored title B", base: issue.title }));
     await act(async () => renderIssueView());
-    await waitForAssertion(() => expect(mockIssuesApi.getCore).toHaveBeenCalledWith(issue.id, { cache: "no-store" }));
+    await waitForAssertion(() => expect(mockIssuesApi.getCore).toHaveBeenCalledWith(issue.id, { cache: "no-store", fresh: true }));
     expect(mockIssuesApi.update).not.toHaveBeenCalled();
     await act(async () => {
       queryClient.setQueryData(queryKeys.issues.detail(issue.identifier!), fresh);
@@ -1929,7 +1929,7 @@ describe("IssueDetail", () => {
     const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
     mockIssuesApi.getCore.mockResolvedValueOnce({ ...canonical, assigneeAdapterOverrides: { useProjectWorkspace: true, adapterConfig: { chrome: true, command: "preserved-command", model: "old-model" } } });
     await act(async () => props.onAdd("Outline the launch", undefined, undefined, undefined, "model-message", { model: "gpt-6-astra", effort: "high", fast: false }));
-    expect(mockIssuesApi.getCore).toHaveBeenCalledWith(canonical.id, { cache: "no-store" });
+    expect(mockIssuesApi.getCore).toHaveBeenCalledWith(canonical.id, { cache: "no-store", fresh: true });
     expect(ensureIssue).toHaveBeenCalledOnce();
     expect(mockIssuesApi.update).toHaveBeenCalledWith(canonical.id, { assigneeAdapterOverrides: { useProjectWorkspace: true, adapterConfig: { chrome: true, command: "preserved-command", model: "gpt-6-astra", modelReasoningEffort: "high" } } });
     expect(mockIssuesApi.addComment).toHaveBeenCalledWith(canonical.id, "Outline the launch", undefined, undefined, undefined, "model-message");
@@ -1946,7 +1946,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.getCore.mockResolvedValueOnce({ ...canonical, assigneeAdapterOverrides: { adapterConfig: { chrome: true, command: "preserved-command" } } });
     const props = mockIssueChatThreadRender.mock.calls.at(-1)![0];
     await act(async () => props.onAdd("Use this model", undefined, undefined, undefined, "task-model-message", { model: "gpt-6-astra", effort: "high", fast: false }));
-    expect(mockIssuesApi.getCore).toHaveBeenCalledWith(canonical.identifier, { cache: "no-store" });
+    expect(mockIssuesApi.getCore).toHaveBeenCalledWith(canonical.identifier, { cache: "no-store", fresh: true });
     expect(mockIssuesApi.update).toHaveBeenCalledWith(canonical.identifier, expect.objectContaining({
       comment: "Use this model",
       assigneeAdapterOverrides: { adapterConfig: { chrome: true, command: "preserved-command", model: "gpt-6-astra", modelReasoningEffort: "high" } },
