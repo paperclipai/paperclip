@@ -1,6 +1,33 @@
-import { describe, expect, it } from "vitest";
-import { enableRoutineScheduleTrigger, routineUiStep } from "./routine-schedule-flow.js";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { enableRoutineScheduleTrigger, routineUiStep, withRoutineTriggerCleanup } from "./routine-schedule-flow.js";
 import { JourneyError } from "./types.js";
+
+describe("routine trigger cleanup failure reporting", () => {
+  it.each([false, true])("retains the original grade with a secondary disable failure (primary=%s)", async primary => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "routine-cleanup-"));
+    const original = new JourneyError("failed", "routine_result_attributed");
+    const patch = vi.fn().mockRejectedValue(new Error("private URL and form data"));
+    try {
+      const result = withRoutineTriggerCleanup({ api: { patch }, triggerRoute: "/api/routine-triggers/owned", directory,
+        run: async () => { if (primary) throw original; return "completed"; } });
+      if (primary) await expect(result).rejects.toBe(original);
+      else await expect(result).rejects.toMatchObject({ outcome: "failed", code: "routine_trigger_disable_failed" });
+      const receipt = JSON.parse(await readFile(path.join(directory, "scheduled-routine-cleanup-failure.json"), "utf8"));
+      expect(receipt).toMatchObject({ code: "routine_trigger_disable_failed", primaryFailurePreserved: primary });
+      expect(JSON.stringify(receipt)).not.toMatch(/private|form data/);
+      expect(patch).toHaveBeenCalledExactlyOnceWith("/api/routine-triggers/owned", { enabled: false });
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  it("keeps the successful outcome when disabling the exact trigger succeeds", async () => {
+    const patch = vi.fn().mockResolvedValue({ enabled: false });
+    expect(await withRoutineTriggerCleanup({ api: { patch }, triggerRoute: "/api/routine-triggers/owned", directory: "/unused",
+      run: async () => "completed" })).toBe("completed");
+    expect(patch).toHaveBeenCalledExactlyOnceWith("/api/routine-triggers/owned", { enabled: false });
+  });
+});
 
 describe("routine UI failure evidence", () => {
   it("retains a closed step code without browser messages or form values", async () => {

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, type Page } from "@playwright/test";
+import { ConnectionFailure } from "../connection-config.js";
 import { fillTaskPrompt, withBrowserEvent } from "../user-actions.js";
 import { validateAgentTaskState, waitFor } from "./agent-flows.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
@@ -28,6 +29,33 @@ export async function enableRoutineScheduleTrigger(page: Pick<Page, "getByRole" 
     () => page.waitForResponse(response => response.request().method() === "PATCH"
       && new URL(response.url()).pathname === triggerRoute),
     () => schedule.getByRole("button", { name: "Enable trigger", exact: true }).click());
+}
+export async function withRoutineTriggerCleanup<T>(input: {
+  api: Pick<JourneyContext["api"], "patch">; triggerRoute: string; directory: string; run(): Promise<T>;
+}): Promise<T> {
+  let primary: { error: unknown } | undefined;
+  try { return await input.run(); }
+  catch (error) { primary = { error }; throw error; }
+  finally {
+    try { await input.api.patch(input.triggerRoute, { enabled: false }); }
+    catch (error) {
+      const failure = new JourneyError("failed", "routine_trigger_disable_failed");
+      try {
+        await mkdir(input.directory, { recursive: true, mode: 0o700 });
+        await writeFile(path.join(input.directory, "scheduled-routine-cleanup-failure.json"), JSON.stringify({
+          schema: "paperclip.product-journey.routine-cleanup-failure/v1", code: failure.code,
+          triggerRoute: input.triggerRoute, primaryFailurePreserved: Boolean(primary),
+          transportCode: error instanceof ConnectionFailure && /^(api_request_failed|api_status_[1-5][0-9]{2})$/.test(error.message)
+            ? error.message : null,
+        }, null, 2), { mode: 0o600 });
+      } catch {
+        if (primary) throw primary.error;
+        throw failure;
+      }
+      // The outer lifecycle still grades cleanup and reconciles the owned trigger.
+      if (!primary) throw failure;
+    }
+  }
 }
 export async function runScheduledRoutine(context: JourneyContext, session: TargetSession, campaignId: string,
   evidence: JourneyEvidence, options: { deadlineAt: number; directory: string }) {
@@ -119,7 +147,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
     };
     const runs = () => readObserved<ScheduledInvocation[]>(`${route}/runs`);
     let pausedAt = 0;
-    try {
+    await withRoutineTriggerCleanup({ api, triggerRoute, directory: options.directory, run: async () => {
       const enabledResponse = await routineUiStep("enable_trigger", async () => {
         await page.goto(`${api.origin}/${company.issuePrefix}/routines/${routine.id}/triggers`, { waitUntil: "domcontentloaded" });
         return enableRoutineScheduleTrigger(page, triggerRoute);
@@ -200,10 +228,6 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       await writeFile(path.join(options.directory, "scheduled-routine-checks.json"), JSON.stringify({ routineId: routine.id,
         triggerId: trigger.id, invocationId: first[0]!.id, taskId: task.id, runId: state.taskRuns[0]!.id, enabledServerAt: enabledAt, pausedMonotonicAt: pausedAt, completedMonotonicAt: completedAt,
         observedUntilMonotonicAt: final.now, documentId: document.id, revisionId: revision.id }, null, 2), { mode: 0o600 });
-    } finally {
-      // The private provider independently reconciles and stops this exact routine
-      // if this request fails or the page closes before its receipt arrives.
-      await api.patch(triggerRoute, { enabled: false });
-    }
+    } });
   } finally { await observations.preserve(options.directory); }
 }
