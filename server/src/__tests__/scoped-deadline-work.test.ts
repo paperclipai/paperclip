@@ -381,7 +381,7 @@ it("keeps an exact deadline and late reconstruction debt with concurrency enable
 
 it("coalesces broad reconstruction without delaying an exact object hint or saved deadline", async () => {
   vi.useFakeTimers();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError: vi.fn() });
   const now = Date.now();
   let dueAt = now + 60_000;

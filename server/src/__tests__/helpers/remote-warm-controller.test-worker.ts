@@ -16,7 +16,7 @@ process.once("message", async (input: {
   options: Parameters<typeof executePaperclipNativeSession>[0];
 }) => {
   const target = input.options.runnerExecutionTarget;
-  if (target?.kind !== "remote") throw new Error("Expected remote worker target");
+  if (target?.kind !== "remote" || target.transport !== "sandbox") throw new Error("Expected remote worker target");
   const api = createServer((_request, response) => { response.writeHead(404).end(); });
   registerLocalRuntimeApiServer(api);
   try {

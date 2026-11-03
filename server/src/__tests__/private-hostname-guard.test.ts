@@ -31,7 +31,7 @@ describe("privateHostnameGuard", () => {
     expect((await request(createApp({ enabled: true })).get("/api/health").set("Host", host)).status).toBe(200);
   });
 
-  it.each([
+  it.each<{ name: string; host?: string; local?: string; remote?: string; path?: string; headers?: Record<string, string>; expected: number }>([
     { name: "same IPv4 socket", expected: 200 },
     { name: "loopback caller", remote: "127.0.0.2", expected: 200 },
     { name: "mapped socket forms", local: "::ffff:203.0.113.5", remote: "::ffff:127.0.0.1", expected: 200 },

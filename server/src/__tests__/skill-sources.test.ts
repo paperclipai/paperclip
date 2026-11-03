@@ -51,7 +51,7 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     await testDb?.cleanup(); if (home) await fs.rm(home, { recursive: true, force: true });
   });
   it('tracks repositories with no selected valid skills without saving their contents', async () => {
-    for (const repository of [{ 'README.md': 'No skills here' }, { 'one/SKILL.md': md('one'), 'shared.txt': 'Unused package content' }]) {
+    for (const repository of [{ 'README.md': 'No skills here' }, { 'one/SKILL.md': md('one'), 'shared.txt': 'Unused package content' }] as Record<string, string>[]) {
       const id = randomUUID();
       await db.insert(companies).values({ id, name: 'Discovery only', issuePrefix: `E${id.slice(0, 6)}` });
       const result = await skillSourceService(db).create(id, { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main',
@@ -155,11 +155,11 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     const service = skillSourceService(db);
     const created = await service.create(isolatedCompany, { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'main', commitSha: sha, selectedPaths: ['deep/one/SKILL.md'] }, context);
     const original = githubFixture(initial), audit = vi.fn();
-    const read = async (request: string) => {
+    const read = Object.assign(async (request: string) => {
       if (request.endsWith('/commits/feature%2Fmissing')) throw unprocessable('Unavailable branch.', { code: 'skill_source_ref_unavailable' });
       if (request.endsWith('/commits/..')) return { id: 42, default_branch: 'main' };
       return original(request);
-    };
+    }, { openSnapshot: original.openSnapshot });
     for (const trackingRef of ['feature/missing', '..']) await expect(service.settings(isolatedCompany, created.source.id, { revision: created.source.revision, trackingRef }, { ...context, audit, read: () => read })).rejects.toMatchObject({ details: { code: 'skill_source_ref_unavailable' } });
     expect(await service.detail(isolatedCompany, created.source.id)).toEqual(created.source);
     expect(audit).not.toHaveBeenCalled();
@@ -167,7 +167,8 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
   it('requires source edit authorization before reading branches and uses only the requested connection', async () => {
     const service = skillSourceService(db);
     const created = await service.create(companyId, { repositoryUrl: 'https://github.com/acme/skills', trackingRef: 'branch-list', commitSha: sha, selectedPaths: [] }, context);
-    const read = vi.fn(async (request: string) => request === '/repos/acme/skills' ? { id: 42, default_branch: 'main' } : [{ name: 'main' }]);
+    const read = Object.assign(vi.fn(async (request: string) => request === '/repos/acme/skills' ? { id: 42, default_branch: 'main' } : [{ name: 'main' }]),
+      { openSnapshot: vi.fn(async () => { throw new Error('Branch discovery must not open a snapshot'); }) });
     const connection = randomUUID(), choose = vi.fn(() => read);
     const result = await service.branches(companyId, created.source.id, { connectionId: connection }, { ...context, read: choose });
     expect(result.defaultBranch).toBe('main'); expect(choose).toHaveBeenCalledWith(connection);
@@ -711,7 +712,7 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     } };
     try {
       const service = skillSourceService(db), library = companySkillService(db);
-      const installed = await service.create(temporaryCompany, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository',
+      const installed = await service.create(temporaryCompany, { repositoryUrl: 'https://github.com/acme/skills', packageMode: 'repository', commitSha: sha,
         selectedPaths: ['skills/main/SKILL.md', 'skills/helper/SKILL.md'] }, localContext);
       const main = installed.imported.find(skill => skill.name === 'main')!;
       const versions = await library.listVersions(temporaryCompany, main.id);
@@ -751,7 +752,7 @@ describe.skipIf(!support.supported)('skill source persistence', () => {
     const localContext = { ...context, read: () => read };
     try {
       const service = skillSourceService(db);
-      const imported = await service.create(temporaryCompany, { repositoryUrl: 'https://github.com/acme/skills',
+      const imported = await service.create(temporaryCompany, { repositoryUrl: 'https://github.com/acme/skills', commitSha: sha,
         selectedPaths: ['skills/test-audit/SKILL.md'] }, localContext);
       expect(imported.imported).toHaveLength(1);
       expect(imported.warnings.join(' ')).toContain('references/unavailable.md');

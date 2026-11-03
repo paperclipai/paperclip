@@ -141,7 +141,7 @@ describe("fast response provider", () => {
     expect(body.tools).toBeUndefined();
     expect(fetch).toHaveBeenCalledTimes(1);
   });
-  it.each([
+  it.each<[AiConnectionMetadata, string, string | null]>([
     [
       {
         provider: "openai",
@@ -172,7 +172,7 @@ describe("fast response provider", () => {
       "http://localhost:8080/v1/chat/completions",
       null,
     ],
-  ] as const)(
+  ])(
     "honors saved chat endpoint/auth %j",
     async (metadata, expectedUrl, auth) => {
       const fetch = vi.fn(async () => response(chatResponse()));

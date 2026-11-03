@@ -72,7 +72,7 @@ describeDatabase("connector access runtime synchronization", () => {
     let memberId: string | undefined;
     if (change === "uninstall") {
       await toolAccessService(db).putConnectionInstalls(connectionId, { installs: [{ targetType: "agent", targetId: agentId }] });
-      expect((await toolAccessService(db).getConnection(connectionId, companyId)).config.mcpAgentAccessConfigured).toBe(true);
+      expect((await toolAccessService(db).getConnection(connectionId, companyId)).config?.mcpAgentAccessConfigured).toBe(true);
       first = client => toolAccessService(client).putConnectionInstalls(connectionId, { installs: [] });
       second = client => toolAccessService(client).finishGalleryAppConnection(companyId, connectionId, { enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: "all_agents" });
     } else {
@@ -80,7 +80,7 @@ describeDatabase("connector access runtime synchronization", () => {
       memberId = member.id;
       await db.insert(principalPermissionGrants).values({ companyId, principalType: "user", principalId: "alice", permissionKey: "agents:create" });
       first = client => accessService(client).updateMemberAndPermissions(companyId, member.id, { membershipRole: "admin", grants: [{ permissionKey: "agents:create" }] }, null);
-      second = client => accessService(client).setMemberPermissions(companyId, member.id, [{ permissionKey: "issues:create" }], null);
+      second = client => accessService(client).setMemberPermissions(companyId, member.id, [{ permissionKey: "tasks:assign" }], null);
     }
     let locked!: () => void; let release!: () => void;
     const held = new Promise<void>(resolve => { locked = resolve; });
@@ -118,7 +118,7 @@ describeDatabase("connector access runtime synchronization", () => {
       expect(bindings.some(binding => binding.metadata?.source === "tool_connection_install")).toBe(false);
     } else {
       expect(await accessService(db).getMemberById(companyId, memberId!)).toMatchObject({ membershipRole: "admin" });
-      expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toEqual([expect.objectContaining({ permissionKey: "issues:create" })]);
+      expect(await db.select().from(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, companyId))).toEqual([expect.objectContaining({ permissionKey: "tasks:assign" })]);
     }
   }, 15000);
   it.each(["email allowAgent", "connection intent"] as const)("orders outer %s with direct install saves", async caller => {
@@ -132,7 +132,7 @@ describeDatabase("connector access runtime synchronization", () => {
       await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "member" });
       await db.insert(issues).values({ id: issueId, companyId, title: "Use Notion", status: "in_progress", assigneeAgentId: agentId });
       await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", responsibleUserId: userId, contextSnapshot: { issueId } });
-      const pending = await connectionIntentService(db).request({ sub: agentId, company_id: companyId, run_id: runId, responsible_user_id: userId, scope: "connection_intents", iat: 1, exp: 2, instance_id: "test" }, "notion");
+      const pending = await connectionIntentService(db).request({ sub: agentId, company_id: companyId, run_id: runId, responsible_user_id: userId }, "notion");
       expect(pending.interactionId).toEqual(expect.any(String));
       await db.update(toolConnections).set({ healthStatus: "ok", config: { sourceTemplateKey: "notion", mcpAgentAccessConfigured: true } }).where(eq(toolConnections.id, connectionId));
       await db.insert(connectionGrants).values({ companyId, connectionId, kind: "organization", status: "active", isDefault: true });
@@ -316,7 +316,7 @@ describeDatabase("connector access runtime synchronization", () => {
   });
   it("limits delegation creation to its target without waiting on unrelated agents", async () => {
     await db.insert(companyMemberships).values(["alice", "bob"].map(principalId => ({ companyId, principalType: "user", principalId, status: "active" })));
-    const grants = await db.insert(connectionGrants).values(["alice", "bob"].map(subjectUserId => ({ companyId, connectionId, kind: "user", subjectUserId }))).returning();
+    const grants = await db.insert(connectionGrants).values(["alice", "bob"].map(subjectUserId => ({ companyId, connectionId, kind: "user" as const, subjectUserId }))).returning();
     const baseline = await events();
     const [lower, higher] = [agentId, peerId].sort();
     let locked!: () => void; let release!: () => void;

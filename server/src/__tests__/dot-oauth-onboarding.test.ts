@@ -22,7 +22,7 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
   }, 120000);
   beforeEach(async () => { await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true, enableOpenAiDot: true, enableNativeRunner: false }); });
   afterAll(async () => { await temp?.cleanup(); });
-  async function fixture(authorizationOrigin?: string, lifecycleState = "ready") {
+  async function fixture(authorizationOrigin?: string, lifecycleState: NonNullable<typeof agents.$inferInsert["lifecycleState"]> = "ready") {
     const userId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Operator", email: userId + "@example.test", createdAt: new Date(), updatedAt: new Date() });
     const [company] = await db.insert(companies).values({ name: "Dot onboarding", issuePrefix: "DO" + randomBytes(3).toString("hex") }).returning();
@@ -64,7 +64,7 @@ describe("Dot onboarding with an operator-issued pairing capability", () => {
     expect(revoked.lifecycleVersion).toBe(paired.lifecycleVersion + 1);
     await expect(f.oauth.authenticate(tokens.access_token)).rejects.toThrow();
   });
-  it.each(["preparing", "verifying"])("allows Dot setup during %s without allowing task access", async (state) => {
+  it.each(["preparing", "verifying"] as const)("allows Dot setup during %s without allowing task access", async (state) => {
     const f = await fixture(undefined, state);
     const tokens = await connect(f);
     const principal = await f.oauth.authenticate(tokens.access_token);

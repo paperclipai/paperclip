@@ -37,7 +37,7 @@ const support = await getEmbeddedPostgresTestSupport();
       const started =
         await startEmbeddedPostgresTestDatabase("plugin-workspaces");
       db = createDb(started.connectionString, { maxConnections: 1 });
-      stopDb = started.stop;
+      stopDb = started.cleanup;
     });
     afterAll(async () => {
       await db?.$client.end();
@@ -123,7 +123,7 @@ const support = await getEmbeddedPostgresTestSupport();
     it.each(["refs/heads/main", null, undefined])("persists the actual prepared destination (%s)", async (destinationRef) => {
       const f = await fixture();
       const workers: WorkspaceWorkers = { ...f.workers, call: async (...args: Parameters<typeof f.workers.call>) => {
-        const result = await f.workers.call(...args);
+        const result = await f.workers.call(...args) as { kind?: string };
         return result.kind === "prepared" ? { ...result, ...(destinationRef !== undefined ? { destinationRef } : {}) } : result;
       } };
       const workspace = await preparePluginWorkspace(db, workers, f.input);
@@ -806,7 +806,7 @@ const support = await getEmbeddedPostgresTestSupport();
           .where(eq(issues.id, f.issueId));
       const workers = {
         getWorker: (id: string) =>
-          [first.pluginId, second.pluginId].includes(id)
+          ([first.pluginId, second.pluginId] as string[]).includes(id)
             ? { supportedMethods: ["workspaceOperation"] }
             : undefined,
         call: (id: string, ...args: unknown[]) =>
@@ -1151,7 +1151,7 @@ const support = await getEmbeddedPostgresTestSupport();
       second.dirty();
       const workers = {
         getWorker: (id: string) =>
-          [first.pluginId, second.pluginId].includes(id)
+          ([first.pluginId, second.pluginId] as string[]).includes(id)
             ? { supportedMethods: ["workspaceOperation"] }
             : undefined,
         call: (id: string, ...args: any[]) =>

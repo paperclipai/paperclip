@@ -2,9 +2,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildSkillMentionHref } from "@paperclipai/shared";
+import { LOW_TRUST_REVIEW_PRESET, buildSkillMentionHref } from "@paperclipai/shared";
 import {
-  LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
   buildReferencedProjectRunObservability,
   buildRunWorkspaceHints,
@@ -25,7 +24,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
     const unsafe = {BASH_ENV:"/workspace/hook.sh",ZDOTDIR:"/workspace",GH_CONFIG_DIR:"/workspace/gh",PAPERCLIP_GITHUB_LAUNCHER_DIR:"/workspace/forged"};
     const resolveAdapterConfigForRuntime = vi.fn(async (_companyId, config) => ({config,secretKeys:new Set(),manifest:[]}));
     const result = await resolveExecutionRunAdapterConfig({companyId:"company-1",adapterType:"paperclip_runner",
-      executionRunConfig:{env:{...unsafe,CUSTOM_VALUE:"allowed"}},
+      executionRunConfig:{env:{...unsafe,CUSTOM_VALUE:"allowed"}},projectEnv:null,
       secretsSvc:{resolveAdapterConfigForRuntime} as any});
     expect(resolveAdapterConfigForRuntime.mock.calls[0]?.[1]).toMatchObject({env:{CUSTOM_VALUE:"allowed"}});
     for (const key of Object.keys(unsafe)) {
@@ -38,7 +37,7 @@ describe("resolveExecutionRunAdapterConfig", () => {
     const env = kind === "many variables"
       ? Object.fromEntries(Array.from({ length: 129 }, (_, index) => [`CUSTOM_${index}`, "value"]))
       : { CUSTOM_VALUE: "x".repeat(65_536) };
-    const result = await resolveExecutionRunAdapterConfig({ companyId: "company-1", adapterType: "process", executionRunConfig: { env }, secretsSvc: {
+    const result = await resolveExecutionRunAdapterConfig({ companyId: "company-1", adapterType: "process", executionRunConfig: { env }, projectEnv: null, secretsSvc: {
       resolveAdapterConfigForRuntime: vi.fn(async (_companyId, config) => ({ config, secretKeys: new Set(), manifest: [] })),
     } as any });
     expect(result.resolvedConfig.env).toEqual(env);
