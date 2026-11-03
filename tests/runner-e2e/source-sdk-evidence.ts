@@ -1,6 +1,8 @@
 import { createSdkArtifactScanner } from "./source-sdk-public-type.js";
+import { constants } from "node:fs";
+import { assertPrivateCellDirectories, privateCellEvidenceOwner } from "./manual-private-report-assets.js";
 import { createHash } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { diagnosticSecrets, readPrivateDiagnosticSecrets } from "./private-diagnostics.js";
 import { findSecretLeak } from "./redaction.js";
@@ -130,4 +132,49 @@ export async function copyRetainedSourceSdk(root: string, executionId: string, s
     await writeFile(filename, file.bytes, { flag: "wx", mode: 0o600 }); await chmod(filename, 0o600);
     if (hash(await readFile(filename)) !== file.sha256) throw new Error("Source SDK published bytes changed");
   }
+}
+
+export interface SourceSdkAuditCapture { executionId: string; context: Parameters<typeof privateCellEvidenceOwner>[0] }
+function closedSdkAudit(value: unknown): boolean {
+  const object = (v: any, keys: string[]) => !!v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).sort().join() === [...keys].sort().join();
+  const v = value as any, a = v?.audit;
+  if (!object(v, ["schema", "complete", "audit"]) || v.schema !== "paperclip.source-sdk-privacy-observation/v1" || typeof v.complete !== "boolean"
+    || !object(a, ["schema", "suppressedFindings", "bounded", "publicSource", "observations"]) || a.schema !== "paperclip.source-sdk-scan/v1" || a.suppressedFindings !== 0
+    || typeof a.bounded !== "boolean" || !Array.isArray(a.observations) || a.observations.length > 4096) return false;
+  if (a.publicSource !== null) {
+    const hashes = ["manifestSha256", "lockSha256", "compilerPackageSha256", "parserPackageSha256", "parserEntrySha256", "zodPackageSha256", "zodEntrySha256", "zodTypeGraphSha256"];
+    if (!object(a.publicSource, ["inputs", ...hashes]) || !Number.isSafeInteger(a.publicSource.inputs) || a.publicSource.inputs < 1 || a.publicSource.inputs > 20000 || !hashes.every(k => hex(a.publicSource[k]))) return false;
+  }
+  return a.observations.every((r: any) => object(r, ["pathSha256", "fileSha256", "detector", "start", "end", "classification"])
+    && hex(r.pathSha256) && hex(r.fileSha256) && Number.isInteger(r.detector) && r.detector >= -1 && r.detector <= 3
+    && Number.isSafeInteger(r.start) && Number.isSafeInteger(r.end) && r.start >= 0 && r.end >= r.start && r.end <= 8 * 1024 * 1024
+    && (r.detector === -1 ? r.classification === "private_exact" : r.detector === 3 ? ["unresolved_context", "public_schema_type"].includes(r.classification) : r.classification === "direct_token"));
+}
+/** Copy only the already-produced typed audit, never rejected SDK output. The
+ * private producer owner binds external capture even when server setup failed. */
+export async function copyPreparedSourceSdkAudit(temporaryRoot: string, casePrivateDir: string, secrets: readonly string[], input: SourceSdkAuditCapture) {
+  if (!selected([input.executionId])) return;
+  const owner = await privateCellEvidenceOwner(input.context, input.executionId);
+  const scenario = input.executionId.slice("chat-features.runner-opencode.local.".length);
+  if (path.resolve(casePrivateDir) !== path.join(owner.root, "capture", "cases", scenario)) throw new Error("SDK audit capture does not match its exact private cell");
+  await assertPrivateCellDirectories(owner, casePrivateDir);
+  const root = await realpath(temporaryRoot), rootInfo = await lstat(temporaryRoot);
+  if (root !== path.resolve(temporaryRoot) || !rootInfo.isDirectory() || rootInfo.isSymbolicLink() || rootInfo.mode & 0o077
+    || typeof process.getuid === "function" && rootInfo.uid !== process.getuid()) throw new Error("SDK audit source custody invalid");
+  const source = path.join(root, "artifacts-private", "cases", scenario, "snapshots", "source-sdk-privacy-observations.json");
+  const info = await lstat(source).catch((error: NodeJS.ErrnoException) => { if (error.code === "ENOENT") return; throw error; });
+  if (!info) return;
+  if (!info.isFile() || info.isSymbolicLink() || info.size > 1024 * 1024 || await realpath(source) !== source) throw new Error("SDK audit source custody invalid");
+  const handle = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+  let bytes: Buffer;
+  try {
+    const before = await handle.stat(); bytes = await handle.readFile(); const after = await handle.stat();
+    if (!before.isFile() || before.ino !== info.ino || before.dev !== info.dev || before.size !== info.size || bytes.length !== info.size
+      || before.ino !== after.ino || before.dev !== after.dev || before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs || await realpath(source) !== source) throw new Error("SDK audit changed during capture");
+  } finally { await handle.close(); }
+  checkSecret(bytes, secrets);
+  if (!closedSdkAudit(JSON.parse(bytes.toString("utf8")))) throw new Error("SDK audit has an unsupported observation shape");
+  const destination = path.join(casePrivateDir, "snapshots"); await mkdir(destination, { recursive: true, mode: 0o700 });
+  await assertPrivateCellDirectories(owner, destination);
+  await writeFile(path.join(destination, "source-sdk-privacy-observations.json"), bytes, { flag: "wx", mode: 0o600 });
 }

@@ -871,7 +871,7 @@ async function runAttempt(input: {
         `attempt-${attempt}`,
       );
       await mkdir(casePrivateDir, { recursive: true });
-      await copySharedEvidence(privateDir, casePrivateDir, temporaryRoot, credentials);
+      await copySharedEvidence(privateDir, casePrivateDir, temporaryRoot, credentials, manualPrivateHandoff ? { executionId: candidate.id, context: manualPrivateHandoff } : undefined);
       if (reporterPrivacy.length) {
         const original = { status: result.status, failureClass: result.failureClass, error: result.error };
         const snapshots = path.join(casePrivateDir, "snapshots"); await mkdir(snapshots, { recursive: true });
