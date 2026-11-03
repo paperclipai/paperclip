@@ -98,5 +98,3 @@ Scope: ui
 Storybook: CLI authorization approval, pending, expired/denied and already-authorized states.
 Production: Authorize intended CLI identity/context, make scoped request, revoke current server token and retry same bearer; logout alone is insufficient.
 Sources: Source: [CliAuth.tsx](../../ui/src/pages/CliAuth.tsx). Tests: [cli-auth-routes.test.ts](../../server/src/__tests__/cli-auth-routes.test.ts), [board-auth.test.ts](../../cli/src/__tests__/board-auth.test.ts), [token.test.ts](../../cli/src/__tests__/token.test.ts)
-
-The Product E2E journey `company-access-isolation` uses two registered Cloud test workspaces, the ordinary tenant workspace menu, and real company-bound agent credentials. It verifies allowed reads and task creation plus denied foreign reads and creation in both directions, including exact creator evidence. It does not certify human membership roles. Source: `tests/runner-e2e/product-journeys/company-access-flow.ts`. Registration is not proof of a deployed pass.
