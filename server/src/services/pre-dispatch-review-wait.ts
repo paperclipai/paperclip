@@ -1,12 +1,45 @@
-import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { hasRequiredWorkspaceRecovery, LEGACY_WORKSPACE_RECOVERY_SCHEMA } from "./workspace-restore-recovery-state.js";
+import type { QueuedRunStalenessErrorCode } from "../modules/run-dispatch/index.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type DispatchFields = "startedAt" | "runtimeModeResolvedAt" | "processPid" | "processGroupId" |
   "processStartedAt" | "nativeIssueId" | "nativeSessionId" | "sessionIdAfter" |
   "controllerBootId" | "controllerLeaseExpiresAt" | "executionStage" | "contextSnapshot";
+
+const staleDispatchErrorCodes = ["issue_not_found", "issue_not_in_progress", "issue_assignee_changed",
+  "issue_waiting_for_response", "issue_continuation_waiting_on_review", "issue_dependencies_blocked",
+  "issue_blocked", "issue_execution_lock_changed", "issue_terminal_status", "issue_review_participant_changed"] satisfies QueuedRunStalenessErrorCode[];
+
+/** A dispatch cancellation is not an interrupted provider attempt. Historical
+ * rows need no new receipt, but every retained execution reference must agree. */
+export function neverStartedDispatchCancellationPredicate() {
+  return and(
+    eq(heartbeatRuns.runtimeMode, "legacy"), eq(heartbeatRuns.status, "cancelled"),
+    inArray(heartbeatRuns.errorCode, staleDispatchErrorCodes),
+    isNotNull(heartbeatRuns.finishedAt),
+    isNull(heartbeatRuns.startedAt), isNull(heartbeatRuns.runtimeModeResolvedAt),
+    isNull(heartbeatRuns.processPid), isNull(heartbeatRuns.processGroupId), isNull(heartbeatRuns.processStartedAt),
+    isNull(heartbeatRuns.nativeIssueId), isNull(heartbeatRuns.nativeSessionId), isNull(heartbeatRuns.sessionIdAfter),
+    isNull(heartbeatRuns.controllerBootId), isNull(heartbeatRuns.controllerLeaseExpiresAt), isNull(heartbeatRuns.executionStage),
+    sql`coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'`,
+    sql`coalesce(${heartbeatRuns.resultJson}->'workspaceRestoreRecovery'->>'schema', '') <> ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}`,
+    sql`not (coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) ?| array[
+      'nativeExecutionInput', 'nativeWorkspaceSync', 'remoteWorkspace', 'nativeWorkspaceFinalizationOwner', 'sessionCheckpoint'])`,
+    sql`not exists (select 1 from ${nativeRunFinalizations}
+      where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId} and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id})`,
+    sql`not exists (select 1 from ${environmentLeases}
+      where ${environmentLeases.companyId} = ${heartbeatRuns.companyId} and ${environmentLeases.heartbeatRunId} = ${heartbeatRuns.id})`,
+    sql`not exists (select 1 from ${heartbeatRunEvents}
+      where ${heartbeatRunEvents.companyId} = ${heartbeatRuns.companyId} and ${heartbeatRunEvents.runId} = ${heartbeatRuns.id}
+        and ${or(isNotNull(heartbeatRunEvents.sourceEventId), inArray(heartbeatRunEvents.eventType,
+          ["adapter.invoke", PROCESS_START_REQUESTED, PROCESS_IDENTITY_RECORDED, "harness.ready", "session.started",
+            "session.resumed", "session.updated", "turn.started", "provider.event", "provider.rpc_result", "tool.execution.started"]))})`,
+  );
+}
 
 /** The queued-run gate owns this receipt before execution authority is claimed.
  * A deliberate review or connection response wait has no provider actions to reconcile. The error code
@@ -39,6 +72,17 @@ export function isPreDispatchReviewWait(
  * retained execution or cleanup evidence. Historical false holds must be
  * checked against the same evidence that gates explicit user admission. */
 export async function isPreDispatchReviewWaitVerified(db: Db, run: Run): Promise<boolean> {
+  if (run.runtimeMode === "legacy" && run.status === "cancelled" && run.finishedAt !== null &&
+      staleDispatchErrorCodes.some(errorCode => errorCode === run.errorCode) &&
+      [run.startedAt, run.runtimeModeResolvedAt, run.processPid, run.processGroupId, run.processStartedAt,
+        run.nativeIssueId, run.nativeSessionId, run.sessionIdAfter, run.controllerBootId,
+        run.controllerLeaseExpiresAt, run.executionStage].every(value => value === null) &&
+      run.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive" && !hasRequiredWorkspaceRecovery(run.resultJson)) {
+    const [unstarted] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id), neverStartedDispatchCancellationPredicate(),
+    )).limit(1);
+    if (unstarted) return true;
+  }
   if (!isPreDispatchReviewWait(run)) return false;
   const [coordinator] = await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
