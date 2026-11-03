@@ -153,6 +153,7 @@ describe("BreadcrumbBar", () => {
     await act(async () => root.render(<BreadcrumbProvider><AgentBreadcrumb /></BreadcrumbProvider>));
     const button = container.querySelector<HTMLButtonElement>('button[aria-label="Switch agent. Currently CodexCoder"]')!;
     expect(button).not.toBeNull();
+    expect(button.getAttribute("aria-current")).toBe("page");
     expect(button.closest('[aria-disabled="true"]')).toBeNull();
     expect(button.querySelector("button, a")).toBeNull();
     expect(document.title).toBe("CodexCoder • Paperclip");
