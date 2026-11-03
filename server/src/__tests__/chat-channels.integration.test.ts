@@ -66676,6 +66676,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
 
   it.each([
     "bootstrap",
+    "session_open",
     "checkpoint",
     "distinct_account",
     "null_account",
@@ -66789,7 +66790,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               kind === "retryable" ? "retryable_failure" : "terminal_failure",
             nativeSessionId,
             runnerInstanceId,
-            errorCode: "provider_initialize_timeout",
+            errorCode: kind === "session_open" ? "provider_session_open_rejected" : "provider_initialize_timeout",
             processPid: kind === "live_pid" ? process.pid : null,
             runnerProfileJson:
               kind === "missing_input"
@@ -66831,7 +66832,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                   ? "native_event_replay_conflict"
                   : kind === "cleanup"
                     ? "native_session_cleanup_quarantined"
-                    : "provider_initialize_timeout",
+                    : kind === "session_open"
+                      ? "provider_session_open_rejected"
+                      : "provider_initialize_timeout",
               recoveryMode:
                 kind === "ambiguous"
                   ? "ambiguous_state"
@@ -66938,7 +66941,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         );
         // A null account without existing provider-session evidence remains
         // conservatively ineligible for the exhausted-run recovery lane.
-        if (["bootstrap", "checkpoint", "distinct_account", "notice_cleanup", "notice_replacement"].includes(kind)) {
+        if (["bootstrap", "session_open", "checkpoint", "distinct_account", "notice_cleanup", "notice_replacement"].includes(kind)) {
           const staged = await attempt;
           await expect(
             context.service.processFailedChatRunRetry(staged.actionId),
