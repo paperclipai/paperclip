@@ -2285,6 +2285,12 @@ matching the Runner connection lease budget. This prevents Claude's default
 The setting applies to that native Claude session's MCP client; other provider
 sessions and ordinary bridge deadlines remain unchanged. Explicit cancellation
 and Runner shutdown still take precedence over that client budget.
+The native OpenCode proxy uses the same one-hour MCP client budget and leaves
+its semantic bridge request pending under Runner ownership. A controller delay
+must not turn an in-flight write into a provider-visible timeout and retry.
+Ordinary OpenCode driver calls keep their 30-second deadline. Stop, bridge close
+and Runner lease expiry still end the native wait. Unanswered effects stay
+pending and continue to block a new run; a longer wait does not certify an outcome.
 An adopted transport can receive authenticated queued semantic calls before
 the driver publishes its recovered session and tool handler. It holds those
 calls until the handler is installed, then rechecks the original authority and

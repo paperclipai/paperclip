@@ -153,6 +153,22 @@ afterAll(async () => {
 });
 
 describe("OpenCodeServerDriver", () => {
+  it.each([false, true])("uses the owning runtime's MCP wait budget only for durable tool requests (%s)", async durableToolRequests => {
+    await chmod(fixture, 0o755);
+    const root = await mkdtemp(join(tmpdir(), "paperclip-opencode-tool-budget-"));
+    roots.push(root);
+    const driver = new OpenCodeServerDriver({
+      model: "openrouter/test-model", command: fixture, runtimeDirectory: root, durableToolRequests,
+    });
+    const session = await driver.openSession({ runId: "budget", normalizedSessionId: "budget", workingDirectory: root });
+    try {
+      const config = JSON.parse(await readFile(join(root, "budget", "config", "opencode", "opencode.json"), "utf8"));
+      expect(config.mcp.paperclip.timeout).toBe(durableToolRequests ? 60 * 60 * 1_000 : 30_000);
+    } finally {
+      await session.close({ reason: "test" });
+    }
+  });
+
   it("exports company traces across warm runs without giving the ingestion key to the provider", async () => {
     await chmod(fixture, 0o755);
     const bodies: Array<Record<string, any>> = [];

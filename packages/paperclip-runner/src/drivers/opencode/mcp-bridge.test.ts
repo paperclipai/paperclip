@@ -31,6 +31,59 @@ async function rpc(
 }
 
 describe("OpenCode MCP bridge", () => {
+  it("keeps a durable call pending across the ordinary timeout and replays its one result", async () => {
+    let started!: () => void;
+    const begun = new Promise<void>(resolve => { started = resolve; });
+    let complete!: (value: unknown) => void;
+    const result = new Promise<unknown>(resolve => { complete = resolve; });
+    const aborted = vi.fn();
+    const handler = vi.fn(({ signal }) => {
+      signal.addEventListener("abort", aborted, { once: true });
+      started();
+      return result;
+    });
+    const bridge = await startOpenCodeMcpBridge({
+      tools: [{ name: "documents.write", inputSchema: { type: "object" } }],
+      timeoutMs: null,
+      handler,
+    });
+    bridges.push(bridge);
+    const request = { id: "durable-write", method: "tools/call", params: { name: "documents.write", arguments: {} } };
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const pending = rpc(bridge, request).then(response => response.json());
+    try {
+      await begun;
+      await vi.advanceTimersByTimeAsync(30_001);
+      expect(aborted).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+      complete({ receipt: "saved-once" });
+    }
+    const delivered = await pending;
+    expect(delivered).toMatchObject({ result: { content: [{ text: '{"receipt":"saved-once"}' }] } });
+    expect(await (await rpc(bridge, request)).json()).toEqual(delivered);
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
+  it("cancels an unanswered durable call when the bridge closes without inventing a result", async () => {
+    let started!: () => void;
+    const begun = new Promise<void>(resolve => { started = resolve; });
+    const aborted = vi.fn();
+    const handler = vi.fn(({ signal }) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => { aborted(); reject(new Error("unknown outcome")); }, { once: true });
+      started();
+    }));
+    const bridge = await startOpenCodeMcpBridge({
+      tools: [{ name: "documents.write", inputSchema: { type: "object" } }], timeoutMs: null, handler,
+    });
+    const pending = rpc(bridge, { id: "close-durable", method: "tools/call", params: { name: "documents.write", arguments: {} } });
+    await begun;
+    await bridge.close();
+    expect(await (await pending).json()).toMatchObject({ result: { isError: true, content: [{ text: "Paperclip tool call cancelled" }] } });
+    expect(aborted).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledOnce();
+  });
+
   it("binds to loopback, requires authentication, and exposes only its closed catalog", async () => {
     const bridge = await startOpenCodeMcpBridge({
       secret: "session-secret",
@@ -247,10 +300,11 @@ describe("OpenCode MCP bridge", () => {
     });
   });
 
-  it("honors MCP cancellation notifications", async () => {
+  it.each([undefined, null])("honors MCP cancellation notifications (timeout=%s)", async timeoutMs => {
     const started = vi.fn();
     const bridge = await startOpenCodeMcpBridge({
       tools: [{ name: "documents.read", inputSchema: { type: "object" } }],
+      timeoutMs,
       handler: ({ signal }) => new Promise((_resolve, reject) => {
         started();
         signal.addEventListener("abort", () => reject(new Error("handler aborted")), { once: true });

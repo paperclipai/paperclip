@@ -320,6 +320,17 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Native OpenCode semantic tool requests wait under the existing durable Runner
+owner across the ordinary 30-second MCP deadline. The native MCP client uses
+the Runner connection lease budget; ordinary driver calls keep their deadline.
+Company, tool, run and Stop authority do not change. Unanswered effects still
+block run attachment. The [proxy regression](../../packages/paperclip-runner/src/live/runnerd-opencode-streaming-tools.test.ts)
+checks delayed delivery, one tool call, and a settled next run with a deterministic
+provider. The [bridge suite](../../packages/paperclip-runner/src/drivers/opencode/mcp-bridge.test.ts)
+covers result replay, cancellation and teardown. These are local protocol checks;
+live provider and deployed access remain separate checks in the
+[session recipe](../feature-map/runs-adapters.md#session).
+
 Fresh remote Retry preparation retains the admitted strategy in its saved
 fingerprint. An unchanged follow-up must not report strategy drift; actual policy
 changes retain the replacement guard. This changes no retry, session-reset,
