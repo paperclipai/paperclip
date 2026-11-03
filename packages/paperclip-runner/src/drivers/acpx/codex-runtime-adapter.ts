@@ -4,6 +4,7 @@ import { kimiReadOnlyPermissionAllowed } from "./kimi-config.js";
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
+import { acpxProviderFailure } from "./provider-failure.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { ChildProcess } from "node:child_process";
@@ -599,6 +600,10 @@ export async function openQualifiedAcpxRuntime(
         return ensuredHandle;
       }) : ensuredSession)
     .catch((error: unknown) => {
+      const providerFailure = acpxProviderFailure(error, options.profile.agent, "startup", options.launchEnvironment);
+      if (providerFailure && error instanceof Error) {
+        Object.defineProperty(error, "providerFailure", { value: providerFailure, enumerable: false });
+      }
       throw classifySessionEnsureFailure(error);
     });
   let lateCleanup: Promise<void> | null = null;

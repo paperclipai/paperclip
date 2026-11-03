@@ -210,6 +210,14 @@ finalize from the same company, workspace, issue, and run. A nested snapshot
 that finishes before that finalize finishes does not leave a permanent wait.
 Unfinished operations and work after the finalize still require a later save.
 
+Daytona file export can preserve an already captured workspace archive when the
+guarded download copy runs out of sandbox capacity. It removes partial copies,
+rechecks confinement in the sandbox-user process, and uses the existing bounded
+stream with a successful completion receipt before replacing host files. The
+writer and finalization holds remain until ordinary snapshot publication and
+cleanup complete. This fallback does not remove source files, rerun provider
+work, or solve capacity failure while creating the workspace archive itself.
+
 ### Answered Slack conversations
 
 An accepted scheduled-monitor yield remains unfinished task work. Its committed
@@ -290,6 +298,20 @@ and identity-checked runner suspension. The input stays unanswered; the cleanup
 purpose alone cannot certify termination. Ordinary execution retains its existing
 semantic dispatcher requirement. Missing usage remains pending accounting debt;
 a complete receipt settles the original reservation and charge once.
+
+A recovery setup failure does not establish that the original execution never
+started. A same-run, company- and issue-bound coordinator attempt proves that
+native execution or result finalization was entered; selected input alone does
+not. Setup-failure writes lock that coordinator before the run, so a concurrently
+committed claim cannot be missed. Current Stop metadata survives configuration
+failure, including an acknowledgement committed while the terminal write waits.
+Only the bounded run-Stop fields, including intentional handoff, are retained;
+stale result projections are replaced. Normal Stop writes can still advance
+delivery metadata. Missing usage keeps its existing hold and accounting debt. Fresh setup
+that genuinely never dispatched can still settle without a provider receipt.
+Account-identity checks continue to reject incompatible execution; preserving
+cleanup obligations does not authorize a new provider turn or repair historical
+state that was already overwritten.
 
 ## 4. Agent-Owned vs User-Owned Execution
 
@@ -1531,6 +1553,18 @@ does not prove that the provider stopped or that a retry is safe; it remains
 non-recoverable until the existing ownership and recovery checks establish the
 next permitted action.
 
+Provider rejections additionally use the versioned `ProviderFailure` cause.
+The provider adapter extracts and redacts the original explanation before the
+process boundary. Startup command receipts and failed turns retain the same
+contract through Runner, persistence, and restart finalization. The task's current
+interruption and the historical run detail show this explanation, including when
+its category is unknown. Later cleanup errors do not erase the saved cause.
+Task read projections reapply registered run-secret and current-user redaction
+before returning provider text to detail or list views.
+The category and retryability describe provider evidence; they do not grant
+retry authority, prove stopped execution, or change the existing recovery budget.
+An HTTP 429 alone does not establish a quota reset time or a safe retry.
+
 Local Codex crash replacement can use a complete interrupted-turn inventory,
 authenticated process-stop evidence, and unchanged retained-state fingerprints.
 Only text and an exactly receipted task-completion call qualify for this path;
@@ -2279,12 +2313,21 @@ HTTP mutation or create another receipt. Missing, changed, pending or unknown
 outcomes remain unanswered for authoritative reconciliation; a stopped run or
 revoked authority cannot recover a result.
 
-The native Claude sidecar also sets its HTTP MCP client budget to one hour,
-matching the Runner connection lease budget. This prevents Claude's default
+The native Claude sidecar also sets its HTTP MCP client budget to one hour.
+This fixed client ceiling prevents Claude's default
 60-second HTTP deadline from aborting an otherwise pending durable request.
 The setting applies to that native Claude session's MCP client; other provider
 sessions and ordinary bridge deadlines remain unchanged. Explicit cancellation
 and Runner shutdown still take precedence over that client budget.
+The native OpenCode proxy uses the same one-hour MCP client budget and leaves
+its semantic bridge request pending under Runner ownership. A controller delay
+must not turn an in-flight write into a provider-visible timeout and retry.
+Ordinary OpenCode driver calls keep their 30-second deadline. Stop, bridge close
+and Runner lease expiry still end the native wait. Unanswered effects stay
+pending and continue to block a new run; a longer wait does not certify an outcome.
+The one-hour client deadline does not renew with the Runner lease. If the client
+deadline expires while Runner still owns a call, its effect remains unknown
+until authoritative reconciliation. Expiry permits neither replay nor attachment.
 An adopted transport can receive authenticated queued semantic calls before
 the driver publishes its recovered session and tool handler. It holds those
 calls until the handler is installed, then rechecks the original authority and
@@ -2347,6 +2390,15 @@ Local durable control-plane state is bounded at 256 MiB in the server,
 runnerd recovery, and durable control-plane readers. These paths synchronously
 read and parse the full JSON file, so memory use and parse time grow with file
 size. Remote checkpoint archive and expanded-size limits remain 64 MiB.
+
+Remote provider checkpoints normally apply exclusions through a filtered copy
+inside the sandbox. If that copy fails with a full-disk diagnostic, the controller
+removes the partial copy and passes the exclusions to the provider's sync-out.
+That transfer can stream without another sandbox archive. Provider exclusions can
+also omit a nested entry with the same name; credentials remain excluded. Other
+copy failures and timeouts still fail. Workspace capture itself still needs free
+sandbox space. Its failed save operation names `remote_workspace_sandbox_disk_full`
+when that capacity is exhausted, without changing retry or ownership rules.
 
 Native assigned app tools save governed responses above 500,000 encoded bytes before returning
 a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in
@@ -2420,6 +2472,14 @@ Saved process configuration must match before reuse. Old checkpoints, changed
 configuration, and controller-owned credential or instruction resources use
 verified suspension and saved-history resume. This recovery can restart a
 provider; it does not suspend every healthy warm turn.
+
+A fresh native session admitted for the current task may replace a terminal
+predecessor's goal source epoch when the saved goal is absent or complete.
+It must hold the task's execution lock and assignee. Its accepted terminal
+checkpoint can then publish the new session for later comments or monitors.
+An unfinished or unreadable goal retains its prior epoch. Delayed predecessor
+events, stale source sequences, conversation resets and unverified outcomes
+retain their existing guards. Source projection does not start provider work.
 
 Changing configuration can retire a completed warm runner during instruction
 preparation, before the next native coordinator is claimed. Its maintenance
@@ -2914,8 +2974,11 @@ loss. The marker may describe the first turn, so it cannot identify every later
 warm checkpoint. Legacy file-backed roots retain their existing checks. A
 restored checkpoint must match the normalized session before writing its local
 projection. This adds a scoped checkpoint read and local reconstruction only
-when warm admission encounters an external marker or an older projection; it
-adds no streaming checkpoint writes or recurring idle work.
+when warm admission encounters an external marker or a prior-run projection.
+A prior-run projection refreshes even when its run ID already matches the saved
+supervisor: the canonical checkpoint can have advanced after an earlier read.
+Current-run state and a retained in-memory warm owner keep their existing
+authority. This adds no streaming checkpoint writes or recurring idle work.
 
 Ordinary remote `per_turn` continuations restore a valid external controller
 marker from the referenced run's company/task-bound checkpoint before reading

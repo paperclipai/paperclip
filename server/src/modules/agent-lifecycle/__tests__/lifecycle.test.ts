@@ -130,7 +130,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     expect(await db.select().from(activityLog).where(and(eq(activityLog.entityId, agent.id), eq(activityLog.action, "agent.updated")))).toHaveLength(1);
     await request(board).patch(`/api/agents/${agent.id}`).send({ name: "Stale", expectedConfigurationRevision: response.body.configurationRevision }).expect(409);
     const foreign = app({ type: "board", source: "session", userId: "outsider", companyIds: [], memberships: [] });
-    await request(foreign).get(`/api/agents/${agent.id}/configuration`).expect(403);
+    await request(foreign).get(`/api/agents/${agent.id}/configuration`).expect(404);
     await request(foreign).patch(`/api/agents/${agent.id}`).send({ title: "Denied", expectedConfigurationRevision: saved.body.configurationRevision }).expect(404);
   });
 

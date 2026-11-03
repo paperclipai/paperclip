@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import express from "express";
+import express, { type Request, type Response } from "express";
 import request from "supertest";
 import { privateHostnameGuard } from "../middleware/private-hostname-guard.js";
 
@@ -24,6 +24,47 @@ function createApp(opts: { enabled: boolean; allowedHostnames?: string[]; bindHo
 }
 
 describe("privateHostnameGuard", () => {
+  it.each([
+    ["IPv6 loopback", "[::1]:3100"],
+    ["mapped loopback", "[::ffff:7f00:1]:3100"],
+  ])("preserves %s admission", async (_name, host) => {
+    expect((await request(createApp({ enabled: true })).get("/api/health").set("Host", host)).status).toBe(200);
+  });
+
+  it.each([
+    { name: "same IPv4 socket", expected: 200 },
+    { name: "loopback caller", remote: "127.0.0.2", expected: 200 },
+    { name: "mapped socket forms", local: "::ffff:203.0.113.5", remote: "::ffff:127.0.0.1", expected: 200 },
+    { name: "mapped Host", host: "[::ffff:cb00:7105]:3100", expected: 200 },
+    { name: "IPv6 compression", host: "[2001:db8::a]:3100", local: "2001:db8:0:0:0:0:0:a", remote: "::1", expected: 200 },
+    { name: "IPv6 same caller", host: "[2001:db8::a]:3100", local: "2001:db8::a", remote: "2001:db8::a", expected: 200 },
+    { name: "remote caller", remote: "203.0.113.6", expected: 403 },
+    { name: "foreign numeric Host", host: "203.0.113.6:3100", expected: 403 },
+    { name: "unknown DNS Host", host: "unknown.example.test:3100", expected: 403 },
+    { name: "missing local socket", local: undefined, expected: 403 },
+    { name: "missing remote socket", remote: undefined, expected: 403 },
+    { name: "nonnumeric local socket", local: "controller.example.test", expected: 403 },
+    { name: "nonnumeric remote socket", remote: "localhost", expected: 403 },
+    { name: "page route", path: "/dashboard", expected: 403 },
+    { name: "API lookalike route", path: "/api-foreign", expected: 403 },
+    { name: "userinfo Host", host: "user@203.0.113.5:3100", expected: 403 },
+    { name: "Forwarded", headers: { forwarded: "for=127.0.0.1" }, expected: 403 },
+    { name: "forwarded Host", headers: { "x-forwarded-host": "203.0.113.5:3100" }, expected: 403 },
+    { name: "forwarded caller", headers: { "x-forwarded-for": "127.0.0.1" }, expected: 403 },
+    { name: "forwarded protocol", headers: { "x-forwarded-proto": "http" }, expected: 403 },
+    { name: "arbitrary forwarded metadata", headers: { "x-forwarded-extra": "" }, expected: 403 },
+  ])("limits direct local API admission: $name", scenario => {
+    const values = { host: "203.0.113.5:3100", local: "203.0.113.5", remote: "203.0.113.5", path: "/api/health", headers: {}, ...scenario };
+    const headers: Record<string, string> = { host: values.host, ...values.headers };
+    const req = { path: values.path, headers, header: (name: string) => headers[name.toLowerCase()], accepts: () => "json",
+      socket: { localAddress: values.local, remoteAddress: values.remote } } as unknown as Request;
+    const res = { status: vi.fn().mockReturnThis(), type: vi.fn().mockReturnThis(), send: vi.fn(), json: vi.fn() } as unknown as Response;
+    const next = vi.fn();
+    privateHostnameGuard({ enabled: true, allowedHostnames: [], bindHost: "configured.example.test" })(req, res, next);
+    if (scenario.expected === 200) { expect(next).toHaveBeenCalledOnce(); expect(res.status).not.toHaveBeenCalled(); }
+    else { expect(next).not.toHaveBeenCalled(); expect(res.status).toHaveBeenCalledWith(403); }
+  });
+
   it("allows requests when disabled", async () => {
     const app = createApp({ enabled: false });
     const res = await request(app).get("/api/health").set("Host", "dotta-macbook-pro:3100");

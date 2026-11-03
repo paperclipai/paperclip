@@ -565,11 +565,26 @@ finish writing the bounded output. Wait for the summary before collecting it.
 It never logs SQL, parameters, result
 values, connection strings, or query errors. In-flight queries continue normally.
 
-Semantic owners work in a bundled server without source maps. For queries
-without an explicit owner, keep the linked source maps and enable Node's
-`--enable-source-maps` option to resolve public caller locations. Restore prior
-Node options after capture. Known semantic owners avoid repeated stack capture.
-Queries without an available owner/caller still contribute to the totals.
+Semantic owners work in a bundled server without source maps. Specific owners
+avoid stack capture. The generic `http.request` owner keeps its exact name but,
+like an unowned query, also captures a bounded caller location during the window.
+For wrapped query builders, a map-free hosted bundle retains one static generated
+construction-site anchor (`dist-runtime/server.mjs`, `index.mjs`, or
+`chunk-<build hash>.mjs`, with line and column). Correlate it with the exact serving
+revision and bundle; it is not a TypeScript location or an execution-time CPU
+owner. Capture wrapper frames are excluded before reading the stack, and deeper
+frames in the same bundle are omitted.
+
+Unscoped driver calls, including relational queries, do not accept generated
+anchors: a bundled ORM helper could otherwise be mistaken for an application
+caller. They can still retain existing public source/dist locations; linked
+source maps and Node's `--enable-source-maps` may help resolve those locations.
+Restore prior Node options after capture. Missing callers remain unknown and
+still contribute to totals. Disabled, future and expired windows do not capture
+stacks; wrappers installed for an armed window remain after expiry. Active census
+stack capture, grouping and bounded sizing add measurement overhead. More caller
+groups still share the existing group, page and output-rate caps. This diagnostic
+is not a production performance improvement.
 
 Look for `paperclip.db_response_capture.entry.v2` and
 `paperclip.db_response_capture.summary.v2` in the process logs. Version 2 uses
@@ -626,6 +641,13 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 ## Connection loss and retries
+
+HTTP access logs distinguish a completed response from a connection that closes
+before or during the response. An aborted request has no success status in the
+log message. The structured response status is null when headers were not sent;
+after headers, it retains the status sent before the abort. These logs describe
+HTTP delivery, not database settlement. A disconnected issue PATCH may continue
+running, so an aborted response does not prove that its writes rolled back.
 
 The database client does not replay arbitrary statements after a disconnect.
 PostgreSQL may have committed a statement before the connection loses its
@@ -1038,6 +1060,13 @@ objects can be reclaimed. Object existence alone is not a committed save.
 remote allocation/path, writer run, and dirty flag. Paths in this record belong
 to the remote allocation. Save publication checks the current writer/epoch and
 atomically commits the ledger row, authority pointer, and operation receipt.
+`execution_workspaces.metadata.remoteWorkspaceSnapshotRepositories` records the
+committed snapshot ID and the repository descriptors covered by that archive.
+Reservation retains this coverage when it adds requested repositories to the
+current source. Successful save publication advances coverage and the snapshot
+pointer together. Older saved workspaces capture their previous source inventory
+at the next reservation. Newly attached repositories use normal acquisition;
+they cannot claim coverage from an older archive. No schema migration is needed.
 `workspace_operations` journals preparation, save, restore, and local import;
 large file bodies stay outside the database. Ledger identities deliberately
 survive source-record deletion so object cleanup can finish.

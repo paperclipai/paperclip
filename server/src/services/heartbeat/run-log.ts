@@ -1,5 +1,6 @@
 import { appendWithByteCap, MAX_EXCERPT_BYTES, parseObject } from "../../adapters/utils.js";
-import { redactSensitiveText } from "../../redaction.js";
+import { redactSensitiveText, sanitizeRecord } from "../../redaction.js";
+import { redactCurrentUserText, redactCurrentUserValue, type CurrentUserRedactionOptions } from "../../log-redaction.js";
 
 const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
@@ -118,3 +119,53 @@ export function compactRunLogChunk(
   return `${normalized.slice(0, headChars)}${marker}${normalized.slice(normalized.length - tailChars)}`;
 }
 
+
+interface CanonicalNativeLogRedaction {
+  redactIdentity: <T>(value: T) => T;
+  currentUser: CurrentUserRedactionOptions;
+}
+
+function omitCanonicalImageData(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(omitCanonicalImageData);
+  if (!value || typeof value !== "object") return value;
+  const object = value as Record<string, unknown>;
+  const result = Object.fromEntries(Object.entries(object).map(([key, child]) =>
+    [key, omitCanonicalImageData(child)]));
+  const source = object.source as Record<string, unknown> | undefined;
+  if (object.type === "image" && source?.type === "base64" &&
+    typeof source.data === "string" && /^[A-Za-z0-9+/=]{1024,}$/.test(source.data)) {
+    result.source = { ...(result.source as Record<string, unknown>),
+      data: `[omitted base64 image data: ${source.data.length} chars]` };
+  }
+  return result;
+}
+
+/** Only complete envelopes supplied by the durable native exporter use this path.
+ * Redact complete JSON values before encoding so quoted secrets cannot damage
+ * the record's structure. Image omission uses the existing field/length policy.
+ * The object writer separately bounds the complete encoded outer record.
+ */
+export function redactCanonicalNativeRunLogChunk(chunk: string, options: CanonicalNativeLogRedaction) {
+  const envelope = JSON.parse(chunk);
+  if (envelope?.type !== "paperclip.prp.event" || !envelope.event ||
+    typeof envelope.event !== "object" || Array.isArray(envelope.event))
+    throw new Error("invalid_canonical_native_run_log_envelope");
+  const projected = redactCurrentUserValue(
+    options.redactIdentity(omitCanonicalImageData(envelope)), options.currentUser,
+  );
+  return `${JSON.stringify(sanitizeRecord(projected as Record<string, unknown>))}\n`;
+}
+
+/** New complete-value forms first; old text projections are computed only when
+ * an archive needs them. An old malformed projection never repairs evidence.
+ */
+export function* canonicalNativeRunLogRedactionForms(chunk: string, options: CanonicalNativeLogRedaction) {
+  for (const enabled of [false, true])
+    yield redactCanonicalNativeRunLogChunk(chunk, {
+      ...options, currentUser: { ...options.currentUser, enabled },
+    });
+  for (const enabled of [false, true])
+    yield compactRunLogChunk(redactCurrentUserText(options.redactIdentity(chunk), {
+      ...options.currentUser, enabled,
+    }), Number.MAX_SAFE_INTEGER);
+}

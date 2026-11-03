@@ -771,6 +771,16 @@ it("reopens Copilot with the current registered files after collecting the previ
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+it("refreshes Cloud instructions on cold rotation without replacing the pinned launch profile", () => {
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "next-run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+  const provider = { kind: "cursor_cloud", provider: "cursor_cloud", instructions: "Prior instructions.", command: "/pinned/node", args: ["/pinned/proxy.cjs"], model: "pinned-model", conversationMode: "task" };
+  const payload = runnerdRecoveryInternals.rotatedRunAttachPayload({ runAttachTemplate: { provider } }, identity, null, undefined,
+    null, { text: "Current instructions.", context: null });
+  expect(payload.provider).toEqual({ ...provider, instructions: "Current instructions." });
+  expect(provider.instructions).toBe("Prior instructions.");
+  expect(runnerdRecoveryInternals.rotatedRunAttachPayload({ runAttachTemplate: { provider } }, identity, null, undefined).provider).toEqual(provider);
+});
+
 it.each(["claude", "codex", "cursor", "pi", "copilot"])("keeps %s's pinned grants on same-run recovery", (agent) => {
   const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "same-run", normalizedSessionId: "session", turnId: "turn", itemId: "item" };
   const provider = { kind: "acpx", agent, runId: identity.runId, instructions: "Pinned instructions.", runtimeContext: assignedRuntimeContext("/skills", "/pinned") };
@@ -9883,6 +9893,22 @@ it("retains the authenticated command failure without implicitly logging its str
   expect(JSON.stringify(failure)).not.toContain("command_execution_failed");
   result.result.message = "mutated after receipt";
   expect(structured).toHaveProperty("result.message", "closed runtime failure");
+});
+
+it.each(["RPC failed: Private provider explanation.", "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=session_ensure_failed)"])("keeps a provider explanation private and retains command diagnosis: %s", async message => {
+  const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+    category: "unknown", message: "Private provider explanation.", retryability: "unknown" };
+  const result = { result: { code: "command_execution_failed", message, providerFailure } };
+  let failure: unknown;
+  try {
+    await waitForRunnerCommand({ type: "session.open", deadline: Date.now() + 1000, abortOnClose: true,
+      isClosed: () => false, throwIfFailed: () => {}, command: () => ({ status: "failed", result }),
+      runnerHasExited: async () => false, failureCode: () => "startup_failed" });
+  } catch (error) { failure = error; }
+  expect(failure).toHaveProperty("runnerCommandResult.result.providerFailure", providerFailure);
+  expect(failure).toHaveProperty("runnerCommandResult.result.message", message);
+  expect((failure as Error).message).not.toContain(providerFailure.message);
+  expect(JSON.stringify(failure)).not.toContain(providerFailure.message);
 });
 
 

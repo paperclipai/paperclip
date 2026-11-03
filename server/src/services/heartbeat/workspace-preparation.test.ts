@@ -666,7 +666,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect(await readFile(join(source, "README.md"), "utf8")).toBe("source content\n");
   });
 
-  it("rejects read-only project references before reserving or acquiring a remote workspace", async () => {
+  it("reserves editable task copies for referenced projects before acquiring the remote environment", async () => {
     const { input, source, issue, envOrchestrator } = await fixture();
     const previous = new Map(["PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC", "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE"]
       .map(key => [key, process.env[key]]));
@@ -680,16 +680,23 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await db.update(projectWorkspaces).set({ cwd: null, sourceType: "git", repoUrl: "https://github.com/example/remote.git" })
       .where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
     const [reference] = await db.insert(projects).values({ companyId: issue.companyId, name: "Referenced project" }).returning();
-    await db.insert(projectWorkspaces).values({ companyId: issue.companyId, projectId: reference.id,
-      name: "Referenced repository", sourceType: "git", repoUrl: "https://github.com/example/reference.git" });
+    const [repository] = await db.insert(projectWorkspaces).values({ companyId: issue.companyId, projectId: reference.id,
+      name: "Referenced repository", sourceType: "git_repo", repoUrl: "https://github.com/example/reference.git" }).returning();
     await db.update(issues).set({ description: `[project](${buildProjectMentionHref(reference.id)})` }).where(eq(issues.id, issue.id));
-    const acquire = vi.spyOn(envOrchestrator, "acquireForRun");
+    const acquire = vi.spyOn(envOrchestrator, "acquireForRun").mockImplementation(async args => {
+      expect(args.persistedExecutionWorkspace).toMatchObject({ companyId: issue.companyId, sourceIssueId: issue.id,
+        metadata: { remoteWorkspace: { source: { kind: "git", repoUrl: "https://github.com/example/remote.git", repositories: [
+          { id: repository.id, projectId: reference.id, projectWorkspaceId: repository.id,
+            repoUrl: "https://github.com/example/reference.git" },
+        ] } } } });
+      const [stored] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, args.persistedExecutionWorkspace!.id));
+      expect(readRemoteWorkspaceAuthority(stored.metadata)?.source.repositories?.[0]?.readOnly).not.toBe(true);
+      throw new Error("editable project copies reached acquisition");
+    });
     try {
-      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
-        code: "workspace_validation_failed", resultJson: { reason: "remote_workspace_readonly_sources_unsupported" },
-      });
-      expect(acquire).not.toHaveBeenCalled();
-      expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
+      await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow("editable project copies reached acquisition");
+      expect(acquire).toHaveBeenCalledOnce();
+      expect(await db.select().from(executionWorkspaces)).toHaveLength(1);
       expect(await readdir(source)).not.toContain(".paperclip-repositories");
     } finally {
       for (const [key, value] of previous) {

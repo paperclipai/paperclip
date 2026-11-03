@@ -5,6 +5,22 @@ instance-wide `idleSleepSafety` report for instance administrators and signed
 Cloud control callers. Ordinary task drains keep their existing behavior.
 Company members and agents cannot read this report.
 
+Instance administrators and signed Cloud control callers may add
+`idleSleepDiagnostics=1` to an owned safety request for fixed-key blocker
+diagnostics. This explicit one-shot read evaluates all current predicates in
+the same bounded snapshot, and can reconnect/wake the database. Do not poll it
+during a suspension observation window. The normal report and its early local
+and plugin short circuits are unchanged when the option is absent.
+
+The optional `diagnostics` field reports `none`, `present`, `unknown`, or
+`not_checked` per reason. `complete` describes applicable read-inspection
+coverage, never stop authorization. Diagnostics do not initiate backup dumps
+or unsafe plugin RPCs. Skipped checkpoints remain `not_checked`; unknown or
+skipped checks never grant a safety `none`. A changed hold or tracked-work
+generation invalidates the observation. Only fixed keys and states are
+returned, with no tenant records or error details. See the
+[complete reason and traffic inventory](plans/2026-11-02-sleep-blocker-inventory.md).
+
 ## Hosting protocol
 
 1. Hold external admission at the hosting layer. Queue user requests for wake or
@@ -339,6 +355,59 @@ This does not replace filesystem backups, encryption-key recovery or off-provide
 disaster recovery. Validate restoration of a staging checkpoint before enabling
 the flag on customer instances.
 
+#### Repeatable local checkpoint qualification
+
+Run the qualification command only against two dedicated, disposable PostgreSQL
+DBs with names that end in `_test`. Provision the source and an empty restore
+DB first. Use a migrated source when testing the full sleep-safety scan. The
+command does not create, drop, or migrate databases. It creates a small fixture
+schema in the source. It refuses an existing fixture and any nonempty restore
+target. The restore engine uses `--clean`, so never use a DB that holds work.
+
+Set `PAPERCLIP_BACKUP_CHECKPOINT_SOURCE_TEST_DATABASE_URL` and
+`PAPERCLIP_BACKUP_CHECKPOINT_RESTORE_TEST_DATABASE_URL`. The command rejects
+partial configuration, unsafe database names, URL database overrides, and the
+same actual server/database even through different host names. Set
+`PAPERCLIP_PG_DUMP_PATH` and `PAPERCLIP_PSQL_PATH` when the matching PostgreSQL
+binaries are outside `PATH`.
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/qualify-idle-database-backup.ts /absolute/new/output-directory pg_dump
+```
+
+Use a fresh source/restore pair and output directory for a second run with
+`javascript` as the last argument. This exercises the supported fallback engine
+separately. The command verifies the full archive, syncs its bytes and directory,
+restores it, checks relational, Unicode and null values, and verifies binary
+scalars and one- and two-dimensional arrays, including empty bytes, empty arrays
+and null elements, with array dimensions and bounds preserved. It enforces the
+restored foreign key and checks identity sequence progress. It writes a JSON
+receipt with binary versions, database names, archive size/hash, and results.
+Archive hashing reads a bounded stream rather than loading the archive into memory.
+It does not write credentials to the receipt. The fixture rows remain available
+for inspection. Dispose of these owned databases through the normal test-owner
+workflow after closing their clients.
+
+The integration suite is
+`server/src/__tests__/database-backup-checkpoint-qualification.integration.ts`. Local
+runs use `pnpm --filter @paperclipai/server exec vitest run --config vitest.backup-qualification.config.ts`, require the same explicit URL pair, and use
+bounded clients. The dedicated Backup checkpoint qualification CI job provisions
+both fixtures and matching PostgreSQL clients. Missing URLs or clients fail this
+required integration invocation; it is separate from the default unit suite. The suite
+also tests the production backup owner under slow dumps, changed drain ownership,
+lease expiry, changed work generation, interrupted checkpoint creation, failed
+wake backup, and successful marker recovery. The filesystem and scheduling
+suites separately verify sync ordering, integrity failure, retry, drain/resume,
+and the normal interval after wake. Set `PAPERCLIP_BACKUP_QUALIFICATION_RECEIPT`
+to retain its JSON evidence and temporary archives.
+
+These results prove a local logical backup and restore. A writable directory and
+successful `fsync` do not prove that a provider volume stays attached across a
+compute stop. Before enabling checkpoint mode, separately verify the deployed
+backup flags, provider volume identity and mount, and archive continuity across
+a real stop/restart. A missing mount can appear as a new writable local directory;
+local tests must not certify that as persistent storage.
+
 The report inspects accounting and sandbox-cleanup spools directly. Any entry,
 including malformed JSON, temporary files and failed write probes, blocks sleep.
 Read errors and invalid spool paths return unknown. Recovery readers that skip
@@ -413,8 +482,9 @@ the same termination and run checks above. Missing cleanup evidence,
 `cleanup_pending`, and live login flows
 remain blockers. A finished coalesced wake is history only when its exact
 company/agent's linked run has finished without retry or accounting debt.
-Image-setup history still blocks: promotion can succeed before teardown is
-confirmed, so a terminal label does not prove that its provider resource is gone.
+Image-setup history requires a known terminal state, finish timestamp, cleared
+connection secret and exact host-owned resource cleanup verification. Promotion
+can succeed before teardown is confirmed, so a terminal label alone still blocks.
 
 Completed question-answer deliveries permit sleep only after acknowledgement
 and completion of their exact target run in the same company, without retry or

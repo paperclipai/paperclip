@@ -353,11 +353,11 @@ When changing the workflow path or branch, authorize the new reference before
 updating the caller. Retain older authorized SHA references while queued runs or
 supported reruns still use them.
 
-General server shards run at most two test files at a time in separate Vitest
+General server shards run at most three test files at a time in separate Vitest
 forks. Each file retains its own home, config and process state, and its test
 cases run serially. An explicit `PAPERCLIP_*_TEST_DATABASE_URL`, including
 `PAPERCLIP_TEST_DATABASE_URL`, keeps those shards serial because the database
-is shared. Native Runner suites also use two isolated file workers. Their long
+is shared. Native Runner suites use four isolated file workers. Their long
 lease, preparation, disk-loss and checkpoint tests have separate files so real
 observation windows can overlap. Issue recovery suites split by producer and
 recovery behavior for the same reason. Unsharded local tests and route/authz
@@ -368,6 +368,22 @@ two independent partitions, each with its own embedded PostgreSQL, home and
 config; an explicit shared test database retains one partition per job.
 The Runner transport lease-expiry and cold-admission regressions live in their
 own file so those real-clock waits overlap other files in the existing pool.
+
+The two PR Runner Vitest jobs separate package tests from native server tests.
+The first runs the complete package inventory; the second runs the complete
+native server group. The existing `--shard=1/2` and `--shard=2/2` commands route
+through `run-pr-vitest-lane.mjs` for compatibility with the master-pinned
+workflow. Other workflow names and shard counts keep their existing coverage.
+Both jobs still prepare debug binaries. A separate exact-key debug cache holds
+the workspace library and every Cargo binary target. Its key includes source,
+protocol and fixture content, Cargo configuration, compiler flags, toolchain
+and checkout path. Only the Rust lane of a verified master push saves it.
+PR jobs only restore it; a missing or incomplete entry rebuilds normally.
+
+Affected-test selection treats Vite's exact `?raw` imports as file inputs.
+Changing that file selects its consumers. Generated/untracked files and unknown
+query loaders retain their consumers conservatively. Other filesystem, process
+and network effects keep their existing fallback.
 
 For a full wall-clock profile of all main PR CI jobs, add `profile-ci` to the PR.
 See [CI profiling](ci-profiling.md) for the Honeycomb waterfall, coverage,
@@ -1132,6 +1148,46 @@ falls back to the fresh path automatically, so the cache can make a suite
 slower but never fail it or skip it: a migration that cannot apply still fails
 the suite on the fresh path.
 
+#### Typecheck memory
+
+TypeScript 7 is a native binary, so `NODE_OPTIONS=--max-old-space-size` does not
+limit `tsc`. Its peak memory depends on how much source one process checks and on
+the number of checkers, because each checker keeps its own copy of the types.
+
+`pnpm --filter @paperclipai/server typecheck` does not check one program.
+`server/scripts/typecheck-layers.mjs` reads the import graph and runs one `tsc`
+process per layer. Each layer reads the earlier layers as declarations:
+
+| Layer | Files |
+| --- | --- |
+| `below` | Files the largest import cycle depends on, and unrelated files |
+| `cycle` | The largest import cycle |
+| `above` | Files that depend on the cycle |
+| `tests` | Test files |
+
+The generated configs and declarations go in
+`server/node_modules/.cache/paperclip-typecheck`. You do not maintain a layer list.
+`server/tsconfig.json` remains the single program for editors and `pnpm build`.
+The server typecheck builds only the Runner's TypeScript output. Use
+`pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
+Runner binary.
+
+If the memory available to the task is limited, use this command:
+
+```sh
+node scripts/typecheck-low-memory.mjs
+```
+
+It peaks at about 3.8 GiB, against about 5.5 GiB for `pnpm -r typecheck` on 16
+cores. It also takes about twice as long.
+
+It checks one package at a time and uses one thread for the server layers and the
+UI. Do not add `GOMEMLIMIT` to this path. It saves at most 300 MiB here, and it
+slows `tsc` by up to 20 times when the live heap goes above the limit.
+`pnpm build` still checks the whole server program and needs more than 8 GiB. The
+Docker image sets `PAPERCLIP_TSC_EMIT_ONLY=1` for that build, which emits
+JavaScript without checks or declarations.
+
 #### Reused Runner build in the server build
 
 The server build vendors `packages/paperclip-runner/dist`, so its
@@ -1283,6 +1339,22 @@ tasks; failed batch reads retain saved history. Existing full-detail cache data
 can update an entry only after the current account's summary confirms access.
 The first healthy live subscription reconciles domain data without re-fetching
 session and health; reconnects and visibility recovery retain full reconciliation.
+
+### Authenticated board startup
+
+`GET /api/auth/get-session` can include an optional `boardBootstrap` for the same
+authenticated session or Cloud tenant actor. It contains accessible company
+snapshots and the existing current-board-access projection. Directory visibility
+through instance admin alone does not add accessible companies. The ordinary
+session schema stays compatible with clients that ignore this projection.
+
+The browser seeds account-keyed navigation and board-access queries from this
+response, avoiding two serial startup reads. Normal company/access readers still
+own invalidation and refresh. A new successful session snapshot replaces older
+cached membership/access for a returning account once; later ordinary reads and
+mutations can update those queries. Missing, malformed, or failed optional bootstrap
+falls back to those readers; a failed session does not become an anonymous cache
+entry. Local trusted startup keeps its existing synthetic `local-board` principal.
 
 ### Run history authorization reads
 
@@ -1759,14 +1831,26 @@ import. An interrupted apply retains its journal and admission hold; retry the
 same command to reconcile it before starting another writer.
 
 Supported sources include empty task folders, repository URLs, and managed
-mutable repositories from the same project. Configured local folders use the
-legacy path until imported. V1 rejects read-only cross-project referenced folders
+mutable repositories. Authorized mentioned projects attach all their configured
+Git repositories as writable copies under `.paperclip-repositories/` in the task
+workspace. These copies use the existing remote save/restore lifecycle and do not
+write to the source project's folder. Later turns retain their saved paths, refs,
+pins and edits, and recheck each retained project's access and trust policy.
+New repository attachments after a save are acquired separately from the saved
+archive. Repository refs use `repoRef`, then `defaultRef`, then the Git remote's
+default. A configured remote branch is resolved before its checkout is published.
+Configured local folders use the legacy path until imported. V1 rejects explicitly read-only sources
 and custom cleanup/teardown commands on remote close. Automatic Core services, manual workspace jobs, services,
 and runtime commands are also rejected before any local directory access; run
 those commands through an agent task. One writer owns each logical
 workspace; separate workspaces can run concurrently. The Files panel identifies
 **Live workspace** and **Saved copy** with its save time. An unavailable dirty
 allocation is not silently replaced with an older saved copy.
+
+Workspace validation failures show their redacted explanation in the task's
+failure notice. They retain the normal Retry permission and admission gates.
+Retained-folder access and trust denials use this explanation; low-trust project
+boundary denials retain their dedicated project-access action.
 
 A child or follow-up task can use a remote workspace inherited through its
 persisted task binding, including an isolated workspace or operator branch.
@@ -3018,8 +3102,22 @@ identity mismatches.
 Native task-session publication is part of the terminal checkpoint transaction,
 not resource cleanup. `native-task-session-publication.ts` owns its accepted-result,
 owner, task-epoch and reset checks; heartbeat supplies prepared session metadata.
+The goal projection also advances its source epoch when a fresh native session
+holds the task's current execution lock and assignee. The predecessor must be
+terminal, and its saved goal must be absent or complete. This lets the accepted
+checkpoint publish the fresh session as the next continuation baseline. A
+different session without current task authority, an unfinished or unreadable
+goal, a reset conversation, and delayed predecessor events retain their fences.
 The goal-less regression in `native-session-resumption.test.ts` holds provider
 cleanup open and then exercises a normal follow-up and an explicit session reset.
+Its fresh-session case keeps the prior task-session row, opens one new provider
+session, and verifies that the following ordinary comment resumes that session.
+The opt-in `native-session-epoch.live.test.ts` runs the same path with an existing
+Codex login and a built native Runner. It uses warm mode, makes three model calls,
+checks exact file contents and provider-thread reuse, and removes its temporary
+credential copy and workspace. Run it with
+`PAPERCLIP_LIVE_SESSION_EPOCH=true pnpm exec vitest run server/src/services/native-runtime/native-session-epoch.live.test.ts`.
+`PAPERCLIP_LIVE_EVIDENCE_PATH` can select a JSON evidence file outside the fixture.
 Control-port tests also cover terminal snapshots before accepted results and
 result-replay contention with the status writer's coordinator-first lock order.
 Remote adoption tests must invoke actual external-state preparation. Inspecting
@@ -4095,6 +4193,12 @@ Task files, personal agent state (`AGENT_HOME`), and provider home are distinct.
 Focused coverage lives in `task-workspace-binding.test.ts`, `task-workspace-repositories*.test.ts`, `task-workspace-tools.test.ts`, channel integration tests, and adapter-utils checkpoint/native persistence tests. Full handoff still requires the repository typecheck, test, and build commands. Remote transport fixtures establish protocol behavior; they do not qualify production provider throughput.
 
 Channel defaults can be configured in Apps connection settings and per destination. They affect new conversations only. A queued selection or repository request is applied on the next normal admission; configuration changes do not interrupt a live run. See [the architecture](plans/2026-10-09-task-workspaces.md).
+
+GitHub repository discovery and admission recheck current grant access. Installation
+changes advance the access revision and invalidate an in-flight refresh. Ordinary
+pull-request webhooks update delivery health without invalidating repository
+access. A refresh preserves their latest webhook timestamp and health when it
+commits. Concurrent access refreshes retain the existing one-retry limit.
 
 ### Slack provisioning paths
 
