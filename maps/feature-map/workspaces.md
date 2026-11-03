@@ -106,6 +106,10 @@ After a final save clears dirty state and writer authority, Files must read the
 current committed saved version even while the old allocation is still recorded
 or its read transport is unavailable. Confirm the original bytes and Saved copy
 label; a new writer or dirty state must retain the live-read requirement.
+Clear the recorded allocation while a saved preview is loading: the pinned copy
+must remain readable. Epoch, snapshot, source, writer, dirty-state, and foreign
+or reintroduced location changes must still reject the read. Live reads keep
+their physical-location fence, and all private saved copies must be removed.
 Close must retain dirty/unfinished work and reject custom cleanup/teardown
 commands; a clean saved workspace can release compute while retaining files.
 Manual runtime commands, jobs, repairs, and service starts must reject remote

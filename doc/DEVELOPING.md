@@ -1732,8 +1732,11 @@ Files reads use the current committed saved version when remote authority is
 clean and has no active writer, even while its old allocation remains recorded.
 The saved loader verifies the company, workspace, snapshot, and archive before
 reading. Dirty or writer-owned authority uses the live allocation and cannot
-substitute an older save if that allocation is unavailable. Reads retain their
-authority-change fence and remove private saved-file copies after use.
+substitute an older save if that allocation is unavailable. A saved read permits
+cleanup to clear its recorded allocation while the epoch, snapshot, source,
+clean state, and absent writer stay identical. A new or reintroduced allocation
+still invalidates that read. Live reads retain the full allocation fence, and
+private saved-file copies are removed after use.
 Embedders that omit the optional saved-file loader keep valid live reads. They
 still report unavailability when neither a live location nor a loader exists.
 
