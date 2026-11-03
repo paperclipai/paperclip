@@ -2894,7 +2894,11 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(calls).toBe(1);
   });
 
-  it.each(["gateway", "plugin"] as const)("reports a saved unknown outcome when a stopped %s provider throws", async path => {
+  it.each([
+    ["gateway", "none"], ["plugin", "none"],
+    ["gateway", "event"], ["plugin", "event"],
+    ["gateway", "audit"], ["plugin", "audit"],
+  ] as const)("reports a saved unknown outcome when a stopped %s provider throws with %s logging", async (path, failure) => {
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow fictional tool",
       policyType: "allow", selectors: { toolName: "fixture:delete_everything" } });
@@ -2911,17 +2915,33 @@ describeEmbeddedPostgres("tool gateway service", () => {
       : gateway.executePluginTool({ actor: { type: "agent", companyId: company.id, agentId: agent.id, runId: run.id },
           tool: "fixture:delete_everything", parameters, runContext: runSessionInput(company, agent, run) });
     const outcome = attempt.then(() => null, error => error);
-    try { await sent; await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop"); }
-    finally { resume(); }
-    expect(await outcome).toMatchObject({ status: 409, reasonCode: "tool_execution_outcome_unknown" });
+    try {
+      await sent;
+      await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop");
+      if (failure !== "none") {
+        await db.execute(sql`create function test_stopped_log_failure() returns trigger language plpgsql as $$
+          begin raise exception 'fictional logging failure'; end $$`);
+        if (failure === "event") await db.execute(sql`create trigger test_stopped_log_failure before insert on tool_call_events
+          for each row when (new.event_type = 'call_failed') execute function test_stopped_log_failure()`);
+        else await db.execute(sql`create trigger test_stopped_log_failure before insert on activity_log
+          for each row when (new.action = 'tool_gateway.call_failed') execute function test_stopped_log_failure()`);
+      }
+    } finally { resume(); }
+    try {
+      expect(await outcome).toMatchObject({ status: 409, reasonCode: "tool_execution_outcome_unknown" });
+    } finally {
+      if (failure === "event") await db.execute(sql`drop trigger test_stopped_log_failure on tool_call_events`);
+      if (failure === "audit") await db.execute(sql`drop trigger test_stopped_log_failure on activity_log`);
+      if (failure !== "none") await db.execute(sql`drop function test_stopped_log_failure()`);
+    }
     const [saved] = await db.select().from(toolInvocations);
     expect(saved).toMatchObject({ status: "failed", errorCode: "tool_execution_outcome_unknown" });
     const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, saved.id));
-    expect(events.filter(event => event.eventType === "call_failed")).toEqual([
+    expect(events.filter(event => event.eventType === "call_failed")).toEqual(failure === "event" ? [] : [
       expect.objectContaining({ decision: "deny", reasonCode: "tool_execution_outcome_unknown" }),
     ]);
     const audits = await db.select().from(activityLog).where(eq(activityLog.companyId, company.id));
-    expect(audits.filter(audit => audit.action === "tool_gateway.call_failed")).toHaveLength(1);
+    expect(audits.filter(audit => audit.action === "tool_gateway.call_failed")).toHaveLength(failure === "audit" ? 0 : 1);
     expect(audits.some(audit => audit.action === "tool_gateway.call_deferred")).toBe(false);
   });
 

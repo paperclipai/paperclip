@@ -11433,32 +11433,38 @@ export function createToolGatewayService(
         const isRuntimeDeferred = status === 429 &&
           (reasonCode === "runtime_capacity_unavailable" || reasonCode === "runtime_restart_backoff" || reasonCode === "runtime_restart_suppressed");
         const isDeferred = status === 504 || isRuntimeDeferred;
+        const preserveUnknown = (error: unknown) => {
+          if (!outcomeUnknown) throw error;
+          logger.warn({ invocationId }, "Failed to record stopped tool call completion");
+        };
         void emitConnectionInvoked(db, invocationId);
-        if (input.approvedActionRequestId) {
-          const actionRequestId = input.approvedActionRequestId;
-          const [failedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
-            .update(toolActionRequests)
-            .set({
-              status: "failed",
-              resolvedAt: completedAt,
-              updatedAt: completedAt,
-            })
-            .where(
-              and(
-                eq(toolActionRequests.id, actionRequestId),
-                eq(toolActionRequests.status, "executing"),
-              ),
-            )
-            .returning({ id: toolActionRequests.id }));
-          if (failedRequest) {
-            await reflectToolActionInteractionLifecycle({
-              actionRequestId: failedRequest.id,
-              status: "failed",
-              errorCode: reasonCode,
-              errorMessage: message,
-            });
+        try {
+          if (input.approvedActionRequestId) {
+            const actionRequestId = input.approvedActionRequestId;
+            const [failedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
+              .update(toolActionRequests)
+              .set({
+                status: "failed",
+                resolvedAt: completedAt,
+                updatedAt: completedAt,
+              })
+              .where(
+                and(
+                  eq(toolActionRequests.id, actionRequestId),
+                  eq(toolActionRequests.status, "executing"),
+                ),
+              )
+              .returning({ id: toolActionRequests.id }));
+            if (failedRequest) {
+              await reflectToolActionInteractionLifecycle({
+                actionRequestId: failedRequest.id,
+                status: "failed",
+                errorCode: reasonCode,
+                errorMessage: message,
+              });
+            }
           }
-        }
+        } catch (error) { preserveUnknown(error); }
         await writeToolCallEvent({
           invocationId,
           actionRequestId: input.approvedActionRequestId ?? null,
@@ -11481,7 +11487,7 @@ export function createToolGatewayService(
               : {}),
           },
           tool,
-        });
+        }).catch(preserveUnknown);
         await writeAudit({
           session,
           companyId: session.companyId,
@@ -11507,7 +11513,7 @@ export function createToolGatewayService(
               ? { execution: executionAuditFromError(normalizedError) }
               : {}),
           },
-        });
+        }).catch(preserveUnknown);
         if (outcomeUnknown) throw new ToolGatewayHttpError(status, message, reasonCode);
         if (normalizedError instanceof ToolContentValidationError) {
           throw new ToolGatewayHttpError(422, message, reasonCode, {
@@ -11777,6 +11783,10 @@ export function createToolGatewayService(
             message = "The external outcome is unknown; inspect the provider before retrying";
           }
         }
+        const preserveUnknown = (error: unknown) => {
+          if (!outcomeUnknown) throw error;
+          logger.warn({ invocationId }, "Failed to record stopped tool call completion");
+        };
         void emitConnectionInvoked(db, invocationId);
         await writeToolCallEvent({
           invocationId,
@@ -11792,7 +11802,7 @@ export function createToolGatewayService(
               ? { findings: err.findings, promptInjection: err.detectorMetadata }
               : null,
           tool,
-        });
+        }).catch(preserveUnknown);
         await writeAudit({
           session: sessionLike,
           companyId: input.runContext.companyId,
@@ -11811,7 +11821,7 @@ export function createToolGatewayService(
             error: message,
             ...(err instanceof ToolContentValidationError ? { promptInjection: err.detectorMetadata } : {}),
           },
-        });
+        }).catch(preserveUnknown);
         if (outcomeUnknown) throw new ToolGatewayHttpError(status, message, reasonCode);
         if (err instanceof ToolContentValidationError) {
           throw new ToolGatewayHttpError(422, message, reasonCode, {
