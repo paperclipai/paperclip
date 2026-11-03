@@ -177,6 +177,6 @@
   {
     "dir": "packages/runner-sdk",
     "name": "@paperclipai/runner-sdk",
-    "publishFromCi": false
+    "publishFromCi": true
   }
 ]
