@@ -197,6 +197,9 @@ describe("KanbanBoard", () => {
     const board = container.querySelector('[role="region"][aria-label="Task board columns"]');
     expect(board?.className).toContain("overflow-auto");
     expect(board?.className).toContain("max-h-(--sz-calc-33)");
+    expect(board?.className).toContain("grid");
+    expect(board?.className).toContain("grid-flow-col");
+    expect(board?.className).toContain("auto-cols-max");
 
     const headers = Array.from(container.querySelectorAll(".sticky"));
     expect(headers.length).toBeGreaterThan(0);
