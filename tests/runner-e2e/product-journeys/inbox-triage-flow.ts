@@ -1,6 +1,7 @@
 import { expect } from "@playwright/test";
 import { inboxArchivePersisted, inboxTaskMatches, inboxTaskResurfaced, type InboxTaskEvidence } from "./inbox-triage-evidence.js";
 import { inboxAuthorCommentMatches, type InboxAuthorComment } from "./inbox-author-contract.js";
+import { inboxBlockedActivity } from "./inbox-triage-fixture.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 export async function inboxStep<T>(code: string, operation: () => Promise<T>): Promise<T> {
@@ -89,7 +90,7 @@ export async function inboxTriage(context: JourneyContext, session: TargetSessio
 
   // A real new Blocked transition is relevant activity. The fixture supplies the
   // event, while the production archive policy must independently resurface it.
-  await inboxStep("inbox_relevant_activity_failed", () => api.patch(route, { status: "blocked" }));
+  await inboxStep("inbox_relevant_activity_failed", () => api.patch(route, inboxBlockedActivity(user.id)));
   const blocked = { ...expected, status: "blocked" };
   await inboxStep("inbox_resurface_projection_failed", () => expect.poll(async () => inboxTaskResurfaced(await read(), blocked, await mine())).toBe(true));
   await openPersonalInbox(context, "mine");

@@ -2327,6 +2327,15 @@ function connectorEnrollmentPrincipal(req: Request): string {
     res.json({ profiles: await filterConnectionManagementRows(db, req, "connections:profiles", await svc.listProfiles(companyId), row => ({ profileId: row.id })) });
   });
 
+  router.get("/tool-connections/:connectionId/profile-configuration", managementGuard("connections:profiles", "GET /tool-connections/:connectionId/profile-configuration", { personal: true }), async (req, res) => {
+    assertBoardOrAgent(req);
+    const existing = await getAccessibleResource(req, res, svc.getConnection(req.params.connectionId as string), "Tool connection not found");
+    if (!existing) return;
+    const profiles = await svc.listConnectionProfileConfiguration(existing.companyId, existing.id,
+      rows => filterConnectionManagementRows(db, req, "connections:profiles", rows, row => ({ profileId: row.id })));
+    res.json({ profiles });
+  });
+
   router.get("/tool-profiles/:profileId/new-tools", managementGuard("connections:profiles", "GET /tool-profiles/:profileId/new-tools", { personal: true }), async (req, res) => {
     assertBoardOrAgent(req);
     const existing = await getAccessibleResource(req, res, svc.getProfile(req.params.profileId as string), "Tool profile not found");

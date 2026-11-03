@@ -85,9 +85,21 @@ export async function testopsClient(token, fetchImpl = fetch) {
   return async (route, method = 'GET', body, timeoutMs = 30_000) => {
     if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) fail('chat_testops_upload_unverified');
     if (!route.startsWith('/api/') || route.includes('://')) fail('testops_route_invalid');
+    const multipart = body instanceof FormData;
+    if (multipart) {
+      const entries = [...body.entries()], files = entries.map(([, file]) => file);
+      if (method !== 'POST' || !/^\/api\/jobrun\/[1-9][0-9]{0,15}\/upload$/.test(route)
+        || !Number.isSafeInteger(Number(route.split('/')[3])) || entries.length !== 3
+        || entries.some(([name]) => name !== 'file')
+        || files.some(file => !(file instanceof Blob) || file.type !== 'application/json' || file.size > 12 * 1024 * 1024
+          || !/^[a-f0-9-]{36}-(?:attachment|result)\.json$/.test(file.name))
+        || files.filter(file => file.name.endsWith('-result.json')).length !== 1
+        || new Set(files.map(file => file.name)).size !== 3
+        || files.reduce((bytes, file) => bytes + file.size, 0) > 32 * 1024 * 1024) fail('testops_route_invalid');
+    }
     const response = await fetchImpl(`${endpoint}${route}`, { method, redirect: 'error',
-      headers: { Accept: 'application/json', Authorization: `Bearer ${value.access_token}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-      ...(body ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMs) });
+      headers: { Accept: 'application/json', Authorization: `Bearer ${value.access_token}`, ...(body && !multipart ? { 'Content-Type': 'application/json' } : {}) },
+      ...(body ? { body: multipart ? body : JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeoutMs) });
     if (!response.ok) fail(`testops_api_http_${response.status}`);
     if (response.status === 204) return null;
     const text = await response.text();

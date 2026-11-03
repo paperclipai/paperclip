@@ -1,3 +1,4 @@
+import { ISSUE_SORT_FIELDS, sortIssues, type IssueSort, type IssueSortField } from "../lib/issue-sort";
 import { saveTaskCollectionPreferences } from "../lib/task-collection-preferences";
 import { useWarmTaskDetailCode } from "@/hooks/useWarmTaskDetailCode";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
@@ -89,7 +90,6 @@ import { getInboxKeyboardSelectionIndex } from "../lib/inbox";
 import { hasBlockingShortcutDialog, isKeyboardShortcutTextInputTarget } from "../lib/keyboardShortcuts";
 import { buildSubIssueDefaultsForViewer } from "../lib/subIssueDefaults";
 import { statusBadge } from "../lib/status-colors";
-import { workflowSort } from "../lib/workflow-sort";
 import { isSuccessfulRunHandoffRequired } from "../lib/successful-run-handoff";
 import { deriveOriginatingActor, ISSUE_STATUSES, ISSUE_DISPLAY_STATUSES, type Issue, type IssueDisplayStatus, type IssueStatus, type Project } from "@paperclipai/shared";
 import { Badge } from "@/components/ui/badge";
@@ -151,7 +151,7 @@ const progressSegmentClasses: Record<IssueDisplayStatus, string> = {
 
 /* ── View state ── */
 
-export type IssueSortField = "status" | "priority" | "title" | "created" | "updated" | "workflow";
+export type { IssueSortField } from "../lib/issue-sort";
 export type BoardCardDensity = "auto" | "compact" | "comfortable";
 export type BoardColdLaneMode = "auto" | "collapsed" | "expanded";
 export type BoardColumnPageSize = KanbanColumnPageSize;
@@ -207,6 +207,8 @@ function getViewState(key: string): IssueViewState {
         ...parsed,
         ...normalizeIssueFilterState(parsed),
         workspaces: [],
+        sortField: ISSUE_SORT_FIELDS.includes(parsed.sortField) ? parsed.sortField : defaultViewState.sortField,
+        sortDir: parsed.sortDir === "asc" ? "asc" : "desc",
         boardCardDensity: normalizeBoardCardDensity(parsed.boardCardDensity),
         boardColdLaneMode: normalizeBoardColdLaneMode(parsed.boardColdLaneMode),
         boardColumnPageSize: normalizeBoardColumnPageSize(parsed.boardColumnPageSize),
@@ -273,31 +275,6 @@ function loadIssueColumns(key: string): InboxIssueColumn[] {
   }
 }
 
-function sortIssues(issues: Issue[], state: IssueViewState): Issue[] {
-  if (state.sortField === "workflow") {
-    const ordered = workflowSort(issues);
-    return state.sortDir === "desc" ? [...ordered].reverse() : ordered;
-  }
-  const sorted = [...issues];
-  const dir = state.sortDir === "asc" ? 1 : -1;
-  sorted.sort((a, b) => {
-    switch (state.sortField) {
-      case "status":
-        return dir * (issueStatusOrder.indexOf(a.displayStatus ?? a.status) - issueStatusOrder.indexOf(b.displayStatus ?? b.status));
-      case "priority":
-        return dir * (issuePriorityOrder.indexOf(a.priority) - issuePriorityOrder.indexOf(b.priority));
-      case "title":
-        return dir * a.title.localeCompare(b.title);
-      case "created":
-        return dir * (new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-      case "updated":
-        return dir * (new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
-      default:
-        return 0;
-    }
-  });
-  return sorted;
-}
 
 const AGE_BUCKET_DAY_MS = 24 * 60 * 60 * 1000;
 const AGE_BUCKET_WEEK_MS = 7 * AGE_BUCKET_DAY_MS;
@@ -471,8 +448,11 @@ interface IssuesListProps {
   initialWorkspaces?: string[];
   routineTasksOnly?: boolean;
   onRoutineTasksOnlyChange?: (checked: boolean) => void;
+  /** URL sorting overrides the saved collection preference when supplied. */
+  sort?: IssueSort;
+  onSortChange?: (sort: IssueSort) => void;
   initialSearch?: string;
-  searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions">;
+  searchFilters?: Omit<IssueListRequestFilters, "q" | "projectId" | "limit" | "includeRoutineExecutions" | "sortField" | "sortDir">;
   searchWithinLoadedIssues?: boolean;
   baseCreateIssueDefaults?: Record<string, unknown>;
   createIssueLabel?: string;
@@ -689,6 +669,8 @@ export function IssuesList({
   initialWorkspaces,
   routineTasksOnly,
   onRoutineTasksOnlyChange,
+  sort,
+  onSortChange,
   initialSearch,
   searchFilters,
   searchWithinLoadedIssues = false,
@@ -764,7 +746,11 @@ export function IssuesList({
     getInitialWorkspaceViewState(scopedKey, initialAssignees, initialWorkspaces, defaultSortField),
   );
   // The Tasks URL owns this filter; other collections keep their saved state.
-  const viewState = useMemo(() => routineTasksOnly === undefined ? savedViewState : { ...savedViewState, routineTasksOnly }, [savedViewState, routineTasksOnly]);
+  const viewState = useMemo(() => ({
+    ...savedViewState,
+    ...sort,
+    ...(routineTasksOnly === undefined ? {} : { routineTasksOnly }),
+  }), [savedViewState, sort, routineTasksOnly]);
   const showAgentCreatedTasks = useShowAgentCreatedTasks(selectedCompanyId, viewStateKey);
   useEffect(() => {
     if (!enableAgentCreatedVisibilityFilter) return;
@@ -806,15 +792,21 @@ export function IssuesList({
 
   const updateView = useCallback((patch: Partial<IssueViewState>) => {
     if (patch.routineTasksOnly !== undefined) onRoutineTasksOnlyChange?.(patch.routineTasksOnly);
+    if (patch.sortField !== undefined || patch.sortDir !== undefined) {
+      onSortChange?.({
+        sortField: patch.sortField ?? viewState.sortField,
+        sortDir: patch.sortDir ?? viewState.sortDir,
+      });
+    }
     setViewState((prev) => {
-      const next = { ...prev, ...patch };
+      const next = { ...prev, ...sort, ...patch };
       saveTaskCollectionPreferences({
         companyId: selectedCompanyId ?? "__unscoped__", collectionKey: viewStateKey,
         legacyViewStorageKey: scopedKey, legacyColumnsStorageKey: getIssueColumnsStorageKey(scopedKey),
       }, { viewState: next, columns: visibleIssueColumns });
       return next;
     });
-  }, [scopedKey, selectedCompanyId, viewStateKey, visibleIssueColumns, onRoutineTasksOnlyChange]);
+  }, [scopedKey, selectedCompanyId, viewStateKey, visibleIssueColumns, onRoutineTasksOnlyChange, onSortChange, sort, viewState.sortField, viewState.sortDir]);
 
   useEffect(() => {
     if (!experimentalSettingsLoaded || externalObjectsEnabled || viewState.externalObjectStatuses.length === 0) return;
@@ -1135,7 +1127,16 @@ export function IssuesList({
       liveIssueIds,
       issueFilterContext,
     );
-    return sortIssues(filteredByControls, viewState);
+    const byId = new Map(searchScopedIssues.map(issue => [issue.id, issue]));
+    return sortIssues(filteredByControls, viewState, issue => {
+      const parent = issue.parentId ? byId.get(issue.parentId) : null;
+      return {
+        createdBy: issue.createdByAgentId ? agentName(issue.createdByAgentId) ?? "Unknown agent" : companyUserLabelMap.get(issue.createdByUserId ?? "") ?? "Board",
+        assignee: issue.assigneeAgentId ? agentName(issue.assigneeAgentId) ?? "Unknown agent" : companyUserLabelMap.get(issue.assigneeUserId ?? "") ?? null,
+        project: projectById.get(issue.projectId ?? "")?.name,
+        parentTask: parent ? `${parent.identifier} ${parent.title}` : null,
+      };
+    });
   }, [
     searchScopedIssues,
     viewState,
@@ -1143,6 +1144,9 @@ export function IssuesList({
     enableAgentCreatedVisibilityFilter,
     liveIssueIds,
     issueFilterContext,
+    agentName,
+    companyUserLabelMap,
+    projectById,
   ]);
 
   const progressSummary = useMemo(

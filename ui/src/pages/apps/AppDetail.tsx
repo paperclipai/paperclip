@@ -13,10 +13,9 @@ import { EmailConnectionInboxes } from "./chat/EmailEndpointSetup";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, Loader2, Pencil } from "lucide-react";
 import type {
-  ToolApplication,
   ToolConnection,
   ToolPolicy,
-  ToolProfileWithDetails,
+  ToolProfileConfiguration,
 } from "@paperclipai/shared";
 import {
   connectionDisplaySecondaryHint,
@@ -29,6 +28,7 @@ import { useCompany } from "@/context/CompanyContext";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useToast } from "@/context/ToastContext";
 import { queryKeys } from "@/lib/queryKeys";
+import { retryTransientOnly } from "@/lib/query-client";
 import { consumeSkillSourceReturn } from "@/lib/skill-source-connect-return";
 import { toolsApi } from "@/api/tools";
 import { agentsApi } from "@/api/agents";
@@ -50,6 +50,7 @@ import {
   appDefinitionLogoUrl,
   appDefinitionName,
   appDefinitionSlug,
+  galleryEntryFor,
   type AppGalleryDisplayEntry,
 } from "./app-definition-display";
 import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
@@ -132,9 +133,9 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     enabled: !!connectionId && needsCatalog,
   });
   const profilesQuery = useQuery({
-    queryKey: queryKeys.tools.profiles(selectedCompanyId ?? "__none__"),
-    queryFn: () => toolsApi.listProfiles(selectedCompanyId!),
-    enabled: !!selectedCompanyId && (activeTab === "review" || activeTab === "permissions"),
+    queryKey: queryKeys.tools.connectionProfileConfiguration(selectedCompanyId ?? "__none__", connectionId),
+    queryFn: () => toolsApi.listConnectionProfileConfiguration(connectionId),
+    enabled: !!selectedCompanyId && !!connectionId && (activeTab === "review" || activeTab === "permissions"),
   });
   const policiesQuery = useQuery({
     queryKey: queryKeys.tools.policies(selectedCompanyId ?? "__none__"),
@@ -156,7 +157,8 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
   // the banner must not offer that action to anyone else.
   const grantsQuery = useQuery({
     queryKey: queryKeys.tools.connectionGrants(connectionId),
-    queryFn: () => toolsApi.listConnectionGrants(connectionId),
+    queryFn: ({ signal }) => toolsApi.listConnectionGrants(connectionId, { signal }),
+    retry: retryTransientOnly(1),
     enabled: !!connectionId && !!activeTab,
   });
 
@@ -921,7 +923,7 @@ function StatusBadge({ status }: { status: StatusInfo }) {
   );
 }
 
-function enabledCatalogIds(profile: ToolProfileWithDetails | undefined): Set<string> {
+function enabledCatalogIds(profile: ToolProfileConfiguration | undefined): Set<string> {
   const ids = new Set<string>();
   for (const entry of profile?.entries ?? []) {
     if (entry.effect === "include" && entry.catalogEntryId) ids.add(entry.catalogEntryId);
@@ -957,7 +959,7 @@ function askFirstCatalogIds(policies: ToolPolicy[], connectionId: string): Set<s
  * one that agrees with what the tab displays.
  */
 function accessFrom(
-  profile: ToolProfileWithDetails | undefined,
+  profile: ToolProfileConfiguration | undefined,
   install: InstallState,
 ): AccessDraft {
   const bindings = profile?.bindings ?? [];
@@ -979,21 +981,4 @@ function accessIncludingInstalls(next: AccessDraft, install: InstallState): Acce
     mode: "specific",
     agentIds: new Set([...next.agentIds, ...install.agentIds]),
   };
-}
-
-function galleryEntryFor(
-  apps: AppGalleryDisplayEntry[],
-  connection: ToolConnection | undefined,
-  application: ToolApplication | undefined,
-): AppGalleryDisplayEntry | null {
-  if (!connection) return null;
-  const sourceSlug = appApplicationSourceSlug(application) ?? appConnectionSourceSlug(connection);
-  if (sourceSlug) {
-    const keyed = apps.find((app) => appDefinitionSlug(app) === sourceSlug);
-    if (keyed) return keyed;
-  }
-  const name = connection.name.toLowerCase();
-  return apps.find((app) => appDefinitionName(app).toLowerCase() === name) ??
-    apps.find((app) => appDefinitionSlug(app) === name) ??
-    null;
 }

@@ -791,19 +791,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     `));
 
     await heartbeat.resumeQueuedRuns();
-    await waitForCondition(async () => {
-      const [run, wakeup] = await Promise.all([
-        db.select({ status: heartbeatRuns.status })
-          .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, runId))
-          .then((rows) => rows[0] ?? null),
-        db.select({ status: agentWakeupRequests.status })
-          .from(agentWakeupRequests)
-          .where(eq(agentWakeupRequests.id, wakeupRequestId))
-          .then((rows) => rows[0] ?? null),
-      ]);
-      return run?.status === "cancelled" && wakeup?.status === "skipped";
-    });
+    await heartbeat.drainActiveRunExecutions();
 
     const [run, wakeup, issue] = await Promise.all([
       db.select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
@@ -975,6 +963,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     await heartbeat.drainActiveRunExecutions();
     await parkPromise;
 
+    expect((await heartbeat.getRun(runId))?.status).toBe("cancelled");
     const issue = await db
       .select({ status: issues.status })
       .from(issues)
@@ -1121,7 +1110,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     expect(run).not.toBeNull();
-    await waitForCondition(async () => countExecuteCallsForRun(run!.id) > 0);
+    await heartbeat.drainActiveRunExecutions();
     expect(countExecuteCallsForRun(run!.id)).toBe(1);
   });
 
@@ -1713,13 +1702,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
 
     await heartbeat.resumeQueuedRuns();
-    await waitForCondition(async () => {
-      const [deferred] = await db
-        .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, deferredWakeupId));
-      return Boolean(deferred?.runId) && deferred?.status !== "deferred_issue_execution";
-    });
+    await heartbeat.drainActiveRunExecutions();
 
     const [deferred] = await db
       .select({ status: agentWakeupRequests.status, runId: agentWakeupRequests.runId })
@@ -1783,15 +1766,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     });
 
     await heartbeat.resumeQueuedRuns();
-
-    await waitForCondition(async () => {
-      const run = await db
-        .select({ status: heartbeatRuns.status })
-        .from(heartbeatRuns)
-        .where(eq(heartbeatRuns.id, runId))
-        .then((rows) => rows[0] ?? null);
-      return run?.status === "cancelled";
-    });
+    await heartbeat.drainActiveRunExecutions();
 
     const [run, wakeup, issue] = await Promise.all([
       db

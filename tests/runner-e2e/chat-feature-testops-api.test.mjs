@@ -794,3 +794,31 @@ test('deadline crossing after a complete attachment GET keeps the exact readines
     assert.equal(projected.verification.attachmentReadiness[0].withinDeadline, false); return true;
   });
 });
+
+test('existing-jobrun upload uses repeated literal file fields without JSON encoding or a lifecycle request', async () => {
+  const calls = [];
+  const api = await testopsClient('PRIVATE_KEY', async (url, options) => {
+    calls.push({ url, options });
+    return calls.length === 1 ? { ok: true, json: async () => ({ access_token: 'PRIVATE_BEARER' }) }
+      : { ok: true, status: 200, text: async () => '{"filesCount":3}' };
+  });
+  const data = new FormData();
+  for (const suffix of ['result', 'attachment', 'attachment']) data.append('file', new Blob(['{}'], { type: 'application/json' }), `${crypto.randomUUID()}-${suffix}.json`);
+  assert.deepEqual(await api('/api/jobrun/77/upload', 'POST', data), { filesCount: 3 });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].url, `${endpoint}/api/jobrun/77/upload`);
+  assert.equal(calls[1].options.body, data);
+  assert.equal(calls[1].options.headers['Content-Type'], undefined);
+  assert.deepEqual([...calls[1].options.body.keys()], ['file', 'file', 'file']);
+  assert.equal(calls[1].options.body.getAll('file[]').length, 0);
+  assert.equal(calls[1].options.redirect, 'error');
+});
+
+test('multipart uploads cannot target another route or add undeclared parts', async () => {
+  let calls = 0;
+  const api = await testopsClient('PRIVATE_KEY', async () => { calls++; return { ok: true, json: async () => ({ access_token: 'PRIVATE_BEARER' }) }; });
+  const form = new FormData(); form.append('file[]', new Blob(['{}']), 'unknown.json');
+  await assert.rejects(api('/api/jobrun/77/upload', 'POST', form), /testops_route_invalid/);
+  await assert.rejects(api('/api/testcase', 'POST', form), /testops_route_invalid/);
+  assert.equal(calls, 1, 'only the existing authentication request');
+});

@@ -99,6 +99,13 @@ adds composer upload, real agent consumption, independent calculation, attribute
 saved output and reload checks. Registration and oracle controls do not establish
 a live pass on a deployment.
 
+[Native completion feedback](../../server/src/services/native-runtime/native-completion-feedback.test.ts)
+checks a real saved-document link alongside a verified CSV attachment, including
+attachment download query and fragment links. It rejects foreign task/company
+links, missing documents, unproven current revisions, and workspace files. The
+document alone cannot satisfy the requested file. These local tool/Postgres
+checks do not establish hosted delivery or browser rendering.
+
 Manual: Upload a small Markdown file and CSV through Artifacts. Markdown becomes
 a versioned task document; other files become attachments. Read the document,
 download the CSV and compare bytes, then reload. Upload the same Markdown filename

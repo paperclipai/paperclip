@@ -1,3 +1,4 @@
+import { readNativeStartupCleanup, readNativeStartupContext } from "../native-runtime/native-startup-cleanup.js";
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { registerLiveRecoveryWork } from "./live-recovery-work.js";
@@ -1038,7 +1039,9 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                       ? "Native restart recovery is waiting for safe ownership evidence"
                       : disposition.kind === "already_finalized"
                         ? "Native restart recovery found an already-finalized result"
-                        : "Native restart recovery blocked ambiguous or conflicting ownership",
+                        : disposition.reason === "native_startup_cleanup_pending"
+                          ? "Native startup timed out; cancellation and verified cleanup are queued"
+                          : "Native restart recovery blocked ambiguous or conflicting ownership",
             payload: {
               restartKind: isClaim ? disposition.restartKind : restartKind,
               recoveryRequestId: isClaim
@@ -2251,6 +2254,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         nativeControllerProcessStartedAt:
           nativeRunFinalizations.controllerProcessStartedAt,
         nativeControllerLeaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
+        nativeLeaseOwner: nativeRunFinalizations.leaseOwner,
+        nativeControllerGeneration: nativeRunFinalizations.controllerGeneration,
+        nativeAttempt: nativeRunFinalizations.attempt,
+        nativeResultId: nativeRunFinalizations.resultId,
         nativeWorkspaceFinalizationPending: pendingNativeWorkspaceFinalizationCondition(db),
       })
       .from(heartbeatRuns)
@@ -2271,7 +2278,10 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       && !isNativeRunnerOwnershipHeld(run)
       && !activeRunExecutions.has(run.id) && !runningProcesses.has(run.id),
     ).map(({ run }) => run.id);
-    const remoteRecoveryRunIds = new Set(await listExpiredNativeRunnerAuthorities(db, now, expiredNativeRunIds));
+    const earlyStartupRunIds = activeRuns.filter(row => expiredNativeRunIds.includes(row.run.id) &&
+      readNativeStartupContext(row.run, { leaseOwner: row.nativeLeaseOwner, controllerGeneration: row.nativeControllerGeneration ?? 0,
+        attempt: row.nativeAttempt ?? 0, resultId: row.nativeResultId })).map(row => row.run.id);
+    const remoteRecoveryRunIds = new Set([...earlyStartupRunIds, ...await listExpiredNativeRunnerAuthorities(db, now, expiredNativeRunIds)]);
     if (remoteRecoveryRunIds.size) {
       const recovery = await recoverNativeRunsAfterRestart(now, [...remoteRecoveryRunIds]);
       for (const claim of recovery.claims) resumedRunIds.add(claim.runId);
@@ -2321,6 +2331,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       nativeControllerLeaseExpiresAt,
       nativeWorkspaceFinalizationPending,
     } of activeRuns) {
+      if (run.runtimeMode === "native" && readNativeStartupCleanup(run)) continue;
       if (parseObject(run.contextSnapshot).nativeQuestionCancellation) continue;
       // Native recovery owns these dispositions. Its writes happened after this
       // inventory was read; do not reap or overwrite them using the old row.
