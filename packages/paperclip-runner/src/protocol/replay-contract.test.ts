@@ -68,6 +68,18 @@ describe("PRP v1 JSON Schema contract", () => {
     });
   }
 
+  it("returns a validated event as the same object and rejects a corrupted one", async () => {
+    const fixture = await readFixture();
+    const event = (fixture.events as Record<string, unknown>[])[0]!;
+    const accepted = validatePrpEvent(event);
+    expect(accepted.ok).toBe(true);
+    // Narrowing after validation is a cast, not a copy.
+    if (accepted.ok) expect(accepted.event).toBe(event);
+    const rejected = validatePrpEvent({ ...event, eventType: 42 });
+    expect(rejected.ok).toBe(false);
+    expect(rejected.event).toBeNull();
+  });
+
   it("preserves unknown optional fields for forward compatibility", async () => {
     const result = parsePrpFixtureText(
       await readFile(new URL("unknown-optional-fields.json", fixtureDirectory), "utf8"),
