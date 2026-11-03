@@ -30,6 +30,8 @@ messages at the bottom of the chat are marked read with a comment cutoff.
 The existing ordering and per-human/company isolation remain in effect.
 
 Open `/chats`, choose an agent, or use `/chats/:agentRef` and its conversation sidebar.
+The chat picker shows each agent's saved avatar, including uploaded images, beside
+their name and role. Agents without a saved appearance use the shared default avatar.
 
 With Coordinator enabled, the composer exposes the shared model/thinking-level picker for supported agents. The agent stays fixed in this control; switching agents remains in the chat header. Choices save as conversation overrides on send, preserving the agent's configuration. A first message creates the conversation before saving settings and submitting through the ordered comments endpoint.
 
@@ -88,6 +90,8 @@ send. Confirm the same file stays in the composer after the chat is created.
 Send it once, reload, and confirm the file and message remain.
 
 Manual: Start a conversation, send a recognizable request, and inspect its reply.
+Open the agent picker from the sidebar or chat header. Confirm its avatars match
+the agents' profiles, including a custom image, and that name/role search still works.
 Click the responding agent's name, return with Back, then click its avatar; both should open that agent's overview without changing companies. Check that the identity looks unchanged at rest and on hover on desktop and mobile.
 Navigate away and reopen the same history. Use `/new` for a fresh session within
 the same standing conversation. Test an unavailable historical agent and an
