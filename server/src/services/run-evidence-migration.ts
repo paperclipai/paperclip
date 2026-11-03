@@ -60,14 +60,17 @@ export async function migrateRunEvidence(
   const config = resolveRunEvidenceStorage();
   if (!config) throw new Error("Run evidence migration requires instance S3 storage");
   const preserveHistoricalFiles = options.preserveHistoricalFiles === true;
-  const noActiveRuns = sql`not exists (select 1 from ${heartbeatRuns} where ${inArray(heartbeatRuns.status, ["queued", "running"])})`;
+  async function assertNoActiveRuns() {
+    options.signal?.throwIfAborted();
+    const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+      .where(inArray(heartbeatRuns.status, ["queued", "running"])).limit(1);
+    if (active) throw new Error("active_execution_requires_drain");
+  }
   if (preserveHistoricalFiles) {
     if (process.env.PAPERCLIP_EPHEMERAL_MIGRATION !== "true") {
       throw new Error("historical_log_archive_requires_offline_migration");
     }
-    const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-      .where(inArray(heartbeatRuns.status, ["queued", "running"])).limit(1);
-    if (active) throw new Error("active_execution_requires_drain");
+    await assertNoActiveRuns();
   }
   function drainedWriter(now = new Date()) {
     return and(
@@ -81,7 +84,6 @@ export async function migrateRunEvidence(
         eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
         gt(nativeRunFinalizations.leaseExpiresAt, now),
       )})`,
-      preserveHistoricalFiles ? noActiveRuns : undefined,
     );
   }
   async function assertDrained(runId: string, companyId: string) {
@@ -452,6 +454,10 @@ export async function migrateRunEvidence(
       item.reason = error instanceof Error ? error.message : "trace_migration_failed";
     }
   }
+  // Cloud has stopped every old process. Check that global prerequisite at
+  // page boundaries, not with an instance-wide scan at every per-run CAS.
+  // If it changes, fail enrollment; already verified copies remain resumable.
+  if (preserveHistoricalFiles) await assertNoActiveRuns();
   return {
     items,
     nextRunId: logs.length === limit ? logs.at(-1)!.id : undefined,

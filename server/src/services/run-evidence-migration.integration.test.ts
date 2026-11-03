@@ -162,6 +162,33 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     if (source.source !== "local") throw new Error("expected real local source");
     await expect(source.assertUnchanged()).rejects.toThrow("legacy_log_source_changed");
   });
+  it("fails the offline page if new execution appears during publication, and resumes verified history", async () => {
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    const companyId = randomUUID(), agentId = randomUUID(), runId = randomUUID(), activeId = randomUUID();
+    const logRef = `${companyId}/${agentId}/${runId}.ndjson`, bytes = "old unfinished history";
+    await fs.mkdir(path.dirname(path.join(directory, "logs", logRef)), { recursive: true });
+    await fs.writeFile(path.join(directory, "logs", logRef), bytes);
+    await db.execute(sql`insert into heartbeat_runs(id,company_id,agent_id,status,runtime_mode,log_store,log_ref)
+      values(${runId},${companyId},${agentId},'failed','native','local_file',${logRef})`);
+    // Fault injection at the real PostgreSQL publication boundary. The old
+    // run is still terminal; a new run violates the global offline contract.
+    await db.$client.unsafe(`create function admit_during_publication() returns trigger language plpgsql as $$
+      begin if new.id='${runId}' then insert into heartbeat_runs(id,company_id,agent_id,status)
+        values('${activeId}','${companyId}','${agentId}','running'); end if; return new; end $$;
+      create trigger admit_during_publication before update on heartbeat_runs
+        for each row execute function admit_during_publication()`);
+    const options = { apply: true, companyId, kinds: ["log"] as const, preserveHistoricalFiles: true };
+    try {
+      await expect(migrateRunEvidence(db, options)).rejects.toThrow("active_execution_requires_drain");
+      const [row] = await db.$client.unsafe("select status,log_store,log_bytes from heartbeat_runs where id=$1", [runId]);
+      expect(row).toMatchObject({ status: "failed", log_store: "s3_archive", log_bytes: null });
+    } finally {
+      await db.$client.unsafe("drop trigger admit_during_publication on heartbeat_runs; drop function admit_during_publication()");
+      await db.execute(sql`delete from heartbeat_runs where id=${activeId}`);
+    }
+    expect((await migrateRunEvidence(db, options)).items).toEqual([]);
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "false");
+  });
   it("preserves exact historical bytes and expiry, while refusing active/missing/corrupt sources", async () => {
     const company = randomUUID(),
       agent = randomUUID(),

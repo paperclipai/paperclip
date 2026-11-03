@@ -244,6 +244,9 @@ The offline ephemeral-enrollment process can also preserve unfinalized native
 local files as read-only `s3_archive` logs. This path requires
 `PAPERCLIP_EPHEMERAL_MIGRATION=true`, all old deployments stopped, no queued or
 running execution anywhere in the instance, and expired writer/finalizer leases.
+The global execution check runs at page boundaries; per-run ownership and
+metadata checks still fence every publication. New execution fails the page and
+enrollment, while verified copies remain available for a safe retry.
 It copies exact surviving bytes to a separate `<run>.archive` journal, checks
 that the local source did not change, and verifies the remote SHA-256 before
 switching the run's reference. It supports terminal `interrupted` runs as well.
