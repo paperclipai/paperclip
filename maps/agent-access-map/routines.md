@@ -71,6 +71,10 @@ Gaps: No dedicated production trigger-management binding; generic `call_api`
 provides the permitted REST path. Credential replies use inline delivery and encrypted
 mutation receipts rather than shared response assets.
 
+Sentry alerts use the ordinary `POST /api/routine-triggers/public/{publicId}/fire`
+endpoint and its trigger authentication. Configure filtering and loop prevention
+in Sentry; see the [Sentry repair tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
+
 The host-only `GET /api/instance/task-drain?idleSleepSafety=1&scheduledWake=1`
 extension reports the earliest supported future routine deadline under an owned
 idle hold. It requires signed Cloud control authority; company agents and tenant
@@ -78,17 +82,6 @@ admin tokens cannot use it. It does not grant routine management or execution
 authority. See the [hosting protocol](../../doc/idle-sleep-safety.md#scheduled-routine-wake-protocol)
 and [route authorization tests](../../server/src/__tests__/instance-settings-routes.test.ts).
 These are local contract checks, not a live provider sleep/wake qualification.
-
-The ordinary `POST /api/routine-triggers/public/{publicId}/fire` endpoint uses its
-trigger secret. A current standard run JWT in `X-Paperclip-Source-Run-Token`
-optionally attests the caller's creation provenance; it grants no actor or
-execution authority. The instance, company, agent, active run, and cancellation
-state are verified. Payload provenance claims are not trusted. Optional
-`X-Paperclip-Idempotency-Scope: routine` shares an execution receipt across the
-routine's triggers; the default remains trigger scope. Local
-[HTTP](../../server/src/__tests__/routines-e2e.test.ts) and
-[service](../../server/src/__tests__/routines-service.test.ts) checks cover these
-contracts. This is not a live external-provider qualification.
 
 ## `run-now`
 

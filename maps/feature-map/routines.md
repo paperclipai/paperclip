@@ -29,9 +29,7 @@ Open `/routines`, create one, and inspect `/routines/:routineId` and its edit se
 ### `trigger-history`
 
 Use the routine's trigger controls and Runs/Recent Runs/Audit links; lists also
-offer Run now. **View all tasks** opens the Tasks list with **Routine tasks**
-selected, using `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc`. Uncheck the
-filter to return to other tasks. **History** records configuration versions, not executions.
+offer Run now. **History** records configuration versions, not executions.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -54,16 +52,10 @@ Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWiza
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
 
-Normal public webhooks can record a verified caller run with
-`X-Paperclip-Source-Run-Token` and opt into routine-wide execution receipts with
-`X-Paperclip-Idempotency-Scope: routine`. Creation ancestry follows routine
-executions, caller runs, parents, and standalone follow-ups. Run-failure events
-expose bounded Sentry tags for filtering; unknown ancestry fails closed in the
-[Sentry tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
-The [HTTP suite](../../server/src/__tests__/routines-e2e.test.ts) and
-[service suite](../../server/src/__tests__/routines-service.test.ts) exercise
-persisted lineage, caller rejection, and cross-trigger deduplication. They do
-not claim a live Sentry delivery.
+Sentry alerts use the ordinary
+`/api/routine-triggers/public/:publicId/fire` webhook and its trigger authentication.
+Configure loop-prevention filters in Sentry as described in the
+[Sentry repair tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
 
 ## Gotchas
 
@@ -97,5 +89,3 @@ Sources: Source: [RoutineRunVariablesDialog.tsx](../../ui/src/components/Routine
 ### Documentation scope: Routines, cases, and status cards
 
 All three capabilities have recipes. Trigger/provider/timezone combinations, custom case schemas and summarizer quality need deeper cases.
-
-The target-independent Product E2E journey `routine-scheduled-run` covers browser creation, an actual scheduled invocation, run-attributed saved output, history after reload, and no new invocation across the next minute boundary after pause. Source: `tests/runner-e2e/product-journeys/routine-schedule-flow.ts`. Registration is not evidence of a passing deployed run.
