@@ -70,6 +70,7 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
 import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
+import { nativeStartupRetryExhaustedAction, nativeStartupRetryWait, planNativeStartupRetry } from "./native-startup-retry.js";
 import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
@@ -7061,6 +7062,7 @@ export function nativeSessionFailureSourceCode(
   | "native_provider_model_rejected"
   | "native_current_wake_comments_unread"
   | "native_current_wake_comments_changed_after_read"
+  | "provider_session_open_rejected"
   | "native_session_interrupted" {
   if (error instanceof NativePermissionDeclinedError) return "native_permission_declined";
   if (error instanceof NativeProviderTerminalFailure) {
@@ -7144,6 +7146,12 @@ export function nativeSessionFailureSourceCode(
   if (/native_current_wake_comments_unread/i.test(message)) {
     return "native_current_wake_comments_unread";
   }
+  // The runner reported a definite session.open outcome. That command runs
+  // before any prompt, so provider work cannot have started. An indeterminate
+  // outcome stays generic.
+  if (/\bPRP command session\.open (?:failed|rejected): /.test(message)) {
+    return "provider_session_open_rejected";
+  }
   return "native_session_interrupted";
 }
 
@@ -7226,6 +7234,7 @@ export async function nativeProviderRecoveryEvidence(input: {
     "provider_request_timeout",
     "provider_request_protocol_error",
     "native_runner_process_exited",
+    "provider_session_open_rejected",
   ]).has(input.sourceFailureCode);
   if (!checkpointExists && !providerEventsExist && definitelyPreSession) {
     return {
@@ -10382,10 +10391,31 @@ async function executePaperclipNativeSessionWithinScope(
         recoveryEvidence.recoveryMode === "ambiguous_state"
           ? sourceFailureCode
           : disposition.failureCode;
+      const providerFailure = providerFailureFromError(error);
+      // Pre-provider startup retries back off and wait out a known provider
+      // limit; their exhaustion explains the startup failure.
+      const startupRetryExhausted =
+        recoveryEvidence.recoveryMode === "bootstrap_retry" &&
+        failureCode === "native_session_retry_exhausted";
+      const startupRetry =
+        recoveryEvidence.recoveryMode === "bootstrap_retry" &&
+        (phase === "retryable_failure" || startupRetryExhausted)
+          ? await planNativeStartupRetry({
+              db: input.db,
+              binding: input.execution.binding,
+              attempt,
+              retryable: phase === "retryable_failure",
+              failure: providerFailure,
+              now,
+            })
+          : null;
+      const providerCooldownAt = startupRetry?.providerCooldownAt ?? null;
       const nextAttemptAt =
         recoveryEvidence.recoveryMode === "ambiguous_state"
           ? null
-          : disposition.nextAttemptAt;
+          : startupRetry
+            ? startupRetry.nextAttemptAt
+            : disposition.nextAttemptAt;
       const recoveryProjection = nativeSessionRecoveryProjection({
         phase,
         failureCode,
@@ -10394,7 +10424,6 @@ async function executePaperclipNativeSessionWithinScope(
       const { exhausted } = recoveryProjection;
       const integrityFailure =
         sourceFailureCode === "native_event_replay_conflict";
-      const providerFailure = providerFailureFromError(error);
       const message = redactIdentityText(
         error instanceof Error ? error.message : String(error),
       ).slice(0, 2_000);
@@ -10449,6 +10478,7 @@ async function executePaperclipNativeSessionWithinScope(
                 recoveryEvidence.providerSessionEstablished,
               providerEventsExist: recoveryEvidence.providerEventsExist,
               checkpointExists: recoveryEvidence.checkpointExists,
+              ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
               recoveryOwner: recoveryProjection.recoveryOwner,
               nextAction:
                 sourceFailureCode === "native_permission_declined"
@@ -10469,11 +10499,13 @@ async function executePaperclipNativeSessionWithinScope(
                           ? "Restore model provider usage capacity, then explicitly retry the task. Automatic retries cannot resolve an exhausted provider allowance."
                           : ownershipUnverified
                             ? "Inspect the retained runner's executable and authenticated connection. Do not replace its provider until ownership is safely resolved."
+                            : startupRetryExhausted
+                              ? nativeStartupRetryExhaustedAction(attempt, providerCooldownAt)
                             : exhausted
                               ? "Inspect the persisted native session after its bounded resume budget was exhausted."
                               : recoveryEvidence.recoveryMode ===
                                   "bootstrap_retry"
-                                ? "Retry provider bootstrap on this same run; durable evidence proves no provider session or provider event was created."
+                                ? `Retry provider bootstrap on this same run${nativeStartupRetryWait(providerCooldownAt)}; durable evidence proves no provider session or provider event was created.`
                                 : "Resume this same run from its exact persisted native provider checkpoint after the retry delay.",
             }),
             nextAttemptAt,
@@ -10640,6 +10672,7 @@ async function executePaperclipNativeSessionWithinScope(
             recoveryMode: recoveryEvidence.recoveryMode,
             providerSessionEstablished:
               recoveryEvidence.providerSessionEstablished,
+            ...(providerCooldownAt ? { providerCooldownAt: providerCooldownAt.toISOString() } : {}),
           },
           nextAction:
             sourceFailureCode === "native_permission_declined"
@@ -10658,10 +10691,12 @@ async function executePaperclipNativeSessionWithinScope(
                       ? "Restore model provider usage capacity, then explicitly retry the task; automatic retries are stopped."
                       : ownershipUnverified
                         ? "Resolve the retained runner's authentication or executable compatibility before an explicit recovery; do not blindly restart, cancel, or replace its provider session."
+                        : startupRetryExhausted
+                          ? nativeStartupRetryExhaustedAction(attempt, providerCooldownAt)
                         : exhausted
                           ? "Inspect the provider trace and explicitly choose a replacement run or provider configuration; automatic provider work is stopped."
                           : recoveryEvidence.recoveryMode === "bootstrap_retry"
-                            ? "Retry bootstrap on the same run without manufacturing a provider checkpoint."
+                            ? `Retry bootstrap on the same run${nativeStartupRetryWait(providerCooldownAt)} without manufacturing a provider checkpoint.`
                             : "Resume the exact persisted native session on the same heartbeat run.",
           wakePolicy: nextAttemptAt
             ? {

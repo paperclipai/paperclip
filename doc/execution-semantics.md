@@ -1576,7 +1576,24 @@ unknown operations or partial transcripts do not. Replacement uses a fresh
 session and retires only the exact predecessor's obsolete recovery hold while
 recording the proof and successor lineage. Retained provider files are not edited.
 
-Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Automatic attempts retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
+Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Exact-checkpoint resumes retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
+
+A bootstrap retry requires durable evidence that no provider session, provider
+event, or checkpoint exists. A runner report that `session.open` failed or was
+rejected qualifies, because that command runs before any prompt. An
+indeterminate `session.open` outcome does not qualify. Bootstrap retries back
+off: about 30 seconds after the first attempt and about 60 seconds after the
+second, with jitter that is persisted with the failure. Before it schedules a
+bootstrap retry, the executor looks for a known provider limit for the agent.
+Evidence is a `rate_limit` or `quota_exhausted` provider failure on the startup
+failure itself, or on an agent run that started in the last day, or a recorded
+usage-limit error code. The retry then waits until the provider's reported
+reset time, or until one hour after the limit failure when no reset time is
+known. A later successful run of the agent clears older evidence. A limit never
+holds a retry for more than one day. Limit evidence only delays a retry; it does
+not grant retry authority or change the budget. When the budget is exhausted,
+the task is blocked and its recovery action states that provider startup failed
+before any provider work began.
 
 A failed, unowned native sandbox retry can outlive an explicit Retry that already
 completed successfully. Startup recovery and ordinary retry admission retire that
