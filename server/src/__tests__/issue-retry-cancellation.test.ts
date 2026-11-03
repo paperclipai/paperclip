@@ -272,6 +272,52 @@ describeEmbeddedPostgres("issue retry cancellation (TON-921)", () => {
     expect(retry?.status).toBe("cancelled");
   });
 
+  it("cancels a queued FIRST-ATTEMPT run, not just retry rows", async () => {
+    // A queued first-attempt run (retryOfRunId is null) holds the issue's
+    // execution lock while it waits. Before this fix it survived the issue
+    // cancellation and left the cancelled issue locked - measured at 32 such
+    // rows on this instance, the oldest 26 hours old (TON-921).
+    //
+    // The scenario deliberately has NO pending retry row: with a retry present
+    // the retry's own cancellation cascades through the promotion path, which
+    // would cancel the queued sibling for an unrelated reason and make this
+    // test pass even without the fix.
+    const { companyId, agentId, issueId, retryRunId } = await seedIssueWithPendingRetry();
+    const queuedRunId = randomUUID();
+    const now = new Date("2026-05-06T18:30:00.000Z");
+
+    // Remove the seeded retry so the queued first attempt is the ONLY pending
+    // run for this issue.
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, retryRunId));
+
+    await db.insert(heartbeatRuns).values({
+      id: queuedRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      // No retryOfRunId: this is a first attempt, not a retry.
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    await db
+      .update(issues)
+      .set({ executionRunId: queuedRunId })
+      .where(eq(issues.id, issueId));
+
+    const res = await request(issueApp(boardActor(companyId)))
+      .patch(`/api/issues/${issueId}`)
+      .send({ status: "cancelled" });
+
+    expect(res.status).toBe(200);
+
+    const queued = await readRetryStatus(queuedRunId);
+    expect(queued?.status).toBe("cancelled");
+  });
+
   it("leaves the pending retry alone when the issue is not closed", async () => {
     const { companyId, issueId, retryRunId } = await seedIssueWithPendingRetry();
 

@@ -42,6 +42,44 @@ export type IssuePendingRetry = {
 };
 
 /**
+ * Find every QUEUED run belonging to an issue, whether or not it is a retry.
+ *
+ * A queued run is a wake that has been granted but has not started yet. It
+ * holds the issue's execution lock (`issues.executionRunId`) while it waits,
+ * so a queued run against a cancelled issue blocks the issue indefinitely -
+ * the wake is only cancelled later, by the stale-queued-run gate, IF the agent
+ * happens to be invoked at all. Measured on this instance before the fix: 32
+ * queued runs against a terminal issue, the oldest 26 hours old, each holding
+ * a lock on work nobody wants.
+ *
+ * This is why the sweep is not limited to retry rows: a first-attempt queued
+ * run is just as dead as a parked retry once the issue is cancelled.
+ */
+export async function listQueuedIssueRuns(
+  db: Db,
+  input: { companyId: string; issueId: string },
+): Promise<IssuePendingRetry[]> {
+  return db
+    .select({
+      id: heartbeatRuns.id,
+      agentId: heartbeatRuns.agentId,
+      status: heartbeatRuns.status,
+      scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+      scheduledRetryAttempt: heartbeatRuns.scheduledRetryAttempt,
+      scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+      retryOfRunId: heartbeatRuns.retryOfRunId,
+    })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.status, "queued"),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+      ),
+    );
+}
+
+/**
  * Find every pending retry row belonging to an issue.
  *
  * The issue link lives in `contextSnapshot.issueId` (the retry run carries the

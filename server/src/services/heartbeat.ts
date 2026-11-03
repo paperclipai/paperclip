@@ -116,7 +116,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
-import { listPendingIssueRetries } from "./issue-retry-cancellation.js";
+import { listPendingIssueRetries, listQueuedIssueRuns } from "./issue-retry-cancellation.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
@@ -9755,12 +9755,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   /**
-   * Cancel every pending retry row parked against an issue.
+   * Cancel every pending retry row AND queued wake parked against an issue.
    *
    * Called when an issue is cancelled or blocked. Without this, a
    * `scheduled_retry` row survives the issue cancellation and fires minutes
    * later against a dead issue - the promotion gate then suppresses it, but
    * only after it has already woken the assignee and burned a run slot.
+   *
+   * The same holds for a `queued` run that has not started yet: it holds the
+   * issue's execution lock while it waits, so a cancelled issue stays locked
+   * until some later wake happens to cancel it.
    *
    * Returns the ids of the runs that were actually cancelled.
    */
@@ -9770,8 +9774,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     reason: string,
   ): Promise<string[]> {
     const pending = await listPendingIssueRetries(db, { companyId, issueId });
+    const queued = await listQueuedIssueRuns(db, { companyId, issueId });
+    // A queued retry row appears in BOTH lists; cancel it once.
+    const seen = new Set<string>();
     const cancelledRunIds: string[] = [];
-    for (const row of pending) {
+    for (const row of [...pending, ...queued]) {
+      if (seen.has(row.id)) continue;
+      seen.add(row.id);
       const cancelled = await cancelRunInternal(row.id, reason, {
         errorCode: "cancelled",
         eventMessage: reason,
