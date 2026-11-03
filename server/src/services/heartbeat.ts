@@ -1481,6 +1481,17 @@ export function heartbeatService(
     return runControl.cancelBudgetScopeWork(...args);
   }
 
+  const HANDOFF_REDISPATCH_RETRY_DELAYS_MS = [250, 1_000, 3_000, 10_000];
+  async function redispatchHandoffWakes(companyId: string, sourceRunId: string, attempt = 0): Promise<void> {
+    const pending = await heartbeatQueue.resumeHandoffWakes({ companyId, sourceRunId }).catch(err => {
+      logger.error({ err, runId: sourceRunId }, "failed to re-dispatch handoff wakes after cleanup");
+      return 1;
+    });
+    const delay = HANDOFF_REDISPATCH_RETRY_DELAYS_MS[attempt];
+    if (pending === 0 || delay === undefined) return;
+    setTimeout(() => { void redispatchHandoffWakes(companyId, sourceRunId, attempt + 1); }, delay).unref?.();
+  }
+
   function releaseIssueExecutionAndPromote(...args: Parameters<typeof runControl.releaseIssueExecutionAndPromote>) {
     return runControl.releaseIssueExecutionAndPromote(...args);
   }
@@ -3998,6 +4009,13 @@ export function heartbeatService(
           : releaseIssueExecutionAndPromote(latestRun, { suppressImmediateRecovery: true })).catch(err => {
           logger.error({ err, runId: run.id }, "failed to promote legacy comment queue after cleanup");
         });
+        // A handoff from this run (review stage, changes requested, reassignment)
+        // woke the next participant while this run still owned its process or
+        // lease. The handoff stopped this run, so the release drain above never
+        // promotes that saved wake. Re-dispatch it now; a lease can settle
+        // shortly after this callback, so retry briefly. The periodic
+        // deferred-receipt sweep remains the fallback (including after restart).
+        await redispatchHandoffWakes(run.companyId, run.id);
       }
       if (
         !nativeSessionResumeScheduled &&

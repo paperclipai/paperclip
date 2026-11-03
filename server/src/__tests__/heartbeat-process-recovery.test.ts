@@ -2348,6 +2348,109 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();
   });
 
+  it.each([
+    ["execution_review_requested", "in_review", "event"],
+    ["execution_changes_requested", "in_progress", "event"],
+    ["execution_review_requested", "in_review", "late_lease"],
+  ] as const)("dispatches a same-issue handoff wake (%s) after the handing-off run's cleanup (%s/%s)", async (reason, nextStatus, mode) => {
+    // Mirrors PATCH /issues/:id from the run that hands its own task over: the
+    // route stops that run with the reassignment cancellation (acknowledged by
+    // the executor), then wakes the next participant while the stopped run
+    // still holds its environment lease.
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const [next] = await db.insert(agents).values({ companyId, name: "Next participant", role: "engineer",
+      status: "idle", adapterType: "codex_local", adapterConfig: {}, runtimeConfig: {}, permissions: {} }).returning();
+    const nextAgentId = next!.id;
+    const leaseId = randomUUID();
+    let heartbeat!: ReturnType<typeof heartbeatService>;
+    let cancellation: ReturnType<typeof heartbeat.cancelRun> | undefined;
+    let handedOff = false;
+    let wokeDuringCleanup: unknown;
+    let savedDuringCleanup: typeof agentWakeupRequests.$inferSelect | undefined;
+    const originalFactory = environmentOrchestrator.environmentRunOrchestrator;
+    const release = vi.fn(async () => {
+      if (!handedOff) {
+        handedOff = true;
+        await db.update(issues).set({ status: nextStatus, assigneeAgentId: nextAgentId }).where(eq(issues.id, issueId));
+        const executionStage = { wakeRole: reason === "execution_review_requested" ? "reviewer" : "executor" };
+        const woke = await heartbeat.wakeup(nextAgentId, {
+          source: "assignment", triggerDetail: "system", reason,
+          payload: { issueId, mutation: "update", executionStage, interruptedRunId: runId },
+          requestedByActorType: "agent", requestedByActorId: agentId,
+          contextSnapshot: { issueId, taskId: issueId, wakeReason: reason, source: "issue.execution_stage",
+            executionStage, interruptedRunId: runId },
+        });
+        wokeDuringCleanup = woke;
+        [savedDuringCleanup] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, nextAgentId));
+      }
+      if (mode === "event") {
+        await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date() })
+          .where(eq(environmentLeases.heartbeatRunId, runId));
+      }
+      return { released: [], errors: [] };
+    });
+    const factory = vi.spyOn(environmentOrchestrator, "environmentRunOrchestrator").mockImplementation((...args) => ({
+      ...originalFactory(...args), releaseForRun: release,
+    }));
+    heartbeat = heartbeatService(db);
+    mockAdapterExecute.mockImplementationOnce(async (input?: unknown) => {
+      const invocation = input as { onCancellationReady: () => Promise<void>; onDispatch: () => void };
+      await invocation.onCancellationReady();
+      invocation.onDispatch();
+      await db.insert(environmentLeases).values({ id: leaseId, companyId, issueId, heartbeatRunId: runId,
+        provider: "local", status: "active", leasePolicy: "ephemeral" });
+      cancellation = heartbeat.cancelRun(runId, "Cancelled before issue reassignment", {
+        errorCode: "issue_reassigned",
+        resultJson: { reassignmentStopConfirmed: true, issueMutationStopId: randomUUID() },
+        eventMessage: "run cancelled before issue reassignment",
+        eventPayload: { issueId },
+      });
+      void cancellation.catch(() => undefined);
+      await waitForValue(async () => adapterExecutionControls.get(runId)?.controller.signal.aborted);
+      return { exitCode: 1, signal: "SIGTERM", timedOut: false, errorMessage: "Cancelled before issue reassignment",
+        resultJson: { executionCancellation: { state: "acknowledged" } },
+        summary: "Stopped for handoff", provider: "test", model: "test-model" };
+    });
+    try {
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect((await cancellation)?.status).toBe("cancelled");
+      expect(release).toHaveBeenCalled();
+      expect(wokeDuringCleanup).toBeNull();
+      expect(savedDuringCleanup).toMatchObject({ status: "deferred_issue_execution", reason,
+        payload: expect.objectContaining({ executionWait: expect.objectContaining({ cause: "execution_owner_active", runId }) }) });
+      const [author] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(author).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned" });
+      expect((author!.resultJson?.executionCancellation as { state?: string } | undefined)?.state).toBe("acknowledged");
+
+      if (mode === "late_lease") {
+        // The lease outlives the executor's cleanup callback; the receipt must
+        // stay saved and the periodic deferred-receipt sweep must dispatch it.
+        expect(await selectRecoveryRunsByAgent(nextAgentId)).toHaveLength(0);
+        expect((await selectRecoveryWakesByAgent(nextAgentId))[0]?.status).toBe("deferred_issue_execution");
+        await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date() })
+          .where(eq(environmentLeases.heartbeatRunId, runId));
+        await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) })
+          .where(eq(agentWakeupRequests.agentId, nextAgentId));
+        await heartbeat.resumeQueuedRuns();
+      }
+      const nextRun = await waitForValue(async () => (await selectRecoveryRunsByAgent(nextAgentId))
+        .find(candidate => candidate.contextSnapshot?.wakeReason === reason));
+      expect(nextRun?.contextSnapshot).toMatchObject({ issueId, wakeReason: reason, interruptedRunId: runId });
+      const wakes = await selectRecoveryWakesByAgent(nextAgentId);
+      expect(wakes.filter(wake => wake.status === "deferred_issue_execution")).toHaveLength(0);
+      expect(wakes.filter(wake => wake.runId === nextRun!.id)).toHaveLength(1);
+      // Exactly one handoff run; later unrelated follow-ups (this fixture has no
+      // review policy) are not handoff re-dispatches.
+      expect((await selectRecoveryRunsByAgent(nextAgentId))
+        .filter(run => run.contextSnapshot?.wakeReason === reason)).toHaveLength(1);
+      await waitForRunToSettle(heartbeat, nextRun!.id);
+      await heartbeat.drainActiveRunExecutions();
+    } finally {
+      factory.mockRestore();
+    }
+  }, 60_000);
+
   it("keeps an unsafe Stop blocked when recovery sees a deferred human comment", async () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress", runStatus: "cancelled",
