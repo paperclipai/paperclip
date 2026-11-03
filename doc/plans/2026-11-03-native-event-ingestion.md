@@ -401,3 +401,32 @@ five-pair A/A noise envelope. This adds the previously missing acceptance check
 before browser A/A; it changes neither the streaming observer nor emitted work.
 The independent source-owner A/A may run during local H work because its workload,
 measurement code and gates remain unchanged.
+
+### Setup readiness observation correction, before browser A/A
+
+The full H `e27b338315034c062b18606c0f3ff7d883e3dfed` qualification
+reached activation index 95, with 95 provider GETs and clock hellos, then hit the
+unchanged shared 180-second deadline. No common epoch was released and no
+measured emission clocks existed. The retained report records the primary
+984-millisecond remaining-budget timeout and a separate cleanup 409 response;
+it is ineligible for acceptance. After teardown, an independent process check
+verified no owned Node, PostgreSQL or Rust Runner processes remained before the
+separate source-owner cursor comparison began.
+
+The default readiness poll backoff is a suspected contributor to the approximately
+1.85-second setup cadence. That failed run did not record clock-hello receipt or
+readiness-observation times, so it does not prove poll quantization. Before fresh
+browser A/A, H changes only the two setup predicates to a fixed 50-millisecond
+observation interval. Both predicates read local provider/clock maps; they issue
+no database or application request. The shared 180-second hard deadline, 600-second
+overall limit, exact-participant checks, 100 live providers, common epoch, measured
+event schedules, counts, payloads and performance gates remain unchanged.
+
+Future qualification records pre-epoch provider GET receipt, clock-hello receipt
+and background readiness-observation timestamps to expose any observation lag.
+These are setup diagnostics, distinct from the unchanged original provider
+emission clocks and browser paint observer. The comparator requires the frozen
+50-millisecond setup interval. Earlier failed samples remain excluded.
+
+Registered browser protocol after setup observation correction: `902c6a208793f0bcde1b326a1fee46d85df3274117754e3bfbbf77a65dc730ee`.
+Comparator SHA256: `e50d958532906d037413db6f66bdc02e60c93ddcacfe2e18e5b731d302f6a785`.

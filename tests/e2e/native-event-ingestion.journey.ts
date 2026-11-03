@@ -10,7 +10,8 @@ type SeenMarker = { markerCode: string; index: number; visibleMs: number };
 type Emission = { nonce: string; markerCode: string; index: number; intendedMs: number; emittedMs: number; receivedAtMs: number };
 type Visible = SeenMarker & Emission;
 type ClockStream = { nonce: string; markerCode: string; opened: boolean; hello: boolean; ended: boolean; aborted: boolean;
-  partialBytes: number; records: Map<number, Emission>; error?: string };
+  partialBytes: number; records: Map<number, Emission>; error?: string;
+  providerReadyAtMs?: number; clockHelloAtMs?: number; readinessObservedAtMs?: number };
 type ClockCase = { events: number; intervalMs: number; epochMs?: number; streams: Map<string, ClockStream>; errors: string[] };
 type Case = { name: string; runs: number; events: number; intervalMs: number; prelude: number };
 const smoke = process.env.PAPERCLIP_INGESTION_SMOKE === "1";
@@ -44,6 +45,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
     if (!key || !participant || !state || !stream) { res.writeHead(404).end(); return; }
     if (!route?.[2] && req.method === "GET") {
       if (pending.get(key)!.has(participant)) { res.writeHead(409).end(); return; }
+      stream.providerReadyAtMs = Date.now();
       pending.get(key)!.set(participant, res);
       res.on("close", () => pending.get(key)?.delete(participant));
       return;
@@ -61,7 +63,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       if (value.nonce !== participant || value.markerCode !== stream.markerCode) throw new Error("Clock identity mismatch");
       if (!stream.hello) {
         if (value.type !== "hello" || value.events !== state.events || value.intervalMs !== state.intervalMs) throw new Error("Clock hello mismatch");
-        stream.hello = true; return;
+        stream.hello = true; stream.clockHelloAtMs = Date.now(); return;
       }
       if (value.type !== "emission" || !Number.isSafeInteger(value.index) || value.index < 0 || value.index >= state.events
         || !Number.isSafeInteger(value.intendedMs) || !Number.isSafeInteger(value.emittedMs) || value.emittedMs <= 0
@@ -147,6 +149,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
   const report: Record<string, unknown> = {
     protocolVersion: "v2-compact-markers-original-clock-stream",
     admissionProtocol: "sequential-provider-and-clock-readiness-before-common-epoch",
+    setupReadinessPollingMs: 50,
     dependency: "Deterministic Codex app-server fixture; real application/runtime/port/PostgreSQL/live WebSocket/shipped UI",
     variant: process.env.PAPERCLIP_INGESTION_VARIANT ?? "unlabelled", qualificationOnly: smoke,
     diagnosticOnly: Boolean(process.env.PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_DIR),
@@ -255,14 +258,15 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         // PATCH schedules wakeup asynchronously. Wait for this actual provider,
         // while the common emission gate remains closed, before scheduling more.
         await expect.poll(() => pending.get(key)!.has(token) && state.streams.get(token)!.hello,
-          { timeout: Math.max(1, readinessDeadlineMs - Date.now()) }).toBe(true);
+          { timeout: Math.max(1, readinessDeadlineMs - Date.now()), intervals: [50] }).toBe(true);
+        state.streams.get(token)!.readinessObservedAtMs = Date.now();
       }
       const route = `/${company.issuePrefix}/issues/${issue.identifier}`;
       await page.goto(route);
       active.phase = "provider-and-clock-readiness";
       await expect.poll(() => ({ providers: pending.get(key)!.size,
         clocks: [...state.streams.values()].filter(stream => stream.hello).length }),
-      { timeout: Math.max(1, readinessDeadlineMs - Date.now()) }).toEqual({ providers: workload.runs, clocks: workload.runs });
+      { timeout: Math.max(1, readinessDeadlineMs - Date.now()), intervals: [50] }).toEqual({ providers: workload.runs, clocks: workload.runs });
       expect(Date.now(), "All participants must be ready within the shared activation/readiness budget").toBeLessThanOrEqual(readinessDeadlineMs);
       let preludeProof: Record<string, unknown> | undefined;
       if (workload.prelude) {
@@ -396,6 +400,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       expect([...state.streams.values()].every(stream => !stream.error)).toBe(true);
       clockEvidence.push(...[...state.streams.values()].map(stream => ({ nonce: stream.nonce, markerCode: stream.markerCode,
         hello: stream.hello, ended: stream.ended, aborted: stream.aborted, error: stream.error, partialBytes: stream.partialBytes,
+        providerReadyAtMs: stream.providerReadyAtMs, clockHelloAtMs: stream.clockHelloAtMs, readinessObservedAtMs: stream.readinessObservedAtMs,
         emissions: [...stream.records.values()].sort((a, b) => a.index - b.index) })));
       (report.cases as unknown[]).push({ ...result, durable, persistedAfterReload: true });
       await info.attach(`${workload.name}${stop ? "-stop" : ""}-metrics`, { body: JSON.stringify(result, null, 2), contentType: "application/json" });

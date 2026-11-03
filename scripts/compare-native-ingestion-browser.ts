@@ -24,6 +24,7 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
   const report = pair[arm];
   assert.equal(report.protocolVersion, "v2-compact-markers-original-clock-stream", "Fresh browser acceptance requires the qualified v2 clock protocol");
   assert.equal(report.admissionProtocol, "sequential-provider-and-clock-readiness-before-common-epoch", "Use the qualified pre-measurement admission protocol");
+  assert.equal(report.setupReadinessPollingMs, 50, "Keep the qualified setup readiness observation interval");
   assert.equal(report.complete, true); assert.equal(report.qualificationOnly, false, "Smoke cannot qualify performance");
   assert.equal(report.cleanup?.complete, true, "Acceptance requires completed fixture cleanup");
   assert.deepEqual(report.cleanup?.errors, [], "Acceptance rejects fixture cleanup errors");
