@@ -261,6 +261,8 @@ describe("typecheckLayers with the real compiler", () => {
           types: [],
           outDir: "dist",
           rootDir: "src",
+          resolveJsonModule: true,
+          skipLibCheck: true,
         },
         include: ["src"],
       })}\n`,
@@ -328,6 +330,48 @@ describe("typecheckLayers with the real compiler", () => {
 
     expect(status).not.toBe(0);
     expect(output).toMatch(/src\/route\.test\.ts\(\d+,\d+\): error TS2322/);
+  }, 60_000);
+
+  // Emitted declarations keep imports of .d.mts and JSON files, which tsc does not
+  // copy to the output directory. If those imports stopped resolving, skipLibCheck
+  // would hide it and the types would become `any`, so these errors would disappear.
+  it("keeps types from .d.mts and JSON imports in later layers", () => {
+    const root = compilerFixture();
+    mkdirSync(path.join(root, "src", "scripts"));
+    writeFileSync(path.join(root, "src", "scripts", "helper.mjs"), `export {};\n`);
+    writeFileSync(path.join(root, "src", "scripts", "helper.d.mts"), `export interface Manifest { version: number }\n`);
+    writeFileSync(path.join(root, "src", "catalog.json"), `${JSON.stringify({ tools: [{ name: "a" }] })}\n`);
+    writeFileSync(
+      path.join(root, "src", "leaf.ts"),
+      [
+        `import catalog from "./catalog.json" with { type: "json" };`,
+        `import type { Manifest } from "./scripts/helper.mjs";`,
+        `export type { Manifest };`,
+        `export type Tool = (typeof catalog.tools)[number];`,
+        `export const leaf = 1;`,
+        ``,
+      ].join("\n"),
+    );
+    const misuse = [
+      `import type { Manifest, Tool } from "./leaf.js";`,
+      `export const manifest: Manifest = { wrong: 1 };`,
+      `export const tool: Tool = { wrong: 1 };`,
+      ``,
+    ].join("\n");
+    writeFileSync(path.join(root, "src", "cycle-misuse.ts"), `import { one } from "./one.js";\nexport const used = one;\n${misuse}`);
+    writeFileSync(
+      path.join(root, "src", "two.ts"),
+      `import { one } from "./one.js";\nimport { used } from "./cycle-misuse.js";\nexport const two = (): number => one.length + used.length;\n`,
+    );
+    writeFileSync(path.join(root, "src", "misuse.test.ts"), misuse);
+
+    const { status, output } = check(root);
+
+    expect(status).not.toBe(0);
+    for (const file of ["cycle-misuse", "misuse\\.test"]) {
+      expect(output).toMatch(new RegExp(`src/${file}\\.ts\\(\\d+,\\d+\\): error TS2353.*'Manifest'`));
+      expect(output).toMatch(new RegExp(`src/${file}\\.ts\\(\\d+,\\d+\\): error TS2353.*'\\{ name: string; \\}'`));
+    }
   }, 60_000);
 });
 
