@@ -1676,6 +1676,12 @@ function invalidateActivityQueries(
     queryClient.invalidateQueries({
       queryKey: queryKeys.approvals.list(companyId),
     });
+    if (entityId) {
+      // An open approval page shows the answer given from Needs You or a task.
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.detail(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.comments(entityId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.approvals.issues(entityId) });
+    }
     return;
   }
 

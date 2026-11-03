@@ -50,6 +50,17 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       client.clear();
     });
 
+    it("refreshes an open approval page when the approval is answered elsewhere", () => {
+      const client = new QueryClient();
+      const own = [queryKeys.approvals.detail("approval-1"), queryKeys.approvals.comments("approval-1"), queryKeys.approvals.issues("approval-1")];
+      seed(client, [...own, queryKeys.approvals.detail("approval-2")]);
+      __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+        entityType: "approval", entityId: "approval-1", action: "approval.approved",
+      }, { userId: "user-2", agentId: null });
+      for (const key of own) expect(invalidated(client, key)).toBe(true);
+      expect(invalidated(client, queryKeys.approvals.detail("approval-2"))).toBe(false);
+      client.clear();
+    });
 
 
   });
