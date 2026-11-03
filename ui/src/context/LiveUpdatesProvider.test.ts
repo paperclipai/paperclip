@@ -62,6 +62,16 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       client.clear();
     });
 
+    it("refreshes an open decision, whose detail key sits outside the company prefix", () => {
+      const client = new QueryClient();
+      seed(client, [queryKeys.decisions.detail("decision-1"), queryKeys.decisions.detail("decision-2")]);
+      __liveUpdatesTestUtils.invalidateActivityQueries(client, "company-1", {
+        entityType: "decision", entityId: "decision-1", action: "decision.decided",
+      }, { userId: "user-2", agentId: null });
+      expect(invalidated(client, queryKeys.decisions.detail("decision-1"))).toBe(true);
+      expect(invalidated(client, queryKeys.decisions.detail("decision-2"))).toBe(false);
+      client.clear();
+    });
 
   });
   it("drops cached decision content when its access is revoked", () => {

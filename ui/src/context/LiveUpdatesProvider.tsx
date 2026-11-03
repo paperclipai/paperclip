@@ -1685,6 +1685,12 @@ function invalidateActivityQueries(
     return;
   }
 
+  if (entityType === "decision") {
+    // Detail is keyed outside the `["decisions", companyId]` prefix above.
+    if (entityId) queryClient.invalidateQueries({ queryKey: queryKeys.decisions.detail(entityId) });
+    return;
+  }
+
   if (entityType === "join_request") {
     queryClient.invalidateQueries({
       queryKey: queryKeys.access.joinRequests(companyId),
