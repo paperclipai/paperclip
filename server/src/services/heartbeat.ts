@@ -116,6 +116,7 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { listPendingIssueRetries } from "./issue-retry-cancellation.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
@@ -9753,6 +9754,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  /**
+   * Cancel every pending retry row parked against an issue.
+   *
+   * Called when an issue is cancelled or blocked. Without this, a
+   * `scheduled_retry` row survives the issue cancellation and fires minutes
+   * later against a dead issue - the promotion gate then suppresses it, but
+   * only after it has already woken the assignee and burned a run slot.
+   *
+   * Returns the ids of the runs that were actually cancelled.
+   */
+  async function cancelPendingIssueRetries(
+    companyId: string,
+    issueId: string,
+    reason: string,
+  ): Promise<string[]> {
+    const pending = await listPendingIssueRetries(db, { companyId, issueId });
+    const cancelledRunIds: string[] = [];
+    for (const row of pending) {
+      const cancelled = await cancelRunInternal(row.id, reason, {
+        errorCode: "cancelled",
+        eventMessage: reason,
+        eventPayload: { source: "issue_retry_cancelled", issueId },
+      });
+      if (cancelled && cancelled.status === "cancelled") {
+        cancelledRunIds.push(cancelled.id);
+      }
+    }
+    return cancelledRunIds;
+  }
+
   async function getIssueRetryRun(
     companyId: string,
     issueId: string,
@@ -15777,6 +15808,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
+    /**
+     * Release the issue's execution lock WITHOUT queueing an immediate
+     * replacement run. Used when the cancellation is itself the point (e.g.
+     * clearing a stale retry ladder), so the cancel does not immediately
+     * re-arm the work it just cancelled.
+     */
+    suppressImmediateRecovery?: boolean;
   };
 
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
@@ -15835,7 +15873,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         message: options.eventMessage ?? "run cancelled",
         ...(options.eventPayload ? { payload: options.eventPayload } : {}),
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      // Cancelling a PARKED retry (a `scheduled_retry` row that has not fired
+      // yet) must not spawn a replacement run. The parked row holds the
+      // issue's execution lock; releasing it through the normal promotion
+      // path would immediately queue a fresh run for the same issue - which
+      // is exactly the amplification we are trying to stop when an agent
+      // clears a stale retry (TON-921). Cancel the row, release the lock,
+      // and let the normal wake paths decide whether more work is due.
+      const wasParkedRetry = run.status === "scheduled_retry";
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressImmediateRecovery: wasParkedRetry || options.suppressImmediateRecovery,
+      });
     }
 
     await finalizeAgentStatus(run.agentId, "cancelled");
@@ -16326,6 +16374,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     cancelRun: (runId: string, reason?: string, options?: CancelRunOptions) => cancelRunInternal(runId, reason, options),
+
+    /**
+     * Cancel every pending retry parked against an issue. Used by the issue
+     * cancellation/blocked path so a dead issue cannot keep a retry ladder.
+     */
+    cancelPendingIssueRetries,
 
     /**
      * Pause-only. Emits errorCode "agent_paused" unconditionally; its sole caller is the

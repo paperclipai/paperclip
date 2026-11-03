@@ -7890,6 +7890,13 @@ export function issueRoutes(
       return;
     }
 
+    // Cancelling OR blocking an issue must stop its pending retry ladder: a
+    // `scheduled_retry` row parked against a dead issue still fires later and
+    // consumes a run slot (TON-921).
+    const shouldCancelPendingRetriesForStatus =
+      (existing.status !== "cancelled" && issue.status === "cancelled") ||
+      (existing.status !== "blocked" && issue.status === "blocked");
+
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {
@@ -7919,6 +7926,53 @@ export function issueRoutes(
           action: "heartbeat.cancel_failed",
           entityType: "heartbeat_run",
           entityId: runToCancelForCancelledStatus.id,
+          details: { source: "issue_status_cancelled", issueId: existing.id },
+        });
+      }
+    }
+
+    // A cancelled (or blocked) issue must not keep a live retry ladder. The
+    // `scheduled_retry` row is parked - it holds no process, but it WILL wake
+    // the assignee when `scheduledRetryAt` arrives. Cancelling only the
+    // RUNNING run (above) left that row alive, so a cancelled issue still
+    // fired a doomed wake minutes later (TON-921).
+    let cancelledPendingRetryRunIds: string[] = [];
+    if (shouldCancelPendingRetriesForStatus) {
+      try {
+        cancelledPendingRetryRunIds = await heartbeat.cancelPendingIssueRetries(
+          existing.companyId,
+          existing.id,
+          `Cancelled because the issue reached ${issue.status}`,
+        );
+        for (const cancelledRunId of cancelledPendingRetryRunIds) {
+          await logActivity(db, {
+            companyId: existing.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            action: "heartbeat.cancelled",
+            entityType: "heartbeat_run",
+            entityId: cancelledRunId,
+            details: {
+              source: "issue_status_cancelled",
+              issueId: existing.id,
+              issueStatus: issue.status,
+              pendingRetry: true,
+            },
+          });
+        }
+      } catch (err) {
+        logger.warn({ err, issueId: existing.id }, "failed to cancel pending retries for closed issue");
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "heartbeat.cancel_failed",
+          entityType: "heartbeat_run",
+          entityId: existing.id,
           details: { source: "issue_status_cancelled", issueId: existing.id },
         });
       }

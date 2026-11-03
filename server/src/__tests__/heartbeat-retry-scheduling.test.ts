@@ -524,6 +524,57 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     );
   });
 
+  it("exhausts the provider-quota ladder instead of climbing forever", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    // A run that has already consumed every rung of the quota ladder.
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+      retryNotBefore: null,
+      scheduledRetryAttempt: PROVIDER_QUOTA_TIMER_BACKOFF_DELAYS_MS.length,
+    });
+
+    const exhausted = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0.5 });
+
+    expect(exhausted).toEqual({
+      outcome: "retry_exhausted",
+      attempt: PROVIDER_QUOTA_TIMER_BACKOFF_DELAYS_MS.length + 1,
+      maxAttempts: PROVIDER_QUOTA_TIMER_BACKOFF_DELAYS_MS.length,
+    });
+
+    // The ladder is exhausted: no NEW scheduled_retry row was created. Without
+    // this bound every 429 would spawn another probe and the fleet would burn
+    // its run budget against an exhausted plan (TON-921).
+    const retryRows = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows);
+    expect(retryRows).toHaveLength(0);
+
+    const totalRuns = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(totalRuns).toBe(1);
+
+    const exhaustionEvent = await db
+      .select({ message: heartbeatRunEvents.message })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .orderBy(sql`${heartbeatRunEvents.id} desc`)
+      .then((rows) => rows[0] ?? null);
+    expect(exhaustionEvent?.message).toContain("Bounded retry exhausted");
+  });
+
   async function seedMaxTurnFixture(input?: {
     companyId?: string;
     agentId?: string;

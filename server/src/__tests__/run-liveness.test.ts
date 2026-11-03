@@ -216,6 +216,39 @@ describe("run liveness classifier", () => {
     expect(classification.livenessReason).toBe("unmanaged background task stopped; no durable live path");
   });
 
+  it("distinguishes provider quota exhaustion from a transient upstream fault", () => {
+    const quota = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      errorCode: "provider_quota",
+      resultJson: { errorFamily: "provider_quota" },
+    });
+
+    const transient = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      errorCode: "acpx_transient_upstream",
+      resultJson: { errorFamily: "transient_upstream" },
+    });
+
+    expect(quota.livenessState).toBe("failed");
+    expect(transient.livenessState).toBe("failed");
+    expect(quota.livenessReason).toContain("Provider quota exhausted");
+    expect(transient.livenessReason).toContain("Transient upstream fault");
+    expect(quota.livenessReason).not.toBe(transient.livenessReason);
+  });
+
+  it("keeps the generic failure reason for failures outside the known families", () => {
+    const classification = classifyRunLiveness({
+      ...baseInput,
+      runStatus: "failed",
+      errorCode: "adapter_failed",
+    });
+
+    expect(classification.livenessState).toBe("failed");
+    expect(classification.livenessReason).toBe("Run ended with failed (adapter_failed)");
+  });
+
   it("marks unclear useful output as unknown actionability", () => {
     const classification = classifyRunLiveness({
       ...baseInput,

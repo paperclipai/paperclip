@@ -287,6 +287,66 @@ function extractNextAction(input: RunLivenessClassificationInput) {
   return null;
 }
 
+/**
+ * Failure families that a reviewer must be able to tell apart.
+ *
+ * `provider_quota` means the provider refused us for MONEY reasons (429 /
+ * "Token Plan usage limit reached"): retrying sooner does not help, and the
+ * fix is a plan top-up or a long backoff. `transient_upstream` means the
+ * socket died mid-request: the same request usually succeeds on a fresh
+ * session within minutes.
+ *
+ * Both previously surfaced as the same generic "Run ended with failed (...)"
+ * string, so a reviewer could not tell "we ran out of credit" from "the
+ * connection dropped" without reading the raw error code (TON-921).
+ */
+const PROVIDER_QUOTA_ERROR_CODES = new Set(["provider_quota"]);
+const TRANSIENT_UPSTREAM_ERROR_CODES = new Set([
+  "acpx_transient_upstream",
+  "acpx_transient_upsert",
+  "codex_transient_upstream",
+  "claude_transient_upstream",
+]);
+
+/**
+ * Read the failure family for a run.
+ *
+ * Prefers the persisted `errorFamily` (the structured family the adapter
+ * recorded) and falls back to the error code, so the reason is right even for
+ * older runs that predate the structured field.
+ */
+export function readRunFailureFamily(input: {
+  errorCode?: string | null;
+  resultJson?: Record<string, unknown> | null;
+}): "provider_quota" | "transient_upstream" | null {
+  const persistedFamily =
+    typeof input.resultJson?.errorFamily === "string" ? input.resultJson.errorFamily.trim() : "";
+  if (persistedFamily === "provider_quota" || persistedFamily === "transient_upstream") {
+    return persistedFamily;
+  }
+  const errorCode = input.errorCode ?? "";
+  if (PROVIDER_QUOTA_ERROR_CODES.has(errorCode)) return "provider_quota";
+  if (TRANSIENT_UPSTREAM_ERROR_CODES.has(errorCode)) return "transient_upstream";
+  return null;
+}
+
+/**
+ * A human-readable terminal-failure reason that names the failure family, so
+ * a reviewer can distinguish "the provider refused us for quota reasons" from
+ * "the upstream socket died".
+ */
+function describeTerminalFailure(input: RunLivenessClassificationInput): string | null {
+  const family = readRunFailureFamily(input);
+  const errorCode = input.errorCode ?? "unknown";
+  if (family === "provider_quota") {
+    return `Provider quota exhausted (${errorCode}): the provider refused the request for plan/usage-limit reasons, so it is not recoverable by retrying sooner`;
+  }
+  if (family === "transient_upstream") {
+    return `Transient upstream fault (${errorCode}): the connection to the provider broke mid-request, which is normally recoverable on a fresh session`;
+  }
+  return null;
+}
+
 export function classifyRunActionability(input: RunLivenessClassificationInput): RunLivenessActionability {
   const text = actionabilityText(input);
   if (!text) return "unknown";
@@ -329,6 +389,10 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
   if (input.runStatus !== "succeeded") {
     if (hasUnmanagedBackgroundTaskEvidence(input.resultJson)) {
       return output("failed", UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON);
+    }
+    const failureReason = describeTerminalFailure(input);
+    if (failureReason) {
+      return output("failed", failureReason);
     }
     return output("failed", input.errorCode ? `Run ended with ${input.runStatus} (${input.errorCode})` : `Run ended with ${input.runStatus}`);
   }

@@ -70,6 +70,7 @@ import type {
 } from "@paperclipai/adapter-utils";
 import { skillVersionSelectionMap } from "../services/runtime-skill-selections.js";
 import { secretService } from "../services/secrets.js";
+import { runIsPendingIssueRetry } from "../services/issue-retry-cancellation.js";
 import { authorizationDeniedDetails } from "../services/authorization.js";
 import {
   detectAdapterModel,
@@ -3645,23 +3646,63 @@ export function agentRoutes(
   });
 
   router.post("/heartbeat-runs/:runId/cancel", async (req, res) => {
-    assertBoard(req);
     const runId = req.params.runId as string;
     const existing = await heartbeat.getRun(runId);
     if (existing) {
       assertCompanyAccess(req, existing.companyId);
     }
+
+    // An agent must be able to clear its OWN stale retry ladder without a
+    // board key. Previously this route was `assertBoard`-only, so an agent
+    // that wanted to stop its own retry had to escalate to a human (TON-921).
+    //
+    // The carve-out is deliberately narrow: the caller must be an agent, the
+    // run must belong to that agent, and the run must be a pending retry
+    // parked against one of the agent's own issues. A board key can still
+    // cancel anything.
+    let agentSelfCancel = false;
+    if (req.actor.type === "agent") {
+      if (!existing) {
+        res.status(404).json({ error: "Heartbeat run not found" });
+        return;
+      }
+      if (existing.agentId !== req.actor.agentId) {
+        throw forbidden("Agent key cannot cancel another agent's run");
+      }
+      const contextSnapshot =
+        existing.contextSnapshot && typeof existing.contextSnapshot === "object"
+          ? (existing.contextSnapshot as Record<string, unknown>)
+          : {};
+      const rawIssueId = contextSnapshot.issueId;
+      const issueId = typeof rawIssueId === "string" && rawIssueId.trim() ? rawIssueId.trim() : null;
+      if (!issueId) {
+        throw forbidden("Agent key can only cancel a pending retry parked against an issue");
+      }
+      const isPendingRetry = await runIsPendingIssueRetry(db, {
+        companyId: existing.companyId,
+        runId,
+        issueId,
+      });
+      if (!isPendingRetry) {
+        throw forbidden("Agent key can only cancel a pending retry parked against an issue");
+      }
+      agentSelfCancel = true;
+    } else {
+      assertBoard(req);
+    }
+
     const run = await heartbeat.cancelRun(runId);
 
     if (run) {
       await logActivity(db, {
         companyId: run.companyId,
-        actorType: "user",
-        actorId: req.actor.userId ?? "board",
+        actorType: agentSelfCancel ? "agent" : "user",
+        actorId: agentSelfCancel ? req.actor.agentId ?? "agent" : req.actor.userId ?? "board",
+        agentId: agentSelfCancel ? req.actor.agentId ?? null : null,
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: run.id,
-        details: { agentId: run.agentId },
+        details: { agentId: run.agentId, source: agentSelfCancel ? "agent_self_cancel" : "board" },
       });
     }
 
