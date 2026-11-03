@@ -1144,6 +1144,7 @@ export function createHeartbeatRunState(db: Db) {
       finishedAt: heartbeatRuns.finishedAt,
       errorCode: heartbeatRuns.errorCode,
       error: safeForLegacyEncoding ? heartbeatRunSqlAsciiSafeColumns.error : heartbeatRuns.error,
+      issueId: heartbeatRuns.issueId,
       nativeIssueId: heartbeatRuns.nativeIssueId,
       nativeSessionId: heartbeatRuns.nativeSessionId,
       processPid: heartbeatRuns.processPid,

@@ -1439,6 +1439,7 @@ export function heartbeatService(
   }
 
   const runControl = createHeartbeatRunControl(db, {
+    scheduleBoundedRetry,
     verifyStartupCleanup: async run => {
       await verifyNativeStartupCleanup(db, run, () => envOrchestrator.releaseForRun({
         heartbeatRunId: run.id, companyId: run.companyId, agentId: run.agentId, status: "expired",
