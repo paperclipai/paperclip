@@ -269,3 +269,47 @@ test("signing out clears saved query data before a later outage reload", async (
     await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
   }
 });
+
+
+test("a restored title draft cannot overwrite an edit made after its cached base", async ({ page, request }) => {
+  const data = await fixture(request);
+  const draft = "My restored title B";
+  const newer = "A newer server title C";
+  let releaseReads!: () => void;
+  const gate = new Promise<void>(resolve => { releaseReads = resolve; });
+  let replayWrites = 0;
+  page.on("request", incoming => {
+    if (incoming.method() === "PATCH" && incoming.postDataJSON()?.title === draft) replayWrites += 1;
+  });
+  try {
+    await page.goto(data.route);
+    await expect(page.getByTestId("task-chat-history-content")).toBeVisible({ timeout: 30_000 });
+    await expectCachedTask(page, data.issue);
+    const session = await json(await request.get("/api/auth/get-session"));
+    const owner = session.user.id as string;
+    const key = `paperclip:inline-draft:v2:${owner}:issue:${data.issue.id}:title`;
+    await page.evaluate(({ key, draft, base }) => localStorage.setItem(key, JSON.stringify({ version: 1, draft, base })), { key, draft, base: data.issue.title });
+    const paths = new Set([data.issue.id, data.issue.identifier].map(ref => `/api/issues/${ref}`.toLowerCase()));
+    await page.route("**/api/issues/**", async route => {
+      if (route.request().method() === "GET" && paths.has(new URL(route.request().url()).pathname.toLowerCase())) await gate;
+      await route.fallback();
+    });
+    await json(await request.patch(`/api/issues/${data.issue.id}`, { data: { title: newer } }));
+    const verifiedSession = page.waitForResponse(response => new URL(response.url()).pathname === "/api/auth/get-session" && response.ok());
+    await page.reload();
+    await verifiedSession;
+    const editor = page.getByTestId("issue-detail-header").locator("textarea");
+    await expect(editor).toHaveValue(draft, { timeout: 30_000 });
+    expect(replayWrites).toBe(0);
+    releaseReads();
+    await expect(editor).toHaveAttribute("aria-invalid", "true", { timeout: 30_000 });
+    await expect(editor).toHaveValue(draft);
+    expect((await json(await request.get(`/api/issues/${data.issue.id}`))).title).toBe(newer);
+    expect(await page.evaluate(key => localStorage.getItem(key), key)).toContain(draft);
+    expect(replayWrites).toBe(0);
+  } finally {
+    releaseReads();
+    await page.unroute("**/api/issues/**");
+    await request.patch(`/api/companies/${data.company.id}`, { data: { status: "archived" } });
+  }
+});
