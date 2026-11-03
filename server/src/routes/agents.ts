@@ -11,6 +11,9 @@ import { connectionManagementGuard, connectionRequestContext, connectionRequestU
 import { cancellationRequestId } from "../services/native-runtime/native-cancellation-request.js";
 import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
+import { runnerHarnessRegistry, validateRunnerHarnessConfiguration } from "../services/runner-harness-registry.js";
+import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
+import { reconcileRetainedAiCleanup, retainAiCredentialCleanup } from "../services/retained-ai-credential-cleanup.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
 import { qualifyAgentRunner } from "../services/agent-runner-qualification.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
@@ -153,6 +156,7 @@ import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/executio
 import type {
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestResult,
+  AdapterEnvironmentTestContext,
 } from "@paperclipai/adapter-utils";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import type { AdapterAuthSignal, AdapterAuthSignalResponse, CodexAccountBindingClaim } from "@paperclipai/shared";
@@ -512,6 +516,7 @@ async function withHireRunLock<T>(key: string, fn: () => Promise<T>): Promise<T>
 export function agentRoutes(
   db: Db,
   options: {
+    testRunnerHarness?: (context: AdapterEnvironmentTestContext) => Promise<AdapterEnvironmentTestResult>;
     chatRunRetries?: Pick<ChatChannelService, "prepareFailedChatRunRetry" | "processFailedChatRunRetry">;
     pluginWorkerManager?: PluginWorkerManager;
     /** The active deployment mode. The confidential transport guard reads it. */
@@ -1899,6 +1904,13 @@ export function agentRoutes(
         );
       }
     }
+    if (adapterType === "paperclip_runner" && asRecord(config)?.provider === "extension") {
+      const harnessId = asNonEmptyString(asRecord(config)?.harnessId);
+      const available = companyId ? await runnerHarnessRegistry(db).list(companyId) : [];
+      if (!harnessId || !available.some(harness => harness.harnessId === harnessId)) {
+        throw unprocessable("Select an installed Runner harness enabled for this company.", { code: "runner_harness_unavailable" });
+      }
+    }
     const disabled = new Set(await adapterSettingsService(db).getDisabledTypes());
     if (!disabled.has(adapterType)) return adapterType;
     const available = listServerAdapters()
@@ -1917,6 +1929,14 @@ export function agentRoutes(
     adapterConfig: Record<string, unknown>,
   ): Promise<void> {
     if (adapterType !== "paperclip_runner") return;
+    if (adapterConfig.provider === "extension") {
+      const harnessId = asNonEmptyString(adapterConfig.harnessId);
+      if (!harnessId) throw unprocessable("Select an installed Runner harness.", { code: "runner_harness_unavailable" });
+      if (!asNonEmptyString(adapterConfig.model)) throw unprocessable("Select a model for the installed harness.", { code: "runner_harness_model_required" });
+      const resolved = await runnerHarnessRegistry(db).resolve(companyId, harnessId);
+      validateRunnerHarnessConfiguration(resolved, adapterConfig);
+      return;
+    }
     let profile;
     try {
       if (adapterConfig.provider === "grok_bot") {
@@ -1960,7 +1980,7 @@ export function agentRoutes(
     ) {
       return input.nextAdapterConfig;
     }
-    if (["openai_dot", "muse"].includes(String(input.nextAdapterConfig.provider))) return input.nextAdapterConfig;
+    if (["openai_dot", "muse", "extension"].includes(String(input.nextAdapterConfig.provider))) return input.nextAdapterConfig;
     // A provisional setup harness supplies no Cursor model or permissions.
     // Legacy Cursor conversion still retains its provider-specific defaults.
     if (input.nextAdapterConfig.provider === "cursor_cloud" && input.previousAdapterType !== "cursor_cloud") return input.nextAdapterConfig;
@@ -2175,6 +2195,10 @@ export function agentRoutes(
     runtimeConfig: unknown,
   ) {
     const normalized = normalizeNewAgentRuntimeConfig(runtimeConfig);
+    if (adapterType === "paperclip_runner" && adapterConfig.provider === "extension") {
+      if (normalized.aiConnection) throw unprocessable("Configure this harness's declared environment variables using saved secrets.");
+      return normalized;
+    }
     if (normalized.aiConnection) return normalized;
     if (req.actor.type === "agent") {
       const manager = req.actor.agentId ? await svc.getById(req.actor.agentId) : null;
@@ -3177,6 +3201,9 @@ export function agentRoutes(
   });
 
   async function validateManagedAgentBinding(req: Request, companyId: string, agentId: string, adapterType: string, config: Record<string, unknown>, binding: AiRuntimeConnectionBinding, environmentId: string | null | undefined, test: boolean, newAgent = false, validateModelCatalog = false) {
+    if (adapterType === "paperclip_runner" && config.provider === "extension") {
+      throw unprocessable("Configure this harness's declared environment variables using saved secrets.");
+    }
     if (binding.mode === "router") {
       const settings = await import("../services/instance-settings.js");
       if (!(await settings.instanceSettingsService(db).getExperimental()).enableAiConnectionRouters) throw unprocessable("Ask your instance operator to enable AI connection routing.");
@@ -3265,6 +3292,9 @@ export function agentRoutes(
       await assertCanCreateAgentsForCompany(req, companyId);
 
       const requestedBinding = req.body.aiConnection ? aiRuntimeConnectionBindingSchema.parse(req.body.aiConnection) : undefined;
+      if (type === "paperclip_runner" && req.body.adapterConfig?.provider === "extension" && requestedBinding) {
+        throw unprocessable("Configure this harness's declared environment variables using saved secrets.");
+      }
       const aiBinding = requestedBinding?.mode === "router" ? undefined : requestedBinding;
       if (aiBinding && req.body.testCredentials && Object.keys(req.body.testCredentials).length) throw unprocessable("A managed connection test cannot override its credentials");
       const inputAdapterConfig = aiBinding ? { ...req.body.adapterConfig, env: stripAiAuthBindings(req.body.adapterConfig?.env) } : (req.body?.adapterConfig ?? {}) as Record<string, unknown>;
@@ -3348,10 +3378,17 @@ export function agentRoutes(
         });
       type = selection.adapterType;
       adapterConfigForTest = selection.adapterConfig;
+      if (type === "paperclip_runner" && adapterConfigForTest.provider === "extension") {
+        await assertFreshPaperclipRunnerProvider(companyId, type, adapterConfigForTest);
+      }
+      const harnessProbeCleanupScope = type === "paperclip_runner" && adapterConfigForTest.provider === "extension"
+        ? { companyId, accountKey: JSON.stringify(["harness-probe", requestedEnvironmentId, savedAgentId, adapterConfigForTest.harnessId]) }
+        : undefined;
+      if (harnessProbeCleanupScope) await reconcileRetainedAiCleanup(harnessProbeCleanupScope);
       if (requestedEnvironment) await assertAdapterTestEnvironmentForCompany(companyId, requestedEnvironment.id, type);
       const adapter = requireServerAdapter(type);
       if (!retainsSavedExecution) await assertSelectableAdapterType(type, adapterConfigForTest, companyId);
-      if (poolBinding?.mode === "router") {
+      if (poolBinding?.mode === "router" && adapterConfigForTest.provider !== "extension") {
         await validateManagedAgentBinding(req, companyId, savedAgentId ?? "", type, adapterConfigForTest, poolBinding, requestedEnvironmentId, false, !savedAgentId || testingSetup);
         res.json({ adapterType: type, status: "warn", testedAt: new Date().toISOString(), checks: [{ code: "ai_connection_pool_task_test_required", level: "warn", message: "Pool configuration is available. Run a task to verify the selected account and harness; this preview does not allocate a task or contact a provider." }] });
         return;
@@ -3411,6 +3448,7 @@ export function agentRoutes(
         });
 
       let releaseStatus: "released" | "failed" = "released";
+      let retainedProbeLease = false;
       try {
         // Mirror the run path (resolveExecutionRunAdapterConfig): the selected
         // environment's envVars are the base env layer and the agent's
@@ -3502,7 +3540,11 @@ export function agentRoutes(
             effectiveAdapterConfig.apiKey = req.body.testCredentials.API_SERVER_KEY;
           }
         }
-        const result = aiBinding ? await withManagedAiProbe(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !savedAgentId || testingSetup, allowUninstalledShared: (!savedAgentId || testingSetup) && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }, async managed => {
+        const result = type === "paperclip_runner" && effectiveAdapterConfig.provider === "extension"
+          ? options.testRunnerHarness
+            ? await options.testRunnerHarness({ companyId, adapterType: type, config: effectiveAdapterConfig, executionTarget, environmentName })
+            : { adapterType: type, status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code: "runner_harness_probe_unavailable", level: "error" as const, message: "Native harness testing is unavailable on this instance." }] }
+          : aiBinding ? await withManagedAiProbe(db, { companyId, agentId: req.body.agentId ?? "", responsibleUserId: responsibleUserForAiRequest(req), adapterType: type, binding: aiBinding, config: effectiveAdapterConfig, allowUninstalledPersonal: !savedAgentId || testingSetup, allowUninstalledShared: (!savedAgentId || testingSetup) && await canInstallSharedAiConnectionForNewAgent(db, req, companyId, aiBinding) }, async managed => {
           const managedAiCredentialHome = type === "paperclip_runner" && (asRecord(managed.config)?.provider === "codex"
             || (asRecord(managed.config)?.provider === "acpx" && asRecord(managed.config)?.acpxAgent === "antigravity")) && managed.home
             ? path.join(managed.home, "provider") : undefined;
@@ -3527,9 +3569,15 @@ export function agentRoutes(
         });
       } catch (err) {
         releaseStatus = "failed";
+        if (harnessProbeCleanupScope && err instanceof NativeEnvironmentProbeCleanupError) {
+          retainedProbeLease = true;
+          retainAiCredentialCleanup({ scope: harnessProbeCleanupScope, cleanup: () => release("failed"), retired: err.retired,
+            ...(err.retryCleanup ? { retryRetirement: err.retryCleanup } : {}) });
+          throw unprocessable("The harness test is still cleaning up. Retry after runtime cleanup completes.", { code: "native_probe_cleanup_pending" });
+        }
         throw err;
       } finally {
-        await release(releaseStatus);
+        if (!retainedProbeLease) await release(releaseStatus);
       }
     },
   );

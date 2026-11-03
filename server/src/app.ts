@@ -174,6 +174,8 @@ import {
   runtimeConnectionIntentRoutes,
 } from "./routes/connection-intents.js";
 import { adapterRoutes } from "./routes/adapters.js";
+import { runnerHarnessRegistry } from "./services/runner-harness-registry.js";
+import { probeInstalledRunnerHarness } from "./services/native-runtime/extension-runtime.js";
 import { managedAgentProfileRoutes } from "./routes/managed-agent-profiles.js";
 import { remoteAgentProfileRoutes } from "./routes/remote-agent-profiles.js";
 import { pluginUiStaticRoutes } from "./routes/plugin-ui-static.js";
@@ -762,6 +764,7 @@ export async function createApp(
   });
   api.use(
     agentRoutes(db, {
+      testRunnerHarness: context => probeInstalledRunnerHarness(db, context),
       chatRunRetries: chatChannels,
       pluginWorkerManager: workerManager,
       deploymentMode: opts.deploymentMode,
@@ -973,6 +976,13 @@ export async function createApp(
       },
     },
   );
+  const runnerHarnesses = runnerHarnessRegistry(db, {
+    localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
+    resolvePackageRoot: bundledPackageResolver?.resolve,
+    assertPackageActivation: bundledPackageResolver?.assertActivation
+      ?? distributionPluginActivationGuard(bundledCatalogRoot, distributionPlugins, managedAutoInstallKeys),
+  });
+  app.locals.runnerHarnessRegistry = runnerHarnesses;
   runtimePluginLoader = loader;
   const browserUse = browserUseService(db, undefined,
     { cancelWorkForScope: heartbeatService(db, { pluginWorkerManager: workerManager }).cancelBudgetScopeWork },
@@ -993,6 +1003,7 @@ export async function createApp(
   api.use(
     adapterRoutes({
       db,
+      runnerHarnesses,
       resolveRunnerTarget: (companyId, environmentId) => resolveAgentRunnerTargetForCompany(db, companyId, environmentId),
       getNativeRunnerEnabled: async () =>
         (await instanceSettingsService(db).getExperimental())

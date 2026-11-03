@@ -29,7 +29,6 @@ import { finishServiceShutdown } from "../shutdown.js";
 import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { isDeepStrictEqual, promisify } from "node:util";
@@ -53,6 +52,8 @@ import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
+import { DEFAULT_LOCAL_PLUGIN_DIR, resolvePluginPackageRoot } from "./plugin-package-root.js";
+export { DEFAULT_LOCAL_PLUGIN_DIR, resolvePluginPackageRoot } from "./plugin-package-root.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,18 +74,6 @@ const STANDALONE_BUNDLED_PLUGIN_SDK_PACKAGE = "@paperclipai/plugin-sdk";
  * @see PLUGIN_SPEC.md §10 — Package Contract
  */
 export const NPM_PLUGIN_PACKAGE_PREFIX = "paperclip-plugin-";
-
-/**
- * Default local plugin directory.  The loader scans this directory for
- * locally-installed plugin packages.
- *
- * @see PLUGIN_SPEC.md §8.1 — On-Disk Layout
- */
-export const DEFAULT_LOCAL_PLUGIN_DIR = path.join(
-  os.homedir(),
-  ".paperclip",
-  "plugins",
-);
 
 const DEV_TSX_LOADER_PATH = path.resolve(__dirname, "../../../cli/node_modules/tsx/dist/loader.mjs");
 
@@ -2622,26 +2611,6 @@ function resolveWorkerEntrypoint(
       `Checked: ${path.resolve(packageDir, workerRelPath)}, ` +
       `${path.resolve(directDir, workerRelPath)}`,
   );
-}
-
-function resolvePluginPackageRoot(
-  plugin: PluginRecord & { packagePath?: string | null },
-  localPluginDir: string,
-): string {
-  if (plugin.packagePath && existsSync(plugin.packagePath)) {
-    return path.resolve(plugin.packagePath);
-  }
-
-  const packageName = plugin.packageName;
-  const packageDir = packageName.startsWith("@")
-    ? path.join(localPluginDir, "node_modules", ...packageName.split("/"))
-    : path.join(localPluginDir, "node_modules", packageName);
-  if (existsSync(packageDir)) return packageDir;
-
-  const directDir = path.join(localPluginDir, packageName);
-  if (existsSync(directDir)) return directDir;
-
-  throw new Error(`Package root not found for plugin "${plugin.pluginKey}"`);
 }
 
 function resolveManagedInstallPackageDir(localPluginDir: string, packageName: string): string {

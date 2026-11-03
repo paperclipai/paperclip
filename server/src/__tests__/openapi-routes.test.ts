@@ -1062,6 +1062,18 @@ describe("openapi routes", () => {
     });
   });
 
+  it("documents installed harness discovery as company-scoped board metadata", () => {
+    const { spec } = loadSpecRoutes();
+    const operation = spec.paths["/api/companies/{companyId}/runner-harnesses"].get;
+    expect(operation["x-paperclip-authorization"]).toEqual({ actor: "board" });
+    expect(operation.security).toEqual([{ BoardSessionAuth: [] }, { BoardApiKeyAuth: [] }]);
+    const response = operation.responses["200"].content["application/json"].schema;
+    expect(response.type).toBe("array");
+    expect(response.items.required).toContain("harnessId");
+    expect(response.items.properties).not.toHaveProperty("runtime");
+    expect(response.items.properties).not.toHaveProperty("entrypoint");
+  });
+
   it("covers the mounted server routes exactly", () => {
     const {
       routes: actualRoutes,

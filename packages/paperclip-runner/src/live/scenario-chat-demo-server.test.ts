@@ -1,8 +1,10 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, extname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -101,13 +103,65 @@ describe("Scenario chat deployment boundary", () => {
     for (const [path, source] of closure) {
       expect(source, path).not.toMatch(/\bimport\s*\(/);
       expect(source, path).not.toMatch(/PaperclipControlPlanePort|PAPERCLIP_API_(?:URL|KEY)|@paperclipai\/db/);
-      for (const specifier of importSpecifiers(source)) {
-        expect(specifier, `${path} imports outside the standalone boundary`).not.toMatch(
-          /^(?:server|ui|cli)(?:\/|$)|^@paperclipai\/(?!paperclip-runner(?:\/|$))/,
-        );
+      for (const declaration of importDeclarations(source)) {
+        expect(isStandaloneImport(declaration), `${path} imports ${declaration.specifier} outside the standalone boundary`).toBe(true);
       }
     }
   });
+
+  it("permits only type-only imports from the exact public SDK contracts entrypoint", () => {
+    const sources: [string, boolean][] = [
+      ['import type { RunnerHarnessCheckpoint } from "@paperclipai/runner-sdk/contracts";', true],
+      ['export type { RunnerHarnessCheckpoint } from "@paperclipai/runner-sdk/contracts";', true],
+      ['import { parseRunnerHarnessCheckpoint } from "@paperclipai/runner-sdk/contracts";', false],
+      ['import type { HarnessHostContext } from "@paperclipai/runner-sdk/host";', false],
+      ['import type { RunnerHarnessCheckpoint } from "@paperclipai/runner-sdk";', false],
+      ['import type { PrivateContract } from "@paperclipai/runner-sdk/contracts/private";', false],
+      ['import { service } from "server/services/example";', false],
+      ['import type { Component } from "ui/example";', false],
+      ['import { client } from "@paperclipai/server";', false],
+    ];
+    for (const [source, allowed] of sources) {
+      const imports = importDeclarations(source);
+      expect(imports).toHaveLength(1);
+      expect(isStandaloneImport(imports[0]!)).toBe(allowed);
+    }
+  });
+
+  it("emits a standalone mock runtime without loading the type-only SDK dependency", async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "paperclip-scenario-chat-build-"));
+    try {
+      await writeFile(resolve(root, "package.json"), JSON.stringify({ type: "module" }));
+      await symlink(resolve(packageRoot, "node_modules"), resolve(root, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+      await writeFile(resolve(root, "tsconfig.json"), JSON.stringify({
+        extends: resolve(packageRoot, "tsconfig.json"),
+        compilerOptions: { outDir: resolve(root, "dist"), rootDir: sourceRoot,
+          declaration: false, declarationMap: false, sourceMap: false, noCheck: true },
+        files: [resolve(sourceRoot, "live/scenario-chat-demo-server.ts")], include: [], exclude: [],
+      }));
+      await promisify(execFile)(process.execPath, [resolve(packageRoot, "node_modules/typescript/bin/tsc"),
+        "-p", resolve(root, "tsconfig.json")], { cwd: packageRoot, timeout: 15_000 });
+      const entry = resolve(root, "dist/live/scenario-chat-demo-server.js");
+      const closure = await sourceClosure(entry, false);
+      expect(closure.size).toBeGreaterThan(10);
+      for (const [path, source] of closure) {
+        expect(source, path).not.toMatch(/\bimport\s*\(/);
+        expect(source, path).not.toMatch(/PaperclipControlPlanePort|PAPERCLIP_API_(?:URL|KEY)|@paperclipai\/db/);
+        for (const declaration of importDeclarations(source)) {
+          expect(declaration.specifier, path).not.toMatch(/^@paperclipai\/runner-sdk(?:\/|$)/);
+          expect(isStandaloneImport(declaration), path).toBe(true);
+        }
+      }
+      const compiled = await import(pathToFileURL(entry).href) as typeof import("./scenario-chat-demo-server.js");
+      const runtime = new compiled.ScenarioChatDemoRuntime({
+        publicOrigin: PUBLIC_ORIGIN, basePath: "", commitSha: "standalone-build", packageRoot, log() {},
+      });
+      try {
+        await runtime.initialize();
+        expect(runtime.health()).toMatchObject({ ready: true, controlPlane: "capability-mock", networkEgress: "denied" });
+      } finally { await runtime.shutdown(); }
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, 20_000);
 
   it("requires the trusted proxy marker and exact forwarded authority over HTTP", async () => {
     await withHttpRuntime(async ({ request }) => {
@@ -502,21 +556,26 @@ async function replaySession(
   });
 }
 
-function importSpecifiers(source: string): string[] {
-  const matches = source.matchAll(/\b(?:import|export)\s+(?:type\s+)?(?:[^"'`;]{0,500}?\s+from\s+)?["']([^"']+)["']/g);
-  return [...matches].map((match) => match[1]!);
+function importDeclarations(source: string): { specifier: string; typeOnly: boolean }[] {
+  const matches = source.matchAll(/\b(?:import|export)\s+(type\s+)?(?:[^"'`;]{0,500}?\s+from\s+)?["']([^"']+)["']/g);
+  return [...matches].map(match => ({ specifier: match[2]!, typeOnly: match[1] !== undefined }));
 }
 
-async function sourceClosure(entry: string): Promise<Map<string, string>> {
+function isStandaloneImport({ specifier, typeOnly }: { specifier: string; typeOnly: boolean }): boolean {
+  return (specifier === "@paperclipai/runner-sdk/contracts" && typeOnly)
+    || !/^(?:server|ui|cli)(?:\/|$)|^@paperclipai\/(?!paperclip-runner(?:\/|$))/.test(specifier);
+}
+
+async function sourceClosure(entry: string, typescript = true): Promise<Map<string, string>> {
   const found = new Map<string, string>();
   const visit = async (path: string): Promise<void> => {
     if (found.has(path)) return;
     const source = await readFile(path, "utf8");
     found.set(path, source);
-    for (const specifier of importSpecifiers(source)) {
+    for (const { specifier } of importDeclarations(source)) {
       if (!specifier.startsWith(".")) continue;
       const imported = resolve(dirname(path), specifier);
-      const target = extname(imported) === ".js" ? `${imported.slice(0, -3)}.ts` : imported;
+      const target = typescript && extname(imported) === ".js" ? `${imported.slice(0, -3)}.ts` : imported;
       await visit(target);
     }
   };

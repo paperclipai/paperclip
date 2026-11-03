@@ -1,3 +1,4 @@
+import { parseRunnerHarnessCheckpoint, type HarnessReleaseIdentity, type RunnerHarnessCheckpoint } from "@paperclipai/runner-sdk/contracts";
 import { readProviderFailure } from "../contracts/provider-failure.generated.js";
 import { confirmAntigravityProbeNativeRetirement } from "../drivers/acpx/antigravity-probe-retirement.js";
 import { resolveGrokDisableWebSearch, admittedGrokWebSearchPolicy } from "../drivers/acpx/grok-web-search.js";
@@ -572,6 +573,17 @@ function providerDrainStateFromSnapshot(state: Record<string, unknown>): {
   activeProviderTurnId: string | null;
   providerSettled: boolean;
 } {
+  if (state.schema === "paperclip.harness-state.v1") {
+    if (!Array.isArray(state.events) || typeof state.activeTurn !== "boolean"
+      || (state.processGroup !== null && (!Number.isSafeInteger(state.processGroup) || Number(state.processGroup) < 1))
+      || (state.activeTurn && (typeof state.turnId !== "string" || !state.turnId))
+      || !state.pendingRequests || typeof state.pendingRequests !== "object" || Array.isArray(state.pendingRequests)) {
+      throw new Error("Extension provider drain state is malformed.");
+    }
+    return { pendingEventCount: state.events.length,
+      activeProviderTurnId: state.activeTurn ? String(state.turnId) : null,
+      providerSettled: !state.activeTurn && state.processGroup === null && Object.keys(state.pendingRequests).length === 0 };
+  }
   if (
     !Array.isArray(state.pendingEvents) ||
     (state.queuedEvents !== undefined && !Array.isArray(state.queuedEvents)) ||
@@ -1245,7 +1257,16 @@ export interface CapabilityRunnerdProcessEvidence {
 export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionDriver {
   observability?: import("../drivers/agent-observability.js").ProviderObservabilityLaunch;
   homeMode?: "isolated" | "preconfigured";
-  provider?: "cursor_cloud" | "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  provider?: "cursor_cloud" | "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx" | "extension";
+  extensionRelease?: HarnessReleaseIdentity;
+  extensionConfig?: Record<string, unknown>;
+  extensionCredentialIdentity?: string;
+  extensionRuntimeRoot?: string;
+  extensionRuntimeDirectory?: string;
+  extensionCapabilities?: Record<string, boolean>;
+  extensionCheckpoint?: RunnerHarnessCheckpoint;
+  /** Trusted execution-owner startup authority; never sourced from run.prepare. */
+  extensionLaunchProfile?: Record<string, unknown>;
   observeCredentials?: boolean;
   onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
   onAccountingEvent?: (event: PrpEvent) => Promise<void>;
@@ -3360,6 +3381,21 @@ function createCapabilityRunnerdProviderEnvironmentBase(input: {
       ? { PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH: input.runtimeContextPath }
       : {}),
   };
+  if (input.provider === "extension") {
+    const profile = input.options.extensionLaunchProfile;
+    if (!profile || !input.options.extensionRelease) throw new Error("runner_extension_launch_profile_required");
+    const environment: NodeJS.ProcessEnv = { ...commonIdentity,
+      PAPERCLIP_RUNNER_EXTENSION_PROFILE: JSON.stringify(profile) };
+    const names = Array.isArray(profile.environmentKeys) ? profile.environmentKeys : [];
+    for (const name of names) {
+      if (typeof name !== "string" || !/^[A-Z][A-Z0-9_]{0,127}$/.test(name)
+        || /^(?:PAPERCLIP_|NODE_|NPM_|LD_|DYLD_)/.test(name)
+        || ["PATH", "HOME", "SHELL", "ENV", "BASH_ENV"].includes(name)) throw new Error("runner_extension_environment_key_invalid");
+      const value = input.options.environment?.[name];
+      if (value !== undefined) environment[name] = value;
+    }
+    return environment;
+  }
   if (input.provider === "cursor_cloud") {
     const env = input.options.environment ?? {};
     if (!env.CURSOR_API_KEY?.trim()) throw new Error("cursor_cloud_api_key_required");
@@ -3838,7 +3874,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       return this.options.provider === undefined ||
         this.options.provider === "codex" ||
         this.options.provider === "opencode" ||
-        this.options.provider === "acpx"
+        this.options.provider === "acpx" ||
+        (this.options.provider === "extension" && this.options.extensionCapabilities?.planning === true)
         ? {
             data: [
               {
@@ -3925,6 +3962,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (!Number.isSafeInteger(offset) || offset < 0 || offset > data.length) throw new Error("codex_history_invalid_cursor");
       const limit = typeof params.limit === "number" ? Math.max(1, Math.min(100, params.limit)) : 100;
       return { data: data.slice(offset, offset + limit), nextCursor: offset + limit < data.length ? String(offset + limit) : null };
+    }
+    if (method === "paperclip/harnessCheckpoint") {
+      if (this.options.provider !== "extension" || this.#core === null) {
+        throw new Error("runner_extension_checkpoint_unavailable");
+      }
+      const snapshot = await this.#commandResult("session.snapshot", {});
+      return { checkpoint: snapshot.extensionCheckpoint == null ? null : parseRunnerHarnessCheckpoint(snapshot.extensionCheckpoint) };
     }
     if (method === "thread/read") {
       if (this.#core === null) {
@@ -4507,7 +4551,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.options.runnerFilesystemRoot !== undefined || this.options.prepareLaunch) return null;
     const provider = this.options.provider ?? "codex";
     const filename =
-      provider === "acpx"
+      provider === "extension"
+        ? "extension-provider-state.json"
+        : provider === "acpx"
         ? "acpx-provider-state.json"
         : provider === "claude_managed" || provider === "aws_agentcore"
           ? "managed-provider-state.json"
@@ -4552,9 +4598,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       && this.options.acpxAgent === "pi"
       && state !== "unreadable"
       && (state === null || (state.activeProviderTurnId === null && state.providerSettled));
+    const stopIdleExtension = this.options.provider === "extension"
+      && state !== null && state !== "unreadable" && !state.providerSettled;
     if (
       state === "unreadable" ||
-      (activeProviderTurnId === null && !stopIdlePi && this.options.recoveryPurpose !== "stop_cleanup") ||
+      (activeProviderTurnId === null && !stopIdlePi && !stopIdleExtension && this.options.recoveryPurpose !== "stop_cleanup") ||
       core === null
     ) {
       return false;
@@ -4574,7 +4622,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (command?.status === "completed") {
         this.#diagnostic(
           activeProviderTurnId === null
-            ? "stopped idle Pi provider before runner suspension"
+            ? "stopped idle provider before runner suspension"
             : `stopped active provider turn ${activeProviderTurnId} before runner suspension`,
         );
         return record(record(command.result).result).providerExitConfirmed === true;
@@ -5098,7 +5146,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ...(completionContract.revision && Array.isArray(completionContract.criterionIds) ? { completionContract } : {}),
           provider: prepared.provider },
         runnerAcpxLaunchProfile: undefined, runnerOpenCodeLaunchProfile: undefined,
-        environment: {},
+        environment: prepared.extensionLaunchProfile ? { PAPERCLIP_RUNNER_EXTENSION_PROFILE: JSON.stringify(prepared.extensionLaunchProfile) } : {},
       };
     }
     const provider = this.options.provider ?? "codex";
@@ -5441,7 +5489,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ? {}
           : { providerIdentity: structuredClone(this.#providerIdentity) }),
         model: params.model,
-        modelProvider: openedThreadModelProvider(provider, acpxAgent, params.model),
+        modelProvider: openedThreadModelProvider(provider, acpxAgent, params.model, this.options.extensionRelease?.harnessId),
       },
     };
   }
@@ -6932,10 +6980,21 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             ? normalizedRequest.requestId
             : "";
         const origin = record(normalizedRequest.origin);
-        const method = typeof origin.method === "string" ? origin.method : "";
-        const permission = normalizedRequest.type === "permission" && normalizedRequest.requestKind === "permission_approval"
-          && ["session/request_permission", "mcpServer/elicitation/request"].includes(method);
-        const params = permission ? bridgedAcpxPermissionParams(
+        const extensionApprovalMethod = this.options.provider === "extension"
+          ? normalizedRequest.requestKind === "command_approval" ? "item/commandExecution/requestApproval"
+            : normalizedRequest.requestKind === "file_approval" ? "item/fileChange/requestApproval"
+              : normalizedRequest.requestKind === "permission_approval" ? "item/permissions/requestApproval" : undefined
+          : undefined;
+        // Extension facts use canonical request kinds; they do not need to
+        // impersonate another provider's native request method.
+        const method = extensionApprovalMethod ?? (this.options.provider === "extension" && normalizedRequest.type === "input"
+          ? "item/tool/requestUserInput" : typeof origin.method === "string" ? origin.method : "");
+        const permission = extensionApprovalMethod !== undefined || (normalizedRequest.type === "permission" && normalizedRequest.requestKind === "permission_approval"
+          && ["session/request_permission", "mcpServer/elicitation/request"].includes(method));
+        const params = extensionApprovalMethod !== undefined
+          ? { ...record(normalizedRequest.details), threadId: this.#threadId, turnId: this.#turnId,
+              itemId: normalizedRequest.itemId, reason: normalizedRequest.prompt }
+          : permission ? bridgedAcpxPermissionParams(
           event,
           this.#threadId,
           this.#turnId,
@@ -7785,7 +7844,7 @@ function retainNativeProbeCleanup(cleanup: (retry: boolean) => Promise<void>) {
 
 export async function probeNativeRunnerEnvironment(options: {
   runtimeDirectory: string;
-  provider: "codex" | "opencode" | "acpx";
+  provider: "codex" | "opencode" | "acpx" | "extension";
   model: string | null;
   reasoningEffort?: string;
   /** Verify native session identity/model and cleanup without a billable turn. */
@@ -7799,7 +7858,7 @@ export async function probeNativeRunnerEnvironment(options: {
   onCodexCredentialRefresh?: (filename: string) => Promise<void>;
   onCleanupConfirmed?: () => Promise<void>;
 }): Promise<{
-  provider: "codex" | "opencode" | "acpx";
+  provider: "codex" | "opencode" | "acpx" | "extension";
   providerDriver: string;
   effectiveModel: string;
   helloProbePassed: boolean;
@@ -7885,7 +7944,8 @@ export async function probeNativeRunnerEnvironment(options: {
     ...(options.model ? { model: options.model } : {}),
     ...(options.reasoningEffort ? { reasoningEffort: options.reasoningEffort } : {}),
     conversationMode: "direct",
-    requestedCollaborationMode: "plan",
+    requestedCollaborationMode: options.provider === "extension" ? "default" : "plan",
+    readOnly: true,
     approvalPolicy: "never",
     includeCollaborationModeInstructions: false,
     dynamicTools: [],
@@ -7911,7 +7971,7 @@ export async function probeNativeRunnerEnvironment(options: {
       workingDirectory, signal: controller.signal });
     controller.signal.throwIfAborted();
     const ids = session.ids();
-    const expectedDriver = { codex: "codex_app_server", opencode: "opencode_server", acpx: "acpx_runtime" }[options.provider];
+    const expectedDriver = { codex: "codex_app_server", opencode: "opencode_server", acpx: "acpx_runtime", extension: "extension" }[options.provider];
     if (!ids.driverSessionId || !ids.providerSessionId || bundle.evidence().providerDriver !== expectedDriver) {
       throw new Error(`The native environment probe returned no matching provider identity (${bundle.evidence().providerDriver ?? "missing driver"}).`);
     }
@@ -8026,7 +8086,9 @@ function openedThreadModelProvider(
   provider: CapabilityRunnerdCodexTransportOptions["provider"],
   acpxAgent: QualifiedAcpxAgent,
   model: unknown,
+  harnessId?: string,
 ): string {
+  if (provider === "extension") return harnessId ? `extension:${harnessId}` : "extension";
   if (provider === "opencode" && typeof model === "string") return model.split("/", 1)[0]!;
   if (provider === "cursor_cloud") return "cursor";
   if (provider === "claude_managed") return "anthropic";

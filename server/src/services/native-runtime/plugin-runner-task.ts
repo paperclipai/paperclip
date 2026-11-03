@@ -1,7 +1,8 @@
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { environmentTaskOperationSchema, environmentTaskResultSchema, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
+import { environmentTaskOperationSchema, environmentTaskResultSchema, environmentRunnerHarnessLaunchProfileSchema, type PluginEnvironmentRunnerHarnessLaunchProfile, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
+import { parseRunnerHarnessReleaseIdentity, sameRunnerHarnessRelease } from "@paperclipai/runner-sdk/contracts";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
   type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
@@ -51,6 +52,7 @@ export function createPluginRunnerTaskOwner(input: {
   let activeOutbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
   let preparedLaunchId: string | undefined;
   let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity;
+  let preparedExtensionLaunchProfile: PluginEnvironmentRunnerHarnessLaunchProfile | undefined;
   let launched = !!input.adoptIdentity;
   let stopRequested = false;
   let released = false;
@@ -113,6 +115,7 @@ export function createPluginRunnerTaskOwner(input: {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     // Reconnecting the previous authority must not prepare it through the new run's lease.
     if (recovery && input.adoptIdentity && Object.entries(input.adoptIdentity).every(([key,value]) => requirements.identity[key as keyof DurableRecoveryIdentity] === value)) {
+      bindExtensionLaunchProfile(requirements, recovery);
       await authorizeRunnerAdoption(recovery.configurationId, requirements.identity);
       return recovery;
     }
@@ -132,12 +135,32 @@ export function createPluginRunnerTaskOwner(input: {
     }));
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     if (result.kind !== "prepared") throw new Error("Plugin Runner preparation unavailable");
+    bindExtensionLaunchProfile(requirements, result.launch);
     if (input.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner managed project authentication validation unavailable");
     if (launched || !result.projectAuthCheckAtSubmit) await checkProjectAuth(result.launch.configurationId);
     preparedLaunchId = result.launch.configurationId;
     preparedIdentity = requirements.identity;
     return result.launch;
   };
+  function bindExtensionLaunchProfile(
+    requirements: Parameters<RunnerLaunchPreparer>[0],
+    launch: Awaited<ReturnType<RunnerLaunchPreparer>>,
+  ): void {
+    if (requirements.provider !== "extension") {
+      if (launch.extensionLaunchProfile !== undefined) throw new Error("Plugin Runner extension launch does not match selected provider");
+      preparedExtensionLaunchProfile = undefined;
+      return;
+    }
+    const expected = parseRunnerHarnessReleaseIdentity(requirements.settings.extensionRelease);
+    const profile = environmentRunnerHarnessLaunchProfileSchema.parse(launch.extensionLaunchProfile);
+    if (!sameRunnerHarnessRelease(profile.identity, expected)
+      || launch.provider.kind !== "extension"
+      || !sameRunnerHarnessRelease(parseRunnerHarnessReleaseIdentity(launch.provider.release), expected)
+      || (input.credential?.type === "harness-env" && input.credential.harnessId !== expected.harnessId)) {
+      throw new Error("Plugin Runner extension package identity mismatch");
+    }
+    preparedExtensionLaunchProfile = profile;
+  }
   const readRunnerState = async () => {
     const identity = submitted ? preparedIdentity : input.priorIdentity ?? preparedIdentity;
     if (!identity) throw new Error("Plugin Runner state identity unavailable");
@@ -194,6 +217,7 @@ export function createPluginRunnerTaskOwner(input: {
         runId: native.identity.runId, sessionId: native.identity.normalizedSessionId,
         turnId: native.identity.turnId, itemId: native.identity.itemId },
       launch: { runnerVersion: native.runnerVersion, runnerDigest: native.runnerDigest,
+        ...(preparedExtensionLaunchProfile ? { extensionLaunchProfile: preparedExtensionLaunchProfile } : {}),
         maxOutboxBytes: native.maxOutboxBytes, p0ReserveBytes: native.p0ReserveBytes,
         maxRuntimeMs: native.maxRuntimeMs, maxLifetimeMs: native.maxLifetimeMs,
         reconnectGraceMs: native.reconnectGraceMs, lifecyclePolicy: native.lifecyclePolicy,

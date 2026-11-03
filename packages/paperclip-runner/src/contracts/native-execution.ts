@@ -1,3 +1,4 @@
+import { parseHarnessCapabilities, parseHarnessReleaseIdentity, parseRunnerHarnessConfig, type HarnessReleaseIdentity } from "@paperclipai/runner-sdk/contracts";
 import { parseNativeCursorCloudConfig, type NativeCursorCloudConfig } from "./cursor-cloud.js";
 import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
@@ -13,6 +14,7 @@ import { explicitTaskSkillNames, parseNativeRuntimeContext, type NativeRuntimeCo
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V1 = "paperclip.native-execution-input.v1" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V2 = "paperclip.native-execution-input.v2" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V3 = "paperclip.native-execution-input.v3" as const;
+export const NATIVE_EXECUTION_INPUT_SCHEMA_V11 = "paperclip.native-execution-input.v11" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V10 = "paperclip.native-execution-input.v10" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V9 = "paperclip.native-execution-input.v9" as const;
 export const NATIVE_EXECUTION_INPUT_SCHEMA_V8 = "paperclip.native-execution-input.v8" as const;
@@ -281,13 +283,28 @@ export interface NativeExecutionInputV10 extends Omit<NativeExecutionInputV9, "s
   provider: NativeProviderConfigV10;
 }
 
+/** An installed extension carries data and immutable release identity, never executable paths. */
+export interface NativeExtensionProviderConfig {
+  kind: "extension";
+  harnessId: string;
+  model: string;
+  release: HarnessReleaseIdentity;
+  config: Record<string, unknown>;
+  capabilities: Record<string, boolean>;
+}
+export interface NativeExecutionInputV11 extends Omit<NativeExecutionInputV10, "schema" | "provider" | "session"> {
+  schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V11;
+  provider: NativeExtensionProviderConfig;
+  session: Omit<NativeExecutionInputV10["session"], "driverKind"> & { driverKind: "extension" };
+}
+
 export interface NativeExecutionInputV8 extends Omit<NativeExecutionInputV6, "schema" | "provider" | "session"> {
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V8;
   provider: { kind: "muse"; model: null; binding: MuseBindingSnapshot; bridgeRevision: "muse-v1" };
   session: Omit<NativeExecutionInputV6["session"], "driverKind"> & { driverKind: "muse_external" };
 }
 
-export type NativeExecutionInput = NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
+export type NativeExecutionInput = NativeExecutionInputV11 | NativeExecutionInputV1 | NativeExecutionInputV2 | NativeExecutionInputV3 | NativeExecutionInputV4 | NativeExecutionInputV5 | NativeExecutionInputV6 | NativeExecutionInputV7 | NativeExecutionInputV8 | NativeExecutionInputV9 | NativeExecutionInputV10;
 
 /** The only task data that may enter provider-visible model input. */
 export interface NativeModelEnvelopeV1 {
@@ -431,7 +448,11 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   const input = record(value, "input");
   if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8) return parseMuseNativeExecutionInput(input);
   if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6) return parseExternalNativeExecutionInput(input);
-  const isV10 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
+  const isV11 = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V11;
+  if (isV11 && record(input.provider, "input.provider").kind !== "extension") {
+    throw new NativeExecutionInputError("v11 requires an extension provider");
+  }
+  const isV10 = isV11 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
   const isV9 = isV10 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9;
   const isV7 = isV9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7;
   const isV5 = isV7 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA;
@@ -532,7 +553,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   }
   if (
     (
-      session.driverKind !== "cursor_cloud_api"
+      !(isV11 && session.driverKind === "extension")
+      && session.driverKind !== "cursor_cloud_api"
       && session.driverKind !== "codex_app_server"
       && session.driverKind !== "opencode_server"
       && session.driverKind !== "claude_managed_agents_api"
@@ -572,7 +594,8 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     ? { kind: "codex", model: null }
     : record(input.provider, "input.provider");
   if (
-    provider.kind !== "cursor_cloud"
+    !(isV11 && provider.kind === "extension")
+    && provider.kind !== "cursor_cloud"
     && provider.kind !== "codex"
     && provider.kind !== "opencode"
     && provider.kind !== "claude_managed"
@@ -583,7 +606,9 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   }
   exactKeys(
     provider,
-    provider.kind === "cursor_cloud"
+    provider.kind === "extension" && isV11
+      ? ["kind", "harnessId", "model", "release", "config", "capabilities"]
+      : provider.kind === "cursor_cloud"
       ? ["kind", "model", "cursorCloud"]
       : provider.kind === "claude_managed"
       ? ["kind", "model", "managedProfile", "maxSessionListCostUsd"]
@@ -599,7 +624,9 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     "input.provider",
   );
   if (
-    (provider.kind === "cursor_cloud" && session.driverKind !== "cursor_cloud_api")
+    (provider.kind === "extension" && (!isV11 || session.driverKind !== "extension"))
+    || (session.driverKind === "extension" && provider.kind !== "extension")
+    || (provider.kind === "cursor_cloud" && session.driverKind !== "cursor_cloud_api")
     || (provider.kind === "codex" && session.driverKind !== "codex_app_server")
     || (provider.kind === "opencode" && session.driverKind !== "opencode_server")
     || (provider.kind === "claude_managed" && session.driverKind !== "claude_managed_agents_api")
@@ -614,8 +641,32 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
   if (provider.kind === "opencode" && (providerModel === null || !providerModel.includes("/"))) {
     throw new NativeExecutionInputError("input.provider.model is required for opencode in provider/model form");
   }
-  let parsedProvider: NativeProviderConfigV9 | NativeProviderConfig | NativeProviderConfigV5;
-  if (provider.kind === "cursor_cloud") {
+  let parsedProvider: NativeProviderConfigV9 | NativeProviderConfig | NativeProviderConfigV5 | NativeExtensionProviderConfig;
+  if (provider.kind === "extension") {
+    if (!isV11 || providerModel === null || input.homeMode !== "isolated") {
+      throw new NativeExecutionInputError("extension providers require v11, an explicit model and isolated home");
+    }
+    let release: HarnessReleaseIdentity;
+    let config: Record<string, unknown>;
+    let capabilities: Record<string, boolean>;
+    try {
+      release = parseHarnessReleaseIdentity(provider.release);
+      config = parseRunnerHarnessConfig(provider.config);
+      capabilities = parseHarnessCapabilities(provider.capabilities);
+    } catch (error) {
+      throw new NativeExecutionInputError(error instanceof Error ? error.message : "invalid extension provider data");
+    }
+    const harnessId = text(provider.harnessId, "input.provider.harnessId");
+    if (harnessId !== release.harnessId) throw new NativeExecutionInputError("extension release does not match harnessId");
+    if (providerModel !== providerModel.trim() || providerModel.length > 512 || /[\u0000-\u001f\u007f]/u.test(providerModel)) {
+      throw new NativeExecutionInputError("extension model must be an exact bounded model identifier");
+    }
+    if (executionMode === "plan" && capabilities.planning !== true) {
+      throw new NativeExecutionInputError("extension provider does not support planning");
+    }
+    parsedProvider = { kind: "extension", harnessId, model: providerModel, release,
+      config, capabilities };
+  } else if (provider.kind === "cursor_cloud") {
     if (!isV5 || !providerModel || providerModel.length > 240 || /[\x00-\x1f\x7f]/.test(providerModel) || lifecyclePolicy.mode !== "per_turn") {
       throw new NativeExecutionInputError("Cursor Cloud requires a model and per-turn lifecycle in a v5 or later input");
     }
@@ -901,7 +952,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       protocolVersion: 1 as const,
       lifecyclePolicy,
     },
-    provider: parsedProvider,
+    provider: parsedProvider as NativeProviderConfig,
     completionContract: {
       id: text(completionContract.id, "input.completionContract.id"),
       sha256: text(completionContract.sha256, "input.completionContract.sha256"),
@@ -937,6 +988,12 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     provider: parsedProvider as NativeProviderConfigV4,
   };
   if (!isV5) return { ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V4 };
+  if (isV11) {
+    if (parsedProvider.kind !== "extension") throw new NativeExecutionInputError("v11 requires an extension provider");
+    return { ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V11, homeMode: "isolated",
+      provider: parsedProvider, session: { ...withPermissions.session, driverKind: "extension" },
+      ...(input.completionSources !== undefined ? { completionSources: parseCompletionSources(input.completionSources) } : {}) };
+  }
   if (isV10) return {
     ...withPermissions, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V10, homeMode: input.homeMode as NativeHomeMode,
     provider: parsedProvider as NativeProviderConfigV10,
@@ -1013,7 +1070,7 @@ export function buildNativeModelEnvelope(input: NativeExecutionInput, options?: 
       interactionResponses: structuredClone(input.interactionResponses),
     };
   }
-  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10) {
+  if (input.schema === NATIVE_EXECUTION_INPUT_SCHEMA || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V6 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V8 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V11) {
     const sourceBinding = input.completionSources;
     const references = sourceBinding?.contractRevision === input.completionContract.contract.revision
       && sourceBinding.promptSha256 === createHash("sha256").update(input.task.prompt).digest("hex")

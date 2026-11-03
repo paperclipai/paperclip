@@ -109,7 +109,8 @@
   },
   "dependencies": {
     "@paperclipai/shared": "workspace:*",
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "@paperclipai/runner-sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",

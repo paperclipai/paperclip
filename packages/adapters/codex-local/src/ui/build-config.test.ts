@@ -166,6 +166,13 @@ describe("buildCodexLocalConfig", () => {
 });
 
 describe("buildPaperclipRunnerConfig", () => {
+  it("preserves an installed native harness and its settings without builtin provider defaults", () => {
+    const schemaValues = { provider: "extension", harnessId: "example.harness/synthetic", extensionConfig: { mode: "coding" } };
+    const env = { SYNTHETIC_API_KEY: { type: "secret_ref" as const, secretId: "secret-1" } };
+    expect(buildPaperclipRunnerConfig(makeValues({ adapterType: "paperclip_runner", model: "caller-model", adapterSchemaValues: schemaValues, envBindings: env })))
+      .toMatchObject({ ...schemaValues, model: "caller-model", env });
+    expect(() => buildPaperclipRunnerConfig(makeValues({ model: "", adapterSchemaValues: schemaValues }))).toThrow("Select a model");
+  });
   it.each(["codex", "claude"])("preserves, overrides and explicitly clears saved %s reasoning effort", harness => {
     const profile = harness === "codex" ? { provider: "codex" } : { provider: "acpx", acpxAgent: "claude" };
     const values = makeValues({ adapterSchemaValues: { ...profile, modelReasoningEffort: "high", reasoningEffort: "low", effort: "low" } });

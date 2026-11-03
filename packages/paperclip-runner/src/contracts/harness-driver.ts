@@ -1,4 +1,5 @@
 import type { NativeRunRuntimeGrant } from "./runtime-context.js";
+import type { RunnerHarnessCheckpoint } from "@paperclipai/runner-sdk/contracts";
 import type {
   PrpEvent,
   PrpStructuredRunResult,
@@ -489,6 +490,7 @@ export interface PersistedHarnessSession {
   lastSourceSequence?: number;
   /** Tagged provider identity used to reject cross-profile recovery. */
   providerIdentity?: PersistedHarnessProviderIdentity;
+  extensionCheckpoint?: RunnerHarnessCheckpoint;
   /** Narrow escape hatch for a durable response-wake when a provider cannot reload its prior native session. */
   providerRecoveryPolicy?:
     | "same_session_only"

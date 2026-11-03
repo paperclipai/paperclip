@@ -46,6 +46,7 @@ function nativeUsageMeasurement(usage: Record<string, unknown>) {
 }
 
 export function nativeUsageBiller(provider: NativeExecutionInput["provider"]): string {
+  if (provider.kind === "extension") return "unknown";
   if (provider.kind === "cursor_cloud") return "cursor";
   if (provider.kind === "acpx") {
     if (provider.agent === "cursor") return "cursor";
@@ -181,7 +182,7 @@ export function usesNativeUsageDelivery(input: {
   runnerd: boolean; remote: boolean; provider?: NativeExecutionInput["provider"] | null;
 }) {
   return input.runnerd && input.remote && input.provider !== undefined && input.provider !== null
-    && ["codex", "opencode", "acpx", "claude_managed", "aws_agentcore"].includes(input.provider.kind);
+    && ["codex", "opencode", "acpx", "claude_managed", "aws_agentcore", "extension"].includes(input.provider.kind);
 }
 
 export function isNativeUsageAccountingEvent(event: Pick<PrpEvent, "eventType">) {

@@ -191,6 +191,10 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
   const disabledTypes = input.disabledTypes ?? localDisabledTypes();
   const harness = agentHarnessType(adapterType, config);
   const native = adapterType === "paperclip_runner";
+  if (native && config.provider === "extension") {
+    if (input.runner === "legacy") throw unprocessable("Installed native harnesses require Paperclip Runner.", { code: "agent_runner_unavailable" });
+    return { adapterType, adapterConfig: config };
+  }
   if (paperclipRunnerProfileForHarness(adapterType) && disabledTypes.includes(adapterType)) throw unprocessable(`${adapterType === "grok_local" ? "Grok Build" : adapterType === "pi_local" ? "Pi" : adapterType === "opencode_local" ? "OpenCode" : adapterType === "claude_local" ? "Claude" : "Codex"} is disabled on this instance. Enable its adapter or choose another harness.`, { code: "agent_runner_unavailable" });
   if (native && (input.runner === undefined || input.runner === "paperclip" || (harness !== "codex_local" && input.runner !== "legacy"))) return { adapterType, adapterConfig: normalizeLegacyRunnerProvider(config) };
   const availability = agentRunnerAvailability(harness, input.target, disabledTypes);

@@ -1087,6 +1087,7 @@ export type {
   PluginLauncherRenderContextSnapshot,
   PluginLauncherDeclaration,
   PluginMinimumHostVersion,
+  PluginRunnerHarnessDeclaration,
   PluginUiDeclaration,
   PluginDatabaseDeclaration,
   PluginApiRouteCompanyResolution,

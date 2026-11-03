@@ -7,6 +7,7 @@ import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.
 import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
 import * as environmentTaskRuntime from "../environment-task-runtime.js";
 import * as pluginTaskRuntime from "./plugin-runner-task.js";
+import * as extensionRuntime from "./extension-runtime.js";
 import * as completionFeedback from "./native-completion-feedback.js";
 import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
 import { trace } from "@opentelemetry/api";
@@ -67,6 +68,7 @@ import {
   type NativeExecutionInputV1,
   type NativeExecutionInputV3,
   type NativeExecutionInput,
+  type RunnerProviderLaunchRequirements,
   type PrpEvent,
 } from "@paperclipai/paperclip-runner";
 import { existsSync } from "node:fs";
@@ -86,6 +88,7 @@ import {
   NativeSessionCloseUnrecoverableError,
   NativeProviderTerminalFailure,
   NativeSessionProtocolIntegrityError,
+  type RunnerProcessLaunchSpec,
 } from "../../vendor/paperclip-runner/index.js";
 import * as issueServiceModule from "../issues.js";
 import * as runEventWriter from "../heartbeat-run-events.js";
@@ -14190,6 +14193,76 @@ describe("runnerd provider runtime wiring", () => {
       runnerArtifact: { version: "admitted-artifact" } });
     expect(options).toMatchObject({ runnerReconnectGraceMs: 420_000 });
     expect(task.mock.calls.some(([op]) => ["prepare", "submit", "stop"].includes(op.kind))).toBe(false);
+  });
+
+  it.each(["extension", "codex", "opencode", "acpx"] as const)("sends the selected %s harness to task authentication and submission", async kind => {
+    const release = { harnessId: "example.native/synthetic", packageName: "@example/plugin-harness", version: "1.0.0",
+      integrity: `sha256-${Buffer.alloc(32, 1).toString("base64")}`, protocolVersion: 1 as const, runtimeDigest: `sha256:${"a".repeat(64)}` };
+    const profile = { schema: "paperclip.harness-launch.v1" as const, identity: release,
+      command: { path: "/runtime/node", sha256: `sha256:${"b".repeat(64)}` },
+      entrypoint: { path: "/runtime/package/main.js", sha256: `sha256:${"c".repeat(64)}` }, args: [], environmentKeys: [] };
+    const prepareExtension = vi.spyOn(extensionRuntime, "prepareInstalledRunnerHarness").mockResolvedValue({
+      resolved: { pluginId: "plugin", pluginKey: "example.native", release, packageRoot: "/runtime/package", entrypoint: profile.entrypoint.path,
+        declaration: { harnessKey: "synthetic", displayName: "Synthetic", configSchema: { type: "object" }, platforms: ["linux-x64"],
+          capabilities: {}, runtime: { entrypoint: "main.js", sha256: profile.entrypoint.sha256 } } }, profile, credentialIdentity: "selected-credential",
+    });
+    const base = scopedNativeExecution(`plugin-selected-harness-${kind}`);
+    const taskExecution = { ...base, ...(kind === "extension" ? { schema: "paperclip.native-execution-input.v11",
+      provider: { kind, harnessId: release.harnessId, release, model: "fixture", config: {}, capabilities: {} } }
+      : kind === "codex" ? {} : { provider: kind === "opencode" ? { kind, model: "openai/test", permissionMode: "deny" }
+        : { kind, agent: "claude", model: "claude-sonnet-4-6", permissionMode: "deny-all" } }) } as NativeExecutionInput;
+    let stopped = false;
+    const task = vi.fn(async (operation: unknown) => {
+      const op = environmentTaskOperationSchema.parse(operation);
+      if (op.kind === "describe") return { kind: "description", taskId: "task", launchPreparationVersion: 1,
+        projectAuthCheckVersion: 1, harnessExtensionVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
+      if (op.kind === "prepare") return { kind: "prepared", taskId: "task", launch: {
+        configurationId: "selected-config", requirementsDigest: `sha256:${"d".repeat(64)}`,
+        provider: kind === "extension" ? { kind, release } : { kind },
+        ...(kind === "extension" ? { extensionLaunchProfile: profile } : {}),
+      } };
+      if (op.kind === "check_project_auth") return { kind: "project_auth", taskId: "task", allowed: true,
+        configurationId: op.configurationId, provider: op.provider };
+      if (op.kind === "stop") stopped = true;
+      if (op.kind === "status") return { kind: "status", taskId: "task", phase: stopped ? "cancelled" : "running", executionStopped: stopped };
+      return { kind: "accepted", taskId: "task" };
+    });
+    const createOwner = pluginTaskRuntime.createPluginRunnerTaskOwner;
+    let owner!: ReturnType<typeof createOwner>;
+    const ownerFactory = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockImplementation(input => owner = createOwner(input));
+    let registration: Awaited<ReturnType<typeof owner.registration>> | undefined;
+    let handle: ReturnType<typeof owner.launcher> | undefined;
+    try {
+      await createRunnerdBackend({ db: leaseDb(taskExecution), execution: taskExecution, runnerInstanceId: "runner",
+        runnerIngressAuthorized: true, runnerExecutionTarget: { kind: "remote", transport: "sandbox", leaseId: "plugin-task-lease",
+          remoteCwd: "/workspace", runnerTask: task } });
+      const identity = { runnerInstanceId: "runner", environmentLeaseId: "plugin-task-lease", runId: taskExecution.binding.runId,
+        normalizedSessionId: taskExecution.session.normalizedSessionId!, turnId: "turn", itemId: "item" };
+      const requirements: RunnerProviderLaunchRequirements = { schema: "paperclip.runner.launch-requirements.v1", identity,
+        provider: kind, model: "fixture", instructions: "Core policy", runtimeContext: null,
+        settings: kind === "extension" ? { extensionRelease: release, extensionConfig: {}, extensionCapabilities: {} } : {},
+        approvalPolicy: "never", readOnly: false, preparedConversation: false, includeCollaborationModeInstructions: false };
+      await owner.driver.prepareLaunch!(requirements);
+      registration = await owner.registration({} as never, taskExecution.binding.runId);
+      const spec: RunnerProcessLaunchSpec = { command: "unused", args: [], cwd: "/unused", environment: {}, nativeRunner: {
+        identity, ticket: "synthetic-ticket", stateDirectory: "/state", runnerVersion: "fixture", runnerDigest: `sha256:${"a".repeat(64)}`,
+        maxOutboxBytes: 262144, p0ReserveBytes: 65536, lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } } };
+      handle = owner.launcher(spec);
+      await vi.waitFor(() => expect(task.mock.calls.some(([op]) => (op as { kind: string }).kind === "submit")).toBe(true));
+      const operations = task.mock.calls.map(([op]) => environmentTaskOperationSchema.parse(op));
+      const auth = operations.find(op => op.kind === "check_project_auth");
+      const submit = operations.find(op => op.kind === "submit");
+      expect({ provider: auth?.kind === "check_project_auth" ? auth.provider : undefined,
+        harness: submit?.kind === "submit" ? submit.runner.harness : undefined }).toEqual(kind === "extension"
+          ? { provider: release.harnessId, harness: release.harnessId }
+          : kind === "codex" ? { provider: "openai", harness: "codex" }
+          : kind === "acpx" ? { provider: "anthropic", harness: "claude" } : { provider: "opencode", harness: "opencode" });
+    } finally {
+      await registration?.release();
+      await registration?.checkpoint("unsettled");
+      await handle?.completion;
+      ownerFactory.mockRestore(); prepareExtension.mockRestore();
+    }
   });
 
   it.each(["codex", "opencode", "acpx"] as const)("uses a task-only %s driver without exposing Core paths or transferring the agent home", async (kind) => {

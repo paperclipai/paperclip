@@ -54,6 +54,60 @@ function provider() {
 }
 
 describe("plugin native Runner ownership", () => {
+  const extensionRelease = { harnessId: "example.native/synthetic", packageName: "@example/plugin-harness", version: "1.0.0",
+    integrity: `sha256-${Buffer.alloc(32, 1).toString("base64")}`, protocolVersion: 1 as const, runtimeDigest: `sha256:${"a".repeat(64)}` };
+  const extensionProfile = { schema: "paperclip.harness-launch.v1" as const, identity: extensionRelease,
+    command: { path: "/runtime/node", sha256: `sha256:${"b".repeat(64)}` },
+    entrypoint: { path: "/runtime/package/main.js", sha256: `sha256:${"c".repeat(64)}` }, args: [], environmentKeys: ["SYNTHETIC_API_KEY"] };
+  const extensionRequirements: RunnerProviderLaunchRequirements = { ...requirements, provider: "extension",
+    settings: { extensionRelease, extensionConfig: {}, extensionCapabilities: { interruption: true } } };
+  const extensionPrepared = { configurationId: "extension-config", requirementsDigest: `sha256:${"d".repeat(64)}`,
+    provider: { kind: "extension", release: extensionRelease }, extensionLaunchProfile: extensionProfile };
+
+  it("passes the verified environment-owned extension launch profile through to submit", async () => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    task.mockImplementation(async operation => operation.kind === "prepare"
+      ? { kind: "prepared", taskId: "task", launch: extensionPrepared } : perform(operation));
+    ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: extensionRelease.harnessId, projectAuthCheckVersion: 1, pollMs: 1,
+      credential: { type: "harness-env", harnessId: extensionRelease.harnessId, environment: { SYNTHETIC_API_KEY: "selected" } } });
+    await prepare(owner, extensionRequirements);
+    const registration = await owner.registration({} as never, "run");
+    const handle = owner.launcher(launchSpec());
+    try {
+      registration.activate(); await registration.ready();
+      const submit = task.mock.calls.find(([operation]) => operation.kind === "submit")?.[0];
+      expect(submit.launch.extensionLaunchProfile).toEqual(extensionProfile);
+      expect(submit.credential.harnessId).toBe(extensionRelease.harnessId);
+    } finally {
+      await registration.release(); await registration.checkpoint("unsettled"); await handle.completion;
+    }
+  });
+
+  it.each(["missing", "wrong-release", "wrong-credential"])("rejects %s extension authority before submitting", async mode => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    const profile = mode === "missing" ? undefined : mode === "wrong-release"
+      ? { ...extensionProfile, identity: { ...extensionRelease, runtimeDigest: `sha256:${"f".repeat(64)}` } } : extensionProfile;
+    task.mockImplementation(async operation => operation.kind === "prepare"
+      ? { kind: "prepared", taskId: "task", launch: { ...extensionPrepared, extensionLaunchProfile: profile } } : perform(operation));
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: extensionRelease.harnessId, projectAuthCheckVersion: 1,
+      credential: { type: "harness-env", harnessId: mode === "wrong-credential" ? "other.native/synthetic" : extensionRelease.harnessId, environment: {} } });
+    await expect(prepare(owner, extensionRequirements)).rejects.toThrow();
+    expect(task.mock.calls.some(([operation]) => operation.kind === "submit")).toBe(false);
+  });
+
+  it("revalidates an adopted extension preparation against the same admitted release", async () => {
+    const { task } = provider();
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: extensionRelease.harnessId,
+      projectAuthCheckVersion: 1, adoptIdentity: requirements.identity });
+    await expect(owner.driver.prepareLaunch!(extensionRequirements, extensionPrepared)).resolves.toEqual(extensionPrepared);
+    await expect(owner.driver.prepareLaunch!(extensionRequirements, { ...extensionPrepared,
+      extensionLaunchProfile: { ...extensionProfile, identity: { ...extensionRelease, version: "2.0.0" } } })).rejects.toThrow("identity mismatch");
+    expect(task.mock.calls.some(([operation]) => operation.kind === "prepare")).toBe(false);
+  });
+
   it.each(["finish", "rebind"])("does not send startup Stop after the context %s", mode => {
     const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
     const next = new NativeExecutionContext(context.execution, 1_000);

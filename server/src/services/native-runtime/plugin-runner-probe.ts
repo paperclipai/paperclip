@@ -11,10 +11,12 @@ import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
 import { resolvePaperclipRunnerProviderProfile } from "./provider-profile.js";
 import { resolveAcpxQualification } from "./acpx-qualification.js";
+import type { ResolvedRunnerHarness } from "../runner-harness-registry.js";
 
 /** Core verifies a real Runner; providers only implement their task API. */
 export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTestContext,
   managed?: { identity: string; accountIdentity: string; home?: string },
+  extension?: { resolved: ResolvedRunnerHarness; credentialIdentity: string },
 ): Promise<AdapterEnvironmentTestResult> {
   const testedAt = new Date().toISOString();
   const target = context.executionTarget;
@@ -29,32 +31,44 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
   let probeStarted = false;
   try {
     const profile = resolvePaperclipRunnerProviderProfile(context.config);
-    if (profile.provider !== "codex" && profile.provider !== "opencode" && profile.provider !== "acpx") throw new Error("Plugin Runner setup requires a workspace harness");
+    if (profile.provider !== "codex" && profile.provider !== "opencode" && profile.provider !== "acpx" && profile.provider !== "extension") throw new Error("Plugin Runner setup requires a workspace harness");
+    if (profile.provider === "extension" && (!extension || extension.resolved.release.harnessId !== profile.harnessId
+      || !/^sha256:[a-f0-9]{64}$/.test(extension.credentialIdentity))) {
+      throw new Error("Plugin Runner extension admission unavailable");
+    }
     const environment = (context.config.env ?? {}) as NodeJS.ProcessEnv;
-    if (!managed && (context.config.managedAiConnection || Object.values(environment).some(value => Boolean(value)))) {
+    if (profile.provider !== "extension" && !managed && (context.config.managedAiConnection || Object.values(environment).some(value => Boolean(value)))) {
       return { adapterType: "paperclip_runner", status: "fail", testedAt,
         checks: [{ code: "runner_account_selection_required", level: "error",
           message: "Select a saved AI account, or remove local environment overrides to test the installed account." }] };
     }
     const description = environmentTaskResultSchema.parse(await task({ kind: "describe" }));
     if (description.kind !== "description" || description.launchPreparationVersion !== 1 || description.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner launch preparation v1 unavailable");
+    if (profile.provider === "extension" && description.harnessExtensionVersion !== 1) throw new Error("Plugin Runner harness extension v1 unavailable");
     const credentials = await preparePluginRunnerCredentials({
       provider: profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
       identity: managed?.identity, accountIdentity: managed?.accountIdentity,
       home: managed?.home, environment,
+      ...(profile.provider === "extension" ? { accountIdentity: extension!.credentialIdentity,
+        extension: { harnessId: profile.harnessId, credentialKeys: extension!.resolved.declaration.credentials?.map(credential => credential.key) ?? [] } } : {}),
     });
     const owner = createPluginRunnerTaskOwner({ ...credentials, projectAuthCheckVersion: description.projectAuthCheckVersion, task, projectIds: [],
-      harness: profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
-      credentialIdentity: managed?.identity });
+      harness: profile.provider === "extension" ? profile.harnessId : profile.provider === "acpx" ? profile.acpxAgent! : profile.provider,
+      credentialIdentity: profile.provider === "extension" ? extension!.credentialIdentity : managed?.identity });
     probeStarted = true;
     const effort = context.config.modelReasoningEffort ?? context.config.reasoningEffort ?? context.config.effort;
     const result = await probeNativeRunnerEnvironment({ runtimeDirectory: root, provider: profile.provider,
       // Plugin preparation selects the physical workspace; the probe uses its own logical scope.
       model: profile.model, timeoutMs: 45_000,
+      ...(profile.provider === "extension" ? { admissionOnly: true } : {}),
       ...(profile.provider === "codex" && typeof effort === "string" && effort ? { reasoningEffort: effort } : {}),
       environment: {},
       transportOptions: {
         ...owner.driver, runnerArtifact: description.runner,
+        ...(profile.provider === "extension" ? { extensionRelease: extension!.resolved.release,
+          extensionConfig: context.config.extensionConfig as Record<string, unknown> | undefined ?? {},
+          extensionCapabilities: extension!.resolved.declaration.capabilities,
+          extensionCredentialIdentity: extension!.credentialIdentity } : {}),
         ...(profile.provider === "opencode" ? { opencodePermissionMode: "deny" } : {}),
         ...(profile.provider === "acpx" ? { acpxAgent: profile.acpxAgent, acpxPermissionMode: "deny-all", acpxPermissionModePinned: true,
           ...(profile.acpxAgent === "pi" ? { piThinkingLevel: resolvePaperclipRunnerPiThinkingLevel("acpx", "pi", context.config.piThinkingLevel) } : {}),
@@ -67,12 +81,14 @@ export async function probePluginRunnerEnvironment(context: AdapterEnvironmentTe
       onCleanupConfirmed: async () => { rmSync(root, { recursive: true, force: true }); cleanupConfirmed = true; },
     });
     return { adapterType: "paperclip_runner", status: "pass", testedAt,
-      checks: [{ code: "runner_hello_probe_passed", level: "info", message: `Runner verified ${result.providerDriver} with model ${result.effectiveModel}.` }] };
+      checks: [{ code: profile.provider === "extension" ? "runner_extension_probe_passed" : "runner_hello_probe_passed", level: "info", message: `Runner verified ${result.providerDriver} with model ${result.effectiveModel}.` }] };
   } catch (error) {
     if (error instanceof NativeEnvironmentProbeCleanupError) throw error;
     // Provider failures may contain credentials or private addressing.
     return { adapterType: "paperclip_runner", status: "fail", testedAt,
-      checks: [{ code: "runner_hello_probe_failed", level: "error", message: "The selected plugin environment did not complete the Runner hello probe and confirmed cleanup. Check its runtime, account, and model access." }] };
+      checks: [{ code: context.config.provider === "extension" ? "runner_harness_admission_failed" : "runner_hello_probe_failed", level: "error", message: context.config.provider === "extension"
+        ? "The selected environment could not verify this installed harness and model and confirm cleanup. Check the installed package and environment support."
+        : "The selected plugin environment did not complete the Runner hello probe and confirmed cleanup. Check its runtime, account, and model access." }] };
   } finally {
     if (!probeStarted || cleanupConfirmed) rmSync(root, { recursive: true, force: true });
   }

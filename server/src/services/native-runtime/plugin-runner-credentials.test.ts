@@ -13,6 +13,21 @@ async function home(auth: object) {
 }
 const auth = { tokens: { account_id: "fixture-account", access_token: "fixture-access", refresh_token: "fixture-refresh" }, last_refresh: "2020-01-01T00:00:00Z" };
 describe("plugin Runner selected credentials", () => {
+  it("transfers declared external harness credentials without a legacy managed account binding", async () => {
+    const selected = { SYNTHETIC_API_KEY: "selected-key", OTHER_SECRET: "unrelated", HOME: "/private/controller" };
+    const input = { provider: "extension", environment: selected, extension: { harnessId: "example.native/synthetic", credentialKeys: ["SYNTHETIC_API_KEY"] } };
+    const transfer = await preparePluginRunnerCredentials(input);
+    expect(transfer.credential).toEqual({ type: "harness-env", harnessId: "example.native/synthetic", environment: { SYNTHETIC_API_KEY: "selected-key" } });
+    expect(transfer.accountIdentity).toBe((await preparePluginRunnerCredentials(input)).accountIdentity);
+    expect(transfer.accountIdentity).not.toContain("selected-key");
+    expect(transfer.onCredentials).toBeUndefined();
+    const changed = await preparePluginRunnerCredentials({ ...input, environment: { SYNTHETIC_API_KEY: "rotated-key" } });
+    expect(changed.accountIdentity).not.toBe(transfer.accountIdentity);
+  });
+  it.each(["NODE_OPTIONS", "HOME", "PAPERCLIP_API_KEY"])("rejects process-control key %s in extension credential declarations", async key => {
+    await expect(preparePluginRunnerCredentials({ provider: "extension", environment: { [key]: "unsafe" },
+      extension: { harnessId: "example.native/synthetic", credentialKeys: [key] } })).rejects.toThrow("credential declaration");
+  });
   it("sends the selected Codex account and preserves a newer refresh for normal secret writeback", async () => {
     const directory = await home(auth);
     const transfer = await preparePluginRunnerCredentials({ provider: "codex", identity: "revision", accountIdentity: "account", home: directory, environment: {} });

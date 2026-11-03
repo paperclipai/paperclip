@@ -1,9 +1,10 @@
 import { describeRunnerdMuseDriver } from "../drivers/muse/runnerd-muse-driver.js";
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
-import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10 } from "../contracts/native-execution.js";
+import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10, NATIVE_EXECUTION_INPUT_SCHEMA_V11 } from "../contracts/native-execution.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
+import { parseRunnerHarnessCheckpoint, sameRunnerHarnessRelease } from "@paperclipai/runner-sdk/contracts";
 import type {
   NativeSessionBackend,
   NativeSessionBackendDescriptor,
@@ -38,6 +39,7 @@ export interface CodexNativeSessionBackendOptions {
   }) => Promise<void>;
   transportFactory?: (context?: {
     baseInstructions?: string;
+    checkpointSourceRunId?: string;
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
     persistedSession?: Pick<
       PersistedHarnessSession,
@@ -45,6 +47,7 @@ export interface CodexNativeSessionBackendOptions {
       | "providerSessionId"
       | "providerIdentity"
       | "activeTurnId"
+      | "extensionCheckpoint"
     >;
   }) => CodexAppServerTransport;
   /** Current server constraints; does not commit task status before the turn ends. */
@@ -61,6 +64,7 @@ export interface CodexNativeSessionBackendOptions {
 
 function transportDriverIdentity(input: NativeExecutionInput): {
   kind:
+    | "extension"
     | "cursor_cloud_api"
     | "codex_app_server"
     | "opencode_server"
@@ -71,6 +75,8 @@ function transportDriverIdentity(input: NativeExecutionInput): {
   version: string;
 } {
   switch (input.provider.kind) {
+    case "extension":
+      return { kind: "extension", displayName: input.provider.harnessId, version: input.provider.release.version };
     case "cursor_cloud":
       return { kind: "cursor_cloud_api", displayName: "Cursor Cloud (experimental)", version: "cursor-cloud-v1" };
     case "codex":
@@ -125,13 +131,14 @@ function createTransportBackedNativeSessionBackend(
   }
   const driverIdentity = transportDriverIdentity(input);
   const isCodex = input.provider.kind === "codex";
+  const extension = input.provider.kind === "extension" ? input.provider : null;
   const preparedContext = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA
     || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7
-    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
+    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V11;
   const supportsCollaborativePlanning =
     isCodex ||
     input.provider.kind === "opencode" ||
-    input.provider.kind === "acpx";
+    input.provider.kind === "acpx" || extension?.capabilities.planning === true;
   if (
     input.provider.kind === "codex" &&
     input.provider.approvalPolicy !== undefined &&
@@ -158,7 +165,7 @@ function createTransportBackedNativeSessionBackend(
 
   const baseInstructions = options.retainedSystemInstructions ?? nativeSystemInstructions(input);
   const transportFactory = options.transportFactory;
-  const backend = new HarnessDriverBackend(
+  const backend: NativeSessionBackend = new HarnessDriverBackend(
     new CodexAppServerDriver({
       ...(input.provider.model ? { model: input.provider.model } : {}),
       ...(input.provider.kind === "codex" && "webSearch" in input.provider && input.provider.webSearch === "disabled"
@@ -205,7 +212,21 @@ function createTransportBackedNativeSessionBackend(
       observability: options.observability,
       workingDirectoryAuthority: options.workingDirectoryAuthority,
       driverIdentity,
-      capabilities: isCodex
+      capabilities: extension
+        ? {
+            resume: extension.capabilities.resume === true,
+            read: extension.capabilities.read === true,
+            steering: extension.capabilities.steering === true,
+            interruption: extension.capabilities.interruption === true,
+            usage: extension.capabilities.usage === true,
+            reconciliation: extension.capabilities.reconciliation === true,
+            dynamicTools: extension.capabilities.dynamicTools === true,
+            toolRefreshOnResume: extension.capabilities.toolRefreshOnResume === true,
+            runtimeRequestResolution: extension.capabilities.runtimeRequestResolution === true,
+            goals: extension.capabilities.goals === true,
+            threadLineage: extension.capabilities.threadLineage === true,
+          }
+        : isCodex
         ? {}
         : { steering: false, goals: false, threadLineage: false,
             ...(input.provider.kind === "cursor_cloud" ? { runtimeRequestResolution: false } : {}),
@@ -227,7 +248,73 @@ function createTransportBackedNativeSessionBackend(
         runtimeContextCapabilities: structuredClone(descriptor.runtimeContextCapabilities) };
     };
   }
+  if (extension !== null) {
+    // A settled per-turn checkpoint restores the native conversation into a
+    // fresh Runner authority epoch. The prior run retains its accepted event
+    // ledger; it must never be presented as provider history in the new epoch.
+    backend.recoverSession = async (snapshot, recoveryOptions) => {
+      if (extension.capabilities.resume !== true || !transportFactory) {
+        return { recovered: false, reason: "extension does not support checkpoint recovery" };
+      }
+      if (input.session.lifecyclePolicy.mode !== "per_turn" || snapshot.activeTurnId !== null ||
+          snapshot.pendingRuntimeRequests?.length || snapshot.goal != null ||
+          snapshot.terminal?.turnTerminalState !== "completed" || snapshot.semanticResult == null) {
+        return { recovered: false, reason: "extension recovery requires a settled completed per-turn checkpoint" };
+      }
+      let checkpoint;
+      try { checkpoint = parseRunnerHarnessCheckpoint(snapshot.extensionCheckpoint); }
+      catch { return { recovered: false, reason: "extension checkpoint is invalid" }; }
+      const workingDirectory = options.workingDirectoryAuthority === "runner_prepared_launch"
+        ? snapshot.workingDirectory : input.workspace.cwd;
+      if (snapshot.driverKind !== "extension" || snapshot.backendKind !== "runner" ||
+          snapshot.identity.companyId !== input.binding.companyId || snapshot.identity.agentId !== input.binding.agentId ||
+          snapshot.identity.issueId !== input.binding.issueId ||
+          snapshot.identity.sessionId !== input.session.normalizedSessionId ||
+          checkpoint.normalizedSessionId !== input.session.normalizedSessionId ||
+          !sameRunnerHarnessRelease(checkpoint.identity, extension.release) || checkpoint.model !== extension.model ||
+          canonicalExtensionConfig(checkpoint.config) !== canonicalExtensionConfig(extension.config) ||
+          !workingDirectory || checkpoint.cwd !== workingDirectory || snapshot.workingDirectory !== workingDirectory ||
+          !snapshot.sessionId || !snapshot.providerSessionId) {
+        return { recovered: false, reason: "extension checkpoint does not match the admitted native session" };
+      }
+      const restoredBackend = createTransportBackedNativeSessionBackend(input, {
+        ...options,
+        transportFactory: context => transportFactory({ ...context, checkpointSourceRunId: snapshot.identity.runId, persistedSession: {
+          driverSessionId: snapshot.sessionId, providerSessionId: snapshot.providerSessionId,
+          extensionCheckpoint: checkpoint, activeTurnId: null,
+        } }),
+      });
+      const session = await restoredBackend.openSession({
+        identity: { ...snapshot.identity, runId: input.binding.runId },
+        workingDirectory,
+        signal: recoveryOptions.signal,
+      });
+      const abortRecovery = () => { void session.close({ reason: "extension checkpoint recovery aborted" }).catch(() => undefined); };
+      recoveryOptions.signal.addEventListener("abort", abortRecovery, { once: true });
+      if (recoveryOptions.signal.aborted) abortRecovery();
+      try {
+        const restored = await session.snapshot();
+        if (recoveryOptions.signal.aborted) throw recoveryOptions.signal.reason ?? new Error("extension checkpoint recovery aborted");
+        if (restored.sessionId !== snapshot.sessionId || restored.providerSessionId !== snapshot.providerSessionId ||
+            restored.workingDirectory !== workingDirectory) {
+          await session.close({ reason: "extension checkpoint restored a different native conversation" });
+          return { recovered: false, reason: "extension checkpoint restored a different native conversation" };
+        }
+        return { recovered: true, session };
+      } catch (error) {
+        await session.close({ reason: "extension checkpoint recovery failed identity validation" }).catch(() => undefined);
+        throw error;
+      } finally {
+        recoveryOptions.signal.removeEventListener("abort", abortRecovery);
+      }
+    };
+  }
   return backend;
+}
+
+function canonicalExtensionConfig(value: unknown): string {
+  return JSON.stringify(value, (_key, child: unknown) => child !== null && typeof child === "object" && !Array.isArray(child)
+    ? Object.fromEntries(Object.entries(child).sort(([left], [right]) => left.localeCompare(right))) : child);
 }
 
 /** Inspect the selected runnerd harness without starting a provider process. */

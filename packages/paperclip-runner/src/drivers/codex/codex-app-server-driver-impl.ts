@@ -163,8 +163,9 @@ export class CodexAppServerDriver implements HarnessDriver {
       usageReporting: true,
     };
     if (!this.#caps.goals) {
-      this.#goalReasonCode = "codex_goal_api_unavailable";
-      this.#goalReason = "This Codex app-server does not expose thread goals.";
+      const extension = options.driverIdentity?.kind === "extension";
+      this.#goalReasonCode = extension ? "harness_goal_api_unavailable" : "codex_goal_api_unavailable";
+      this.#goalReason = extension ? "This harness does not expose session goals." : "This Codex app-server does not expose thread goals.";
     }
     if (!this.#caps.read) this.#caps.reconciliation = false;
   }
@@ -291,7 +292,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         this.#options.requestedCollaborationMode ?? "default";
       const threadParams = createSecuredCodexThreadParams(
         workingDirectory ?? "",
-        requestedMode,
+        this.#options.readOnly ? "plan" : requestedMode,
         this.#options.includeCollaborationModeInstructions ?? true,
         this.#options.includeSkillInstructions ?? false,
         this.#options.environment,
@@ -303,6 +304,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       const response = await cancellation.wait(
         transport.request("thread/start", {
           ...threadParams,
+          ...(this.#options.driverIdentity?.kind === "extension" ? { paperclipExecutionMode: requestedMode } : {}),
           approvalPolicy: this.#options.approvalPolicy ?? "never",
           ...(this.#options.model ? { model: this.#options.model } : {}),
           ...(this.#direct()
@@ -405,6 +407,7 @@ export class CodexAppServerDriver implements HarnessDriver {
         providerSessionId: snapshot.providerSessionId,
         providerIdentity: snapshot.providerIdentity,
         activeTurnId: snapshot.activeTurnId,
+        extensionCheckpoint: snapshot.extensionCheckpoint,
       },
     });
     const cancellation = bootstrapCancellation(transport, options.signal);
@@ -686,8 +689,9 @@ export class CodexAppServerDriver implements HarnessDriver {
   #resumeThreadParams(threadId: string, workingDirectory: string): Record<string, unknown> {
     return {
       excludeTurns: true, threadId,
+      ...(this.#options.driverIdentity?.kind === "extension" ? { paperclipExecutionMode: this.#options.requestedCollaborationMode ?? "default" } : {}),
       ...createSecuredCodexThreadParams(workingDirectory,
-        this.#options.requestedCollaborationMode ?? "default",
+        this.#options.readOnly ? "plan" : this.#options.requestedCollaborationMode ?? "default",
         this.#options.includeCollaborationModeInstructions ?? true,
         this.#options.includeSkillInstructions ?? false, this.#options.environment),
       ...this.#instructionParams(this.#direct() ? "" : this.#baseInstructions()),
@@ -708,6 +712,7 @@ export class CodexAppServerDriver implements HarnessDriver {
       | "providerSessionId"
       | "providerIdentity"
       | "activeTurnId"
+      | "extensionCheckpoint"
     >;
   }): CodexAppServerTransport {
     const workingDirectory = context?.workingDirectory ?? this.#options.environment?.PAPERCLIP_WORKSPACE_CWD;
@@ -819,16 +824,17 @@ export class CodexAppServerDriver implements HarnessDriver {
         // The provider answered, and its answer is that this build has no goal
         // API. That is the only evidence that retires the capability.
         this.#caps.goals = false;
+        const extension = this.#options.driverIdentity?.kind === "extension";
         if (policyDisabled) {
           this.#goalAvailability = "policy_disabled";
-          this.#goalReasonCode = "codex_goal_policy_disabled";
+          this.#goalReasonCode = extension ? "harness_goal_policy_disabled" : "codex_goal_policy_disabled";
           this.#goalReason =
-            "Session goals are disabled by the Codex provider policy.";
+            extension ? "Session goals are disabled by the harness policy." : "Session goals are disabled by the Codex provider policy.";
         } else {
           this.#goalAvailability = "unsupported";
-          this.#goalReasonCode = "codex_goal_api_unavailable";
+          this.#goalReasonCode = extension ? "harness_goal_api_unavailable" : "codex_goal_api_unavailable";
           this.#goalReason =
-            "This Codex app-server does not expose thread goals.";
+            extension ? "This harness does not expose session goals." : "This Codex app-server does not expose thread goals.";
         }
         this.#options.onDiagnostic?.(
           redactCodexDiagnostic(`thread goals unavailable: ${String(error)}`),
@@ -873,7 +879,7 @@ export class CodexAppServerDriver implements HarnessDriver {
     const permissionProfileId = text(activePermissionProfile.id);
     const requestedMode = this.#options.requestedCollaborationMode ?? "default";
     const requiredPermissionProfile =
-      text(createSecuredCodexThreadParams(workingDirectory, requestedMode, true, false, this.#options.environment).permissions);
+      text(createSecuredCodexThreadParams(workingDirectory, this.#options.readOnly ? "plan" : requestedMode, true, false, this.#options.environment).permissions);
     if (
       permissionProfileId.length > 0 &&
       permissionProfileId !== requiredPermissionProfile
@@ -912,7 +918,7 @@ export class CodexAppServerDriver implements HarnessDriver {
           legacyPolicy: boundedCodexValue(response.sandbox ?? null),
           rootAccess: "none",
           minimalRuntimeAccess: "read",
-          workspaceAccess: requestedMode === "plan" ? "read" : "write",
+          workspaceAccess: this.#options.readOnly || requestedMode === "plan" ? "read" : "write",
           networkAccess: codexNetworkAccess(this.#options.environment),
           githubAuthenticationMode: this.#options.environment?.PAPERCLIP_GITHUB_AUTH_MODE ?? "managed",
         },

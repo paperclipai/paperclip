@@ -209,6 +209,7 @@ const FEATURE_CAPABILITIES: Record<string, PluginCapability> = {
   webhooks: "webhooks.receive",
   database: "database.namespace.migrate",
   environmentDrivers: "environment.drivers.register",
+  runnerHarnesses: "runner.harnesses.register",
   workspaceProvider: "workspaces.manage",
   agents: "agents.managed",
   projects: "projects.managed",

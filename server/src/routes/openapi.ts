@@ -1425,6 +1425,7 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/companies/{companyId}/runner-harnesses",
   "GET /api/agents/{id}/project-access",
   "POST /api/agents/{id}/project-access",
   "GET /api/issues/{id}/pending-questions",
@@ -4085,6 +4086,24 @@ registry.registerPath({
 });
 
 // ─── Adapters ────────────────────────────────────────────────────────────────
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/runner-harnesses",
+  tags: ["adapters"],
+  summary: "List installed native Runner harnesses enabled for the company",
+  description: "Returns package-owned settings, capability and credential metadata without executing the harness or exposing runtime paths.",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: {
+    200: r.ok(z.array(z.object({
+      harnessId: z.string(), pluginKey: z.string(), packageName: z.string(), version: z.string(), displayName: z.string(),
+      configSchema: z.record(z.string(), z.unknown()), platforms: z.array(z.string()),
+      capabilities: z.record(z.string(), z.boolean()), protocolVersion: z.literal(1),
+      credentials: z.array(z.object({ key: z.string(), displayName: z.string(), required: z.boolean() }).strict()).optional(),
+    }).strict())),
+    400: r.badRequest, 401: r.unauthorized, 403: r.forbidden,
+  },
+});
 
 registry.registerPath({
   method: "get",

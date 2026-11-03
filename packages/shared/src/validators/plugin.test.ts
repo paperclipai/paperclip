@@ -33,6 +33,19 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("accepts native harness contributions only with registration authority and unique keys", () => {
+    const harness = { harnessKey: "synthetic", displayName: "Synthetic", configSchema: { type: "object" },
+      platforms: ["linux-x64"], capabilities: { interruption: true },
+      runtime: { entrypoint: "dist/harness.js", sha256: `sha256:${"a".repeat(64)}` } };
+    const manifest = { id: "example.harness", apiVersion: 1, version: "1.0.0", displayName: "Harness", description: "Harness",
+      author: "Tests", categories: ["automation"], entrypoints: { worker: "dist/worker.js" },
+      capabilities: ["runner.harnesses.register"], runnerHarnesses: [harness] };
+    expect(pluginManifestV1Schema.parse(manifest).runnerHarnesses).toEqual([harness]);
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["agents.read"] }).success).toBe(false);
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, runnerHarnesses: [harness, harness] }).success).toBe(false);
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, runnerHarnesses: [{ ...harness, runtime: { ...harness.runtime, entrypoint: "../outside.js" } }] }).success).toBe(false);
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, runnerHarnesses: [{ ...harness, credentials: [{ key: "NODE_OPTIONS", displayName: "Unsafe", required: true }] }] }).success).toBe(false);
+  });
   it("preserves explicit workspace ancestry support without changing legacy declarations", () => {
     const manifest = { id: "example.storage", apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Tests",
       categories: ["workspace"], capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"],

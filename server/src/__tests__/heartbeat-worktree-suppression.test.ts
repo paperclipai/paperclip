@@ -271,6 +271,51 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     expect(runningCount).toBe(0);
   });
 
+  it.each([true, false])("applies a worktree execution permission change immediately at wake admission (enabled=%s)", async enabled => {
+    const { agentId, issueId } = await insertAgentAndIssue();
+    if (!enabled) await armWorktreeRunExecution(new Date());
+    const heartbeat = heartbeatService(db, { runtimeEnv: {
+      PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "test-worktree",
+    } });
+    expect((await heartbeat.resolveSchedulingSuppression()).suppressed).toBe(enabled);
+    if (enabled) await armWorktreeRunExecution(new Date());
+    else await instanceSettingsService(db).updateExperimental({ enableWorktreeRunExecution: false });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment", triggerDetail: "system", reason: "issue_assigned",
+      payload: { issueId }, contextSnapshot: { issueId, skipIssueComment: true },
+      requestedByActorType: "user", requestedByActorId: "operator",
+    });
+    if (enabled) {
+      expect(run).not.toBeNull();
+      await heartbeat.waitForRunExecutionDrain(run!.id);
+      const [started] = await db.select({ startedAt: heartbeatRuns.startedAt }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+      expect(started?.startedAt).not.toBeNull();
+    } else {
+      expect(run).toBeNull();
+      expect(await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)).toHaveLength(0);
+      expect(await db.select({ reason: agentWakeupRequests.reason }).from(agentWakeupRequests)).toEqual([
+        { reason: "heartbeat.scheduling_suppressed" },
+      ]);
+    }
+  }, 10_000);
+
+  it("does not dispatch a queued run using cached worktree permission after disabling execution", async () => {
+    const { companyId, agentId, issueId } = await insertAgentAndIssue();
+    await armWorktreeRunExecution(new Date());
+    const heartbeat = heartbeatService(db, { runtimeEnv: {
+      PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "test-worktree",
+    } });
+    expect((await heartbeat.resolveSchedulingSuppression()).suppressed).toBe(false);
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "assignment",
+      triggerDetail: "system", status: "queued", responsibleUserId: "responsible-user", contextSnapshot: { issueId } });
+    await instanceSettingsService(db).updateExperimental({ enableWorktreeRunExecution: false });
+    await heartbeat.resumeQueuedRunsForAgent(companyId, agentId);
+    const [run] = await db.select({ status: heartbeatRuns.status, startedAt: heartbeatRuns.startedAt }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(run).toEqual({ status: "queued", startedAt: null });
+  });
+
   it("skips pre-cutoff system wakes but allows user wakes in an armed worktree", async () => {
     const { agentId, issueId } = await insertAgentAndIssue();
     await armWorktreeRunExecution(new Date(Date.now() + 1_000));

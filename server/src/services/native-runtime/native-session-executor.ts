@@ -1,3 +1,6 @@
+import { prepareInstalledRunnerHarness, prepareRemoteRunnerHarness } from "./extension-runtime.js";
+import { prepareRemoteExtensionCheckpoint } from "./extension-session-persistence.js";
+import type { RunnerHarnessCheckpoint } from "@paperclipai/runner-sdk/contracts";
 import { prepareCursorCloudRuntime } from "./cursor-cloud-runtime.js";
 import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js";
@@ -952,7 +955,7 @@ export function resolveNativeProviderEnvironment(
   if (provider.kind === "acpx" && ["pi", "cursor", "copilot", "kimi", "antigravity"].includes(provider.agent)) {
     return buildNativeProviderEnvironment({}, host);
   }
-  if (provider.kind === "cursor_cloud") return {};
+  if (provider.kind === "cursor_cloud" || provider.kind === "extension") return {};
   return host;
 }
 
@@ -1899,6 +1902,7 @@ export function nativeSessionWorkspaceScope(execution: { binding: Pick<NativeExe
 
 function nativeProviderSessionScope(execution: NativeExecutionInput) {
   switch (execution.provider.kind) {
+    case "extension": return { kind: "extension", harnessId: execution.provider.harnessId, release: execution.provider.release };
     case "muse":
     case "grok_bot":
     case "openai_dot": return { kind: execution.provider.kind, bindingId: execution.provider.binding.bindingId, generation: execution.provider.binding.bindingGeneration };
@@ -2008,7 +2012,7 @@ function runnerdStateBase(): string {
 function scopedRunnerdStateRoot(execution: NativeExecutionInput): string {
   // Antigravity's first release owns a fresh per-turn daemon. Its native
   // conversation is stored separately and may load under each new run's grant.
-  const scope = execution.provider.kind === "acpx" && execution.provider.agent === "antigravity"
+  const scope = execution.provider.kind === "extension" || (execution.provider.kind === "acpx" && execution.provider.agent === "antigravity")
     ? JSON.stringify([nativeSessionScopeKey(execution), execution.binding.runId])
     : nativeSessionScopeKey(execution);
   return resolve(
@@ -2246,7 +2250,7 @@ function runnerdAuthorityLifecycleWithVerifiedBackup(input: {
   if (direct !== "absent") return direct;
   if (!input.allowVerifiedBackup) return "indeterminate";
   const backup = verifyNativeHarnessBackup({
-    root: input.root,
+    root: input.execution.provider.kind === "extension" ? extensionSessionBackupStorageRoot(input.execution) : input.root,
     execution: input.execution,
     runnerInstanceId: input.identity.runnerInstanceId,
   });
@@ -4359,7 +4363,7 @@ export function nativeFailedRunRetryStateIsSafe(input: {
     const direct = runnerdAuthorityLifecycle(root, identity);
     if (direct === "absent" && input.allowVerifiedBackup) {
       const backup = verifyNativeHarnessBackup({
-        root,
+        root: execution.provider.kind === "extension" ? extensionSessionBackupStorageRoot(execution) : root,
         execution,
         runnerInstanceId: input.runnerInstanceId,
       });
@@ -6027,7 +6031,7 @@ type NativeProviderKind = NativeExecutionInput["provider"]["kind"];
 type NativeDriverKind = NativeExecutionInput["session"]["driverKind"];
 
 export interface NativeHarnessPersistenceDirectory {
-  name: "runner" | "codex-home" | "opencode" | "acpx";
+  name: "runner" | "codex-home" | "opencode" | "acpx" | "extension";
   location: "runner" | "filesystem";
   excludeEntries: readonly string[];
 }
@@ -6104,7 +6108,7 @@ export function resolveNativeHarnessPersistenceProfile(
                   : []),
               ],
             }
-          : null;
+          : execution.provider.kind === "extension" ? { name: "extension", location: "filesystem", excludeEntries: [] } : null;
   return {
     providerKind: execution.provider.kind,
     driverKind: execution.session.driverKind,
@@ -6128,6 +6132,7 @@ function canonicalJson(value: unknown): string {
 
 function runnerProviderStateFilename(execution: NativeExecutionInput): string {
   switch (execution.provider.kind) {
+    case "extension": return "extension-provider-state.json";
     case "muse": return "muse-provider-state.json";
     case "grok_bot":
     case "openai_dot":
@@ -6165,6 +6170,24 @@ export function providerSessionIdentityFromDurableProviderState(input: {
     providerSessionIdentity: null,
   });
   switch (input.execution.provider.kind) {
+    case "extension": {
+      const descriptor = record(state.provider);
+      const nativeIdentity = record(state.providerSessionIdentity);
+      const release = input.execution.provider.release;
+      if (state.schema !== "paperclip.harness-state.v1" || state.sessionId !== expectedSessionId
+        || state.activeTurn !== false || state.processGroup !== null
+        || Object.keys(record(state.pendingRequests)).length !== 0
+        || canonicalJson(state.identity) !== canonicalJson(release)
+        || descriptor.kind !== "extension" || descriptor.model !== input.execution.provider.model
+        || canonicalJson(descriptor.config) !== canonicalJson(input.execution.provider.config)
+        || !nonEmptyString(nativeIdentity.providerSessionId) || nativeIdentity.providerSessionId.length > 160
+        || /[\s\u0000-\u001f]/.test(nativeIdentity.providerSessionId)
+        || !nonEmptyString(nativeIdentity.backendSessionId) || nativeIdentity.backendSessionId.length > 160
+        || /[\s\u0000-\u001f]/.test(nativeIdentity.backendSessionId)) return emptyIdentity();
+      return { providerSessionId: nativeIdentity.providerSessionId, providerBackendSessionId: nativeIdentity.backendSessionId,
+        providerSessionIdentity: { kind: "extension", normalizedSessionId: expectedSessionId, release,
+          providerSessionId: nativeIdentity.providerSessionId, backendSessionId: nativeIdentity.backendSessionId } };
+    }
     case "muse":
     case "grok_bot":
     case "openai_dot":
@@ -6451,6 +6474,10 @@ function harnessBackupRoot(root: string): string {
   return resolve(root, "failover-backups");
 }
 
+function extensionSessionBackupStorageRoot(execution: NativeExecutionInput): string {
+  return resolve(runnerdStateBase(), "extension-session-backups", createHash("sha256").update(nativeSessionScopeKey(execution)).digest("hex"));
+}
+
 function harnessBackupCandidates(root: string): string[] {
   const backupRoot = harnessBackupRoot(root);
   return [resolve(backupRoot, "current"), resolve(backupRoot, "previous")];
@@ -6501,7 +6528,7 @@ function compatibleNativeHarnessBackupManifests(input: {
     if (
       manifest.schema !== "paperclip.native-harness-backup.v1" ||
       manifest.normalizedSessionId !== nativeSessionKey(input.execution) ||
-      manifest.runnerInstanceId !== input.runnerInstanceId ||
+      (input.execution.provider.kind !== "extension" && manifest.runnerInstanceId !== input.runnerInstanceId) ||
       manifest.providerKind !== profile.providerKind ||
       manifest.driverKind !== profile.driverKind ||
       manifest.environmentFingerprint !==
@@ -8378,6 +8405,7 @@ async function executePaperclipNativeSessionWithinScope(
     identityRedactor.chunk("diagnostic", text) + identityRedactor.finish("diagnostic"),
   );
   if (
+    input.execution.provider.kind !== "extension" &&
     input.execution.provider.kind !== "cursor_cloud" &&
     input.execution.provider.kind !== "codex" &&
     input.execution.provider.kind !== "opencode" &&
@@ -10762,6 +10790,7 @@ async function executePaperclipNativeSessionWithinScope(
 export function resolveNativeBilling(provider: NativeExecutionInput["provider"], env: NodeJS.ProcessEnv = {}, identity?: Pick<AdapterExecutionResult, "provider" | "biller" | "billingType">): Pick<AdapterExecutionResult, "provider" | "biller" | "billingType"> {
   if (provider.kind === "cursor_cloud") return { provider: "cursor", biller: "cursor", billingType: "unknown" };
   if (provider.kind === "grok_bot") return { provider: "grok_bot", biller: "unknown", billingType: "unknown" };
+  if (provider.kind === "extension") return { provider: provider.harnessId, biller: "unknown", billingType: "unknown" };
   if (identity) return identity.provider === "openai" && identity.billingType === "metered_api"
     ? { ...identity, biller: inferOpenAiCompatibleBiller(env, identity.biller ?? "unknown") }
     : identity;
@@ -11263,9 +11292,10 @@ export async function stageRemoteRunnerDirectory(input: {
   targetPath: string;
   mode: number;
   excludeEntries?: readonly string[];
+  preservePermissions?: boolean;
 }): Promise<void> {
   const excludeArgs = archiveExcludeArgs(input.excludeEntries ?? []);
-  if (input.runner.syncIn) {
+  if (input.runner.syncIn && !input.preservePermissions) {
     let stagingRoot: string | null = null;
     let sourcePath = input.sourcePath;
     try {
@@ -11326,7 +11356,7 @@ export async function stageRemoteRunnerDirectory(input: {
     : `base64 -d | tar "$@" -xzf - -C '${escapedTarget}'`;
   const script =
     `case "$(tar --version 2>/dev/null)" in *"GNU tar"*) set -- --delay-directory-restore ;; *) set -- ;; esac; ` +
-    `umask 077; test ! -L '${escapedTarget}' && mkdir -p '${escapedTarget}' && ` +
+    `${input.preservePermissions ? 'set -- "$@" -p; ' : ""}umask 077; test ! -L '${escapedTarget}' && mkdir -p '${escapedTarget}' && ` +
     `{ ${immutableStage}; } && chmod ${input.mode.toString(8)} '${escapedTarget}'`;
   const result = await input.runner.execute({
     command: "sh",
@@ -11606,6 +11636,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   targetPath: string;
   mode: number;
   excludeEntries?: readonly string[];
+  preservePermissions?: boolean;
 }): Promise<void> {
   if (
     !(await remoteRunnerPathExists({
@@ -11620,7 +11651,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
   const excludeArgs = archiveExcludeArgs(excluded)
     .map((argument) => `'${argument}'`)
     .join(" ");
-  if (input.runner.syncOut) {
+  if (input.runner.syncOut && !input.preservePermissions) {
     let syncSourcePath = input.sourcePath;
     let snapshotPath: string | null = null;
     let providerExclude: string[] | null = null;
@@ -11712,7 +11743,7 @@ export async function syncRemoteRunnerDirectoryOut(input: {
       "tar",
       [
         "--no-same-owner",
-        "--no-same-permissions",
+        input.preservePermissions ? "-p" : "--no-same-permissions",
         "-xzf",
         "-",
         "-C",
@@ -12704,7 +12735,7 @@ async function createRunnerdBackendWithinSessionClaim(
   // Codex and OpenCode send dynamic tool calls over authenticated PRP. Keep
   // the assigned gateway on the control plane instead of asking the sandbox to
   // reach the host's HTTP origin (which may be private or loopback-only).
-  const relayAssignedMcp = Boolean(pluginTask) || input.execution.provider.kind === "cursor_cloud" || input.execution.provider.kind === "opencode" || (remoteTarget !== null && input.execution.provider.kind === "codex") || input.execution.schema === "paperclip.native-execution-input.v6";
+  const relayAssignedMcp = input.execution.provider.kind === "extension" || Boolean(pluginTask) || input.execution.provider.kind === "cursor_cloud" || input.execution.provider.kind === "opencode" || (remoteTarget !== null && input.execution.provider.kind === "codex") || input.execution.schema === "paperclip.native-execution-input.v6";
   const assignedMcpUrl = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_URL;
   const assignedMcpToken = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_TOKEN;
   const assignedMcpName = input.runnerEnvironment?.PAPERCLIP_NATIVE_MCP_NAME;
@@ -12833,7 +12864,7 @@ async function createRunnerdBackendWithinSessionClaim(
   mkdirSync(root, { recursive: true, mode: 0o700 });
   if (pluginTask && remoteTarget?.transport === "sandbox" && input.execution.schema !== "paperclip.native-execution-input.v6" && input.execution.schema !== "paperclip.native-execution-input.v8") {
     const provider = input.execution.provider;
-    if (provider.kind !== "codex" && provider.kind !== "opencode" && provider.kind !== "acpx") throw new Error("Plugin Runner tasks require a workspace harness");
+    if (provider.kind !== "extension" && provider.kind !== "codex" && provider.kind !== "opencode" && provider.kind !== "acpx") throw new Error("Plugin Runner tasks require a workspace harness");
     if (remoteTarget.sandboxLeaseAcquisition?.outcome === "resumed" && !durableBinding && !input.retainedPluginTaskOwner && !input.remoteWarmRecovery) {
       // A new logical session (including fresh retries) cannot inherit the old process authority.
       await pluginTask({kind:"stop"});
@@ -12843,6 +12874,10 @@ async function createRunnerdBackendWithinSessionClaim(
     }
     const description = input.pluginTaskDescription ?? environmentTaskResultSchema.parse(await pluginTask({ kind: "describe" }));
     if (description.kind !== "description" || description.launchPreparationVersion !== 1 || description.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner launch preparation v1 unavailable");
+    if (provider.kind === "extension" && description.harnessExtensionVersion !== 1) throw new Error("runner_extension_environment_upgrade_required");
+    const installedExtension = provider.kind === "extension"
+      ? await prepareInstalledRunnerHarness(input.db, { companyId: input.execution.binding.companyId,
+          provider, environment: input.runnerEnvironment ?? {}, launchDirectory: join(root, "extension-launcher") }) : null;
     const saved = durableBinding ? durableIdentity as RunnerdDurableIdentity : undefined;
     const prior = saved ? {
       runnerInstanceId: saved.runnerInstanceId, environmentLeaseId: saved.environmentLeaseId,
@@ -12869,6 +12904,8 @@ async function createRunnerdBackendWithinSessionClaim(
       provider: provider.kind === "acpx" ? provider.agent : provider.kind,
       identity: input.managedAiCredentialIdentity, accountIdentity: input.managedAiAccountIdentity,
       home: input.managedAiCredentialHome, environment: input.runnerEnvironment ?? {},
+      ...(installedExtension ? { extension: { harnessId: installedExtension.resolved.release.harnessId,
+        credentialKeys: installedExtension.profile.environmentKeys } } : {}),
     });
     if (credentials.needsWriteback && !input.managedAiCredentialWriteback) throw new Error("Plugin Runner credential writeback authority unavailable");
     if (!adopting && input.managedAiCredentialWriteback && credentials.accountIdentity) {
@@ -12886,7 +12923,7 @@ async function createRunnerdBackendWithinSessionClaim(
         runId: prior.runId, normalizedSessionId: prior.normalizedSessionId,
         turnId: prior.turnId ?? "", itemId: prior.itemId ?? "",
       } : undefined), projectAuthCheckVersion: description.projectAuthCheckVersion, task: pluginTask, projectIds: remoteTarget.runnerTaskProjectIds ?? [],
-      harness: provider.kind === "acpx" ? provider.agent : provider.kind, resumeFrom, priorIdentity: prior ? {
+      harness: provider.kind === "extension" ? provider.harnessId : provider.kind === "acpx" ? provider.agent : provider.kind, resumeFrom, priorIdentity: prior ? {
         runnerInstanceId: prior.runnerInstanceId, environmentLeaseId: prior.environmentLeaseId,
         runId: prior.runId, normalizedSessionId: prior.normalizedSessionId,
         turnId: typeof prior.turnId === "string" ? prior.turnId : "",
@@ -12930,6 +12967,8 @@ async function createRunnerdBackendWithinSessionClaim(
         return nativeCompletionFeedback(input.db, current.runId, result);
       },
       codexTransportFactory: recovery => createRunnerdCodexTransport({ provider: provider.kind, stateDirectory: root,
+        ...(provider.kind === "extension" ? { extensionRelease: provider.release, extensionConfig: provider.config,
+          extensionCapabilities: provider.capabilities, extensionCredentialIdentity: installedExtension?.credentialIdentity, extensionCheckpoint: recovery?.persistedSession?.extensionCheckpoint } : {}),
         ...(input.recoveryPurpose === "stop_cleanup" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
         measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
         recordTimingReceipt: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? recordRunnerTimingReceipt : undefined,
@@ -13097,7 +13136,7 @@ async function createRunnerdBackendWithinSessionClaim(
   // filesystem; the remote launcher separately owns the sandbox command path.
   // When an explicit remote artifact is configured, prepareRemoteRunner stages
   // these exact bytes at remoteBinary before launch.
-  const targetMatchedCodexArtifact = remoteTarget !== null && input.execution.provider.kind === "codex";
+  const targetMatchedCodexArtifact = remoteTarget !== null && ["codex", "extension"].includes(input.execution.provider.kind);
   // The persisted admission owns a surviving runner's identity. Local release
   // files are launch inputs and may no longer exist on a replacement controller.
   const controllerRunnerBinary = adoptingPersistedRemoteRunner
@@ -13145,7 +13184,7 @@ async function createRunnerdBackendWithinSessionClaim(
     ? posix.join(remoteRuntimeRoot, "sessions", remoteSessionDigest)
     : null;
   const remoteStateDirectory = remoteSessionRoot
-    ? posix.join(remoteSessionRoot, "runner")
+    ? input.execution.provider.kind === "extension" ? posix.join(remoteSessionRoot, "runner", input.execution.binding.runId) : posix.join(remoteSessionRoot, "runner")
     : undefined;
   const remoteRunnerFilesystemRoot = remoteSessionRoot
     ? posix.join(remoteSessionRoot, "filesystem")
@@ -13153,6 +13192,12 @@ async function createRunnerdBackendWithinSessionClaim(
   const persistenceProfile = resolveNativeHarnessPersistenceProfile(
     input.execution,
   );
+  // Runner journals rotate per turn; provider-home backups retain session scope.
+  const backupStorageRoot = input.execution.provider.kind === "extension"
+    ? extensionSessionBackupStorageRoot(input.execution)
+    : root;
+  let extensionRecoveryCheckpoint: RunnerHarnessCheckpoint | undefined;
+  let extensionCheckpointSourceRunId: string | undefined;
   const sandboxLeaseAcquisition =
     remoteTarget?.transport === "sandbox"
       ? (remoteTarget.sandboxLeaseAcquisition ?? null)
@@ -13402,7 +13447,7 @@ async function createRunnerdBackendWithinSessionClaim(
       throw new Error(`runner_harness_state_mismatch: provider_identity_incomplete (${durableProviderCheckpointFailureReason(input.execution, providerState)})`);
     }
     const previousManifest = compatibleNativeHarnessBackupManifests({
-      root,
+      root: backupStorageRoot,
       execution: input.execution,
       runnerInstanceId: input.runnerInstanceId,
     })[0]?.manifest;
@@ -13534,7 +13579,7 @@ async function createRunnerdBackendWithinSessionClaim(
       throw new Error("runner_harness_backup_unavailable");
     }
     const backup = verifyNativeHarnessBackup({
-      root,
+      root: backupStorageRoot,
       execution: input.execution,
       runnerInstanceId: input.runnerInstanceId,
     });
@@ -13552,6 +13597,7 @@ async function createRunnerdBackendWithinSessionClaim(
             sourcePath: resolve(backup.root, directory.name),
             targetPath,
             mode: 0o700,
+            preservePermissions: input.execution.provider.kind === "extension",
           });
         }
       },
@@ -13583,6 +13629,24 @@ async function createRunnerdBackendWithinSessionClaim(
     return backup;
   };
 
+  const prepareExtensionColdRecovery = async () => {
+    if (!extensionRecoveryCheckpoint || !extensionCheckpointSourceRunId || !remoteCommandRunner || !remoteSessionRoot || !remoteStateDirectory || !remoteRunnerFilesystemRoot || !remoteTarget) {
+      throw new Error("runner_extension_checkpoint_source_unproven");
+    }
+    const backup = verifyNativeHarnessBackup({ root: backupStorageRoot, execution: input.execution, runnerInstanceId: input.runnerInstanceId });
+    if (!backup) throw new Error("runner_extension_checkpoint_backup_unavailable");
+    await prepareRemoteExtensionCheckpoint({ checkpoint: extensionRecoveryCheckpoint, backup,
+      currentRunId: input.execution.binding.runId, checkpointSourceRunId: extensionCheckpointSourceRunId, remoteSessionRoot, remoteStateDirectory,
+      remoteHomeDirectory: posix.join(remoteRunnerFilesystemRoot, "extension"),
+      acquisitionOutcome: sandboxLeaseAcquisition?.outcome ?? null,
+      currentProviderLeaseId: sandboxLeaseAcquisition?.providerLeaseId ?? remoteTarget.leaseId ?? undefined,
+      runner: remoteCommandRunner,
+      restoreHome: (sourcePath, targetPath) => stageRemoteRunnerDirectory({
+        target: remoteTarget, runner: remoteCommandRunner, sourcePath, targetPath, mode: 0o700, preservePermissions: true }),
+    });
+    await recordHarnessBackupStampForCurrentLease(backup);
+  };
+
   const ensureRemoteRunner = async (launchScope: "launch" | "recovery" | "none" = "launch") => {
     await measureNativeRunnerSpan(
       input.trace,
@@ -13612,12 +13676,18 @@ async function createRunnerdBackendWithinSessionClaim(
               input.trace,
               "session.checkpoint.restore",
               async () => {
-                if (
+                if (input.execution.provider.kind === "extension" && !extensionRecoveryCheckpoint
+                  && harnessBackupCandidates(backupStorageRoot).some(candidate => existsSync(resolve(candidate, "manifest.json")))) {
+                  throw new Error("runner_extension_checkpoint_required");
+                }
+                if (input.execution.provider.kind === "extension" && extensionRecoveryCheckpoint) {
+                  await prepareExtensionColdRecovery();
+                } else if (
                   remoteTarget?.transport === "sandbox" &&
                   remoteCommandRunner
                 ) {
                   const acquisitionRecordedAtMs = Date.now();
-                  const backupAvailable = harnessBackupCandidates(root).some(
+                  const backupAvailable = harnessBackupCandidates(backupStorageRoot).some(
                     (candidate) =>
                       existsSync(resolve(candidate, "manifest.json")),
                   );
@@ -13907,7 +13977,7 @@ async function createRunnerdBackendWithinSessionClaim(
               }
               const providerSessionIdentity = verified.providerSessionIdentity;
 
-              const backupRoot = harnessBackupRoot(root);
+              const backupRoot = harnessBackupRoot(backupStorageRoot);
               mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
               const pendingRoot = resolve(
                 backupRoot,
@@ -13926,6 +13996,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     targetPath,
                     mode: 0o700,
                     excludeEntries: directory.excludeEntries,
+                    preservePermissions: input.execution.provider.kind === "extension",
                   });
                   if (!existsSync(targetPath)) {
                     throw new Error("runner_harness_state_mismatch: checkpoint_directory_missing");
@@ -13940,6 +14011,7 @@ async function createRunnerdBackendWithinSessionClaim(
                     sandboxLeaseAcquisition?.providerLeaseId ??
                     remoteTarget?.leaseId ??
                     input.durableEnvironmentLeaseId ??
+                    (typeof verified.runnerState.environmentLeaseId === "string" ? verified.runnerState.environmentLeaseId : undefined) ??
                     "unknown",
                 });
                 backupSpanAttributes.bytesTransferred =
@@ -14187,7 +14259,7 @@ async function createRunnerdBackendWithinSessionClaim(
       "failover-backups",
       "provider-pack-authority.json",
     ]) {
-      const source = resolve(root, name);
+      const source = resolve(name === "failover-backups" ? backupStorageRoot : root, name);
       if (existsSync(source)) renameSync(source, resolve(archiveRoot, name));
     }
     if (remoteCommandRunner && remoteSessionRoot) {
@@ -14265,6 +14337,16 @@ async function createRunnerdBackendWithinSessionClaim(
       runnerPublicUrl: input.runnerPublicUrl, runnerCaBundlePath: input.runnerCaBundlePath,
       runId: input.execution.binding.runId, prepareRemote: prepareRemoteRunner });
   }
+  const extensionRuntime = input.execution.provider.kind === "extension"
+    ? await prepareInstalledRunnerHarness(input.db, { companyId: input.execution.binding.companyId,
+        provider: input.execution.provider, environment: effectiveRunnerEnvironment,
+        launchDirectory: join(root, "extension-launcher") }) : null;
+  if (extensionRuntime && remoteTarget && remoteRuntimeRoot && remoteCommandRunner) {
+    extensionRuntime.profile = await prepareRemoteRunnerHarness({ ...extensionRuntime,
+      targetRoot: posix.join(remoteRuntimeRoot, "harnesses", extensionRuntime.resolved.release.runtimeDigest.slice(7)),
+      runner: remoteCommandRunner, stageDirectory: (sourcePath, targetPath) => stageRemoteRunnerDirectory({
+        target: remoteTarget, runner: remoteCommandRunner, sourcePath, targetPath, mode: 0o555, preservePermissions: true }) });
+  }
   const backend = createNativeSessionBackend(runnerExecution, {
     retainedSystemInstructions,
     runnerInstanceId:
@@ -14297,6 +14379,8 @@ async function createRunnerdBackendWithinSessionClaim(
       "acpx",
     ),
     codexTransportFactory: (recoveryContext) => {
+      extensionRecoveryCheckpoint = input.execution.provider.kind === "extension" ? recoveryContext?.persistedSession?.extensionCheckpoint : undefined;
+      extensionCheckpointSourceRunId = recoveryContext?.checkpointSourceRunId;
       const bundle = createRunnerdCodexTransport({
         ...(input.recoveryPurpose === "stop_cleanup" ? { recoveryPurpose: "stop_cleanup" as const } : {}),
         measureOperation: process.env.OTEL_EXPORTER_OTLP_ENDPOINT?.trim() ? measureRunnerOperation : undefined,
@@ -14332,7 +14416,7 @@ async function createRunnerdBackendWithinSessionClaim(
           event,
         }),
         provider:
-          input.execution.provider.kind === "cursor_cloud" ? "cursor_cloud" : input.execution.provider.kind === "codex"
+          input.execution.provider.kind === "extension" ? "extension" : input.execution.provider.kind === "cursor_cloud" ? "cursor_cloud" : input.execution.provider.kind === "codex"
             ? "codex"
             : input.execution.provider.kind === "opencode"
               ? "opencode"
@@ -14343,6 +14427,17 @@ async function createRunnerdBackendWithinSessionClaim(
                   : input.execution.provider.kind === "acpx"
                     ? "acpx"
                     : undefined,
+        ...(input.execution.provider.kind === "extension" && extensionRuntime ? {
+          extensionRelease: input.execution.provider.release, extensionConfig: input.execution.provider.config,
+          extensionCapabilities: input.execution.provider.capabilities,
+          extensionCredentialIdentity: extensionRuntime.credentialIdentity,
+          extensionRuntimeDirectory: remoteRunnerFilesystemRoot ? posix.join(remoteRunnerFilesystemRoot, "extension")
+            : resolve(runnerdStateBase(), "extension-homes", createHash("sha256").update(nativeSessionScopeKey(input.execution)).digest("hex")),
+          extensionRuntimeRoot: remoteTarget && remoteRuntimeRoot
+            ? posix.join(remoteRuntimeRoot, "harnesses", extensionRuntime.resolved.release.runtimeDigest.slice(7)) : extensionRuntime.resolved.packageRoot,
+          extensionCheckpoint: recoveryContext?.persistedSession?.extensionCheckpoint,
+          extensionLaunchProfile: { ...extensionRuntime.profile },
+        } : {}),
         ...(input.execution.provider.kind === "acpx"
           ? {
               acpxAgent: input.execution.provider.agent,

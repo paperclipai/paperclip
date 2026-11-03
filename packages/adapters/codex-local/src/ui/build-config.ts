@@ -78,6 +78,17 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues, context?: {
 }): Record<string, unknown> {
   const config = buildCodexLocalConfig(v);
   const schemaValues = normalizeLegacyRunnerProvider({ ...(v.adapterSchemaValues ?? {}) });
+  if (schemaValues.provider === "extension") {
+    const model = typeof v.model === "string" && v.model.trim() ? v.model.trim()
+      : typeof schemaValues.model === "string" ? schemaValues.model.trim() : "";
+    if (!model) throw new Error("Select a model for the installed harness before saving.");
+    if (typeof schemaValues.harnessId !== "string" || !schemaValues.harnessId.includes("/")) throw new Error("Select an installed Runner harness.");
+    return { provider: "extension", harnessId: schemaValues.harnessId, model,
+      extensionConfig: schemaValues.extensionConfig ?? {}, lifecycleMode: schemaValues.lifecycleMode ?? "per_turn",
+      ...(config.env ? { env: config.env } : {}),
+      ...(config.instructionsFilePath ? { instructionsFilePath: config.instructionsFilePath } : {}),
+    };
+  }
   const configuredEffort = typeof v.thinkingEffort === "string"
     ? v.thinkingEffort.trim()
     : schemaValues.modelReasoningEffort || schemaValues.reasoningEffort || schemaValues.effort;

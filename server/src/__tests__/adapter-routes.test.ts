@@ -152,6 +152,18 @@ describe("adapter routes", () => {
       expect(typeof adapter.capabilities.supportsAcp).toBe("boolean");
     }
   });
+  it("discovers installed Runner harnesses only after validating company access", async () => {
+    const harness = { harnessId: "example.harness/synthetic", pluginKey: "example.harness", packageName: "@example/plugin-harness",
+      version: "1.0.0", displayName: "Synthetic", configSchema: {}, platforms: ["linux-x64" as const], capabilities: {}, protocolVersion: 1 as const };
+    const list = vi.fn(async () => [harness]);
+    const app = createApp({ source: "session", companyIds: ["allowed"] }, { runnerHarnesses: { list } });
+    expect((await request(app).get("/api/companies/foreign/runner-harnesses")).status).toBe(403);
+    expect(list).not.toHaveBeenCalled();
+    const response = await request(app).get("/api/companies/allowed/runner-harnesses");
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([harness]);
+    expect(list).toHaveBeenCalledWith("allowed");
+  });
   it("projects only the enabled company-local candidate and exact model", async () => {
     mockCandidateAdmission.mockImplementation(({ companyId }) => companyId === "company-1"
       ? { agent: "antigravity", model: "exact-google-model", profileDigest: "private-profile", nativeClosureDigest: "private-closure" } : undefined);

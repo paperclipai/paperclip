@@ -118,7 +118,8 @@
     "tar-stream": "3.2.0",
     "ws": "^8.22.0",
     "zod": "^4.4.3",
-    "@opentelemetry/resources": "2.10.0"
+    "@opentelemetry/resources": "2.10.0",
+    "@paperclipai/runner-sdk": "workspace:*"
   },
   "bundleDependencies": [
     "@agentclientprotocol/claude-agent-acp",

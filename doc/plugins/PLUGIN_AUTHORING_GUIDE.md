@@ -813,6 +813,10 @@ transfer API. Native agent execution is a separate integration.
 
 ## Plugin-provided Runner execution
 
+Plugins can also [contribute native harnesses](PLUGIN_RUNNER_HARNESSES.md) from
+independent npm packages. Harness implementation and execution-environment
+placement are separate extension contracts.
+
 Plugins can [provide Runner execution through environment drivers](PLUGIN_RUNNER_EXECUTION.md).
 Core can select this path for `paperclip_runner` agents assigned to a saved plugin
 environment. The plugin owns project volumes and starts Runner from structured

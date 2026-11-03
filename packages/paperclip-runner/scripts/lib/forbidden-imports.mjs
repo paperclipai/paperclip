@@ -178,6 +178,7 @@ function violationReason({ file, packageRoot, specifier, publicRunnerImports, re
   if (
     specifier.startsWith("@paperclipai/") &&
     specifier !== "@paperclipai/paperclip-runner" &&
+    specifier !== "@paperclipai/runner-sdk" && specifier !== "@paperclipai/runner-sdk/contracts" &&
     !publicRunnerImports.has(specifier) &&
     !(specifier === REVIEWED_EVAL_KERNEL && reviewedEvalHarness && relativeFile === REVIEWED_EVAL_HARNESS)
   ) {
@@ -234,7 +235,7 @@ async function manifestViolations(packageRoot) {
   );
   return [...runtimeDependencies, ...unreviewedDevelopmentDependencies]
     .filter(
-      (name) => name.startsWith("@paperclipai/") && name !== "@paperclipai/paperclip-runner",
+      (name) => name.startsWith("@paperclipai/") && name !== "@paperclipai/paperclip-runner" && name !== "@paperclipai/runner-sdk",
     )
     .map((specifier) => ({
       file: manifestPath,

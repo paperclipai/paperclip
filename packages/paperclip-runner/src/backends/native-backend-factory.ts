@@ -27,6 +27,7 @@ export interface NativeBackendFactoryOptions extends Omit<
   dotRunnerOptions?: Omit<RunnerdDotDriverOptions, "execution" | "dynamicTools" | "dynamicToolHandler" | "completionFeedback" | "onSpawn">;
   codexTransportFactory?: (context?: {
     baseInstructions?: string;
+    checkpointSourceRunId?: string;
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
     persistedSession?: Pick<
       PersistedHarnessSession,
@@ -34,6 +35,7 @@ export interface NativeBackendFactoryOptions extends Omit<
       | "providerSessionId"
       | "providerIdentity"
       | "activeTurnId"
+      | "extensionCheckpoint"
     >;
   }) => CodexAppServerTransport;
   acpxRuntimeDirectory?: string;
@@ -79,6 +81,9 @@ export function createNativeSessionBackend(
       workingDirectoryAuthority: options.workingDirectoryAuthority,
       transportFactory: options.codexTransportFactory,
     });
+  }
+  if (input.provider.kind === "extension") {
+    throw new Error("External harnesses require an admitted Runner transport and installed runtime package");
   }
   if (input.provider.kind === "opencode") {
     if (!options.opencodeRuntimeDirectory?.trim()) {

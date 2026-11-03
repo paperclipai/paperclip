@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {environmentTaskOperationSchema} from "../src/environment-tasks.js";
+import { environmentTaskOperationSchema, environmentTaskResultSchema, environmentTaskCredentialSchema, environmentRunnerHarnessLaunchProfileSchema } from "../src/environment-tasks.js";
 const submit={kind:"submit",projectIds:[],bootstrapTicket:"synthetic",runner:{harness:"codex",protocolMin:1,protocolMax:3,runnerId:"runner",leaseId:"lease",runId:"run",sessionId:"session",turnId:"turn",itemId:"item"},
  launch:{runnerVersion:"fixture",runnerDigest:`sha256:${"a".repeat(64)}`,maxOutboxBytes:262144,p0ReserveBytes:65536,lifecyclePolicy:{mode:"warm",idleTimeoutMs:300000}}};
 describe("task lifecycle policy",()=>{
@@ -69,5 +69,46 @@ describe("implementation-independent GitHub credential broker", () => {
   it("rejects executable delivery as part of this contract", () => {
     expect(environmentTaskOperationSchema.safeParse({ ...prepare, githubBroker: {
       url: "https://core.example.test", token: "runtime-capability", script: "run-this" } }).success).toBe(false);
+  });
+});
+
+describe("external native harness execution", () => {
+  const identity = { harnessId: "example.native/synthetic", packageName: "@example/plugin-harness", version: "1.0.0",
+    integrity: `sha256-${Buffer.alloc(32, 1).toString("base64")}`, protocolVersion: 1, runtimeDigest: `sha256:${"a".repeat(64)}` };
+  const profile = { schema: "paperclip.harness-launch.v1", identity,
+    command: { path: "/runtime/node", sha256: `sha256:${"b".repeat(64)}` },
+    entrypoint: { path: "/runtime/package/main.js", sha256: `sha256:${"c".repeat(64)}` }, args: [], environmentKeys: ["SYNTHETIC_API_KEY"] };
+
+  it("preserves admitted release, configuration, capabilities and prepared runtime authority", () => {
+    const operation = { ...prepare, requirements: { ...prepare.requirements, provider: "extension",
+      settings: { extensionRelease: identity, extensionConfig: { mode: "coding" }, extensionCapabilities: { interruption: true }, extensionCheckpoint: null } } };
+    expect(environmentTaskOperationSchema.parse(operation)).toEqual(operation);
+    const prepared = { kind: "prepared", taskId: "task", launch: { configurationId: "config", requirementsDigest: `sha256:${"d".repeat(64)}`,
+      provider: { kind: "extension", release: identity }, extensionLaunchProfile: profile } };
+    expect(environmentTaskResultSchema.parse(prepared)).toEqual(prepared);
+    const submitted = { ...submit, runner: { ...submit.runner, harness: identity.harnessId },
+      launch: { ...submit.launch, extensionLaunchProfile: profile },
+      credential: { type: "harness-env", harnessId: identity.harnessId, environment: { SYNTHETIC_API_KEY: "synthetic" } } };
+    expect(environmentTaskOperationSchema.parse(submitted)).toEqual(submitted);
+  });
+
+  it("requires package admission and keeps extension fields out of built-in provider settings", () => {
+    expect(environmentTaskOperationSchema.safeParse({ ...prepare, requirements: { ...prepare.requirements, provider: "extension" } }).success).toBe(false);
+    expect(environmentTaskOperationSchema.safeParse({ ...prepare, requirements: { ...prepare.requirements,
+      settings: { extensionRelease: identity } } }).success).toBe(false);
+    expect(environmentRunnerHarnessLaunchProfileSchema.safeParse({ ...profile, identity: { ...identity, protocolVersion: 2 } }).success).toBe(false);
+    expect(environmentRunnerHarnessLaunchProfileSchema.safeParse({ ...profile, command: { ...profile.command, path: "relative-node" } }).success).toBe(false);
+  });
+
+  it.each(["PATH", "HOME", "NODE_OPTIONS", "PAPERCLIP_API_KEY", "LD_PRELOAD", "GIT_CONFIG_COUNT"])("rejects process-control credential key %s", key => {
+    expect(environmentTaskCredentialSchema.safeParse({ type: "harness-env", harnessId: identity.harnessId, environment: { [key]: "synthetic" } }).success).toBe(false);
+    expect(environmentRunnerHarnessLaunchProfileSchema.safeParse({ ...profile, environmentKeys: [key] }).success).toBe(false);
+  });
+
+  it("advertises support explicitly while preserving older environment descriptions", () => {
+    const description = { kind: "description", taskId: "task", runner: { version: "1.0.0", digest: `sha256:${"a".repeat(64)}` } };
+    expect(environmentTaskResultSchema.parse(description)).toEqual(description);
+    expect(environmentTaskResultSchema.parse({ ...description, harnessExtensionVersion: 1 })).toHaveProperty("harnessExtensionVersion", 1);
+    expect(environmentTaskResultSchema.safeParse({ ...description, harnessExtensionVersion: 2 }).success).toBe(false);
   });
 });

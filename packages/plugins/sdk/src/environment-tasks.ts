@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isHarnessCredentialEnvironmentKey, parseRunnerHarnessReleaseIdentity, parseRunnerHarnessLaunchProfile } from "@paperclipai/runner-sdk/contracts";
 import type { PluginEnvironmentDriverBaseParams, PluginEnvironmentLease } from "./protocol.js";
 import type { PluginAgentRuntimeIdentity } from "./types.js";
 
@@ -19,6 +20,23 @@ const secureUrl = z.string().url().refine(value => {
 }, "Expected a credential-free WSS URL");
 
 const credentialValue = z.string().min(1).max(65_536).refine(value => !value.includes("\0"));
+const harnessId = z.string().max(240).regex(/^[a-z0-9][a-z0-9._-]*\/[a-z][a-z0-9_-]{0,95}$/);
+const harnessRelease = z.unknown().transform((value, ctx) => {
+  try { return parseRunnerHarnessReleaseIdentity(value); }
+  catch (error) {
+    ctx.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid harness release" });
+    return z.NEVER;
+  }
+});
+const harnessCredentialKey = z.string().refine(isHarnessCredentialEnvironmentKey, "Expected a declared credential key, not a process control");
+/** Environment-owned startup authority; never supplied by an agent's settings. */
+export const environmentRunnerHarnessLaunchProfileSchema = z.unknown().transform((value, ctx) => {
+  try { return parseRunnerHarnessLaunchProfile(value); }
+  catch (error) {
+    ctx.addIssue({ code: "custom", message: error instanceof Error ? error.message : "Invalid harness launch profile" });
+    return z.NEVER;
+  }
+});
 const githubBroker = z.object({ url: z.string().url().max(2000).refine(value => {
   try {
     const url = new URL(value);
@@ -31,6 +49,10 @@ export const environmentTaskCredentialSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("claude-env"), environment: z.object({
     CLAUDE_CODE_OAUTH_TOKEN: credentialValue.optional(), ANTHROPIC_API_KEY: credentialValue.optional(),
   }).strict().refine(env => Object.values(env).filter(Boolean).length === 1, "Select one Claude credential") }).strict(),
+  z.object({ type: z.literal("harness-env"), harnessId,
+    environment: z.record(harnessCredentialKey, credentialValue).refine(env => Object.keys(env).length <= 32
+      && JSON.stringify(env).length <= 65_536, "Harness credentials exceed the bounded transfer contract"),
+  }).strict(),
 ]);
 export type PluginEnvironmentTaskCredential = z.infer<typeof environmentTaskCredentialSchema>;
 
@@ -38,7 +60,7 @@ export type PluginEnvironmentTaskCredential = z.infer<typeof environmentTaskCred
 export const environmentRunnerLaunchRequirementsSchema = z.object({
   schema: z.literal("paperclip.runner.launch-requirements.v1"),
   identity: durableIdentity,
-  provider: z.enum(["codex", "opencode", "acpx", "claude_managed", "aws_agentcore"]),
+  provider: z.enum(["codex", "opencode", "acpx", "claude_managed", "aws_agentcore", "extension"]),
   model: z.string().min(1).nullable(), instructions: z.string().max(1024 * 1024),
   runtimeContext: z.record(z.string(), z.unknown()).nullable(),
   settings: z.object({ acpxAgent: identifier.optional(), acpxMode: z.string().optional(),
@@ -49,13 +71,28 @@ export const environmentRunnerLaunchRequirementsSchema = z.object({
     disableCodexWebSearch: z.literal(true).optional(),
     disableCodexProjectInstructions: z.literal(true).optional(),
     managedProfile: z.record(z.string(), z.unknown()).optional(), agentCoreProfile: z.record(z.string(), z.unknown()).optional(),
+    extensionRelease: harnessRelease.optional(),
+    extensionConfig: z.record(z.string(), z.unknown()).optional(),
+    extensionCapabilities: z.record(z.string().regex(/^[a-z][a-zA-Z0-9]{0,95}$/), z.boolean())
+      .refine(value => Object.keys(value).length <= 64).optional(),
+    extensionCheckpoint: z.record(z.string(), z.unknown()).nullable().optional(),
+    extensionCredentialIdentity: z.string().regex(/^sha256:[a-f0-9]{64}$/).optional(),
   }).strict(),
   approvalPolicy: z.enum(["never", "on-request", "untrusted"]), readOnly: z.boolean(),
+  collaborationMode: z.enum(["default", "plan"]).optional(),
   preparedConversation: z.boolean(), includeCollaborationModeInstructions: z.boolean(),
-}).strict();
+}).strict().superRefine((requirements, ctx) => {
+  if (requirements.provider === "extension" && !requirements.settings.extensionRelease) {
+    ctx.addIssue({ code: "custom", path: ["settings", "extensionRelease"], message: "Extension launches require an admitted package release" });
+  }
+  if (requirements.provider !== "extension" && Object.keys(requirements.settings).some(key => key.startsWith("extension"))) {
+    ctx.addIssue({ code: "custom", path: ["settings"], message: "Extension settings require the extension provider" });
+  }
+});
 const preparedLaunch = z.object({ configurationId: providerId.max(1024),
   requirementsDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
   provider: z.record(z.string(), z.unknown()),
+  extensionLaunchProfile: environmentRunnerHarnessLaunchProfileSchema.optional(),
 }).strict();
 
 /** One plugin-provided Runner execution attempt with a PRP connection. Secrets are transient RPC input. */
@@ -75,7 +112,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
       /** Inclusive PRP version range supported by the submitting client. */
       protocolMin: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
       protocolMax: z.number().int().min(1).max(Number.MAX_SAFE_INTEGER),
-      harness: identifier,
+      harness: z.union([identifier, harnessId]),
       runnerId: runnerIdentity, leaseId: runnerIdentity, runId: runnerIdentity,
       sessionId: runnerIdentity, turnId: runnerIdentity, itemId: runnerIdentity,
     }).strict().refine(value => value.protocolMin <= value.protocolMax, "Invalid PRP version range"),
@@ -94,6 +131,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
       maxOutboxBytes: z.number().int().positive(), p0ReserveBytes: z.number().int().positive(),
       maxRuntimeMs: z.number().int().nonnegative().optional(), maxLifetimeMs: z.number().int().nonnegative().optional(),
       reconnectGraceMs: z.number().int().nonnegative().optional(),
+      extensionLaunchProfile: environmentRunnerHarnessLaunchProfileSchema.optional(),
       lifecyclePolicy: z.discriminatedUnion("mode", [
         z.object({ mode: z.literal("per_turn"), idleTimeoutMs: z.null() }).strict(),
         z.object({ mode: z.literal("warm"), idleTimeoutMs: z.number().int().positive().max(86_400_000) }).strict(),
@@ -101,7 +139,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     }).strict().optional(),
   }).strict(),
   z.object({ kind: z.literal("check_project_auth"), configurationId: providerId.max(1024),
-    provider: identifier, projectIds: z.array(z.string().uuid()).max(64)
+    provider: z.union([identifier, harnessId]), projectIds: z.array(z.string().uuid()).max(64)
       .refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs") }).strict(),
   z.object({ kind: z.literal("read_file"), identity: durableIdentity,
     path: taskFilePath, maxBytes: z.number().int().positive().max(MAX_ENVIRONMENT_TASK_FILE_BYTES),
@@ -122,7 +160,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("copilot_metadata"), taskId: providerId, metadata: z.record(z.string(), z.unknown()),
     executionStopped: z.literal(true) }).strict(),
   z.object({ kind: z.literal("project_auth"), taskId: providerId, configurationId: providerId.max(1024),
-    provider: identifier, allowed: z.boolean() }).strict(),
+    provider: z.union([identifier, harnessId]), allowed: z.boolean() }).strict(),
   z.object({ kind: z.literal("file"), taskId: providerId,
     base64: z.string().max(4 * Math.ceil(MAX_ENVIRONMENT_TASK_FILE_BYTES / 3)),
     byteSize: z.number().int().nonnegative().max(MAX_ENVIRONMENT_TASK_FILE_BYTES),
@@ -141,6 +179,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
     projectAuthCheckVersion: z.literal(1).optional(),
     workspaceFileReadVersion: z.literal(1).optional(),
     githubCredentialBrokerVersion: z.literal(1).optional(),
+    harnessExtensionVersion: z.literal(1).optional(),
   }).strict(),
   z.object({
     kind: z.literal("status"), taskId: providerId,
@@ -167,6 +206,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
 
 export type PluginEnvironmentRunnerLaunchRequirements = z.infer<typeof environmentRunnerLaunchRequirementsSchema>;
 export type PluginEnvironmentPreparedLaunch = z.infer<typeof preparedLaunch>;
+export type PluginEnvironmentRunnerHarnessLaunchProfile = z.infer<typeof environmentRunnerHarnessLaunchProfileSchema>;
 
 export type PluginEnvironmentTaskOperation = z.infer<typeof environmentTaskOperationSchema>;
 export type PluginEnvironmentTaskResult = z.infer<typeof environmentTaskResultSchema>;

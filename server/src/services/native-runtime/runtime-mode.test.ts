@@ -423,6 +423,14 @@ describe("resolveNativeRuntimeMode", () => {
     }));
   });
 
+  it("keeps a persisted v11 extension on its admitted driver across current configuration changes", () => {
+    const selected = resolveHeartbeatNativeRuntimeMode({ ...eligible, enabled: false,
+      adapterConfig: { provider: "codex" }, persisted: { runtimeMode: "native", runtimeModeReason: "eligible_opt_in",
+        runtimeModeResolvedAt: new Date(), driverKind: "extension" } });
+    expect(selected).toMatchObject({ kind: "native", profile: { mode: "native", backend: "extension", protocolVersion: 1 } });
+    expect(isRunnerIngressAuthorized(selected)).toBe(true);
+  });
+
   it("rejects an explicit native profile outside the approved boundary", () => {
     expect(resolveNativeRuntimeMode({ ...eligible, agent: { ...eligible.agent, adapterType: "claude_local" } }))
       .toEqual(expect.objectContaining({ kind: "legacy", reason: "direct_adapter" }));
@@ -502,6 +510,11 @@ const compatibilityInput = {
 } as const;
 
 describe("resolveHeartbeatRuntimeMode compatibility", () => {
+  it("preserves an explicit external harness instead of reporting the Codex default", () => {
+    expect(resolveHeartbeatRuntimeMode({ ...compatibilityInput, adapterType: "paperclip_runner",
+      adapterConfig: { provider: "extension", harnessId: "fixture.native/task", model: "fixture-exact-model" },
+    })).toMatchObject({ kind: "native", provider: "extension" });
+  });
   it("keeps every direct built-in adapter on the legacy path", () => {
     for (const adapterType of BUILTIN_ADAPTER_TYPES) {
       if (adapterType === "paperclip_runner") continue;

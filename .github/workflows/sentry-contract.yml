@@ -56,6 +56,9 @@ jobs:
             pnpm install --frozen-lockfile --ignore-scripts
           fi
 
+      - name: Build workspace import prerequisites
+        run: pnpm --filter @paperclipai/plugin-sdk ensure-build-deps
+
       - name: Install the audited optional SDK outside the workspace
         shell: bash
         run: |
