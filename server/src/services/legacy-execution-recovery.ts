@@ -6,6 +6,7 @@ import { hasRequiredWorkspaceRecovery, preserveWorkspaceRestoreRecoveryMetadata,
 import { hasUnrestoredRemoteWorkspace, preserveLegacyWorkspaceRestoreSources, type LegacyWorkspaceRestoreSource } from "./legacy-workspace-restore-recovery.js";
 import { isPreDispatchReviewWaitVerified } from "./pre-dispatch-review-wait.js";
 import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wait.js";
+import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "./remote-workspace-transport.js";
 import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { claimedAdapterType, hasConversationContinuationPolicy } from "./conversation-continuation.js";
@@ -72,7 +73,8 @@ export function legacyExecutionNeedsReconciliation(
   // Setup owns the bounded retry budget for temporary workspace scans. Its
   // exhaustion needs workspace repair, not reconciliation of provider actions
   // that the bootstrap evidence proves never started. Keep unknown outcomes held.
-  if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated") &&
+  if ((run.errorCode === "workspace_git_scan_timeout" || run.errorCode === "workspace_git_scan_saturated"
+      || run.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE) &&
       evidence?.kind === "bootstrap" && evidence.providerWorkStarted === false) return false;
   if (executionFailureRetryCount(run) >= 2) return true;
   return !(

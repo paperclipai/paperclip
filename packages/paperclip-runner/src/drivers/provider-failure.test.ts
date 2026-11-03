@@ -22,6 +22,40 @@ describe("provider failure boundary", () => {
     expect(acpxProviderFailure(new Error("internal runtime failure"), "claude", "startup")).toBeNull();
   });
 
+  it("classifies typed ACP errors and leaves untyped ones unknown", () => {
+    const rejected = (code: number, message: string, data?: unknown) =>
+      Object.assign(new Error(message), { code, ...(data === undefined ? {} : { data }) });
+    // Claude ACP attaches the SDK error kind to ACP error data.
+    expect(acpxProviderFailure(rejected(-32603, "Internal error", { errorKind: "billing_error" }), "claude", "startup"))
+      .toMatchObject({ category: "quota_exhausted", providerCode: "billing_error", message: "Internal error", retryability: "requires_action" });
+    expect(acpxProviderFailure(rejected(-32603, "Internal error", { errorKind: "rate_limit" }), "claude", "startup"))
+      .toMatchObject({ category: "rate_limit", providerCode: "rate_limit" });
+    // A JSON provider body becomes ACP error data on the agent side.
+    expect(acpxProviderFailure(rejected(-32603, "Internal error",
+      { type: "error", error: { type: "rate_limit_error", message: "Usage limit reached." } }), "claude", "startup"))
+      .toMatchObject({ category: "rate_limit", providerCode: "rate_limit_error", message: "Usage limit reached." });
+    // ACP's reserved authentication-required code, as Pi and Claude raise it.
+    const auth = "Authentication required: Bind the configured OpenRouter API credential to this Paperclip runtime.";
+    expect(acpxProviderFailure(rejected(-32000, auth, { authMethods: [{ id: "openrouter" }] }), "pi", "startup"))
+      .toEqual({ schema: "paperclip.provider-failure.v1", provider: "pi", phase: "startup", category: "authentication",
+        message: auth, retryability: "requires_action" });
+    for (const data of [{ details: "Query closed before response received" }, { errorKind: "server_error" }, { errorKind: "constructor" }]) {
+      expect(acpxProviderFailure(rejected(-32603, "Internal error", data), "claude", "startup"))
+        .toMatchObject({ category: "unknown", retryability: "unknown" });
+    }
+  });
+
+  it("keeps a plain error's own redacted message only when asked", () => {
+    const secret = "fixture-launch-secret";
+    const error = new Error(`Claude Code initialization failed for ${secret} with sk-ant-api03-fixtureprivatecredential`);
+    expect(acpxProviderFailure(error, "claude", "startup", { ANTHROPIC_API_KEY: secret })).toBeNull();
+    const failure = acpxProviderFailure(error, "claude", "startup", { ANTHROPIC_API_KEY: secret }, true);
+    expect(failure).toMatchObject({ provider: "anthropic", phase: "startup", category: "unknown",
+      message: "Claude Code initialization failed for [REDACTED] with [REDACTED]" });
+    expect(JSON.stringify(failure)).not.toMatch(/fixture-launch-secret|fixtureprivatecredential/);
+    expect(acpxProviderFailure(new Error(""), "claude", "startup", {}, true)).toBeNull();
+  });
+
   it("keeps the ACPX terminal cause when the raw result exceeds its payload limit", () => {
     const terminal = acpxTerminalResult({ status: "failed", error: { ...acp,
       data: { ...acp.data, responseBody: "private-body".repeat(7000) } } }, "claude");

@@ -7,6 +7,7 @@ import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-pre
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { boundRunIssueId } from "../run-task-binding.js";
+import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "../remote-workspace-transport.js";
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
 import { recoveryRunResultColumn } from "./run-result-read.js";
 import { readLegacyDispositionSource } from "./legacy-disposition-read.js";
@@ -112,6 +113,7 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
 import {
   legacyExecutionNeedsReconciliationWithEvidence,
@@ -551,6 +553,7 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "workspace_git_scan_cancelled",
   "workspace_git_scan_output_limit",
   "workspace_git_scan_failed",
+  REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE,
   "low_trust_isolation_unavailable",
   "low_trust_requires_isolated_workspace",
   "low_trust_boundary_mismatch",
@@ -569,7 +572,7 @@ const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
-export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
+export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;

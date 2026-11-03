@@ -920,6 +920,23 @@ recovery path with the specific scan cause and an operator action. Generic
 stranded-work recovery must not grant another budget for these errors. This
 does not automatically replay historical generic `setup_failed` runs.
 
+Fresh remote workspace preparation timeouts use that same bounded retry budget.
+The workspace owner re-reads its company-scoped authority after the timeout. It
+must still have the same writer and epoch, with no location, saved version, or
+unsaved task work. Only the initial directory/clone operation qualifies; restoring
+saved work, acquiring additional repositories, provisioning, and saving do not.
+The failed allocation is not reused by a successor. Normal lease cleanup and
+fresh admission retain their existing ownership and execution gates. A lost
+preparation reply therefore cannot cause a successor to overwrite that allocation.
+Provider work must not have started and the run must not have retained native
+execution identity. For that persisted bootstrap-only timeout, a successor may
+claim the still-unpublished reservation after every prior lease is terminal and
+successfully cleaned up, including providers whose release returns no receipt.
+This grants no provider-stop evidence: published or saved work, retained execution
+identity, unknown failures, active leases, and incomplete cleanup still require
+their normal reconciliation and termination proof. Unknown historical setup errors remain
+outside this policy, and generic recovery cannot renew its exhausted budget.
+
 ### Runner authentication and ACP startup handshake bounds
 
 The native Runner waits up to the ten-second connection setup budget for the
@@ -950,6 +967,8 @@ A new user message can continue a terminal native run whose process fields were 
 The task thread exposes the guarded Retry action for failed or timed-out conversation runs and native preparation cancelled before provider startup when the never-started proof is verified. The server projects this eligibility on the recovery notice and rechecks it on Retry. Cleanup quarantine retains its inspection path, and non-conversation reconciliation gates remain enforced. Pending decisions, active execution, pause, budget, dependency, and ownership gates remain in force. A refused Retry reports its reason inline and remains available for another attempt. When a newer linked-human GitHub message was saved but its admission was skipped by a budget or agent-availability gate, ordinary task Retry selects that unstarted message before considering the older failed run. The existing chat task-Retry owner snapshots the complete pending batch, including eligible skipped input, into a new admission generation bound to the canonical processed deliveries, comments, principal, session generation, admitted instruction snapshots, and task Retry intent. It retains the original skipped receipt and failed result unchanged. A terminal failed publication of that old result also remains history for a distinct selected request; pending or uncertain publication still holds work, and the old output is never replayed. Board Retry refusals expose only stable allowlisted authority categories, never source payloads, identifiers, or credential fingerprints. Admission rechecks source integrity and current access, then uses the normal new-user-turn continuation proof: a committed failed result can remain history only after controller, successor, process, workspace, and exact remote-termination guards pass. Unknown ownership stays deferred; Retry cannot certify it. The existing chat retry queue owns delivery and bounded infrastructure retries; a committed receipt settles a lost acknowledgment without another execution. An accepted saved-input receipt discharges only its matching unadmitted-input gate, allowing later genuine conversation or tree-resume wakes without replaying the skipped request.
 
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
+
+Other legacy queued-run gate cancellations also stay out of unknown-action reconciliation when the terminal run has no retained execution authority, session, workspace recovery, resources, or execution events. The same proof removes the effect of an old false recovery hold only for its exact company, task, and run; the audit row remains. Started or conflicting work retains its hold. Review waits retain their guarded Retry path. New work still passes the current approval, dependency, budget, pause, and ownership gates.
 
 A successful connected run can still have newer admitted input waiting behind it.
 Task Retry resumes that input's existing durable chat receipt through the inbound
@@ -1574,7 +1593,24 @@ unknown operations or partial transcripts do not. Replacement uses a fresh
 session and retires only the exact predecessor's obsolete recovery hold while
 recording the proof and successor lineage. Retained provider files are not edited.
 
-Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Automatic attempts retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
+Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Exact-checkpoint resumes retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
+
+A bootstrap retry requires durable evidence that no provider session, provider
+event, or checkpoint exists. A runner report that `session.open` failed or was
+rejected qualifies, because that command runs before any prompt. An
+indeterminate `session.open` outcome does not qualify. Bootstrap retries back
+off: about 30 seconds after the first attempt and about 60 seconds after the
+second, with jitter that is persisted with the failure. Before it schedules a
+bootstrap retry, the executor looks for a known provider limit for the agent.
+Evidence is a `rate_limit` or `quota_exhausted` provider failure on the startup
+failure itself, or on an agent run that started in the last day, or a recorded
+usage-limit error code. The retry then waits until the provider's reported
+reset time, or until one hour after the limit failure when no reset time is
+known. A later successful run of the agent clears older evidence. A limit never
+holds a retry for more than one day. Limit evidence only delays a retry; it does
+not grant retry authority or change the budget. When the budget is exhausted,
+the task is blocked and its recovery action states that provider startup failed
+before any provider work began.
 
 A failed, unowned native sandbox retry can outlive an explicit Retry that already
 completed successfully. Startup recovery and ordinary retry admission retire that
@@ -1607,6 +1643,28 @@ its local suspension receipt is removed. This applies to built-in sandbox runner
 and plugin tasks. The running session then owns authority;
 the old receipt must not conflict with a later warm run's journal identity.
 Failed admission retains the receipt. Normal suspension writes a new receipt.
+
+A per-turn sandbox turn can finish through recovery without a Runner
+suspension receipt or failover backup on the controller. For example, its
+post-turn checkpoint copy can fail on a full sandbox disk. The controller
+journal from the database then cannot prove that the old Runner suspended.
+When the next run starts in a new or replacement sandbox, admission archives
+that old authority as a continuity break, and the run starts a new Runner.
+All of these must be true:
+
+- The prior run is terminal and its coordinator committed a result.
+- The coordinator has no lease owner and no recovery state.
+- The prior controller is proven stopped.
+- The journal has a delivered terminal, only completed commands, and an
+  answer for each tool input.
+- No local Runner lifecycle evidence exists for the old owner.
+- Each quarantined root for the scope passes the same journal and local
+  Runner evidence checks for the same owner.
+
+The provider session then follows the normal resume-or-replace policy. A
+resumed sandbox, a warm session, a plugin task, a restart claim, or any
+missing proof keeps the existing `prior_owner_terminal_state_indeterminate`
+rejection.
 
 A repository-free fresh plugin task directory remains the task's directory on
 ordinary follow-ups. Reuse requires its exact company, task, workspace, provider
