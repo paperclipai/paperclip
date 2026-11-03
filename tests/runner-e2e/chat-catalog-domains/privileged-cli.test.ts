@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { websiteCreateArgv, validContextGuidance } from "./privileged-cli-support.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
 import { privilegedCliCases, gradeChooseCliContext, gradeCreateFromCli } from "./privileged-cli.js";
+vi.mock("./internal-definition.js", () => ({ fixtureWorker: vi.fn() }));
 const target = { company: "owned-company", project: "launch", agent: "morgan", apiBase: "http://127.0.0.1:3100" };
 const command = (text: string) => `Use the explicit owned context.\n\`\`\`bash\n${text}\n\`\`\``;
 const valid = 'paperclipai issue create --company-id <COMPANY_ID> --title "Website task" --project-id <PROJECT_ID> --assignee-agent-id <MORGAN_AGENT_ID>';

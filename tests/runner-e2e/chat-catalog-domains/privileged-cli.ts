@@ -5,7 +5,7 @@ import type { RuntimeAgent } from "./runtime-support.js";
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
 import { checks, project, entity, type Entity } from "./internal-support.js";
 import { fixtureWorker } from "./internal-definition.js";
-import { privilegedDefinition, privilegedObservation, settlePrivilegedChat } from "./privileged-support.js";
+import { privilegedDefinition, privilegedObservation, settlePrivilegedChat, remainingPrivilegedObservationBudget } from "./privileged-support.js";
 import { prepareOwnedCli, runOwnedCli, cleanupOwnedCli, websiteCreateArgv, validContextGuidance, contextGuidanceArgv } from "./privileged-cli-support.js";
 
 export function gradeCreateFromCli(value: unknown) {
@@ -38,7 +38,9 @@ const create = privilegedDefinition("cli-operations.create-from-cli", "privilege
     return { ...operator, project: launch, worker: paused, workerWasManuallyPaused: true };
   },
   async act(ctx, state) {
-    const reply = await settlePrivilegedChat(ctx);
+    remainingPrivilegedObservationBudget(ctx);
+    const reply = await settlePrivilegedChat(ctx, ctx.observationDeadlineAt);
+    remainingPrivilegedObservationBudget(ctx);
     state.tasksBeforeCli = reply.tasks.length;
     const fixture = { company: ctx.input.fixtures.company.id, project: entity(state, "project").id,
       agent: entity(state, "worker").id, apiBase: ctx.input.api.baseURL };
@@ -115,7 +117,9 @@ const context = privilegedDefinition("cli-operations.choose-cli-context", "privi
     return { ...operator, initialProfile: before.currentProfile, otherProfile: before.profiles.birch };
   },
   async act(ctx, state) {
-    const reply = await settlePrivilegedChat(ctx);
+    remainingPrivilegedObservationBudget(ctx);
+    const reply = await settlePrivilegedChat(ctx, ctx.observationDeadlineAt);
+    remainingPrivilegedObservationBudget(ctx);
     const returned = contextGuidanceArgv(reply.reply, { company: ctx.input.fixtures.company.id, apiBase: ctx.input.api.baseURL });
     if (!returned) throw new Error("Actual model context commands are unsupported or do not select and read back the intended profile");
     for (const argv of returned.commands) await runOwnedCli(ctx, argv);
