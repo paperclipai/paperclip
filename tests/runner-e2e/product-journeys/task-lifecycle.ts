@@ -27,8 +27,13 @@ async function properties(context: JourneyContext) {
 }
 
 async function setStatus(context: JourneyContext, label: string) {
-  await context.page.getByRole("button", { name: /^Change status \(current:/ }).filter({ visible: true }).first().click();
-  await context.page.getByRole("button", { name: label, exact: true }).filter({ visible: true }).click();
+  const { page } = context;
+  await page.getByTestId("issue-detail-header").filter({ visible: true })
+    .getByRole("button", { name: /^Change status \(current:/ }).click();
+  // The shipped picker includes both a labeled status glyph and visible text.
+  // Bind the choice to its exact accessible glyph inside the open popover.
+  await page.locator('[data-slot="popover-content"]').filter({ visible: true })
+    .getByRole("button").filter({ has: page.getByRole("img", { name: label, exact: true }) }).click();
 }
 
 /** All measured edits use the shipped browser. Independent GETs verify saved state. */
