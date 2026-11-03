@@ -18,6 +18,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     decodeScope(hint: string): Scope | undefined;
     matches(entry: Entry, scope?: Scope): boolean;
     load(scope?: Scope, signal?: AbortSignal): Promise<Entry[] | { rows: Entry[] | null; complete: boolean }>;
+    // Owners may retain pending queue priority while refreshing eligibility.
+    mergeEntry?(pending: Entry, loaded: Entry): Entry;
     check(entry: Entry, signal?: AbortSignal): Promise<Entry | null>;
   },
   canRun: () => boolean,
@@ -90,7 +92,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
           const loaded = await options.load(scope, signal);
           const result = Array.isArray(loaded) ? { rows: loaded, complete: true } : loaded;
           for (const entry of result.rows ?? []) {
-            entries.set(entry.id, entry);
+            const pending = entries.get(entry.id);
+            entries.set(entry.id, pending && options.mergeEntry ? options.mergeEntry(pending, entry) : entry);
             for (const [other, progress] of scans) if (options.matches(entry, options.decodeScope(other))) progress.seen.add(entry.id);
           }
           if (!result.complete) { dirty.add(hint); continue; }

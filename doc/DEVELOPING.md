@@ -1878,6 +1878,22 @@ or recovery, unsafe paths, and explicitly concurrent shared writers block
 import. An interrupted apply retains its journal and admission hold; retry the
 same command to reconcile it before starting another writer.
 
+An import preserves the workspace's lifecycle state and the task's current
+workspace binding. It can import an archived or superseded workspace without
+reopening the task or selecting that older workspace for future turns. A changed
+task binding during the import blocks publication.
+
+If an archived folder has already been removed, the importer can reconstruct it
+in private scratch space from its encrypted task-directory restore point or
+validated Git restoration recipe. For older Git workspaces without a recipe,
+it requires a successful branch-deletion receipt and the exact saved commit in
+the verified source repository. It never substitutes today's default branch.
+Git restore points retain unpushed history and staged and unstaged edits, even
+when the source repository has pruned the saved branch. Missing, expired,
+corrupt, or unbound sources block the import. Publication still requires an
+independent download and restore of the new encrypted snapshot. The old folder
+remains absent, and the importer does not change the original restore point.
+
 Supported sources include empty task folders, repository URLs, and managed
 mutable repositories. Authorized mentioned projects attach all their configured
 Git repositories as writable copies under `.paperclip-repositories/` in the task
