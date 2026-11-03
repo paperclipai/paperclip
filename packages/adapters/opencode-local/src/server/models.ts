@@ -172,13 +172,20 @@ export async function discoverOpenCodeModels(
   );
 
   const maxAttempts = MODELS_DISCOVERY_RETRY_DELAYS_MS.length + 1;
+  const openCodeV2 = input.openCodeMajor === 2;
   let lastError: Error | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const result = await runChildProcess(
       `opencode-models-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       command,
-      ["models", ...(input.refresh && input.openCodeMajor !== 2 ? ["--refresh"] : [])],
+      [
+        "models",
+        // V2 needs a private server so discovery sees the same env and XDG
+        // paths as the run instead of another process's background service.
+        ...(openCodeV2 ? ["--standalone"] : []),
+        ...(input.refresh && !openCodeV2 ? ["--refresh"] : []),
+      ],
       {
         cwd,
         env: runtimeEnv,

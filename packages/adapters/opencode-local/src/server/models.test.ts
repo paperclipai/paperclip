@@ -223,10 +223,11 @@ describe("openCode models", () => {
       id: "openrouter/deepseek/deepseek-v4-flash-0731",
       label: "openrouter/deepseek/deepseek-v4-flash-0731",
     });
-    // V2 dropped `models --refresh`; every enumeration runs bare `models`.
+    // V2 dropped `models --refresh`; every enumeration runs `models` against a
+    // private server so it sees the same env as the run.
     expect(spy).toHaveBeenCalledTimes(3);
     for (const call of spy.mock.calls) {
-      expect(call[2]).toEqual(["models"]);
+      expect(call[2]).toEqual(["models", "--standalone"]);
     }
   });
 

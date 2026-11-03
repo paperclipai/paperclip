@@ -74,6 +74,16 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
 import { testEnvironment } from "./test.js";
 import { discoverOpenCodeModels, ensureOpenCodeModelConfiguredAndAvailable } from "./models.js";
 
+vi.mock("./version.js", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  const version = { version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true };
+  return {
+    ...actual,
+    probeOpenCodeCliVersion: vi.fn(async () => version),
+    probeOpenCodeCliVersionOnTarget: vi.fn(async () => version),
+  };
+});
+
 vi.mock("./models.js", async () => ({
   ...await vi.importActual<typeof import("./models.js")>("./models.js"),
   discoverOpenCodeModels: vi.fn().mockRejectedValue(new Error("catalog should not be needed")),
@@ -108,7 +118,7 @@ describe("opencode remote environment diagnostics", () => {
       expect(discoverOpenCodeModels).not.toHaveBeenCalled();
       expect(ensureOpenCodeModelConfiguredAndAvailable).not.toHaveBeenCalled();
       expect(runAdapterExecutionTargetProcess).toHaveBeenCalledExactlyOnceWith(
-        expect.any(String), null, "opencode", ["run", "--format", "json", "--model", "openrouter/deepseek/deepseek-v4-flash-0731", "--auto"],
+        expect.any(String), null, "opencode", ["run", "--format", "json", "--standalone", "--model", "openrouter/deepseek/deepseek-v4-flash-0731", "--auto"],
         expect.objectContaining({ stdin: "Respond with hello." }),
       );
       expect(result.status).toBe(outcome === "passed" ? "pass" : "warn");

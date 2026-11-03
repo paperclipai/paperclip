@@ -382,6 +382,7 @@ describe("OpenCode version guard", () => {
     extraEnv: Record<string, string> = {},
     extraConfig: Record<string, unknown> = {},
     runImpl?: (...args: unknown[]) => unknown,
+    runtime: Record<string, unknown> = {},
   ) {
     const commandPath = path.join(root, "opencode");
     await fs.writeFile(commandPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
@@ -396,7 +397,7 @@ describe("OpenCode version guard", () => {
     return execute({
       runId: "run-version-guard",
       agent: { id: "agent-1", companyId: "company-1", name: "OpenCode", adapterType: "opencode_local", adapterConfig: {} },
-      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null, ...runtime },
       config: {
         command: commandPath,
         cwd: root,
@@ -410,7 +411,10 @@ describe("OpenCode version guard", () => {
   }
 
   function lastExecutionArgs(): string[] {
-    return (runProcessMock.mock.calls.at(-1)?.[3] ?? []) as string[];
+    const runCall = runProcessMock.mock.calls
+      .filter((call) => Array.isArray(call[3]) && call[3].includes("run"))
+      .at(-1);
+    return (runCall?.[3] ?? []) as string[];
   }
 
   it("fails fast with an actionable message when OpenCode's major version is unsupported", async () => {
@@ -441,25 +445,13 @@ describe("OpenCode version guard", () => {
     expect(args).not.toContain("--variant");
   });
 
-  it("uses a standalone server when a run projects provider config", async () => {
+  it("uses a private server for every V2 run", async () => {
     versionProbeMock.mockResolvedValue({ version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true });
-    await callExecute({ OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: {} }) });
+    await callExecute();
     expect(lastExecutionArgs()).toContain("--standalone");
   });
 
-  it("uses a standalone server on Windows V2 so the UTF-8 shell plugin loads", async () => {
-    versionProbeMock.mockResolvedValue({ version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true });
-    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
-    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-    try {
-      await callExecute();
-    } finally {
-      if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
-    }
-    expect(lastExecutionArgs()).toContain("--standalone");
-  });
-
-  it("keeps the shared OpenCode service when no provider config is projected", async () => {
+  it("uses a private server for a V2 run even without projected provider config", async () => {
     versionProbeMock.mockResolvedValue({ version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true });
     const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
     Object.defineProperty(process, "platform", { value: "linux", configurable: true });
@@ -468,13 +460,108 @@ describe("OpenCode version guard", () => {
     } finally {
       if (originalPlatform) Object.defineProperty(process, "platform", originalPlatform);
     }
-    expect(lastExecutionArgs()).not.toContain("--standalone");
+    expect(lastExecutionArgs()).toContain("--standalone");
   });
 
   it("never passes --standalone to OpenCode V1", async () => {
     versionProbeMock.mockResolvedValue({ version: "1.18.34", major: 1, minor: 18, patch: 34, supported: true });
     await callExecute({ OPENCODE_CONFIG_CONTENT: JSON.stringify({ provider: {} }) });
     expect(lastExecutionArgs()).not.toContain("--standalone");
+  });
+
+  it("does not retry an unknown V2 session because V2 creates it instead", async () => {
+    versionProbeMock.mockResolvedValue({ version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true });
+    let runCalls = 0;
+    const result = await callExecute(
+      {},
+      {},
+      (_runId, _target, _command, args) => {
+        const argv = args as string[];
+        if (argv.includes("run")) {
+          runCalls += 1;
+          return probeResult({
+            stdout: JSON.stringify({ type: "error", sessionID: "ses_v2", error: "unknown session" }),
+          });
+        }
+        return probeResult({ stdout: "" });
+      },
+      { sessionId: "previous", sessionParams: { sessionId: "previous" } },
+    );
+    expect(runCalls).toBe(1);
+    expect(result.errorMessage).toContain("unknown session");
+  });
+
+  it("reconciles V2 usage from the session record when step_finish is missing", async () => {    versionProbeMock.mockResolvedValue({ version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true });
+    const result = await callExecute(
+      {},
+      {},
+      (_runId, _target, _command, args) => {
+        const argv = args as string[];
+        if (argv.includes("run")) {
+          return probeResult({
+            stdout: JSON.stringify({ type: "text", sessionID: "ses_usage", part: { text: "done" } }),
+          });
+        }
+        if (argv.includes("api")) {
+          return probeResult({
+            stdout: JSON.stringify({
+              data: {
+                cost: 0.5,
+                tokens: { input: 10, output: 2, reasoning: 1, cache: { read: 3, write: 4 } },
+              },
+            }),
+          });
+        }
+        return probeResult({ stdout: "" });
+      },
+    );
+    expect(result.costUsd).toBe(0.5);
+    expect(result.usageComplete).toBe(true);
+    expect(result.usage).toEqual({
+      inputTokens: 14,
+      cachedInputTokens: 3,
+      outputTokens: 3,
+    });
+  });
+
+  it("prefers the V2 session record even when stdout already reports step usage", async () => {
+    versionProbeMock.mockResolvedValue({ version: "2.0.26", major: 2, minor: 0, patch: 26, supported: true });
+    const result = await callExecute(
+      {},
+      {},
+      (_runId, _target, _command, args) => {
+        const argv = args as string[];
+        if (argv.includes("run")) {
+          return probeResult({
+            stdout: [
+              JSON.stringify({
+                type: "step_finish",
+                sessionID: "ses_complete",
+                part: { cost: 0.01, tokens: { input: 1, output: 1 } },
+              }),
+              JSON.stringify({ type: "text", sessionID: "ses_complete", part: { text: "done" } }),
+            ].join("\n"),
+          });
+        }
+        if (argv.includes("api")) {
+          return probeResult({
+            stdout: JSON.stringify({
+              data: {
+                cost: 0.25,
+                tokens: { input: 100, output: 20, reasoning: 5, cache: { read: 7, write: 8 } },
+              },
+            }),
+          });
+        }
+        return probeResult({ stdout: "" });
+      },
+    );
+    expect(result.costUsd).toBe(0.25);
+    expect(result.usage).toEqual({
+      inputTokens: 108,
+      cachedInputTokens: 7,
+      outputTokens: 25,
+    });
   });
 
   it.each(["1.18.34", "2.0.26"])("auto-approves permissions on the run by default (%s)", async (version) => {

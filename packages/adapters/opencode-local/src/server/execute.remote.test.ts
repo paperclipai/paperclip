@@ -285,7 +285,7 @@ describe("opencode remote execution", () => {
     const modelProbeCall = runChildProcess.mock.calls.find((entry) => Array.isArray(entry[2]) && entry[2].includes("models")) as
       | [string, string, string[], { env: Record<string, string>; remoteExecution?: { remoteCwd: string } | null }]
       | undefined;
-    expect(modelProbeCall?.[2]).toEqual(["models"]);
+    expect(modelProbeCall?.[2]).toEqual(["models", "--standalone"]);
     // The model probe runs after the runtime workspace is prepared (so XDG
     // points at the managed subdirectory) but the SSH session targets the
     // original target remoteCwd — the per-run subdirectory is layered

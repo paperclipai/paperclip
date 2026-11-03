@@ -56,6 +56,11 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { isOpenCodeUnknownSessionError, parseOpenCodeJsonl, createOpenCodeJsonlParser } from "./parse.js";
 import {
+  parseOpenCodeSessionTotals,
+  subtractOpenCodeSessionTotals,
+  type OpenCodeSessionTotals,
+} from "./session-usage.js";
+import {
   ensureOpenCodeModelConfiguredAndAvailable,
   isTruthyEnvFlag,
   parseOpenCodeModelsOutput,
@@ -109,6 +114,7 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
   env: Record<string, string>;
   timeoutSec: number;
   graceSec: number;
+  openCodeV2?: boolean;
 }) {
   const model = requireOpenCodeModelId(input.model);
 
@@ -133,7 +139,7 @@ export async function ensureRemoteOpenCodeModelConfiguredAndAvailable(input: {
     input.runId,
     input.executionTarget,
     input.command,
-    ["models"],
+    ["models", ...(input.openCodeV2 ? ["--standalone"] : [])],
     {
       cwd: input.cwd,
       env: input.env,
@@ -538,6 +544,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         env: preparedRuntimeConfig.env,
         timeoutSec,
         graceSec,
+        openCodeV2: usesOpenCodeV2Cli(openCodeCliVersion),
       });
     }
     const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
@@ -691,17 +698,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     );
     const buildArgs = (resumeSessionId: string | null) => {
       const args = ["run", "--format", "json"];
-      // A projected AI connection arrives only through env. OpenCode's shared
-      // background service was started without that env, so it answers
-      // `provider.no-route` ("Model unavailable") for the projected provider.
-      // A standalone server inherits the run env and resolves it correctly.
-      // Windows also needs a standalone server so the per-run UTF-8 shell
-      // plugin (loaded from XDG_CONFIG_HOME) actually applies.
-      if (
-        openCodeV2 &&
-        (env.OPENCODE_CONFIG_CONTENT || env.OPENCODE_CONFIG ||
-          (!executionTargetIsRemote && process.platform === "win32"))
-      ) {
+      // Every V2 run gets a private server. Without `--standalone`, OpenCode
+      // routes run/models through its shared background service, which keeps
+      // the env, XDG paths, and project config of whichever process started it.
+      // That leaks credentials and per-run settings between agents, and makes
+      // the projected provider config (`provider.no-route`) and the Windows
+      // per-run UTF-8 shell plugin unreliable. V1 has no such flag.
+      if (openCodeV2) {
         args.push("--standalone");
       }
       if (printLogs) args.push("--print-logs");
@@ -727,7 +730,40 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
     // Remote targets receive only the prepared environment, never host keys.
     const accountingEnv = executionTargetIsRemote ? preparedRuntimeConfig.env : runtimeEnv;
+    // OpenCode 2 can omit the final `step_finish` from `run --format json`, so
+    // stdout usage under-reports the turn. Reconcile against the session record
+    // the server keeps. Best-effort: any failure keeps the stdout accounting.
+    const readSessionTotals = async (
+      sessionId: string,
+    ): Promise<OpenCodeSessionTotals | null> => {
+      if (!openCodeV2) return null;
+      try {
+        const result = await runAdapterExecutionTargetProcess(
+          runId,
+          runtimeExecutionTarget,
+          command,
+          ["--standalone", "api", "GET", `/api/session/${encodeURIComponent(sessionId)}`],
+          {
+            cwd: effectiveExecutionCwd,
+            env: preparedRuntimeConfig.env,
+            timeoutSec: timeoutSec > 0 ? Math.min(timeoutSec, 30) : 30,
+            graceSec,
+            onLog: async () => {},
+          },
+        );
+        if ((result.exitCode ?? 1) !== 0) return null;
+        return parseOpenCodeSessionTotals(result.stdout);
+      } catch {
+        return null;
+      }
+    };
     const runAttempt = async (resumeSessionId: string | null) => {
+      // The session record is cumulative. Snapshot it before a resumed turn so
+      // the post-run reconciliation reports this attempt only. A failed
+      // snapshot disables reconciliation rather than reporting the whole
+      // session total twice.
+      const usageBaseline = resumeSessionId ? await readSessionTotals(resumeSessionId) : null;
+      const usageBaselineKnown = !resumeSessionId || usageBaseline !== null;
       await hydrateFreshSessionHandoff(ctx, { resumedSession: Boolean(resumeSessionId) });
       const { basePrompt, promptMetrics } = buildPrompt(Boolean(resumeSessionId));
       const prompt = joinPromptSections([
@@ -840,6 +876,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         parsed.usageReported = retained.usageReported;
         parsed.usageComplete = retained.usageComplete;
         parsed.costUsd = retained.costUsd;
+      }
+      // Reconcile every V2 run. V2 can drop the final `step_finish` while the
+      // tool-step records make stdout look complete, so an "already complete"
+      // stdout total can still be short. The session record is authoritative.
+      if (openCodeV2 && usageBaselineKnown) {
+        const accountingSessionId = parsed.sessionId ?? resumeSessionId;
+        if (accountingSessionId) {
+          const totals = await readSessionTotals(accountingSessionId);
+          if (totals) {
+            const runTotals = subtractOpenCodeSessionTotals(totals, usageBaseline);
+            parsed.usage = runTotals.usage;
+            parsed.usageReported = true;
+            parsed.usageComplete = true;
+            parsed.costUsd = runTotals.costUsd;
+          }
+        }
       }
       // OpenCode 2.x can exit non-zero after it already streamed the final
       // assistant answer. Record the last JSONL record type so the result can
@@ -983,6 +1035,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       const initialFailed =
         !initial.proc.timedOut && ((initial.proc.exitCode ?? 0) !== 0 || Boolean(initial.parsed.errorMessage));
       if (
+        !openCodeV2 &&
         sessionId &&
         initialFailed &&
         isOpenCodeUnknownSessionError(initial.proc.stdout, initial.rawStderr)
