@@ -4,6 +4,14 @@ Product map: [Recovery](../feature-map/recovery.md).
 
 Feature ID: `recovery`.
 
+Pre-native graceful-shutdown preparation recovery is server-owned. It derives
+eligibility from the exact terminal controller claim and checks independent
+remote stop and saved-file receipts. Missing native input grants no authority.
+Continuation uses the existing bounded retry and current access, budget,
+Pause/Stop and task-ownership gates. This adds no agent endpoint, native
+acknowledgement, provider result or cost receipt. Local database and shared-worker
+tests establish only their tested contracts, not hosted rollover acceptance.
+
 Fresh native retry session publication remains server-owned. Goal source
 replacement requires the current task execution lock and assignee, a terminal
 predecessor, and an absent or completed saved goal. It grants no agent API or

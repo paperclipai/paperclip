@@ -9,7 +9,8 @@ import { isPreDispatchExecutionWaitVerified } from "./pre-dispatch-execution-wai
 import { heartbeatRunEvents } from "@paperclipai/db";
 import { createHeartbeatQueue, shouldDeferFollowupWakeForSameIssue, shouldQueueFollowupForRunningIssueWake } from "./heartbeat/queue.js";
 import { createHeartbeatQueueTestDependencies } from "../__tests__/helpers/heartbeat-queue.js";
-import { recordRequiredWorkspaceRestoreFailure, terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
+import { legacyExecutionNeedsReconciliationWithEvidence, recordRequiredWorkspaceRestoreFailure, settleInterruptedNativeBootstrap, terminalizeLegacyExecution } from "./legacy-execution-recovery.js";
+import { LEGACY_PREPARATION_FENCING_VERSION, legacyControllerClaim } from "./legacy-controller-lease.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 import { withQueuedCommentIdsInWakePayload } from "./issue-queued-comment-queue.js";
 import * as recoverySources from "./workspace-recovery-source.js";
@@ -346,6 +347,7 @@ describe("automatic retained workspace recovery", () => {
     { status: "cancelled", runtimeMode: "native", scenario: "none" },
     { status: "failed", runtimeMode: "legacy", scenario: "final" },
     { status: "failed", runtimeMode: "legacy", scenario: "initial" },
+    { status: "interrupted", runtimeMode: "legacy", scenario: "shutdown" },
   ] as const)("saves the authoritative remote workspace after $runtimeMode $status without replaying a turn or certifying external effects ($scenario)", async ({ status, runtimeMode, scenario }) => {
     const f = await seed(runtimeMode, false);
     let retryRequestId: string | undefined;
@@ -409,6 +411,18 @@ describe("automatic retained workspace recovery", () => {
         nativeCancellation: { dispatchState: "acknowledged", requestedAt: new Date().toISOString() },
       } : {}) },
     }).where(eq(heartbeatRuns.id, f.runId));
+    if (scenario === "shutdown") {
+      // The assembled heartbeat regression covers the real graceful-shutdown
+      // producer. This fixture exercises its independent remote-file barrier.
+      await db.update(heartbeatRuns).set({ ...legacyControllerClaim("legacy"),
+        startedAt: before.createdAt,
+        controllerLeaseExpiresAt: new Date(Date.now() - 1000), errorCode: "server_shutdown_interrupted",
+        runnerProfileJson: { ...(await run(f.runId)).runnerProfileJson, adapterDispatch: {
+          adapterType: "paperclip_runner", preparationFencingVersion: LEGACY_PREPARATION_FENCING_VERSION } },
+      }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await settleInterruptedNativeBootstrap(db, { run: await run(f.runId),
+        providerDispatchStarted: false, recoverStoppedPreparation: true })).toBeNull();
+    }
     await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: { ...authority, epoch: authority.epoch + 1 } } })
       .where(eq(executionWorkspaces.id, workspaceId));
     await expect(recoverySources.inspectWorkspaceRecoverySource(db, f.input)).rejects.toMatchObject({ code: "source_binding_invalid" });
@@ -458,7 +472,7 @@ describe("automatic retained workspace recovery", () => {
         epoch: authority.epoch, snapshotId: authority.snapshotId });
       expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
       expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
-      if (scenario === "final") await makeRetryDue(f.actionId);
+      if (scenario === "final" || scenario === "shutdown") await makeRetryDue(f.actionId);
     }
     if (scenario.startsWith("registration")) {
       await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
@@ -509,9 +523,9 @@ describe("automatic retained workspace recovery", () => {
     expect(saved).toMatchObject({ dirty: false, writerRunId: null });
     expect(saved?.snapshotId).toBeTruthy();
     const snapshots = await db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.executionWorkspaceId, workspaceId));
-    expect(snapshots).toHaveLength(runtimeMode === "legacy" ? 2 : 1);
+    expect(snapshots).toHaveLength(runtimeMode === "legacy" && scenario !== "shutdown" ? 2 : 1);
     expect(snapshots.find(snapshot => snapshot.id === saved!.snapshotId))
-      .toMatchObject({ status: "committed", sourceRunId: f.runId, generation: runtimeMode === "legacy" ? 2 : 1 });
+      .toMatchObject({ status: "committed", sourceRunId: f.runId, generation: runtimeMode === "legacy" && scenario !== "shutdown" ? 2 : 1 });
     const extracted = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId, snapshotId: saved!.snapshotId! });
     try {
       expect(await readFile(path.join(extracted.root, "saved.txt"), "utf8")).toBe("finished work\n");
@@ -520,7 +534,8 @@ describe("automatic retained workspace recovery", () => {
     }
     finally { await extracted.cleanup(); }
     expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
-    expect(await run(f.runId)).toMatchObject({ status, errorCode: scenario === "initial" ? "setup_failed" : "execution_interrupted",
+    expect(await run(f.runId)).toMatchObject({ status, errorCode: scenario === "initial" ? "setup_failed"
+      : scenario === "shutdown" ? "server_shutdown_interrupted" : "execution_interrupted",
       runnerProfileJson: { remoteWorkspace: { state: "saved", snapshotId: saved!.snapshotId } } });
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
       .toHaveLength(retryRequestId ? 1 : 0);
@@ -528,9 +543,28 @@ describe("automatic retained workspace recovery", () => {
     expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(0);
     expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, f.runId),
       eq(workspaceOperations.phase, "workspace_recovery_snapshot")))).toHaveLength(0);
-    expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(scenario === "final" ? 2 : 1);
+    expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(scenario === "final" || scenario === "shutdown" ? 2 : 1);
     expect(f.runtime.retryPendingSandboxTeardown).toHaveBeenCalledTimes(runtimeMode === "legacy" ? 2 : 1);
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
+    if (scenario === "shutdown") {
+      const current = await run(f.runId);
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      await db.update(environmentLeases).set({ metadata: { ...lease.metadata, remoteExecutionTermination: null } })
+        .where(eq(environmentLeases.id, f.lease.id));
+      expect(await settleInterruptedNativeBootstrap(db, { run: current, providerDispatchStarted: false,
+        recoverStoppedPreparation: true })).toBeNull();
+      await db.update(environmentLeases).set({ metadata: lease.metadata }).where(eq(environmentLeases.id, f.lease.id));
+      const settled = await settleInterruptedNativeBootstrap(db, { run: current, providerDispatchStarted: false,
+        recoverStoppedPreparation: true });
+      expect(settled).toMatchObject({ status: "interrupted", errorCode: "server_shutdown_interrupted",
+        resultJson: { workspaceRestoreFailure: "restore_failed", executionRecovery: {
+          proof: "terminal_preparation_claim_v1", workspaceRepairReceipt: expect.any(String),
+        } } });
+      expect(await legacyExecutionNeedsReconciliationWithEvidence(db, settled!)).toBe(false);
+      expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual([]);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId))).toEqual([]);
+      return;
+    }
     await scheduleRecoveredWorkspaceCleanup(db, await run(f.runId));
     const [settledLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
     if (retryRequestId) {

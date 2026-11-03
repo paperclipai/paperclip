@@ -32,6 +32,7 @@ import { inspectWorkspaceRecoverySource, workspaceRecoverySourceEligible, worksp
 import { preserveWorkspaceSnapshot } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries } from "./workspace-recovery-backfill.js";
 import { saveRemoteWorkspace } from "./remote-workspaces.js";
+import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
 
 const exportCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
 const terminal = ["failed", "interrupted", "timed_out", "cancelled", "succeeded"];
@@ -350,6 +351,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       const next = { ...current!, revision: current!.revision + 1, phase: "reconcile_effects" as const,
         state: "complete" as const, nextAttemptAt: null };
       const activity = await db.transaction(async tx => {
+        await notifyLiveRunRecovery(tx, { companyId: input.companyId, runId: input.runId });
         await notifyNativeResultCommit(tx, input);
         await notifyNativeWorkspaceFinalization(tx, input);
         await notifyNativeStatusReassessment(tx, input);

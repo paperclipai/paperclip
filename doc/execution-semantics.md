@@ -1119,6 +1119,26 @@ Paperclip now treats crash/restart recovery as a stranded-assigned-work problem,
 
 There are two distinct failure modes.
 
+Graceful shutdown can also interrupt Paperclip Runner before native selection.
+The server can continue that admitted preparation through its normal bounded
+retry path after the original executor leaves. It requires the exact durable
+`preparing` controller claim, an expired controller lease, and a terminal
+`server_shutdown_interrupted` row. Native selection and adapter dispatch both
+reject that terminal row. The fresh server claim must also carry its preparation
+fencing version in the frozen adapter dispatch snapshot. Recovery never adds
+this marker to unversioned historical claims or trusts an agent-supplied marker.
+Missing native input alone is insufficient. Native
+session, process, coordinator, dispatch, newer-owner, or exhausted-retry evidence
+keeps its existing recovery path.
+
+For a remote workspace, the exact allocation must have a confirmed stop and
+the host must verify the saved-file recovery receipt. A visible recovery message
+does not certify either fact. The source interruption and file-failure evidence
+remain intact. This classification adds no native acknowledgement, provider
+result, or cost receipt. The ordinary retry owner rechecks current Pause, Stop,
+task ownership, access and budget gates. Durable pending work survives a restart;
+settled history leaves the shared recovery worker quiet.
+
 ### 9.1 Stranded assigned `todo`
 
 Example:

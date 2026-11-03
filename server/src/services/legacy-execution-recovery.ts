@@ -11,7 +11,7 @@ import { normalizeMaxTurnStopReason } from "./heartbeat-stop-metadata.js";
 import { claimedAdapterType, hasConversationContinuationPolicy } from "./conversation-continuation.js";
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, getTableColumns, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, getTableColumns, gt, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { issueRecoveryActionService } from "./issue-recovery-actions.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
@@ -19,6 +19,10 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { logActivity } from "./activity-log.js";
 import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
+import { verifiedWorkspaceRepairReceipt } from "./workspace-recovery-receipt.js";
+import { hasConfirmedSandboxStopAndRetain } from "./sandbox-stop-and-retain.js";
+import { notifyLiveRunRecovery } from "./live-run-recovery-notifications.js";
+import { LEGACY_PREPARATION_FENCING_VERSION } from "./legacy-controller-lease.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
@@ -83,6 +87,12 @@ export function legacyExecutionNeedsReconciliation(
 /** Admission-wait receipts are only exempt after retained execution evidence agrees.
  * The synchronous classifier stays conservative for callers without a DB proof. */
 export async function legacyExecutionNeedsReconciliationWithEvidence(db: Db, run: Run): Promise<boolean> {
+  if (run.resultJson?.executionRecovery &&
+      (run.resultJson.executionRecovery as Record<string, unknown>).proof === "terminal_preparation_claim_v1" &&
+      terminalPreparationClaimMatches(run) && await stoppedPreparationFiles(db, run)) {
+    const { workspaceRestoreFailure: _failure, workspaceRestoreRecovery: _recovery, ...settled } = run.resultJson;
+    return legacyExecutionNeedsReconciliation({ ...run, resultJson: settled });
+  }
   return await hasUnrestoredRemoteWorkspace(db, run) ||
     (legacyExecutionNeedsReconciliation(run) && !(await isPreDispatchReviewWaitVerified(db, run))
       && !(await isPreDispatchExecutionWaitVerified(db, run)));
@@ -304,11 +314,60 @@ export async function terminalizeLegacyExecution(input: {
   });
 }
 
-/** Called only by the exact executor's finally block after preparation/cleanup
- * settles. A shutdown can win the terminal-status race before the setup catch
- * records that no provider started. Retire only that mistaken recovery hold. */
+/** Exact executors settle preparation in finally. Lost-owner recovery must
+ * independently verify the versioned terminal claim and stopped/saved files.
+ * A shutdown can win the status race before the setup catch records its result.
+ * Retire only the matching recovery hold; preserve the original interruption. */
+export function interruptedRunnerPreparationPending() {
+  return sql<boolean>`${heartbeatRuns.runtimeMode} = 'legacy' and ${heartbeatRuns.status} = 'interrupted'
+    and ${heartbeatRuns.errorCode} = 'server_shutdown_interrupted' and ${heartbeatRuns.executionStage} = 'preparing'
+    and ${heartbeatRuns.startedAt} is not null and ${heartbeatRuns.finishedAt} is not null
+    and ${heartbeatRuns.controllerBootId} is not null and ${heartbeatRuns.controllerLeaseExpiresAt} is not null
+    and ${heartbeatRuns.runtimeModeResolvedAt} is null and ${heartbeatRuns.processPid} is null
+    and ${heartbeatRuns.processGroupId} is null and ${heartbeatRuns.processStartedAt} is null
+    and ${heartbeatRuns.nativeSessionId} is null and ${heartbeatRuns.nativeIssueId} is null and ${heartbeatRuns.runnerInstanceId} is null
+    and ${heartbeatRuns.nativePhase} is null and ${heartbeatRuns.driverKind} is null and ${heartbeatRuns.driverVersion} is null
+    and ${heartbeatRuns.completionContractId} is null and ${heartbeatRuns.sessionIdAfter} is null
+    and (${heartbeatRuns.usageJson} is null or ${heartbeatRuns.usageJson} = '{}'::jsonb)
+    and coalesce(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted', '') <> 'true'
+    and ${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput' is null
+    and coalesce(${heartbeatRuns.scheduledRetryAttempt}, 0) < 2
+    and coalesce(${heartbeatRuns.resultJson}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
+    and ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->>'adapterType' = 'paperclip_runner'
+    and ${heartbeatRuns.runnerProfileJson}->'adapterDispatch'->'preparationFencingVersion' = ${JSON.stringify(LEGACY_PREPARATION_FENCING_VERSION)}::jsonb
+    and coalesce(${heartbeatRuns.resultJson}->'executionRecovery'->>'preparationContinuation', '') <> 'settled'
+    and not exists (select 1 from heartbeat_runs successor where successor.retry_of_run_id = ${heartbeatRuns.id})`;
+}
+
+function terminalPreparationClaimMatches(run: Run): boolean {
+  return run.runtimeMode === "legacy" && run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted"
+    && !!run.startedAt && !!run.finishedAt
+    && run.executionStage === "preparing" && !!run.controllerBootId && !!run.controllerLeaseExpiresAt
+    && run.controllerLeaseExpiresAt.getTime() <= Date.now() && !run.runtimeModeResolvedAt
+    && !run.processPid && !run.processGroupId && !run.processStartedAt && !run.nativeSessionId
+    && !run.nativeIssueId && !run.runnerInstanceId && !Object.hasOwn(run.runnerProfileJson ?? {}, "nativeExecutionInput")
+    && !run.nativePhase && !run.driverKind && !run.driverVersion && !run.completionContractId && !run.sessionIdAfter
+    && (!run.usageJson || (typeof run.usageJson === "object" && !Array.isArray(run.usageJson) && Object.keys(run.usageJson).length === 0))
+    && (run.resultJson?.executionRecovery as Record<string, unknown> | undefined)?.providerWorkStarted !== true
+    && claimedAdapterType(run) === "paperclip_runner"
+    && (run.runnerProfileJson?.adapterDispatch as Record<string, unknown> | undefined)?.preparationFencingVersion === LEGACY_PREPARATION_FENCING_VERSION
+    && run.resultJson?.workspaceRestoreFailure !== "restore_unsafe_archive";
+}
+
+async function stoppedPreparationFiles(db: Db, run: Run, lock = false): Promise<{ repairReceipt: string | null } | null> {
+  const query = db.select().from(environmentLeases).where(and(
+    eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+  ));
+  const leases = await (lock ? query.for("update") : query);
+  if (!leases.length && !hasWorkspaceRestoreFailure(run.resultJson)
+      && !run.runnerProfileJson?.remoteWorkspace && !run.runnerProfileJson?.nativeWorkspaceSync) return { repairReceipt: null };
+  if (!leases.length || !leases.every(hasConfirmedSandboxStopAndRetain)) return null;
+  const repairReceipt = await verifiedWorkspaceRepairReceipt(db, run);
+  return repairReceipt ? { repairReceipt } : null;
+}
+
 export async function settleInterruptedNativeBootstrap(
-  db: Db, input: { run: Run; providerDispatchStarted: boolean },
+  db: Db, input: { run: Run; providerDispatchStarted: boolean; recoverStoppedPreparation?: boolean },
 ): Promise<Run | null> {
   if (input.providerDispatchStarted) return null;
   const issueId = input.run.contextSnapshot?.issueId;
@@ -316,17 +375,40 @@ export async function settleInterruptedNativeBootstrap(
   return db.transaction(async tx => {
     const [task] = await tx.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, input.run.companyId))).for("update");
     const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, input.run.id), eq(heartbeatRuns.companyId, input.run.companyId))).for("update");
+    if (!input.recoverStoppedPreparation &&
+        (run?.resultJson?.executionRecovery as Record<string, unknown> | undefined)?.proof === "terminal_preparation_claim_v1") return null;
     if (!task || !run || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt ||
         run.contextSnapshot?.issueId !== task.id ||
         run.status !== "interrupted" || run.errorCode !== "server_shutdown_interrupted" ||
         claimedAdapterType(run) !== "paperclip_runner" || run.processPid || run.processGroupId ||
-        hasWorkspaceRestoreFailure(run.resultJson) || executionFailureRetryCount(run) >= 2) return null;
+        (!input.recoverStoppedPreparation && hasWorkspaceRestoreFailure(run.resultJson)) || executionFailureRetryCount(run) >= 2) return null;
     const [native] = await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)).limit(1);
     const [lease] = await tx.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
       or(isNull(environmentLeases.releasedAt), eq(environmentLeases.status, "pending_cleanup"), eq(environmentLeases.cleanupStatus, "failed")),
     )).limit(1);
     if (native || lease) return null;
+    let workspaceRepairReceipt: string | null = null;
+    if (input.recoverStoppedPreparation) {
+      // The terminal row fences both native selection and the legacy dispatch
+      // renewal. Missing native input alone is never a no-dispatch proof.
+      if (!terminalPreparationClaimMatches(run) || task.assigneeAgentId !== run.agentId
+          || isSupersededConversationRun(task, run)
+          || (task.executionRunId && task.executionRunId !== run.id)
+          || (task.checkoutRunId && task.checkoutRunId !== run.id)
+          || (run.resultJson?.executionRecovery as Record<string, unknown> | undefined)?.preparationContinuation === "settled") return null;
+      const files = await stoppedPreparationFiles(tx as unknown as Db, run, true);
+      if (!files) return null;
+      workspaceRepairReceipt = files.repairReceipt;
+      const [newer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+        eq(heartbeatRuns.companyId, run.companyId), sql`${heartbeatRuns.id} <> ${run.id}`,
+        sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${task.id}`,
+        gt(heartbeatRuns.createdAt, run.createdAt),
+      )).limit(1);
+      if (newer) return null;
+      if ((run.resultJson?.executionRecovery as Record<string, unknown> | undefined)?.proof === "terminal_preparation_claim_v1"
+          && (run.resultJson?.executionRecovery as Record<string, unknown> | undefined)?.preparationContinuation === "pending") return run;
+    }
     const holds = await tx.select().from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, task.id),
       eq(issueRecoveryActions.cause, LEGACY_RECOVERY_CAUSE), eq(issueRecoveryActions.fingerprint, `legacy-execution:${run.id}`),
@@ -350,8 +432,12 @@ export async function settleInterruptedNativeBootstrap(
       await issueService(tx as unknown as Db).update(task.id, { status: String(ownedBlock.previousStatus) }, tx);
     }
     const now = new Date();
+    if (input.recoverStoppedPreparation) await notifyLiveRunRecovery(tx, { companyId: run.companyId, runId: run.id });
     const [settled] = await tx.update(heartbeatRuns).set({ resultJson: { ...run.resultJson,
-      executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString() },
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false, preparationSettledAt: now.toISOString(),
+        ...(input.recoverStoppedPreparation ? { proof: "terminal_preparation_claim_v1", preparationContinuation: "pending",
+          ...(workspaceRepairReceipt ? { workspaceRepairReceipt } : {}) } : {}),
+      },
     }, updatedAt: now }).where(eq(heartbeatRuns.id, run.id)).returning();
     if (holds.length) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: task.companyId, issueId: task.id });
     const resolved = holds.length ? await tx.update(issueRecoveryActions).set({ status: "resolved", outcome: "false_positive",

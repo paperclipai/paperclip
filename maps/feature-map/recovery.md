@@ -25,6 +25,12 @@ Agent access: [companion](../agent-access-map/recovery.md).
   Restart recovery respects live heartbeat preparation before workspace
   synchronization finishes. PostgreSQL regressions cover unchanged ownership,
   no duplicate dispatch, and later recovery after preparation leaves the registry.
+  A graceful interruption before native selection can continue through the
+  bounded retry owner after its exact terminal preparation claim is verified.
+  Remote files require separate exact stop and saved-file receipts. Local
+  PostgreSQL regressions cover concurrent recovery, Pause/Stop and ownership
+  denials, restart reconstruction, and quiet settled history. Hosted rollover
+  acceptance remains separate.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
 - `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.

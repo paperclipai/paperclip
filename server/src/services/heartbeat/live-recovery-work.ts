@@ -6,6 +6,7 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { DELIVERY_QUEUES, type DeliveryQueue } from "../delivery-work-notifications.js";
 import type { LiveResourceRecoveryScope, LiveRunRecoveryScope } from "../live-run-recovery-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
+import { interruptedRunnerPreparationPending } from "../legacy-execution-recovery.js";
 
 const TERMINAL = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
 type Scope = LiveRunRecoveryScope & LiveResourceRecoveryScope;
@@ -61,6 +62,7 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
           }));
         } else {
           const candidates = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
+            status: heartbeatRuns.status, controllerLeaseExpiresAt: heartbeatRuns.controllerLeaseExpiresAt,
             nextAttemptAt: nativeRunFinalizations.nextAttemptAt, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt })
             .from(heartbeatRuns).leftJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.runId, heartbeatRuns.id),
               eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId)))
@@ -73,7 +75,7 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
                 : kind === "question" ? and(or(inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
                     pendingFailedNativeRetryCancellationCondition()),
                   sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is not null`)
-                  : kind === "active" ? and(eq(heartbeatRuns.status, "running"),
+                  : kind === "active" ? and(or(eq(heartbeatRuns.status, "running"), interruptedRunnerPreparationPending()),
                     sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null`)
                     : and(eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["failed", "cancelled", "timed_out", "interrupted"]),
                       isNotNull(heartbeatRuns.finishedAt), or(isNotNull(heartbeatRuns.processPid),
@@ -81,7 +83,8 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
                       settledNativeProcessIdentityCondition(db)),
             )).orderBy(asc(heartbeatRuns.id)).limit(100);
           rows = candidates.map(row => ({ id: row.id, companyId: row.companyId, dueAt: kind === "native"
-            ? Math.max(Date.now(), row.nextAttemptAt?.getTime() ?? 0, row.leaseExpiresAt?.getTime() ?? 0) : Date.now() }));
+            ? Math.max(Date.now(), row.nextAttemptAt?.getTime() ?? 0, row.leaseExpiresAt?.getTime() ?? 0)
+            : kind === "active" && row.status === "interrupted" ? Math.max(Date.now(), row.controllerLeaseExpiresAt?.getTime() ?? 0) : Date.now() }));
         }
         const complete = rows.length < 100;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);

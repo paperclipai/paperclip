@@ -18,12 +18,14 @@ import * as environmentOrchestrator from "../services/environment-run-orchestrat
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { legacyDispositionFingerprint, LEGACY_DISPOSITION_REPAIR_INSTRUCTION } from "../services/recovery/legacy-continuation.js";
 import * as controllerLeases from "../services/legacy-controller-lease.js";
+import { createHeartbeatQueue } from "../services/heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "./helpers/heartbeat-queue.js";
 import * as instructionWorkingCopies from "../services/agent-instruction-working-copies.js";
 import * as runEvents from "../services/heartbeat-run-events.js";
 import { waitForPendingRunFailureReports } from "../services/run-failure-report.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createHash, randomUUID } from "node:crypto";
-import { recordLegacyWorkspaceRestoreFailure, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
+import { recordLegacyWorkspaceRestoreFailure, settleInterruptedNativeBootstrap, terminalizeLegacyExecution } from "../services/legacy-execution-recovery.js";
 import { issueService } from "../services/issues.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
@@ -3529,6 +3531,135 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(issueRecoveryActions.sourceIssueId, issueId))).toEqual([]);
     expect(mockAdapterExecute).not.toHaveBeenCalled();
   });
+
+  async function seedInterruptedRunnerPreparation(reclaimed = false) {
+    const fixture = await seedRunFixture({
+      adapterType: "paperclip_runner", agentStatus: "idle", runtimeMode: "legacy", runStatus: "queued",
+    });
+    const { runId } = fixture;
+    // Exercise the actual SQL claim producer. Its committed claim outlives a
+    // controller lost before invoking the executor callback. Conflicting input
+    // cannot supply the server-owned dispatch snapshot or fencing version.
+    await db.update(heartbeatRuns).set({
+      ...(!reclaimed ? { startedAt: null } : {}),
+      runnerProfileJson: { adapterDispatch: { adapterType: "process", preparationFencingVersion: 999 } },
+    }).where(eq(heartbeatRuns.id, runId));
+    const deps = createHeartbeatQueueTestDependencies(db);
+    deps.getAgent.mockResolvedValue((await db.select().from(agents).where(eq(agents.id, fixture.agentId)))[0]);
+    const queued = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0];
+    expect(await createHeartbeatQueue(db, deps).claimQueuedRun(queued)).toMatchObject({ id: runId, status: "running" });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+    const shutdown = await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
+    expect(shutdown.interruptedRunIds).toContain(runId);
+    expect(adapterExecutionControls.has(runId)).toBe(false);
+    // The old owner is gone. Expiry is not a provider receipt; the terminal
+    // row plus its durable preparing claim fences any late dispatch.
+    await db.update(heartbeatRuns).set({
+      controllerLeaseExpiresAt: sql`clock_timestamp() - interval '1 second'`,
+    }).where(eq(heartbeatRuns.id, runId));
+    return fixture;
+  }
+
+  it("recovers admitted Runner preparation after graceful shutdown loses its executor", async () => {
+    const { companyId, runId } = await seedInterruptedRunnerPreparation();
+    await heartbeatService(db).reapOrphanedRuns();
+    const retries = await db.select().from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId),
+    ));
+    expect(retries).toEqual([expect.objectContaining({ status: "scheduled_retry" })]);
+    expect(await heartbeatService(db).getRun(runId)).toMatchObject({
+      status: "interrupted", errorCode: "server_shutdown_interrupted",
+    });
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+  it("does not backfill a preparation fence when an already-started historical run is claimed again", async () => {
+    const { runId } = await seedInterruptedRunnerPreparation(true);
+    await heartbeatService(db).reapOrphanedRuns();
+    expect((await heartbeatService(db).getRun(runId))?.runnerProfileJson?.adapterDispatch)
+      .toEqual({ adapterType: "paperclip_runner" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toEqual([]);
+  });
+
+  it("serializes interrupted preparation continuation and leaves completed history quiet", async () => {
+    const { companyId, runId } = await seedInterruptedRunnerPreparation();
+    await Promise.all([heartbeatService(db).reapOrphanedRuns(), heartbeatService(db).reapOrphanedRuns()]);
+    await heartbeatService(db).reapOrphanedRuns();
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.retryOfRunId, runId)))).toHaveLength(1);
+    expect((await heartbeatService(db).getRun(runId))?.resultJson?.executionRecovery).toMatchObject({
+      proof: "terminal_preparation_claim_v1", preparationContinuation: "settled",
+    });
+    const settled = (await heartbeatService(db).getRun(runId))!;
+    expect(await settleInterruptedNativeBootstrap(db, { run: settled, providerDispatchStarted: false })).toBeNull();
+    expect((await heartbeatService(db).getRun(runId))?.resultJson).toEqual(settled.resultJson);
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
+
+  it("retains interrupted preparation continuation across a crash after proof persistence", async () => {
+    const { runId, companyId } = await seedInterruptedRunnerPreparation();
+    const run = (await heartbeatService(db).getRun(runId))!;
+    await expect(db.transaction(async tx => {
+      expect(await settleInterruptedNativeBootstrap(tx as unknown as ReturnType<typeof createDb>, { run, providerDispatchStarted: false,
+        recoverStoppedPreparation: true })).not.toBeNull();
+      throw new Error("synthetic_outer_rollback");
+    })).rejects.toThrow("synthetic_outer_rollback");
+    expect((await heartbeatService(db).getRun(runId))?.resultJson?.executionRecovery).toBeUndefined();
+    expect(await settleInterruptedNativeBootstrap(db, { run, providerDispatchStarted: false,
+      recoverStoppedPreparation: true })).toMatchObject({ resultJson: { executionRecovery: { preparationContinuation: "pending" } } });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, runId))).toEqual([]);
+    await heartbeatService(db).reapOrphanedRuns();
+    expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+      eq(heartbeatRuns.retryOfRunId, runId)))).toHaveLength(1);
+  });
+
+  it.each(["claim-missing", "unfenced", "context-fence", "wrong-fence", "dispatching", "unexpired", "native-input", "null-native-input", "native-selected", "native-coordinator",
+    "process-pid", "process-start", "native-phase", "post-session", "usage", "provider-started", "other-adapter", "live-owner", "active-lease", "released-without-stop",
+    "unverified-file-repair", "unsafe-files", "retry-exhausted", "user-stop", "pause", "reassignment", "newer-run", "newer-native-run"])(
+    "retains interrupted preparation safety for %s", async kind => {
+      const { companyId, runId, issueId, agentId } = await seedInterruptedRunnerPreparation();
+      const claimProfile = (await heartbeatService(db).getRun(runId))!.runnerProfileJson;
+      const patch: Partial<typeof heartbeatRuns.$inferInsert> = kind === "claim-missing" ? { controllerBootId: null }
+        : kind === "unfenced" ? { runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } } }
+        : kind === "context-fence" ? { runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+          contextSnapshot: { issueId, adapterDispatch: { adapterType: "paperclip_runner", preparationFencingVersion: 1 } } }
+        : kind === "wrong-fence" ? { runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner", preparationFencingVersion: 999 } } }
+        : kind === "dispatching" ? { executionStage: "dispatching" }
+        : kind === "unexpired" ? { controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }
+        : kind === "native-input" ? { runnerProfileJson: { ...claimProfile, nativeExecutionInput: { persisted: true } } }
+        : kind === "null-native-input" ? { runnerProfileJson: { ...claimProfile, nativeExecutionInput: null } }
+        : kind === "native-selected" ? { runtimeMode: "native", runtimeModeResolvedAt: new Date() }
+        : kind === "native-coordinator" ? { nativeIssueId: issueId }
+        : kind === "process-pid" ? { processPid: 999999 }
+        : kind === "process-start" ? { processStartedAt: new Date() }
+        : kind === "native-phase" ? { nativePhase: "observed" }
+        : kind === "post-session" ? { sessionIdAfter: "provider-session" }
+        : kind === "usage" ? { usageJson: { inputTokens: 1 } }
+        : kind === "provider-started" ? { resultJson: { executionRecovery: { providerWorkStarted: true } } }
+        : kind === "other-adapter" ? { runnerProfileJson: { adapterDispatch: { adapterType: "process" } } }
+        : kind === "unsafe-files" ? { resultJson: { workspaceRestoreFailure: "restore_unsafe_archive" } }
+        : kind === "unverified-file-repair" ? { resultJson: { workspaceRestoreFailure: "restore_failed" } }
+        : kind === "retry-exhausted" ? { scheduledRetryAttempt: 2 }
+        : kind === "user-stop" ? { status: "cancelled", errorCode: "cancelled" } : {};
+      if (Object.keys(patch).length) await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, runId));
+      if (kind === "native-coordinator") await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "observed" });
+      if (kind === "pause") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+      if (kind === "reassignment") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, issueId));
+      if (kind === "newer-run") await db.insert(heartbeatRuns).values({ companyId, agentId, issueId,
+        contextSnapshot: { issueId }, status: "succeeded", createdAt: new Date(Date.now() + 1000) });
+      if (kind === "newer-native-run") await db.insert(heartbeatRuns).values({ companyId, agentId, nativeIssueId: issueId,
+        runtimeMode: "native", status: "succeeded", createdAt: new Date(Date.now() + 1000) });
+      if (["active-lease", "released-without-stop", "unverified-file-repair"].includes(kind)) await db.insert(environmentLeases).values({
+        companyId, heartbeatRunId: runId, ...(kind !== "active-lease" ? { status: "released", cleanupStatus: "succeeded", releasedAt: new Date() } : {}),
+      });
+      const control = kind === "live-owner" ? createAdapterExecutionControl() : null;
+      if (control) adapterExecutionControls.set(runId, control);
+      try { await heartbeatService(db).reapOrphanedRuns(); }
+      finally { control?.finish(); adapterExecutionControls.delete(runId); }
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.retryOfRunId, runId)))).toEqual([]);
+      expect(mockAdapterExecute).not.toHaveBeenCalled();
+    },
+  );
 
   it("keeps an orphaned legacy run that reached adapter dispatch held for reconciliation", async () => {
     const { companyId, runId, issueId } = await seedRestartOrphanedLegacySetup("dispatching");

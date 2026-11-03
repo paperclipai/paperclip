@@ -8,6 +8,19 @@ import type { LegacyControllerLeaseLossCause, LegacyControllerLeaseLossTiming } 
 export const legacyControllerBootId = randomUUID();
 export const LEGACY_CONTROLLER_LEASE_MS = 60_000;
 export const LEGACY_CONTROLLER_RENEW_MS = 10_000;
+export const LEGACY_PREPARATION_FENCING_VERSION = 1;
+
+/** Only a fresh claim by a controller with terminal native-selection fencing
+ * may certify preparation after that controller is gone. Never add this to an
+ * already running or terminal historical run during recovery. */
+export function claimedAdapterDispatch(adapterType: string) {
+  return sql`jsonb_build_object('adapterDispatch', jsonb_build_object('adapterType', ${adapterType}::text) ||
+    case when ${heartbeatRuns.status} = 'queued' and ${heartbeatRuns.runtimeMode} = 'legacy' and ${adapterType}::text = 'paperclip_runner'
+      and ${heartbeatRuns.startedAt} is null and ${heartbeatRuns.controllerBootId} is null
+      and ${heartbeatRuns.executionStage} is null and ${heartbeatRuns.runtimeModeResolvedAt} is null
+    then jsonb_build_object('preparationFencingVersion', ${LEGACY_PREPARATION_FENCING_VERSION}::integer)
+    else '{}'::jsonb end)`;
+}
 
 type Run = typeof heartbeatRuns.$inferSelect;
 

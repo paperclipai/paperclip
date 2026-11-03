@@ -32,7 +32,7 @@ import {
 } from "../legacy-controller-lease.js";
 import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { runUsedConversationAdapter } from "../conversation-continuation.js";
-import { legacyExecutionNeedsReconciliationWithEvidence, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { interruptedRunnerPreparationPending, legacyExecutionNeedsReconciliationWithEvidence, settleInterruptedNativeBootstrap, terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
 import { reconcileRetainedWorkspaces } from "../workspace-recovery.js";
 import { randomUUID } from "node:crypto";
 import os from "node:os";
@@ -2241,6 +2241,34 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     const now = new Date();
     const staleThresholdMs = options.staleThresholdMs ?? 5 * 60_000;
     const resumedRunIds = options.resumedRunIds ?? new Set<string>();
+    const interruptedPreparations = await db.select().from(heartbeatRuns).where(and(
+      interruptedRunnerPreparationPending(),
+      scope.companyId ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
+      scope.runId ? eq(heartbeatRuns.id, scope.runId) : undefined,
+    )).limit(100);
+    for (const preparation of interruptedPreparations) {
+      if (activeRunExecutions.has(preparation.id) || adapterExecutionControls.has(preparation.id)
+          || runningProcesses.has(preparation.id)) continue;
+      if (preparation.controllerLeaseExpiresAt && preparation.controllerLeaseExpiresAt > now) {
+        scope.onDeferredDeadline?.(preparation.controllerLeaseExpiresAt.getTime());
+        continue;
+      }
+      const settled = await settleInterruptedNativeBootstrap(db, { run: preparation,
+        providerDispatchStarted: false, recoverStoppedPreparation: true });
+      if (!settled) continue;
+      const agent = await getAgent(settled.agentId);
+      const retry = agent ? await enqueueProcessLossRetry(settled, agent, now) : null;
+      // A current eligibility gate parks the existing intent. Its ordinary
+      // mutation notification reactivates recovery; it does not consume work.
+      if (!retry) continue;
+      await db.transaction(async tx => {
+        await notifyLiveRunRecovery(tx, { companyId: settled.companyId, runId: settled.id });
+        await tx.update(heartbeatRuns).set({ resultJson: sql`jsonb_set(${heartbeatRuns.resultJson},
+          '{executionRecovery,preparationContinuation}', '"settled"'::jsonb)`, updatedAt: new Date() })
+          .where(and(eq(heartbeatRuns.id, settled.id), eq(heartbeatRuns.companyId, settled.companyId),
+            eq(heartbeatRuns.status, "interrupted")));
+      });
+    }
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
       .select({

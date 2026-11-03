@@ -35,6 +35,7 @@ import { requestNativeQuestionRunCancellation } from "../services/native-runtime
 import { readNativeLocalProcessStop } from "../services/native-local-process-stop.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { logger } from "../middleware/logger.js";
+import { LEGACY_PREPARATION_FENCING_VERSION, legacyControllerClaim } from "../services/legacy-controller-lease.js";
 
 vi.setConfig({ testTimeout: 90_000 });
 describe("residual recovery production matrix", () => {
@@ -128,6 +129,49 @@ describe("residual recovery production matrix", () => {
       agentId: f.agent.id, status: "failed", runtimeMode: "native", nativeIssueId: f.issue.id, finishedAt: new Date() }))).returning();
     await db.insert(nativeRunFinalizations).values(runs.map(run => ({ companyId: f.companyId, issueId: f.issue.id, runId: run.id, phase: "committed" })));
     await start(); await quiet();
+  });
+  it.each(["startup", "after idle"])("reconciles interrupted preparation through %s and becomes quiet", async mode => {
+    const f = await fixture();
+    const provider = vi.fn(() => { throw new Error("Recovery must not dispatch a provider"); });
+    heartbeat = heartbeatService(db, { nativeSessionBackendFactory: provider });
+    // Pause is a real current execution gate. Recovery may classify the old
+    // preparation, but must not create or dispatch a replacement under it.
+    await db.update(agents).set({ adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex", model: "gpt-5.6-luna" } }).where(eq(agents.id, f.agent.id));
+    const lifecycleWorker = configureAgentLifecycle(db, { requiredPluginIds: async () => [],
+      runHost: async () => "complete", runPlugin: async () => "complete" });
+    extraStops.push(() => lifecycleWorker.stop());
+    await createAgentLifecycle(db).pauseAgent(f.agent.id);
+    await lifecycleWorker.process(f.agent.id);
+    await db.update(issues).set({ status: "in_progress", responsibleUserId: f.actorId }).where(eq(issues.id, f.issue.id));
+    if (mode === "after idle") { await start(); await quiet(); }
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      status: "running", runtimeMode: "legacy", contextSnapshot: { issueId: f.issue.id },
+      responsibleUserId: f.actorId, startedAt: new Date(Date.now() - 10_000),
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner", preparationFencingVersion: LEGACY_PREPARATION_FENCING_VERSION } },
+      ...legacyControllerClaim("legacy"),
+    }).returning();
+    await heartbeatService(db).drainRunningRunsForShutdown("SIGTERM");
+    await db.transaction(async tx => {
+      await notifyLiveRunRecovery(tx, { companyId: f.companyId, runId: run.id });
+      await tx.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() - 1000) }).where(eq(heartbeatRuns.id, run.id));
+    });
+    if (mode === "startup") await start();
+    await vi.waitFor(async () => expect((await getRun(run.id)).resultJson?.executionRecovery).toMatchObject({
+      proof: "terminal_preparation_claim_v1", preparationContinuation: "pending",
+    }));
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toEqual([]);
+    expect((await getRun(run.id)).status).toBe("interrupted");
+    await quiet();
+    await createAgentLifecycle(db).resumeAgent(f.agent.id);
+    await lifecycleWorker.process(f.agent.id);
+    await advance(1000);
+    await vi.waitFor(async () => expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id))).toHaveLength(1));
+    const [retry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run.id));
+    expect(retry.status).toBe("scheduled_retry");
+    await heartbeat.cancelRun(retry.id, "Test operator stops the future retry before dispatch");
+    await quiet();
+    expect(provider).not.toHaveBeenCalled();
   });
   it("catches up native resultless retry debt through its real claim owner without replaying missing state", async () => {
     const f = await fixture(); await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issue.id));
