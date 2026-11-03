@@ -4086,3 +4086,18 @@ one-time config-file seed preserves existing choices, then later starts use the
 database without loading home `.env` files or repairing worktree config. See
 [Cloud runtime configuration](cloud-runtime-configuration.md) for field ownership,
 secret handling, initialization order and migration interfaces.
+
+### Candidate compatibility with trusted test-project typechecks
+
+Trusted PR CI checks the server in low-memory layers, then runs:
+
+```sh
+node scripts/typecheck-test-projects.mjs --low-memory --reuse-declarations
+```
+
+Run that command immediately after a successful server typecheck on the same
+commit. It checks maintenance support, lifecycle, Runner E2E, and Speko projects
+against fresh server declarations and rejects accidental server source imports.
+For a standalone check, omit `--reuse-declarations` so the driver prepares and
+builds those declarations first. The ordinary project configs remain available
+to editors and Vitest; CI uses their separate `tsconfig.layers.json` files.
