@@ -437,9 +437,16 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     });
     const persistenceEndedAt = persistenceStartedAt + performance.now() - persistenceClock;
     this.#assertActive(options);
+    // Publish the whole committed prefix synchronously. A callback can append
+    // its own later run event (for example a first-text timing span); awaiting
+    // it between rows would create a false gap and delay already durable text.
+    for (const receipt of receipts) {
+      this.#assertActive(options);
+      if (receipt.disposition === "committed") this.#publishCommittedEvent(receipt);
+    }
     for (let index = 0; index < events.length; index += 1) {
       this.#assertActive(options);
-      await this.#publishEventReceipt(events[index]!, receipts[index]!, persistenceStartedAt, persistenceEndedAt);
+      await this.#observeEventReceipt(events[index]!, receipts[index]!, persistenceStartedAt, persistenceEndedAt, options);
     }
     return receipts.map(persisted => ({
       cursor: persisted.row.seq,
@@ -448,27 +455,31 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
     }));
   }
 
-  async #publishEventReceipt(event: PrpEvent, persisted: AppendHeartbeatRunEventResult,
-    persistenceStartedAt: number, persistenceEndedAt: number): Promise<void> {
+  #publishCommittedEvent(persisted: AppendHeartbeatRunEventResult): void {
+    try {
+      publishLiveEvent({
+        companyId: this.#binding.companyId,
+        type: "heartbeat.run.event",
+        payload: {
+          runId: this.#binding.runId,
+          agentId: this.#binding.agentId,
+          issueId: this.#binding.issueId,
+          seq: persisted.row.seq,
+          eventType: persisted.row.eventType,
+          stream: persisted.row.stream,
+          level: persisted.row.level,
+          payload: persisted.row.payload,
+        },
+      });
+    } catch {
+    }
+  }
+
+  async #observeEventReceipt(event: PrpEvent, persisted: AppendHeartbeatRunEventResult,
+    persistenceStartedAt: number, persistenceEndedAt: number, options?: { signal: AbortSignal }): Promise<void> {
     try { await this.#onEventPersistence?.(event, persistenceStartedAt, persistenceEndedAt); } catch {}
+    this.#assertActive(options);
     if (persisted.disposition === "committed") {
-      try {
-        publishLiveEvent({
-          companyId: this.#binding.companyId,
-          type: "heartbeat.run.event",
-          payload: {
-            runId: this.#binding.runId,
-            agentId: this.#binding.agentId,
-            issueId: this.#binding.issueId,
-            seq: persisted.row.seq,
-            eventType: persisted.row.eventType,
-            stream: persisted.row.stream,
-            level: persisted.row.level,
-            payload: persisted.row.payload,
-          },
-        });
-      } catch {
-      }
       await this.#onCommittedEvent?.(event, persisted.row.seq);
     } else {
       // A recovered runner may replay the event whose durable side effects
