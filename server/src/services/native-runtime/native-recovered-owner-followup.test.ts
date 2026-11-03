@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { cp, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { eq } from "drizzle-orm";
@@ -232,6 +232,29 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
     expect(await followUp.start()).toBe(ADMITTED);
     expect(await quarantined()).toHaveLength(1);
+  }, 60_000);
+
+  it("keeps an unsuspended Runner receipt decisive after a retry rebuilds the root", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    // Learn the scope key from a held attempt, then give the active root the
+    // local evidence of an owner whose Runner never suspended.
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    expect(await followUp.start()).toBe(STRANDED);
+    const [copy] = await quarantined();
+    const root = join(stateDirectory, copy!.split(".")[0]!);
+    await rename(join(stateDirectory, "quarantine", copy!), root);
+    await mkdir(join(root, "runner"));
+    await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({
+      schema: "paperclip.runner.durable.state.v1", lifecycle: "ready", ...prior.identity }));
+    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    expect(await followUp.start()).toBe(STRANDED);
+    expect(await quarantined()).toHaveLength(1);
+    // The retry restores only the database journal. The quarantined receipt
+    // must still hold it.
+    expect(await followUp.start()).toBe(STRANDED);
+    expect(await quarantined()).toHaveLength(2);
+    expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
   }, 60_000);
 
   it.each(["uncommitted result", "live controller lease", "unexpired controller lease", "recovery pending", "pending command",

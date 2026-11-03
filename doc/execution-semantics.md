@@ -1622,7 +1622,8 @@ All of these must be true:
 - The journal has a delivered terminal, only completed commands, and an
   answer for each tool input.
 - No local Runner lifecycle evidence exists for the old owner.
-- Each quarantined root for the scope is a copy of the same owner.
+- Each quarantined root for the scope passes the same journal and local
+  Runner evidence checks for the same owner.
 
 The provider session then follows the normal resume-or-replace policy. A
 resumed sandbox, a warm session, a plugin task, a restart claim, or any

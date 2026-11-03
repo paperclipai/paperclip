@@ -5124,6 +5124,38 @@ function moveNativeContinuityState(root: string, archiveRoot: string): void {
 }
 
 /**
+ * Returns the journal bytes when a root holds only a settled controller
+ * journal for this exact owner. The controller acknowledged its terminal,
+ * completed every command and answered every tool input, so the unreadable
+ * Runner outbox can hold only post-terminal telemetry. Local lifecycle
+ * evidence, even an unsuspended receipt, and unknown entries are owner
+ * claims that this proof never overrides.
+ */
+function readSettledRunnerdProjection(root: string, identity: Record<string, string>): string | null {
+  try {
+    if (!isSafeNativeStateDirectory(root) ||
+        runnerdAuthorityLifecycle(root, identity as RunnerdDurableIdentity) !== "absent" ||
+        readdirSync(root).some(name => name !== "continuity-breaks" && !NATIVE_CONTINUITY_STATE_ENTRIES.includes(name))) {
+      return null;
+    }
+    const bytes = readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
+      NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8");
+    const control = record(JSON.parse(bytes));
+    const answered = new Set((Array.isArray(control.commands) ? control.commands : []).map(record)
+      .filter(command => command.type === "semantic_tool.result" && command.status === "completed")
+      .map(command => record(command.payload).sourceEventId));
+    if (control.schema !== RUNNERD_CONTROL_PLANE_STATE_SCHEMA || control.warmTransition != null ||
+        control.stagedRunAttachment != null || !isSettledRemoteWarmControlState(control, identity) ||
+        (control.committedEvents as unknown[]).map(record).some(event =>
+          (event.eventType === "semantic_tool.input" || event.eventType === "mcp_app.tool_input") &&
+          !answered.has(event.sourceEventId))) return null;
+    return bytes;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * A per-turn sandbox turn can finish through recovery after its post-turn
  * checkpoint copy failed: the result is committed and the controller lease is
  * released, but no suspended Runner receipt or failover backup ever reached
@@ -5148,39 +5180,14 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
   if (input.execution.session.lifecyclePolicy.mode !== "per_turn" || target?.kind !== "remote" ||
       target.transport !== "sandbox" || !target.runner || target.runnerTask ||
       !["created", "replacement"].includes(target.sandboxLeaseAcquisition?.outcome ?? "")) return false;
-  // Local lifecycle evidence, even an unsuspended receipt, is an owner claim
-  // this proof never overrides. Unknown root entries are not ours to archive.
-  if (runnerdAuthorityLifecycle(input.root, input.identity) !== "absent" ||
-      readdirSync(input.root).some(name => name !== "continuity-breaks" && !NATIVE_CONTINUITY_STATE_ENTRIES.includes(name))) {
-    return false;
-  }
   const identity: Record<string, string> = {};
   for (const key of ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId", "turnId", "itemId"]) {
     const value = input.identity[key];
     if (typeof value !== "string" || !value) return false;
     identity[key] = value;
   }
-  const readControl = () => readBoundedNativeFile(resolve(input.root, "control-plane", "control-plane-state.json"),
-    NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8");
-  let controlBytes: string;
-  let control: Record<string, unknown>;
-  try {
-    controlBytes = readControl();
-    control = record(JSON.parse(controlBytes));
-  } catch {
-    return false;
-  }
-  // The controller acknowledged this owner's terminal, completed every
-  // command and answered every tool input. The unreadable Runner outbox can
-  // then hold only post-terminal telemetry, never an effect or a terminal.
-  const answered = new Set((Array.isArray(control.commands) ? control.commands : []).map(record)
-    .filter(command => command.type === "semantic_tool.result" && command.status === "completed")
-    .map(command => record(command.payload).sourceEventId));
-  if (control.schema !== RUNNERD_CONTROL_PLANE_STATE_SCHEMA || control.warmTransition != null ||
-      control.stagedRunAttachment != null || !isSettledRemoteWarmControlState(control, identity) ||
-      (control.committedEvents as unknown[]).map(record).some(event =>
-        (event.eventType === "semantic_tool.input" || event.eventType === "mcp_app.tool_input") &&
-        !answered.has(event.sourceEventId))) return false;
+  const controlBytes = readSettledRunnerdProjection(input.root, identity);
+  if (controlBytes === null) return false;
   const { binding } = input.execution;
   let prior: { run: typeof heartbeatRuns.$inferSelect; owner: typeof nativeRunFinalizations.$inferSelect } | undefined;
   try {
@@ -5205,24 +5212,19 @@ async function retireFinishedPerTurnRunnerdOwner(input: {
     requireStoppedController: true,
     remoteLeaseFenced: readNativeControllerRecovery(profile.nativeControllerRecovery, profile.sessionCheckpoint) !== null });
   if (!stopped.allowed) return false;
-  // Earlier rejected admissions quarantined copies of this same projection.
-  // Anything else saved for this scope is unresolved evidence and stays held.
+  // Earlier rejected admissions can quarantine the same projection. Each copy
+  // must pass the same proof: a rebuilt root never carries the local Runner
+  // evidence that held an earlier attempt, so that evidence stays decisive.
   const quarantine = resolve(runnerdStateBase(), "quarantine");
   if (existsSync(quarantine)) {
     if (!isSafeNativeStateDirectory(quarantine)) return false;
     for (const name of readdirSync(quarantine)) {
-      if (!name.startsWith(`${basename(input.root)}.`)) continue;
-      const saved = readRunnerdDurableIdentity(resolve(quarantine, name));
-      if (!saved || ["runId", "normalizedSessionId", "runnerInstanceId", "environmentLeaseId"]
-        .some(key => saved[key] !== identity[key])) return false;
+      if (name.startsWith(`${basename(input.root)}.`) &&
+          readSettledRunnerdProjection(resolve(quarantine, name), identity) === null) return false;
     }
   }
   // Database reads can await. Retire only the exact evidence proven above.
-  try {
-    if (readControl() !== controlBytes) return false;
-  } catch {
-    return false;
-  }
+  if (readSettledRunnerdProjection(input.root, identity) !== controlBytes) return false;
   const archivedAt = Date.now();
   const archiveRoot = resolve(input.root, "continuity-breaks", `${archivedAt}-${randomUUID()}`);
   mkdirSync(archiveRoot, { recursive: true, mode: 0o700 });
