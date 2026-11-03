@@ -590,7 +590,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       },
     };
   }
+  const externalHome = ctx.config.remoteCodexHomeMode === "empty";
+  if (ctx.config.remoteCodexHomeMode !== undefined && !externalHome) {
+    throw new Error("Invalid remoteCodexHomeMode");
+  }
   if (engineSelection.engine === "acp") {
+    if (externalHome) throw new Error("remoteCodexHomeMode=empty is not supported by ACP");
     return executeCodexAcp(ctx);
   }
 
@@ -652,6 +657,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
+  const extraConfiguredEnv = Object.keys(envConfig).some(key => key !== "CODEX_HOME");
+  if (externalHome && (!executionTargetIsRemote || !configuredCodexHome || configuredOpenAiApiKey || config.managedAiConnection || extraConfiguredEnv || ctx.observability)) {
+    throw new Error("remoteCodexHomeMode=empty requires a remote target, explicit CODEX_HOME and no configured provider credential, extra environment or observability exporter");
+  }
   const skillSourceHome = configuredCodexHome;
   const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
     && /^[a-f0-9]{64}$/.test(config.paperclipConnectorSkillDigest) ? config.paperclipConnectorSkillDigest : null;
@@ -707,7 +716,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // holds no credential it does nothing (no random pick). This keeps the change
   // additive: the managed home still symlinks the shared `auth.json`, now at its
   // freshest same-identity copy. The off-switch (default on) skips the vend.
-  if (!config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
+  if (!externalHome && !config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
     const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
     // This caller reads `process.env` directly and holds no separate `env`
     // object, so `selectVendCredential` falls back to its own `process.env`
@@ -855,7 +864,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // the single-use `auth.json`) are dereferenced to bytes. This drops the
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
-          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
+          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, empty: externalHome, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,
@@ -881,7 +890,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // that already carries a Codex `auth.json` keeps whichever
                 // credential is newer. The sandbox runtime core stays adapter-
                 // agnostic — it just invokes this generic `provision` seam.
-                provision: buildCodexAuthInboundProvision(),
+                provision: externalHome ? undefined : buildCodexAuthInboundProvision(),
                 // Outbound (sandbox→host) auth copy-back contribution: at
                 // teardown, read the sandbox's `auth.json` and — guarded by the
                 // same direction-agnostic decision predicate under a directory
@@ -891,7 +900,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
                 // generic `restore` seam per asset before destroying the sandbox.
                 // Target is the shared symlink SOURCE (what managed homes point
                 // `auth.json` at), not the in-sandbox symlink.
-                restore: async ({ assetDir, readFile }) =>
+                restore: externalHome ? undefined : async ({ assetDir, readFile }) =>
                   void (await copyBackCodexAuth({
                     readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
                     hostAuthPath: path.join(config.managedAiConnection ? effectiveCodexHome : resolveSharedCodexHomeDir(process.env), "auth.json"),
@@ -1074,7 +1083,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       );
     }
     const runtimeEnv = Object.fromEntries(
-      Object.entries(ensurePathInEnv(effectiveEnv)).filter(
+      Object.entries(ensurePathInEnv(externalHome ? env : effectiveEnv)).filter(
         (entry): entry is [string, string] => typeof entry[1] === "string",
       ),
     );

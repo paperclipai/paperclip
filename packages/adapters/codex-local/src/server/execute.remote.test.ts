@@ -80,6 +80,7 @@ describe("codex remote execution", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
@@ -333,6 +334,143 @@ describe("codex remote execution", () => {
 
     // The staged temp dir is removed after execute completes (cleanup on teardown).
     await expect(readdir(snap.localDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("keeps host credentials, configuration, skills and inherited secrets out of an empty remote home", async () => {
+    vi.stubEnv("PAPERCLIP_FIXTURE_HOST_SECRET", "fictional-only-host-secret");
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-allowlist-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const codexHomeDir = path.join(rootDir, "codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(codexHomeDir, { recursive: true });
+
+    // Seed the managed home with the files Codex needs (config.toml carries a
+    // provider-routing block; skills injected) plus large runtime decoys the
+    // old 4-name denylist missed.
+    await writeFile(path.join(codexHomeDir, "auth.json"), '{"tokens":{"account_id":"a","refresh_token":"r"}}', "utf8");
+    await writeFile(
+      path.join(codexHomeDir, "config.toml"),
+      'model_provider = "bifrost"\n\n[model_providers.bifrost]\nname = "bifrost"\n',
+      "utf8",
+    );
+    await writeFile(path.join(codexHomeDir, "instructions.md"), "hi\n", "utf8");
+    await mkdir(path.join(codexHomeDir, "skills", "demo"), { recursive: true });
+    await writeFile(path.join(codexHomeDir, "skills", "demo", "SKILL.md"), "# demo\n", "utf8");
+    // Decoys:
+    await writeFile(path.join(codexHomeDir, "logs_2.sqlite"), "x", "utf8");
+    await writeFile(path.join(codexHomeDir, "state_5.sqlite"), "x", "utf8");
+    await mkdir(path.join(codexHomeDir, "sessions"), { recursive: true });
+    await writeFile(path.join(codexHomeDir, "sessions", "rollout.jsonl"), "x", "utf8");
+    await mkdir(path.join(codexHomeDir, "tmp"), { recursive: true });
+    await symlink("/usr/bin/env", path.join(codexHomeDir, "tmp", "arg0"));
+
+    // Snapshot the staged dir contents at sync time — execute() removes the
+    // staged temp dir on teardown, so we cannot read it after execute returns.
+    let stagedSnapshot:
+      | { localDir: string; entries: string[]; skillEntries: string[]; configToml: string; authJson: string }
+      | null = null;
+    (syncDirectoryToSsh as unknown as {
+      mockImplementationOnce: (fn: (args: { localDir: string }) => Promise<void>) => void;
+    }).mockImplementationOnce(async (args: { localDir: string }) => {
+      const entries = (await readdir(args.localDir)).sort();
+      const skillEntries = entries.includes("skills")
+        ? (await readdir(path.join(args.localDir, "skills"))).sort()
+        : [];
+      const configToml = entries.includes("config.toml")
+        ? await readFile(path.join(args.localDir, "config.toml"), "utf8")
+        : "";
+      const authJson = entries.includes("auth.json")
+        ? await readFile(path.join(args.localDir, "auth.json"), "utf8")
+        : "";
+      stagedSnapshot = { localDir: args.localDir, entries, skillEntries, configToml, authJson };
+    });
+
+    await execute({
+      runId: "run-allowlist",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "CodexCoder",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        engine: "cli",
+        remoteCodexHomeMode: "empty",
+        command: "codex",
+        env: {
+          CODEX_HOME: codexHomeDir,
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(stagedSnapshot).not.toBeNull();
+    const snap = stagedSnapshot as unknown as {
+      localDir: string;
+      entries: string[];
+      skillEntries: string[];
+      configToml: string;
+      authJson: string;
+    };
+    expect(snap.entries).toEqual([]);
+    expect(ensureCommandResolvable).toHaveBeenCalled();
+    for (const call of ensureCommandResolvable.mock.calls as unknown as Array<[unknown, unknown, Record<string, string>]>) {
+      expect(call[2].PAPERCLIP_FIXTURE_HOST_SECRET).toBeUndefined();
+    }
+    expect(resolveCommandForLogs).toHaveBeenCalled();
+    for (const call of resolveCommandForLogs.mock.calls as unknown as Array<[unknown, unknown, Record<string, string>]>) {
+      expect(call[2].PAPERCLIP_FIXTURE_HOST_SECRET).toBeUndefined();
+    }
+    vi.unstubAllEnvs();
+
+    // The staged temp dir is removed after execute completes (cleanup on teardown).
+    await expect(readdir(snap.localDir)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects a configured provider credential for an empty remote home", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-reject-key-"));
+    cleanupDirs.push(rootDir);
+    await expect(execute({
+      runId: "run-reject-key",
+      agent: { id: "agent-1", companyId: "company-1", name: "Fixture", adapterType: "codex_local", adapterConfig: {} },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { engine: "cli", remoteCodexHomeMode: "empty", command: "codex", env: {
+        CODEX_HOME: rootDir, OPENAI_API_KEY: "fictitious-not-allowed",
+      } },
+      context: {},
+      executionTransport: { remoteExecution: {
+        host: "127.0.0.1", port: 2222, username: "fixture", remoteWorkspacePath: "/remote/workspace",
+        remoteCwd: "/remote/workspace", privateKey: "PRIVATE KEY", knownHosts: "fixture", strictHostKeyChecking: true,
+      } },
+      onLog: async () => {},
+    })).rejects.toThrow("no configured provider credential");
+    expect(syncDirectoryToSsh).not.toHaveBeenCalled();
   });
 
   it("does not resume saved Codex sessions for remote SSH execution without a matching remote identity", async () => {

@@ -402,6 +402,8 @@ export async function writeApiKeyAuthJson(home: string, apiKey: string): Promise
 }
 
 export interface StageCodexHomeForSyncOptions {
+  /** Do not stage any host home content for an externally mediated runtime. */
+  empty?: boolean;
   additionalFiles?: readonly string[];
   /** Run id, used only to make the staged temp-dir name traceable in logs. */
   runId?: string;
@@ -624,6 +626,7 @@ export async function stageCodexHomeForSync(
     path.join(os.tmpdir(), `paperclip-codex-home-sync-${runIdPart ? `${runIdPart}-` : ""}`),
   );
   try {
+    if (options.empty) return stagedHome;
     for (const filename of options.additionalFiles ?? []) {
       if (!/^paperclip-observability-[A-Za-z0-9_-]+\.config\.toml$/.test(filename)) throw new Error("Invalid managed observability profile");
       const source = path.join(effectiveCodexHome, filename);
