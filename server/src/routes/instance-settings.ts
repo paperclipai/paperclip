@@ -334,8 +334,9 @@ export function instanceSettingsRoutes(db: Db, pluginWorkers?: PluginWorkerManag
       }
       const idleSleepSafety = await readIdleSleepSafety(db, () => heartbeat.getTaskDrainStatus(), Date.now,
         typeof req.query.ownerId === "string" ? req.query.ownerId : undefined,
-        () => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup) }),
-        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors);
+        diagnostic => readIdleLocalWork({ backupCheckpoint: Boolean(prepareIdleDatabaseBackup), diagnostic }),
+        pluginWorkers?.inspectIdleSleep?.bind(pluginWorkers), prepareIdleDatabaseBackup, scheduledRoutines, scheduledIssueMonitors,
+        ...(req.query.idleSleepDiagnostics === "1" ? [{ collectDiagnostics: true }] as const : [] as const));
       res.json({ ...heartbeat.getTaskDrainStatus(), idleSleepSafety });
       return;
     }
