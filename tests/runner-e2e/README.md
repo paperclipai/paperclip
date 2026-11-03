@@ -3303,3 +3303,12 @@ Command, filename, digest, task/run, audit, link, privacy and read-only checks
 remain independent. The deterministic owner/verifier and production timeline
 route regressions do not qualify the actual model journey. Historical failures
 retain their original grades; a missing human handoff narrative still fails.
+
+The timeline API projects initial assignment and delegation only from complete
+`issue.created` audit facts inside the requested window. It uses the saved actor,
+target and timestamp, and requires a readable recorded parent for delegation.
+It does not use current ownership as creation evidence. Missing or malformed
+legacy creation details leave initial ownership unknown. The API performs no
+all-history ownership-presence query. Recorded canonical and legacy ownership
+clears emit `unassigned` events with their actual actor and timestamp, without a
+target edge. Event markers are not currently rendered by the timeline chart.

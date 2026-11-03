@@ -119,7 +119,7 @@ function dateIso(value: Date | null | undefined) {
   return value ? value.toISOString() : null;
 }
 
-/** One ownership contract for history detection and recorded event projection. */
+/** Scalar ownership facts for bounded recorded creation and change events. */
 function timelineOwnershipProjection() {
   const record = (value: SQL) => sql`case when jsonb_typeof(${value}) = 'object' then ${value} else '{}'::jsonb end`;
   const details = record(sql`${activityLog.details}`);
@@ -134,12 +134,34 @@ function timelineOwnershipProjection() {
   });
   const stringValue = (value: SQL) => sql<string | null>`case when jsonb_typeof(${value}) = 'string'
     then nullif(btrim(${value} #>> '{}'), '') else null end`;
-  const target = (key: string, legacyKey: string) => sql<string | null>`case when ${canonical}
-    then ${stringValue(sql`${changes} -> ${key} -> 'to'`)}
-    else coalesce(${stringValue(sql`${details} -> ${key}`)}, ${stringValue(sql`${details} -> ${legacyKey}`)}) end`;
+  const targetValue = (key: string, legacyKey: string) => sql`case when ${canonical} then ${changes} -> ${key} -> 'to'
+    when ${details} ? ${key} then ${details} -> ${key} else ${details} -> ${legacyKey} end`;
+  const target = (key: string, legacyKey: string) => stringValue(targetValue(key, legacyKey));
+  const creationAgentId = stringValue(sql`${details} -> 'assigneeAgentId'`);
+  const creationUserId = stringValue(sql`${details} -> 'assigneeUserId'`);
+  const sameCompanyAgent = (id: SQL) => sql`exists (select 1 from ${agents}
+    where ${agents.id} = case when ${id} ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      then ${id}::uuid else null end and ${agents.companyId} = ${activityLog.companyId})`;
+  const knownUser = (id: SQL) => sql`exists (select 1 from ${authUsers} where ${authUsers.id} = ${id})`;
+  const creationOwnerTypes = ["assigneeAgentId", "assigneeUserId"].map(key => sql`${details} ? ${key}
+    and jsonb_typeof(${details} -> ${key}) in ('string', 'null')`);
+  const cleared = ([["assigneeAgentId", "toAgentId"], ["assigneeUserId", "toUserId"]] as const).map(([key, alias], index) => sql`(
+    (case when ${canonical} or ${details} ? ${key} then ${changed[index]} else ${details} ? ${alias} end)
+    and jsonb_typeof(${targetValue(key, alias)}) = 'null')`);
   return {
     recorded: sql<boolean>`coalesce(position('assign' in ${activityLog.action}) > 0 or
       (${activityLog.action} = 'issue.updated' and (${sql.join(changed, sql` or `)})), false)`,
+    cleared: sql<boolean>`coalesce(${sql.join(cleared, sql` or `)}, false)`,
+    creationRecorded: sql<boolean>`coalesce(${activityLog.action} = 'issue.created'
+      and (${sql.join(creationOwnerTypes, sql` and `)})
+      and ${details} ? 'parentId' and jsonb_typeof(${details} -> 'parentId') in ('string', 'null')
+      and ((${creationAgentId} is not null and ${creationUserId} is null and ${sameCompanyAgent(creationAgentId)})
+        or (${creationUserId} is not null and ${creationAgentId} is null and ${knownUser(creationUserId)}))
+      and ((${activityLog.actorType} = 'agent' and ${sameCompanyAgent(sql`${activityLog.actorId}`)})
+        or (${activityLog.actorType} = 'user' and ${knownUser(sql`${activityLog.actorId}`)})), false)`,
+    creationAgentId,
+    creationUserId,
+    creationParentId: stringValue(sql`${details} -> 'parentId'`),
     agentId: target("assigneeAgentId", "toAgentId"),
     userId: target("assigneeUserId", "toUserId"),
   };
@@ -477,12 +499,6 @@ export function workTimelineService(db: Db) {
     return actorId("system", "system");
   }
 
-  function actorForIssueAssignee(issue: IssueRow) {
-    if (issue.assigneeAgentId) return actorId("agent", issue.assigneeAgentId);
-    if (issue.assigneeUserId) return actorId("user", issue.assigneeUserId);
-    return null;
-  }
-
   async function getTimeline(input: WorkTimelineQuery): Promise<WorkTimelineResult> {
     const { from, to, capped } = normalizeTimelineWindow(input);
     const limit = normalizeLimit(input.limit);
@@ -509,18 +525,6 @@ export function workTimelineService(db: Db) {
     }
 
     const ownership = timelineOwnershipProjection();
-    // Read only presence, for the page and its already-readable parents. This
-    // returns at most 2 * MAX_LIMIT IDs, regardless of history length or window.
-    const ownershipIssueIds = maybeUuidList(pagedIssues.flatMap(issue => [
-      issue.id, ...(issue.parentId && issueById.has(issue.parentId) ? [issue.parentId] : []),
-    ]));
-    const ownershipRows = await db.selectDistinct({ issueId: activityLog.entityId })
-      .from(activityLog)
-      .where(and(eq(activityLog.companyId, input.companyId), eq(activityLog.entityType, "issue"),
-        inArray(activityLog.entityId, ownershipIssueIds), ownership.recorded))
-      .limit(ownershipIssueIds.length);
-    const ownershipHistory = new Set(ownershipRows.map(row => row.issueId));
-
     const actorIds = new Set<string>();
     const events: WorkTimelineEvent[] = [];
     const edges: WorkTimelineEdge[] = [];
@@ -534,38 +538,6 @@ export function workTimelineService(db: Db) {
         issueId: issue.id,
         at: issue.createdAt.toISOString(),
       });
-
-      const assigneeActorId = actorForIssueAssignee(issue);
-      if (assigneeActorId && !ownershipHistory.has(issue.id)) {
-        actorIds.add(assigneeActorId);
-        edges.push({
-          fromActorId: creatorActorId,
-          toActorId: assigneeActorId,
-          issueId: issue.id,
-          at: issue.createdAt.toISOString(),
-          kind: "assignment",
-        });
-      }
-
-      const parent = issue.parentId ? issueById.get(issue.parentId) : null;
-      const parentActorId = parent ? actorForIssueAssignee(parent) ?? actorForIssueCreator(parent) : null;
-      if (parentActorId && assigneeActorId && parentActorId !== assigneeActorId
-        && !ownershipHistory.has(issue.id) && parent && !ownershipHistory.has(parent.id)) {
-        actorIds.add(parentActorId);
-        edges.push({
-          fromActorId: parentActorId,
-          toActorId: assigneeActorId,
-          issueId: issue.id,
-          at: issue.createdAt.toISOString(),
-          kind: "delegation",
-        });
-        events.push({
-          actorId: parentActorId,
-          kind: "delegated",
-          issueId: issue.id,
-          at: issue.createdAt.toISOString(),
-        });
-      }
     }
 
     const [contextRunRows, activityRunRows, commentRows, approvalRows, interactionRows, logRows] = await Promise.all([
@@ -681,6 +653,11 @@ export function workTimelineService(db: Db) {
           actorType: activityLog.actorType,
           actorId: activityLog.actorId,
           action: activityLog.action,
+          creationRecorded: ownership.creationRecorded,
+          creationParentId: ownership.creationParentId,
+          creationAgentId: ownership.creationAgentId,
+          creationUserId: ownership.creationUserId,
+          assignmentCleared: ownership.cleared,
           assignmentRecorded: ownership.recorded,
           assignmentAgentId: ownership.agentId,
           assignmentUserId: ownership.userId,
@@ -767,16 +744,33 @@ export function workTimelineService(db: Db) {
     }
 
     for (const row of logRows) {
-      if (!row.assignmentRecorded) continue;
-      const toActorId = row.assignmentAgentId ? actorId("agent", row.assignmentAgentId)
-        : row.assignmentUserId ? actorId("user", row.assignmentUserId) : null;
-      if (!toActorId) continue;
       const logActorType = row.actorType === "agent" || row.actorType === "user" || row.actorType === "plugin"
         ? row.actorType : "system";
       const fromActorId = actorId(logActorType, row.actorId);
+      if (row.action === "issue.created") {
+        if (!row.creationRecorded) continue;
+        const toActorId = row.creationAgentId ? actorId("agent", row.creationAgentId)
+          : actorId("user", row.creationUserId!);
+        actorIds.add(fromActorId);
+        actorIds.add(toActorId);
+        edges.push({ fromActorId, toActorId, issueId: row.issueId, at: row.createdAt.toISOString(), kind: "assignment" });
+        // Delegation is the recorded creating agent's action under a readable
+        // parent, not an inference from that parent's mutable current owner.
+        if (logActorType === "agent" && row.creationParentId
+          && row.creationParentId !== row.issueId && issueById.has(row.creationParentId) && fromActorId !== toActorId) {
+          edges.push({ fromActorId, toActorId, issueId: row.issueId, at: row.createdAt.toISOString(), kind: "delegation" });
+          events.push({ actorId: fromActorId, kind: "delegated", issueId: row.issueId, at: row.createdAt.toISOString() });
+        }
+        continue;
+      }
+      if (!row.assignmentRecorded) continue;
+      const toActorId = row.assignmentAgentId ? actorId("agent", row.assignmentAgentId)
+        : row.assignmentUserId ? actorId("user", row.assignmentUserId) : null;
+      if (!toActorId && !row.assignmentCleared) continue;
       actorIds.add(fromActorId);
+      events.push({ actorId: fromActorId, kind: toActorId ? "assigned" : "unassigned", issueId: row.issueId, at: row.createdAt.toISOString() });
+      if (!toActorId) continue;
       actorIds.add(toActorId);
-      events.push({ actorId: fromActorId, kind: "assigned", issueId: row.issueId, at: row.createdAt.toISOString() });
       edges.push({ fromActorId, toActorId, issueId: row.issueId, at: row.createdAt.toISOString(), kind: "assignment" });
     }
 
