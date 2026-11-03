@@ -19,7 +19,7 @@ import {
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
-import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
+import { createFullDatabaseResponseCapture, installDatabaseResponseCapture } from "../../__tests__/helpers/full-database-response-capture.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { initializeRunIdentity, reserveSteeredIdentity, reconcileSteeredIdentity } from "../run-identity.js";
 import { documentService } from "../documents.js";
@@ -248,7 +248,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     }).where(eq(heartbeatRuns.id, runId));
     const [expanded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const observed = createDb(temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents, companies }, capture);
     try {
       const reader = new PaperclipRunnerToolAuthority(observed, binding);
@@ -291,7 +291,7 @@ describe("PaperclipRunnerToolAuthority", () => {
     await db.update(heartbeatRuns).set({ contextSnapshot: context }).where(eq(heartbeatRuns.id, runId));
     const [expanded] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     const observed = createDb(temporary!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
-    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    const capture = createFullDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues, agents, companies }, capture);
     try {
       const reader = new PaperclipRunnerToolAuthority(observed, binding);

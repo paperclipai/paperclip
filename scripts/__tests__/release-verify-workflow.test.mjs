@@ -579,8 +579,8 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     readWorkflow("runner-full-stack-e2e.yml"),
     readWorkflow("e2e.yml"),
     readWorkflow("runner-protocol-live-evals.yml"),
-    readWorkflow("chat-feature-testops.yml"),
-    readWorkflow("chat-completion-testops.yml"),
+    readWorkflow("chat-catalog-testops.yml"),
+    readWorkflow("chat-catalog-testops-case.yml"),
   ];
 
   for (const workflow of actionPinWorkflows) {
@@ -620,8 +620,8 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
     "runner-full-stack-e2e.yml",
     "runner-live-evals.yml",
     "runner-protocol-live-evals.yml",
-    "chat-feature-testops.yml",
-    "chat-completion-testops.yml",
+    "chat-catalog-testops.yml",
+    "chat-catalog-testops-case.yml",
   ];
   const paidWorkflowNameSet = new Set(paidWorkflowNames);
   const providerSecretReference =
@@ -640,6 +640,79 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
   for (const name of paidWorkflowNames) {
     const workflow = readWorkflow(name);
     const triggerHeader = workflow.slice(0, workflow.indexOf("\njobs:\n"));
+    if (name === "chat-catalog-testops.yml") {
+      assert.match(triggerHeader, /^  workflow_dispatch:/m);
+      assert.doesNotMatch(triggerHeader, /^  (?:push|pull_request|workflow_call|workflow_run):/m);
+      const callerBlocks = ["chat", "chat_external"].map(id => workflow.split(`  ${id}:\n`)[1].split(/\n  [a-z_]+:\n/)[0]);
+      assert.doesNotMatch(callerBlocks.reduce((rest, block) => rest.replace(block, ""), workflow), providerSecretReference);
+      assert.match(workflow, /group: chat-catalog-testops-streaming-v1/);
+      for (const id of ["chat", "chat_external"]) {
+        const block = workflow.split(`  ${id}:\n`)[1].split(/\n  [a-z_]+:\n/)[0];
+        const assertCaller = block => {
+        assert.match(block, /if: needs\.authorize\.outputs\.operation == 'evaluate'/);
+        assert.ok(block.includes(`needs.select.outputs.${id === "chat" ? "native" : "external"}_count != '0'`));
+        assert.match(block, /needs: \[authorize, select, build\]/);
+        assert.match(block, /uses: \.\/\.github\/workflows\/chat-catalog-testops-case\.yml/);
+        assert.match(block, /protocol: streaming-v1/);
+        const mapping = block.split("\n    secrets:\n");
+        assert.equal(mapping.length, 2);
+        assert.deepEqual(mapping[1].trim().split("\n").map(line => line.trim()), [
+          "OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}",
+          "ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}",
+          "ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}",
+        ]);
+        assert.doesNotMatch(block, /secrets: inherit/);
+        assert.match(block, /fail-fast: false/);
+        };
+        assertCaller(block);
+        const lane = id === "chat" ? "native" : "external";
+        for (const mutant of [block.replace("needs.authorize.outputs.operation == 'evaluate' && ", ""),
+          block.replace(`needs.select.outputs.${lane}_count != '0'`, 'true'),
+          block.replace('${{ secrets.OPENROUTER_API_KEY }}', "''"),
+          block + '\n      EXTRA: ${{ secrets.EXTRA }}',
+          block.replace(/\n    secrets:[\s\S]*/, '\n    secrets: inherit')]) assert.throws(() => assertCaller(mutant));
+      }
+      const final = workflow.split("  verify:\n")[1];
+      assert.match(final, /chat-completion-testops-cli\.mjs verify-stream/);
+      assert.doesNotMatch(final, /allurectl|cli\.mjs upload(?: |$)/);
+      continue;
+    }
+    if (name === "chat-catalog-testops-case.yml") {
+      assert.match(triggerHeader, /^  workflow_call:/m);
+      assert.doesNotMatch(triggerHeader, /^  (?:push|pull_request|workflow_dispatch|workflow_run):/m);
+      const chat = workflow.split("  chat:\n")[1].split("\n  report:\n")[0];
+      const report = workflow.split("  report:\n")[1].split("\n  upload:\n")[0];
+      const upload = workflow.split("  upload:\n")[1];
+      const boundary = value => {
+        assert.match(value, /environment: runner-e2e-private-paid/);
+        assert.match(value, /CHAT_TESTOPS_PROTOCOL: \$\{\{ inputs\.protocol \}\}/);
+        assert.match(value, /test "\$CHAT_TESTOPS_PROTOCOL" = streaming-v1/);
+        assert.match(value, /chat-completion-testops-cli\.mjs guard/);
+        assert.match(value, /chat-completion-testops-cli\.mjs verify-selection/);
+        assert.match(value, /--max-parallel 1 --max-automatic-retries 0/);
+        assert.match(value, /PAPERCLIP_CHAT_COMPLETION_TESTOPS: v1/);
+        assert.doesNotMatch(value, /ALLURE_TOKEN/);
+        assert.equal([...value.matchAll(providerSecretReference)].length, 2);
+        assert.ok(value.indexOf("chat-completion-testops-cli.mjs verify-selection") < value.search(providerSecretReference));
+      };
+      boundary(chat);
+      for (const mutant of [chat.replace("environment: runner-e2e-private-paid", "environment: unprotected"),
+        chat.replace("cli.mjs verify-selection", "cli.mjs unverified-selection"), chat + "\n ALLURE_TOKEN: leaked"]) {
+        assert.throws(() => boundary(mutant));
+      }
+      assert.match(report, /needs: chat/); assert.match(report, /always\(\) && !cancelled\(\)/);
+      assert.match(report, /environment: runner-e2e-private-history/);
+      assert.doesNotMatch(report, /secrets\./);
+      assert.match(report, /manual-private-transfer\.ts download-cell/);
+      assert.match(report, /cli\.mjs prepare-case-upload/);
+      assert.match(upload, /needs: report/); assert.match(upload, /always\(\) && !cancelled\(\)/);
+      assert.match(upload, /environment: runner-e2e-testops-reporting/);
+      assert.doesNotMatch(upload, /configure-aws-credentials|manual-private-transfer|secrets\.(?:OPENROUTER|ANTHROPIC)/);
+      assert.match(upload, /ALLURE_TOKEN: \$\{\{ secrets\.ALLURE_TOKEN \}\}/);
+      assert.match(upload, /cli\.mjs upload-case/);
+      assert.doesNotMatch(upload, /allurectl/);
+      continue;
+    }
     assert.doesNotMatch(
       triggerHeader,
       /^\s{2}(?:pull_request|pull_request_target|push|workflow_call|workflow_run):/m,
@@ -654,68 +727,6 @@ test("Runner eval workflows pin actions and gate paid live execution", () => {
       (block) => [...block.matchAll(providerSecretReference)].length > 0,
     );
     assert.ok(providerJobs.length > 0, `${name} needs a provider-secret job`);
-    if (name === "chat-completion-testops.yml") {
-      assert.equal(providerJobs.length, 1);
-      const assertBoundary = (block) => {
-        assert.match(block, /^  chat:\n/);
-        assert.match(block, /\n    needs: \[authorize, select, build\]\n/);
-        assert.match(block, /\n    if: needs\.authorize\.outputs\.operation == 'evaluate'\n/);
-        assert.match(block, /\n    environment: runner-e2e-private-paid\n/);
-        assert.match(block, /\n      - \*checkout\n      - \*node\n      - \*guard\n/);
-        assert.match(block, /chat-completion-testops-cli\.mjs verify-selection/);
-        assert.match(block, /OPENROUTER_API_KEY: \$\{\{ secrets\.OPENROUTER_API_KEY \}\}/);
-        assert.match(block, /--id "\$\{\{ matrix\.executionId \}\}" --max-parallel 1 --max-automatic-retries 0/);
-        assert.match(block, /PAPERCLIP_CHAT_COMPLETION_TESTOPS: v1/);
-        assert.match(block, /max-parallel: 1/);
-        assert.doesNotMatch(block, /ALLURE_TOKEN/);
-        assert.equal([...block.matchAll(providerSecretReference)].length, 1);
-        assert.ok(block.indexOf("      - *guard") < block.search(providerSecretReference));
-        assert.ok(block.indexOf("chat-completion-testops-cli.mjs verify-selection") < block.search(providerSecretReference));
-      };
-      const block = providerJobs[0]; assertBoundary(block);
-      assert.equal([...workflow.matchAll(providerSecretReference)].length, 1);
-      for (const mutant of [
-        block.replace("needs: [authorize, select, build]", "needs: [authorize, build]"),
-        block.replace("environment: runner-e2e-private-paid", "environment: unprotected"),
-        block.replace("      - *guard\n", ""),
-        block.replace("chat-completion-testops-cli.mjs verify-selection", "chat-completion-testops-cli.mjs unverified-selection"),
-        block.replace('--id "${{ matrix.executionId }}"', "--all"),
-        block.replace("PAPERCLIP_CHAT_COMPLETION_TESTOPS: v1", "PAPERCLIP_CHAT_COMPLETION_TESTOPS: unknown"),
-      ]) assert.throws(() => assertBoundary(mutant));
-      continue;
-    }
-    if (name === "chat-feature-testops.yml") {
-      assert.equal(providerJobs.length, 1);
-      const assertBoundary = (block) => {
-        assert.match(block, /^  chat:\n/);
-        assert.match(block, /\n    needs: \[authorize, select, build\]\n/);
-        assert.match(block, /\n    if: needs\.authorize\.outputs\.operation == 'evaluate'\n/);
-        assert.match(block, /\n    environment: runner-e2e-private-paid\n/);
-        assert.match(block, /\n      - \*checkout\n      - \*node\n      - \*guard\n/);
-        assert.match(block, /testops-chat-reporter\.mjs verify-selection chat-testops-selection\/testops-selection\.json/);
-        assert.match(block, /OPENROUTER_API_KEY: \$\{\{ secrets\.OPENROUTER_API_KEY \}\}/);
-        assert.match(block, /--id chat-features\.runner-opencode-deepseek-1017\.local\.create-backlog --max-parallel 1 --max-automatic-retries 0/);
-        assert.doesNotMatch(block, /ALLURE_TOKEN/);
-        assert.equal([...block.matchAll(providerSecretReference)].length, 1);
-        assert.ok(block.indexOf("      - *guard") < block.search(providerSecretReference));
-        assert.ok(block.indexOf("testops-chat-reporter.mjs verify-selection") < block.search(providerSecretReference));
-      };
-      const block = providerJobs[0];
-      assertBoundary(block);
-      assert.equal([...workflow.matchAll(providerSecretReference)].length, 1);
-      assert.match(workflow, /ref: \$\{\{ github\.sha \}\}/);
-      assert.match(workflow, /run: node tests\/runner-e2e\/testops-chat-dispatch\.ts/);
-      assert.match(workflow, /TESTOPS_ALLOWED_ACTOR_IDS: \$\{\{ vars\.RUNNER_E2E_ALLOWED_ACTOR_IDS \}\}/);
-      for (const mutant of [
-        block.replace("needs: [authorize, select, build]", "needs: [authorize, build]"),
-        block.replace("environment: runner-e2e-private-paid", "environment: unprotected"),
-        block.replace("      - *guard\n", ""),
-        block.replace("testops-chat-reporter.mjs verify-selection", "testops-chat-reporter.mjs unverified-selection"),
-        block.replace("OPENROUTER_API_KEY:", "ALLURE_TOKEN:"),
-        block.replace("--id chat-features.runner-opencode-deepseek-1017.local.create-backlog", "--id chat-features.runner-opencode.local.create-backlog"),
-      ]) assert.throws(() => assertBoundary(mutant));
-      continue;
-    }
     for (const block of providerJobs) {
       if (name === "runner-protocol-live-evals.yml") {
         assert.ok(block.includes("name: ${{ needs.authorize.outputs.accounting_mode == 'controlled' && 'runner-e2e-private-paid' || 'runner-e2e-paid' }}"));

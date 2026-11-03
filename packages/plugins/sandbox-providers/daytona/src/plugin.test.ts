@@ -1217,6 +1217,36 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(1);
     });
 
+    it.each([400, 401, 403, 429, 500])("retains only SDK HTTP %i when failed creation cleanup is unconfirmed", async statusCode => {
+      mockCreate.mockRejectedValue(Object.assign(new Error("Bearer provider-secret-canary"), {
+        statusCode, headers: { authorization: "provider-secret-canary" },
+      }));
+      mockGet.mockRejectedValue(Object.assign(new Error("cleanup-secret-canary"), { statusCode: 503 }));
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(failure.message).toContain(`HTTP ${statusCode}`);
+      expect(failure.message).not.toContain("secret-canary");
+      expect(JSON.stringify(environmentCreationCleanupErrorData(failure, true))).not.toContain("secret-canary");
+      expect(readEnvironmentCreationCleanupError(failure)?.attemptId).toBeTruthy();
+    });
+
+    it.each([undefined, "401", -1, 600, NaN, 401.5])("omits non-HTTP statusCode %s without reading provider text", async statusCode => {
+      mockCreate.mockRejectedValue(Object.assign(new Error("HTTP 401 provider-secret-canary"), { statusCode }));
+      mockGet.mockRejectedValue(new Error("cleanup-secret-canary"));
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(failure.message).not.toContain("HTTP");
+      expect(failure.message).not.toContain("secret-canary");
+    });
+
+    it("does not invoke a provider status accessor", async () => {
+      const getter = vi.fn(() => { throw new Error("provider-secret-canary"); });
+      mockCreate.mockRejectedValue(Object.defineProperty(new Error("provider-secret-canary"), "statusCode", { get: getter }));
+      mockGet.mockRejectedValue(new Error("cleanup-secret-canary"));
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(failure.message).not.toContain("HTTP");
+      expect(failure.message).not.toContain("secret-canary");
+      expect(getter).not.toHaveBeenCalled();
+    });
+
     it("reports unconfirmed cleanup when the provider lookup fails", async () => {
       mockGet.mockRejectedValue(new Error("provider unavailable"));
       await expect(plugin.definition.onEnvironmentAcquireLease?.(params)).rejects.toThrow("cleanup could not be confirmed");

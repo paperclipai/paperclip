@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { fullCatalogCases, fullCatalogPlanName, catalogTargetSha } from './chat-full-catalog-testops-manifest.mjs';
 
 // The catalog remains on its preservation/integration branch. Updating this
 // immutable source pin requires a reviewed source change.
@@ -7,6 +8,7 @@ export const launchSha256 = 'f2e69957c350b220b06edca49194a4bd07d70bc882f80838eeb
 export const workflow = '.github/workflows/chat-completion-testops.yml';
 export const planName = 'Chat completion pilot — OpenCode 1017';
 export const model = 'openrouter/deepseek/deepseek-v4.1-flash-1017';
+export const catalogWorkflow = '.github/workflows/chat-catalog-testops.yml';
 export const cases = Object.freeze([
   { key: 'control', scenario: 'instance-operations.restart-service', name: 'Restart an instance and retain the conversation', checks: 9, minimumRuns: 1, maximumRuns: 1 },
   { key: 'defaults', scenario: 'projects.project-defaults', name: 'Save project defaults for future work', checks: 11, minimumRuns: 3, maximumRuns: 3 },
@@ -14,6 +16,12 @@ export const cases = Object.freeze([
 ].map(row => Object.freeze({ ...row, executionId: `chat-features.runner-opencode.local.${row.scenario}`,
   fullName: `paperclip.Product E2E.chat-features.${row.scenario}` })));
 export const positive = value => Number.isSafeInteger(value) && value > 0;
+export function catalogDefinition(context = {}) {
+  if (context.catalog === 'full') return { cases: fullCatalogCases, planName: fullCatalogPlanName,
+    targetSha: catalogTargetSha, workflow: catalogWorkflow, bindingKey: 'CHAT_FULL_CATALOG_TESTOPS_BINDING' };
+  if (context.catalog !== undefined) reject('catalog');
+  return { cases, planName, targetSha, workflow, bindingKey: 'CHAT_COMPLETION_TESTOPS_BINDING' };
+}
 export const hash = value => createHash('sha256').update(value).digest('hex');
 // These bounds are copied from the pinned source, not inferred from one
 // measurement. The real-source control checks them before provider access.
@@ -27,39 +35,49 @@ export function admitDispatch(env, event, triggeringActorId) {
   try { allowed = JSON.parse(env.TESTOPS_ALLOWED_ACTOR_IDS); } catch { reject('actor'); }
   const branch = event.repository?.default_branch;
   const operation = event.inputs?.operation ?? 'evaluate';
+  const full = env.GITHUB_WORKFLOW_REF === `paperclipai/paperclip/${catalogWorkflow}@refs/heads/master`;
+  const definition = catalogDefinition(full ? { catalog: 'full' } : {});
   if (env.GITHUB_ACTIONS !== 'true' || env.GITHUB_EVENT_NAME !== 'workflow_dispatch'
     || env.GITHUB_REPOSITORY !== 'paperclipai/paperclip' || event.repository?.full_name !== 'paperclipai/paperclip'
     || event.repository?.private !== false || branch !== 'master' || env.GITHUB_REF !== 'refs/heads/master'
-    || event.ref !== env.GITHUB_REF || env.GITHUB_WORKFLOW_REF !== `paperclipai/paperclip/${workflow}@refs/heads/master`
+    || event.ref !== env.GITHUB_REF || env.GITHUB_WORKFLOW_REF !== `paperclipai/paperclip/${definition.workflow}@refs/heads/master`
     || !/^[a-f0-9]{40}$/.test(env.GITHUB_SHA ?? '') || env.GITHUB_RUN_ATTEMPT !== '1'
     || !numeric(env.GITHUB_RUN_ID) || !numeric(env.GITHUB_ACTOR_ID) || event.sender?.id !== Number(env.GITHUB_ACTOR_ID)
     || !Array.isArray(allowed) || !allowed.length || allowed.some(v => !positive(v))
     || !allowed.includes(Number(env.GITHUB_ACTOR_ID)) || !allowed.includes(triggeringActorId)
     || !event.inputs || Object.keys(event.inputs).some(k => !['operation', 'ALLURE_JOB_RUN_ID', 'ALLURE_USERNAME'].includes(k))
     || !['bootstrap', 'evaluate', 'launch-plan'].includes(operation)
+    || full && operation === 'launch-plan'
     || (operation === 'evaluate' ? !numeric(event.inputs.ALLURE_JOB_RUN_ID) : (event.inputs.ALLURE_JOB_RUN_ID ?? '') !== '')) reject('dispatch');
-  return Object.freeze({ runId: env.GITHUB_RUN_ID, attempt: '1', workflowSha: env.GITHUB_SHA, targetSha, operation,
+  return Object.freeze({ runId: env.GITHUB_RUN_ID, attempt: '1', workflowSha: env.GITHUB_SHA, targetSha: definition.targetSha, operation,
+    ...(full ? { catalog: 'full' } : {}),
     actorId: Number(env.GITHUB_ACTOR_ID), triggeringActorId });
 }
 
-export function selectedCases(rows) {
+export function selectedCases(rows, context = {}) {
+  const { cases } = catalogDefinition(context);
   if (!Array.isArray(rows) || !rows.length || rows.length > cases.length || new Set(rows.map(row => row.executionId)).size !== rows.length) reject('selection');
   const selected = cases.filter(row => rows.some(value => value.executionId === row.executionId));
   if (selected.length !== rows.length) reject('selection');
   for (const row of rows) {
     const expected = selected.find(value => value.executionId === row.executionId);
-    if (!positive(row.caseId) || row.fullName !== expected.fullName || row.key !== expected.key || row.scenario !== expected.scenario) reject('selection');
+    if (!positive(row.caseId) || row.fullName !== expected.fullName || row.key !== expected.key || row.scenario !== expected.scenario
+      || row.registeredFullName !== undefined && ![expected.fullName, ...(expected.aliases ?? [])].includes(row.registeredFullName)) reject('selection');
   }
   if (new Set(rows.map(row => row.caseId)).size !== rows.length) reject('selection');
-  return selected.map(expected => ({ ...expected, caseId: rows.find(row => row.executionId === expected.executionId).caseId }));
+  return selected.map(expected => {
+    const actual = rows.find(row => row.executionId === expected.executionId);
+    return { ...expected, caseId: actual.caseId, ...(actual.registeredFullName === undefined ? {} : { registeredFullName: actual.registeredFullName }) };
+  });
 }
 
 export function validateSelection(selection, context, jobRunId) {
+  const definition = catalogDefinition(context);
   if (selection.schema !== 'paperclip.chat-completion-testops-selection/v1' || selection.projectId !== 1
     || selection.runId !== context.runId || selection.attempt !== '1' || selection.workflowSha !== context.workflowSha
-    || selection.targetSha !== targetSha || selection.allureJobRunId !== jobRunId || !numeric(jobRunId)
+    || selection.targetSha !== definition.targetSha || selection.catalog !== context.catalog || selection.allureJobRunId !== jobRunId || !numeric(jobRunId)
     || ['planId', 'jobId', 'launchId'].some(key => !positive(selection[key]))) reject('selection_binding');
-  return selectedCases(selection.cases);
+  return selectedCases(selection.cases, context);
 }
 
 // This authority is emitted only by the trusted main-only selector after an
@@ -67,7 +85,7 @@ export function validateSelection(selection, context, jobRunId) {
 // scanners, byte limits and exact-key S3 policies remain the enforcement owner.
 export function evidencePolicy(selection, context, jobRunId) {
   const selected = validateSelection(selection, context, jobRunId);
-  return { version: 1, approvals: [{ workflowSha: context.workflowSha, targetSha,
+  return { version: 1, approvals: [{ workflowSha: context.workflowSha, targetSha: catalogDefinition(context).targetSha,
     runId: context.runId, attempt: '1', executionIds: selected.map(row => row.executionId),
     protocol: 'paperclip.manual-private-evidence/v1', launchSha256 }] };
 }

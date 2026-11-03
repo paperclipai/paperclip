@@ -1,12 +1,12 @@
 import { t, useTranslation } from "@/i18n";
 import { useState } from "react";
-import type { Agent, ToolCatalogEntry, ToolPolicy, ToolProfileWithDetails } from "@paperclipai/shared";
+import type { Agent, ToolCatalogEntry, ToolPolicy, ToolProfileConfiguration } from "@paperclipai/shared";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { Button } from "@/components/ui/button";
 
 export function AgentConnectionAccess({ connectionId, profiles, policies, catalog, agents, canManage, onRemove }: {
   connectionId: string;
-  profiles: ToolProfileWithDetails[];
+  profiles: ToolProfileConfiguration[];
   policies: ToolPolicy[];
   catalog: ToolCatalogEntry[];
   agents: Agent[];

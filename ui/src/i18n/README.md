@@ -104,6 +104,12 @@ presence, not the values supplied at runtime.
 
 ## Rendering and runtime boundaries
 
+Keep the language selector as a vertical list of full-width buttons. Language
+names must wrap inside a narrow account menu. Show the current selection with
+both its pressed state and a check mark. Preserve keyboard activation and the
+saved language after a reload. Check the real component at narrow widths in
+both themes when changing the menu or adding language names.
+
 Use `useTranslation()` in rendered components so open surfaces update on a
 language change. Include `t` in memo dependencies that compute display text.
 Do not add locale dependencies to effects that initialize form drafts, open

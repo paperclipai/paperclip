@@ -457,6 +457,49 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).toContain(saved.executionWait.message);
     expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled).toBe(false);
   });
+  it.each([
+    {
+      name: "recognized server wait",
+      message: "Waiting for the previous environment to stop. Your message will start automatically.",
+      en: "Waiting for the previous environment to stop. Your message will start automatically.",
+      ru: "Ждём остановки предыдущей среды. Обработка сообщения начнётся автоматически.",
+    },
+    { name: "custom server wait", message: "RAW_PROVIDER_WAIT", en: "RAW_PROVIDER_WAIT", ru: "RAW_PROVIDER_WAIT" },
+    {
+      name: "missing wait message",
+      message: null,
+      en: "Messages are still queued. They will send when the task is ready.",
+      ru: "Сообщения остаются в очереди. Они будут отправлены, когда задача будет готова.",
+    },
+  ])("retranslates a deferred send's $name without resending or changing its payload", async ({ message, en, ru }) => {
+    const saved: IssueQueuedCommentQueue = {
+      ...queue,
+      targetRunId: null,
+      executionWait: message == null ? null : { reason: "remote_cleanup", message },
+    };
+    const before = JSON.stringify(saved);
+    const delivery = deferred<IssueQueuedCommentQueue>();
+    const props = render({ queue: saved, onInterrupt: vi.fn().mockReturnValue(delivery.promise) });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')!.click(); });
+    await act(async () => { delivery.resolve(saved); await delivery.promise; });
+    const row = container.querySelector('[data-testid="task-chat-queued-message-comment-1"]');
+    const status = container.querySelector('p[role="status"]');
+    expect(row).not.toBeNull();
+    expect(status).not.toBeNull();
+    for (const [locale, expected] of [["en", en], ["ru", ru], ["en", en]] as const) {
+      await act(async () => { await i18n.changeLanguage(locale); });
+      expect(container.querySelector('[data-testid="task-chat-queued-message-comment-1"]')).toBe(row);
+      expect(row?.textContent).toContain("First queued message");
+      expect(container.querySelector('p[role="status"]')).toBe(status);
+      expect(status?.textContent).toBe(expected);
+      expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled).toBe(false);
+      expect(props.onInterrupt).toHaveBeenCalledOnce();
+      expect(props.onSteer).not.toHaveBeenCalled();
+      expect(props.onDiscard).not.toHaveBeenCalled();
+      expect(props.onReorder).not.toHaveBeenCalled();
+      expect(JSON.stringify(saved)).toBe(before);
+    }
+  });
   it("clears a deferred wait message when a refreshed queue finishes sending", async () => {
     const saved = { ...queue, targetRunId: null, executionWait: { reason: "decision_pending", message: "Resolve the pending approval before sending." } };
     render({ queue: saved, onInterrupt: vi.fn().mockResolvedValue(saved) });

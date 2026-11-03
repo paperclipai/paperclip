@@ -8248,7 +8248,7 @@ it("still fails closed when a real close grace period cannot fit a durable suspe
   }
 }, 30_000);
 
-it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accounting-rejected"] as const)("cold-restores a suspended provider session under its durable run binding (pending tail: %s)", async (pendingTail) => {
+it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accounting-rejected", "credentials-cleaned"] as const)("cold-restores a suspended provider session under its durable run binding (pending tail: %s)", async (pendingTail) => {
   const stateDirectory = await mkdtemp(join(tmpdir(), "runnerd-cold-attach-"));
   const tracePath = join(stateDirectory, "provider-trace.ndjson");
   const skillRoot = join(stateDirectory, "runtime-skill");
@@ -8256,6 +8256,12 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
   await Promise.all([mkdir(skillRoot), mkdir(instructionRoot)]);
   await writeFile(join(skillRoot, "SKILL.md"), "# Assigned runtime skill\n");
   await writeFile(join(instructionRoot, "AGENTS.md"), "Runtime instructions\n");
+  const credentialsCleaned = pendingTail === "credentials-cleaned";
+  const sourceCodexHome = join(stateDirectory, "selected-account-first");
+  if (credentialsCleaned) {
+    await mkdir(sourceCodexHome);
+    await writeFile(join(sourceCodexHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "selected-account-fixture" }), { mode: 0o600 });
+  }
   const baseIdentity = {
     runnerInstanceId: "runner-cold-attach",
     environmentLeaseId: "lease-cold-attach",
@@ -8271,14 +8277,21 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
       stateDirectory,
       "--include-skill-instructions",
       "--durable-turn-ids",
+      ...(credentialsCleaned ? ["--require-codex-home-auth"] : []),
       "-c",
       'shell_environment_policy.set={PATH="/run/A"}',
     ),
     stateDirectory,
+    ...(credentialsCleaned ? { sourceCodexHome } : {}),
     environment: {
       PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-A-capability",
       PAPERCLIP_PROVIDER_TRACE_PATH: tracePath,
       PAPERCLIP_PROVIDER_TRACE_MAX_BYTES: String(64 * 1024 * 1024),
+      ...(credentialsCleaned ? {
+        PAPERCLIP_NATIVE_MCP_NAME: "assigned",
+        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp/first",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "first-assigned-gateway-credential",
+      } : {}),
     },
     lifecyclePolicy: { mode: "per_turn" as const, idleTimeoutMs: null },
     runtimeContext: assignedRuntimeContext(skillRoot, instructionRoot),
@@ -8340,6 +8353,13 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
   if (!firstProviderThread) {
     throw new Error("cold attach fixture did not return a provider thread");
   }
+  const successorCodexHome = join(stateDirectory, "selected-account-next");
+  if (credentialsCleaned) {
+    await rm(join(stateDirectory, "codex-home", "auth.json"));
+    await rm(sourceCodexHome, { recursive: true });
+    await mkdir(successorCodexHome);
+    await writeFile(join(successorCodexHome, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "selected-account-fixture" }), { mode: 0o600 });
+  }
 
   // Model a retained provider-owned suffix: rotation must deliver and durably
   // accept it before attempting run.attach, rather than dropping or ACKing it.
@@ -8378,6 +8398,7 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
   let rejectStagedCommit = pendingTail === "restart-before-bootstrap";
   const rotatedOptions = {
     ...options,
+    ...(credentialsCleaned ? { sourceCodexHome: successorCodexHome } : {}),
     onStagedRunAttachment: pendingTail === "restart-before-bootstrap" ? async (authority: DurablePrpControlPlane) => {
       authority.setCheckpointPersistence(async checkpoint => {
         stagedCheckpoint = checkpoint;
@@ -8392,7 +8413,12 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
         await retainedAccepted;
       }
     } : undefined,
-    environment: { ...options.environment, PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-B-capability" },
+    environment: { ...options.environment, PAPERCLIP_GITHUB_BROKER_TOKEN: "test-run-B-capability",
+      ...(credentialsCleaned ? {
+        PAPERCLIP_NATIVE_MCP_URL: "https://paperclip.example/mcp/current",
+        PAPERCLIP_NATIVE_MCP_TOKEN: "current-assigned-gateway-credential",
+      } : {}),
+    },
     codexArgs: options.codexArgs.map((arg) => arg.replace('/run/A', '/run/B')),
     resumeDynamicTools: dynamicTools,
     resumeCompletionContract: {
@@ -8452,6 +8478,7 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
     }
     return;
   }
+  let recoveryError: unknown;
   try {
     const reading = rotated.transport.request("thread/read", {});
     void reading.catch(() => undefined);
@@ -8466,6 +8493,13 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
       } : JSON.parse(await readFile(join(stateDirectory, "control-plane", "control-plane-state.json"), "utf8"));
       expect(retainedCore.identity).toEqual(baseIdentity);
       expect(retainedCore.commands.some((command: { type: string }) => command.type === "run.attach")).toBe(false);
+      if (credentialsCleaned) {
+        const config = await readFile(join(stateDirectory, "codex-home", "config.toml"), "utf8");
+        expect(config).toContain("https://paperclip.example/mcp/current");
+        expect(config).toContain("current-assigned-gateway-credential");
+        expect(config).not.toContain("first-assigned-gateway-credential");
+        expect(currentHandler).not.toHaveBeenCalled();
+      }
     }
     releaseRetained();
     const read = await reading;
@@ -8497,9 +8531,15 @@ it.each([false, true, "restart-before-bootstrap", "unknown-semantic", "accountin
       expect(target.stagedRunAttachment).toBeUndefined();
       expect(target.completedWarmTransition.receipt).toMatchObject({ oldIdentity: baseIdentity, newIdentity: secondIdentity });
     } else expect(await stat(join(stateDirectory, "authority-epochs"))).toBeDefined();
+  } catch (error) {
+    recoveryError = error;
+    throw error;
   } finally {
     releaseRetained();
-    await rotated.transport.close();
+    await rotated.transport.close().catch(error => {
+      if (recoveryError) throw new AggregateError([recoveryError, error], "Provider recovery and cleanup failed");
+      throw error;
+    });
   }
   const requestFrames = (await readFile(tracePath, "utf8"))
     .trim()

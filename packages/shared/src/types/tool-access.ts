@@ -785,6 +785,12 @@ export interface ToolProfileSummary {
   isCompanyDefault: boolean;
 }
 
+/** Saved configuration only; no effective-access summary or pending-review calculation. */
+export interface ToolProfileConfiguration extends Omit<ToolProfile, "newToolsPendingCount"> {
+  entries: ToolProfileEntry[];
+  bindings: ToolProfileBinding[];
+}
+
 export interface ToolProfileWithDetails extends ToolProfile {
   entries: ToolProfileEntry[];
   bindings: ToolProfileBinding[];
@@ -1012,6 +1018,11 @@ export interface ToolAppAttentionItem {
   newToolsPendingReviewCount: number;
   newToolsPendingProfiles: ToolAppAttentionProfileNewTools[];
   reasons: ToolAppAttentionReason[];
+}
+
+export interface ToolConnectionReviewCounts {
+  pendingActionRequestCount: number;
+  quarantinedCatalogEntryCount: number;
 }
 
 export interface ToolAppsAttentionResponse {

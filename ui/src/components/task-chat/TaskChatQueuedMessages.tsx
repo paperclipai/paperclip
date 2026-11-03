@@ -442,7 +442,7 @@ export function TaskChatQueuedMessages({
           })}
         </SortableContext>
       </DndContext>
-      {deferredStatus ? <p role="status" className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground">{deferredStatus.message ?? t("nov02Components.messagesWaitForTask", { defaultValue: "Messages are still queued. They will send when the task is ready." })}</p> : null}
+      {deferredStatus ? <p role="status" className="border-t border-border px-3 py-1.5 text-xs text-muted-foreground">{deferredStatus.message != null ? queuedMessageWaitMessage(deferredStatus.message) : t("nov02Components.messagesWaitForTask", { defaultValue: "Messages are still queued. They will send when the task is ready." })}</p> : null}
       {visibleError ? (
         <div
           role="status"

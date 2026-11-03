@@ -28,6 +28,10 @@ Agent access: [companion](../agent-access-map/recovery.md).
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
 - `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.
+  The failed-attempt notice has padding, a tinted background and an error icon;
+  its message and Retry remain readable on narrow screens in both themes. Verify
+  with [the browser layout checks](../../tests/e2e/execution-recovery/failed-attempt-notice.spec.ts)
+  against an owned Storybook server using `RECOVERY_STORYBOOK_URL`.
   Internal repair stays system-owned; genuine user decisions retain their
   specific action.
 - `workspace`: `recovery/workspace` — workspace divergence/export failures show the applicable repair,
@@ -424,6 +428,17 @@ and filesystem controls do not qualify a deployed provider.
 Verify saved and newer local files, one preservation receipt, and
 no additional agent turn. The PostgreSQL regression covers this boundary; the
 opt-in provider probe also uses this runtime path with the protection marker.
+
+Repeat Task Retry with a completed native result whose unfinished export uses
+the remote-workspace descriptor. Before preservation, require the original run
+to remain the only task run. After preservation, verify restored file bytes and
+Git HEAD, commitment of that same result, and an unanswered human review keeping
+the task In Review. For an action superseded by a newer failure, request exact
+historical file recovery through the board API: verify a committed snapshot,
+unchanged newer workspace binding and attention owner, no old-result commitment,
+and no provider turn. An active current writer or no explicit request keeps the
+historical source waiting. The PostgreSQL/HTTP regression is in
+[workspace recovery](../../server/src/services/workspace-recovery.test.ts).
 
 For a missing managed allocation, verify a fresh Cloud-signed absence observation
 under the exact physical recovery owner. The existing Retry may then select an

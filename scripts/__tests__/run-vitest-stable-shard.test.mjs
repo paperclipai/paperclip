@@ -324,6 +324,8 @@ const usageDeliverySuitePath = "server/src/services/native-runtime/native-usage-
 const dotRunnerSuitePath = "server/src/__tests__/dot-runner.test.ts";
 const restartRecoverySuitePath =
   "server/src/services/native-runtime/native-runner-restart-recovery.integration.test.ts";
+const restartWaitSuites = ["lease-renewal", "preparation", "checkpoint-cost", "diskless"]
+  .map(name => `server/src/services/native-runtime/native-runner-restart-${name}.integration.test.ts`);
 
 // Mirrors pr-trusted.yml (12 shards, called by pr.yml so GITHUB_WORKFLOW is
 // "PR"): the chat suite runs in its dedicated lanes and the cargo-dependent
@@ -365,7 +367,7 @@ test("12 PR without-chat shards plus the dedicated chat and native-runner lanes 
   assert.ok(!files.includes(dotRunnerSuitePath));
   assert.ok(!files.includes(restartRecoverySuitePath));
   assert.ok(!files.includes(usageDeliverySuitePath));
-  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath, usageDeliverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
+  assert.deepEqual([...files, chatSuitePath, nativeRunnerSuitePath, dotRunnerSuitePath, restartRecoverySuitePath, ...restartWaitSuites, usageDeliverySuitePath, "server/src/services/native-runtime/plugin-runner-probe.test.ts"].sort(), full.selectedGeneralServerSuites.sort());
   assert.equal(new Set(files).size, files.length);
   const defaultRun = dryRunJson([], prEnv);
   assert.ok(defaultRun.generalServerSuiteCount === full.generalServerSuiteCount);
@@ -414,6 +416,7 @@ test("the native-runner lane runs exactly the cargo-dependent suites", () => {
     "server/src/services/native-runtime/native-codex-runner.integration.test.ts",
     dotRunnerSuitePath,
     restartRecoverySuitePath,
+    ...restartWaitSuites,
     usageDeliverySuitePath,
   ]);
 });
@@ -723,4 +726,32 @@ test("a failed chat child fails the job after its sibling finishes", { skip: pro
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("native files overlap only when their database fixtures are isolated", { skip: process.platform === "win32" }, () => {
+  const directory = mkdtempSync(path.join(os.tmpdir(), "native-file-workers-"));
+  const receipt = path.join(directory, "args.json");
+  const fakePnpm = path.join(directory, "pnpm");
+  writeFileSync(fakePnpm, `#!/usr/bin/env node\nrequire('node:fs').writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(process.argv.slice(2)));\n`);
+  chmodSync(fakePnpm, 0o755);
+  try {
+    for (const [databaseEnv, workers] of [
+      [{}, 2],
+      [{ PAPERCLIP_TEST_DATABASE_URL: "postgresql://shared/test" }, 1],
+      [{ PAPERCLIP_ISSUE_RECOVERY_TEST_DATABASE_URL: "postgresql://shared/recovery_test" }, 1],
+      [{ PAPERCLIP_TEST_POSTGRES_ADMIN_URL: "postgresql://owned/postgres" }, 2],
+    ]) {
+      const env = workflowEnv({ PATH: `${directory}${path.delimiter}${process.env.PATH}`, PAPERCLIP_CI_PROFILE: "false" });
+      for (const key of Object.keys(env)) if (key.endsWith("_TEST_DATABASE_URL")) delete env[key];
+      Object.assign(env, databaseEnv);
+      const result = spawnSync(process.execPath, [script, "--mode", "general", "--group", "general-server-native-runner"], {
+        cwd: repoRoot, encoding: "utf8", env,
+      });
+      assert.equal(result.status, 0, result.stdout + result.stderr);
+      const args = JSON.parse(readFileSync(receipt, "utf8"));
+      assert.ok(args.includes(`--maxWorkers=${workers}`));
+      assert.ok(args.includes(workers === 2 ? "--fileParallelism" : "--no-file-parallelism"));
+      for (const file of [restartRecoverySuitePath, ...restartWaitSuites]) assert.ok(args.includes(file));
+    }
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });

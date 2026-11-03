@@ -29,6 +29,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import { StatusIcon } from "./StatusIcon";
 import { SidebarSection } from "./SidebarSection";
 import { SidebarNavItem } from "./SidebarNavItem";
 
@@ -254,6 +255,7 @@ function RecentTasksList({
             <SidebarNavItem
               to={`/issues/${entry.id}`}
               label={entry.title}
+              iconNode={entry.displayStatus === "monitoring" && !liveIssueIds.has(entry.id) ? <StatusIcon status={entry.status} displayStatus={entry.displayStatus} /> : undefined}
               trailing={entry.status === "in_review" && entry.externalConversationState === "waiting"
                 ? <span className="text-xs text-muted-foreground">{t("status.idle")}</span> : undefined}
               trailingLabel={entry.status === "in_review" && entry.externalConversationState === "waiting" ? t("status.idle") : undefined}

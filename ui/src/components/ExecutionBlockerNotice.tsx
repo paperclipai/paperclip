@@ -1,5 +1,6 @@
 import type { TaskInterruptionPresentation } from "@paperclipai/shared";
 import { useTranslation } from "@/i18n";
+import { AlertCircle } from "lucide-react";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
 import { useSecondTick } from "../hooks/useSecondTick";
@@ -29,11 +30,17 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
       !["failed", "retry_scheduled"].includes(presentation.state)) return null;
   const seconds = Math.max(0, Math.ceil((Date.parse(presentation.nextRetryAt ?? "") - Date.now()) / 1000));
   return (
-    <div role="status" aria-label={t("oct26Onboarding.blocker.status")} className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}>
-      <span>{presentation.state === "retry_scheduled"
-        ? t(seconds > 60 ? "oct26Onboarding.blocker.retryMinutes" : "oct26Onboarding.blocker.retrySeconds", { count: seconds > 60 ? Math.ceil(seconds / 60) : seconds })
-        : t("oct26Onboarding.blocker.savedMessage")}</span>
-      {canRetry && presentation.canRetry && <Button variant="outline" size="sm" onClick={onRetry}>{t("sep12Screens.retry")}</Button>}
+    <div className={cn(presentation.state === "failed" && "pt-4", className)}>
+      <div role="status" aria-label={t("oct26Onboarding.blocker.status")} className={cn(
+        "flex items-center justify-between gap-3 text-sm",
+        presentation.state === "failed" ? "rounded-lg bg-destructive/10 p-4 text-foreground" : "text-muted-foreground",
+      )}>
+        {presentation.state === "failed" && <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />}
+        <span className="min-w-0 flex-1">{presentation.state === "retry_scheduled"
+          ? t(seconds > 60 ? "oct26Onboarding.blocker.retryMinutes" : "oct26Onboarding.blocker.retrySeconds", { count: seconds > 60 ? Math.ceil(seconds / 60) : seconds })
+          : t("oct26Onboarding.blocker.savedMessage")}</span>
+        {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry}>{t("sep12Screens.retry")}</Button>}
+      </div>
     </div>
   );
 }

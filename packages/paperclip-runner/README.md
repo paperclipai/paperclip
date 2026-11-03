@@ -391,6 +391,12 @@ runner supplies the pinned executable, selected model, and assigned MCP tools.
 Provider inference and reasoning still contribute to time to first text. These
 startup settings do not disable model reasoning.
 
+An interrupted OpenCode turn does not request a replacement final answer.
+This also applies when an unanswered native question moves to a durable wait.
+The driver reports an interrupted idle as a cancelled terminal so the wait can
+settle. An abort acknowledgement alone does not prove that the provider stopped.
+A later authorized turn can use normal answer recovery.
+
 On macOS, the verified OpenCode executable keeps its private launch pathname
 until the provider process exits. Removing that pathname immediately after
 spawn can kill or stall the signed binary before its health check succeeds.

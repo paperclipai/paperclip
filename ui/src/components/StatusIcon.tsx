@@ -11,6 +11,8 @@ const allStatuses = ["backlog", "todo", "in_progress", "in_review", "done", "can
 
 interface StatusIconProps {
   status: string;
+  /** Server-derived presentation; mutations still use the canonical status. */
+  displayStatus?: string | null;
   externalConversationState?: "active" | "waiting" | null;
   blockerAttention?: IssueBlockerAttention | null;
   onChange?: (status: string) => void;
@@ -60,8 +62,8 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
 }
 
 /** Shared accessible/tooltip copy, including waiting and covered-blocker states. */
-export function getStatusIconLabel(status: string, externalConversationState?: "active" | "waiting" | null, blockerAttention?: IssueBlockerAttention | null): string {
-  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status;
+export function getStatusIconLabel(status: string, externalConversationState?: "active" | "waiting" | null, blockerAttention?: IssueBlockerAttention | null, presentationStatus?: string | null): string {
+  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status === "in_progress" && presentationStatus === "monitoring" ? "monitoring" : status;
   return status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(displayStatus);
 }
 
@@ -77,12 +79,12 @@ export function getStatusIconLabel(status: string, externalConversationState?: "
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
  */
-export function StatusIcon({ status, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
+export function StatusIcon({ status, displayStatus: presentationStatus, externalConversationState, blockerAttention, onChange, className, glyphContainerClassName, showLabel, size = "md" }: StatusIconProps) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status;
+  const displayStatus = status === "in_review" && externalConversationState === "waiting" ? "idle" : status === "in_progress" && presentationStatus === "monitoring" ? "monitoring" : status;
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
-  const ariaLabel = getStatusIconLabel(status, externalConversationState, blockerAttention);
+  const ariaLabel = getStatusIconLabel(status, externalConversationState, blockerAttention, presentationStatus);
   const glyphStatus = isCoveredBlocked ? "in_queue" : displayStatus;
 
   const glyphIcon = (

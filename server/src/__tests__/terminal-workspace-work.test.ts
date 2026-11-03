@@ -22,7 +22,7 @@ function setup() {
   });
   coordinators.push(coordinator);
   const service = {
-    sweepTerminalWorkspaces: vi.fn(async (_limit?: number, _signal?: AbortSignal, _options?: { compact?: boolean }) => ({ checked: 0 })),
+    sweepTerminalWorkspaces: vi.fn(async (_limit?: number, _signal?: AbortSignal, _options?: { compact?: boolean; allowRemoteDeliveryChecks?: boolean }) => ({ checked: 0 })),
     hasTerminalWorkspaceSweepContinuation: vi.fn(() => false),
     nextTerminalWorkspaceSweepAt: vi.fn(async (): Promise<number | null> => null),
   };
@@ -44,15 +44,48 @@ describe("terminal workspace work", () => {
     expect(worker.hasUnrecoveredWork()).toBe(false);
   });
 
-  it("skips compaction only in the startup sweep that readiness waits for", async () => {
+  it("defers compaction and remote delivery checks only in the startup sweep that readiness waits for", async () => {
     const s = setup();
     s.service.hasTerminalWorkspaceSweepContinuation.mockReturnValueOnce(true);
     await s.start().ready;
     expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
-    expect(s.service.sweepTerminalWorkspaces.mock.calls[0]?.[2]).toEqual({ compact: false });
+    expect(s.service.sweepTerminalWorkspaces.mock.calls[0]?.[2]).toEqual({ compact: false, allowRemoteDeliveryChecks: false });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(2);
-    expect(s.service.sweepTerminalWorkspaces.mock.calls[1]?.[2]).toEqual({ compact: true });
+    expect(s.service.sweepTerminalWorkspaces.mock.calls[1]?.[2]).toEqual({ compact: true, allowRemoteDeliveryChecks: true });
+  });
+
+  it("retains deferred delivery across drain and resumes it outside readiness", async () => {
+    const s = setup();
+    let deadline: number | null = Date.now();
+    let release!: () => void;
+    const remote = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+    s.service.hasTerminalWorkspaceSweepContinuation.mockReturnValueOnce(true);
+    s.service.nextTerminalWorkspaceSweepAt.mockImplementation(async () => deadline);
+    s.service.sweepTerminalWorkspaces.mockImplementation(async (_limit, _signal, options) => {
+      if (options?.allowRemoteDeliveryChecks === false) return { checked: 1 };
+      await remote();
+      deadline = null;
+      return { checked: 1 };
+    });
+    const worker = s.start();
+    try {
+      await worker.ready;
+      expect(remote).not.toHaveBeenCalled();
+      expect(s.coordinator.nextWakeAt()).toBe(Date.now() + 1000);
+      s.enabled.mockReturnValue(false);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(remote).not.toHaveBeenCalled();
+      expect(s.service.sweepTerminalWorkspaces).toHaveBeenCalledTimes(1);
+      expect(s.coordinator.nextWakeAt()).not.toBeNull();
+      s.enabled.mockReturnValue(true);
+      await vi.advanceTimersByTimeAsync(TERMINAL_WORKSPACE_RETRY_MS);
+      expect(remote).toHaveBeenCalledTimes(1);
+      release();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(s.coordinator.nextWakeAt()).toBeNull();
+      expect(worker.hasUnrecoveredWork()).toBe(false);
+    } finally { release?.(); }
   });
 
   it("restores the cooldown deadline, lets commits preempt it, and parks after cleanup", async () => {

@@ -906,7 +906,8 @@
     "unavailable": "Unavailable",
     "endpoint_removed": "Connection removed",
     "validating": "Validating",
-    "resolving": "Resolving"
+    "resolving": "Resolving",
+    "monitoring": "Monitoring"
   },
   "priority": {
     "critical": "Critical",
@@ -16513,7 +16514,9 @@
     "ai_connection_local_login_cleanup_requested": "ai connection local login cleanup requested",
     "project_git_authorized": "project git authorized",
     "project_git_authorization_revoked": "project git authorization revoked",
-    "issue_retry_inputs_restored": "issue retry inputs restored"
+    "issue_retry_inputs_restored": "issue retry inputs restored",
+    "native_startup_cleanup_requested": "native startup cleanup requested",
+    "runner_artifact_install": "runner artifact install"
   },
   "localizationMembership": {
     "join": "Join",
@@ -23916,5 +23919,29 @@
     "changesToApply_other": "{{count}} changes to apply",
     "sendSavedMessageAfterStop": "Send the saved message again now that the previous run has stopped.",
     "savedMessageWaitingForCleanup": "Waiting for the previous run to finish cleanup. Your message is saved."
+  },
+  "nov03": {
+    "composer": {
+      "uploadingImage": "Uploading {{name}}…",
+      "imageAttachments": "Image attachments",
+      "restoreFilesFailed": "Saved files could not be restored. Attach them again before you create the task.",
+      "saveFilesFailed": "Files could not be saved in this browser. Keep this page open until you create the task.",
+      "stagedFileMissing": "This page no longer has the file staged for this task ({{names}}). Attach it again, then create the task.",
+      "stagedFilesMissing": "This page no longer has the {{count}} files staged for this task ({{names}}). Attach them again, then create the task."
+    }
+  },
+  "nov03AccountIdentity": {
+    "providerAccount": "{{provider}} account",
+    "checking": "Checking account details…",
+    "retry": "Retry account check",
+    "notice": {
+      "unsupported": "Account details are not available for this sign-in method.",
+      "connection_unavailable": "Reconnect or enable this connection to check its account details.",
+      "authentication_required": "Reconnect this account to check its account details.",
+      "permission_denied": "Anthropic did not permit this connection to read the account email.",
+      "rate_limited": "Anthropic limited this account check. Try again later.",
+      "provider_unavailable": "Could not read the account details. Try again later.",
+      "invalid_response": "Anthropic did not return an account email."
+    }
   }
 }

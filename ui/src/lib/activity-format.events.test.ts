@@ -158,6 +158,55 @@ describe("activity event fallback localization", () => {
     }
   });
 
+  it.each([
+    ["native.startup_cleanup_requested", ["pending"]],
+    ["runner.artifact_install", ["started", "completed", "unconfirmed"]],
+  ] as const)("localizes %s without changing outcome, artifact or lease metadata", async (action, outcomes) => {
+    for (const outcome of outcomes) {
+      const details = Object.freeze({
+        outcome,
+        artifactId: "artifact.Raw_Id",
+        destination: "workspace/Original_File.md",
+        sha256: "a".repeat(64),
+        byteSize: 42,
+        contextId: "context.Raw_Id",
+        leaseId: "lease.Raw_Id",
+        controllerGeneration: 3,
+        reason: "startup_worker_unsettled",
+      });
+      const event = Object.freeze({ action, details });
+      const original = JSON.stringify(event);
+      for (const locale of ["en", "ru", "en"]) {
+        await i18n.changeLanguage(locale);
+        const catalog = locale === "ru" ? ruEvents : enEvents;
+        for (const format of [formatActivityVerb, formatIssueActivityAction]) {
+          expect(format(action, details)).toBe(catalog[eventKey(action)]);
+          for (const unknown of [action.replace(/\./g, "_"), `${action}.${outcome}`, `plugin.${action}`]) {
+            expect(format(unknown, details)).toBe(unknown.replace(/[._]/g, " "));
+          }
+        }
+        expect(JSON.stringify(event)).toBe(original);
+      }
+    }
+  });
+
+  it.each(["native.startup_cleanup_requested", "runner.artifact_install"])("retains a readable %s label if both locale entries are absent", async action => {
+    const key = eventKey(action);
+    const bundles = ["en", "ru"].map(locale => i18n.getResource(locale, "translation", "localizationActivityEvents") as Record<string, string>);
+    const saved = bundles.map(bundle => bundle[key]);
+    try {
+      for (const bundle of bundles) delete bundle[key];
+      for (const locale of ["en", "ru", "en"]) {
+        await i18n.changeLanguage(locale);
+        for (const format of [formatActivityVerb, formatIssueActivityAction]) {
+          expect(format(action)).toBe(action.replace(/[._]/g, " "));
+        }
+      }
+    } finally {
+      bundles.forEach((bundle, index) => { bundle[key] = saved[index]; });
+    }
+  });
+
   it("keeps exact action identities and collision-free catalog keys in parity", () => {
     const keys = fallbackActions.map(eventKey);
     expect(new Set(fallbackActions).size).toBe(fallbackActions.length);

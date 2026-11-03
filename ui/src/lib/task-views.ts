@@ -63,7 +63,7 @@ export const TASK_VIEW_GROUPS: TaskViewGroup[] = [
     get label() { return t("oct5Core.s0298"); },
     views: [
       { key: "all", get label() { return t("oct5Core.s0299"); }, surface: "issues", statuses: [], get hint() { return t("oct5Core.s0300"); } },
-      { key: "active", get label() { return t("oct5Core.s0301"); }, surface: "issues", statuses: ["todo", "in_progress", "in_review", "blocked"], get hint() { return t("oct5Core.s0302"); } },
+      { key: "active", get label() { return t("oct5Core.s0301"); }, surface: "issues", statuses: ["todo", "in_progress", "monitoring", "in_review", "blocked"], get hint() { return t("oct5Core.s0302"); } },
       { key: "backlog", get label() { return t("oct5Core.s0303"); }, surface: "issues", statuses: ["backlog"], get hint() { return t("oct5Core.s0304"); } },
       { key: "done", get label() { return t("oct5Core.s0305"); }, surface: "issues", statuses: ["done", "cancelled"], get hint() { return t("oct5Core.s0306"); } },
     ],

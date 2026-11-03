@@ -14,6 +14,7 @@ export type IssueDetailHeaderSeed = {
   identifier: string | null;
   title: string;
   status: string;
+  displayStatus?: Issue["displayStatus"];
   blockerAttention?: Issue["blockerAttention"];
   priority: string;
   projectId: string | null;
@@ -25,6 +26,7 @@ export type IssueDetailHeaderSeed = {
 type IssueDetailHeaderSeedSource = Pick<Issue, "id" | "title"> & {
   identifier?: string | null;
   status: string;
+  displayStatus?: Issue["displayStatus"];
   blockerAttention?: Issue["blockerAttention"];
   priority: string;
   projectId?: string | null;
@@ -84,6 +86,7 @@ function createIssueDetailHeaderSeed(issue: IssueDetailHeaderSeedSource): IssueD
     identifier: issue.identifier ?? null,
     title: issue.title,
     status: issue.status,
+    displayStatus: issue.displayStatus,
     blockerAttention: issue.blockerAttention,
     priority: issue.priority,
     projectId: issue.projectId ?? null,

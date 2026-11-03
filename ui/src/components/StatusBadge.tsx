@@ -90,9 +90,9 @@ export function AgentStatusCapsule({ status }: { status: string }) {
  * Distinct from the generic {@link StatusBadge} so run/goal/approval badges are
  * unaffected.
  */
-export function IssueStatusBadge({ status: taskStatus, externalConversationState }: { status: string; externalConversationState?: "active" | "waiting" | null }) {
+export function IssueStatusBadge({ status: taskStatus, displayStatus, externalConversationState }: { status: string; displayStatus?: string | null; externalConversationState?: "active" | "waiting" | null }) {
   const { t } = useTranslation();
-  const status = taskStatus === "in_review" && externalConversationState === "waiting" ? "idle" : taskStatus;
+  const status = taskStatus === "in_review" && externalConversationState === "waiting" ? "idle" : taskStatus === "in_progress" && displayStatus === "monitoring" ? "monitoring" : taskStatus;
   const cssVar = taskStatusVar[status] ?? taskStatusVarDefault;
   return (
     <span

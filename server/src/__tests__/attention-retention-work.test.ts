@@ -58,8 +58,10 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "owner", status: "active" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Origin", role: "engineer", status: "active" });
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
-    vi.setSystemTime(new Date("2026-11-01T12:00:00Z"));
+    // Ordinary issue creation uses database timestamp defaults. Start the fake
+    // clock there too; a fixed calendar date eventually trails those deadlines.
+    const [clock] = await db.execute<{ now: string }>(sql`select (extract(epoch from clock_timestamp()) * 1000)::text as now`);
+    vi.useFakeTimers({ now: Number(clock.now), toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
   });
   afterEach(async () => {
     await coordinator?.stop(); coordinator = undefined;

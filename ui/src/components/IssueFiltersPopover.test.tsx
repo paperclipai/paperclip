@@ -271,7 +271,7 @@ describe("IssueFiltersPopover", () => {
       root.render(
         <IssueFiltersPopover
           presentation="streamlined"
-          state={{ ...defaultIssueFilterState, statuses: ["in_progress"] }}
+          state={{ ...defaultIssueFilterState, statuses: ["in_progress", "monitoring"] }}
           onChange={onChange}
           activeFilterCount={1}
           agents={Array.from({ length: 7 }, (_, index) => ({ id: `agent-${index}`, name: `Agent ${index}` }))}
@@ -284,6 +284,10 @@ describe("IssueFiltersPopover", () => {
     });
     const search = container.querySelector<HTMLInputElement>('input[aria-label="Поиск ответственных"]')!;
     expect(search).not.toBeNull();
+    const monitoringLabel = Array.from(container.querySelectorAll("label"))
+      .find(label => label.textContent?.includes("Мониторинг"))!;
+    const monitoringCheckbox = monitoringLabel?.querySelector<HTMLInputElement>('input[type="checkbox"]');
+    expect(monitoringCheckbox).not.toBeNull();
     act(() => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(search, "Agent 6");
       search.dispatchEvent(new Event("input", { bubbles: true }));
@@ -300,10 +304,16 @@ describe("IssueFiltersPopover", () => {
       expect(container.querySelector('[data-filter-options="responsible"]')?.textContent).not.toContain("Agent 1");
       const selectedStatus = container.querySelector<HTMLInputElement>('input[type="checkbox"]:checked');
       expect(selectedStatus?.closest("label")?.textContent).toContain(locale === "ru" ? "В работе" : "In Progress");
+      expect(monitoringLabel.textContent).toContain(locale === "ru" ? "Мониторинг" : "Monitoring");
+      expect(monitoringLabel.querySelector("input")).toBe(monitoringCheckbox);
+      expect(monitoringCheckbox?.checked).toBe(true);
     }
+    expect(onChange).not.toHaveBeenCalled();
+    act(() => monitoringCheckbox?.click());
+    expect(onChange).toHaveBeenLastCalledWith({ statuses: ["in_progress"] });
     const activePreset = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Активные");
     act(() => activePreset?.click());
-    expect(onChange).toHaveBeenLastCalledWith({ statuses: ["todo", "in_progress", "in_review", "blocked"] });
+    expect(onChange).toHaveBeenLastCalledWith({ statuses: ["todo", "in_progress", "monitoring", "in_review", "blocked"] });
   });
 
 });

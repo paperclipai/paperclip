@@ -27,6 +27,8 @@ interface ActivityFormatOptions {
 // collide with a built-in code (for example issue.read_marked / issue_read.marked).
 // These labels supplement the existing detail-aware formatters below.
 const LOCALIZED_FALLBACK_ACTIVITY_ACTIONS = new Set<string>([
+  "native.startup_cleanup_requested",
+  "runner.artifact_install",
 "instance.adapter.updated",
 "tool_gateway.created",
 "tool_gateway.updated",

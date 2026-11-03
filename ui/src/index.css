@@ -349,6 +349,8 @@
   --status-task-backlog: #a8aeb2;
   --status-task-todo: #f59e0b;
   --status-task-in_progress: #2563eb;
+  --status-task-monitoring: var(--status-task-in_progress);
+  --status-task-icon-monitoring: var(--status-task-icon-in_progress);
   --status-task-in_review: #7c3aed;
   --status-task-done: #22c55e;
   --status-task-blocked: #dc2626;
@@ -5045,7 +5047,7 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-workspace [data-conversation-text="human"] { background: var(--bubble-human-bg); color: var(--bubble-human-fg); }
 .coordinator-workspace [data-question-answer] { background: var(--card); }
 .dark .coordinator-workspace [data-question-answer] { background: var(--muted); }
-.coordinator-workspace [data-testid="task-chat-composer-dock"] {
+.coordinator-workspace .task-chat-composer-dock {
   flex-shrink: 0;
   background: var(--background);
   backdrop-filter: none;
@@ -5053,7 +5055,7 @@ html:not(.dark) .coordinator-sidebar {
 }
 @media (min-width: 768px) {
   .coordinator-workspace [data-testid="task-chat-thread"] { position: relative; }
-  .coordinator-workspace [data-testid="task-chat-composer-dock"] { position: absolute; inset-inline: 0; bottom: 0; }
+  .coordinator-workspace .task-chat-composer-dock { position: absolute; inset-inline: 0; bottom: 0; }
   .coordinator-workspace [data-testid="task-chat-scroller"] > .paperclip-mobile-thread {
     padding-bottom: calc(var(--task-composer-dock-height, 0px) + var(--spacing) * 4);
   }
@@ -5061,7 +5063,7 @@ html:not(.dark) .coordinator-sidebar {
     bottom: calc(var(--task-composer-dock-height, 0px) + var(--spacing) * 3);
   }
 }
-.coordinator-workspace [data-testid="task-chat-composer-dock"] > :last-child { border-radius: var(--coordinator-card-radius); }
+.coordinator-workspace .task-chat-composer-dock > :last-child { border-radius: var(--coordinator-card-radius); }
 .coordinator-workspace [cmdk-root] { height: auto; flex: none; }
 .coordinator-workspace [cmdk-list] { flex: none; }
 .coordinator-decision-card { border: 1px solid var(--border); border-radius: var(--coordinator-card-radius, var(--radius-xl)); padding: var(--coordinator-card-inset, calc(var(--spacing) * 6)); background: var(--card); box-shadow: var(--coordinator-card-shadow); }

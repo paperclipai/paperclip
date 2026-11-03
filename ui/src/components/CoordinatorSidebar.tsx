@@ -54,7 +54,7 @@ function ProjectRecent({ project }: { project: Project }) {
     </div>
     {expanded && <div className="ml-5 border-l border-border pl-1">
       {isPending ? <p className="px-3 py-2 text-xs text-muted-foreground" role="status">{t("sep12Screens.loadingTasks")}</p> : error ? <p className="px-3 py-2 text-xs text-muted-foreground">{t("nov02Components.tasksLoadFailed", { defaultValue: "Couldn’t load tasks." })}</p> : tasks?.length ? tasks.map(task =>
-        <SidebarNavItem className="design-sidebar-item" key={task.id} to={`/issues/${task.identifier ?? task.id}`} label={task.title} iconNode={<StatusIcon status={task.status} />} />)
+        <SidebarNavItem className="design-sidebar-item" key={task.id} to={`/issues/${task.identifier ?? task.id}`} label={task.title} iconNode={<StatusIcon status={task.status} displayStatus={task.displayStatus} />} />)
         : <p className="px-3 py-2 text-xs text-muted-foreground">{t("pages.dashboard.noTasksYet")}</p>}
     </div>}
   </div>;
@@ -142,7 +142,7 @@ export function CoordinatorSidebar({ children }: { children?: ReactNode }) {
       {!rail && <div className="design-sidebar-recents"><SidebarSection label={t("nov02Components.recents", { defaultValue: "Recents" })}>
         <div className="design-sidebar-recent-list scrollbar-while-scrolling" onScroll={handleRecentScroll} role="region" aria-label={t("nov02Components.recents", { defaultValue: "Recents" })} tabIndex={0}>
         {session.isSuccess && recents.map(item => item.kind === "task"
-          ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon status={item.task.status} externalConversationState={item.task.externalConversationState} />} />
+          ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/issues/${item.task.identifier ?? item.id}`} label={item.task.title} iconNode={<StatusIcon status={item.task.status} displayStatus={item.task.displayStatus} externalConversationState={item.task.externalConversationState} />} />
           : item.kind === "chat"
             ? <SidebarNavItem className="design-sidebar-item" key={item.id} to={`/chats/${encodeURIComponent(agentRouteRef(item.agent))}`} label={item.agent.name} icon={MessageCircle} />
             : <ProjectRecent key={item.id} project={item.project} />)}

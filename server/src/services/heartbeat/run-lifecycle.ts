@@ -1,3 +1,4 @@
+import { readNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import { notifyStrandedAgentStatus } from "../live-run-recovery-notifications.js";
 import { notifyRunDispatch } from "../run-dispatch-notifications.js";
 import { preserveAcceptedRunUsageProjectionSql } from "../usage-receipts.js";
@@ -1159,6 +1160,9 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       .where(eq(heartbeatRuns.id, runId))
       .then((rows) => rows[0] ?? null);
     const previousStatus = previous?.run ?? null;
+    if (status === "failed" && patch?.errorCode === "process_lost" && previousStatus?.runtimeMode === "native" && readNativeStartupCleanup(previousStatus)) {
+      return { updated: false, run: previousStatus };
+    }
 
     if (previousStatus && (status === "cancelled" || status === "interrupted")) {
       patch = { ...patch, resultJson: cancellationResultJson(previousStatus, status, patch?.resultJson, patch?.errorCode, patch?.error) };
