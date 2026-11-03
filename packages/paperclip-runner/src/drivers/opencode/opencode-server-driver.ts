@@ -191,6 +191,7 @@ export type OpenCodeCompletionFeedback = (result: PrpStructuredRunResult, call: 
 export interface OpenCodeServerDriverOptions {
   model: string;
   permissionMode?: "allow" | "ask" | "deny";
+  durableToolRequests?: boolean;
   taskEnvelope?: CodexTaskEnvelope;
   conversationMode?: "task" | "prepared";
   runnerInstanceId?: string;
@@ -3014,7 +3015,7 @@ function buildOpenCodeConfig(input: {
         enabled: true,
         oauth: false,
         headers: { Authorization: `Bearer ${input.bridge.secret}` },
-        timeout: 30_000,
+        timeout: input.options.durableToolRequests ? 60 * 60 * 1_000 : 30_000,
       },
       ...(input.assignedMcp
         ? {
