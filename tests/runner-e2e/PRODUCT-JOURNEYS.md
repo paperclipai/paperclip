@@ -482,7 +482,8 @@ The journey retries only transient read transport failures within the existing
 phase and journey deadlines. Private read-failure receipts retain those
 observations. Mutations, user messages and agent work are never replayed.
 
-Repository reads retry only transient transport failures within the original
-journey deadline. Git inspection consumes the exact digest-verified download
+Repository JSON metadata observations retry only transient transport failures
+within the original journey deadline. Binary attachment and browser downloads
+remain single attempts; transport failures and digest mismatches fail visibly. Git inspection consumes the exact digest-verified download
 buffer; browser downloads remain an independent result-access check. The
 repository journey shares the observation reader and browser helpers above.

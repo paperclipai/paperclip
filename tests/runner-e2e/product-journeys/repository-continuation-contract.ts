@@ -16,14 +16,14 @@ export function repositoryContinuationStory(campaignId: string) {
       "Use this task's configured project repository. Work only in its existing checkout; do not create another repository, project, or task. Do not push anything to a remote.",
       `Verify that its starting HEAD is ${repositoryContinuationSource.commit}, then read the committed README. Stop and report a mismatch if this is not the configured repository.`,
       `Generate a fresh unpredictable 32-byte hexadecimal reference from the operating system random source and save it followed by one LF in ${files.context}. Do not print the reference in comments or your final answer.`,
-      `Create ${files.first} containing exactly "first\\n". Make one local Git commit containing only these two new files. Preserve every original repository file.`,
+      `Create ${files.first} containing only the text first followed by exactly one LF newline. Make one local Git commit containing only these two new files. Preserve every original repository file.`,
       `After the commit, create a self-contained Git bundle of HEAD at ${files.firstBundle}. Do not add the bundle to Git.`,
       `Register both ${files.context} and ${files.firstBundle} as downloadable artifacts with those exact filenames and titles. Deliver their accessible links and finish the task. I will send a later follow-up.`,
     ].join("\n"),
     followup: [
       "Continue in the same project checkout. Keep the earlier commit and original files.",
       `Read ${files.context} and ${files.first} from the current workspace. If either is missing or invalid, stop and report the failure. Never recreate either file or recover it from conversation, attachments, or another checkout.`,
-      `Keep their original bytes. Add ${files.followup} containing exactly "verified\\n" and make one more local Git commit containing only that new file. Do not amend or rewrite the earlier commit, and do not push.`,
+      `Keep their original bytes. Add ${files.followup} containing only the text verified followed by exactly one LF newline. Make one more local Git commit containing only that new file. Do not amend or rewrite the earlier commit, and do not push.`,
       `Create a new self-contained Git bundle of HEAD at ${files.finalBundle}. Register it as a downloadable artifact with that exact filename and title. Deliver its accessible link and finish the task.`,
     ].join("\n"),
   };

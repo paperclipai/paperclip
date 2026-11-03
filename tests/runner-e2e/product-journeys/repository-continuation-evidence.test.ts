@@ -95,4 +95,11 @@ describe("repository continuation target binding", () => {
     expect(story.followup).not.toContain("c".repeat(64));
     expect(() => repositoryContinuationStory("../unsafe")).toThrow();
   });
+  it("emits unambiguous LF instructions for the independently verified file bytes", () => {
+    const story = repositoryContinuationStory("journey-1793642415731-3c34246f");
+    expect(story.first).toContain("containing only the text first followed by exactly one LF newline.");
+    expect(story.followup).toContain("containing only the text verified followed by exactly one LF newline.");
+    expect(story.first).not.toContain("first\\n");
+    expect(story.followup).not.toContain("verified\\n");
+  });
 });
