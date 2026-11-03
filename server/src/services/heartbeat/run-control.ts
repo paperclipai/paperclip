@@ -573,7 +573,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
     let interruptedPreparation = false;
     if (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") {
-      const current = await getRun(run.id);
+      const current = await getRun(run.id, { includeExecutionEvidence: true });
       if (current && await isInterruptedNativePreparation(db, current)) {
         const settled = await settleInterruptedNativeBootstrap(db, { run: current, providerDispatchStarted: false });
         if (settled) { run = settled; interruptedPreparation = true; }

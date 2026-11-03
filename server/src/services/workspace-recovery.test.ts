@@ -39,7 +39,7 @@ import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from 
 import { requestTaskRetry } from "./task-retry.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { execFile } from "node:child_process";
-import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -317,7 +317,7 @@ describe("automatic retained workspace recovery", () => {
     } finally { await restarted.$client.end(); }
   }, 30_000);
 
-  it.each(["provider_started", "runtime_selected", "live_controller", "wrong_snapshot", "operator_stop",
+  it.each(["provider_started", "provider_dispatch_recorded", "runtime_selected", "live_controller", "wrong_snapshot", "operator_stop",
     "retry_exhausted", "human_reblock", "paused", "reassigned"] as const)(
     "keeps the interrupted preparation continuation behind %s", async gate => {
       const f = await interruptedRemotePreparation();
@@ -325,6 +325,9 @@ describe("automatic retained workspace recovery", () => {
       const source = await run(f.runId);
       if (gate === "provider_started") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
         runId: f.runId, agentId: source.agentId, seq: 1, eventType: "native.process_start_requested", stream: "system" });
+      if (gate === "provider_dispatch_recorded") await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: true }, output: randomBytes(128 * 1024).toString("base64"),
+      } }).where(eq(heartbeatRuns.id, f.runId));
       if (gate === "runtime_selected") await db.update(heartbeatRuns).set({ runtimeModeResolvedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
       if (gate === "live_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, f.runId));
       if (gate === "wrong_snapshot") await db.update(heartbeatRuns).set({ runnerProfileJson: { ...source.runnerProfileJson,
@@ -339,7 +342,7 @@ describe("automatic retained workspace recovery", () => {
       await heartbeat.resumeRemoteStopComments(await run(f.runId));
       expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         eq(heartbeatRuns.retryOfRunId, f.runId)))).toHaveLength(0);
-      if (["provider_started", "runtime_selected", "live_controller", "wrong_snapshot", "operator_stop"].includes(gate)) {
+      if (["provider_started", "provider_dispatch_recorded", "runtime_selected", "live_controller", "wrong_snapshot", "operator_stop"].includes(gate)) {
         const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
           actorId: "local-board", actorSource: "local_implicit", observedRunId: f.runId, idempotencyKey: randomUUID() });
         await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
@@ -365,6 +368,19 @@ describe("automatic retained workspace recovery", () => {
     expect(successors).toHaveLength(1);
     expect(successors[0].status).toBe("queued");
     expect(await readFreshWorkspaceReadiness(db, successors[0])).toMatchObject({ mode: "resume_preserved_workspace" });
+  }, 30_000);
+
+  it("cancels the interrupted preparation retry when a user blocks the task before it starts", async () => {
+    const f = await interruptedRemotePreparation();
+    await recoverRetainedWorkspace(f.input);
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeRemoteStopComments(await run(f.runId));
+    const [successor] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successor.status).toBe("scheduled_retry");
+    await db.update(issues).set({ status: "blocked", statusVersion: 4 }).where(eq(issues.id, f.issueId));
+    await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 300_000));
+    expect(await run(successor.id)).toMatchObject({ status: "cancelled", errorCode: "issue_blocked" });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("blocked");
   }, 30_000);
 
   it.each([false, true])("keeps Retry behind an accepted remote export and resumes only its saved result (review pending: %s)", async reviewPending => {
