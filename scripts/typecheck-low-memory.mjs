@@ -15,7 +15,7 @@ export const STEPS = [
   ["-r", "--workspace-concurrency=1", "typecheck"],
 ];
 
-function runPnpm(args, options) {
+export function runPnpm(args, options) {
   const result = spawnSync("pnpm", args, {
     ...options,
     stdio: "inherit",
