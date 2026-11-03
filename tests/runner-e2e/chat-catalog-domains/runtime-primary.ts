@@ -88,7 +88,10 @@ export const runtimePrimaryCases = [runtimeDefinition("agents.choose-primary", a
   authentication: "human-session",
   sourceFiles: ["chat-catalog-domains/runtime-primary.ts", "chat-catalog-domains/runtime-support.ts", "chat-catalog-domains/identity-support.ts", "chat-scenarios/agents.yaml"],
   async act(ctx, state) {
-    await waitForReply(ctx); const worker = state.worker as RuntimeAgent;
+    remainingIdentityObservationBudget(ctx);
+    await waitForReply(ctx, ctx.observationDeadlineAt);
+    remainingIdentityObservationBudget(ctx);
+    const worker = state.worker as RuntimeAgent;
     state.beforeHumanPrimary = (await ctx.input.api.get<Primary>(endpoint(ctx.input.fixtures.company.id))).primaryAgentId;
     state.agentWriteStatus = await probeAgentPermission(ctx, endpoint(ctx.input.fixtures.company.id), "PUT", { primaryAgentId: worker.id });
     const o = await observeRuntime(ctx, state);
