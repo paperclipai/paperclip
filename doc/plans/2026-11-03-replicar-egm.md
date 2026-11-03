@@ -171,6 +171,18 @@ Paperclip y devuelve el veredicto:
 | La guardia corta el run equivocado | mata el run vivo | un log viejo (run muerto) nunca escribe `lifecycle: run` y parece abierto | la guardia mira **sólo el log más reciente por agente** y compara el `mtime` |
 | `Low-trust review requires a concrete project…` | el run muere en setup y el agente queda en `error` | `trustPreset=low_trust_review` exige run atado a una tarea | un agente low-trust no puede recibir pulsos |
 
+## 10.b. Re-aplicar el fix del 403 (después de cada `paperclipai update`)
+
+El copy del 403 vive hoy como **PR** (paperclipai/paperclip#18743). Hasta que
+entre en un release, cada `paperclipai update` pisa el módulo del paquete
+publicado y devuelve el copy que induce el loop.
+
+```sh
+node scripts/apply-403-patch.js --check   # ¿hace falta?
+node scripts/apply-403-patch.js           # aplica (idempotente) + verifica
+systemctl restart paperclip.service        # para que el proceso cargue el módulo
+```
+
 ## 11. Cómo probarlo sin quemar tokens
 
 1. Elegí un proyecto y poné `EGM=full`, `EGM_AUTOSTART=off`.
