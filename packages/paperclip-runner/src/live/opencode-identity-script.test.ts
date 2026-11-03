@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { acceptedIdentityIds, diagnosticChildEnvironment, diagnosticIdentity, diagnosticPrompt, failedIdentity, identityAcceptanceComplete, identityCallIds, identityResponse } from "../../test-support/opencode-identity-script.js";
+import { acceptedIdentityIds, closedRejection, closedTerminalStatus, diagnosticChildEnvironment, diagnosticIdentity, diagnosticPrompt, failedIdentity, identityAcceptanceComplete, identityCallIds, identityResponse } from "../../test-support/opencode-identity-script.js";
 const message = (id: string, value: unknown = diagnosticIdentity) => ({ role: "tool", tool_call_id: id,
   content: JSON.stringify({ type: "inputText", text: JSON.stringify(value) }) });
 const body = (messages: unknown[]) => ({ model: "protocol-diagnostic", stream: true, messages: [{ role: "user", content: diagnosticPrompt }, ...messages],
@@ -47,4 +47,17 @@ it("does not mistake auxiliary title requests for the next relevant main-provide
   expect(title.accepted).toEqual([]);
   expect(() => identityResponse(body([]), false, issued)).toThrow("diagnostic_next_result_missing");
   expect(identityResponse(body([message(issued)]), false, issued).accepted).toEqual([issued]);
+});
+
+it("projects only closed rejection fields and withholds secret-bearing unknown errors and request content", () => {
+  const secret = "synthetic-private-secret-that-must-not-print";
+  const result = closedRejection(new Error(secret), secret, 999, { model: secret, messages: [{ role: "user", content: secret }], authorization: secret }, secret);
+  expect(JSON.stringify(result)).not.toContain(secret);
+  expect(result.reason).toBe("unknown_withheld"); expect(result.stage).toBe("unknown"); expect(result.ordinal).toBe(13);
+  expect(closedRejection(new Error("diagnostic_next_result_missing"), "script", 2, body([]), identityCallIds[0]).reason).toBe("diagnostic_next_result_missing");
+});
+it("requires the actual completed terminal payload, never merely the shared terminal method", () => {
+  for (const status of ["failed", "cancelled", "interrupted", "unknown"]) expect(closedTerminalStatus({ method: "turn/completed", params: { turn: { status } } })).not.toBe("completed");
+  expect(closedTerminalStatus({ method: "turn/completed", params: { turn: { status: "completed" } } })).toBe("completed");
+  expect(closedTerminalStatus({ method: "turn/completed", params: {} })).toBe("unknown");
 });

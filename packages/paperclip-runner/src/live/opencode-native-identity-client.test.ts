@@ -6,7 +6,7 @@ import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/prom
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, it } from "vitest";
-import { diagnosticChildEnvironment, identityCallIds, identityResponse } from "../../test-support/opencode-identity-script.js";
+import { closedRejection, diagnosticChildEnvironment, identityCallIds, identityResponse } from "../../test-support/opencode-identity-script.js";
 
 // No native resolution, lifecycle hooks, install, or subprocess runs on a Mac.
 const linuxCi = process.platform === "linux" && process.env.GITHUB_ACTIONS === "true";
@@ -40,17 +40,22 @@ it.skipIf(!linuxCi)("attests real OpenCode client acceptance through runnerd, pr
     for (const negative of [false, true]) {
       const accepted = new Set<string>(); let negativeObserved = false, requests = 0, fixtureError = false;
       let justIssued: string | undefined;
+      const rejections: ReturnType<typeof closedRejection>[] = [];
       const provider = createServer(async (request, response) => {
+        let stage = "route", body: unknown;
         try {
           if (request.method !== "POST" || request.url !== "/v1/chat/completions" || ++requests > 12) throw new Error("diagnostic_route");
+          stage = "body";
           let size = 0; const chunks: Buffer[] = [];
           for await (const chunk of request) { size += chunk.length; if (size > 1024 * 1024) throw new Error("diagnostic_body_bound"); chunks.push(chunk); }
-          const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          stage = "parse"; body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+          stage = "script";
           const scripted = identityResponse(body, negative, justIssued);
           if (!scripted.auxiliary) justIssued = scripted.delta.tool_calls?.[0]?.id;
           for (const id of scripted.accepted) accepted.add(id);
           negativeObserved ||= scripted.negativeObserved;
-          if (scripted.auxiliary && body.stream !== true) {
+          stage = "respond";
+          if (scripted.auxiliary && (body as Record<string, unknown>).stream !== true) {
             response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ id: "synthetic-title",
               object: "chat.completion", created: 1, model: "protocol-diagnostic", choices: [{ index: 0,
                 message: { role: "assistant", content: "Protocol diagnostic" }, finish_reason: "stop" }] }));
@@ -61,7 +66,11 @@ it.skipIf(!linuxCi)("attests real OpenCode client acceptance through runnerd, pr
             id: "synthetic-diagnostic", object: "chat.completion.chunk", created: 1, model: "protocol-diagnostic", choices: [{ index: 0, delta, finish_reason }],
           })}\n\n`);
           response.end("data: [DONE]\n\n");
-        } catch { fixtureError = true; response.writeHead(400).end("diagnostic_fixture_rejected"); }
+        } catch (error) {
+          fixtureError = true;
+          if (rejections.length < 13) rejections.push(closedRejection(error, stage, requests, body, justIssued));
+          response.writeHead(400).end("diagnostic_fixture_rejected");
+        }
       });
       provider.listen(0, "127.0.0.1"); await once(provider, "listening");
       let child: ReturnType<typeof spawn> | undefined;
@@ -81,10 +90,16 @@ it.skipIf(!linuxCi)("attests real OpenCode client acceptance through runnerd, pr
         const timer = setTimeout(() => { signalGroup(child?.pid, "SIGTERM"); hardKill = setTimeout(() => signalGroup(child?.pid, "SIGKILL"), 3000); }, 40_000);
         let code: number | null;
         try { [code] = await once(child, "exit") as [number | null]; } finally { clearTimeout(timer); if (hardKill) clearTimeout(hardKill); }
-        if (code !== 0) throw new Error("diagnostic_native_child_failed");
+        const phase = negative ? "negative" : "positive";
+        if (fixtureError) console.info(`OPENCODE_CLIENT_DIAGNOSTIC_REJECTION ${JSON.stringify({ phase, version, binarySha256, rejections })}`);
         const line = stdout.split("\n").find(value => value.startsWith("DIAGNOSTIC_RESULT "));
         if (!line) throw new Error("diagnostic_native_receipt_missing");
         const receipt = JSON.parse(line.slice("DIAGNOSTIC_RESULT ".length));
+        const status = ["completed", "failed"].includes(receipt.status) ? receipt.status : "unknown";
+        const terminalStatus = ["completed", "failed", "cancelled", "interrupted"].includes(receipt.terminalStatus) ? receipt.terminalStatus : "unknown";
+        console.info(`OPENCODE_NATIVE_TERMINAL ${JSON.stringify({ phase, status, terminalStatus })}`);
+        if (code !== 0) throw new Error("diagnostic_native_child_failed");
+        expect(terminalStatus).toBe("completed");
         expect(receipt.status).toBe("completed"); expect(receipt.backendCalls).toBeGreaterThanOrEqual(1);
         expect(receipt.backendCalls).toBeLessThanOrEqual(5); expect(fixtureError).toBe(false);
         counts.push(receipt.backendCalls);

@@ -57,3 +57,26 @@ export function identityResponse(body: unknown, negative = false, expectedPrevio
 export function diagnosticChildEnvironment(path: string): NodeJS.ProcessEnv {
   return { PATH: path, LANG: "C.UTF-8" };
 }
+
+const rejectionReasons = new Set(["diagnostic_route", "diagnostic_body_bound", "diagnostic_request_invalid",
+  "diagnostic_main_request_invalid", "diagnostic_next_result_missing", "diagnostic_identity_rejected",
+  "diagnostic_identity_duplicate", "diagnostic_identity_foreign", "diagnostic_messages_invalid"]);
+export function closedRejection(error: unknown, stage: string, ordinal: number, body: unknown, pending?: string) {
+  const b = row(body), messages = Array.isArray(b.messages) ? b.messages : [];
+  const tools = Array.isArray(b.tools) ? b.tools.map(value => row(row(value).function)) : [];
+  const count = tools.filter(value => /(?:^|_)get_identity$/.test(String(value.name))).length;
+  return { reason: error instanceof Error && rejectionReasons.has(error.message) ? error.message : "unknown_withheld",
+    stage: ["route", "body", "parse", "script", "respond"].includes(stage) ? stage : "unknown",
+    ordinal: Number.isInteger(ordinal) ? Math.max(0, Math.min(13, ordinal)) : 0,
+    modelExact: b.model === "protocol-diagnostic", messagesArray: Array.isArray(b.messages),
+    identityToolCount: count === 0 ? "zero" : count === 1 ? "one" : "many",
+    mainPromptPresent: messages.some(value => row(value).role === "user" && (JSON.stringify(row(value).content) ?? "").includes(diagnosticPrompt)),
+    stream: b.stream === true ? "true" : b.stream === false ? "false" : "other",
+    pendingIndex: pending ? identityCallIds.indexOf(pending) + 1 : 0,
+    pendingResultPresent: !!pending && messages.some(value => row(value).role === "tool" && row(value).tool_call_id === pending) };
+}
+export function closedTerminalStatus(value: unknown): "completed" | "failed" | "cancelled" | "interrupted" | "unknown" {
+  const n = row(value), status = row(row(n.params).turn).status;
+  return n.method === "turn/completed" && ["completed", "failed", "cancelled", "interrupted"].includes(String(status))
+    ? status as "completed" | "failed" | "cancelled" | "interrupted" : "unknown";
+}

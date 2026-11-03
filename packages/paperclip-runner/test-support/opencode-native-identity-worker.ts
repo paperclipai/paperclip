@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { dynamicToolResponse } from "../src/drivers/codex/codex-driver-values.js";
 import { createRunnerdCodexTransport, defaultCapabilityRunnerdBinary } from "../src/live/runnerd-codex-transport.js";
-import { diagnosticIdentity, diagnosticPrompt, failedIdentity } from "./opencode-identity-script.js";
+import { closedTerminalStatus, diagnosticIdentity, diagnosticPrompt, failedIdentity } from "./opencode-identity-script.js";
 if (process.platform !== "linux" || process.env.PAPERCLIP_NATIVE_PROTOCOL_DIAGNOSTIC !== "1") throw new Error("diagnostic_linux_ci_only");
 const config = JSON.parse(process.argv[2]!);
 const hash = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
@@ -16,6 +16,7 @@ const { transport } = createRunnerdCodexTransport({ provider: "opencode", runner
 });
 process.once("SIGTERM", () => { void transport.close().finally(() => { process.exit(1); }); });
 let calls = 0;
+let terminalStatus: ReturnType<typeof closedTerminalStatus> = "unknown";
 transport.setServerRequestHandler(async request => {
   if (request.method !== "item/tool/call" || request.params.tool !== "get_identity"
     || JSON.stringify(request.params.arguments) !== "{}") throw new Error("diagnostic_unexpected_tool");
@@ -28,7 +29,11 @@ try {
       inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false } }] });
   const done = (async () => {
     for await (const notification of transport.notifications()) {
-      if (notification.method === "turn/completed") return;
+      if (notification.method === "turn/completed") {
+        terminalStatus = closedTerminalStatus(notification);
+        if (terminalStatus !== "completed") throw new Error("diagnostic_terminal_not_completed");
+        return;
+      }
       if (notification.method === "turn/failed") throw new Error("diagnostic_turn_failed");
     }
     throw new Error("diagnostic_notifications_ended");
@@ -38,8 +43,9 @@ try {
   try { await Promise.race([done, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("diagnostic_timeout")), 35_000); })]); }
   finally { if (timer) clearTimeout(timer); }
   await transport.close();
-  process.stdout.write(`DIAGNOSTIC_RESULT ${JSON.stringify({ status: "completed", backendCalls: calls })}\n`);
+  process.stdout.write(`DIAGNOSTIC_RESULT ${JSON.stringify({ status: "completed", backendCalls: calls, terminalStatus })}\n`);
 } catch {
   await transport.close().catch(() => {});
+  process.stdout.write(`DIAGNOSTIC_RESULT ${JSON.stringify({ status: "failed", backendCalls: calls, terminalStatus })}\n`);
   process.stderr.write("diagnostic_native_failure\n"); process.exitCode = 1;
 }
