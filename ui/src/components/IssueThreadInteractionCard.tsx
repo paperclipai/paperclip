@@ -1801,9 +1801,9 @@ function RequestToolActionCard({
   const variant = payload.risk === "destructive" ? "destructive" : "cta";
   // This server projection is already redacted and bounded by the interaction schema.
   const inspectableArguments = typeof payload.argumentsSummaryJson === "string"
-    && payload.argumentsSummaryJson.trim().length > 0 && payload.argumentsSummaryJson.length <= 20_000
-    && typeof payload.argumentsHash === "string" && payload.argumentsHash.trim().length > 0
-    && payload.argumentsHash.length <= 255;
+    && payload.argumentsSummaryJson.length <= 20_000 && payload.argumentsSummaryJson.trim().length > 0
+    && typeof payload.argumentsHash === "string" && payload.argumentsHash.length <= 255
+    && payload.argumentsHash.trim().length > 0;
 
 
   useEffect(() => {
