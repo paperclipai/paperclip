@@ -3857,11 +3857,11 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           ? JSON.stringify([workspace.companyId, workspacePath, workspace.baseRef, workspace.branchName, createdByRuntime])
           : `workspace:${workspace.id}`;
         const sharedSession = workspace.mode === "shared_workspace";
-        // A shared session without its own worktree points at the project workspace
+        // A local shared session points at the project workspace
         // directory. Archiving it changes no file on disk, so it needs no git inspection
-        // and no merge proof. A shared session can still own a git worktree (agent-level
-        // git_worktree strategy); its cleanup removes that worktree and keeps both checks.
-        const skipGitChecks = sharedSession && workspace.providerType !== "git_worktree";
+        // and no merge proof. Git worktrees and plugin-owned sessions retain both checks
+        // because cleanup removes their provider-owned workspace.
+        const skipGitChecks = sharedSession && workspace.providerType === "local_fs";
         let inspection = skipGitChecks ? undefined : readinessByWorkingTree.get(readinessKey);
         if (!skipGitChecks && !inspection) {
           inspection = inspectWorkspace(toExecutionWorkspace(workspace), recoveryPullRequest);

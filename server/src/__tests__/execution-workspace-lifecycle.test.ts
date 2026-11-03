@@ -260,6 +260,7 @@ describeEmbeddedPostgres("shared execution workspace session lifecycle", () => {
 
     expect(result.cleanupFailed).toBe(0);
     expect(await statusOf(fixture.executionWorkspaceId)).toBe("archived");
+    expect(await pathExists(fixture.worktreePath)).toBe(false);
   }, 20_000);
 
   it("lets the reaper keep a shared session that another open issue still uses", async () => {

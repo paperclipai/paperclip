@@ -4281,7 +4281,7 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
   runCleanupCommands?: boolean;
   forceWorktreeRemoval?: boolean;
 }) {
-  if (input.workspace.mode === "shared_workspace") {
+  if (input.workspace.mode === "shared_workspace" && input.workspace.providerType === "local_fs") {
     return {
       cleanedPath: null,
       cleaned: true,
