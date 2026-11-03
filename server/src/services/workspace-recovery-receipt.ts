@@ -45,7 +45,8 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
   const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
   const remote = parsedRemote.success && parsedRemote.data.state === "saved" ? parsedRemote.data : null;
   if ((run.runnerProfileJson?.remoteWorkspace != null && !parsedRemote.success) || reference && parsedRemote.success) return null;
-  if (typeof issueId === "string" && (reference?.state === "prepared" || !reference && !parsedRemote.success)) {
+  if (typeof issueId === "string" && (reference?.state === "prepared" || !reference && !parsedRemote.success
+    && run.runnerProfileJson?.legacyWorkspaceRecoveryMigration != null)) {
     let migrated;
     try { migrated = await readMigratedLegacyWorkspaceSource(db, { companyId: run.companyId, runId: run.id, reference }); }
     catch (error) { if (error instanceof Error && error.message === "legacy_workspace_migration_receipt_invalid") return null; throw error; }

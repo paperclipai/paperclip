@@ -64,7 +64,14 @@ export async function readMigratedLegacyWorkspaceSource(db: Pick<Db, "select">, 
   companyId: string; runId: string; reference: NativeWorkspaceSyncReference | null;
 }): Promise<LegacyWorkspaceRecoverySource | null> {
   if (input.reference && input.reference.state !== "prepared") return null;
-  const [run] = await db.select().from(heartbeatRuns).where(and(
+  const [run] = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
+    nativeIssueId: heartbeatRuns.nativeIssueId,
+    resultJson: sql<Record<string, unknown>>`jsonb_build_object('workspaceRestoreRecovery', ${heartbeatRuns.resultJson}->'workspaceRestoreRecovery')`,
+    runnerProfileJson: sql<Record<string, unknown>>`jsonb_build_object(
+      'legacyWorkspaceRecoveryMigration', ${heartbeatRuns.runnerProfileJson}->'legacyWorkspaceRecoveryMigration',
+      'nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync',
+      'remoteWorkspace', ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace')`,
+  }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
   ));
   const runMarker = run?.runnerProfileJson?.legacyWorkspaceRecoveryMigration as { workspaceId?: unknown } | undefined;
