@@ -135,4 +135,24 @@ describe("codexCustomProviderToml", () => {
     expect(toml).toContain('base_url = "https://gateway.test/v1"');
     expect(toml).toContain('model_provider = "gateway"');
   });
+
+  it("drops a credential header whatever its name", () => {
+    const toml = codexCustomProviderToml({
+      PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+        providers: {
+          gateway: {
+            base_url: "https://gateway.test/v1",
+            http_headers: { "X-Auth": "{env:GATEWAY_KEY}", "X-Route": "eu" },
+          },
+        },
+      }),
+      GATEWAY_KEY: "gateway-key",
+    });
+
+    // Header names are arbitrary, so every reference is dropped rather than
+    // guessed from the name. Plain headers still apply.
+    expect(toml).not.toContain("X-Auth");
+    expect(toml).not.toContain("gateway-key");
+    expect(toml).toContain('X-Route = "eu"');
+  });
 });

@@ -170,7 +170,18 @@ describe("parseOpenCodeCustomProviders", () => {
     ]);
   });
 
-  it("keeps an override of a built-in provider without a proxy", () => {
+  it("applies a models-only override of a built-in provider", () => {
+    const parsed = parseOpenCodeCustomProviders({
+      PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
+        openai: { models: { "gpt-x": { name: "X" } } },
+      }),
+    });
+
+    expect(parsed.providers.openai).toEqual({ models: { "gpt-x": { name: "X" } } });
+    expect(parsed.credentials).toEqual([]);
+  });
+
+  it("rejects an override that declares a key without an endpoint", () => {
     const parsed = parseOpenCodeCustomProviders({
       PAPERCLIP_OPENCODE_PROVIDERS: JSON.stringify({
         openai: { options: { apiKey: "{env:OPENAI_KEY}" }, models: { "gpt-x": { name: "X" } } },
@@ -178,11 +189,11 @@ describe("parseOpenCodeCustomProviders", () => {
       OPENAI_KEY: "openai-key",
     });
 
-    // No endpoint means no proxy. The override keeps its declaration, including
-    // the key reference: dropping it would silently remove the operator's key,
-    // and resolving it would write a durable credential into the config.
-    expect(parsed.providers.openai?.options).toEqual({ apiKey: "{env:OPENAI_KEY}" });
-    expect(parsed.providers.openai?.models).toEqual({ "gpt-x": { name: "X" } });
+    // Without an endpoint there is no proxy, so the key would sit in the
+    // agent-readable config. Reject the override and say why.
+    expect(parsed.providers).toEqual({});
     expect(parsed.credentials).toEqual([]);
+    expect(parsed.warnings).toHaveLength(1);
+    expect(parsed.warnings[0]).toContain("without baseURL");
   });
 });

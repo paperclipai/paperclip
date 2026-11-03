@@ -2521,8 +2521,12 @@ async function startRuntime(input: {
   if (instructionRoot) externalDirectories[`${instructionRoot}/**`] = "allow";
   const [modelProvider, ...modelIdParts] = input.options.model.split("/");
   const providerModelId = modelIdParts.join("/");
-  const { providers: parsedCustomProviders, credentials: customProviderCredentials } =
-    parseOpenCodeCustomProviders(input.options.environment);
+  const {
+    providers: parsedCustomProviders,
+    credentials: customProviderCredentials,
+    warnings: customProviderWarnings,
+  } = parseOpenCodeCustomProviders(input.options.environment);
+  for (const warning of customProviderWarnings) input.options.onDiagnostic?.(warning);
   const customProviders: Record<string, Record<string, unknown>> = { ...parsedCustomProviders };
   const customProviderProxies: Array<{ close: () => Promise<void> }> = [];
   if (customProviderCredentials.length > 0) {
@@ -3320,8 +3324,9 @@ export function parseOpenCodeCustomProviders(
 ): {
   providers: Record<string, Record<string, unknown>>;
   credentials: OpenCodeCustomProviderCredential[];
+  warnings: string[];
 } {
-  const empty = { providers: {}, credentials: [] };
+  const empty = { providers: {}, credentials: [], warnings: [] };
   const raw = environment?.[OPENCODE_CUSTOM_PROVIDERS_ENV];
   if (typeof raw !== "string" || raw.trim().length === 0) return empty;
   let parsed: unknown;
@@ -3334,6 +3339,7 @@ export function parseOpenCodeCustomProviders(
   const resolve = (name: string) => environment?.[name];
   const providers: Record<string, Record<string, unknown>> = {};
   const credentials: OpenCodeCustomProviderCredential[] = [];
+  const warnings: string[] = [];
   for (const [providerId, entry] of Object.entries(parsed)) {
     if (!isRecord(entry)) continue;
     const sanitized = structuredClone(entry);
@@ -3348,9 +3354,6 @@ export function parseOpenCodeCustomProviders(
     if (baseUrl) options.baseURL = baseUrl;
     else delete options.baseURL;
     const rawKey = typeof options.apiKey === "string" ? options.apiKey.trim() : "";
-    // Only a proxied provider moves its key out of the config. An override of a
-    // built-in provider keeps calling the built-in endpoint, so its key stays.
-    if (baseUrl) delete options.apiKey;
     const headers: Record<string, string> = {};
     if (isRecord(options.headers)) {
       const retained: Record<string, unknown> = {};
@@ -3368,19 +3371,32 @@ export function parseOpenCodeCustomProviders(
       if (Object.keys(retained).length > 0) options.headers = retained;
       else delete options.headers;
     }
+    // A provider that overrides a built-in one keeps no endpoint of its own, so
+    // it cannot be fronted by a proxy. A declared key would then have to sit in
+    // the agent-readable config, so the override is rejected instead of being
+    // written in the clear. Overrides without a key still apply (models only).
+    if (!baseUrl) {
+      if (rawKey) {
+        warnings.push(`PAPERCLIP_OPENCODE_PROVIDERS: provider "${providerId}" declares an API key without baseURL; the override was ignored. Add baseURL to use a custom credential.`);
+      } else {
+        delete options.apiKey;
+        if (Object.keys(options).length > 0) sanitized.options = options;
+        else delete sanitized.options;
+        providers[providerId] = sanitized;
+      }
+      continue;
+    }
+    delete options.apiKey;
     sanitized.options = options;
     providers[providerId] = sanitized;
     const apiKey = resolveApiKeyReference(rawKey, resolve);
-    // A provider that overrides a built-in one keeps no endpoint of its own, so
-    // it cannot be fronted by a proxy. Leave it in the config untouched.
-    if (!baseUrl) continue;
     // A proxy is only useful when it carries a credential: a key or an
     // environment-backed header.
     if (!apiKey && Object.keys(headers).length === 0) continue;
     const models = isRecord(sanitized.models) ? Object.keys(sanitized.models) : [];
     credentials.push({ providerId, baseUrl, apiKey, headers, models });
   }
-  return { providers, credentials };
+  return { providers, credentials, warnings };
 }
 
 /** Resolve `{env:NAME}` anywhere inside a value; unresolved references keep the text. */

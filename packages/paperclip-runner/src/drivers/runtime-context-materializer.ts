@@ -367,7 +367,10 @@ export function codexCustomProviderToml(
 }
 
 const CODEX_PROVIDER_KEY_ENV = "PAPERCLIP_AI_PROVIDER_KEY";
-const CREDENTIAL_FIELD_RE = /(authorization|api[-_]?key|token|secret|password|cookie)/i;
+// Only the endpoint may be resolved from the environment. Every other field
+// that still holds a reference is dropped: header names are arbitrary, so no
+// name-based heuristic can tell a routing header from a credential one.
+const RESOLVABLE_PROVIDER_FIELDS = new Set(["base_url"]);
 
 /**
  * Resolve `{env:...}` references in provider fields.
@@ -388,7 +391,7 @@ function resolveProviderFields(
         out[key] = value;
         continue;
       }
-      if (CREDENTIAL_FIELD_RE.test(key)) continue;
+      if (!RESOLVABLE_PROVIDER_FIELDS.has(key)) continue;
       out[key] = value.replace(/\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g, (match, name: string) =>
         environment?.[name] ?? match,
       );
