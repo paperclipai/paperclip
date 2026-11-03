@@ -1608,6 +1608,27 @@ and plugin tasks. The running session then owns authority;
 the old receipt must not conflict with a later warm run's journal identity.
 Failed admission retains the receipt. Normal suspension writes a new receipt.
 
+A per-turn sandbox turn can finish through recovery without a Runner
+suspension receipt or failover backup on the controller. For example, its
+post-turn checkpoint copy can fail on a full sandbox disk. The controller
+journal from the database then cannot prove that the old Runner suspended.
+When the next run starts in a new or replacement sandbox, admission archives
+that old authority as a continuity break, and the run starts a new Runner.
+All of these must be true:
+
+- The prior run is terminal and its coordinator committed a result.
+- The coordinator has no lease owner and no recovery state.
+- The prior controller is proven stopped.
+- The journal has a delivered terminal, only completed commands, and an
+  answer for each tool input.
+- No local Runner lifecycle evidence exists for the old owner.
+- Each quarantined root for the scope is a copy of the same owner.
+
+The provider session then follows the normal resume-or-replace policy. A
+resumed sandbox, a warm session, a plugin task, a restart claim, or any
+missing proof keeps the existing `prior_owner_terminal_state_indeterminate`
+rejection.
+
 A repository-free fresh plugin task directory remains the task's directory on
 ordinary follow-ups. Reuse requires its exact company, task, workspace, provider
 owner, fresh-attempt identity and path. Mode-only isolation settings do not turn
