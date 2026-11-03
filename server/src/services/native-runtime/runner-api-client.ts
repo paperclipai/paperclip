@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { resolveLocalRuntimeApiUrl } from "../../runtime-api.js";
 import { badRequest, forbidden, unprocessable } from "../../errors.js";
 import { runnerApiSensitiveResponse } from "./runner-api-sensitive-response.js";
 import { runnerApiOperation, type RunnerApiOperation } from "./runner-api-catalog.js";
@@ -71,14 +72,35 @@ export function validateRunnerApiCall(value: unknown, context: RunnerApiContext)
   return { input, operation };
 }
 
-export function localRunnerApiUrl(url: URL, env: NodeJS.ProcessEnv = process.env): URL {
-  const port = env.PAPERCLIP_LISTEN_PORT?.trim();
+export function localRunnerApiUrl(
+  url: URL,
+  env: NodeJS.ProcessEnv = process.env,
+  resolveLocalUrl: () => string = resolveLocalRuntimeApiUrl,
+): URL {
   const own = env.PAPERCLIP_API_URL?.trim();
-  if (!port || !own) return url;
+  if (!env.PAPERCLIP_LISTEN_PORT?.trim() || !own) return url;
   try {
-    if (url.origin !== new URL(own).origin || ["127.0.0.1", "localhost", "[::1]"].includes(url.hostname)) return url;
-  } catch { return url; }
-  return new URL(`${url.pathname}${url.search}`, `http://127.0.0.1:${port}`);
+    const configured = new URL(own);
+    if (!["http:", "https:"].includes(url.protocol)
+      || !["http:", "https:"].includes(configured.protocol)
+      || url.username || url.password || url.hash
+      || configured.username || configured.password || configured.search || configured.hash
+      || url.origin !== configured.origin) return url;
+
+    const local = new URL(resolveLocalUrl());
+    if (local.protocol !== "http:" || local.username || local.password
+      || local.pathname !== "/" || local.search || local.hash || !local.port) return url;
+
+    const basePath = configured.pathname.replace(/\/+$/, "").replace(/\/api$/, "");
+    const path = basePath && url.pathname.startsWith(basePath + "/api/")
+      ? url.pathname.slice(basePath.length) : url.pathname;
+    if (path !== "/api" && !path.startsWith("/api/")) return url;
+
+    const target = new URL(path + url.search, local.origin);
+    return target.href === url.href ? url : target;
+  } catch {
+    return url;
+  }
 }
 
 export function runnerApiUrl(operation: RunnerApiOperation, input: RunnerApiCall, context: RunnerApiContext, apiUrl: string): URL {
