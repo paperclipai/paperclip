@@ -349,3 +349,44 @@ samples are never reused as v2 evidence.
 Registered v2 browser protocol SHA256: `5498ed8dfc7139285aeda582c540eb572f07a1ad3e73de6e0f12c5af4c45e0ba`.
 Comparator SHA256: `d8cf6f55339ad811ca1743f4bc73b74afa3a321b93e17ef913fc0339b47b4d7d`. Individual source hashes and
 H's exact committed revision are retained with each qualification/execution receipt.
+
+### V2 admission qualification correction, before fresh A/A
+
+H `96b1a5f1a4497d1389c21b0cc52d55b86641690d` passed the compiled
+single-run smoke and completed paced 128, burst 16, and ten runs of 128 events.
+Its first full baseline qualification then failed during setup for the 100-run
+case, before the common emission epoch was released. All 100 issues existed,
+but only one provider/clock hello arrived and no measured deltas were emitted.
+Ten concurrent normal task-activation requests timed out; cleanup also timed
+out and masked the original exception. The complete failed report and an
+independent SELECT-only database inspection remain excluded from acceptance.
+The active issues were 50 todo, 49 backlog, and 1 in_progress; 31 runs existed
+(3 running, 28 queued), with no measured item.delta rows.
+
+Static inspection found a separate potential pool-starvation path: each native
+wakeup transaction can await a responsible-user lookup on the outer database
+client, whose default pool is 10; a group of ten activation wakeups can consume
+that pool. This is an observed pre-epoch startup-contention failure with a
+matching static candidate, not a runtime-proven deadlock diagnosis: no live
+pg_stat_activity capture exists. The product admission hazard remains separate
+from this ingestion change; increasing pool size or request timeouts is not
+part of the experiment.
+
+Before any fresh A/A, H now schedules each background using the same normal
+PATCH, then requires that exact participant's provider GET and original-clock
+hello before scheduling the next. All 100 providers remain live behind the
+closed common emission gate. A **shared 180-second readiness budget starts
+before activation**; this is stricter than starting the same readiness budget
+after activation. The 600-second overall test limit, 20-second request limits,
+event counts, payloads, rates, 100-run measured concurrency and every performance
+gate are unchanged. Source owner-path protocol and gates are byte-identical.
+The report identifies this admission protocol explicitly, and its comparator
+rejects reports without it. Original exceptions, exact activation progress and
+separate cleanup errors are retained without accepting a cleanup failure.
+
+Registered corrected browser protocol SHA256:
+`b955ff1f84d82655e5e1d331b2494cb811f459f44aee0e29205a70636c07dc84`.
+Comparator SHA256:
+`55eab8950528a6ec6a30728fb7614b5a9fb7aa210526cb8b7d3237a82db65672`.
+The corrected H commit and source hashes are recorded before its full baseline
+qualification and new browser A/A. Earlier H96b samples never enter that series.

@@ -146,6 +146,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
     screencast: captureMode(info.project.use.trace) !== "off" || captureMode(info.project.use.video) !== "off" };
   const report: Record<string, unknown> = {
     protocolVersion: "v2-compact-markers-original-clock-stream",
+    admissionProtocol: "sequential-provider-and-clock-readiness-before-common-epoch",
     dependency: "Deterministic Codex app-server fixture; real application/runtime/port/PostgreSQL/live WebSocket/shipped UI",
     variant: process.env.PAPERCLIP_INGESTION_VARIANT ?? "unlabelled", qualificationOnly: smoke,
     diagnosticOnly: Boolean(process.env.PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_DIR),
@@ -245,15 +246,24 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         issueIds.push(background.id);
         issuedTokens.set(background.id, backgroundToken);
       }
-      for (let offset = 1; offset < issueIds.length; offset += 10) {
-        await Promise.all(issueIds.slice(offset, offset + 10).map(async id => json(await request.patch(`/api/issues/${id}`, { data: { status: "todo" } }))));
+      const readinessDeadlineMs = Date.now() + 180_000;
+      active.phase = "activation-and-provider-readiness";
+      for (let index = 1; index < issueIds.length; index++) {
+        const id = issueIds[index], token = issuedTokens.get(id)!;
+        active.activation = { index, issueId: id, token, startedAtMs: Date.now(), readinessDeadlineMs };
+        await json(await request.patch(`/api/issues/${id}`, { data: { status: "todo" } }));
+        // PATCH schedules wakeup asynchronously. Wait for this actual provider,
+        // while the common emission gate remains closed, before scheduling more.
+        await expect.poll(() => pending.get(key)!.has(token) && state.streams.get(token)!.hello,
+          { timeout: Math.max(1, readinessDeadlineMs - Date.now()) }).toBe(true);
       }
       const route = `/${company.issuePrefix}/issues/${issue.identifier}`;
       await page.goto(route);
       active.phase = "provider-and-clock-readiness";
       await expect.poll(() => ({ providers: pending.get(key)!.size,
         clocks: [...state.streams.values()].filter(stream => stream.hello).length }),
-      { timeout: 180_000 }).toEqual({ providers: workload.runs, clocks: workload.runs });
+      { timeout: Math.max(1, readinessDeadlineMs - Date.now()) }).toEqual({ providers: workload.runs, clocks: workload.runs });
+      expect(Date.now(), "All participants must be ready within the shared activation/readiness budget").toBeLessThanOrEqual(readinessDeadlineMs);
       let preludeProof: Record<string, unknown> | undefined;
       if (workload.prelude) {
         await expect(page.getByText(`PRELUDE_${nonce}_READY`, { exact: false }).first()).toBeVisible({ timeout: 120_000 });
@@ -389,6 +399,10 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
     for (const workload of cases) await perform(workload);
     await perform({ name: "operator-stop", runs: 1, events: 512, intervalMs: 100, prelude: 0 }, true);
     report.complete = true;
+  } catch (error) {
+    report.primaryFailure = { name: error instanceof Error ? error.name : "UnknownError",
+      message: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined };
+    throw error;
   } finally {
     if (report.activeCase) {
       const active = report.activeCase as Record<string, unknown>;
@@ -407,13 +421,23 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         ...stream, records: [...stream.records.values()],
       })) };
     }
-    await info.attach("native-ingestion-evidence", { body: JSON.stringify(report, null, 2), contentType: "application/json" });
+    // Retain primary failure evidence even if API teardown cannot finish. This
+    // attachment is never eligible for the standalone acceptance comparator.
+    await info.attach("native-ingestion-precleanup-evidence", { body: JSON.stringify(report, null, 2), contentType: "application/json" });
     for (const requests of pending.values()) for (const response of requests.values()) response.writeHead(503).end();
     gate.closeAllConnections();
     await new Promise<void>(resolve => gate.close(() => resolve()));
-    const live = await json(await request.get(`/api/companies/${company.id}/live-runs`)).catch(() => []);
-    for (const run of live) await request.post(`/api/heartbeat-runs/${run.id}/cancel`);
-    await request.patch("/api/instance/settings/experimental", { data: { enableNativeRunner: original.enableNativeRunner,
-      enableWorktreeRunExecution: original.enableWorktreeRunExecution } });
+    const cleanupErrors: Array<{ step: string; message: string }> = [];
+    const attemptCleanup = async (step: string, action: () => Promise<unknown>) => {
+      try { return await action(); } catch (error) { cleanupErrors.push({ step, message: String(error) }); }
+    };
+    const live = await attemptCleanup("list-live-runs", async () => json(await request.get(`/api/companies/${company.id}/live-runs`))) as any[] | undefined;
+    for (const run of live ?? []) await attemptCleanup(`cancel-${run.id}`, async () => json(await request.post(`/api/heartbeat-runs/${run.id}/cancel`)));
+    await attemptCleanup("restore-experimental-settings", async () => json(await request.patch("/api/instance/settings/experimental", {
+      data: { enableNativeRunner: original.enableNativeRunner, enableWorktreeRunExecution: original.enableWorktreeRunExecution } })));
+    report.cleanup = { errors: cleanupErrors, complete: cleanupErrors.length === 0 };
+    if (cleanupErrors.length) { report.complete = false; report.performanceAcceptanceEligible = false; }
+    await info.attach("native-ingestion-evidence", { body: JSON.stringify(report, null, 2), contentType: "application/json" });
+    if (!report.primaryFailure) expect(cleanupErrors, "API cleanup must succeed before accepting an invocation").toEqual([]);
   }
 });
