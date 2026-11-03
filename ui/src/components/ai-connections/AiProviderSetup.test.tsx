@@ -204,3 +204,18 @@ it.each(["google", "openai", "anthropic", "xai"] as const)("allows an ordinary m
     await act(async () => root.unmount()); client.clear();
   }
 });
+
+it.each(["openai", "anthropic", "google"] as const)("forces api_key method for pi_local with %s", async provider => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: false, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  credentialProps = undefined;
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" adapterType="pi_local" initialProvider={provider} onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    expect(credentialProps).toMatchObject({ provider, initialMethod: "api_key", fixedMethod: true });
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});

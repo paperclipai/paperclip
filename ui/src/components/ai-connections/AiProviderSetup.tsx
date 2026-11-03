@@ -189,6 +189,12 @@ export function AiProviderSetup({
           })()
         : label
     }`;
+  const supportedMethods = adapterType && nativeProvider in AI_CONNECTION_CAPABILITIES
+    ? (["subscription", "api_key"] as const).filter((m) =>
+        AI_CONNECTION_CAPABILITIES[nativeProvider].methods[m]?.adapters.includes(adapterType),
+      )
+    : [];
+  const forcedMethod = supportedMethods.length === 1 ? supportedMethods[0] : undefined;
   const complete = (result: {
     connectionId: string;
     grantId: string;
@@ -198,7 +204,7 @@ export function AiProviderSetup({
     void client.invalidateQueries({ queryKey: ["tools"] });
     onComplete({
       provider: nativeProvider,
-      method: result.method ?? "api_key",
+      method: result.method ?? forcedMethod ?? "api_key",
       mode: ownership === "shared" ? "shared" : "delegated",
       ...result,
     });
@@ -350,8 +356,8 @@ export function AiProviderSetup({
           companyId={companyId}
           provider={nativeProvider}
           connectionId={reconnect?.id}
-          initialMethod={reconnect?.method}
-          fixedMethod={Boolean(reconnect)}
+          initialMethod={reconnect?.method ?? forcedMethod}
+          fixedMethod={Boolean(reconnect) || Boolean(forcedMethod)}
           name={name}
           hideName
           ownership={ownership}
