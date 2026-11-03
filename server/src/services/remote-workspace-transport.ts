@@ -29,11 +29,18 @@ const DISK_FULL_CHECK = String.raw`const diskFull=e=>['ENOSPC','EDQUOT'].include
 
 type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "restore" | "cleanup";
 
+export class RemoteWorkspaceOperationTimeoutError extends Error {
+  constructor(operation: RemoteWorkspaceOperation, timeoutMs: number) {
+    super(`remote_workspace_operation_timed_out: ${operation} (configured timeout ${timeoutMs}ms)`);
+    this.name = "RemoteWorkspaceOperationTimeoutError";
+  }
+}
+
 async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspaceOperation,
   args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
   const result = await target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
     env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
-  if (result.timedOut) throw new Error(`remote_workspace_operation_timed_out: ${operation} (configured timeout ${timeoutMs}ms)`);
+  if (result.timedOut) throw new RemoteWorkspaceOperationTimeoutError(operation, timeoutMs);
   if (result.exitCode !== 0) {
     const gitOperation = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
     const reported = result.stderr.trim();

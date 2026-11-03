@@ -1806,6 +1806,10 @@ or `cleanup`) and its timeout in milliseconds. Command output is excluded from
 that diagnostic. A timeout does not prove the remote process stopped or that a
 save failed before publication. Reconcile the existing workspace and operation
 receipts before recovery; the transport does not automatically repeat the command.
+Export cleanup keeps this typed timeout diagnostic in the operation's
+`metadata.exportCleanup.lastError`. Other cleanup errors retain a generic message.
+The saved snapshot stays acknowledged and the cleanup obligation stays pending
+until the existing reconciliation path settles it.
 
 Files reads use the current committed saved version when remote authority is
 clean and has no active writer, even while its old allocation remains recorded.
