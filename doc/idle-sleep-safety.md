@@ -644,3 +644,13 @@ retry dates and package/object/native-asset retention timestamps are earliest
 maintenance eligibility, not promised delivery deadlines. Workers reconstruct persisted rows and filesystem
 access leases on startup, and use the existing coordinator's drain/standby/shutdown
 controls. No external Cloud alarm or provider suspension is established by these tests.
+
+
+## Negotiated incoming work
+
+A signed, stack/owner-scoped Cloud incoming-wake capability can produce a version-3
+safety report for saved API keys and exactly bound brokered GitHub bot endpoints.
+Tenant authorization still runs after wake. Personal GitHub credential continuity
+and unsupported transports retain their blockers. See [authenticated incoming
+wake proof](idle-incoming-wake.md) for scope, HTTP versus durable-event guarantees,
+rate/availability bounds, compatibility and remaining transport dependencies.

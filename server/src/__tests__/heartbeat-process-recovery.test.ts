@@ -7117,7 +7117,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentId,
       status: "scheduled_retry",
       scheduledRetryAttempt: 1,
-      scheduledRetryReason: "transient_failure",
+      scheduledRetryReason: "interrupted_preparation",
     });
     // The retry keeps the handoff contract: it is still the corrective run,
     // so a finished attempt that leaves no disposition still escalates.
@@ -7328,7 +7328,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       agentId,
       status: "scheduled_retry",
       scheduledRetryAttempt: 2,
-      scheduledRetryReason: "transient_failure",
+      scheduledRetryReason: "interrupted_preparation",
     });
     const sourceIssue = await db
       .select({ status: issues.status })

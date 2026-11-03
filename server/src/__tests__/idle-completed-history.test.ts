@@ -2131,14 +2131,15 @@ const DELETE_METHOD = "DELETE" as never;
       expect(runtime.readWorkspaceRuntimeIdleWork()).toBe("unknown");
       await runtime.reconcilePersistedRuntimeServicesOnStartup(db);
       expect(runtime.readWorkspaceRuntimeIdleWork()).toBe("none");
-      // Reconciliation does not adopt a stopped row whose port is in the reserved exposure range.
-      let port: number;
-      do {
+      let port = 0;
+      for (let attempt = 0; attempt < 32; attempt++) {
         const server = net.createServer();
         await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
         port = (server.address() as net.AddressInfo).port;
         await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
-      } while (isRuntimeExposureAppPort(port));
+        if (!isRuntimeExposureAppPort(port)) break;
+      }
+      expect(isRuntimeExposureAppPort(port)).toBe(false);
       const command = "node -e \"require('node:http').createServer((req,res)=>res.end('history')).listen(Number(process.env.PORT),'127.0.0.1')\"";
       const refs = await runtime.startRuntimeServicesForWorkspaceControl({ db,
         actor: { id: null, name: "History operator", companyId: f.companyId }, issue: null,

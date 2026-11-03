@@ -151,6 +151,16 @@ const support = await getEmbeddedPostgresTestSupport();
     });
   });
 
+  it.each(["nativeExecutionInput", "nativeWorkspaceSync", "remoteWorkspace", "nativeWorkspaceFinalizationOwner", "sessionCheckpoint"])(
+    "retains an admission-wait hold with a retained %s profile", async key => {
+      const f = await seed(true);
+      const [run] = await db.update(heartbeatRuns).set({ runnerProfileJson: { [key]: { retained: true } } })
+        .where(eq(heartbeatRuns.id, f.runId)).returning();
+      expect(await legacyExecutionNeedsReconciliationWithEvidence(db, run)).toBe(true);
+      expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toMatchObject({ recoveryActionId: f.actionId });
+    },
+  );
+
   it.each(["started", "runtime_selected", "process", "session", "controller", "stage", "receipt", "receipt_issue", "receipt_action", "lease", "coordinator", "launch", "provider", "workspace"])(
     "retains a hold with conflicting or incomplete %s evidence", async kind => {
       const f = await seed(true);

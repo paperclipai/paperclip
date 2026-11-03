@@ -30,9 +30,21 @@ const DISK_FULL_CHECK = String.raw`const diskFull=e=>['ENOSPC','EDQUOT'].include
 type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "restore" | "cleanup";
 
 export class RemoteWorkspaceOperationTimeoutError extends Error {
-  constructor(operation: RemoteWorkspaceOperation, timeoutMs: number) {
+  constructor(readonly operation: RemoteWorkspaceOperation, readonly timeoutMs: number) {
     super(`remote_workspace_operation_timed_out: ${operation} (configured timeout ${timeoutMs}ms)`);
     this.name = "RemoteWorkspaceOperationTimeoutError";
+  }
+}
+
+export const REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE = "remote_workspace_prepare_timeout";
+
+export class RemoteWorkspacePreparationTimeoutError extends RemoteWorkspaceOperationTimeoutError {
+  readonly code = REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE;
+
+  constructor(error: RemoteWorkspaceOperationTimeoutError) {
+    super("prepare", error.timeoutMs);
+    this.name = "RemoteWorkspacePreparationTimeoutError";
+    this.cause = error;
   }
 }
 

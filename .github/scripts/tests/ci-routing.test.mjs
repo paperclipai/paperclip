@@ -98,7 +98,20 @@ const stackedBase = {
 
 const routeCases = [
   ["allowlisted PR", {}, awsRunner],
-  ["allowlisted profile label", { EVENT_ACTION: "labeled", EVENT_LABEL_NAME: "profile-ci" }, awsRunner],
+  ...["profile-ci", "full-ci"].flatMap((label) => {
+    const event = { EVENT_ACTION: "labeled", EVENT_LABEL_NAME: label };
+    return [
+      [`allowlisted ${label} label`, event, awsRunner],
+      [`${label} with unlisted author`, { ...event, EVENT_PR_AUTHOR_ID: "99999999" }],
+      [`${label} with unlisted sender`, { ...event, EVENT_SENDER_ID: "99999999" }],
+      [`${label} with unlisted rerun actor`, { ...event, TEST_TRIGGERING_ACTOR_ID: "99999999" }],
+      [`${label} on non-owner PR with owner sender and rerun`, {
+        ...event, EVENT_PR_AUTHOR_ID: "99999999", TEST_PR_AUTHOR_ID: "99999999", TRUSTED_USER_IDS: "[34892728,99999999]",
+      }],
+      [`${label} with non-owner sender`, { ...event, EVENT_SENDER_ID: "99999999", TRUSTED_USER_IDS: "[34892728,99999999]" }],
+      [`${label} with non-owner rerun actor`, { ...event, TEST_TRIGGERING_ACTOR_ID: "99999999", TRUSTED_USER_IDS: "[34892728,99999999]" }],
+    ];
+  }),
   ["unrelated label", { EVENT_ACTION: "labeled", EVENT_LABEL_NAME: "documentation" }],
   ["validated stacked base", stackedBase, awsRunner],
   ["lagging PR API base snapshot", { TEST_PR_BASE_SHA: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }, awsRunner],
