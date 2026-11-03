@@ -92,19 +92,19 @@ describe("run observer capability", () => {
       reached(); return stalled;
     } }) }) } as unknown as typeof server.db;
     const run = { id: randomUUID(), companyId: randomUUID(), agentId: randomUUID() };
-    registerRunObserverScheduler(fakeDb, deadlines);
+    const unregister = registerRunObserverScheduler(fakeDb, deadlines);
     const delivery = await startRunObserverDelivery(fakeDb, run,
       { socketPath, companyId: run.companyId, agentId: run.agentId }, { refreshMs: 100 });
     try {
       await waiting;
       const start = Date.now();
-      await delivery!.close();
+      unregister();
       expect(Date.now() - start).toBeLessThan(500);
       release([{ status: "running", resultJson: null }]);
       await new Promise(resolve => setTimeout(resolve, 200));
       expect(messages).toBe(1);
     } finally {
-      delivery?.close(); release([]);
+      unregister(); delivery?.close(); release([]);
       await new Promise<void>(resolve => sink.close(() => resolve()));
       await rm(directory, { recursive: true, force: true });
     }

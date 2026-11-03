@@ -12,10 +12,17 @@ export type ObserverDeadlineScheduler = {
   scheduleActiveDeadline(key: string, at: number, callback: () => void): void;
   cancelActiveDeadline(key: string): void;
 };
-const schedulers = new WeakMap<object, ObserverDeadlineScheduler>();
+type ObserverRegistration = { scheduler: ObserverDeadlineScheduler; closeAll: Set<() => void>; stopped: boolean };
+const schedulers = new WeakMap<object, ObserverRegistration>();
 export function registerRunObserverScheduler(owner: object, scheduler: ObserverDeadlineScheduler) {
-  schedulers.set(owner, scheduler);
-  return () => { if (schedulers.get(owner) === scheduler) schedulers.delete(owner); };
+  const registration: ObserverRegistration = { scheduler, closeAll: new Set(), stopped: false };
+  if (schedulers.has(owner)) throw new Error("Run observer scheduler is already registered");
+  schedulers.set(owner, registration);
+  return () => {
+    registration.stopped = true;
+    for (const close of registration.closeAll) close();
+    if (schedulers.get(owner) === registration) schedulers.delete(owner);
+  };
 }
 
 
@@ -62,13 +69,22 @@ async function sendToOwnedSocket(socketPath: string, payload: string, signal: Ab
 export async function startRunObserverDelivery(db: Db, run: { id: string; companyId: string; agentId: string },
   config: ObserverDeliveryConfig | null, options: { refreshMs?: number; scheduler?: ObserverDeadlineScheduler } = {}) {
   if (!config || config.companyId !== run.companyId || config.agentId !== run.agentId) return null;
-  const scheduler = options.scheduler ?? schedulers.get(db);
+  const registration = schedulers.get(db);
+  const scheduler = options.scheduler ?? registration?.scheduler;
   if (!scheduler) throw new Error("Run observer scheduler is unavailable");
   const deadlineKey = `run-observer:${run.id}:${randomUUID()}`;
   let closed = false;
   const controller = new AbortController();
   class RunInactive extends Error {}
   let inFlight: Promise<void> | null = null;
+  const close = () => {
+    closed = true;
+    scheduler.cancelActiveDeadline(deadlineKey);
+    controller.abort();
+    registration?.closeAll.delete(close);
+  };
+  if (registration?.stopped) throw new Error("Run observer scheduler is stopped");
+  registration?.closeAll.add(close);
   const deliver = async () => {
     const [current] = await db.select({ status: heartbeatRuns.status, resultJson: heartbeatRuns.resultJson })
       .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.agentId, run.agentId)));
@@ -77,22 +93,22 @@ export async function startRunObserverDelivery(db: Db, run: { id: string; compan
     if (!token) throw new Error("Run observer signing is unavailable");
     await sendToOwnedSocket(config.socketPath, JSON.stringify({ runId: run.id, token }), controller.signal);
   };
-  await deliver();
+  try { await deliver(); } catch (error) { close(); throw error; }
   const configuredTtl = Number(process.env.PAPERCLIP_AGENT_JWT_TTL_SECONDS);
   const refreshMs = options.refreshMs ?? (Number.isFinite(configuredTtl) && configuredTtl > 0
     ? Math.min(40_000, Math.max(250, Math.floor(configuredTtl * 1000 / 3))) : 40_000);
   const schedule = () => scheduler.scheduleActiveDeadline(deadlineKey, Date.now() + refreshMs, () => {
     if (closed || inFlight) return;
     inFlight = deliver().catch(error => {
-      if (error instanceof RunInactive) { closed = true; controller.abort(); }
+      if (error instanceof RunInactive) close();
       // On transient errors the broker must stop when its token expires.
     }).finally(() => {
       inFlight = null;
       if (!closed) {
-        try { schedule(); } catch { closed = true; controller.abort(); }
+        try { schedule(); } catch { close(); }
       }
     });
   });
-  try { schedule(); } catch (error) { closed = true; controller.abort(); throw error; }
-  return { close() { closed = true; scheduler.cancelActiveDeadline(deadlineKey); controller.abort(); } };
+  try { if (closed) throw new Error("Run observer delivery stopped"); schedule(); } catch (error) { close(); throw error; }
+  return { close };
 }
