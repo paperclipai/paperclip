@@ -6477,6 +6477,23 @@ export function recoveryService(
       if (!status) return true; // missing run row → no real claim
       return TERMINAL_HEARTBEAT_RUN_STATUSES.has(status);
     };
+    // A native failure that schedules a same-run resume marks its run failed
+    // but keeps both task locks for that resume. Clearing them lets another
+    // run take the task first, and then the resume can never run. Only a
+    // closed task releases them here.
+    const pendingResumeLock = sql<boolean>`exists (select 1 from ${nativeRunFinalizations} pending_resume
+      where pending_resume.company_id = ${issues.companyId}
+        and pending_resume.run_id in (${issues.checkoutRunId}, ${issues.executionRunId})
+        and pending_resume.phase = 'retryable_failure'
+        and pending_resume.result_id is null)`;
+    const pendingResumeRunIds = new Set(referencedRunIds.length === 0 ? [] : (await db
+      .select({ runId: nativeRunFinalizations.runId })
+      .from(nativeRunFinalizations)
+      .where(and(
+        inArray(nativeRunFinalizations.runId, referencedRunIds),
+        eq(nativeRunFinalizations.phase, "retryable_failure"),
+        isNull(nativeRunFinalizations.resultId),
+      ))).map(row => row.runId));
 
     for (const issue of candidates) {
       const originalOwner = issue.executionRunId ? runById.get(issue.executionRunId) : undefined;
@@ -6495,6 +6512,11 @@ export function recoveryService(
         !isCleanable(issue.checkoutRunId) ||
         !isCleanable(issue.executionRunId)
       ) {
+        continue;
+      }
+      const taskClosed = issue.status === "done" || issue.status === "cancelled";
+      if (!taskClosed && [issue.checkoutRunId, issue.executionRunId]
+        .some(runId => runId !== null && pendingResumeRunIds.has(runId))) {
         continue;
       }
 
@@ -6519,6 +6541,8 @@ export function recoveryService(
             issue.executionRunId
               ? eq(issues.executionRunId, issue.executionRunId)
               : isNull(issues.executionRunId),
+            // Recheck at the write: a failure can schedule a resume after the read.
+            taskClosed ? undefined : not(pendingResumeLock),
           ),
         )
         .returning({ id: issues.id })
