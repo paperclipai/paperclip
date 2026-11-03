@@ -317,6 +317,19 @@ describe("automatic retained workspace recovery", () => {
     } finally { await restarted.$client.end(); }
   }, 30_000);
 
+  it.each(["local", "none"])("continues verified interrupted preparation with %s leases", async provider => {
+    const f = await interruptedRemotePreparation();
+    await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      resultJson: null }).where(eq(heartbeatRuns.id, f.runId));
+    if (provider === "none") await db.delete(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    else await db.update(environmentLeases).set({ provider: "local", metadata: {} }).where(eq(environmentLeases.id, f.lease.id));
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeRemoteStopComments(await run(f.runId));
+    const successors = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.runId));
+    expect(successors).toHaveLength(1);
+    expect(successors[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryAttempt: 1 });
+  }, 30_000);
+
   it.each(["provider_started", "provider_dispatch_recorded", "runtime_selected", "live_controller", "wrong_snapshot", "operator_stop",
     "retry_exhausted", "human_reblock", "paused", "reassigned"] as const)(
     "keeps the interrupted preparation continuation behind %s", async gate => {
