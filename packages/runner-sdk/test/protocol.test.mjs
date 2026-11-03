@@ -113,3 +113,37 @@ test("checkpoint directories accept absolute Windows paths without unsafe path a
     assert.throws(() => parseRunnerHarnessCheckpoint({ ...checkpoint, cwd: directory }), undefined, directory);
   }
 });
+
+
+test("credential declarations and launch profiles reject process-control environment keys", () => {
+  const keys = ["GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK", "PROMPT_COMMAND", "PS4",
+    "SHELLOPTS", "BASHOPTS", "CDPATH", "GLOBIGNORE", "OPENSSL_CONF", "OPENSSL_MODULES", "GIT_EXEC_PATH", "GIT_PROXY_COMMAND",
+    "BASH_LOADABLES_PATH", "ZDOTDIR", "COMSPEC", "PATHEXT", "GCONV_PATH", "GLIBC_TUNABLES", "OPENSSL_ENGINES"];
+  const launch = { schema: "paperclip.harness-launch.v1", identity,
+    command: { path: "/runtime/node", sha256: `sha256:${"c".repeat(64)}` }, args: [], environmentKeys: [] };
+  for (const key of keys) {
+    assert.throws(() => parseRunnerHarnessDeclaration({ ...declaration, credentials: [{ key, displayName: key, required: true }] }), undefined, key);
+    assert.throws(() => parseRunnerHarnessLaunchProfile({ ...launch, environmentKeys: [key] }), undefined, key);
+  }
+  for (const key of ["EXAMPLE_API_KEY", "GIT_TOKEN", "GITHUB_TOKEN"]) {
+    assert.equal(parseRunnerHarnessDeclaration({ ...declaration, credentials: [{ key, displayName: key, required: true }] }).credentials[0].key, key);
+    assert.deepEqual(parseRunnerHarnessLaunchProfile({ ...launch, environmentKeys: [key] }).environmentKeys, [key]);
+  }
+});
+
+test("checkpoints and launch profiles accept ordinary UNC paths and reject devices or traversal", () => {
+  const checkpoint = { schema: "paperclip.harness-checkpoint.v1", identity, normalizedSessionId: "session_1",
+    model: "selected-model", config: {}, providerState: {}, processGroup: null };
+  const launch = { schema: "paperclip.harness-launch.v1", identity,
+    command: { path: "/runtime/node", sha256: `sha256:${"c".repeat(64)}` }, args: [], environmentKeys: [] };
+  for (const directory of [String.raw`\\server\share`, String.raw`\\server\share\task`, "//server/share/task"]) {
+    assert.equal(parseRunnerHarnessCheckpoint({ ...checkpoint, cwd: directory }).cwd, directory);
+    assert.equal(parseRunnerHarnessLaunchProfile({ ...launch, command: { ...launch.command, path: directory } }).command.path, directory);
+    assert.throws(() => parseRunnerHarnessLaunchProfile({ ...launch, args: [directory] }));
+  }
+  for (const directory of [String.raw`\\server`, String.raw`\\server\share\..\other`, String.raw`\\?\C:\task`,
+    String.raw`\\.\pipe\native`, "//?/C:/task", "//server/share/task:stream", "//server/./task", "//server/share/task."]) {
+    assert.throws(() => parseRunnerHarnessCheckpoint({ ...checkpoint, cwd: directory }), undefined, directory);
+    assert.throws(() => parseRunnerHarnessLaunchProfile({ ...launch, command: { ...launch.command, path: directory } }), undefined, directory);
+  }
+});

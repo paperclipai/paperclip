@@ -27,7 +27,10 @@ export function parseHarnessCapabilities(value: unknown): RunnerHarnessCapabilit
 export function isHarnessCredentialEnvironmentKey(key: string): boolean {
   return /^[A-Z][A-Z0-9_]{0,127}$/u.test(key)
     && !/^(?:PAPERCLIP_|NODE_|NPM_|LD_|DYLD_|GIT_CONFIG)/u.test(key)
-    && !["PATH", "HOME", "SHELL", "ENV", "BASH_ENV", "IFS", "NODEPATH", "PYTHONPATH", "PYTHONHOME", "RUBYOPT", "PERL5OPT"].includes(key);
+    && !["PATH", "HOME", "SHELL", "ENV", "BASH_ENV", "IFS", "NODEPATH", "PYTHONPATH", "PYTHONHOME", "RUBYOPT", "PERL5OPT",
+      "GIT_SSH", "GIT_SSH_COMMAND", "GIT_ASKPASS", "SSH_ASKPASS", "SSH_AUTH_SOCK", "PROMPT_COMMAND", "PS4",
+      "SHELLOPTS", "BASHOPTS", "CDPATH", "GLOBIGNORE", "OPENSSL_CONF", "OPENSSL_MODULES", "GIT_EXEC_PATH", "GIT_PROXY_COMMAND",
+      "BASH_LOADABLES_PATH", "ZDOTDIR", "COMSPEC", "PATHEXT", "GCONV_PATH", "GLIBC_TUNABLES", "OPENSSL_ENGINES"].includes(key);
 }
 
 export function parseRunnerHarnessDeclaration(value: unknown): RunnerHarnessDeclaration {
@@ -103,6 +106,17 @@ export function parseRunnerHarnessConfig(value: unknown): JsonObject {
   return jsonObject(value, "harness configuration");
 }
 
+function isAbsoluteHarnessResourcePath(resource: string): boolean {
+  const drive = /^[a-zA-Z]:[\\/]/u.test(resource);
+  const unc = resource.startsWith("\\\\") || resource.startsWith("//");
+  const windows = drive || unc;
+  const parts = windows ? resource.slice(drive ? 3 : 2).split(/[\\/]/u) : resource.split("/");
+  return (windows || (resource.startsWith("/") && resource !== "/" && !resource.includes("\\")))
+    && (!unc || parts.length >= 2)
+    && !parts.some(part => part === "." || part === ".."
+      || (windows && (!part || /[<>:"|?*]/u.test(part) || /[. ]$/u.test(part))));
+}
+
 export function parseRunnerHarnessCheckpoint(value: unknown): RunnerHarnessCheckpoint {
   const fields = record(value, "harness checkpoint");
   exactKeys(fields, ["schema", "identity", "normalizedSessionId", "model", "config", "cwd", "runtimeDirectory", "accountIdentity", "credentialIdentity", "providerSessionIdentity", "providerState", "processGroup"], "harness checkpoint");
@@ -114,11 +128,7 @@ export function parseRunnerHarnessCheckpoint(value: unknown): RunnerHarnessCheck
   for (const key of ["cwd", "runtimeDirectory"] as const) {
     if (fields[key] === undefined) continue;
     const directory = text(fields[key], `checkpoint.${key}`, 4096);
-    const windows = /^[a-zA-Z]:[\\/]/u.test(directory);
-    const parts = windows ? directory.slice(3).split(/[\\/]/u) : directory.split("/");
-    if ((!windows && (!directory.startsWith("/") || directory === "/" || directory.includes("\\")))
-      || parts.some(part => part === "." || part === ".."
-        || (windows && (!part || /[<>:"|?*]/u.test(part) || /[. ]$/u.test(part))))) {
+    if (!isAbsoluteHarnessResourcePath(directory)) {
       throw new HarnessProtocolError(`checkpoint.${key} must be an absolute contained resource path`);
     }
     directories[key] = directory;
@@ -152,8 +162,7 @@ export function parseRunnerHarnessLaunchProfile(value: unknown): RunnerHarnessLa
     const fields = record(value, path);
     exactKeys(fields, ["path", "sha256"], path);
     const resource = text(fields.path, `${path}.path`, 4096);
-    if (!(resource.startsWith("/") || /^[a-zA-Z]:[\\/]/u.test(resource)) || resource === "/"
-      || resource.split(/[\\/]/u).some(part => part === "." || part === "..")) {
+    if (!isAbsoluteHarnessResourcePath(resource)) {
       throw new HarnessProtocolError(`${path}.path must be an absolute resource path`);
     }
     const hash = text(fields.sha256, `${path}.sha256`, 71);
@@ -162,7 +171,7 @@ export function parseRunnerHarnessLaunchProfile(value: unknown): RunnerHarnessLa
   };
   if (!Array.isArray(fields.args) || fields.args.length > 64
     || fields.args.some(arg => typeof arg !== "string" || arg.length > 4096 || arg.includes("\0")
-      || arg.startsWith("/") || /^[a-zA-Z]:[\\/]/u.test(arg))) {
+      || arg.startsWith("/") || arg.startsWith("\\\\") || /^[a-zA-Z]:[\\/]/u.test(arg))) {
     throw new HarnessProtocolError("harness launch arguments must be bounded literals without absolute resource paths");
   }
   if (!Array.isArray(fields.environmentKeys) || fields.environmentKeys.length > 128

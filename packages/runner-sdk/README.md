@@ -140,9 +140,11 @@ exports and empty runtime dependency graph.
 External repositories can import `runHarnessProcessConformance` from
 `@paperclipai/runner-sdk/testing`. Supply an absolute executable and cwd, its exact
 admitted identity, explicit fixture commands, required normalized event types and
-a total deadline. It drives a real subprocess through initialize, commands,
-snapshot and close, checks event ordering and exact identity, and verifies a clean
-exit. On failure it reaps its owned process group. Only PATH and explicitly
+a total deadline. It drives a real subprocess through initialize, commands and
+close, checks event ordering and exact identity, and verifies a clean exit.
+Snapshot conformance is required when the harness advertises `resume: true` or the
+caller sets `requireSnapshot: true`. A one-shot harness can omit its snapshot
+handler; successful one-shot reports omit `snapshot`. On failure it reaps its owned process group. Only PATH and explicitly
 supplied environment values reach the child; provider diagnostics are consumed
 without entering the report. The test kit never downloads a package or chooses
 a model on the caller's behalf.

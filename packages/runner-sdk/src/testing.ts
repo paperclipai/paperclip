@@ -19,6 +19,7 @@ export interface HarnessProcessConformanceInput {
   commands: HarnessCommand[];
   requiredEventTypes?: string[];
   initializeParams?: JsonObject;
+  requireSnapshot?: boolean;
   /** Total deadline for the fixture, including provider work. Defaults to 30 seconds. */
   timeoutMs?: number;
   signal?: AbortSignal;
@@ -30,7 +31,7 @@ export interface HarnessProcessConformanceReport {
   capabilities: RunnerHarnessCapabilities;
   commandResults: JsonObject[];
   events: HarnessEvent[];
-  snapshot: JsonObject;
+  snapshot?: JsonObject;
   exitCode: 0;
 }
 
@@ -43,7 +44,8 @@ export async function runHarnessProcessConformance(input: HarnessProcessConforma
   const identity = parseRunnerHarnessReleaseIdentity(input.identity);
   const timeoutMs = input.timeoutMs ?? 30_000;
   if (!isAbsolute(input.command) || !isAbsolute(input.cwd)
-    || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000) {
+    || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 600_000
+    || (input.requireSnapshot !== undefined && typeof input.requireSnapshot !== "boolean")) {
     throw new HarnessProtocolError("conformance requires absolute paths and a bounded deadline");
   }
   input.signal?.throwIfAborted();
@@ -154,7 +156,7 @@ export async function runHarnessProcessConformance(input: HarnessProcessConforma
       eventWaiters.add(wake);
       wake();
     })]);
-    const snapshot = await request("snapshot");
+    const snapshot = capabilities.resume === true || input.requireSnapshot === true ? await request("snapshot") : undefined;
     await request("close", { reason: "conformance_complete" });
     child.stdin.end();
     const exitCode = await Promise.race([failure, exited]);
@@ -170,7 +172,7 @@ export async function runHarnessProcessConformance(input: HarnessProcessConforma
       }
     }
     return { schema: "paperclip.harness-process-conformance.v1", identity, capabilities,
-      commandResults, events, snapshot, exitCode: 0 };
+      commandResults, events, ...(snapshot === undefined ? {} : { snapshot }), exitCode: 0 };
   } finally {
     clearTimeout(timer);
     input.signal?.removeEventListener("abort", abort);

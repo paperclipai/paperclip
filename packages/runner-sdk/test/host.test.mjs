@@ -186,3 +186,86 @@ test("shutdown bounds stalled protocol output and revokes queued and late writes
     input.destroy(); output.destroy();
   }
 });
+
+
+for (const action of ["tool", "finish", "request_user_input", "consume_input"]) {
+  test(`PRP v3 ${action} callbacks bypass a command waiting for their result`, { timeout: 2000 }, async () => {
+    let release, began;
+    const active = new Promise(resolve => { began = resolve; });
+    const f = fixture({ execute: async command => {
+      if (command.type === "turn.start") { began(); return new Promise(resolve => { release = resolve; }); }
+      return { action: command.payload.action };
+    } });
+    let timer;
+    try {
+      await f.request("initialize", { identity });
+      const pending = f.execute("turn.start"); await active;
+      const callback = f.request("execute", { command: { schema: "paperclip.prp.command.v1", commandId: "operation_1",
+        controllerSeq: 2, type: "external_provider.operation", issuedAt: "2026-11-03T00:00:00Z", payload: { action, input: {} } } });
+      const response = await Promise.race([callback, new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(Error("callback deadlocked behind native work")), 500);
+      })]);
+      assert.deepEqual(response.result, { action });
+      release({}); await pending;
+    } finally { clearTimeout(timer); release?.({}); f.input.end(); await f.done; }
+  });
+}
+
+test("asynchronous initialization failure settles without EOF or another request", { timeout: 2000 }, async () => {
+  const f = fixture({ initialize: async () => { throw Error("native initialization failed"); } });
+  let timer;
+  try {
+    assert.equal((await f.request("initialize", { identity })).ok, false);
+    await assert.rejects(Promise.race([f.done, new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(Error("host waited for another input chunk")), 500);
+    })]), /native initialization failed/);
+    assert.equal(f.closed(), 1);
+  } finally { clearTimeout(timer); f.input.end(); }
+});
+
+test("fatal output failure closes native ownership while input remains open", { timeout: 2000 }, async () => {
+  let initialized, writes = 0;
+  const hello = new Promise(resolve => { initialized = resolve; });
+  const output = new Writable({ write(_chunk, _encoding, callback) {
+    if (++writes === 1) { callback(); initialized(); }
+    else callback(Error("protocol output failed"));
+  } });
+  output.on("error", () => {});
+  const f = fixture({}, { output });
+  let timer;
+  try {
+    f.input.write(serializeHarnessFrame({ schema: HARNESS_PROTOCOL_SCHEMA, id: 1, method: "initialize", params: { identity } }));
+    await hello;
+    f.input.write(serializeHarnessFrame({ schema: HARNESS_PROTOCOL_SCHEMA, id: 2, method: "execute", params: {
+      command: { schema: "paperclip.prp.command.v1", commandId: "failed_output", controllerSeq: 1,
+        type: "turn.start", issuedAt: "2026-11-03T00:00:00Z", payload: {} },
+    } }));
+    await assert.rejects(Promise.race([f.done, new Promise((_resolve, reject) => {
+      timer = setTimeout(() => reject(Error("host waited for another input chunk")), 500);
+    })]), /protocol output failed/);
+    assert.equal(f.closed(), 1);
+  } finally { clearTimeout(timer); f.input.end(); output.destroy(); }
+});
+
+
+test("v3 operations outside the callback actions retain command serialization", async () => {
+  let release, began;
+  const active = new Promise(resolve => { began = resolve; });
+  const observed = [];
+  const f = fixture({ execute: async command => {
+    if (command.type === "turn.start") { began(); return new Promise(resolve => { release = resolve; }); }
+    observed.push(command.payload.action); return {};
+  } });
+  try {
+    await f.request("initialize", { identity });
+    const pending = f.execute("turn.start"); await active;
+    const results = ["accept", "progress", "renew"].map((action, index) => f.request("execute", { command: {
+      schema: "paperclip.prp.command.v1", commandId: `operation_${index}`, controllerSeq: index + 2,
+      type: "external_provider.operation", issuedAt: "2026-11-03T00:00:00Z", payload: { action, input: {} },
+    } }));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(observed, []);
+    release({}); await pending; await Promise.all(results);
+    assert.deepEqual(observed, ["accept", "progress", "renew"]);
+  } finally { release?.({}); f.input.end(); await f.done; }
+});
