@@ -1,6 +1,18 @@
 /** Closed, target-independent success requirements used by dispatch and retained evidence. */
-export const agentJourneyRuns = { "repository-continuation": 2, "routine-scheduled-run": 1, "file-input-answer": 1, "ask-question": 1, "plan-revise-accept": 3, "build-revise": 2,
-  "followup-while-running": 2, "protected-actions": 4, "create-skill-studio": 1, "stop-redirect": 3, "question-answer-resume": 3, "hire-delegate-reuse": 7 } as const;
+export const agentJourneyRuns = {
+  "repository-continuation": 2,
+  "routine-scheduled-run": 1,
+  "file-input-answer": 1,
+  "ask-question": 1,
+  "plan-revise-accept": 3,
+  "build-revise": 2,
+  "followup-while-running": 2,
+  "protected-actions": 4,
+  "create-skill-studio": 1,
+  "stop-redirect": 3,
+  "question-answer-resume": 3,
+  "hire-delegate-reuse": 7
+} as const;
 
 export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
   if (!Object.hasOwn(agentJourneyRuns, id) || !Number.isSafeInteger(count)) return false;
