@@ -7006,10 +7006,38 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
       ),
     );
     expect(updatedWithWorkspace?.executionWorkspaceId).toBe(eWorkspace.id);
+
+    const createdWithWorkspace = await singleConnectionDb.transaction(async (tx) =>
+      singleConnectionSvc.create(
+        companyId,
+        {
+          title: "tx created issue with workspace",
+          assigneeAgentId: agentId,
+          projectId: project.id,
+          projectWorkspaceId: pWorkspace.id,
+          workspaceSelection: {
+            kind: "configured_source",
+            projectWorkspaceId: pWorkspace.id,
+            mode: "shared",
+          },
+          workspaceSelectionSource: "explicit",
+          workspaceSelectionActor: { type: "board", userId: memberUserId },
+        },
+        tx,
+      ),
+    );
+    expect(createdWithWorkspace.projectWorkspaceId).toBe(pWorkspace.id);
   });
 
   it("keeps externalObjects syncComment on caller transaction on a single pooled connection", async () => {
+    const pluginWorkerManager = {
+      call: vi.fn().mockResolvedValue({
+        ok: true,
+        detections: [],
+      }),
+    };
     const extSvc = externalObjectService(singleConnectionDb, {
+      pluginWorkerManager: pluginWorkerManager as any,
       enabled: async (tx) =>
         (await instanceSettingsService(singleConnectionDb).getExperimental({ db: tx })).enableExternalObjects === true,
     });
@@ -7019,7 +7047,7 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
         id: randomUUID(),
         companyId,
         issueId,
-        body: "test comment with mention",
+        body: "test comment with mention https://example.com/item/123",
       })
       .returning()
       .then((rows) => rows[0]!);

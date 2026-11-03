@@ -53,6 +53,7 @@ export interface ExternalObjectDetector {
     companyId: string;
     urls: ExternalObjectCanonicalUrl[];
     sourceContext: ExternalObjectSourceContext;
+    db?: any;
   }): Promise<ExternalObjectDetection[]> | ExternalObjectDetection[];
 }
 
@@ -192,6 +193,7 @@ export function createExternalObjectDetectorRegistry(detectors: ExternalObjectDe
     companyId: string;
     urls: ExternalObjectCanonicalUrl[];
     sourceContext: ExternalObjectSourceContext;
+    db?: any;
   }) {
     const claimed = new Set<string>();
     const detections: ExternalObjectDetection[] = [];
@@ -262,7 +264,9 @@ function objectSnapshot(object: ExternalObjectRecord): PluginExternalObjectRecor
   };
 }
 
-async function readyObjectReferencePlugins(db: Db, companyId?: string) {
+type DbOrTx = Db | Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+async function readyObjectReferencePlugins(db: DbOrTx, companyId?: string) {
   return db
     .select({
       id: plugins.id,
@@ -289,7 +293,8 @@ function createPluginProviderDetector(
   return {
     key: "plugin-object-reference-providers",
     async detect(input) {
-      const providers = await readyObjectReferencePlugins(db, input.companyId);
+      const runner = input.db ?? db;
+      const providers = await readyObjectReferencePlugins(runner, input.companyId);
       const detections: ExternalObjectDetection[] = [];
 
       for (const provider of providers) {
@@ -521,6 +526,7 @@ export function externalObjectService(
       companyId: input.companyId,
       urls,
       sourceContext: input,
+      db: dbOrTx,
     });
     if (detections.length === 0) return;
 
