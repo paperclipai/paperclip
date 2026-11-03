@@ -1045,7 +1045,6 @@ function extractResultText(value: unknown): string | null {
   return nonEmpty(record.text) ?? nonEmpty(record.summary) ?? null;
 }
 
-/** Whether the gateway confirmed a stop requested by Paperclip's cancel. */
 interface GatewayCancellation {
   abortConfirmed: Promise<boolean> | null;
 }
@@ -1057,9 +1056,6 @@ function acknowledgedCancellation(): Record<string, unknown> {
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const cancellation: GatewayCancellation = { abortConfirmed: null };
   const result = await executeGatewayRun(ctx, cancellation);
-  // heartbeat.cancelRun accepts a stop only when the result acknowledges it.
-  // Acknowledge only what the gateway confirmed: sessions.abort succeeded and
-  // the run's request returned. Otherwise the run stays "not verified".
   if (!ctx.signal?.aborted || !cancellation.abortConfirmed) return result;
   if (!(await cancellation.abortConfirmed)) return result;
   await ctx.onProviderStopped?.();
@@ -1356,8 +1352,6 @@ async function executeGatewayRun(
         `[openclaw-gateway] connected protocol=${asNumber(asRecord(hello)?.protocol, PROTOCOL_VERSION)}\n`,
       );
 
-      // Opt in to operator cancellation before the gateway gets any work, and
-      // do not start work for a run that was stopped meanwhile.
       await ctx.onCancellationReady?.();
       if (ctx.signal?.aborted) {
         return {
@@ -1371,20 +1365,11 @@ async function executeGatewayRun(
         };
       }
 
-      // A cancelled Paperclip run must stop the gateway session too. Without
-      // this the session keeps running, and OpenClaw's restart recovery even
-      // resumes it after a gateway restart. Install it before the agent
-      // request: a cancel can arrive while that request is still pending.
-      // Until the gateway answers, its run id is our own (idempotencyKey).
       let gatewayRunId = ctx.runId;
-      // The abort result comes only from the gateway. A failed log write must
-      // not change it or keep the connection open.
       const logAbortOutcome = async (stream: "stdout" | "stderr", chunk: string) => {
         try {
           await ctx.onLog(stream, chunk);
-        } catch {
-          // Ignore run-log failures here.
-        }
+        } catch {}
       };
       const abortGatewaySession = () => {
         cancellation.abortConfirmed = client
@@ -1621,8 +1606,6 @@ async function executeGatewayRun(
       };
     } finally {
       removeAbortListener?.();
-      // Let a pending sessions.abort answer before the connection closes; the
-      // request has its own timeout. Close the connection in any case.
       try {
         if (cancellation.abortConfirmed) await cancellation.abortConfirmed;
       } finally {

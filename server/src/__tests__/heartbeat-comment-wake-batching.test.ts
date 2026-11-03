@@ -79,8 +79,6 @@ async function createControlledGatewayServer(beforeComplete?: (turn: number) => 
     firstWaitRelease = resolve;
   });
   let waitCount = 0;
-  // Runs stopped with sessions.abort; their agent.wait ends as an error, as on
-  // a real OpenClaw gateway.
   const abortedRunIds = new Set<string>();
 
   wss.on("connection", (socket) => {

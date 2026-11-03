@@ -58,14 +58,10 @@ vi.mock("ws", async () => {
           this.emit("message", JSON.stringify({ type: "res", id, ok: true, payload: responsePayload }));
         });
       };
-      // holdAgent: the gateway starts the run but does not answer the agent
-      // request yet (a slow reply); sessions.abort ends it.
       if (websocketState.holdAgent && request.method === "agent") {
         websocketState.pendingAgentId = request.id;
         return;
       }
-      // acceptOnly: the gateway accepts the run and holds agent.wait until
-      // sessions.abort ends it, like a long-running OpenClaw turn.
       if (websocketState.acceptOnly && request.method === "agent") {
         respond(request.id, { status: "accepted", runId: "remote-run-1" });
         return;
@@ -232,7 +228,6 @@ describe("openclaw_gateway execute dispatch boundary", () => {
     controller.abort(new Error("Cancelled by a board operator"));
     const result = await run;
 
-    // The gateway has not named its run yet, so the adapter uses the run id it sent.
     expect(websocketState.abortParams).toEqual([
       expect.objectContaining({ key: expect.any(String), runId: "run-1", clearQueued: true }),
     ]);
