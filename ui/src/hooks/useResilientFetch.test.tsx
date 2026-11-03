@@ -122,6 +122,17 @@ describe("useResilientFetch", () => {
     expect(container.textContent).toBe("Loaded");
   });
 
+  it("keeps health-driven recovery pending when an older component read succeeds", async () => {
+    mount();
+    await outage();
+    act(() => attempts[0]!.resolve({ title: "Late readable result" }));
+    await settle();
+    expect(last().data).toEqual({ title: "Late readable result" });
+    expect(last().view.kind).toBe("stale");
+    expect(store.getSnapshot().status).toBe("reconnecting");
+    expect(successes).toEqual([{ title: "Late readable result" }]);
+  });
+
   it("keeps the last good value through a transient failure and retries with the shared policy", async () => {
     vi.useFakeTimers();
     mount();

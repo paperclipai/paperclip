@@ -216,7 +216,8 @@ export function useResilientFetch<TData>(options: ResilientFetchOptions<TData>):
           failureReason: undefined,
           dataUpdatedAt: current.dataUpdatedAt + 1,
         }));
-        store.reportSuccess();
+        // A component result can be a local no-op or an older in-flight read.
+        // Health probes and the socket own app-wide recovery.
         optionsRef.current.onSuccess?.(data);
         schedulePoll();
       },

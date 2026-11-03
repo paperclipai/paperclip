@@ -841,6 +841,7 @@ export function ExecutionWorkspaceDetail() {
     queryFn: () => issuesApi.list(workspace!.companyId, { executionWorkspaceId: workspace!.id }),
     enabled: Boolean(workspace?.companyId),
   });
+  const linkedIssuesView = useQueryView(linkedIssuesQuery);
   const linkedIssues = linkedIssuesQuery.data ?? [];
 
   const linkedProjectWorkspace = useMemo(
@@ -1589,14 +1590,16 @@ export function ExecutionWorkspaceDetail() {
               title="Workspace summary"
               description="Summarizer keeps the latest workspace status, next step, and operator-needed items here."
             />
+            {linkedIssuesView.kind === "error" ? <QueryErrorState error={linkedIssuesView.error} action="load workspace tasks" onRetry={linkedIssuesView.retry} retrying={linkedIssuesView.isFetching} /> : (
             <ExecutionWorkspaceIssuesList
               companyId={workspace.companyId}
               workspace={workspace}
               issues={linkedIssues}
-              isLoading={linkedIssuesQuery.isLoading}
-              error={linkedIssuesQuery.error as Error | null}
+              isLoading={linkedIssuesView.kind === "loading" || linkedIssuesView.kind === "reconnecting"}
+              error={null}
               project={project}
             />
+            )}
           </div>
         ) : activePluginTab ? (
           <PluginSlotMount
