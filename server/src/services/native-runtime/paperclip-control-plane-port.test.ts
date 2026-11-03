@@ -48,6 +48,7 @@ import {
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { startRecoveryPostgres } from "../../__tests__/helpers/recovery-postgres.js";
 import { PaperclipControlPlanePort } from "./paperclip-control-plane-port.js";
+import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { nativeSha256 } from "./canonical.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
 import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
@@ -66,6 +67,7 @@ import { childReviewOutcomes } from "./child-review-outcomes.js";
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
 import { materializeRuntimeQuestionFallback } from "./native-session-executor.js";
 import {
+  publishLiveEvent,
   subscribeAllCompanyLiveEvents,
   subscribeCompanyLiveEvents,
 } from "../live-events.js";
@@ -575,6 +577,94 @@ describe("PaperclipControlPlanePort conformance", () => {
       expect(observed.reduce((bytes, event) => bytes + Buffer.byteLength(JSON.stringify(event)), 0)).toBe(64 * 1024 + 1);
     }
   });
+
+  it("publishes all committed text before a callback publishes its later legacy event", async () => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+      runnerInstanceId: runnerId, completionContractId: contractId, completionContractSha256: contractSha });
+    const callbacks: number[] = [], published: number[] = [];
+    const port = new PaperclipControlPlanePort(db, { ...identity, completionContractId: contractId,
+      completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `nested-${identity.runId}` }, {
+      onCommittedEvent: async event => {
+        callbacks.push(event.sourceSeq);
+        if (event.sourceSeq !== 1) return;
+        // The production first-text trace sink takes this same legacy append
+        // and publication path while the PRP commit callback is still pending.
+        const nested = await appendHeartbeatRunEvent(db, { companyId: identity.companyId,
+          agentId: identity.agentId, runId: identity.runId, eventType: "run.performance.span",
+          stream: "system", payload: { span: "task.time_to_first_token" } });
+        publishLiveEvent({ companyId: identity.companyId, type: "heartbeat.run.event", payload: {
+          runId: identity.runId, agentId: identity.agentId, seq: nested.row.seq,
+          eventType: nested.row.eventType, payload: nested.row.payload,
+        } });
+      },
+    });
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const events: PrpEvent[] = [1, 2].map(sourceSeq => ({
+      schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceEventId: `${runnerId}:${sourceSeq}`, sourceSeq,
+      sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId,
+      turnId: "nested-turn", itemId: "nested-item", eventType: "item.delta", priority: 1,
+      emittedAt: "2026-11-03T00:00:00.000Z", payload: { kind: "agentMessage", text: `chunk-${sourceSeq}` },
+    }));
+    const unsubscribe = subscribeCompanyLiveEvents(identity.companyId, event => {
+      if (event.type === "heartbeat.run.event" && event.payload.runId === identity.runId) published.push(Number(event.payload.seq));
+    });
+    try { await port.appendEvents(events); } finally { unsubscribe(); }
+    expect(published).toEqual([1, 2, 3]);
+    expect(callbacks).toEqual([1, 2]);
+    const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId)).orderBy(heartbeatRunEvents.seq);
+    expect(rows.map(row => row.eventType)).toEqual(["item.delta", "item.delta", "run.performance.span"]);
+  });
+
+  it.each([[false, "metric"], [true, "metric"], [true, "business"]] as const)(
+    "publishes committed text before awaiting a blocked %s/%s callback",
+    async (batch, blocked) => {
+      const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+      const runnerId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+        status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+        runnerInstanceId: runnerId, completionContractId: contractId, completionContractSha256: contractSha });
+      let release!: () => void, entered!: () => void;
+      const hold = new Promise<void>(resolve => { release = resolve; });
+      const reached = new Promise<void>(resolve => { entered = resolve; });
+      const published: number[] = [], callbacks: number[] = [], endedAt: number[] = [];
+      const port = new PaperclipControlPlanePort(db, { ...identity, completionContractId: contractId,
+        completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: `blocked-${identity.runId}` }, {
+        onEventPersistence: async (event, _startedAt, persistenceEndedAt) => {
+          endedAt.push(persistenceEndedAt);
+          if (blocked === "metric" && event.sourceSeq === 1) { entered(); await hold; }
+        },
+        onCommittedEvent: async event => {
+          callbacks.push(event.sourceSeq);
+          if (blocked === "business" && event.sourceSeq === 1) { entered(); await hold; }
+        },
+      });
+      await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+      const events: PrpEvent[] = Array.from({ length: batch ? 2 : 1 }, (_, index) => ({
+        schema: "paperclip.prp.event.v1", schemaVersion: 1, sourceEventId: `${runnerId}:${index + 1}`, sourceSeq: index + 1,
+        sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId,
+        turnId: "blocked-turn", itemId: "blocked-item", eventType: "item.delta", priority: 1,
+        emittedAt: "2026-11-03T00:00:00.000Z", payload: { kind: "agentMessage", text: `chunk-${index + 1}` },
+      }));
+      const unsubscribe = subscribeCompanyLiveEvents(identity.companyId, event => {
+        if (event.type === "heartbeat.run.event" && event.payload.runId === identity.runId) published.push(Number(event.payload.seq));
+      });
+      let settled = false;
+      const pending = (batch ? port.appendEvents(events) : port.appendEvent(events[0]!))
+        .then(value => { settled = true; return value; });
+      try {
+        await reached;
+        expect(published).toEqual(events.map(event => event.sourceSeq));
+        expect(callbacks).toEqual(blocked === "metric" ? [] : [1]);
+        expect(settled).toBe(false);
+        expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId))).toHaveLength(events.length);
+      } finally { release(); await pending; unsubscribe(); }
+      expect(callbacks).toEqual(events.map(event => event.sourceSeq));
+      expect(new Set(endedAt).size).toBe(1);
+    },
+  );
 
   it("persists panel activation under the authenticated run and recovers it across source replay", async () => {
     await db.insert(plugins).values({ pluginKey: "example.live-view", packageName: "example-live-view", version: "1.0.0", status: "ready",
