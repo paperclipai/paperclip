@@ -439,21 +439,23 @@ width tokens and configurable column order. Review the complete composition in
   level. Task IDs and names use natural, case-insensitive ordering; timestamps use
   their raw value. Tags sort by their
   alphabetized names; missing values stay last in both directions. Equal values
-  retain their order. The initial collection uses Task ID ascending as its
-  default order, with no active header, direction arrow or persistent highlight.
-  A header becomes active only after the user sorts by it; the first click sorts
-  ascending.
+  retain their order. Task lists default to Last updated descending, with the
+  Last updated header active and its downward arrow visible. Parent tasks stay
+  before their descendants; roots and siblings use newest-first update order.
+  With nesting disabled, all tasks use that order in one flat list. Explicit
+  URL sorting and saved user sorting retain precedence over the default.
+  Subtask lists use the same default while keeping checklist controls available.
 - A horizontal ellipsis stays pinned to the right edge of the header, outside
   horizontal scrolling. Its “Columns” flyout lists all nine columns in their current order
   with checkmarks on the right. Toggling columns updates both header and rows
   immediately and keeps the flyout open. Keep at least one column visible; nesting
   controls remain available even when Task is hidden. Reset defaults shows only
   Task, Task ID, and Last updated and restores the default column order.
-  Reset also clears the active sort, direction arrow and persistent header highlight.
+  Reset also restores Last updated descending and its active header.
   Other columns remain available in the menu; hiding and re-enabling a column
   preserves its position until reset.
   Hiding the sorted column clears the explicit sort and restores the default
-  collection order without highlighting another header.
+  collection order. Last updated shows the active sort when that column is visible.
 - The refresh's compact flyout uses the shared DropdownMenu primitives. The
   Paper reference defines a 200px surface with an 8px radius, 12px content
   padding, 32px items separated by 4px, regular-weight muted labels and 14px
