@@ -4994,7 +4994,6 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-ta
   --coordinator-card-shadow: 0 5px 22px #00000008;
   --coordinator-composer-shadow: 0 8px 30px #0000000a;
   --background: #fafafa;
-  /* Resolve list surfaces in this palette scope, like the Storybook page. */
   --task-list-surface: var(--background);
   --task-list-edge-fade-surface: var(--task-list-surface);
   --foreground: #262626;
