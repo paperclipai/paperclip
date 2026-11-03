@@ -24,6 +24,7 @@ import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssu
 import type { IssuePrivacyConstraints } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import {
+  childCreatedByRequest,
   loadCreationSourceAgent,
   loadRunBoundIssue,
   resolveIssueCreationSource,
@@ -13209,6 +13210,7 @@ export function issueRoutes(
         entityId: issue.id,
         details: {
           parentId: parent.id,
+          createdByRequest: childCreatedByRequest(issueId, issue.id),
           identifier: issue.identifier,
           title: issue.title,
           ...buildCreateIssueActivityStatusDetails(issue, res),
@@ -13489,6 +13491,7 @@ export function issueRoutes(
           entityId: issue.id,
           details: {
             parentId: sourceIssue.id,
+            createdByRequest: true,
             identifier: issue.identifier,
             title: issue.title,
             inheritedExecutionWorkspaceFromIssueId: sourceIssue.id,
