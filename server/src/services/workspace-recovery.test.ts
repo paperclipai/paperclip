@@ -338,12 +338,17 @@ describe("automatic retained workspace recovery", () => {
   }, 30_000);
 
   it.each([
-    { status: "failed", runtimeMode: "native", uploadFailure: "none" },
-    { status: "cancelled", runtimeMode: "native", uploadFailure: "none" },
-    { status: "failed", runtimeMode: "legacy", uploadFailure: "final" },
-    { status: "failed", runtimeMode: "legacy", uploadFailure: "initial" },
-  ] as const)("saves the authoritative remote workspace after $runtimeMode $status without replaying a turn or certifying external effects ($uploadFailure upload failure)", async ({ status, runtimeMode, uploadFailure }) => {
+    { status: "failed", runtimeMode: "native", scenario: "none" },
+    { status: "failed", runtimeMode: "native", scenario: "registration" },
+    { status: "failed", runtimeMode: "native", scenario: "registration_after_dispatch" },
+    { status: "failed", runtimeMode: "native", scenario: "registration_existing_hold" },
+    { status: "failed", runtimeMode: "native", scenario: "registration_existing_hold_after_dispatch" },
+    { status: "cancelled", runtimeMode: "native", scenario: "none" },
+    { status: "failed", runtimeMode: "legacy", scenario: "final" },
+    { status: "failed", runtimeMode: "legacy", scenario: "initial" },
+  ] as const)("saves the authoritative remote workspace after $runtimeMode $status without replaying a turn or certifying external effects ($scenario)", async ({ status, runtimeMode, scenario }) => {
     const f = await seed(runtimeMode, false);
+    let retryRequestId: string | undefined;
     const remoteCwd = await realpath(f.remote);
     targets.get(f.lease.id)!.remoteCwd = remoteCwd;
     f.runtime.resumeRunLease.mockImplementation(async () => ({ providerLeaseId: f.providerLeaseId, metadata: { remoteCwd } }));
@@ -361,7 +366,7 @@ describe("automatic retained workspace recovery", () => {
       metadata: { ...boundLease.metadata, remoteCwd, agentId: (await run(f.runId)).agentId } })
       .where(eq(environmentLeases.id, f.lease.id));
     const before = await run(f.runId);
-    if (uploadFailure === "final") {
+    if (scenario === "final") {
       // A reused allocation can fail during preparation, before native input or
       // its finalization coordinator exists. Keep a real saved predecessor and
       // the ordinary exact lease handoff; neither grants a new provider turn.
@@ -415,7 +420,7 @@ describe("automatic retained workspace recovery", () => {
       expect((await recoverySources.inspectWorkspaceRecoverySource(db, f.input)).sources).toHaveLength(1);
       const failedUpload = vi.spyOn(getStorageService(), "putFile").mockRejectedValueOnce(new Error("Synthetic saved-copy outage"));
       try {
-        if (uploadFailure === "initial") {
+        if (scenario === "initial") {
           // Exercise the original setup boundary, not a failed final save that
           // retries the same operation. The initial ledger reservation survives.
           await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
@@ -453,7 +458,48 @@ describe("automatic retained workspace recovery", () => {
         epoch: authority.epoch, snapshotId: authority.snapshotId });
       expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(false);
       expect(await readFile(path.join(f.remote, "saved.txt"), "utf8")).toBe("finished work\n");
-      if (uploadFailure === "final") await makeRetryDue(f.actionId);
+      if (scenario === "final") await makeRetryDue(f.actionId);
+    }
+    if (scenario.startsWith("registration")) {
+      await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+      await db.update(heartbeatRuns).set({ resultJson: { workspaceRestoreFailure: "restore_failed", originalDiagnostic: true },
+        runnerProfileJson: { ...(await run(f.runId)).runnerProfileJson, nativeResourceDisposition: "keep_running" },
+      }).where(eq(heartbeatRuns.id, f.runId));
+      const [stopped] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      const termination = stopped.metadata!.remoteExecutionTermination as Record<string, unknown>;
+      await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment", releasedAt: new Date(String(termination.confirmedAt)), metadata: { ...stopped.metadata,
+        sandboxStopAndRetainReceipt: { ...termination, schema: "paperclip.sandbox-stop-and-retain-receipt.v1",
+          pluginId: stopped.metadata!.pluginId, method: "environmentStopLease", requestId: randomUUID() },
+      } }).where(eq(environmentLeases.id, f.lease.id));
+      const [later] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: before.agentId,
+        issueId: f.issueId, runtimeMode: "legacy", status: "failed", errorCode: "setup_failed", finishedAt: new Date(),
+        executionStage: "preparing", runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+        createdAt: new Date(before.createdAt.getTime() + 1), contextSnapshot: { issueId: f.issueId },
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      }).returning();
+      if (scenario.endsWith("after_dispatch")) await appendHeartbeatRunEvent(db, {
+        companyId: f.companyId, runId: later.id, agentId: before.agentId, eventType: "adapter.invoke", stream: "system",
+        level: "info", message: "Execution started before the contradictory bootstrap result.", payload: null,
+      });
+      const existingHold = scenario.includes("existing_hold");
+      await issueRecoveryActionService(db).upsertSourceScoped({ companyId: f.companyId, sourceIssueId: f.issueId,
+        kind: existingHold ? "active_run_watchdog" : "stranded_assigned_issue",
+        cause: existingHold ? "legacy_execution_requires_reconciliation" : "stranded_assigned_issue", fingerprint: `latest-setup:${later.id}`,
+        ownerType: "board", nextAction: "Inspect the failed setup before continuing.",
+        evidence: existingHold ? { runId: later.id, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } }
+          : { latestRunId: later.id, latestRunStatus: "failed", latestRunErrorCode: "setup_failed" } });
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: before.agentId, status: "running" });
+      const app = boardRecoveryApp(), retryIntent = { observedRunId: later.id, idempotencyKey: randomUUID() };
+      const retry = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body;
+      retryRequestId = retry.requestId;
+      expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body.requestId).toBe(retryRequestId);
+      await heartbeatService(db).resumeTaskRetry(f.companyId, retryRequestId!);
+      const [registered] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, f.companyId),
+        sql`${issueRecoveryActions.evidence}->>'runId' = ${f.runId}`));
+      expect(registered).toBeDefined();
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(3);
+      f.actionId = f.input.actionId = registered.id;
+      await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async () => {}) ?? []);
     }
     await recoverRetainedWorkspace(f.input);
     const recoveredAction = await action(f.actionId);
@@ -474,24 +520,44 @@ describe("automatic retained workspace recovery", () => {
     }
     finally { await extracted.cleanup(); }
     expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
-    expect(await run(f.runId)).toMatchObject({ status, errorCode: uploadFailure === "initial" ? "setup_failed" : "execution_interrupted",
+    expect(await run(f.runId)).toMatchObject({ status, errorCode: scenario === "initial" ? "setup_failed" : "execution_interrupted",
       runnerProfileJson: { remoteWorkspace: { state: "saved", snapshotId: saved!.snapshotId } } });
-    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId)))
+      .toHaveLength(retryRequestId ? 1 : 0);
     expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toHaveLength(0);
     expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(0);
     expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, f.runId),
       eq(workspaceOperations.phase, "workspace_recovery_snapshot")))).toHaveLength(0);
-    expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(uploadFailure === "final" ? 2 : 1);
+    expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(scenario === "final" ? 2 : 1);
     expect(f.runtime.retryPendingSandboxTeardown).toHaveBeenCalledTimes(runtimeMode === "legacy" ? 2 : 1);
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
     await scheduleRecoveredWorkspaceCleanup(db, await run(f.runId));
     const [settledLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    if (retryRequestId) {
+      expect(settledLease).toMatchObject({ status: "released", leasePolicy: "reuse_by_environment" });
+      await heartbeatService(db).resumeTaskRetry(f.companyId, retryRequestId);
+      await heartbeatService(db).resumeTaskRetry(f.companyId, retryRequestId);
+      const queued = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "queued")));
+      if (scenario.endsWith("after_dispatch")) {
+        expect(queued).toHaveLength(0);
+        expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retryRequestId)))[0])
+          .toMatchObject({ status: "deferred_issue_execution", runId: null });
+        return;
+      }
+      expect(queued).toHaveLength(1);
+      expect(await readFreshWorkspaceReadiness(db, queued[0]))
+        .toMatchObject({ mode: "resume_preserved_workspace", preservationReceiptId: expect.any(String) });
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ executionWorkspaceId: workspaceId });
+      expect((await run(f.runId)).resultJson).toMatchObject({ originalDiagnostic: true });
+      expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(1);
+      return;
+    }
     if (runtimeMode === "legacy") {
       expect(settledLease).toMatchObject({ status: "released",
-        leasePolicy: uploadFailure === "initial" ? "retain_on_failure" : "reuse_by_execution_workspace" });
+        leasePolicy: scenario === "initial" ? "retain_on_failure" : "reuse_by_execution_workspace" });
       expect((await run(f.runId)).runtimeMode).toBe("legacy");
       expect(await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId))).toEqual([]);
-      if (uploadFailure === "final") expect(snapshots.find(snapshot => snapshot.id === authority.snapshotId)).toMatchObject({ status: "superseded" });
+      if (scenario === "final") expect(snapshots.find(snapshot => snapshot.id === authority.snapshotId)).toMatchObject({ status: "superseded" });
       else expect(snapshots.find(snapshot => snapshot.generation === 1)).toMatchObject({ status: "pending" });
       // Explicit Retry may admit the preserved files. Saturate agent capacity
       // so this tests admission without dispatching a new agent turn.
@@ -504,7 +570,7 @@ describe("automatic retained workspace recovery", () => {
       expect(await readFreshWorkspaceReadiness(db, successor))
         .toMatchObject({ mode: "resume_preserved_workspace", preservationReceiptId: expect.any(String) });
       expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, successor.id))).toEqual([]);
-      expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(uploadFailure === "final" ? 2 : 1);
+      expect(f.runtime.resumeRunLease).toHaveBeenCalledTimes(scenario === "final" ? 2 : 1);
       return;
     }
     if (status === "failed") {
