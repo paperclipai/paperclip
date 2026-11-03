@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { test } from "node:test";
 import { HARNESS_PROTOCOL_SCHEMA, serializeHarnessFrame } from "../dist/index.js";
 import { serveHarness } from "../dist/host.js";
@@ -138,4 +138,51 @@ test("EOF aborts pending work and bounds cleanup even when provider teardown han
   await f.request("initialize", { identity });
   f.input.end();
   await assert.rejects(f.done, /cleanup exceeded/);
+});
+
+
+test("shutdown bounds stalled protocol output and revokes queued and late writes", { timeout: 2000 }, async () => {
+  const input = new PassThrough();
+  const writes = [];
+  let blockedWrite, releaseBlocked, emit, emission, queuedEmission;
+  const blocked = new Promise(resolve => { blockedWrite = resolve; });
+  const output = new Writable({ write(chunk, _encoding, callback) {
+    writes.push(JSON.parse(chunk.toString()));
+    if (writes.length === 2) { releaseBlocked = callback; blockedWrite(); }
+    else callback();
+  } });
+  const done = serveHarness({ identity, capabilities: {},
+    async execute(_command, context) {
+      emit = context.emit;
+      emission = context.emit({ eventType: "item.delta", priority: "p1", payload: { text: "pending" } });
+      queuedEmission = context.emit({ eventType: "item.delta", priority: "p1", payload: { text: "queued" } });
+      await Promise.all([emission, queuedEmission]);
+      return {};
+    }, close() { return {}; },
+  }, { input, output, diagnostic() {}, shutdownTimeoutMs: 20 });
+  void done.catch(() => {});
+  input.write(serializeHarnessFrame({ schema: HARNESS_PROTOCOL_SCHEMA, id: 1, method: "initialize", params: { identity } }));
+  input.write(serializeHarnessFrame({ schema: HARNESS_PROTOCOL_SCHEMA, id: 2, method: "execute", params: {
+    command: { schema: "paperclip.prp.command.v1", commandId: "stalled_command", controllerSeq: 1,
+      type: "turn.start", issuedAt: "2026-11-03T00:00:00Z", payload: {} },
+  } }));
+  await blocked;
+  input.end();
+  let timeout;
+  try {
+    await assert.rejects(Promise.race([done, new Promise((_resolve, reject) => {
+      timeout = setTimeout(() => reject(Error("host did not finish its bounded shutdown")), 1000);
+    })]), /cleanup exceeded/);
+    assert.equal(output.destroyed, true);
+    await assert.rejects(emission, /cleanup exceeded/);
+    await assert.rejects(queuedEmission, /cleanup exceeded/);
+    await assert.rejects(emit({ eventType: "turn.completed", priority: "p0", payload: {} }), /cancelled|closed|active/);
+    const release = releaseBlocked; releaseBlocked = undefined; release();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(writes.length, 2, "a released write callback must not publish a late execute response");
+  } finally {
+    clearTimeout(timeout);
+    releaseBlocked?.();
+    input.destroy(); output.destroy();
+  }
 });

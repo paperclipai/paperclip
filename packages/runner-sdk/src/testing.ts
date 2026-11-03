@@ -56,10 +56,12 @@ export async function runHarnessProcessConformance(input: HarnessProcessConforma
   let fatal: Error | undefined;
   let nextId = 0;
   let expectedSequence = 1;
+  let admission: "initializing" | "ready" | "closing" | "closed" = "initializing";
+  let admittedCapabilities: RunnerHarnessCapabilities | undefined;
   let retainedBytes = 0;
   let remainder = Buffer.alloc(0);
   const events: HarnessEvent[] = [];
-  const pending = new Map<number, { resolve(value: JsonObject): void; reject(error: Error): void }>();
+  const pending = new Map<number, { method: HarnessMethod; resolve(value: JsonObject): void; reject(error: Error): void }>();
   const eventWaiters = new Set<() => void>();
   let rejectFailure!: (error: Error) => void;
   const failure = new Promise<never>((_resolve, reject) => { rejectFailure = reject; });
@@ -84,6 +86,7 @@ export async function runHarnessProcessConformance(input: HarnessProcessConforma
   child.stderr.on("data", () => {});
   child.stdin.on("error", fail);
   child.stdout.on("data", (chunk: Buffer) => {
+    if (fatal) return;
     try {
       let start = 0;
       for (;;) {
@@ -98,9 +101,22 @@ export async function runHarnessProcessConformance(input: HarnessProcessConforma
           const waiter = pending.get(response.id);
           if (!waiter) throw new HarnessProtocolError("harness replied to an unknown or settled request");
           pending.delete(response.id);
+          if (response.ok && waiter.method === "initialize") {
+            // Admit before parsing the next frame in this same stdout chunk.
+            // The successful response must independently bind the release.
+            if (!sameRunnerHarnessRelease(identity, parseRunnerHarnessReleaseIdentity(response.result.identity))) {
+              throw new HarnessProtocolError("harness conformance identity mismatch");
+            }
+            admittedCapabilities = parseHarnessCapabilities(response.result.capabilities);
+            admission = "ready";
+          }
+          if (waiter.method === "close") admission = "closed";
           if (response.ok) waiter.resolve(response.result);
           else waiter.reject(new HarnessProtocolError(response.error.message, response.error.code));
         } else {
+          if (admission !== "ready" && admission !== "closing") {
+            throw new HarnessProtocolError("harness events require initialized admission and must stop after the close response");
+          }
           const event = parseHarnessEvent(value);
           if (event.sequence !== expectedSequence++) throw new HarnessProtocolError("harness event sequence contains a gap or duplicate");
           retainedBytes += line.length;
@@ -120,16 +136,15 @@ export async function runHarnessProcessConformance(input: HarnessProcessConforma
     const id = ++nextId;
     return Promise.race([failure, new Promise<JsonObject>((resolve, reject) => {
       const frame = serializeHarnessFrame({ schema: HARNESS_PROTOCOL_SCHEMA, id, method, params });
-      pending.set(id, { resolve, reject });
+      pending.set(id, { method, resolve, reject });
+      if (method === "close") admission = "closing";
       child.stdin.write(frame, error => { if (error) fail(error); });
     })]);
   };
   try {
-    const hello = await request("initialize", { ...input.initializeParams, identity: identity as unknown as JsonObject });
-    if (!sameRunnerHarnessRelease(identity, parseRunnerHarnessReleaseIdentity(hello.identity))) {
-      throw new HarnessProtocolError("harness conformance identity mismatch");
-    }
-    const capabilities = parseHarnessCapabilities(hello.capabilities);
+    await request("initialize", { ...input.initializeParams, identity: identity as unknown as JsonObject });
+    if (admittedCapabilities === undefined) throw new HarnessProtocolError("harness initialization did not establish admission");
+    const capabilities = admittedCapabilities;
     const commandResults: JsonObject[] = [];
     for (const command of input.commands) commandResults.push(await request("execute", { command: command as unknown as JsonObject }));
     const required = input.requiredEventTypes ?? [];

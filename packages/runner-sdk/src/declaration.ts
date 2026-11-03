@@ -114,8 +114,11 @@ export function parseRunnerHarnessCheckpoint(value: unknown): RunnerHarnessCheck
   for (const key of ["cwd", "runtimeDirectory"] as const) {
     if (fields[key] === undefined) continue;
     const directory = text(fields[key], `checkpoint.${key}`, 4096);
-    if (!directory.startsWith("/") || directory === "/" || directory.includes("\\")
-      || directory.split("/").some(part => part === "." || part === "..")) {
+    const windows = /^[a-zA-Z]:[\\/]/u.test(directory);
+    const parts = windows ? directory.slice(3).split(/[\\/]/u) : directory.split("/");
+    if ((!windows && (!directory.startsWith("/") || directory === "/" || directory.includes("\\")))
+      || parts.some(part => part === "." || part === ".."
+        || (windows && (!part || /[<>:"|?*]/u.test(part) || /[. ]$/u.test(part))))) {
       throw new HarnessProtocolError(`checkpoint.${key} must be an absolute contained resource path`);
     }
     directories[key] = directory;

@@ -50,3 +50,41 @@ test("test kit bounds waiting for an event that the provider never emits", async
   });`, input => assert.rejects(runHarnessProcessConformance({ ...input, timeoutMs: 200,
     requiredEventTypes: ["turn.completed"] }), /deadline exceeded/));
 });
+
+
+function rawLifecycleProvider(eventPosition) {
+  return `const { createInterface } = await import('node:readline');
+    const lines = createInterface({ input: process.stdin });
+    const fact = { schema: 'paperclip.harness.v1', sequence: 1, eventType: 'turn.started', priority: 'p0', payload: {} };
+    const encode = value => JSON.stringify(value) + '\\n';
+    for await (const line of lines) {
+      const request = JSON.parse(line);
+      const response = { schema: 'paperclip.harness.v1', id: request.id, ok: true,
+        result: request.method === 'initialize' ? { identity, capabilities: {} } : {} };
+      if (request.method === 'initialize') process.stdout.write(
+        ${JSON.stringify(eventPosition)} === 'before_initialize' ? encode(fact) + encode(response)
+          : encode(response) + (${JSON.stringify(eventPosition)} === 'after_initialize' ? encode(fact) : ''));
+      else if (request.method === 'close') {
+        process.stdout.write(encode(response) + (${JSON.stringify(eventPosition)} === 'after_close' ? encode(fact) : ''));
+        break;
+      } else process.stdout.write(encode(response));
+    }
+    process.stdin.destroy();`;
+}
+
+test("test kit rejects events before the initialize success response", async () => {
+  await fixture(rawLifecycleProvider("before_initialize"), input =>
+    assert.rejects(runHarnessProcessConformance(input), /initializ|admission/));
+});
+
+test("test kit rejects events after the close response", async () => {
+  await fixture(rawLifecycleProvider("after_close"), input =>
+    assert.rejects(runHarnessProcessConformance(input), /close|admission/));
+});
+
+test("test kit admits events immediately following initialize success in the same chunk", async () => {
+  await fixture(rawLifecycleProvider("after_initialize"), async input => {
+    const report = await runHarnessProcessConformance({ ...input, requiredEventTypes: ["turn.started"] });
+    assert.equal(report.events.length, 1);
+  });
+});

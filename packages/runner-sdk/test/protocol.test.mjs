@@ -98,3 +98,18 @@ test("checkpoints preserve exact release and bounded native state without accept
     { ...nativeBound, providerSessionIdentity: { ...nativeBound.providerSessionIdentity, invented: "authority" } },
   ]) assert.throws(() => parseRunnerHarnessCheckpoint(value));
 });
+
+
+test("checkpoint directories accept absolute Windows paths without unsafe path aliases", () => {
+  const checkpoint = { schema: "paperclip.harness-checkpoint.v1", identity,
+    normalizedSessionId: "session_1", model: "selected-model", config: {}, providerState: {}, processGroup: null };
+  for (const directory of [String.raw`C:\workspace\task`, "C:/workspace/task"]) {
+    assert.deepEqual(parseRunnerHarnessCheckpoint({ ...checkpoint, cwd: directory, runtimeDirectory: directory }),
+      { ...checkpoint, cwd: directory, runtimeDirectory: directory });
+  }
+  for (const directory of ["C:workspace/task", "C:/", "C:\\", "C:/workspace/../other", "C:/workspace/./task",
+    String.raw`C:\workspace\..\other`, "C:/workspace/task:stream", "C:/workspace/task?", "C:/workspace/task.",
+    "C:/workspace/task ", "C:/workspace/ta\u0000sk"]) {
+    assert.throws(() => parseRunnerHarnessCheckpoint({ ...checkpoint, cwd: directory }), undefined, directory);
+  }
+});

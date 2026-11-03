@@ -66,6 +66,8 @@ export async function serveHarness(handlers: HarnessHostHandlers, options: Harne
   let lastRequestId = 0;
   let queuedOutputBytes = 0;
   let outputQueue = Promise.resolve();
+  let outputFailure: Error | undefined;
+  const outputWaiters = new Set<(error: Error) => void>();
   let workQueue = Promise.resolve();
   let initialization: Promise<void> = Promise.resolve();
   let closeTask: Promise<JsonObject> | undefined;
@@ -77,15 +79,38 @@ export async function serveHarness(handlers: HarnessHostHandlers, options: Harne
   let workLifetime = new AbortController();
 
   const write = (frame: string): Promise<void> => {
+    if (outputFailure) throw outputFailure;
     const bytes = Buffer.byteLength(frame);
     if (queuedOutputBytes + bytes > maxQueuedOutputBytes) throw new HarnessProtocolError("harness output backpressure limit exceeded");
     queuedOutputBytes += bytes;
-    const task = outputQueue.then(() => new Promise<void>((resolve, reject) => {
-      output.write(frame, error => error ? reject(error) : resolve());
-    })).finally(() => { queuedOutputBytes -= bytes; });
+    const previous = outputQueue;
+    const task = new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error | null) => {
+        if (settled) return;
+        settled = true;
+        outputWaiters.delete(cancel);
+        queuedOutputBytes -= bytes;
+        if (error) reject(error); else resolve();
+      };
+      const cancel = (error: Error) => finish(error);
+      outputWaiters.add(cancel);
+      void previous.then(() => {
+        // A cancelled queued write must never resume after shutdown, even if
+        // an earlier stalled stream callback eventually becomes writable.
+        if (outputFailure) { finish(outputFailure); return; }
+        try { output.write(frame, finish); }
+        catch (error) { finish(asError(error)); }
+      });
+    });
     // Retain the failure for every subsequent write without an unhandled rejection.
     outputQueue = task.catch(error => { fatal ??= asError(error); });
     return task;
+  };
+  const revokeOutput = (error: Error, destroy: boolean) => {
+    outputFailure ??= error;
+    for (const cancel of [...outputWaiters]) cancel(outputFailure);
+    if (destroy) output.destroy();
   };
   const emit: HarnessHostContext["emit"] = async event => {
     if (state !== "ready") throw new HarnessProtocolError("harness cannot publish events before initialization or after close", "harness_not_active");
@@ -206,11 +231,21 @@ export async function serveHarness(handlers: HarnessHostHandlers, options: Harne
   } catch (error) {
     fatal ??= asError(error);
   } finally {
-    try { await cleanup({ reason: fatal ? "protocol_failure" : "input_closed" }); }
-    catch (error) { fatal ??= asError(error); }
-    try { await within(Promise.allSettled([...pending]), shutdownTimeoutMs); }
-    catch (error) { fatal ??= asError(error); }
-    await outputQueue;
+    let drained = false;
+    try {
+      // Native disposal, pending replies and the final stdout drain share one
+      // deadline. A blocked pipe cannot keep ownership alive indefinitely.
+      await within((async () => {
+        await cleanup({ reason: fatal ? "protocol_failure" : "input_closed" });
+        await Promise.allSettled([...pending]);
+        await outputQueue;
+      })(), shutdownTimeoutMs);
+      drained = true;
+    } catch (error) { fatal ??= asError(error); }
+    finally {
+      state = "closed";
+      revokeOutput(fatal ?? new HarnessProtocolError("harness output is closed", "harness_not_active"), !drained);
+    }
   }
   if (fatal) throw fatal;
 }
