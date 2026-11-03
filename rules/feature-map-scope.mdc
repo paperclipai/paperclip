@@ -29,7 +29,7 @@ same-named agent-access companions.
 
 ## Existing-entry corrections
 
-Keep-map-synchronization instructions require a minimal correction only when an
+Instructions to keep maps synchronized require a minimal correction only when an
 existing entry would become materially inaccurate, such as a removed entry
 point, changed access requirement, or obsolete user journey. Correct or remove
 the affected text in place and preserve stable IDs; this does not justify new

@@ -20,21 +20,12 @@ Agent access: [companion](../agent-access-map/tasks.md).
 
 - `discussion`: `tasks/discussion` — persist comments, references, and files on the task.
 - `completion`: `tasks/completion` — distinguish backlog, active work, review, blocked, done, and cancelled outcomes.
-  A board user closing an active native task must stop its run before the task
-  releases execution ownership, including providers without session goals.
-  Verify Done and Cancelled, an unconfirmed stop, and ordinary agent completion.
 - `privacy`: `tasks/privacy` — create private tasks, share or revoke access, and inspect parent/project inheritance before changing visibility.
 
 The [Product task-properties journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md)
 checks only assignment to the signed-in user and persistence after reload. Its
 source is reusable across self-hosted and Cloud; Cloud live qualification is
 separate. It does not cover other property operations or agent authorization.
-
-The [Product task-search-filter journey](../../tests/runner-e2e/PRODUCT-JOURNEYS.md)
-checks `tasks/organize` with owned matching and nonmatching controls, exact task
-identities, saved task content, and search/status persistence after reload and
-detail/back navigation. It is model-free and reusable across deployment targets.
-Live Cloud qualification is separate from the journey's assertion unit tests.
 
 ## How to get to it (user POV)
 
@@ -44,56 +35,18 @@ visible-row details independently when verifying `tasks/organize`: row heights,
 title bounds, and the first-row origin should remain stable. Test nested expansion,
 scrolling to more rows, and detail/back navigation; a collection projection must
 never suppress the full task instruction fetch.
-Coordinator Tasks uses the same index and visible-row enrichment. Needs attention
-resolves pending task IDs in batches of at most 100; it does not fetch enriched
-task detail for every decision. Search and participant filters stay on the server.
-Cold Coordinator detail must stay compact when Classic settings arrive before
-the personal workspace preference. Verify explicit history expansion afterward.
 
 ### `new-task`
 
 Use New task from the global launcher, task list, or project task view.
-Images selected, pasted, or dropped into either the new-task or thread composer
-appear as equal-size rounded thumbnails above the text. Check mixed image/file
-selections, removal, thread upload failure/retry, and restored thread drafts.
-New-task files persist in account- and company-scoped browser storage across
-reloads and are cleared after creation. Verify that restored image bytes reach
-the task and that older inline-image drafts keep the rich editor.
-The Storybook new-task and add-menu suites have desktop and mobile image examples;
-their upload and submit boundaries are fixtures.
 
 ### `task-list`
 
-Scheduled ordinary monitor waits display **Monitoring** with a blue clock in
-current task indicators, groups, board columns, and filters. Compare Monitoring
-with In Progress, then start the check and verify the status returns to its
-execution presentation. Retained monitors must not override blocked/review or
-terminal states. Inspect due/overdue copy separately; no runner is implied.
-
 Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
-Filters → **Routine tasks** selects tasks created by routine runs. The
-`/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` link opens that selection with newest-created tasks first. Sort controls update
-`sortField` and `sortDir` in the URL. Reloads and task return links keep that order.
-Shared sort links also retain their order when opened in another task interface.
 
 ### `task-detail`
 
-During a cold open, task data prepares behind the shell loading view until the
-personal presentation preference resolves. The temporary shell stays hidden.
-The matching chat loading frame then owns the same viewport and
-composer geometry as the resolved conversation. The real title and monitor
-banner stay concealed until the initial reading position is prepared. The
-[rich loading journey](../../tests/perf/issue-detail/loading-layout.spec.ts)
-checks direct and list-based entry, delayed fonts and preferences, and desktop/mobile geometry
-with a long saved thread, cards, a monitor, and a pending confirmation. This
-synthetic local coverage does not establish a deployed staging pass. The normal
-[browser CI journey](../../tests/e2e/task-loading-frame.spec.ts) also covers the
-loading contract, Classic preference loading and typography, stable mobile chrome,
-and a bounded wait for stalled fonts.
-
-Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. Completed runs with saved replies defer their transcripts until the reader opens history. Live runs, failures, yielded runs and runs without a saved reply still hydrate; an already shown transcript stays available after completion. No URL fragment expands history; older-comment anchors fetch only their target, and document anchors open the pane. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A single run with deferred output or a truncated legacy log offers **More run output** instead. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
-
-For an ordinary native task, deferred workspace finalization must preserve the final reply for both completed work and work awaiting review. Reload must show that saved reply once. The pending review stays pending; publishing the reply does not approve it or start another run. The [database recovery suite](../../server/src/services/native-runtime/agent-chat-response-recovery.test.ts) covers deferred review publication, exact final-message selection and review preservation. Live acceptance is recorded in the pull request.
+Open `/issues/:issueId` from a row, mention, or direct link. Cold opens show the instruction, recent exchange and saved cards together. **More messages** appears only when earlier comments or runs are omitted and loads that history. Fresh tasks with no omitted history have no disclosure. A run with deferred output or a truncated legacy log offers **More run output**. **More task actions → Show task activity** loads full activity even for a single native run; incoming messages remain visible while the task stays open.
 
 ### `task-sharing`
 
@@ -135,8 +88,6 @@ Use a human/unassigned task to verify persistence without invoking a model.
 
 Automated: [task-list helpers](../../ui/src/pages/Issues.test.tsx) cover search URLs, pagination, deduplication, and presentation constants. The suite does not render the page or exercise filtering, grouping, opening a task, and returning; those interactions still need a running-browser check.
 
-Task and inbox rows omit the system interruption labels **Thinking**, **Trying again soon**, and **Retry available**. [Shared row tests](../../ui/src/components/IssueRow.test.tsx) cover working, scheduled-retry, and failed interruptions in both row presentations, including suppression of replacement recovery chips. Task status and other relevant badges remain visible; retry controls remain inside the task conversation.
-
 Manual: Seed human-created, agent-created, scheduled routine, human-initiated chat-channel, and creator-less tasks. Confirm automation is hidden by default, **Show agent-created tasks** reveals it, reload preserves the choice, and Clear filters hides it again. Verify list and board search with automation newer than the human results, and expand contextual ancestors/subtasks without promoting unrelated automated roots. Repeat in project task lists. Agent profiles and task-detail subtasks retain complete history.
 
 Manual: Filter by status and assignee, change grouping/sort, open a task, and return. Verify the correct records and selected view survive navigation and reload. Include an empty result and a failed request.
@@ -146,8 +97,6 @@ Manual: Filter by status and assignee, change grouping/sort, open a task, and re
 Manual: Open a long task with slow historical requests. Read the instruction and recent reply before those requests finish. Edit the title/status while enrichment is pending and verify saves and rollbacks. Expand **More messages**, verify scroll position and no duplicate replies, return to the task, and follow an older comment link. Leave a task open across new messages and runs and confirm none disappear. Reconnect after several turns and verify watched runs settle. Reopen after steering with more than 50 newer activity rows; the delivered message must not reappear in the queue.
 
 Automated: [cold-open reads](../../server/src/__tests__/task-cold-open.test.ts) cover bounded reads, event filtering and company denial. [Task detail](../../ui/src/pages/IssueDetail.test.tsx) covers component behavior, while [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts.
-
-The opt-in [saved-reply browser case](../../tests/perf/issue-detail/saved-reply-startup.spec.ts) uses 200 completed native runs and long saved replies in a disposable PostgreSQL instance. It holds transcript reads, checks desktop/mobile first-reveal geometry, then opens history while retaining the editor and draft. See its [setup](../../tests/perf/issue-detail/README.md).
 
 Failure markers have no dashed divider rules. An adjacent run error and
 no-live-execution-path notice show only the last error, with its details and
@@ -187,13 +136,6 @@ schema feedback supports a corrected call before a wait is claimed.
 For a due monitor held by execution recovery, confirm that the schedule remains
 and task activity explains the deferral. Repeated checks must not replay the held
 work. Resolve the hold through its existing recovery action, then verify one wake.
-On a blocked task with a retained monitor, verify that automatic checks show as
-paused. Check now requests one check through normal admission without changing
-the task status. Confirm that an unresolved dependency or recovery hold prevents
-dispatch and does not produce a success message. Backlog and todo tasks must not
-offer Check now. Blocked provider-quota recovery must offer no manual check and
-retain its schedule until the task resumes. Agents and automatic ticks cannot
-check a blocked task.
 Hold native finalization after the provider has stopped, and verify that both
 scheduled and manual checks retain the due monitor. After settlement, verify one
 wake. If its timeout passes during workspace recovery, verify settlement followed
