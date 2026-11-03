@@ -9,6 +9,9 @@ const CODEX_TRANSIENT_UPSTREAM_RE =
 const CODEX_REMOTE_COMPACTION_RE = /remote\s+compact\s+task/i;
 const CODEX_USAGE_LIMIT_RE =
   /you(?:'|’)ve hit your usage limit for .+\.\s+switch to another model now,\s+or try again at\s+([^.!\n]+)(?:[.!]|\n|$)/i;
+const CODEX_USAGE_LIMIT_DATED_RE =
+  /you(?:'|’)ve hit your usage limit\b[^\n]*?\btry again at\s+([a-z]{3,9})\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+(\d{4}),?\s+(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\b/i;
+const MONTH_PREFIXES = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
 const CODEX_PROVIDER_QUOTA_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit|model (?:is )?at capacity|at capacity for this model|capacity limit)/i;
 const CODEX_REFRESH_TOKEN_REUSED_RE =
@@ -315,8 +318,23 @@ export function extractCodexRetryNotBefore(input: {
 }, now = new Date()): Date | null {
   const haystack = buildCodexErrorHaystack(input);
   const usageLimitMatch = haystack.match(CODEX_USAGE_LIMIT_RE);
-  if (!usageLimitMatch) return null;
-  return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
+  if (usageLimitMatch) return parseLocalClockTime(usageLimitMatch[1] ?? "", now);
+  const datedMatch = haystack.match(CODEX_USAGE_LIMIT_DATED_RE);
+  if (!datedMatch) return null;
+  return parseLocalDateTime(datedMatch);
+}
+
+function parseLocalDateTime(match: RegExpMatchArray): Date | null {
+  const month = MONTH_PREFIXES.indexOf((match[1] ?? "").slice(0, 3).toLowerCase());
+  const day = Number.parseInt(match[2] ?? "", 10);
+  const year = Number.parseInt(match[3] ?? "", 10);
+  const hour12 = Number.parseInt(match[4] ?? "", 10);
+  const minute = Number.parseInt(match[5] ?? "0", 10);
+  if (month < 0 || day < 1 || day > 31 || hour12 < 1 || hour12 > 12 || minute > 59) return null;
+  const hour24 = (hour12 % 12) + ((match[6] ?? "").toLowerCase() === "p" ? 12 : 0);
+  const retryAt = new Date(year, month, day, hour24, minute, 0, 0);
+  if (retryAt.getMonth() !== month || retryAt.getDate() !== day) return null;
+  return retryAt;
 }
 
 export function isCodexTransientUpstreamError(input: {
