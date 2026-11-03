@@ -357,7 +357,7 @@ jobs:
   # tags. Nothing is publicly tagged until this runs, so a half-published
   # multi-arch image is not a state anything can pull.
   merge-and-push:
-    if: ${{ !cancelled() && needs.build-and-push.result == 'success' && (needs.source_verification.result == 'success' || needs.source_verification.result == 'skipped') && (needs.publication_verification.result == 'success' || (needs.publication_verification.result == 'skipped' && (github.ref != 'refs/heads/master' || needs.source_verification.outputs.verified == 'true'))) }}
+    if: ${{ !cancelled() && needs.build-and-push.result == 'success' && (needs.source_verification.result == 'success' || needs.source_verification.result == 'skipped') && (needs.publication_verification.result == 'success' || (needs.publication_verification.result == 'skipped' && (github.repository != 'paperclipai/paperclip' || github.repository_id != '1170821064' || github.ref != 'refs/heads/master' || needs.source_verification.outputs.verified == 'true'))) }}
     needs: [build-and-push, source_verification, publication_verification]
     runs-on: ${{ github.repository == 'paperclipai/paperclip' && github.repository_id == '1170821064' && github.ref == 'refs/heads/master' && (vars.CORE_PUBLICATION_RUNNER || 'cloud-release-32') || 'ubuntu-latest' }}
     timeout-minutes: 20

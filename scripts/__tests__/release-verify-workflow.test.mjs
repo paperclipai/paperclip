@@ -76,16 +76,19 @@ test("source proof gates publication without occupying a publication runner", ()
   assert.match(publisher, /actions: read/);
   assert.match(publisher, /timeout-minutes: 20/);
   const expression = publisher.match(/^    if: \$\{\{ (.+) \}\}$/m)[1].replaceAll("needs.build-and-push", "needs.build");
-  for (const [ref, observed, fallback, expected] of [
+  for (const [ref, observed, fallback, expected, repository = "paperclipai/paperclip", repository_id = "1170821064"] of [
     ["refs/heads/master", "true", "skipped", true],
     ["refs/heads/master", "false", "skipped", false],
     ["refs/heads/master", undefined, "skipped", false],
     ["refs/heads/master", "false", "success", true],
     ["refs/heads/master", "false", "failure", false],
     ["refs/tags/v1", undefined, "skipped", true],
+    ["refs/heads/master", undefined, "skipped", true, "fork/paperclip", "123"],
+    ["refs/heads/master", undefined, "skipped", true, "paperclipai/paperclip", "123"],
   ]) {
-    assert.equal(runInNewContext(expression, { cancelled: () => false, github: { ref }, needs: {
-      build: { result: "success" }, source_verification: { result: ref === "refs/heads/master" ? "success" : "skipped", outputs: { verified: observed } },
+    const canonical = repository === "paperclipai/paperclip" && repository_id === "1170821064" && ref === "refs/heads/master";
+    assert.equal(runInNewContext(expression, { cancelled: () => false, github: { ref, repository, repository_id }, needs: {
+      build: { result: "success" }, source_verification: { result: canonical ? "success" : "skipped", outputs: { verified: observed } },
       publication_verification: { result: fallback },
     } }), expected);
   }
