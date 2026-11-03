@@ -1,8 +1,8 @@
 import { expect, it, vi } from "vitest";
-import { searchRunnerApi } from "./runner-api-catalog.js";
-import { executeRunnerApi } from "./runner-api-client.js";
-import { startOpenCodeMcpBridge } from "../../../../packages/paperclip-runner/src/drivers/opencode/mcp-bridge.js";
-import { searchApiAction } from "../../../../packages/paperclip-runner/src/protocol-actions/search-api.js";
+import { searchRunnerApi } from "../services/native-runtime/runner-api-catalog.js";
+import { executeRunnerApi } from "../services/native-runtime/runner-api-client.js";
+import { startOpenCodeMcpBridge } from "../../../packages/paperclip-runner/src/drivers/opencode/mcp-bridge.js";
+import { searchApiAction } from "../../../packages/paperclip-runner/src/protocol-actions/search-api.js";
 
 it("delivers personal primary profile guidance through actual API discovery and bounded OpenCode MCP output", async () => {
   const descriptor = searchApiAction.live.descriptor;
