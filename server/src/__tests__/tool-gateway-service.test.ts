@@ -2894,6 +2894,32 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(calls).toBe(1);
   });
 
+  it.each(["gateway", "plugin"] as const)("reports a saved unknown outcome when a stopped %s provider throws", async path => {
+    const { company, agent, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({ companyId: company.id, name: "Allow fictional tool",
+      policyType: "allow", selectors: { toolName: "fixture:delete_everything" } });
+    let entered!: () => void; let resume!: () => void;
+    const sent = new Promise<void>(resolve => { entered = resolve; });
+    const gate = new Promise<void>(resolve => { resume = resolve; });
+    const dispatcher = fakePluginDispatcher();
+    dispatcher.executeTool = async () => { entered(); await gate; throw new ToolGatewayHttpError(504, "Fictional timeout", "tool_timeout"); };
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: dispatcher });
+    const parameters = { target: "fictional" };
+    const session = await gateway.createSession(runSessionInput(company, agent, run));
+    const attempt = path === "gateway"
+      ? gateway.executeTool({ sessionToken: session.token, tool: "fixture:delete_everything", parameters })
+      : gateway.executePluginTool({ actor: { type: "agent", companyId: company.id, agentId: agent.id, runId: run.id },
+          tool: "fixture:delete_everything", parameters, runContext: runSessionInput(company, agent, run) });
+    const outcome = attempt.then(() => null, error => error);
+    try { await sent; await createHeartbeatRunControl(db, callbacks(db)).cancelRunInternal(run.id, "Stop"); }
+    finally { resume(); }
+    expect(await outcome).toMatchObject({ status: 409, reasonCode: "tool_execution_outcome_unknown" });
+    const [saved] = await db.select().from(toolInvocations);
+    expect(saved).toMatchObject({ status: "failed", errorCode: "tool_execution_outcome_unknown" });
+    const events = await db.select().from(toolCallEvents).where(eq(toolCallEvents.invocationId, saved.id));
+    expect(events.some(event => event.policyDecision === "defer_runtime")).toBe(false);
+  });
+
   it("marks an in-flight fictional provider outcome unknown and does not retry on cancellation", async () => {
     const { company, agent, issue, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({ companyId: company.id, name: "Review destructive tools",
