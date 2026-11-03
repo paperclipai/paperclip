@@ -1,3 +1,4 @@
+import * as wakeSettlementNotifications from "../services/external-conversation-settlement-notifications.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { createHeartbeatLifecycle, type HeartbeatLifecycleDependencies } from "../services/heartbeat/run-lifecycle.js";
@@ -180,6 +181,25 @@ describe("committed native run projection lifecycle", () => {
       if (fault === "live-owner") expect((await read(binding.runId)).status).toBe("running");
     },
   );
+
+  it("registers wake settlement intent before mutation and rolls back notification failure", async () => {
+    const binding = await accepted(), wake = await claimedWake(binding);
+    await finalizeNativeRun({ db, runId: binding.runId, workspaceFinalizeStatus: "succeeded" });
+    const before = await read(binding.runId);
+    const notify = wakeSettlementNotifications.notifyExternalConversationSettlement;
+    const notification = vi.spyOn(wakeSettlementNotifications, "notifyExternalConversationSettlement")
+      .mockImplementation(async (tx, scope) => {
+        const [current] = await tx.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+        expect(current.status).toBe("claimed");
+        await notify(tx, scope);
+        throw new Error("wake intent registration failure");
+      });
+    await expect(projectCommittedRun({ db, run: before, coordinator: await state(binding.runId) }))
+      .rejects.toThrow("wake intent registration failure");
+    expect(notification).toHaveBeenCalledOnce();
+    expect(await read(binding.runId)).toEqual(before);
+    expect(await readWake(wake.id)).toEqual(wake);
+  });
 
   it("rolls back terminal projection and exact wake settlement together", async () => {
     const binding = await accepted(), wake = await claimedWake(binding);

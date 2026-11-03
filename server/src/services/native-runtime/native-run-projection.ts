@@ -42,16 +42,18 @@ export async function settleNativeTerminalWake(tx: Db, run: Pick<typeof heartbea
   "id" | "companyId" | "agentId" | "wakeupRequestId" | "runtimeMode" | "status" | "finishedAt" | "error">) {
   if (run.runtimeMode !== "native" || !run.wakeupRequestId || !run.finishedAt
     || !["succeeded", "failed", "cancelled"].includes(run.status)) return;
-  const [settled] = await tx.update(agentWakeupRequests).set({
-    status: run.status === "succeeded" ? "completed" : run.status,
-    finishedAt: run.finishedAt, error: run.error, updatedAt: new Date(),
-  }).where(and(eq(agentWakeupRequests.id, run.wakeupRequestId),
+  const claim = and(eq(agentWakeupRequests.id, run.wakeupRequestId),
     eq(agentWakeupRequests.companyId, run.companyId), eq(agentWakeupRequests.agentId, run.agentId),
-    eq(agentWakeupRequests.runId, run.id), eq(agentWakeupRequests.status, "claimed")))
-    .returning({ id: agentWakeupRequests.id });
-  if (!settled) return;
+    eq(agentWakeupRequests.runId, run.id), eq(agentWakeupRequests.status, "claimed"));
+  const [current] = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests)
+    .where(claim).for("update").limit(1);
+  if (!current) return;
   await notifyExternalConversationSettlement(tx, { companyId: run.companyId });
   await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
+  await tx.update(agentWakeupRequests).set({
+    status: run.status === "succeeded" ? "completed" : run.status,
+    finishedAt: run.finishedAt, error: run.error, updatedAt: new Date(),
+  }).where(claim);
 }
 
 export function nativeRunProjectionNeedsRepair(projectedStatus: "succeeded" | "failed" | "cancelled" | SQL) {
