@@ -5,7 +5,7 @@ import { registry } from "./registry";
 export type DirectionId = (typeof registry.directions)[number]["id"];
 export type SurfaceId = (typeof registry.surfaces)[number]["id"];
 
-export type LabKind =
+export type LabCardKind =
   | "plan"
   | "confirmation"
   | "question"
@@ -41,7 +41,7 @@ export interface LabTarget {
 
 export interface LabAttentionRecord {
   id: string;
-  kind: LabKind;
+  kind: LabCardKind;
   decideHere: boolean;
   source: AttentionSourceKind;
   task: string;

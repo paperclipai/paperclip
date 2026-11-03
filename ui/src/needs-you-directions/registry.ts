@@ -13,8 +13,8 @@ export const registry = defineLab({
     { id: "panel", label: "Review-panel", width: 434, nav: "other" },
   ],
   directions: [
-    { id: "d1-focus", key: "1", name: "1.Focus", tagline: "Direction 1", stage: "proposed" },
-    { id: "d2-workspace", key: "2", name: "2.Workspace", tagline: "Direction 2", stage: "proposed" },
+    { id: "d1-focus", key: "1", name: "1.Focus", tagline: "The familiar list, decluttered — decision first", stage: "proposed" },
+    { id: "d2-workspace", key: "2", name: "2.Workspace", tagline: "Coordinator two-pane — one record, many views", stage: "proposed" },
     { id: "today", key: "0", name: "0.Today", tagline: "What ships now", baseline: true, stage: "shipped" },
   ],
   baselinePosition: "last",

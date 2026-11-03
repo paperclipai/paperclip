@@ -7,7 +7,7 @@ import "./tokens.css";
 export const kit: DirectionKit = {
   id: "d1-focus",
   name: "1.Focus",
-  tagline: "Direction 1",
+  tagline: "The familiar list, decluttered — decision first",
   LandingBody,
   CardBody,
   PanelBody,

@@ -7,7 +7,7 @@ import "./tokens.css";
 export const kit: DirectionKit = {
   id: "d2-workspace",
   name: "2.Workspace",
-  tagline: "Direction 2",
+  tagline: "Coordinator two-pane — one record, many views",
   LandingBody,
   CardBody,
   PanelBody,
