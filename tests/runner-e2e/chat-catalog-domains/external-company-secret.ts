@@ -19,10 +19,11 @@ function controllerMetadata(rows: CompanySecret[]): ControllerSecret[] {
  return rows.map(row => Object.fromEntries(controllerFields.map(field => [field, row[field]])) as ControllerSecret).sort((a,b) => a.id.localeCompare(b.id));
 }
 /** Only independently created controller refs can precede the requested secret.
+ * Fixture credential env names are uppercase; the secret producer stores lowercase keys.
  * Values and runtime-resolution timestamps never enter this metadata receipt. */
 export function companySecretControllerBaseline(rows: CompanySecret[], companyId: string, refs: SecretReferenceMap): ControllerSecret[] {
  const baseline = controllerMetadata(rows), entries = Object.entries(refs);
- if (!entries.length || baseline.length !== entries.length || entries.some(([key, ref]) => !ref || ref.type !== "secret_ref" || ref.version !== "latest" || baseline.filter(row => row.id === ref.secretId && row.companyId === companyId && row.key === key).length !== 1) || new Set(entries.map(([,ref]) => ref!.secretId)).size !== entries.length || baseline.some(row => row.name === "Deployment API key" || row.key === "DEPLOYMENT_API_KEY")) throw new Error("Company secret entry permits only exact controller-bootstrap secret references");
+ if (!entries.length || baseline.length !== entries.length || entries.some(([key, ref]) => !ref || ref.type !== "secret_ref" || ref.version !== "latest" || baseline.filter(row => row.id === ref.secretId && row.companyId === companyId && row.key === key.toLowerCase()).length !== 1) || new Set(entries.map(([,ref]) => ref!.secretId)).size !== entries.length || baseline.some(row => row.name === "Deployment API key" || row.key === "deployment_api_key")) throw new Error("Company secret entry permits only exact controller-bootstrap secret references");
  return baseline;
 }
 export function companySecretControllersUnchanged(rows: CompanySecret[], baseline: unknown): boolean {
@@ -58,7 +59,7 @@ export const companySecretExternalCases=[definition("secrets.configure-company-s
  return {morganId:morgan.id,agentCreateStatus,controllerSecretBaseline};
 },gradeCompanySecret,{
  authentication:"human-session",oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v2",expectedRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
- sourceFiles:["chat-catalog-domains/external-company-secret.ts","chat-catalog-domains/external-private-browser.ts","chat-catalog-domains/external-private-browser-worker.ts","chat-catalog-domains/external-credential-language.ts","chat-catalog-domains/external-secret-scan.ts","chat-catalog-domains/external-support.ts","chat-catalog-domains/internal-support.ts","chat-catalog-domains/identity-support.ts","run-observations.ts","chat-flow.ts","chat-scenarios/secrets.yaml"],
+ sourceFiles:["chat-catalog-domains/external-company-secret.ts","chat-catalog-domains/external-private-browser.ts","chat-catalog-domains/external-private-browser-worker.ts","chat-catalog-domains/external-credential-language.ts","chat-catalog-domains/external-secret-scan.ts","chat-catalog-domains/external-support.ts","chat-catalog-domains/internal-support.ts","chat-catalog-domains/identity-support.ts","live-fixtures.ts","../../server/src/services/secrets.ts","run-observations.ts","chat-flow.ts","chat-scenarios/secrets.yaml"],
  async act(ctx,state){
   await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx));const initial=await observeExternal(ctx,state),reply=initial.phaseReplies.at(-1);if(!reply||!deploymentSecretGuidance(reply.body))throw new Error("Actual reply must direct secure deployment-key entry and Morgan-only reference binding before human action");state.initialRunId=reply.runId;
   const beforeHuman=await ctx.input.api.get<CompanySecret[]>(`${root(ctx)}/secrets`);
