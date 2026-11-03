@@ -818,6 +818,8 @@
       "../../server/src/services/tool-action-delivery.ts",
       "../../server/src/services/tool-access-policy.ts",
       "../../ui/src/components/IssueThreadInteractionCard.tsx",
+      "../../ui/src/components/task-chat/TaskChatInteractionCard.tsx",
+      "../../ui/src/components/task-chat/TaskChatComposer.tsx",
       "chat-scenarios/app-permissions.yaml"
     ],
     "oracleVersion": "paperclip.chat-catalog.external.v1",
@@ -5163,6 +5165,7 @@
   {
     "scenarioId": "skills.review-update",
     "sourceFiles": [
+      "chat-catalog-domains/identity-support.ts",
       "chat-catalog-domains/integrator-skill-versions.ts",
       "chat-catalog-domains/integrator-skill-update.ts",
       "chat-catalog-domains/integrator-skill-source.ts",
@@ -5188,14 +5191,16 @@
   {
     "scenarioId": "skills.studio-test",
     "sourceFiles": [
+      "chat-catalog-domains/integrator-skill-versions.ts",
+      "../../server/src/services/chat-completion-delivery.ts",
       "chat-catalog-domains/integrator-skill-studio.ts",
       "chat-catalog-domains/integrator-support.ts",
       "chat-catalog-domains/internal-support.ts",
       "chat-catalog-domains/internal-definition.ts",
       "chat-scenarios/skills.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.integrator.v1",
-    "expectedRunCount": 2,
+    "oracleVersion": "paperclip.chat-catalog.skill-studio.v2",
+    "expectedRunCount": 3,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 540000,
@@ -5207,7 +5212,8 @@
         "stateKey": "factualContextAttachment",
         "filename": "skill-context.md"
       }
-    ]
+    ],
+    "minimumRunCount": 2
   },
   {
     "scenarioId": "status-cards.archive-card",
