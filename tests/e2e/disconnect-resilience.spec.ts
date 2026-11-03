@@ -262,14 +262,18 @@ test("a legacy Inbox reload retains its saved task rows during a 20-second outag
   try {
     const session = await json(await request.get("/api/auth/get-session"));
     await json(await request.patch(`/api/issues/${data.issue.id}`, { data: { status: "todo", assigneeUserId: session.user.id } }));
-    await page.route("**/api/instance/settings/experimental", async route => {
-      const response = await route.fetch();
-      await route.fulfill({ json: { ...await response.json(), enableClassicTaskInterface: true, enableStreamlinedUi: false } });
-    });
-    await page.route("**/api/workspace-preferences/me", async route => {
-      const response = await route.fetch();
-      await route.fulfill({ json: { ...await response.json(), coordinatorWorkspaceEnabled: false } });
-    });
+    // Serve complete server-derived settings throughout reloads without
+    // retaining route.fetch responses that can be disposed during teardown.
+    const [experimental, preferences] = await Promise.all([
+      request.get("/api/instance/settings/experimental").then(json),
+      request.get("/api/workspace-preferences/me").then(json),
+    ]);
+    await page.route("**/api/instance/settings/experimental", route => route.fulfill({
+      json: { ...experimental, enableClassicTaskInterface: true, enableStreamlinedUi: false },
+    }));
+    await page.route("**/api/workspace-preferences/me", route => route.fulfill({
+      json: { ...preferences, coordinatorWorkspaceEnabled: false },
+    }));
     await page.goto(`/${data.company.issuePrefix}/inbox/all`);
     const row = page.locator("[data-inbox-item]").filter({ hasText: data.issue.title });
     await expect(row).toBeVisible({ timeout: 30_000 });
