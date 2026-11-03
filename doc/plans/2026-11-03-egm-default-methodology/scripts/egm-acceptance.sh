@@ -49,9 +49,9 @@ pd=$(node -e 'const j=require("/tmp/acc594.json");const i=j.issue||j;process.std
 say $([ "$st" = "done" ] && echo 0 || echo 1) "OMA-594 cerrada (status=$st)"
 say $([ "${pd:-0}" -gt 12000 ] && echo 0 || echo 1) "documento plan con diseño+síntesis ($pd bytes)"
 say $([ -n "$ver" ] && echo 0 || echo 1) "veredicto EGM en el plan: ${ver:0:80}..."
-N=$(ls -t /home/paperclip/.paperclip/instances/default/data/run-logs/$CO/*/*.ndjson | head -1)
+N=$(ls -t /home/paperclip/.paperclip/instances/default/data/run-logs/$CO/*/28751208-*.ndjson 2>/dev/null | head -1)
 gold=$(bash "$HOME/egm-run-audit.sh" "$N" 2>/dev/null | grep -oE "oro despachado +[0-9]+" | grep -oE "[0-9]+")
-say $([ "${gold:-0}" -ge 5 ] && echo 0 || echo 1) "último run: $gold revisores de oro despachados"
+say $([ "${gold:-0}" -ge 5 ] && echo 0 || echo 1) "run del ciclo (OMA-594): $gold revisores de oro despachados"
 
 # 4. cero loops
 guard=$(systemctl is-active egm-silence-guard.timer 2>/dev/null)
@@ -68,6 +68,20 @@ hoke=$(echo "$agents" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("e
 runbook=$(ls "$HOME"/*replicar-egm.md 2>/dev/null | wc -l | tr -d ' ')
 say $([ "${hoke%%/*}" = "opencode_local" ] && echo 0 || echo 1) "hoke operativo: $hoke"
 say $([ "$runbook" -ge 1 ] && echo 0 || echo 1) "runbook de replicación en el host"
+
+# 7. A.1 durable: el fix del 403 tiene PR y re-aplicado idempotente
+pr=$(curl -s -m 15 https://api.github.com/repos/paperclipai/paperclip/pulls/18743 | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const j=JSON.parse(s);process.stdout.write(String(j.state||"none"))}catch(e){process.stdout.write("none")}})')
+say $([ "$pr" = "open" ] || [ "$pr" = "merged" ] && echo 0 || echo 1) "PR del fix del 403 abierto en el upstream (estado: $pr)"
+say $([ -f "$HOME/apply-403-patch.js" ] && echo 0 || echo 1) "script de re-aplicado post-update instalado"
+
+# 8. E.1 clean-room: el runbook ejecutado de cero deja la maquinaria sana
+clean=$(bash "$HOME/egm-cleanroom-check.sh" /tmp/egm-clean-verify 2>&1 | grep -c "RESULTADO: sano")
+say $([ "${clean:-0}" -ge 1 ] && echo 0 || echo 1) "runbook ejecutado de cero en HOME limpio -> health sano"
+
+# 9. E.1 hoke: respondio un handoff con una corrida atada a tarea
+hokeid="a0b7a0bf-d412-4286-b610-ba786a521554"
+hk=$(curl -s -m 15 -H "Authorization: Bearer $TOK" "$API/api/issues/178ec8f7-75c4-487d-a0ed-313a0658bd8e/comments" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{const j=JSON.parse(s);const l=Array.isArray(j)?j:(j.comments||j.data||[]);process.stdout.write(String(l.filter(c=>c.authorAgentId==='$hokeid').length))}catch(e){process.stdout.write('0')}})")
+say $([ "${hk:-0}" -ge 1 ] && echo 0 || echo 1) "hoke respondio el handoff OMA-602 ($hk comentario/s suyo/s)"
 
 echo
 echo "RESULTADO: $pass PASS · $fail FAIL"
