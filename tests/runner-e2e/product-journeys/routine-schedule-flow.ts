@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { expect, type Page } from "@playwright/test";
-import { withBrowserEvent } from "../user-actions.js";
+import { fillTaskPrompt, withBrowserEvent } from "../user-actions.js";
 import { validateAgentTaskState, waitFor } from "./agent-flows.js";
 import { openDocumentAuthoring } from "./task-document-flow.js";
 import { scheduledInvocationMatches, schedulePauseMatches, schedulePauseObservationMs, type ScheduledInvocation, type ScheduledTask } from "./routine-schedule-evidence.js";
@@ -41,14 +41,17 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       evidence.checks.push({ id, passed });
       if (!passed) throw new JourneyError("failed", id.replaceAll("-", "_"));
     };
+    const bodyReceipt = (body: unknown) => typeof body === "string" ? { byteSize: Buffer.byteLength(body),
+      sha256: createHash("sha256").update(body).digest("hex"), trimmedSha256: createHash("sha256").update(body.trim()).digest("hex"),
+      lineFeedCount: body.split("\n").length - 1, backslashCount: body.split("\\").length - 1 } : null;
     await session.own({ kind: "project", name: projectName, journeyId });
     const project = await api.post<Row>(`/api/companies/${company.id}/projects`, { name: projectName, status: "planned" });
     await session.own({ kind: "project", name: projectName, id: project.id, journeyId });
     const key = "scheduled-summary", marker = `scheduled-${campaignId}`;
     const expectedBody = `${marker}\nSchedule check complete.`;
     const prompt = `Prepare the scheduled status check. Save a task document with key ${key} and title Scheduled check. `
-      + "Copy exactly the two lines inside this block, including the final period. Do not include the fences in the document body.\n"
-      + `\`\`\`text\n${expectedBody}\n\`\`\`\n`
+      + "Copy exactly the two lines inside this block, including the final period. Do not include the fences in the document body.\n\n"
+      + `\`\`\`text\n${expectedBody}\n\`\`\`\n\n`
       + "Then finish the task. Do not create other tasks or agents.";
     await routineUiStep("open_composer", async () => {
       await page.goto(`${api.origin}/${company.issuePrefix}/routines`, { waitUntil: "domcontentloaded" });
@@ -69,7 +72,7 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
       await projectSearch.fill(projectName);
       await page.getByRole("button", { name: projectName, exact: true }).click();
     });
-    await routineUiStep("fill_instructions", () => dialog.locator('[contenteditable="true"]').fill(prompt));
+    await routineUiStep("fill_instructions", () => fillTaskPrompt(dialog.locator('[contenteditable="true"]'), prompt));
     await session.own({ kind: "routine", name: title, journeyId });
     const response = await routineUiStep("submit", () => withBrowserEvent(
       () => page.waitForResponse(response => response.request().method() === "POST"
@@ -83,9 +86,21 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
     // Fixture policy makes duplicate scheduler work observable instead of coalescing it.
     await api.patch(route, { concurrencyPolicy: "always_enqueue" });
     const saved = await readObserved<Row>(route);
-    check("routine-browser-created", saved.companyId === company.id && saved.title === title && saved.projectId === project.id
-      && saved.assigneeAgentId === agent.id && saved.createdByUserId === user.id && saved.createdByAgentId === null
-      && saved.description === prompt && saved.concurrencyPolicy === "always_enqueue" && saved.triggers.length === 0);
+    const creationMatches = { company: saved.companyId === company.id, title: saved.title === title,
+      project: saved.projectId === project.id, assignee: saved.assigneeAgentId === agent.id,
+      userCreator: saved.createdByUserId === user.id, agentCreatorNull: saved.createdByAgentId === null,
+      description: saved.description === prompt, concurrency: saved.concurrencyPolicy === "always_enqueue", zeroTriggers: saved.triggers.length === 0 };
+    await mkdir(options.directory, { recursive: true, mode: 0o700 });
+    await writeFile(path.join(options.directory, "scheduled-routine-creation.json"), JSON.stringify({
+      schema: "paperclip.product-journey.routine-creation/v1", matches: creationMatches,
+      expectedDescription: bodyReceipt(prompt), savedDescription: bodyReceipt(saved.description),
+      expected: { companyId: company.id, titleSha256: bodyReceipt(title)!.sha256, projectId: project.id, agentId: agent.id, userId: user.id },
+      saved: { id: saved.id, companyId: saved.companyId, titleSha256: bodyReceipt(saved.title)?.sha256,
+        projectId: saved.projectId, assigneeAgentId: saved.assigneeAgentId, createdByUserId: saved.createdByUserId,
+        createdByAgentId: saved.createdByAgentId, concurrencyPolicy: saved.concurrencyPolicy, triggerCount: saved.triggers.length,
+        createdAt: saved.createdAt, updatedAt: saved.updatedAt },
+    }, null, 2), { mode: 0o600 });
+    check("routine-browser-created", Object.values(creationMatches).every(Boolean));
     const createdTrigger = await api.post<Row>(`${route}/triggers`, { kind: "schedule", label: `QA schedule ${campaignId}`,
       cronExpression: "* * * * *", timezone: "America/Chicago", enabled: false });
     const trigger = createdTrigger.trigger;
@@ -143,8 +158,6 @@ export async function runScheduledRoutine(context: JourneyContext, session: Targ
         documentUserNull: document.createdByUserId === null, revisionDocument: revision.documentId === document.id,
         revisionExactBody: revision.body?.trim() === expectedBody, revisionAuthor: revision.createdByAgentId === agent.id,
         revisionRun: revision.createdByRunId === state.taskRuns[0]!.id };
-      const bodyReceipt = (body: unknown) => typeof body === "string" ? { byteSize: Buffer.byteLength(body),
-        sha256: createHash("sha256").update(body).digest("hex"), trimmedSha256: createHash("sha256").update(body.trim()).digest("hex") } : null;
       // A failed grade must retain its attribution inputs without the prompt or output body.
       await mkdir(options.directory, { recursive: true, mode: 0o700 });
       await writeFile(path.join(options.directory, "scheduled-routine-result.json"), JSON.stringify({
