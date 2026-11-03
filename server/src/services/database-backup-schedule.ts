@@ -53,10 +53,14 @@ export type InterruptedServerBackups = {
 };
 
 /**
- * Server-named `.sql.gz.partial` files newer than the latest completed dump.
- * Both backup engines unlink their partial on a handled failure, so each one
- * left behind is an attempt whose process died mid-dump (out of memory, kill).
- * Pass `latestBackupMtimeMs: null` to count every partial.
+ * Leftovers of server-named backup attempts newer than the latest completed
+ * dump. The JavaScript engine streams `<name>.sql` before gzipping it into
+ * `<name>.sql.gz`, and a staged writer may use `<name>.sql.gz.partial`; both
+ * are unlinked on a handled failure, so each one left behind is an attempt
+ * whose process died mid-dump (out of memory, kill). A dump killed during
+ * compression leaves an older `.sql` next to the newer `.sql.gz`, which then
+ * anchors the schedule instead, so it is not counted here.
+ * Pass `latestBackupMtimeMs: null` to count every leftover.
  */
 export async function findInterruptedServerBackups(
   backupDir: string,
@@ -64,7 +68,7 @@ export async function findInterruptedServerBackups(
   filenamePrefix = "paperclip",
 ): Promise<InterruptedServerBackups> {
   const pattern = new RegExp(
-    `^${escapeRegExp(filenamePrefix)}-\\d{8}-\\d{6}(?:-[0-9a-f-]+)?\\.sql\\.gz\\.partial$`,
+    `^${escapeRegExp(filenamePrefix)}-\\d{8}-\\d{6}(?:-[0-9a-f-]+)?\\.sql(?:\\.gz\\.partial)?$`,
   );
   let names: string[];
   try {

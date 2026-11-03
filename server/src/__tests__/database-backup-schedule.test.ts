@@ -140,6 +140,29 @@ describe("findInterruptedServerBackups", () => {
     });
     expect((await findInterruptedServerBackups(directory, null)).count).toBe(3);
   });
+
+  it("counts the uncompressed SQL a JavaScript dump leaves when it dies before gzip", async () => {
+    const base = Date.UTC(2026, 10, 1, 19, 30);
+    await writeBackup("paperclip-20261031-153042.sql.gz", base - DAY);
+    await writeBackup("paperclip-20261101-153042.sql", base + 3 * 60_000);
+    await writeBackup("paperclip-20261101-154324.sql", base + 16 * 60_000);
+    await writeBackup("paperclip-pre-deploy.sql", base + HOUR);
+    const latest = await findLatestServerBackup(directory);
+    expect(latest?.name).toBe("paperclip-20261031-153042.sql.gz");
+    expect(await findInterruptedServerBackups(directory, latest!.mtimeMs)).toEqual({
+      count: 2,
+      newestMtimeMs: base + 16 * 60_000,
+    });
+  });
+
+  it("does not count SQL left by a dump killed during compression", async () => {
+    const base = Date.UTC(2026, 10, 1, 19, 30);
+    await writeBackup("paperclip-20261101-153042.sql", base);
+    await writeBackup("paperclip-20261101-153042.sql.gz", base + 2 * 60_000);
+    const latest = await findLatestServerBackup(directory);
+    expect(latest?.name).toBe("paperclip-20261101-153042.sql.gz");
+    expect(await findInterruptedServerBackups(directory, latest!.mtimeMs)).toEqual({ count: 0, newestMtimeMs: null });
+  });
 });
 
 describe("computeFirstScheduledBackupDelayMs after interrupted attempts", () => {
