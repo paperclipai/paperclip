@@ -4,14 +4,14 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { agents, companies, createDb, heartbeatRunEventCursors, heartbeatRunEventSourceRanges,
   heartbeatRunEvents, heartbeatRuns } from "@paperclipai/db";
-import { appendHeartbeatRunEvent, type AppendHeartbeatRunEventInput } from "../services/heartbeat-run-events.js";
-import { rebuildNativeEventCursorPage } from "../services/heartbeat/native-event-cursors.js";
-import { nativeEventCursorWork } from "../services/heartbeat/native-event-cursor-work.js";
-import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
-import { idleWorkSnapshot } from "../services/task-admission.js";
-import { nativeSha256 } from "../services/native-runtime/canonical.js";
-import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
-import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { appendHeartbeatRunEvent, type AppendHeartbeatRunEventInput } from "../heartbeat-run-events.js";
+import { rebuildNativeEventCursorPage } from "./native-event-cursors.js";
+import { nativeEventCursorWork } from "./native-event-cursor-work.js";
+import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../task-admission.js";
+import { nativeSha256 } from "../native-runtime/canonical.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 
 const external = resolveExternalTestDatabaseUrl("PAPERCLIP_EVENT_CURSORS_TEST_DATABASE_URL");
 const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
