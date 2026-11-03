@@ -638,6 +638,10 @@ export const runnerApiReference: Record<string, { section: string; description?:
     "section": "Routines",
     "description": "Fire webhook trigger from external system"
   },
+  "POST /api/routine-triggers/public/{}/sentry-run-failures": {
+    "section": "Routines",
+    "description": "Receive Sentry alert deliveries using the trigger bearer; validates source provenance and deduplicates failed runs"
+  },
   "GET /api/routines/{}/runs": {
     "section": "Routines",
     "description": "Run history (default 50)"

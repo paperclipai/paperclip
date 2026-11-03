@@ -5316,6 +5316,15 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
+registry.registerPath({
+  method: "post",
+  path: "/api/routine-triggers/public/{publicId}/sentry-run-failures",
+  tags: ["routines"],
+  summary: "Receive Sentry failed-run alerts with provenance and replay guards",
+  request: { params: z.object({ publicId: z.string() }), body: jsonBody(z.record(z.string(), z.unknown())) },
+  responses: { 202: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound, 409: r.conflict },
+});
+
 // ─── Goals ───────────────────────────────────────────────────────────────────
 
 registry.registerPath({

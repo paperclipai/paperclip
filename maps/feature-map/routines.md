@@ -54,6 +54,16 @@ Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWiza
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
 
+Sentry run-failure alerts can use the bearer-authenticated
+`/api/routine-triggers/public/:publicId/sentry-run-failures` receiver. It validates
+the source run against this company's task, admits one repair per failed run,
+and ignores tasks originating from the repair routine, including children and
+standalone creation descendants. Private or unreadable sources are ignored rather
+than copied into company-readable routine history. The routine's instructions
+should reuse existing repair cases/PRs for the same root cause. Service and HTTP
+regressions in the routine suites cover recursion, concurrent delivery, and access;
+these checks do not prove a live Sentry integration is configured.
+
 ## Gotchas
 
 - Saving a schedule does not prove the scheduler invoked it.
