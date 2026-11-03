@@ -1,5 +1,6 @@
 import { renewNativeSessionExecutionLease, startNativeSessionExecutionLeaseRenewal, type NativeExecutionLeaseRenewal } from "./native-execution-lease.js";
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
+import { NativeControllerRecoveryWaitingError } from "./native-controller-recovery.js";
 import { hasNativeLocalProcessStop } from "../native-local-process-stop.js";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
@@ -150,7 +151,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     expect(next.kind).toBe("bootstrap_incomplete");
   });
 
-  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "warm-suspended", "stale-projection", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry", "diskless-warm-suspended", "diskless-warm-suspended-read-retry", "diskless-live-inspection"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
+  it.skipIf(!process.env.PAPERCLIP_TEST_RUNNER_CONTAINER).each(["warm", "hard", "finalizer-wait", "warm-suspended", "stale-projection", "legacy", "changed", "same-server", "diskless", "diskless-per-turn", "diskless-per-turn-read-retry", "diskless-warm-suspended", "diskless-warm-suspended-read-retry", "diskless-live-inspection"])("preserves remote warm continuity across completed turns: %s", async (scenario) => {
     const hardRestart = !["warm", "same-server", "warm-suspended"].includes(scenario);
     const diskless = scenario.startsWith("diskless");
     const perTurn = scenario.startsWith("diskless-per-turn");
@@ -408,6 +409,23 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
           ...(perTurn ? { sessionCheckpoint: admission.checkpoint } : {}) } }).where(eq(heartbeatRuns.id, row.id));
       };
       await admitContinuation(nextOptions.execution);
+      let continuationLeaseOwner: string | undefined;
+      if (scenario === "finalizer-wait") {
+        const retryAt = new Date(Date.now() + 60_000);
+        await fixture.db.update(nativeRunFinalizations).set({ leaseOwner: "fixture-finalizer", leaseExpiresAt: retryAt })
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        await expect(executePaperclipNativeSession(nextOptions)).rejects.toBeInstanceOf(NativeControllerRecoveryWaitingError);
+        const [waiting] = await fixture.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, nextRunId));
+        expect(waiting).toMatchObject({ phase: "retryable_failure", attempt: 0, nextAttemptAt: retryAt });
+        const calls = await runner.execute({ command: "cat", args: [`${remoteCwd}/provider-calls.log`] });
+        expect(calls.stdout.split("\n").filter(line => line === "turn/start")).toHaveLength(1);
+        await fixture.db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
+          .where(eq(nativeRunFinalizations.runId, fixture.runId));
+        const [claim] = await claimNativeSessionResumptions({ db: fixture.db, runnerInstanceId: next.runnerInstanceId,
+          runIds: [nextRunId], now: retryAt });
+        expect(claim).toBeDefined();
+        continuationLeaseOwner = claim.leaseOwner;
+      }
       if (scenario.endsWith("-read-retry")) {
         let rejectedReads = 0;
         await expect(executePaperclipNativeSession({ ...nextOptions,
@@ -425,7 +443,8 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         // Retry with the partial PRP projection left by the failed read. No
         // fixture writes a suspended receipt or changes the surviving Runner.
       }
-      const second = diskless ? await executeInController(nextOptions) : await executePaperclipNativeSession(nextOptions);
+      const second = diskless ? await executeInController(nextOptions) : await executePaperclipNativeSession({ ...nextOptions,
+        ...(continuationLeaseOwner ? { leaseOwner: continuationLeaseOwner } : {}) });
       expect(second.exitCode).toBe(0);
       if (scenario === "diskless-live-inspection") expect("inspectionOverridden" in second && second.inspectionOverridden).toBe(true);
       const historyAfter = await runner.execute({ command: "sh", args: ["-c", `cat '${remoteCwd}'/.paperclip-runtime/paperclip-runner/sessions/*/filesystem/codex-home/fake-codex-state.json`] });
