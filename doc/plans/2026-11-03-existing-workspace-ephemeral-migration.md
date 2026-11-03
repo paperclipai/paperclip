@@ -65,6 +65,18 @@ replaying the old agent turn or destroying its allocation.
 Publication requires the offline deployment fence, terminal unowned runs,
 unchanged descriptors and task bindings, verified local snapshot bytes, and a
 single transaction publishing the migration receipt and remote authority.
+Failed runs with result-less `observed` or `retryable_failure` coordinators can
+also be preserved after their leases expire and the offline deployment fence is
+in force. Their coordinator, checkpoint, and unresolved copyback remain intact.
+Publication journals the original coordinator binding and installs a run-scoped
+admission fence: a replacement cannot automatically replay that old turn against
+the removed local authority. Explicit file recovery and a new task continuation
+use the retained sources and remote workspace. This is not successful recovery,
+provider termination evidence, or permission to delete the original allocation.
+Accepted results with unfinished copyback remain blockers. Once the original
+sync receipt is finalized, assessment and status effects can continue from their
+existing database coordinator independently of the file storage migration.
+
 Controller leases, in-flight recovery, active writers, and uncertain workspace
 operations remain blockers. Tests must prove migration leaves failure state
 intact, rejects stale copyback even if the old folder exists, and preserves

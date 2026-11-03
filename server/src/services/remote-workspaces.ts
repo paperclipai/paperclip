@@ -372,11 +372,19 @@ export async function prepareRemoteWorkspace(input: {
   }
   const recoveredFiles: Array<{ operationId: string; sourceRunId: string; path: string }> = [];
   const recoverySourceRunIds = input.workspace.metadata?.remoteWorkspaceRecoverySourceRunIds;
-  if (!sameAllocation && Array.isArray(recoverySourceRunIds) && recoverySourceRunIds.length && input.workspace.sourceIssueId) {
+  if (!sameAllocation && Array.isArray(recoverySourceRunIds) && recoverySourceRunIds.length) {
+    // Shared and inherited workspaces retain their original source task. The
+    // current writer's task owns its recovery attachments, including a child's
+    // preserved files recorded during migration of an ancestor's workspace.
+    const [run] = await input.db.select({ nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
+      contextIssueId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'issueId'` }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, input.workspace.companyId), eq(heartbeatRuns.id, input.runId)));
+    const issueId = run?.nativeIssueId ?? run?.issueId ?? run?.contextIssueId;
+    if (typeof issueId !== "string") throw new Error("remote_workspace_recovery_task_missing");
     const scratch = await mkdtemp(path.join(os.tmpdir(), "pc-workspace-recovery-import-"));
     try {
       const recovered = await attachPreservedWorkspaceSnapshots({ db: input.db, companyId: input.workspace.companyId,
-        issueId: input.workspace.sourceIssueId, sourceRunIds: recoverySourceRunIds as string[], cwd: scratch });
+        issueId, sourceRunIds: recoverySourceRunIds as string[], cwd: scratch });
       for (const item of recovered) {
         const relative = `.paperclip-recovered/${item.operationId}`;
         await target.runner!.syncIn!([{ operationId: randomUUID(), files: [{

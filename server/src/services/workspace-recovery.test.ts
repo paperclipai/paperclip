@@ -195,7 +195,9 @@ describe("automatic retained workspace recovery", () => {
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
   const run = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
 
-  it.each([false, true])("preserves an old sandbox after storage migration without writing its old host (removed=%s)", async removeHost => {
+  it.each(["retained", "removed", "child"])("preserves an old sandbox after storage migration without writing its old host (%s)", async mode => {
+    vi.stubEnv("DATABASE_URL", connectionString);
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "63".repeat(32));
     const f = await seed();
     // The fixture's command runner supports native copyback; the provider
     // snapshot boundary separately needs its real-file syncOut capability.
@@ -209,14 +211,19 @@ describe("automatic retained workspace recovery", () => {
         await cp(file.sourcePath, file.targetPath, { recursive: true, dereference: false });
       return { filesTransferred: 2, bytesTransferred: 0, operations: [] };
     };
-    await db.insert(executionWorkspaces).values({ id: f.issueId, companyId: f.companyId, sourceIssueId: f.issueId,
+    const sourceIssueId = mode === "child" ? randomUUID() : f.issueId;
+    if (mode === "child") {
+      await db.insert(issues).values({ id: sourceIssueId, companyId: f.companyId, title: "Ancestor workspace owner" });
+      await db.update(issues).set({ parentId: sourceIssueId }).where(eq(issues.id, f.issueId));
+    }
+    await db.insert(executionWorkspaces).values({ id: f.issueId, companyId: f.companyId, sourceIssueId,
       name: "Existing files", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: f.host });
     await db.update(issues).set({ executionWorkspaceId: f.issueId }).where(eq(issues.id, f.issueId));
     vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
     try {
       await migrateRemoteWorkspace({ db, storage: getStorageService(), companyId: f.companyId,
         workspaceId: f.issueId, apply: true, writersStopped: true });
-      if (removeHost) await rm(f.host, { recursive: true });
+      if (mode !== "retained") await rm(f.host, { recursive: true });
       await requestWorkspaceRecovery({ ...f, idempotencyKey: randomUUID(), actorId: "board" });
       await recoverRetainedWorkspace(f.input);
       expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
@@ -229,6 +236,29 @@ describe("automatic retained workspace recovery", () => {
       expect(await readFile(path.join(copies[0]!.path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
       expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+      if (mode === "child") {
+        // The parent must not receive the child's task-scoped recovery copy.
+        expect(await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: sourceIssueId,
+          sourceRunIds: [f.runId], cwd: restored })).toHaveLength(0);
+        vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "false");
+        const nextRunId = randomUUID(), nextLeaseId = randomUUID(), sourceRun = await run(f.runId);
+        await db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId, agentId: sourceRun.agentId,
+          nativeIssueId: f.issueId, runtimeMode: "native", status: "running" });
+        const storage = { ...getStorageService(), provider: "s3" as const };
+        const reserved = await reserveRemoteWorkspace({ db, storage, companyId: f.companyId, issueId: f.issueId,
+          runId: nextRunId, agentId: sourceRun.agentId, environmentId: f.lease.environmentId!,
+          projectId: null, projectWorkspaceId: null, existingWorkspaceId: f.issueId, source: { kind: "empty" } });
+        const [lease] = await db.insert(environmentLeases).values({ id: nextLeaseId, companyId: f.companyId,
+          issueId: f.issueId, heartbeatRunId: nextRunId, environmentId: f.lease.environmentId,
+          provider: "daytona", providerLeaseId: randomUUID(), status: "active" }).returning();
+        const nextRoot = path.join(root, nextRunId); await mkdir(nextRoot);
+        const target = { ...targets.get(f.lease.id)!, leaseId: nextLeaseId, remoteCwd: await realpath(nextRoot) };
+        const prepared = await prepareRemoteWorkspace({ db, storage, workspace: reserved,
+          runId: nextRunId, lease: lease as EnvironmentLease, target });
+        expect(prepared.workspace.sourceIssueId).toBe(sourceIssueId);
+        expect(await readFile(path.join(prepared.remoteRoot, ".paperclip-recovered", copies[0]!.operationId, "files", "saved.txt"), "utf8"))
+          .toBe("finished work\n");
+      }
     } finally { vi.unstubAllEnvs(); }
   }, 30_000);
 

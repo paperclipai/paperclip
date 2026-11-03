@@ -109,20 +109,56 @@ async function inspect(db: ReadDb, input: { companyId: string; workspaceId: stri
   const legacyRecoverySources: LegacyWorkspaceRecoverySource[] = [];
   for (const run of unexported.sort((a, b) => a.id.localeCompare(b.id))) {
     const reference = readNativeWorkspaceSyncReference(run.reference);
-    const [owner] = await db.select({ phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner })
+    const [owner] = await db.select({ phase: nativeRunFinalizations.phase, leaseOwner: nativeRunFinalizations.leaseOwner,
+      leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt, resultId: nativeRunFinalizations.resultId })
       .from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.companyId, workspace.companyId), eq(nativeRunFinalizations.runId, run.id)));
+    const unsettled = owner && ["observed", "retryable_failure"].includes(owner.phase) && owner.resultId === null;
+    const owned = owner?.leaseOwner && (!owner.leaseExpiresAt || owner.leaseExpiresAt > new Date());
     if (!input.writersStopped || !reference || run.runtimeMode !== "native" || !run.issueId
       || !await isLegacyWorkspaceTaskRelated(db, { companyId: workspace.companyId, issueId: run.issueId, sourceIssueId: workspace.sourceIssueId })
       || !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(run.status)
       || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()
-      || !owner || owner.leaseOwner || !["committed", "terminal_failure"].includes(owner.phase)) reasons.push("remote_copyback_unresolved");
-    else legacyRecoverySources.push({ runId: run.id, issueId: run.issueId, reference });
+      || !owner || owned || !(["committed", "terminal_failure"].includes(owner.phase) || unsettled)) reasons.push("remote_copyback_unresolved");
+    else legacyRecoverySources.push({ runId: run.id, issueId: run.issueId, reference,
+      ...(unsettled ? { unresolvedFinalization: { phase: owner.phase, leaseOwner: owner.leaseOwner,
+        leaseExpiresAt: owner.leaseExpiresAt?.toISOString() ?? null } } : {}) });
   }
-  const [finalization] = workspace.sourceIssueId ? await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(
+  const finalizations = workspace.sourceIssueId ? await db.select({ id: nativeRunFinalizations.runId, phase: nativeRunFinalizations.phase,
+    leaseOwner: nativeRunFinalizations.leaseOwner, leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
+    resultId: nativeRunFinalizations.resultId, run: heartbeatRuns }).from(nativeRunFinalizations)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.id, nativeRunFinalizations.runId))).where(and(
     eq(nativeRunFinalizations.companyId, workspace.companyId), eq(nativeRunFinalizations.issueId, workspace.sourceIssueId),
     sql`${nativeRunFinalizations.phase} not in ('committed', 'terminal_failure')`,
-  )).limit(1) : [];
-  if (finalization) reasons.push("execution_finalization_unresolved");
+  )) : [];
+  for (const row of finalizations) {
+    if (legacyRecoverySources.some(source => source.runId === row.id && source.unresolvedFinalization)) continue;
+    const stopped = input.writersStopped && row.run.runtimeMode === "native"
+      && ["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(row.run.status)
+      && !(row.run.controllerLeaseExpiresAt && row.run.controllerLeaseExpiresAt > new Date())
+      && !(row.leaseOwner && (!row.leaseExpiresAt || row.leaseExpiresAt > new Date()));
+    const reference = readNativeWorkspaceSyncReference(row.run.runnerProfileJson?.nativeWorkspaceSync);
+    // Finalized copyback has no outstanding local writer. Assessment/status
+    // effects stay with their existing durable coordinator after the move.
+    if (stopped && reference?.state === "finalized") continue;
+    if (stopped && reference && reference.workspaceId !== workspace.id) {
+      const [other] = await db.select({ providerType: executionWorkspaces.providerType, cwd: executionWorkspaces.cwd,
+        sourceIssueId: executionWorkspaces.sourceIssueId, metadata: executionWorkspaces.metadata }).from(executionWorkspaces).where(and(
+        eq(executionWorkspaces.companyId, workspace.companyId), eq(executionWorkspaces.id, reference.workspaceId)));
+      // The offline batch must migrate every local record before the app can
+      // start. Another workspace's coordinator is checked with its own source.
+      if (other && ((other.cwd && ["local_fs", "git_worktree"].includes(other.providerType)) || readRemoteWorkspaceAuthority(other.metadata))
+        && await isLegacyWorkspaceTaskRelated(db, { companyId: workspace.companyId, issueId: row.run.nativeIssueId, sourceIssueId: other.sourceIssueId })) continue;
+    }
+    if (stopped && row.run.runnerProfileJson?.nativeWorkspaceSync == null && row.run.runnerProfileJson?.remoteWorkspace == null
+      && row.resultId === null && ["observed", "retryable_failure"].includes(row.phase)) {
+      legacyRecoverySources.push({ runId: row.id, issueId: row.run.nativeIssueId!, reference: null,
+        unresolvedFinalization: { phase: row.phase, leaseOwner: row.leaseOwner,
+          leaseExpiresAt: row.leaseExpiresAt?.toISOString() ?? null } });
+      continue;
+    }
+    reasons.push("execution_finalization_unresolved");
+  }
+  legacyRecoverySources.sort((a, b) => a.runId.localeCompare(b.runId));
   const [operation] = await db.select({ id: workspaceOperations.id }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, workspace.companyId), eq(workspaceOperations.executionWorkspaceId, workspace.id),
     allowedOperation ? ne(workspaceOperations.id, allowedOperation) : undefined,
@@ -267,8 +303,12 @@ export async function migrateRemoteWorkspace(input: {
       input.signal?.throwIfAborted();
       await lock.execute(sql`select 1`);
       const publication = await input.db.transaction(async tx => {
-        for (const source of reserved.legacyRecoverySources) await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-          .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, source.runId))).for("update");
+        for (const source of reserved.legacyRecoverySources) {
+          await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
+            .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, source.runId))).for("update");
+          await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, source.runId))).for("update");
+        }
         const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))).for("update");
         if (!workspace) throw new Error("remote_workspace_migration_workspace_missing");
         const existing = readRemoteWorkspaceAuthority(workspace.metadata);
@@ -298,6 +338,12 @@ export async function migrateRemoteWorkspace(input: {
         const metadata: Record<string, unknown> = { ...workspace.metadata, remoteWorkspace: authority }; delete metadata.remoteWorkspaceMigration;
         if (reserved.legacyRecoverySources.length) {
           metadata.legacyWorkspaceRecoveryMigration = { schema: LEGACY_WORKSPACE_RECOVERY_MIGRATION, operationId: operation.id };
+          for (const source of reserved.legacyRecoverySources) await tx.update(heartbeatRuns).set({
+            runnerProfileJson: sql`coalesce(${heartbeatRuns.runnerProfileJson}, '{}'::jsonb) || ${JSON.stringify({
+              legacyWorkspaceRecoveryMigration: { schema: LEGACY_WORKSPACE_RECOVERY_MIGRATION,
+                operationId: operation.id, workspaceId: workspace.id },
+            })}::jsonb`, updatedAt: new Date(),
+          }).where(and(eq(heartbeatRuns.companyId, workspace.companyId), eq(heartbeatRuns.id, source.runId)));
           const prior = Array.isArray(metadata.remoteWorkspaceRecoverySourceRunIds) ? metadata.remoteWorkspaceRecoverySourceRunIds : [];
           metadata.remoteWorkspaceRecoverySourceRunIds = [...new Set([...prior, ...reserved.legacyRecoverySources.map(source => source.runId)])];
         }

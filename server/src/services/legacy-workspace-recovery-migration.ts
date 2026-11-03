@@ -1,11 +1,21 @@
 import { isDeepStrictEqual } from "node:util";
-import { and, eq } from "drizzle-orm";
-import { executionWorkspaces, issues, workspaceOperations, type Db } from "@paperclipai/db";
+import { and, eq, sql } from "drizzle-orm";
+import { executionWorkspaces, heartbeatRuns, issues, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import type { NativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 
-export type LegacyWorkspaceRecoverySource = { runId: string; issueId: string; reference: NativeWorkspaceSyncReference };
+export type LegacyWorkspaceRecoverySource = {
+  runId: string; issueId: string; reference: NativeWorkspaceSyncReference | null;
+  unresolvedFinalization?: { phase: string; leaseOwner: string | null; leaseExpiresAt: string | null };
+};
 export const LEGACY_WORKSPACE_RECOVERY_MIGRATION = "paperclip.legacy-workspace-recovery-migration.v1";
+
+/** Offline migration preserves an unresolved coordinator, but it cannot replay
+ * an old execution against a local copyback destination that is no longer its
+ * authority. File recovery and explicit task continuation remain available. */
+export function legacyWorkspaceRecoveryNotMigrated() {
+  return sql`${heartbeatRuns.runnerProfileJson}->'legacyWorkspaceRecoveryMigration' is null`;
+}
 
 /** Child tasks can explicitly reuse an ancestor's workspace. The run's own
  * task remains the scope for its recovery files; migration never rebinds it. */

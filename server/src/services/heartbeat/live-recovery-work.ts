@@ -1,4 +1,5 @@
 import { pendingFailedNativeRetryCancellationCondition } from "../native-runtime/native-cancellation-request.js";
+import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { settledNativeProcessIdentityCondition } from "../native-local-process-stop.js";
 import { and, asc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import { agents, environmentLeases, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
@@ -73,6 +74,7 @@ export function registerLiveRecoveryWork(db: Db, coordinator: ReturnType<typeof 
               scope?.runId ? eq(heartbeatRuns.id, scope.runId) : undefined,
               cursor ? gt(heartbeatRuns.id, cursor) : undefined,
               kind === "native" ? and(eq(heartbeatRuns.runtimeMode, "native"), inArray(heartbeatRuns.status, ["running", "failed"]),
+                legacyWorkspaceRecoveryNotMigrated(),
                 eq(nativeRunFinalizations.phase, "retryable_failure"), isNull(nativeRunFinalizations.resultId),
                 sql`${heartbeatRuns.contextSnapshot}->'nativeQuestionCancellation' is null`)
                 : kind === "question" ? and(or(inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
