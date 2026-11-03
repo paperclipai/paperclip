@@ -84,14 +84,6 @@ entries without pagination. The tested RoutineAuditActivity component has no
 registered activity-route host; inspect execution links actually offered by
 the routine rather than treating that component test as a reachable journey.
 
-The company timeline keeps the actor, target worker and timestamp of recorded
-assignment changes, including ordinary `issue.updated` events. A recorded change
-replaces the inferred creation-time assignment to the current worker. The saved PATCH change receipt excludes repeated owner fields. Status-only
-updates and unchanged assignment fields do not count as handoffs. Null assignment
-fields do not create a target worker. [Timeline route regressions](../../server/src/__tests__/work-timeline-service.test.ts)
-cover these distinctions with a disposable database; they do not prove a live
-agent produced a complete timeline narrative.
-
 ### `agent-commentary`
 
 Open Audit → Commentary (`/activity/commentary`). Search message text, filter by agent and suggestion/complaint,
