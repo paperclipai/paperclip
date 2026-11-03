@@ -409,6 +409,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       env,
       config,
       openCodeV2: usesOpenCodeV2Cli(cliVersion),
+      sandboxToolOomPreference: executionTarget?.kind === "remote" && executionTarget.transport === "sandbox",
     });
     let localRuntimeConfigHome =
       preparedRuntimeConfig.notes.length > 0 ? preparedRuntimeConfig.env.XDG_CONFIG_HOME : "";
