@@ -1,5 +1,6 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy, isWorkspaceProvider } from "./project-workspace-provider.js";
+import { pluginWorkspaceHostRef } from "./plugin-host-local-execution.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
 import { randomUUID, createHash } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
@@ -512,6 +513,12 @@ export async function preparePluginWorkspace(
       .update(executionWorkspaces)
       .set({
         providerRef: result.binding.workspaceRef,
+        // A host-addressable workspaceRef doubles as the row cwd so reuse
+        // checks, boards, and the native chat contract see the real tree path.
+        // Opaque provider refs leave the row cwd untouched (plugin-host-local-execution).
+        ...(pluginWorkspaceHostRef(result.binding.workspaceRef)
+          ? { cwd: pluginWorkspaceHostRef(result.binding.workspaceRef) }
+          : {}),
         branchName: result.branchName,
         status: "active",
         lastUsedAt: new Date(),
@@ -585,6 +592,9 @@ async function reconcilePluginWorkspaceReservation(
       .update(executionWorkspaces)
       .set({
         providerRef: result.binding.workspaceRef,
+        ...(pluginWorkspaceHostRef(result.binding.workspaceRef)
+          ? { cwd: pluginWorkspaceHostRef(result.binding.workspaceRef) }
+          : {}),
         branchName: result.branchName,
         updatedAt: new Date(),
         metadata: {
@@ -713,6 +723,9 @@ async function finishPendingRestoration(
       .update(executionWorkspaces)
       .set({
         providerRef: result.binding.workspaceRef,
+        ...(pluginWorkspaceHostRef(result.binding.workspaceRef)
+          ? { cwd: pluginWorkspaceHostRef(result.binding.workspaceRef) }
+          : {}),
         branchName: result.branchName,
         updatedAt: new Date(),
         metadata: {

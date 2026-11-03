@@ -1,4 +1,5 @@
 import { freshWorkspaceSchema } from "@paperclipai/plugin-sdk";
+import { decidePluginWorkspaceHostExecution, type PluginWorkspaceHostExecutionDecision } from "./plugin-host-local-execution.js";
 import { prepareRemoteWorkspace, readRemoteWorkspaceAuthority, remoteWorkspaceRepositoryPath } from "./remote-workspaces.js";
 /**
  * Centralized environment run orchestrator.
@@ -477,9 +478,19 @@ export function environmentRunOrchestrator(
         remoteExecution: adapterExecutionTargetToRemoteSpec(executionTarget), persistedExecutionWorkspace };
     }
 
+    let bindingHostExecution: PluginWorkspaceHostExecutionDecision | null = null;
     if (executionWorkspace.providerBinding) {
       const binding = executionWorkspace.providerBinding;
-      if (environment.driver !== "plugin" || adapterType !== "paperclip_runner" || lease.metadata?.pluginId !== binding.pluginId || !await environmentRuntime.supportsTasks({ lease })) {
+      bindingHostExecution = decidePluginWorkspaceHostExecution(binding, environment.driver);
+      if (bindingHostExecution.kind === "blocked") {
+        throw new EnvironmentRunError(
+          "workspace_realization_failed",
+          `Managed workspace cannot execute on the local environment: the provider workspace "${binding.workspaceRef}" is not an accessible host directory. Retire the workspace or restore the directory, then retry the task.`,
+          { environmentId: environment.id },
+        );
+      }
+      if (bindingHostExecution.kind !== "host" &&
+          (environment.driver !== "plugin" || adapterType !== "paperclip_runner" || lease.metadata?.pluginId !== binding.pluginId || !await environmentRuntime.supportsTasks({ lease }))) {
         throw new EnvironmentRunError("workspace_realization_failed", "The execution plugin cannot access this managed workspace.", { environmentId: environment.id });
       }
       const updated = await environmentsSvc.updateLeaseMetadata(lease.id, { ...lease.metadata, workspaceProvider: binding });
@@ -651,8 +662,13 @@ export function environmentRunOrchestrator(
         environmentRuntime,
         duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
       });
-      // The native plugin task bridge owns guest paths. Never fall back to host execution.
-      if (executionWorkspace.providerBinding && (executionTarget?.kind !== "remote" ||
+      // The native plugin task bridge owns guest paths for plugin-driver
+      // environments; never fall back to host execution there. A storage
+      // plugin publishing an existing host directory already passed the local
+      // contract in `plugin-host-local-execution`, so the plain local target
+      // is the intended execution for it.
+      if (executionWorkspace.providerBinding && bindingHostExecution?.kind !== "host" &&
+          (executionTarget?.kind !== "remote" ||
           !("runnerTask" in executionTarget) || typeof executionTarget.runnerTask !== "function")) {
         throw new Error("Managed workspace execution requires the native plugin task bridge");
       }

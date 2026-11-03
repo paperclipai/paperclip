@@ -12,6 +12,7 @@ import { materializeFreshWorkspaceSeed } from "../fresh-workspace-seed.js";
 import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
 import { preparePluginWorkspace, type WorkspaceWorkers } from "../plugin-workspaces.js";
 import { readWorkspaceProviderBinding } from "@paperclipai/shared";
+import { decidePluginWorkspaceHostExecution } from "../plugin-host-local-execution.js";
 import { nativeExecutionUsesTaskWorkspace } from "./external-provider.js";
 import { readGitCacheRestoration } from "../git-workspace-restoration.js";
 import { createHeartbeatPreparationTiming } from "./preparation-timing.js";
@@ -715,6 +716,18 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     resolvedWorkspace.cwd = cwd;
     await controllerLease.assertOwned();
   }
+  const pluginPreparedBinding = pluginPrepared ? readWorkspaceProviderBinding(pluginPrepared.metadata) : null;
+  const pluginPreparedHostExecution = pluginPreparedBinding
+    ? decidePluginWorkspaceHostExecution(pluginPreparedBinding, hostProvisionDriver)
+    : null;
+  // The plugin task bridge owns guest paths for a plugin-driver environment,
+  // so the synthesized workspace carries the logical `/workspaces/<id>` scope
+  // marker. A pure storage plugin that publishes an existing host directory
+  // (`plugin-host-local-execution`) executes in place on the local driver
+  // instead, with its real path.
+  const pluginPreparedSyntheticCwd = pluginPreparedHostExecution?.kind === "host"
+    ? pluginPreparedHostExecution.workspaceRef
+    : pluginPrepared ? `/workspaces/${pluginPrepared.id}` : null;
   const {
     executionWorkspace,
     reusedExecutionWorkspace,
@@ -722,7 +735,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
   } = pluginPrepared ? { executionWorkspace: { ...executionWorkspaceBase,
     providerBinding: readWorkspaceProviderBinding(pluginPrepared.metadata)!,
     strategy: pluginPrepared.strategyType as "git_worktree" | "project_primary",
-    cwd: `/workspaces/${pluginPrepared.id}`, branchName: pluginPrepared.branchName, worktreePath: null,
+    cwd: pluginPreparedSyntheticCwd!, branchName: pluginPrepared.branchName, worktreePath: null,
     warnings: [], created: false, branchCreatedByRuntime: false,
     baseRefSha: pluginPrepared.metadata?.workspaceProviderBaseSha as string | null,
   } as RealizedExecutionWorkspace, reusedExecutionWorkspace: Boolean(reusableExistingExecutionWorkspace), policy: workspaceReuseProvisioningPolicy }
