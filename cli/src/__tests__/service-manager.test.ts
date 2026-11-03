@@ -297,6 +297,8 @@ describe("launchd lifecycle", () => {
     const manager = new LaunchdServiceManager("team-a", runner, path.join(home, ".paperclip"), "/bin/echo", home, daemonDir);
     await expect(manager.install({ startNow: true, startOnLogin: true })).rejects.toThrow("competing GUI agent");
     await expect(manager.uninstall()).rejects.toThrow("competing GUI agent");
+    await expect(manager.stop()).rejects.toThrow("source plist");
+    expect(calls).not.toContainEqual(["sudo", "-n", "launchctl", "bootout", `system/${name}`]);
     await manager.restart();
     expect(calls).toContainEqual(["sudo", "-n", "launchctl", "kickstart", "-k", `system/${name}`]);
     expect(await manager.definitionOwnership()).toEqual({ kind: "operator", path: `system/${name}` });

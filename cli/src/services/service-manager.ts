@@ -409,6 +409,9 @@ export class LaunchdServiceManager implements ServiceManager {
   }
   async stop(): Promise<void> {
     const domain = await this.activeDomain();
+    if (domain === "system" && !(await this.systemJobConfigured())) {
+      throw new Error(`System LaunchDaemon ${this.serviceName} is loaded, but its source plist is not at ${this.systemDefinitionPath}. The CLI cannot safely unload it because it cannot reload an unknown plist. To manage it manually, run sudo launchctl bootout system/${this.serviceName}, then sudo launchctl bootstrap system <path-to-system-plist> to start it again.`);
+    }
     await this.launchctlAction(domain, "bootout", `${domain}/${this.serviceName}`);
   }
   async restart(): Promise<void> {
