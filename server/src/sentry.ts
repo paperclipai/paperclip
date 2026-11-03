@@ -471,7 +471,7 @@ async function bootstrapSentry(dsn: string): Promise<void> {
 
     Sentry.init(buildSentryInitOptions(dsn, Sentry));
 
-    Sentry.getClient?.()?.on("afterSendEvent", (event, response) => {
+    Sentry.getClient?.()?.on("afterSendEvent", (event: { event_id?: string }, response?: { statusCode?: number }) => {
       confirmTaskInterruptionDelivery(event.event_id, response?.statusCode);
     });
 
