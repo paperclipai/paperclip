@@ -1,3 +1,4 @@
+import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import { isNewHumanIntentAfterToolRejection } from "./tool-action-replay-intent.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
@@ -1184,6 +1185,12 @@ export function createToolGatewayService(
     vercelConnectClient?: VercelConnectClient | null;
     /** Test seam for reproducing the managed-argument drift expiry race. */
     beforeManagedArgumentDriftExpiry?: () => Promise<void>;
+    /** Test seam for cancellation between card creation and linkage. */
+    afterToolReviewInteractionCreated?: () => Promise<void>;
+    /** Test seam for cancellation just before formal approval creation. */
+    beforeToolFormalApproval?: () => Promise<void>;
+    /** Test seam for cancellation after claiming a reviewed action. */
+    afterToolActionClaimed?: () => Promise<void>;
     /** Test seam for pausing a legacy approved request before its execution claim. */
     beforeLegacyApprovedActionClaim?: () => Promise<void>;
     mcpGatewayProtocolLimits?: Partial<{
@@ -2570,7 +2577,7 @@ export function createToolGatewayService(
           completedAt: new Date(),
           updatedAt: new Date(),
         })
-        .where(eq(toolInvocations.id, input.invocation.id));
+        .where(and(eq(toolInvocations.id, input.invocation.id), ne(toolInvocations.status, "cancelled")));
       void emitConnectionInvoked(db, input.invocation.id);
       throw new ToolGatewayHttpError(
         500,
@@ -2657,11 +2664,28 @@ export function createToolGatewayService(
 
     let formalApprovalId: string | null = null;
     if (toolRequiresFormalApproval(input.tool)) {
-      const [approval] = await writeApprovalChange(db, input.session.companyId, tx => tx
-        .insert(approvals)
+      await options.beforeToolFormalApproval?.();
+      const [approval] = await writeApprovalChange(db, input.session.companyId, async tx => {
+        const origin = input.invocation;
+        if (origin.actorType === "agent" && origin.runId) {
+          if (!origin.actorId || !origin.agentId) throw new Error("Run-bound invocation has no actor");
+          const run = await assertAgentRunWriteAllowed(tx, input.session.companyId, { agentId: origin.actorId, runId: origin.runId });
+          if (!run) throw new Error("Run-bound invocation has no matching execution");
+        }
+        const [lockedInvocation] = await tx.select().from(toolInvocations).where(and(
+          eq(toolInvocations.id, origin.id), eq(toolInvocations.companyId, input.session.companyId),
+        )).for("update");
+        if (!lockedInvocation || lockedInvocation.runId !== origin.runId || lockedInvocation.agentId !== origin.agentId || lockedInvocation.actorId !== origin.actorId || lockedInvocation.actorType !== origin.actorType)
+          throw new Error("Invocation origin changed before approval creation");
+        const [lockedRequest] = await tx.select().from(toolActionRequests).where(and(
+          eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.companyId, input.session.companyId),
+        )).for("update");
+        if (!lockedRequest || lockedRequest.status !== "pending") throw new Error("Action request is no longer pending");
+        const rows = await tx.insert(approvals)
         .values({
           companyId: input.session.companyId,
           type: "request_board_approval",
+          originRunId: origin.runId ?? null,
           requestedByAgentId: input.session.originatingAgentId ?? input.session.agentId,
           payload: {
             title: `Approve high-risk tool action: ${input.tool.name}`,
@@ -2680,7 +2704,11 @@ export function createToolGatewayService(
             argumentsHash: canonicalArgumentsHash,
           },
         })
-        .returning());
+        .returning();
+        await tx.update(toolActionRequests).set({ approvalId: rows[0]!.id, updatedAt: new Date() })
+          .where(eq(toolActionRequests.id, actionRequest.id));
+        return rows;
+      });
       formalApprovalId = approval.id;
       const approvalIssueId = input.session.issueId;
       await writeApprovalChange(db, input.session.companyId, tx => tx
@@ -2751,6 +2779,8 @@ export function createToolGatewayService(
       { agentId: input.session.agentId },
     );
 
+    await options.afterToolReviewInteractionCreated?.();
+
     // Sign the row only while it is still pending. A concurrent matching call can
     // expire this row when the create runs longer than the abandon grace time.
     // Guard the update with the pending status so the sign step never resurrects
@@ -2777,6 +2807,17 @@ export function createToolGatewayService(
       )
       .returning({ id: toolActionRequests.id }));
     if (signedRows.length === 0) {
+      // Cancellation can win after the interaction was created but before it
+      // was linked. Attach that card to the terminal request for projection;
+      // never turn cancellation into a retriable supersession.
+      const [cancelled] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
+        .update(toolActionRequests)
+        .set({ interactionId: interaction.id, updatedAt: new Date() })
+        .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "cancelled"), isNull(toolActionRequests.interactionId)))
+        .returning({ id: toolActionRequests.id }));
+      const [currentRequest] = cancelled ? [cancelled] : await db.select({ id: toolActionRequests.id }).from(toolActionRequests)
+        .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.status, "cancelled")));
+      if (currentRequest) throw new ToolGatewayHttpError(409, "The originating run was cancelled", "agent_run_cancelled");
       await db
         .update(toolInvocations)
         .set({
@@ -2805,6 +2846,16 @@ export function createToolGatewayService(
     }
 
     await db.transaction(async tx => {
+      const origin = input.invocation;
+      if (origin.actorType === "agent" && origin.runId) {
+        if (!origin.actorId || !origin.agentId) throw new Error("Run-bound invocation has no actor");
+        const run = await assertAgentRunWriteAllowed(tx as unknown as Db, input.session.companyId, { agentId: origin.actorId, runId: origin.runId });
+        if (!run) throw new Error("Run-bound invocation has no matching execution");
+      }
+      const [request] = await tx.select({ status: toolActionRequests.status }).from(toolActionRequests)
+        .where(and(eq(toolActionRequests.id, actionRequest.id), eq(toolActionRequests.companyId, input.session.companyId)))
+        .for("update");
+      if (!request || request.status !== "pending") throw new ToolGatewayHttpError(409, "The action request is no longer pending", "action_request_resolved");
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.toolAction);
       await tx
         .insert(toolActionDeliveries)
@@ -7609,6 +7660,18 @@ export function createToolGatewayService(
       },
     });
 
+    const unsettledOutcome = async () => {
+      const [saved] = await db.select({ errorCode: toolInvocations.errorCode }).from(toolInvocations)
+        .where(eq(toolInvocations.id, args.invocationId));
+      const unknown = saved?.errorCode === "tool_execution_outcome_unknown";
+      return {
+        decision: "allowed" as const,
+        invocationId: args.invocationId,
+        error: unknown
+          ? { message: "The external outcome is unknown; inspect the provider before retrying.", reasonCode: "tool_execution_outcome_unknown" }
+          : { message: "Tool action execution claim is no longer current.", reasonCode: "action_already_consumed" },
+      };
+    };
     const startedAt = Date.now();
     let connectedMcpExecution: Awaited<ReturnType<typeof executeRemoteHttpTool>> | Awaited<ReturnType<typeof executeLocalStdioTool>> | null;
     let resultValidation: Awaited<ReturnType<typeof validateToolContent>>;
@@ -7674,10 +7737,11 @@ export function createToolGatewayService(
             ? err.reasonCode
             : "tool_execution_failed";
       const message = err instanceof Error ? err.message : String(err);
-      await persistToolTestOutcome(db, args.invocationId, {
+      const settled = await persistToolTestOutcome(db, args.invocationId, {
         status: status === 504 ? "timed_out" : status === 429 ? "rate_limited" : "failed",
         errorCode: reasonCode, errorMessage: message,
       }, args.approvedClaim);
+      if (!settled) return unsettledOutcome();
       void emitConnectionInvoked(db, args.invocationId);
       await writeToolCallEvent({
         invocationId: args.invocationId,
@@ -7736,9 +7800,10 @@ export function createToolGatewayService(
           : {}),
       };
     }
-    await persistToolTestOutcome(db, args.invocationId, {
+    const settled = await persistToolTestOutcome(db, args.invocationId, {
       status: "succeeded", result: resultValidation.summary,
     }, args.approvedClaim);
+    if (!settled) return unsettledOutcome();
     await writeToolCallEvent({
       invocationId: args.invocationId,
       session: args.session,
@@ -8598,6 +8663,11 @@ export function createToolGatewayService(
       if (!signed || canonicalToolArguments(signed.arguments) !== canonicalToolArguments(input.parameters)) return null;
     } else if (match.actionRequest.canonicalArgumentsHash !== input.argumentsHash) {
       return null;
+    }
+    if (match.invocation.errorCode === "tool_execution_outcome_unknown") {
+      throw new ToolGatewayHttpError(409,
+        "The previous external outcome is unknown; inspect the provider before taking further action",
+        "tool_execution_outcome_unknown", { invocationId: match.invocation.id, actionRequestId: match.actionRequest.id });
     }
     // Rejection applies to that intent, not every later human request with the
     // same arguments. A new trusted request still passes the normal policy and
@@ -10956,6 +11026,7 @@ export function createToolGatewayService(
             "action_already_consumed",
           );
         }
+        await options.afterToolActionClaimed?.();
         await reflectToolActionInteractionLifecycle({
           actionRequestId: claimed.id,
           status: "executing",
@@ -10963,15 +11034,9 @@ export function createToolGatewayService(
         invocationId = storedInvocation.id as typeof invocationId;
         effectiveParameters = storedParameters;
         effectiveArgumentsSummary = storedArgumentValidation.summary;
-        await db
-          .update(toolInvocations)
-          .set({
-            status: "executing",
-            approvalState: "approved",
-            startedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(toolInvocations.id, invocationId));
+        if (!(await startToolInvocation(db, invocationId, { actionRequestId: claimed.id, invocationId, claimedAt }))) {
+          throw new ToolGatewayHttpError(409, "Tool action execution claim is no longer current", "action_already_consumed");
+        }
       } else {
         const decisionInput = policyInputForTool({
           session,
@@ -10990,6 +11055,9 @@ export function createToolGatewayService(
         );
         await policyService.writeAudit(decisionInput, accessDecision);
         invocationId = recorded.invocation.id;
+        if (recorded.replayed && recorded.invocation.errorCode === "tool_execution_outcome_unknown") {
+          throw new ToolGatewayHttpError(409, "The previous external outcome is unknown; inspect the provider before taking further action", "tool_execution_outcome_unknown");
+        }
         const retryingSlackRateLimit = recorded.replayed && accessDecision.allowed && tool.providerType === "paperclip_slack_chat" && session.agentId && session.runId && session.issueId
           ? await claimSlackRateLimitRetry(db, { companyId: session.companyId, agentId: session.agentId, runId: session.runId, issueId: session.issueId, endpointId: String(asRecord(tool.providerMetadata)?.endpointId ?? ""), identityContextId: session.identityContextId }, invocationId)
           : false;
@@ -11105,15 +11173,12 @@ export function createToolGatewayService(
             },
           );
         }
-        await db
-          .update(toolInvocations)
-          .set({
-            status: "executing",
-            ...(retryingGitHubPublication ? { errorCode: null, errorMessage: null, completedAt: null } : {}),
-            startedAt: new Date(),
-            updatedAt: new Date(),
-          })
-          .where(eq(toolInvocations.id, invocationId));
+        if (!(await startToolInvocation(db, invocationId))) {
+          throw new ToolGatewayHttpError(409, "Tool invocation cannot be dispatched", "action_already_consumed");
+        }
+        if (retryingGitHubPublication) await db.update(toolInvocations)
+          .set({ errorCode: null, errorMessage: null, completedAt: null })
+          .where(and(eq(toolInvocations.id, invocationId), eq(toolInvocations.status, "executing")));
       }
 
       await writeAudit({
@@ -11137,6 +11202,7 @@ export function createToolGatewayService(
         },
       });
 
+      let resultSettledByThisCall = false;
       try {
         await assertCurrentGatewayIssuer(session, tool, effectiveParameters, invocationId, !!input.approvedActionRequestId);
         const executionTimeoutMs = timeoutMs(input.timeoutMs, tool);
@@ -11209,7 +11275,7 @@ export function createToolGatewayService(
             { execution: connectedMcpExecution?.execution },
           );
         }
-        await db
+        const settledInvocation = await db
           .update(toolInvocations)
           .set({
             status: "succeeded",
@@ -11219,30 +11285,10 @@ export function createToolGatewayService(
             completedAt,
             updatedAt: completedAt,
           })
-          .where(eq(toolInvocations.id, invocationId));
-        if (input.approvedActionRequestId) {
-          const actionRequestId = input.approvedActionRequestId;
-          const [executedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
-            .update(toolActionRequests)
-            .set({
-              status: "executed",
-              resolvedAt: completedAt,
-              updatedAt: completedAt,
-            })
-            .where(
-              and(
-                eq(toolActionRequests.id, actionRequestId),
-                eq(toolActionRequests.status, "executing"),
-              ),
-            )
-            .returning({ id: toolActionRequests.id }));
-          if (executedRequest) {
-            await reflectToolActionInteractionLifecycle({
-              actionRequestId: executedRequest.id,
-              status: "executed",
-            });
-          }
-        }
+          .where(and(eq(toolInvocations.id, invocationId), eq(toolInvocations.status, "executing")))
+          .returning({ id: toolInvocations.id });
+        if (!settledInvocation.length) throw new ToolGatewayHttpError(409, "The external outcome requires review", "tool_execution_outcome_unknown");
+        resultSettledByThisCall = true;
         await writeToolCallEvent({
           invocationId,
           actionRequestId: input.approvedActionRequestId ?? null,
@@ -11293,6 +11339,29 @@ export function createToolGatewayService(
             execution: connectedMcpExecution?.execution ?? undefined,
           },
         });
+        if (input.approvedActionRequestId) {
+          const actionRequestId = input.approvedActionRequestId;
+          const [executedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
+            .update(toolActionRequests)
+            .set({
+              status: "executed",
+              resolvedAt: completedAt,
+              updatedAt: completedAt,
+            })
+            .where(
+              and(
+                eq(toolActionRequests.id, actionRequestId),
+                eq(toolActionRequests.status, "executing"),
+              ),
+            )
+            .returning({ id: toolActionRequests.id }));
+          if (executedRequest) {
+            await reflectToolActionInteractionLifecycle({
+              actionRequestId: executedRequest.id,
+              status: "executed",
+            });
+          }
+        }
         // After the bookkeeping above: a throw there is caught below, overwrites
         // the row to failed, and emits — an earlier success emit would make one
         // execution report both outcomes.
@@ -11314,23 +11383,17 @@ export function createToolGatewayService(
                 err.details,
               )
             : err;
-        const status =
+        let status =
           normalizedError instanceof ToolGatewayHttpError
             ? normalizedError.status
             : 502;
-        const reasonCode =
+        let reasonCode =
           normalizedError instanceof ToolContentValidationError
             ? normalizedError.reasonCode
             : normalizedError instanceof ToolGatewayHttpError
               ? normalizedError.reasonCode
               : "tool_execution_failed";
-        const isRuntimeDeferred =
-          status === 429 &&
-          (reasonCode === "runtime_capacity_unavailable" ||
-            reasonCode === "runtime_restart_backoff" ||
-            reasonCode === "runtime_restart_suppressed");
-        const isDeferred = status === 504 || isRuntimeDeferred;
-        const message =
+        let message =
           normalizedError instanceof Error
             ? normalizedError.message
             : String(normalizedError);
@@ -11338,7 +11401,7 @@ export function createToolGatewayService(
           throw normalizedError;
         }
         const completedAt = new Date();
-        await db
+        const [failedInvocation] = await db
           .update(toolInvocations)
           .set({
             status:
@@ -11347,38 +11410,64 @@ export function createToolGatewayService(
                 : status === 429
                   ? "rate_limited"
                   : "failed",
-            errorCode: reasonCode,
+            errorCode: resultSettledByThisCall ? "tool_execution_outcome_unknown" : reasonCode,
             errorMessage: message,
             completedAt,
             updatedAt: completedAt,
           })
-          .where(eq(toolInvocations.id, invocationId));
-        void emitConnectionInvoked(db, invocationId);
-        if (input.approvedActionRequestId) {
-          const actionRequestId = input.approvedActionRequestId;
-          const [failedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
-            .update(toolActionRequests)
-            .set({
-              status: "failed",
-              resolvedAt: completedAt,
-              updatedAt: completedAt,
-            })
-            .where(
-              and(
-                eq(toolActionRequests.id, actionRequestId),
-                eq(toolActionRequests.status, "executing"),
-              ),
-            )
-            .returning({ id: toolActionRequests.id }));
-          if (failedRequest) {
-            await reflectToolActionInteractionLifecycle({
-              actionRequestId: failedRequest.id,
-              status: "failed",
-              errorCode: reasonCode,
-              errorMessage: message,
-            });
-          }
+          .where(and(eq(toolInvocations.id, invocationId), resultSettledByThisCall
+            ? inArray(toolInvocations.status, ["executing", "succeeded"])
+            : eq(toolInvocations.status, "executing")))
+          .returning({ id: toolInvocations.id });
+        let outcomeUnknown = Boolean(failedInvocation && resultSettledByThisCall);
+        if (!failedInvocation) {
+          const [saved] = await db.select({ errorCode: toolInvocations.errorCode }).from(toolInvocations)
+            .where(eq(toolInvocations.id, invocationId));
+          outcomeUnknown = saved?.errorCode === "tool_execution_outcome_unknown";
         }
+        if (outcomeUnknown) {
+          status = 409;
+          reasonCode = "tool_execution_outcome_unknown";
+          message = "The external outcome is unknown; inspect the provider before retrying";
+        }
+        const isRuntimeDeferred = status === 429 &&
+          (reasonCode === "runtime_capacity_unavailable" || reasonCode === "runtime_restart_backoff" || reasonCode === "runtime_restart_suppressed");
+        const isDeferred = status === 504 || isRuntimeDeferred;
+        const preserveUnknown = (error: unknown) => {
+          if (!outcomeUnknown) throw error;
+          logger.warn({ invocationId }, "Failed to record stopped tool call completion");
+        };
+        void emitConnectionInvoked(db, invocationId);
+        try {
+          if (input.approvedActionRequestId) {
+            const actionRequestId = input.approvedActionRequestId;
+            const [failedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
+              .update(toolActionRequests)
+              .set({
+                status: "failed",
+                resolvedAt: completedAt,
+                updatedAt: completedAt,
+              })
+              .where(
+                and(
+                  eq(toolActionRequests.id, actionRequestId),
+                  eq(toolActionRequests.invocationId, invocationId),
+                  resultSettledByThisCall && failedInvocation
+                    ? inArray(toolActionRequests.status, ["executing", "executed"])
+                    : eq(toolActionRequests.status, "executing"),
+                ),
+              )
+              .returning({ id: toolActionRequests.id }));
+            if (failedRequest) {
+              await reflectToolActionInteractionLifecycle({
+                actionRequestId: failedRequest.id,
+                status: "failed",
+                errorCode: reasonCode,
+                errorMessage: message,
+              });
+            }
+          }
+        } catch (error) { preserveUnknown(error); }
         await writeToolCallEvent({
           invocationId,
           actionRequestId: input.approvedActionRequestId ?? null,
@@ -11401,7 +11490,7 @@ export function createToolGatewayService(
               : {}),
           },
           tool,
-        });
+        }).catch(preserveUnknown);
         await writeAudit({
           session,
           companyId: session.companyId,
@@ -11427,7 +11516,8 @@ export function createToolGatewayService(
               ? { execution: executionAuditFromError(normalizedError) }
               : {}),
           },
-        });
+        }).catch(preserveUnknown);
+        if (outcomeUnknown) throw new ToolGatewayHttpError(status, message, reasonCode);
         if (normalizedError instanceof ToolContentValidationError) {
           throw new ToolGatewayHttpError(422, message, reasonCode, {
             findings: normalizedError.findings,
@@ -11521,6 +11611,9 @@ export function createToolGatewayService(
       invocationId = recorded.invocation.id;
 
       if (recorded.replayed) {
+        if (recorded.invocation.errorCode === "tool_execution_outcome_unknown") {
+          throw new ToolGatewayHttpError(409, "The previous external outcome is unknown; inspect the provider before taking further action", "tool_execution_outcome_unknown");
+        }
         return recorded.invocation.resultSummary;
       }
 
@@ -11572,14 +11665,9 @@ export function createToolGatewayService(
         );
       }
 
-      await db
-        .update(toolInvocations)
-        .set({
-          status: "executing",
-          startedAt: new Date(),
-          updatedAt: new Date(),
-        })
-        .where(eq(toolInvocations.id, invocationId));
+      if (!(await startToolInvocation(db, invocationId))) {
+        throw new ToolGatewayHttpError(409, "Tool invocation cannot be dispatched", "action_already_consumed");
+      }
 
       await writeAudit({
         session: sessionLike,
@@ -11599,6 +11687,7 @@ export function createToolGatewayService(
       });
 
       const startedAt = Date.now();
+      let resultSettledByThisCall = false;
       try {
         const result = await pluginToolDispatcher.executeTool(
           input.tool,
@@ -11611,7 +11700,7 @@ export function createToolGatewayService(
           sensitiveMode: "redact",
           promptInjectionMode: "block", classifier: resultClassifier(sessionLike, tool, invocationId, { signal: input.signal }),
         });
-        await db
+        const settledInvocation = await db
           .update(toolInvocations)
           .set({
             status: "succeeded",
@@ -11621,7 +11710,10 @@ export function createToolGatewayService(
             completedAt: new Date(),
             updatedAt: new Date(),
           })
-          .where(eq(toolInvocations.id, invocationId));
+          .where(and(eq(toolInvocations.id, invocationId), eq(toolInvocations.status, "executing")))
+          .returning({ id: toolInvocations.id });
+        if (!settledInvocation.length) throw new ToolGatewayHttpError(409, "The external outcome requires review", "tool_execution_outcome_unknown");
+        resultSettledByThisCall = true;
         await writeToolCallEvent({
           invocationId,
           session: sessionLike,
@@ -11662,24 +11754,42 @@ export function createToolGatewayService(
         void emitConnectionInvoked(db, invocationId);
         return resultValidation.value as typeof result;
       } catch (err) {
-        const status = err instanceof ToolGatewayHttpError ? err.status : 502;
-        const reasonCode =
+        let status = err instanceof ToolGatewayHttpError ? err.status : 502;
+        let reasonCode =
           err instanceof ToolContentValidationError
             ? err.reasonCode
             : err instanceof ToolGatewayHttpError
               ? err.reasonCode
               : "tool_execution_failed";
-        const message = err instanceof Error ? err.message : String(err);
-        await db
+        let message = err instanceof Error ? err.message : String(err);
+        const [failedInvocation] = await db
           .update(toolInvocations)
           .set({
             status: status === 504 ? "timed_out" : "failed",
-            errorCode: reasonCode,
+            errorCode: resultSettledByThisCall ? "tool_execution_outcome_unknown" : reasonCode,
             errorMessage: message,
             completedAt: new Date(),
             updatedAt: new Date(),
           })
-          .where(eq(toolInvocations.id, invocationId));
+          .where(and(eq(toolInvocations.id, invocationId), resultSettledByThisCall
+            ? inArray(toolInvocations.status, ["executing", "succeeded"])
+            : eq(toolInvocations.status, "executing")))
+          .returning({ id: toolInvocations.id });
+        let outcomeUnknown = Boolean(failedInvocation && resultSettledByThisCall);
+        if (!failedInvocation) {
+          const [saved] = await db.select({ errorCode: toolInvocations.errorCode }).from(toolInvocations)
+            .where(eq(toolInvocations.id, invocationId));
+          outcomeUnknown = saved?.errorCode === "tool_execution_outcome_unknown";
+        }
+        if (outcomeUnknown) {
+          status = 409;
+          reasonCode = "tool_execution_outcome_unknown";
+          message = "The external outcome is unknown; inspect the provider before retrying";
+        }
+        const preserveUnknown = (error: unknown) => {
+          if (!outcomeUnknown) throw error;
+          logger.warn({ invocationId }, "Failed to record stopped tool call completion");
+        };
         void emitConnectionInvoked(db, invocationId);
         await writeToolCallEvent({
           invocationId,
@@ -11695,7 +11805,7 @@ export function createToolGatewayService(
               ? { findings: err.findings, promptInjection: err.detectorMetadata }
               : null,
           tool,
-        });
+        }).catch(preserveUnknown);
         await writeAudit({
           session: sessionLike,
           companyId: input.runContext.companyId,
@@ -11714,7 +11824,8 @@ export function createToolGatewayService(
             error: message,
             ...(err instanceof ToolContentValidationError ? { promptInjection: err.detectorMetadata } : {}),
           },
-        });
+        }).catch(preserveUnknown);
+        if (outcomeUnknown) throw new ToolGatewayHttpError(status, message, reasonCode);
         if (err instanceof ToolContentValidationError) {
           throw new ToolGatewayHttpError(422, message, reasonCode, {
             findings: err.findings,

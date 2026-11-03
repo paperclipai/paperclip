@@ -4,6 +4,7 @@ export interface Approval {
   id: string;
   companyId: string;
   type: ApprovalType;
+  originRunId: string | null;
   requestedByAgentId: string | null;
   requestedByUserId: string | null;
   status: ApprovalStatus;

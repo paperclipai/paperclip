@@ -1,3 +1,4 @@
+import { unprocessable } from "../errors.js";
 import { Router, type Request } from "express";
 import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
@@ -234,6 +235,14 @@ export function approvalRoutes(
     assertCompanyAccess(req, companyId);
     if (!(await assertApprovalAccessAllowed(req, res, companyId))) return;
     if (!(await assertApprovalMutationAllowedByRunContext(req, res, companyId))) return;
+    // Optional deployment policy: persistent agent keys and their caller-supplied
+    // run headers cannot establish which execution owns an approval.
+    const runScopedOnly = process.env.PAPERCLIP_REQUIRE_RUN_SCOPED_APPROVALS !== undefined &&
+      process.env.PAPERCLIP_REQUIRE_RUN_SCOPED_APPROVALS !== "false";
+    if (runScopedOnly && req.actor.type === "agent" && (req.actor.source !== "agent_jwt" || !req.actor.runId)) {
+      res.status(403).json({ error: "Approval creation requires a run-scoped agent token" });
+      return;
+    }
     const rawIssueIds = req.body.issueIds;
     const issueIds = Array.isArray(rawIssueIds)
       ? rawIssueIds.filter((value: unknown): value is string => typeof value === "string")
@@ -250,7 +259,15 @@ export function approvalRoutes(
         : approvalInput.payload;
 
     const actor = getActorInfo(req);
+    // Only a signed, run-scoped agent JWT is authoritative. Agent-key and
+    // browser run headers are caller supplied and must not acquire ownership.
+    const originRunId = req.actor.type === "agent" && req.actor.source === "agent_jwt"
+      ? req.actor.runId ?? null : null;
+    if (originRunId && approvalInput.requestedByAgentId && approvalInput.requestedByAgentId !== req.actor.agentId) {
+      throw unprocessable("Run-scoped approvals must belong to the authenticated agent");
+    }
     const approval = await svc.create(companyId, {
+      originRunId,
       ...approvalInput,
       payload: normalizedPayload,
       requestedByUserId: actor.actorType === "user" ? actor.actorId : null,

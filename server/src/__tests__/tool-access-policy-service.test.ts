@@ -1,3 +1,5 @@
+import { cancelGatewayActionsForRun } from "../services/run-gateway-cancellation.js";
+import { startToolInvocation } from "../services/tool-approval-execution.js";
 import { createHash, randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
@@ -1170,6 +1172,78 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(await db.select().from(toolRateLimitCounters)).toEqual(counters);
     expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id)))[0].policyExplanation)
       .toEqual(invocation.policyExplanation);
+  });
+
+  it.each([
+    { requestStatus: "pending", started: false, expectedRequest: "cancelled", expectedInvocation: "cancelled", error: "originating_run_cancelled" },
+    { requestStatus: "approved", started: false, expectedRequest: "cancelled", expectedInvocation: "cancelled", error: "originating_run_cancelled" },
+    { requestStatus: "executing", started: false, expectedRequest: "cancelled", expectedInvocation: "cancelled", error: "originating_run_cancelled" },
+    { requestStatus: "executing", started: true, expectedRequest: "failed", expectedInvocation: "failed", error: "tool_execution_outcome_unknown" },
+    { requestStatus: "approved", started: true, expectedRequest: "failed", expectedInvocation: "failed", error: "tool_execution_outcome_unknown" },
+    { requestStatus: "pending", started: true, expectedRequest: "failed", expectedInvocation: "failed", error: "tool_execution_outcome_unknown" },
+  ] as const)("settles $requestStatus actions on cancellation, started=$started", async ({ requestStatus, started, expectedRequest, expectedInvocation, error }) => {
+    const { company, invocation } = await admittedRateLimitedInvocation();
+    await db.update(toolInvocations).set({ status: started ? "executing" : "awaiting_approval", startedAt: started ? new Date() : null }).where(eq(toolInvocations.id, invocation.id));
+    const [action] = await db.insert(toolActionRequests).values({ companyId: company.id, invocationId: invocation.id,
+      status: requestStatus, canonicalArgumentsHash: "fictitious", canonicalArgumentsSummary: { summary: "fixture", sha256: "fixture", sizeBytes: 0 } }).returning();
+    await db.transaction(async tx => {
+      await tx.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, invocation.runId!));
+      await cancelGatewayActionsForRun(tx as unknown as typeof db, company.id, invocation.runId!);
+    });
+    const [request] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, action.id));
+    const [result] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.id));
+    expect(request.status).toBe(expectedRequest);
+    expect(result).toMatchObject({ status: expectedInvocation, errorCode: error });
+    expect(request.signedArguments).toBeNull();
+  });
+
+  it.each([{ invocationStatus: "succeeded", expected: "executed" },
+    { invocationStatus: "failed", expected: "failed" }, { invocationStatus: "cancelled", expected: "cancelled" }] as const)(
+    "reconciles an open review after its invocation is already $invocationStatus", async ({ invocationStatus, expected }) => {
+      const { company, invocation } = await admittedRateLimitedInvocation();
+      await db.update(toolInvocations).set({ status: invocationStatus, completedAt: new Date() }).where(eq(toolInvocations.id, invocation.id));
+      const [action] = await db.insert(toolActionRequests).values({ companyId: company.id, invocationId: invocation.id,
+        status: "pending", canonicalArgumentsHash: "fictional", canonicalArgumentsSummary: { summary: "fixture", sha256: "fixture", sizeBytes: 0 } }).returning();
+      await db.transaction(async tx => {
+        await tx.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, invocation.runId!));
+        await cancelGatewayActionsForRun(tx as unknown as typeof db, company.id, invocation.runId!);
+      });
+      const [request] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, action.id));
+      expect(request.status).toBe(expected);
+    });
+
+  it("does not start provider dispatch after cancellation even if admission already passed", async () => {
+    const { input, invocation, svc } = await admittedRateLimitedInvocation();
+    expect((await svc.admitInvocation(input, invocation.id)).allowed).toBe(true);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, invocation.runId!));
+    await expect(startToolInvocation(db, invocation.id)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("rejects admission after the originating run is cancelled", async () => {
+    const { input, invocation, svc } = await admittedRateLimitedInvocation();
+    expect(invocation.runId).toBeTruthy();
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, invocation.runId!));
+    await expect(svc.admitInvocation(input, invocation.id)).rejects.toMatchObject({ status: 403 });
+  });
+
+  it("waits for cancellation to commit before admitting a racing invocation", async () => {
+    const { input, invocation, svc } = await admittedRateLimitedInvocation();
+    let release!: () => void;
+    let admitted!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { admitted = resolve; });
+    const cancel = db.transaction(async tx => {
+      await tx.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, invocation.runId!));
+      admitted(); await held;
+    });
+    await locked;
+    const admission = svc.admitInvocation(input, invocation.id);
+    const result = admission.then(() => "allowed", () => "denied");
+    try {
+      expect(await Promise.race([result, new Promise<string>(resolve => setTimeout(() => resolve("waiting"), 100))])).toBe("waiting");
+    } finally { release(); }
+    await cancel;
+    expect(await result).toBe("denied");
   });
 
   it("rolls back rate charges when saving the admission receipt fails and admits a retry once", async () => {

@@ -1,3 +1,4 @@
+import { cancelPendingRunApprovals } from "../run-approval-cancellation.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { writeDeferredExecutionWait } from "../deferred-execution-wait.js";
 import type { DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
@@ -1320,6 +1321,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         }
         await acknowledgeBudgetCancellation(run, terminationProof);
       }
+      if (run.status === "cancelled") {
+        await db.transaction(async transaction => {
+          const tx = transaction as unknown as Db;
+          const [current] = await tx.select({ id: heartbeatRuns.id, status: heartbeatRuns.status }).from(heartbeatRuns)
+            .where(and(eq(heartbeatRuns.id, run!.id), eq(heartbeatRuns.companyId, run!.companyId))).for("update");
+          if (current?.status === "cancelled") await cancelPendingRunApprovals(tx, run!.companyId, current.id);
+        });
+      }
       return run;
     }
     const agent = await getAgent(run.agentId);
@@ -1411,6 +1420,44 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       const stopRequestedAt = Date.now();
       const cancellation = await (async () => {
         try {
+          // Fence dispatch before waiting for Stop. If persistence fails for
+          // an already-owned legacy process, still stop it, but do not claim
+          // a durable cancellation receipt.
+          try {
+            await db.transaction(async transaction => {
+              const tx = transaction as unknown as Db;
+              if (committedBudgetCancellation) {
+                // The durable budget fence already revokes writes. Preserve its
+                // distinct receipt while serializing approval reconciliation.
+                const [current] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+                  eq(heartbeatRuns.id, run!.id), eq(heartbeatRuns.companyId, run!.companyId))).for("update");
+                if (current) await cancelPendingRunApprovals(tx, run!.companyId, current.id);
+                return;
+              }
+              const marker = JSON.stringify({ state: "requested", requestedAt: new Date(stopRequestedAt).toISOString() });
+              const [fenced] = await tx.update(heartbeatRuns).set({
+                resultJson: sql`jsonb_set(coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb), '{executionCancellation}',
+                  coalesce(${heartbeatRuns.resultJson}->'executionCancellation', '{}'::jsonb) || ${marker}::jsonb, true)`,
+                updatedAt: new Date(),
+              }).where(and(eq(heartbeatRuns.id, run!.id), eq(heartbeatRuns.companyId, run!.companyId),
+                inArray(heartbeatRuns.status, ["running", "queued"]))).returning({ id: heartbeatRuns.id });
+              if (fenced) await cancelPendingRunApprovals(tx, run!.companyId, run!.id);
+            });
+          } catch (fenceError) {
+            if (run.runtimeMode !== "native" && (running || control)) {
+              control?.controller.abort(new Error(reason));
+              if (running) {
+                try {
+                  await terminateHeartbeatRunProcess({ pid: running.child.pid, processGroupId: running.processGroupId,
+                    signal: !control && agent?.adapterType === "codex_local" ? "SIGINT" : undefined,
+                    graceMs: cancellationTerminationGraceMs(running.graceSec, options.terminationGraceMs) });
+                } catch (stopError) {
+                  throw new AggregateError([fenceError, stopError], "Stop fence and process termination failed");
+                }
+              }
+            }
+            throw fenceError;
+          }
           if (control) {
             await db
               .update(heartbeatRuns)

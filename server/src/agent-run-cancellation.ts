@@ -8,8 +8,11 @@ export function agentRunWritesRevoked(run: {
   resultJson?: Record<string, unknown> | null;
 } | null | undefined): boolean {
   const cancellation = run?.resultJson?.executionCancellation;
+  const startup = run?.resultJson?.startupCancellation;
+  const budget = startup && typeof startup === "object" && "budgetEnforcement" in startup ? startup.budgetEnforcement : null;
   return run?.status === "cancelled" || Boolean(cancellation && typeof cancellation === "object"
-    && "state" in cancellation && cancellation.state === "requested");
+    && "state" in cancellation && cancellation.state === "requested") || Boolean(budget && typeof budget === "object"
+    && "scopeType" in budget && budget.scopeType);
 }
 
 /** The caller must supply its write transaction, so Stop and commit serialize. */

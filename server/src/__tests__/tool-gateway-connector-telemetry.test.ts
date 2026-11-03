@@ -339,7 +339,12 @@ describeEmbeddedPostgres("gateway connector invocation telemetry", () => {
   }, 30_000);
 
   it("emits a single failed event when post-success audit work throws (no contradictory pair)", async () => {
-    const f = await fixture();
+    let providerCalls = 0;
+    const f = await fixture({ remoteHttpRequest: async (_url, init) => {
+      providerCalls += 1;
+      return mcpSuccessResponse(init);
+    } });
+    const idempotencyKey = `audit-failure-${randomUUID()}`;
     failLogActivityForAction.current = "tool_gateway.call_completed";
 
     await expect(
@@ -347,11 +352,17 @@ describeEmbeddedPostgres("gateway connector invocation telemetry", () => {
         sessionToken: f.session.token,
         tool: f.tool.name,
         parameters: { key: "a", value: "1" },
+        idempotencyKey,
       }),
-    ).rejects.toThrow(/forced activity write failure/);
+    ).rejects.toMatchObject({ reasonCode: "tool_execution_outcome_unknown" });
 
     const [invocation] = await db.select().from(toolInvocations);
     expect(invocation?.status).toBe("failed");
+    expect(invocation?.errorCode).toBe("tool_execution_outcome_unknown");
+    const callsBeforeReplay = providerCalls;
+    await expect(f.gateway.executeTool({ sessionToken: f.session.token, tool: f.tool.name,
+      parameters: { key: "a", value: "1" }, idempotencyKey })).rejects.toMatchObject({ reasonCode: "tool_execution_outcome_unknown" });
+    expect(providerCalls).toBe(callsBeforeReplay);
 
     const events = await settledEvents(1);
     expect(events).toHaveLength(1);

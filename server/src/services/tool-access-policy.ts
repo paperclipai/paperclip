@@ -1,3 +1,4 @@
+import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
 import type { ConnectionManagementContext } from "./connection-management.js";
 import { createHash } from "node:crypto";
 import { boundRunIssueIdSql } from "./run-task-binding.js";
@@ -1433,9 +1434,22 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
   ): Promise<ToolAccessDecision> {
     try {
       return await db.transaction(async tx => {
+        // Acquire the run fence before invocation and action-request locks.
+        // Stop takes the conflicting run lock when it revokes run authority.
+        const [origin] = await tx.select({ agentId: toolInvocations.agentId, actorId: toolInvocations.actorId, runId: toolInvocations.runId, actorType: toolInvocations.actorType })
+          .from(toolInvocations).where(and(eq(toolInvocations.companyId, input.companyId), eq(toolInvocations.id, invocationId)));
+        if (origin?.actorType === "agent" && origin.runId) {
+          if (!origin.agentId || !origin.actorId || origin.actorId !== input.actor.actorId)
+            return decision("deny", "deny_run_context_mismatch", "Tool invocation origin is invalid.", [], []);
+          const run = await assertAgentRunWriteAllowed(tx as unknown as Db, input.companyId, { agentId: origin.actorId, runId: origin.runId });
+          if (!run) return decision("deny", "deny_run_context_mismatch", "Tool invocation run is unavailable.", [], []);
+        }
         const [invocation] = await tx.select().from(toolInvocations)
           .where(and(eq(toolInvocations.companyId, input.companyId), eq(toolInvocations.id, invocationId)))
           .for("update");
+        if (origin && invocation && (origin.agentId !== invocation.agentId || origin.actorId !== invocation.actorId || origin.runId !== invocation.runId || origin.actorType !== invocation.actorType)) {
+          throw new Error("Invocation origin changed before admission");
+        }
         // Historical reviewed requests can still have a pending invocation.
         // Accept that state only with the exact executing claim owned by the
         // gateway, locked in the same invocation-then-request order as dispatch.
@@ -1864,7 +1878,13 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
     }).returning();
     let actionRequest = null;
     if (accessDecision.decision === "require_approval") {
-      [actionRequest] = await db.insert(toolActionRequests).values({
+      [actionRequest] = await db.transaction(async tx => {
+        if (ctx.actorType === "agent" && ctx.heartbeatRunId) {
+          if (!ctx.actorId) throw new Error("Run-bound invocation has no actor");
+          const run = await assertAgentRunWriteAllowed(tx as unknown as Db, ctx.companyId, { agentId: ctx.actorId, runId: ctx.heartbeatRunId });
+          if (!run) throw new Error("Run-bound invocation has no matching execution");
+        }
+        return tx.insert(toolActionRequests).values({
         companyId: ctx.companyId,
         invocationId: invocation.id,
         issueId: ctx.issueId,
@@ -1873,7 +1893,8 @@ export function toolAccessPolicyService(db: Pick<Db, "select" | "insert" | "upda
         canonicalArgumentsSummary: redaction.summary,
         requestedByAgentId: ctx.actorType === "agent" ? ctx.actorId : null,
         requestedByUserId: ctx.actorType === "user" ? ctx.actorId : null,
-      }).returning();
+        }).returning();
+      });
     }
     return { invocation, replayed: false, actionRequest };
   }

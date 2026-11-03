@@ -1,3 +1,4 @@
+import { cancelPendingRunApprovals } from "../run-approval-cancellation.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { notifyExternalAgentSettlement } from "../../modules/external-agents/index.js";
 import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
@@ -1680,6 +1681,9 @@ export async function finalizeNativeRun(input: {
         await notifyExecutionRunWork(tx, { companyId: run.companyId });
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
         const [after] = await projectRun(tx);
+        if (after?.status === "cancelled" && input.projectRunStatus) {
+          await cancelPendingRunApprovals(tx, run.companyId, run.id);
+        }
         if (after && input.projectRunStatus) await settleNativeTerminalWake(tx, after);
         return after ? { before, after } : null;
       });
