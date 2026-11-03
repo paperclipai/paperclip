@@ -230,3 +230,20 @@ it.each([
 ])("rejects reversed pause order with bounded command descriptions: %s", reply => {
   const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
 });
+
+
+it.each([
+  "Today UTC: Morgan paused the task after the automated smoke check failed. You reassigned the task to Riley. Riley fixed the label and the automated smoke check passed.",
+  "Today UTC: Morgan was blocked because the build validation command failed. You reassigned the task to Riley. Riley fixed the label and the build validation command passed.",
+])("accepts ordinary bounded command noun phrases: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+it.each([
+  "Today UTC: Morgan paused the task before the automated smoke check failed. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan was blocked before the build validation command failed. You reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan paused the task after the automated smoke check failed. You watched while Morgan reassigned the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan paused the task after the build validation command failed. You asked Morgan to reassign the task to Riley. Riley fixed the label and the check passed.",
+  "Today UTC: Morgan paused the task after the build validation command failed. You reassigned the task to Riley. Morgan fixed the label and the check passed.",
+])("preserves chronology and actors with ordinary command noun phrases: %s", reply => {
+  const o = fixture(); o.reply = reply; expect(gradeWorkTimeline(o).passed).toBe(false);
+});

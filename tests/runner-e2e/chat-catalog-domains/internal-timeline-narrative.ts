@@ -12,7 +12,18 @@ export function truthfulTimelineAccount(input: {
   const withinClause = "(?:[^.!?\\n]|\\.(?=\\S))";
   const clauses = [...body.matchAll(new RegExp(`${withinClause}+(?:[!?]|\\.(?=\\s|$)|$)`, "g"))]
     .map(match => ({ text: match[0], at: match.index }));
-  const commandSubject = "(?:(?:accessibility|verification|accessible|heading|email|label|html|launch|page|form|input)\\s+){0,3}(?:verification|verify_launch_html|check|test|command)";
+  // A command noun can have ordinary modifiers, but never absorb a new event,
+  // actor, negation or clause boundary while connecting this pause to failure.
+  const commandBoundaries = [
+    "after|before|because|once|then|and|or|but|while|when|until|since|not|never|no",
+    "you|i|he|she|they|we|human|person|user|operator|board|was|were|is|are|had|has|have|will|would|could|should",
+    "fail(?:ed|ure|ing)?|pass(?:ed)?|succeed(?:ed)?|exit(?:ed)?|paus(?:e|ed)|block(?:ed)?|stop(?:ped)?",
+    "(?:re)?assign(?:ed|ment)?|hand(?:ed|off)?|fix(?:ed)?|repair(?:ed)?|watch(?:ed)?|ask(?:ed)?|ran|run|execut(?:e|ed)",
+    ...[firstWorker, repairWorker, input.personName].filter(Boolean).flatMap(name => name!.split(/\s+/).map(escape)),
+  ].join("|");
+  const commandModifier = `(?!(?:${commandBoundaries})\\b)[a-z][a-z0-9_-]*`;
+  const commandSubject = `(?:${commandModifier}[ \\t]+){0,3}(?:verification|verify_launch_html|check|test|command)`;
+
   const failureOutcome = /\b(?:fail(?:ed|ure|ing)?|exit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*1)\b/gi;
   const failures = clauses.flatMap(({ text, at }) => mentions(text, firstWorker)
     && new RegExp(`\\b${commandSubject}\\b`, "i").test(text)
