@@ -382,6 +382,13 @@ config; an explicit shared test database retains one partition per job.
 The Runner transport lease-expiry and cold-admission regressions live in their
 own file so those real-clock waits overlap other files in the existing pool.
 
+Exact-source release verification uses the post-merge AWS fleet on the first
+attempt. Reruns of its verification and chaos jobs use GitHub-hosted runners.
+Exact-source cloud-migrator planning and package builds use the same policy.
+This gives interrupted jobs an independent recovery path. It keeps the same
+source, commands, assertions and required gates. A failed test still needs a fix;
+a successful rerun does not explain an earlier failure.
+
 The two PR Runner Vitest jobs separate package tests from native server tests.
 The first runs the complete package inventory; the second runs the complete
 native server group. The existing `--shard=1/2` and `--shard=2/2` commands route
