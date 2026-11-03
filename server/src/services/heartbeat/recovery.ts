@@ -2775,7 +2775,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           scope.onDeferredDeadline(Date.now() + 30_000);
           return;
         }
-        await releaseSettledNativeRunProcess(db, scope.runId, scope);
+        const outcome = await releaseSettledNativeRunProcess(db, scope.runId, scope);
+        if (outcome !== "pending") await acknowledgeRemoteStop(scope.runId, scope.companyId);
       },
       orphanLease: scope => sweepOrphanedActiveLeases({ ...scope, backoffMs: 5 * 60_000 }),
       shutdown: scope => sweepLegacyShutdownWorkspaceSettlements(db, new Date(), scope),

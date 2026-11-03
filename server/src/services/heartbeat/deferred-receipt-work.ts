@@ -6,7 +6,7 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { DeferredExecutionScope, DeferredReceiptRecoveryOptions } from "../deferred-execution-notifications.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 
-type Entry = { id: string; companyId: string; dueAt: number };
+type Entry = { id: string; companyId: string; dueAt: number; immediate: boolean };
 type NativeIntentOptions = DeferredExecutionScope & {
   onDeferredDeadline(at: number): void;
   onError(error: unknown): void;
@@ -39,6 +39,11 @@ export function registerDeferredReceiptWork(
       },
       decodeScope: hint => hint === "*" ? undefined : JSON.parse(hint),
       matches: (entry, scope) => !scope || entry.companyId === scope.companyId && (!scope.requestId || entry.id === scope.requestId),
+      // A busy company can invalidate a paginated scan before the pending
+      // batch drains. Keep unread ready receipts ahead of freshly reloaded
+      // receipts already checked; actual wait/claim deadlines still replace.
+      mergeEntry: (pending, loaded) => pending.immediate && loaded.immediate
+        ? { ...loaded, dueAt: Math.min(pending.dueAt, loaded.dueAt) } : loaded,
       load: async scope => {
         const key = scope ? JSON.stringify({ companyId: scope.companyId, requestId: scope.requestId }) : "*";
         if (!enabled) { cursors.delete(key); return []; }
@@ -76,12 +81,15 @@ export function registerDeferredReceiptWork(
         )).orderBy(asc(agentWakeupRequests.id)).limit(100);
         const complete = rows.length < 100;
         if (complete) cursors.delete(key); else cursors.set(key, rows.at(-1)!.id);
-        return { rows: rows.map(row => ({ id: row.id, companyId: row.companyId,
-          dueAt: kind === "native" && row.status === "claimed" && row.claimedAt ? row.claimedAt.getTime() + 60_000
+        const now = Date.now();
+        return { rows: rows.map(row => {
+          const deadline = kind === "native" && row.status === "claimed" && row.claimedAt ? row.claimedAt.getTime() + 60_000
             : kind === "native" && row.error ? row.updatedAt.getTime() + 30_000
             : kind === "deferred" && row.delayed && !row.interruptedLegacy ? row.updatedAt.getTime() + 30_000
-            : Date.now(),
-        })), complete };
+            : null;
+          const immediate = deadline === null || deadline <= now;
+          return { id: row.id, companyId: row.companyId, dueAt: immediate ? now : deadline, immediate };
+        }), complete };
       },
       check: async entry => {
         if (!enabled) return null;
@@ -101,7 +109,7 @@ export function registerDeferredReceiptWork(
               : kind === "deferred" && current.status === "deferred_issue_execution" && !current.interruptedLegacy
                 && (current.payload?.queuedCommentInterrupt || current.payload?.executionWait)
                 ? current.updatedAt.getTime() + 30_000 : null;
-          if (due !== null && due > Date.now()) return { ...entry, dueAt: due };
+          if (due !== null && due > Date.now()) return { ...entry, dueAt: due, immediate: false };
         }
         const errors: unknown[] = [];
         let next: number | null = null;
@@ -117,7 +125,7 @@ export function registerDeferredReceiptWork(
           catch (error) { failed(error); }
         }
         if (errors.length) throw new AggregateError(errors, `Deferred receipt ${entry.id} could not settle`);
-        return next === null ? null : { ...entry, dueAt: next };
+        return next === null ? null : { ...entry, dueAt: next, immediate: false };
       },
     }, canRun);
   }
