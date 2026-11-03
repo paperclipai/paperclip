@@ -30,6 +30,15 @@ export interface AppendControlPlaneEventOptions {
   signal: AbortSignal;
 }
 
+/** Only ordinary display text can share a persistence batch. */
+export function isBatchableNativeTextEvent(event: PrpEvent): boolean {
+  return event.sourceKind === "runner"
+    && event.priority !== 0
+    && event.eventType === "item.delta"
+    && (event.payload.kind === "agentMessage" || event.payload.kind === "reasoning")
+    && typeof event.payload.text === "string";
+}
+
 export interface CheckpointControlPlaneSessionOptions {
   /**
    * Cancellation is a durability boundary: once aborted, checkpoint work
@@ -84,6 +93,15 @@ export interface ControlPlanePort {
     event: NativeRunEvent | PrpEvent,
     options?: AppendControlPlaneEventOptions,
   ): Promise<AppendedEventReceipt>;
+  /**
+   * Commit ordinary text together without changing its source identities.
+   * Receipts have the input order and are returned only after the whole batch
+   * commits. Cancellation has the same durability boundary as appendEvent.
+   */
+  appendEvents?(
+    events: readonly PrpEvent[],
+    options?: AppendControlPlaneEventOptions,
+  ): Promise<AppendedEventReceipt[]>;
   replayEvents(
     input: ReplayControlPlaneEventsInput,
     options?: FinalizeControlPlaneOperationOptions,
