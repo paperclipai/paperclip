@@ -318,6 +318,18 @@ session-control access. Deployed diagnostic usefulness remains unverified.
 
 ## `session`
 
+Native OpenCode semantic tool requests wait under the existing durable Runner
+owner across the ordinary 30-second MCP deadline. The native MCP client uses
+a fixed one-hour ceiling; ordinary driver calls keep their deadline.
+Company, tool, run and Stop authority do not change. Unanswered effects still
+block run attachment, including after the client ceiling expires while the
+Runner lease remains valid. The [proxy regression](../../packages/paperclip-runner/src/live/runnerd-opencode-streaming-tools.test.ts)
+checks delayed delivery, one tool call, and a settled next run with a deterministic
+provider. The [bridge suite](../../packages/paperclip-runner/src/drivers/opencode/mcp-bridge.test.ts)
+covers result replay, cancellation and teardown. These are local protocol checks;
+live provider and deployed access remain separate checks in the
+[session recipe](../feature-map/runs-adapters.md#session).
+
 Scoped source evidence: restart preparation transfers its lease renewal to the
 native executor after the executor acquires its own reference. Completion stops
 renewal before coordinator release, while real ownership loss retains the detach

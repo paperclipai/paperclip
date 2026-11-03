@@ -129,6 +129,14 @@ the owner's newer completed checkpoint. The
 cover checkpoint restoration and its guards; real-provider acceptance remains
 separate evidence.
 
+For native OpenCode, hold an assigned tool result for more than 30 seconds.
+Verify that the provider receives the saved result once and the next run can
+attach with no pending tool call. Stop and bridge teardown must still end an
+unanswered wait without claiming the action failed or repeating it. The
+[native proxy regression](../../packages/paperclip-runner/src/live/runnerd-opencode-streaming-tools.test.ts)
+uses the real Rust Runner and proxy with a deterministic provider; live provider
+and deployed sandbox acceptance remain separate evidence.
+
 After a completed warm turn, change an agent setting that invalidates its
 instruction copy, then send a follow-up. Verify the old runner suspends during
 preparation, saved files remain available, and the follow-up completes once.
