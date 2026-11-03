@@ -248,7 +248,7 @@ export const questionIdentityCases = [
       if (!state.validationObserved) throw new Error("Required multipart question advanced or changed before an answer");
       await form.getByRole("radio", { name: "Researchers", exact: true }).click();
       await form.getByRole("button", { name: "Next", exact: true }).click();
-      await form.getByRole("button", { name: "Back", exact: true }).click();
+      await form.getByRole("button", { name: "Previous question", exact: true }).click();
       state.retainedAudience = await form.getByRole("radio", { name: "Researchers", exact: true }).isChecked();
       await form.getByRole("button", { name: "Next", exact: true }).click();
       await form.getByRole("radio", { name: "Clear", exact: true }).click();
