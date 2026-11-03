@@ -5,7 +5,7 @@ import path from "node:path";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { applyPendingMigrations, closeRegisteredClients, companies, createDb, executionWorkspaceSnapshots,
   executionWorkspaces, issueRecoveryActions, issues, workspaceOperations } from "@paperclipai/db";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
@@ -130,6 +130,23 @@ describe.skipIf(!support.supported)("remote workspace snapshot retention", () =>
     expect(await owner.tick()).toMatchObject({ deleted: 1, failed: 0 });
     for (const key of f.keys) expect((await storage.headObject(f.companyId, key)).exists).toBe(false);
     expect(await owner.nextDeadlineAt()).toBeNull();
+  });
+  it("uses the dependency index when a company has many unrelated snapshots", async () => {
+    const child = await seed();
+    await db.execute(sql`insert into execution_workspace_snapshots
+      (company_id, execution_workspace_id, source_operation_id, generation, epoch, status)
+      select ${child.companyId}::uuid, gen_random_uuid(), gen_random_uuid(), 1, 1, 'committed'
+      from generate_series(1, 2500)`);
+    await db.insert(executionWorkspaceSnapshots).values({ companyId: child.companyId, executionWorkspaceId: randomUUID(),
+      sourceOperationId: randomUUID(), generation: 1, epoch: 1, status: "committed",
+      metadata: { importedWorkspaceChildren: [{ workspaceId: child.workspaceId, snapshotId: child.row.id }] } });
+    await db.execute(sql`analyze execution_workspace_snapshots`);
+    const plan = await db.execute(sql`explain (format json) select id from execution_workspace_snapshots
+      where company_id = ${child.companyId}::uuid and status <> 'deleted'
+        and metadata ? 'importedWorkspaceChildren'
+        and metadata->'importedWorkspaceChildren' @> ${JSON.stringify([{ workspaceId: child.workspaceId, snapshotId: child.row.id }])}::jsonb
+      limit 1`);
+    expect(JSON.stringify(plan)).toContain("execution_workspace_snapshots_imported_children_idx");
   });
   it("pins imported child bytes until the covering parent snapshot is deleted", async () => {
     const child = await seed(), parentId = randomUUID(), workspaceId = randomUUID();

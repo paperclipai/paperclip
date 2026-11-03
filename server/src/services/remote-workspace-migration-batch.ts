@@ -15,6 +15,9 @@ export async function migrateWorkspaceTrees(db: Db, input: {
   let migrated = 0;
   for (;;) {
     input.signal.throwIfAborted();
+    // Match the final ephemeral-storage contract, not just the importer's
+    // supported subset. Silently skipping an unsupported provider or unsettled
+    // lifecycle state would abandon files when the original volume is detached.
     const rows = await db.select({ companyId: executionWorkspaces.companyId, workspaceId: executionWorkspaces.id })
       .from(executionWorkspaces).where(and(isNotNull(executionWorkspaces.cwd),
         sql`${executionWorkspaces.providerType} <> 'plugin'`,

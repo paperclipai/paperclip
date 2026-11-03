@@ -145,6 +145,15 @@ describe.skipIf(!support.supported)("remote workspace migration", () => {
     await db.insert(executionWorkspaces).values({ id, companyId: f.companyId, name: "Historical alias", mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs", cwd: f.cwd });
     await expect(migrateRemoteWorkspace({ db, storage, ...f, apply: true })).rejects.toThrow("overlapping_workspace_requires_maintenance");
   });
+  it.each(["cleanup_failed", "adapter_managed"])("blocks enrollment instead of abandoning unsupported local files (%s)", async kind => {
+    const f = await seed(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
+    await db.update(executionWorkspaces).set(kind === "cleanup_failed" ? { status: kind } : { providerType: kind })
+      .where(eq(executionWorkspaces.id, f.workspaceId));
+    await expect(migrateWorkspaceTrees(db, { storage, signal: new AbortController().signal, phase: () => {} }))
+      .rejects.toThrow(kind === "cleanup_failed" ? "workspace_not_active" : "workspace_provider_unsupported");
+    expect(readRemoteWorkspaceAuthority((await workspace(f.workspaceId)).metadata)).toBeNull();
+    expect(await fs.readFile(path.join(f.cwd, "saved.txt"), "utf8")).toBe("original saved work\n");
+  });
   it.each(["changed", "corrupt", "late-change", "abort"])("keeps the parent local when nested coverage is unsafe (%s)", async mode => {
     const { parent, child } = await nestedFixture(); vi.stubEnv("PAPERCLIP_EPHEMERAL_MIGRATION", "true");
     await migrateRemoteWorkspace({ db, storage, ...child, apply: true, writersStopped: true });

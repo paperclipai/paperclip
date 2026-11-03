@@ -25,6 +25,7 @@ async function pinned(db: ReadDb, row: Snapshot) {
   if ((workspace?.metadata?.remoteWorkspace as { snapshotId?: unknown } | undefined)?.snapshotId === row.id) return true;
   const [importedBy] = await db.select({ id: executionWorkspaceSnapshots.id }).from(executionWorkspaceSnapshots).where(and(
     eq(executionWorkspaceSnapshots.companyId, row.companyId), ne(executionWorkspaceSnapshots.status, "deleted"),
+    sql`${executionWorkspaceSnapshots.metadata} ? 'importedWorkspaceChildren'`,
     sql`${executionWorkspaceSnapshots.metadata}->'importedWorkspaceChildren' @> ${JSON.stringify([
       { workspaceId: row.executionWorkspaceId, snapshotId: row.id },
     ])}::jsonb`,
