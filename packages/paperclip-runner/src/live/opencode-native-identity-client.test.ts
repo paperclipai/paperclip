@@ -59,7 +59,7 @@ it.skipIf(!linuxCi)("attests real OpenCode client acceptance through runnerd, pr
       try {
         const address = provider.address(); if (!address || typeof address === "string") throw new Error("diagnostic_loopback_unavailable");
         const workspace = join(root, negative ? "negative" : "positive"); await mkdir(workspace);
-        child = spawn(process.execPath, ["--import", resolve("../../node_modules/tsx/dist/loader.mjs"),
+        child = spawn(process.execPath, ["--import", resolve("node_modules/tsx/dist/loader.mjs"),
           resolve("test-support/opencode-native-identity-worker.ts"), JSON.stringify({ root: workspace, node, executable, proxy,
             providerUrl: `http://127.0.0.1:${address.port}/v1`, negative })], {
           env: { ...environment, PAPERCLIP_NATIVE_PROTOCOL_DIAGNOSTIC: "1" }, stdio: ["ignore", "pipe", "pipe"], detached: true,
