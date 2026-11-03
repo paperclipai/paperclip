@@ -20,7 +20,11 @@
 // server/tsconfig.json stays the single program that editors and `pnpm build`
 // use.
 //
-// Usage: node scripts/typecheck-layers.mjs
+// Projects outside the server read the source layers as declarations through a
+// `tsconfig.layers.json` that references tsconfig.declarations.json in the output
+// directory. --declarations-only builds those layers and skips the tests layer.
+//
+// Usage: node scripts/typecheck-layers.mjs [--declarations-only]
 
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -212,8 +216,20 @@ export function layerConfig(layer, { emptyLayers = new Set() } = {}) {
   };
 }
 
+/** Builds the config other projects reference to read the source layers as declarations. */
+export function declarationsConfig(layers) {
+  return {
+    compilerOptions: { composite: true },
+    files: [],
+    references: layers
+      .filter((layer) => layer.name !== "tests")
+      .map((layer) => ({ path: `./tsconfig.${layer.name}.json` })),
+  };
+}
+
 export function typecheckLayers({
   serverRoot,
+  declarationsOnly = false,
   run = runTsc,
   log = console.log,
 }) {
@@ -236,8 +252,14 @@ export function typecheckLayers({
     );
   }
 
+  writeFileSync(
+    path.join(outputRoot, "tsconfig.declarations.json"),
+    `${JSON.stringify(declarationsConfig(layers), null, 2)}\n`,
+  );
+
   let exitCode = 0;
   for (const layer of layers) {
+    if (declarationsOnly && layer.name === "tests") continue;
     log(`typecheck:layers: ${layer.name} (${layer.sourceFiles.length} files)`);
     const config = path.join(OUTPUT_DIRECTORY, `tsconfig.${layer.name}.json`);
     const { status, signal } = run(["-p", config], { cwd: serverRoot });
@@ -253,5 +275,6 @@ export function typecheckLayers({
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.exitCode = typecheckLayers({
     serverRoot: path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."),
+    declarationsOnly: process.argv.includes("--declarations-only"),
   });
 }

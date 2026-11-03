@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import { emitOnlyTscArgs, lowMemoryTscArgs, runTsc } from "../../scripts/run-tsc.mjs";
 import { STEPS, typecheckLowMemory } from "../../scripts/typecheck-low-memory.mjs";
-import { layerConfig, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
+import { PREPARE_STEPS, PROJECTS, typecheckTestProjects } from "../../scripts/typecheck-test-projects.mjs";
+import { declarationsConfig, layerConfig, listSourceFiles, planLayers, readImports, typecheckLayers } from "./typecheck-layers.mjs";
 
 const serverRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sourcesOf = (layers, name) => layers.find((layer) => layer.name === name)?.sourceFiles;
@@ -159,6 +160,16 @@ describe("layerConfig", () => {
   });
 });
 
+describe("declarationsConfig", () => {
+  it("references the source layers that exist, and not tests", () => {
+    const config = declarationsConfig([{ name: "below" }, { name: "above" }, { name: "tests" }]);
+
+    expect(config.compilerOptions.composite).toBe(true);
+    expect(config.files).toEqual([]);
+    expect(config.references).toEqual([{ path: "./tsconfig.below.json" }, { path: "./tsconfig.above.json" }]);
+  });
+});
+
 describe("typecheckLayers", () => {
   const roots = [];
 
@@ -200,6 +211,30 @@ describe("typecheckLayers", () => {
     ]);
     const output = path.join(root, "node_modules", ".cache", "paperclip-typecheck");
     expect(JSON.parse(readFileSync(path.join(output, "package.json"), "utf8"))).toEqual({ type: "module" });
+  });
+
+  it("skips the tests layer when only declarations are needed", () => {
+    const root = serverFixture();
+    const configs = [];
+
+    const status = typecheckLayers({
+      serverRoot: root,
+      declarationsOnly: true,
+      log: () => {},
+      run: (args) => {
+        configs.push(path.basename(args[1]));
+        return { status: 0, signal: null };
+      },
+    });
+
+    expect(status).toBe(0);
+    expect(configs).toEqual(["tsconfig.below.json", "tsconfig.cycle.json", "tsconfig.above.json"]);
+    const output = path.join(root, "node_modules", ".cache", "paperclip-typecheck");
+    expect(JSON.parse(readFileSync(path.join(output, "tsconfig.declarations.json"), "utf8")).references).toEqual([
+      { path: "./tsconfig.below.json" },
+      { path: "./tsconfig.cycle.json" },
+      { path: "./tsconfig.above.json" },
+    ]);
   });
 
   it("reports type errors from every layer", () => {
@@ -308,6 +343,49 @@ describe("typecheckLayers with the real compiler", () => {
     expect(existsSync(path.join(declarations, "route.test.d.ts"))).toBe(false);
   }, 60_000);
 
+  it("lets a project outside the server read the source layers as declarations", () => {
+    const root = compilerFixture();
+    const outside = path.join(root, "outside");
+    mkdirSync(outside);
+    writeFileSync(path.join(outside, "use.ts"), `import { route } from "../src/route.js";\nexport const used: number = route();\n`);
+    const config = path.join(outside, "tsconfig.layers.json");
+    writeFileSync(
+      config,
+      `${JSON.stringify({
+        extends: "../tsconfig.json",
+        compilerOptions: { noEmit: true, rootDir: "..", outDir: null },
+        include: ["*.ts"],
+        references: [{ path: "../node_modules/.cache/paperclip-typecheck/tsconfig.declarations.json" }],
+      })}\n`,
+    );
+    const buildDeclarations = () =>
+      typecheckLayers({
+        serverRoot: root,
+        declarationsOnly: true,
+        log: () => {},
+        run: (args, { cwd }) => {
+          const result = spawnSync(process.execPath, [tsc, ...args], { cwd, encoding: "utf8" });
+          return { status: result.status ?? 1, signal: result.signal };
+        },
+      });
+    const tscOutside = (...args) => spawnSync(process.execPath, [tsc, "-p", config, ...args], { cwd: root, encoding: "utf8" });
+
+    expect(buildDeclarations()).toBe(0);
+    const passing = tscOutside();
+    expect(passing.stdout).toBe("");
+    expect(passing.status).toBe(0);
+    const loaded = tscOutside("--listFilesOnly").stdout;
+    expect(loaded).toContain("paperclip-typecheck/dts/route.d.ts");
+    expect(loaded).not.toContain("src/route.ts");
+
+    writeFileSync(path.join(root, "src", "route.ts"), `import { one } from "./one.js";\nexport const route = () => String(one());\n`);
+    expect(buildDeclarations()).toBe(0);
+    const failing = tscOutside();
+    expect(failing.stdout).toContain("outside/use.ts");
+    expect(failing.stdout).toContain("TS2322");
+    expect(failing.status).not.toBe(0);
+  }, 60_000);
+
   it("reports a changed export in the layers that depend on it", () => {
     const root = compilerFixture();
     writeFileSync(path.join(root, "src", "leaf.ts"), `export const renamedLeaf = 1;\n`);
@@ -401,6 +479,112 @@ describe("typecheckLowMemory", () => {
 
     expect(status).toBe(1);
     expect(calls).toHaveLength(1);
+  });
+});
+
+describe("typecheckTestProjects", () => {
+  const roots = [];
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+  });
+
+  function repositoryFixture() {
+    const root = mkdtempSync(path.join(tmpdir(), "typecheck-test-projects-"));
+    roots.push(root);
+    mkdirSync(path.join(root, "server", "src"), { recursive: true });
+    writeFileSync(path.join(root, "server", "src", "leaf.ts"), "");
+    writeFileSync(path.join(root, "server", "src", "one.ts"), `import "./two.js"; import "./leaf.js";`);
+    writeFileSync(path.join(root, "server", "src", "two.ts"), `import "./one.js";`);
+    writeFileSync(path.join(root, "server", "src", "route.ts"), `import "./one.js";`);
+    writeFileSync(path.join(root, "server", "src", "route.test.ts"), `import "./route.js";`);
+    return root;
+  }
+
+  function runWith(root, { pnpmStatus = () => 0, tscResult = () => ({ status: 0, signal: null }), ...options } = {}) {
+    const calls = [];
+    const status = typecheckTestProjects({
+      root,
+      log: () => {},
+      pnpm: (args, { env }) => {
+        calls.push({ tool: "pnpm", args, env });
+        return pnpmStatus(args);
+      },
+      run: (args, { env }) => {
+        const target = path.basename(path.dirname(args[1])) === "paperclip-typecheck" ? path.basename(args[1]) : args[1];
+        calls.push({ tool: "tsc", target, env });
+        return tscResult(target);
+      },
+      ...options,
+    });
+    return { status, calls };
+  }
+
+  it("prepares, builds declarations without the tests layer, and then checks the projects", () => {
+    const env = { MARKER: "1" };
+
+    const { status, calls } = runWith(repositoryFixture(), { projects: ["tests/a", "tests/b"], env });
+
+    expect(status).toBe(0);
+    expect(calls.filter((call) => call.tool === "pnpm").map((call) => call.args)).toEqual(PREPARE_STEPS);
+    expect(calls.filter((call) => call.tool === "tsc").map((call) => call.target)).toEqual([
+      "tsconfig.below.json",
+      "tsconfig.cycle.json",
+      "tsconfig.above.json",
+      "tests/a/tsconfig.layers.json",
+      "tests/b/tsconfig.layers.json",
+    ]);
+    expect(calls.every((call) => call.env === env)).toBe(true);
+  });
+
+  it("stops when the preparation or the server layers fail", () => {
+    const prepare = runWith(repositoryFixture(), { pnpmStatus: () => 3 });
+    expect(prepare.status).toBe(3);
+    expect(prepare.calls).toHaveLength(1);
+
+    const layers = runWith(repositoryFixture(), {
+      projects: ["tests/a"],
+      tscResult: (target) => ({ status: target === "tsconfig.cycle.json" ? 2 : 0, signal: null }),
+    });
+    expect(layers.status).toBe(2);
+    expect(layers.calls.some((call) => call.target === "tests/a/tsconfig.layers.json")).toBe(false);
+  });
+
+  it("checks every project after a type error, and stops when a process is killed", () => {
+    const errors = runWith(repositoryFixture(), {
+      projects: ["tests/a", "tests/b"],
+      tscResult: (target) => ({ status: target === "tests/a/tsconfig.layers.json" ? 2 : 0, signal: null }),
+    });
+    expect(errors.status).toBe(2);
+    expect(errors.calls.at(-1).target).toBe("tests/b/tsconfig.layers.json");
+
+    const killed = runWith(repositoryFixture(), {
+      projects: ["tests/a", "tests/b"],
+      tscResult: (target) =>
+        target === "tests/a/tsconfig.layers.json" ? { status: 1, signal: "SIGKILL" } : { status: 0, signal: null },
+    });
+    expect(killed.status).toBe(1);
+    expect(killed.calls.at(-1).target).toBe("tests/a/tsconfig.layers.json");
+  });
+
+  it("prepares the same way as the server typecheck", () => {
+    const { scripts } = JSON.parse(readFileSync(path.join(serverRoot, "package.json"), "utf8"));
+    for (const step of PREPARE_STEPS) {
+      expect(scripts.typecheck).toContain(`pnpm ${step.join(" ")}`);
+    }
+  });
+
+  it.each(PROJECTS)("keeps the generated references out of the tsconfig.json of %s", (project) => {
+    const directory = path.join(serverRoot, "..", project);
+    const readConfig = (name) => JSON.parse(readFileSync(path.join(directory, name), "utf8"));
+
+    // Vitest reads tsconfig.json and fails when a referenced config does not exist yet.
+    expect(readConfig("tsconfig.json").references).toBeUndefined();
+    const layered = readConfig("tsconfig.layers.json");
+    expect(layered.extends).toBe("./tsconfig.json");
+    expect(layered.references.map((reference) => path.resolve(directory, reference.path))).toEqual([
+      path.join(serverRoot, "node_modules", ".cache", "paperclip-typecheck", "tsconfig.declarations.json"),
+    ]);
   });
 });
 
