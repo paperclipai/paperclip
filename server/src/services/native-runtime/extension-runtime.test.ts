@@ -100,6 +100,19 @@ async function fixture() {
   return { root, packageRoot, plugin, context };
 }
 
+async function executeLocalCommand(input: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) {
+  return await new Promise<Awaited<ReturnType<CommandManagedRuntimeRunner["execute"]>>>((resolveResult, reject) => {
+    const child = spawn(input.command, input.args ?? [], { cwd: input.cwd, env: { ...process.env, ...input.env } });
+    let stdout = "", stderr = "", timedOut = false;
+    child.stdout.on("data", chunk => { stdout += chunk; }); child.stderr.on("data", chunk => { stderr += chunk; });
+    const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, input.timeoutMs ?? 10_000);
+    child.once("error", error => { clearTimeout(timer); reject(error); });
+    child.once("close", (exitCode, signal) => { clearTimeout(timer); resolveResult({ exitCode, signal, timedOut,
+      stdout, stderr, pid: child.pid ?? null, startedAt: null }); });
+    child.stdin.end(input.stdin);
+  });
+}
+
 afterEach(async () => {
   vi.unstubAllEnvs();
   async function restoreFixtureDirectories(directory: string) {
@@ -185,6 +198,110 @@ describe("installed native harness probes", () => {
     expect(state.remoteProbe).toHaveBeenCalledWith(expect.objectContaining({ companyId: "company-1" }), undefined,
       expect.objectContaining({ resolved: expect.objectContaining({ release: expect.objectContaining({ harnessId: "example.native/synthetic" }) }),
         credentialIdentity: expect.stringMatching(/^sha256:[a-f0-9]{64}$/) }));
+  });
+
+  it("releases staged files after an actual remote ENOENT spawn and allows another probe", async () => {
+    const { root, context } = await fixture();
+    let failSpawn = true;
+    let noChildReceipt: unknown;
+    const runner: CommandManagedRuntimeRunner = { execute: async input => {
+      if (failSpawn && input.args?.[0] === "-e" && input.args[2]?.includes('"recordPath"')) {
+        const spec = JSON.parse(input.args[2]);
+        spec.profile.command.path = path.join(root, "missing-node-command");
+        return executeLocalCommand({ ...input, args: [input.args[0], input.args[1]!, JSON.stringify(spec)] });
+      }
+      if (failSpawn && input.args?.[1]?.includes("Harness process retirement remains unconfirmed")) {
+        noChildReceipt = JSON.parse(await readFile(input.args[2]!, "utf8"));
+      }
+      return executeLocalCommand(input);
+    } };
+    context.executionTarget = { kind: "remote", transport: "sandbox", remoteCwd: root, runner };
+    expect(await probeInstalledRunnerHarness(database, context)).toMatchObject({ status: "fail" });
+    expect(noChildReceipt).toMatchObject({ pid: null, spawnOutcome: "not_started", retired: true });
+    const probeDirectory = path.join(root, ".paperclip-runtime", "harness-probes");
+    expect(await readdir(probeDirectory)).toEqual([]);
+    await expect(readFile(path.join(root, "probe.json"))).rejects.toMatchObject({ code: "ENOENT" });
+    failSpawn = false;
+    expect(await probeInstalledRunnerHarness(database, context)).toMatchObject({ status: "pass" });
+    expect(await readdir(probeDirectory)).toEqual([]);
+  });
+
+  it.each(["absent", "pending", "pending-with-pid", "ambiguous", "wrong-nonce"])("retains remote cleanup authority for a %s process receipt", async mode => {
+    const { root, context } = await fixture();
+    let spec!: { recordPath: string; id: string };
+    const runner: CommandManagedRuntimeRunner = { execute: async input => {
+      if (input.args?.[0] === "-e" && input.args[2]?.includes('"recordPath"')) {
+        spec = JSON.parse(input.args[2]);
+        if (mode !== "absent") await writeFile(spec.recordPath, JSON.stringify(mode === "pending"
+          ? { nonce: spec.id, pid: null, spawnOutcome: "pending" }
+          : mode === "pending-with-pid" ? { nonce: spec.id, pid: process.pid, spawnOutcome: "pending", retired: true }
+          : mode === "ambiguous" ? { nonce: spec.id, pid: null, retired: true }
+          : { nonce: "foreign-probe", pid: null, spawnOutcome: "not_started", retired: true }));
+        return { exitCode: null, signal: null, timedOut: true, stdout: "", stderr: "Lost spawn outcome", pid: null, startedAt: null };
+      }
+      return executeLocalCommand(input);
+    } };
+    context.executionTarget = { kind: "remote", transport: "sandbox", remoteCwd: root, runner };
+    const failure = await probeInstalledRunnerHarness(database, context).catch(error => error);
+    expect(failure).toBeInstanceOf(NativeEnvironmentProbeCleanupError);
+    if (!(failure instanceof NativeEnvironmentProbeCleanupError)) throw new Error("Missing retained cleanup owner");
+    await expect(failure.retired).rejects.toThrow("retirement remains unconfirmed");
+    const stagedRoot = spec.recordPath.slice(0, -".process.json".length);
+    expect((await lstat(stagedRoot)).mode & 0o777).toBe(0o555);
+    // A later authoritative no-child receipt resolves this exact nonce; a
+    // timeout, a missing PID, or a generic retired flag did not resolve it.
+    await writeFile(spec.recordPath, JSON.stringify({ nonce: spec.id, pid: null, spawnOutcome: "not_started", retired: true }));
+    await failure.retryCleanup!();
+    expect(await readdir(path.dirname(stagedRoot))).toEqual([]);
+  });
+
+  it.each(["partial-stage", "inventory", "platform", "node-version", "cleanup-unconfirmed"])("cleans a remote preparation failure before provider launch (%s)", async mode => {
+    const { root, packageRoot, context } = await fixture();
+    const sourceMode = (await lstat(packageRoot)).mode & 0o777;
+    let stagedRoot = "", providerStarted = false, denyCleanup = mode === "cleanup-unconfirmed";
+    const runner: CommandManagedRuntimeRunner = { execute: async input => {
+      if (input.args?.[0] === "-e" && input.args[2]?.includes('"recordPath"')) providerStarted = true;
+      if (input.args?.[1]?.includes("fs.promises.rm(") && denyCleanup) {
+        return { exitCode: null, signal: null, timedOut: true, stdout: "", stderr: "Cleanup transport unavailable", pid: null, startedAt: null };
+      }
+      const result = await executeLocalCommand(input);
+      if (input.command === "sh" && input.stdin) {
+        const directory = path.join(root, ".paperclip-runtime", "harness-probes");
+        stagedRoot = path.join(directory, (await readdir(directory))[0]!);
+        if (mode === "partial-stage" || mode === "cleanup-unconfirmed") {
+          await chmod(stagedRoot, 0o755);
+          await rm(path.join(stagedRoot, "runtime.js"));
+          await chmod(stagedRoot, 0o555);
+          return { ...result, exitCode: mode === "partial-stage" ? 1 : null, timedOut: mode === "cleanup-unconfirmed" };
+        }
+        if (mode === "inventory") {
+          await chmod(stagedRoot, 0o755);
+          await writeFile(path.join(stagedRoot, "unexpected-file"), "tampered inventory");
+          await chmod(stagedRoot, 0o555);
+        }
+      }
+      if (input.args?.[1]?.includes("Harness runtime integrity verification failed") && (mode === "platform" || mode === "node-version")) {
+        const metadata = JSON.parse(result.stdout);
+        if (mode === "platform") metadata.platform = "unsupported-fixture-platform";
+        else metadata.node = "22.0.0";
+        return { ...result, stdout: JSON.stringify(metadata) };
+      }
+      return result;
+    } };
+    context.executionTarget = { kind: "remote", transport: "sandbox", remoteCwd: root, runner };
+    const result = await probeInstalledRunnerHarness(database, context).catch(error => error);
+    if (mode === "cleanup-unconfirmed") {
+      expect(result).toBeInstanceOf(NativeEnvironmentProbeCleanupError);
+      if (!(result instanceof NativeEnvironmentProbeCleanupError)) throw new Error("Missing preparation cleanup owner");
+      await expect(result.retired).rejects.toThrow("files remain pending cleanup");
+      expect((await lstat(stagedRoot)).mode & 0o777).toBe(0o555);
+      denyCleanup = false;
+      await result.retryCleanup!();
+    } else expect(result).toMatchObject({ status: "fail" });
+    expect(providerStarted).toBe(false);
+    expect(await readdir(path.dirname(stagedRoot))).toEqual([]);
+    expect((await lstat(packageRoot)).mode & 0o777).toBe(sourceMode);
+    expect(await readFile(path.join(packageRoot, "runtime.js"), "utf8")).toBe(runtime);
   });
 
   it.each(["local", "remote", "lost-remote-wrapper", "unconfirmed-remote-proof", "unconfirmed-remote-files"])("reaps a descendant that ignores TERM after its harness leader exits (%s)", async mode => {

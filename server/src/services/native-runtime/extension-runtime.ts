@@ -173,10 +173,20 @@ export async function probeInstalledRunnerHarness(db: Db, context: AdapterEnviro
         : target.runner;
       if (!runner) throw new Error("The selected execution environment cannot probe an installed harness.");
       const targetRoot = target.remoteCwd + "/.paperclip-runtime/harness-probes/" + randomUUID();
-      const { stageRemoteRunnerDirectory } = await import("./native-session-executor.js");
-      const remoteProfile = await prepareRemoteRunnerHarness({ resolved, profile, runner, targetRoot,
-        stageDirectory: (sourcePath, targetPath) => stageRemoteRunnerDirectory({
-          target, runner, sourcePath, targetPath, mode: 0o555, preservePermissions: true }) });
+      // Preparation owns staged files before any provider process can launch.
+      // An unconfirmed removal retains this exact target and its retry authority.
+      const cleanupPreparation = () => removeRemoteProbeFiles(runner, "node", targetRoot);
+      let remoteProfile: ExtensionLaunchProfile;
+      try {
+        const { stageRemoteRunnerDirectory } = await import("./native-session-executor.js");
+        remoteProfile = await prepareRemoteRunnerHarness({ resolved, profile, runner, targetRoot,
+          stageDirectory: (sourcePath, targetPath) => stageRemoteRunnerDirectory({
+            target, runner, sourcePath, targetPath, mode: 0o555, preservePermissions: true }) });
+      } catch (operationError) {
+        try { await cleanupPreparation(); }
+        catch (cleanupError) { throw retainedProbeCleanup(operationError, cleanupError, cleanupPreparation); }
+        throw operationError;
+      }
       const provider = { kind: "extension", harnessId: resolved.release.harnessId, release: resolved.release,
         model, config, cwd: target.remoteCwd, runtimeDirectory: null, instructions: "", runtimeContext: null,
         readOnly: true, toolsDenied: true };
@@ -210,14 +220,19 @@ const remoteProcessProbe = String.raw`
 (async()=>{
  const {spawn}=require('node:child_process'),{createInterface}=require('node:readline'),fs=require('node:fs');
  const spec=JSON.parse(process.argv[1]),selected=Object.fromEntries(spec.profile.environmentKeys.flatMap(k=>process.env[k]===undefined?[]:[[k,process.env[k]]]));
- fs.writeFileSync(spec.recordPath,JSON.stringify({nonce:spec.id,pid:null}),{mode:384,flag:'wx'});
- const child=spawn(spec.profile.command.path,[spec.profile.entrypoint.path,...spec.profile.args],{detached:true,env:selected,stdio:['pipe','pipe','pipe']});
- fs.writeFileSync(spec.recordPath,JSON.stringify({nonce:spec.id,pid:child.pid??null}),{mode:384});
- let closed=false;child.once('close',()=>{closed=true});child.once('error',()=>{closed=true});child.stderr.resume();
- const absent=()=>{if(!child.pid)return closed;try{process.kill(-child.pid,0);return false}catch(e){if(e.code==='ESRCH')return true;throw e}};
+ const record=(value,initial=false)=>fs.writeFileSync(spec.recordPath,JSON.stringify({nonce:spec.id,...value}),{mode:384,...(initial?{flag:'wx'}:{})});
+ record({pid:null,spawnOutcome:'pending'},true);
+ let child;try{child=spawn(spec.profile.command.path,[spec.profile.entrypoint.path,...spec.profile.args],{detached:true,env:selected,stdio:['pipe','pipe','pipe']});}
+ catch(error){record({pid:null,spawnOutcome:'not_started',retired:true});throw error}
+ record({pid:child.pid??null,spawnOutcome:child.pid?'started':'pending'});
+ let closed=false,noChildStarted=false,spawned=!!child.pid;
+ child.once('spawn',()=>{spawned=true});child.once('close',()=>{closed=true});
+ child.once('error',()=>{closed=true;if(!spawned&&!child.pid){noChildStarted=true;record({pid:null,spawnOutcome:'not_started',retired:true});}});child.stderr.resume();
+ const absent=()=>{if(!child.pid)return noChildStarted;try{process.kill(-child.pid,0);return false}catch(e){if(e.code==='ESRCH')return true;throw e}};
  const kill=s=>{try{if(child.pid)process.kill(-child.pid,s);}catch{}};
  process.once('SIGTERM',()=>kill('SIGKILL'));process.once('SIGINT',()=>kill('SIGKILL'));
  const lines=createInterface({input:child.stdout});let pending,seq=0,bytes=0;
+ child.stdin.on('error',()=>pending?.reject(Error('write')));
  child.stdout.on('data',chunk=>{bytes+=chunk.length;if(bytes>4194304){kill('SIGKILL');pending?.reject(Error('limit'));}});
  child.on('error',()=>pending?.reject(Error('spawn')));child.on('exit',()=>pending?.reject(Error('exit')));
  lines.on('line',line=>{try{const r=JSON.parse(line);if(r.schema!=='paperclip.harness.v1'||r.id!==pending?.id||r.ok!==true)throw Error('response');pending.resolve(r.result);}catch{pending?.reject(Error('protocol'));}});
@@ -226,7 +241,7 @@ const remoteProcessProbe = String.raw`
  try{receipt=await request('initialize',{identity:spec.profile.identity,runId:spec.id,normalizedSessionId:spec.id,provider:spec.provider,snapshot:null,probe:true});await request('close',{reason:'setup probe complete'});}
  finally{lines.close();child.stdin.end();kill('SIGTERM');const start=Date.now();let killed=false;
   while(!closed||!absent()){if(Date.now()-start>=1000&&!killed){kill('SIGKILL');killed=true}if(Date.now()-start>=4000)throw Error('retirement');await new Promise(r=>setTimeout(r,25));}
-  fs.writeFileSync(spec.recordPath,JSON.stringify({nonce:spec.id,pid:child.pid,retired:true}),{mode:384});}
+  record({pid:child.pid??null,spawnOutcome:noChildStarted?'not_started':'started',retired:true});}
  process.stdout.write(JSON.stringify(receipt));
 })().catch(()=>{process.stderr.write('Harness account probe failed');process.exitCode=1;});`;
 
@@ -237,7 +252,12 @@ const remoteProcessCleanup = String.raw`
  const fs=require('node:fs'),[recordPath,nonce,packageRoot]=process.argv.slice(1);
  const s=await fs.promises.lstat(recordPath);if(!s.isFile()||s.isSymbolicLink()||s.size>1024)throw Error('record');
  const record=JSON.parse(await fs.promises.readFile(recordPath,'utf8'));
- if(record.nonce!==nonce||!Number.isSafeInteger(record.pid)||record.pid<=0)throw Error('identity');
+ if(record.nonce!==nonce)throw Error('identity');
+ if(record.spawnOutcome==='not_started'){
+  if(record.pid!==null||record.retired!==true)throw Error('identity');
+  process.stdout.write(JSON.stringify({nonce,confirmed:true}));return;
+ }
+ if(record.spawnOutcome!=='started'||!Number.isSafeInteger(record.pid)||record.pid<=0)throw Error('identity');
  const absent=()=>{try{process.kill(-record.pid,0);return false}catch(e){if(e.code==='ESRCH')return true;throw e}};
  const kill=signal=>{try{process.kill(-record.pid,signal)}catch(e){if(e.code!=='ESRCH')throw e}};
  if(record.retired!==true){const started=Date.now();kill('SIGTERM');let killed=false;
@@ -263,8 +283,14 @@ const remoteProbeFilesCleanup = String.raw`
  };
  await writableDirectories(packageRoot,true);
  await fs.promises.rm(packageRoot,{recursive:true,force:true});
- await fs.promises.rm(recordPath,{force:true});
+ if(recordPath)await fs.promises.rm(recordPath,{force:true});
 })().catch(()=>{process.exitCode=1});`;
+
+async function removeRemoteProbeFiles(runner: CommandManagedRuntimeRunner, command: string, packageRoot: string, recordPath?: string) {
+  const removed = await runner.execute({ command, args: ["-e", remoteProbeFilesCleanup, packageRoot, ...(recordPath ? [recordPath] : [])],
+    timeoutMs: 6000, bypassSession: true });
+  if (removed.exitCode !== 0 || removed.timedOut) throw new Error("Remote harness probe files remain pending cleanup");
+}
 
 function retainedProbeCleanup(operationError: unknown, cleanupError: unknown, cleanup: () => Promise<void>) {
   let running: Promise<void> | undefined;
@@ -290,9 +316,7 @@ async function probeRemoteHarnessProcess(profile: ExtensionLaunchProfile, provid
       if (receipt.nonce !== id || receipt.confirmed !== true) throw new Error("Remote harness retirement proof is invalid");
       retired = true;
     }
-    const removed = await runner.execute({ command: profile.command.path, args: ["-e", remoteProbeFilesCleanup, packageRoot, recordPath],
-      timeoutMs: 6000, bypassSession: true });
-    if (removed.exitCode !== 0 || removed.timedOut) throw new Error("Remote harness probe files remain pending cleanup");
+    await removeRemoteProbeFiles(runner, profile.command.path, packageRoot, recordPath);
     cleaned = true;
   };
   let operationError: unknown;

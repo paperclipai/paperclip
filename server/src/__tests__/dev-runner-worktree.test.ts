@@ -44,6 +44,12 @@ describe("dev-runner worktree env bootstrap", () => {
       "scripts/ensure-plugin-build-deps.mjs", "packages/paperclip-runner/src/live/runner-binary.ts",
       ...["packages/runner-sdk", "packages/shared", "packages/plugins/sdk", "packages/db"].flatMap(directory =>
         ["src", "package.json", "tsconfig.json"].map(name => `${directory}/${name}`))]) copy(relative);
+    const sharedManifestPath = path.join(root, "packages/shared/package.json");
+    const sharedManifest = JSON.parse(fs.readFileSync(sharedManifestPath, "utf8"));
+    sharedManifest.dependencies = { ...sharedManifest.dependencies, "@paperclipai/runner-sdk": "workspace:*" };
+    fs.writeFileSync(sharedManifestPath, JSON.stringify(sharedManifest));
+    fs.appendFileSync(path.join(root, "packages/shared/src/index.ts"),
+      '\nexport { HARNESS_PROTOCOL_SCHEMA as coldBootstrapHarnessProtocolSchema } from "@paperclipai/runner-sdk/contracts";\n');
     fs.symlinkSync(path.join(repoRoot, "server"), path.join(root, "server"), "junction");
     const packages = [["runner-sdk", "packages/runner-sdk"], ["shared", "packages/shared"],
       ["plugin-sdk", "packages/plugins/sdk"], ["db", "packages/db"]];
@@ -59,9 +65,6 @@ describe("dev-runner worktree env bootstrap", () => {
         fs.symlinkSync(path.join(root, target), path.join(modules, "@paperclipai", name), "junction");
       }
     }
-    // Keep the real migration entrypoint, client, schemas, Shared, and SDK imports.
-    // Replace only connection resolution: reaching it proves static imports
-    // completed, and no database can open even if startup ordering regresses.
     fs.writeFileSync(path.join(root, "packages/db/src/migration-runtime.ts"),
       "export async function resolveMigrationConnection(){throw new Error('MIGRATION_IMPORT_READY_NO_DATABASE')}\n");
     const bin = path.join(root, "bin");
@@ -76,7 +79,8 @@ let command;
 if (args.includes("ensure-build-deps")) command = [path.join(root, "scripts/ensure-plugin-build-deps.mjs")];
 else if (args.includes("src/migration-status.ts")) command = ["--import", ${JSON.stringify(tsx)}, path.join(root, "packages/db/src/migration-status.ts"), "--json"];
 else if (args.includes("@paperclipai/ui") && args.includes("build")) command = ["--import", ${JSON.stringify(tsx)}, "--input-type=module", "--eval",
-  "await import(" + JSON.stringify(${JSON.stringify(pathToFileURL(path.join(root, "packages/shared/src/index.ts")).href)}) + "); console.log('UI_IMPORT_READY');"];
+  "const shared = await import(" + JSON.stringify(${JSON.stringify(pathToFileURL(path.join(root, "packages/shared/src/index.ts")).href)})
+    + "); if(shared.coldBootstrapHarnessProtocolSchema !== 'paperclip.harness.v1') throw new Error('SDK contract missing'); console.log('UI_IMPORT_READY');"];
 else { console.error("Unexpected app/build command: " + JSON.stringify(args)); process.exit(91); }
 const child = spawnSync(process.execPath, command, { cwd: root, env: process.env, stdio: "inherit" });
 if (child.error) throw child.error; process.exit(child.status ?? 1);\n`);
