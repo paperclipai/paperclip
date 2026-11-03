@@ -49,6 +49,40 @@ it("shows advanced providers directly when entered from advanced connection mode
   }
 });
 
+it("filters provider choices for hermes_local and shows openrouter directly without xai or bedrock", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" adapterType="hermes_local" onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    const choices = Array.from(container.querySelectorAll("button[aria-label]")).map(button => button.getAttribute("aria-label"));
+    expect(choices).toEqual(["OpenRouter", "Custom gateway", "Local endpoint"]);
+    expect(container.querySelector("details")).toBeNull();
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});
+
+it("filters incompatible providers for claude_local", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" adapterType="claude_local" onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    const choices = Array.from(container.querySelectorAll("button[aria-label]")).map(button => button.getAttribute("aria-label"));
+    expect(choices).toEqual(["Anthropic", "OpenRouter", "Amazon Bedrock", "Custom gateway", "Local endpoint"]);
+    expect(choices).not.toContain("xAI");
+    expect(choices).not.toContain("OpenAI");
+    expect(choices).not.toContain("Google");
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});
+
 it.each(providerSources)("opens %s directly with shared access folded under Advanced", async source => {
   const preset = aiProviderSetupPreset(source)!;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });

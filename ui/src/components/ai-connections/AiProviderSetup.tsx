@@ -4,6 +4,7 @@ import { Network, Monitor } from "lucide-react";
 import {
   aiProviderRoutingSchema,
   createAiConnectionSchema,
+  AI_CONNECTION_CAPABILITIES,
   type AiProvider,
   type AiProviderRouting,
   type AiConnectionBinding,
@@ -65,10 +66,41 @@ const providers = [
 ] as const;
 type ProviderChoice = (typeof providers)[number]["id"] | "github";
 
+function isProviderSupportedForAdapter(
+  choiceId: ProviderChoice,
+  adapterType?: string,
+): boolean {
+  if (!adapterType) return true;
+  if (choiceId === "gateway" || choiceId === "local") {
+    return ["claude_local", "codex_local", "opencode_local", "hermes_local"].includes(adapterType);
+  }
+  if (choiceId === "bedrock") {
+    return adapterType === "claude_local";
+  }
+  if (choiceId === "openrouter") {
+    return [
+      "claude_local",
+      "codex_local",
+      "opencode_local",
+      "pi_local",
+      "hermes_local",
+    ].includes(adapterType);
+  }
+  if (choiceId === "github") {
+    return adapterType === "copilot_runtime";
+  }
+  const capabilities = AI_CONNECTION_CAPABILITIES[choiceId as AiProvider];
+  if (!capabilities) return false;
+  return Object.values(capabilities.methods).some((method) =>
+    method?.adapters.includes(adapterType),
+  );
+}
+
 export function AiProviderSetup({
   companyId,
   agentId,
   environmentId,
+  adapterType,
   initialProvider,
   initialProtocol,
   providerLabel,
@@ -81,6 +113,7 @@ export function AiProviderSetup({
   companyId: string;
   agentId?: string;
   environmentId?: string;
+  adapterType?: string;
   initialProvider?: ProviderChoice;
   initialProtocol?: AiProviderRouting["protocol"];
   providerLabel?: string;
@@ -209,10 +242,20 @@ export function AiProviderSetup({
       setApiKey("");
     },
   });
-  const choices = (advancedOnly: boolean) => (
+  const availableProviders = providers.filter((p) =>
+    isProviderSupportedForAdapter(p.id, adapterType),
+  );
+  const standardChoices = availableProviders.filter(
+    (p) => !("advanced" in p && p.advanced),
+  );
+  const advancedChoices = availableProviders.filter(
+    (p) => Boolean("advanced" in p && p.advanced),
+  );
+  const effectiveAdvancedOnly = advancedOnly || standardChoices.length === 0;
+  const choices = (advancedSection: boolean) => (
     <ConnectionChoiceList
-      choices={providers
-        .filter((p) => Boolean("advanced" in p && p.advanced) === advancedOnly)
+      choices={availableProviders
+        .filter((p) => Boolean("advanced" in p && p.advanced) === advancedSection)
         .map((p) => ({
           ...p,
           icon:
@@ -286,14 +329,16 @@ export function AiProviderSetup({
       {agents.isError && <p role="alert" className="text-sm text-destructive">Could not load agents. <Button type="button" variant="ghost" onClick={() => void agents.refetch()}>Retry</Button></p>}
       {step === "provider" ? (
         <>
-          {advancedOnly ? choices(true) : <>
+          {effectiveAdvancedOnly ? choices(true) : <>
           {choices(false)}
-          <details>
-            <summary className="cursor-pointer text-sm text-muted-foreground">
-              Advanced providers
-            </summary>
-            <div className="pt-4">{choices(true)}</div>
-          </details>
+          {advancedChoices.length > 0 && (
+            <details>
+              <summary className="cursor-pointer text-sm text-muted-foreground">
+                Advanced providers
+              </summary>
+              <div className="pt-4">{choices(true)}</div>
+            </details>
+          )}
           </>}
           <Button type="button" variant="ghost" onClick={onCancel}>
             Cancel
