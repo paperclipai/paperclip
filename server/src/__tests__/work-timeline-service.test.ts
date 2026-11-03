@@ -939,7 +939,7 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     const nodes = (plan: any): any[] => [plan, ...(plan.Plans ?? []).flatMap(nodes)];
     const scans = nodes(explain[0]!["QUERY PLAN"][0].Plan).filter(node => node["Relation Name"] === "agents");
     expect(scans.length).toBeGreaterThan(0);
-    expect(scans.every(node => /Index/.test(node["Node Type"]) && /id =/.test(node["Index Cond"] ?? ""))).toBe(true);
+    expect(scans.every(node => /Index/.test(node["Node Type"]) && /\bid\b\s*=/.test(node["Index Cond"] ?? ""))).toBe(true);
     expect(scans.some(node => node["Actual Loops"] > 0)).toBe(true);
     console.info("Creation agent identity plan", JSON.stringify(scans.map(node => ({ type: node["Node Type"], index: node["Index Name"], condition: node["Index Cond"], loops: node["Actual Loops"], rows: node["Actual Rows"] }))));
   });
