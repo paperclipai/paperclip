@@ -6,6 +6,7 @@ import net from "node:net";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
 import * as tables from "@paperclipai/db";
+import { isRuntimeExposureAppPort } from "@paperclipai/shared";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { completedHistoryChecks, readIdleSleepSafety } from "../services/idle-sleep-safety.js";
@@ -2130,10 +2131,14 @@ const DELETE_METHOD = "DELETE" as never;
       expect(runtime.readWorkspaceRuntimeIdleWork()).toBe("unknown");
       await runtime.reconcilePersistedRuntimeServicesOnStartup(db);
       expect(runtime.readWorkspaceRuntimeIdleWork()).toBe("none");
-      const server = net.createServer();
-      await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-      const port = (server.address() as net.AddressInfo).port;
-      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      // Reconciliation does not adopt a stopped row whose port is in the reserved exposure range.
+      let port: number;
+      do {
+        const server = net.createServer();
+        await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
+        port = (server.address() as net.AddressInfo).port;
+        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      } while (isRuntimeExposureAppPort(port));
       const command = "node -e \"require('node:http').createServer((req,res)=>res.end('history')).listen(Number(process.env.PORT),'127.0.0.1')\"";
       const refs = await runtime.startRuntimeServicesForWorkspaceControl({ db,
         actor: { id: null, name: "History operator", companyId: f.companyId }, issue: null,
