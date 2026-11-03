@@ -110,7 +110,7 @@ function browserReport(revision, latency) {
         checkpoint_part: stop ? null : "header", checkpoint_header_bytes: stop ? null : 256,
         runner_instance_id: id(6, caseIndex, index), native_session_id: id(7, caseIndex, index), admitted_execution_workspace_id: id(8, caseIndex, index),
         ...(stop ? { process_pid: pid - 1, process_group_id: pid - 1, process_started_at: "2026-11-03T00:00:00.000Z",
-          process_identity_seq: 1, process_identity_source_event_id: null,
+          process_identity_seq: "9", process_identity_source_event_id: null,
           process_identity: { targetKind: "local", hostname: "fixture-host", processPid: pid - 1, processGroupId: pid - 1,
             processStartedAt: "2026-11-03T00:00:00.000Z" } } : {}),
       }));
@@ -131,7 +131,7 @@ function browserReport(revision, latency) {
           processes: { ...localProcesses, runnerAbsent: true, groupAbsent: true, providerAbsent: true },
           database: { ...snapshot, checkedBeforeMeasuredEpoch: false, checkedAtMs: 1000 + latency, connectionClosedAtMs: 1000 + latency,
             rows: [{ ...rows[0], process_pid: null, process_group_id: null, process_started_at: null, status: "cancelled", cancellation_dispatch_state: "acknowledged",
-              process_stopped_seq: 2, process_stopped_source_event_id: null, process_stopped: { processPid: pid - 1, processGroupId: pid - 1, processStartedAt: rows[0].process_started_at } }] } } }
+              process_stopped_seq: "64", process_stopped_source_event_id: null, process_stopped: { processPid: pid - 1, processGroupId: pid - 1, processStartedAt: rows[0].process_started_at } }] } } }
           : { remoteLeases: rows.map(row => ({ id: row.lease_id, runId: row.run_id, companyId, environmentId, provider: "fake-plugin", providerLeaseId: row.provider_lease_id,
             status: "released", cleanupStatus: "success", releasedAt: "2026-11-03T00:00:00.000Z" })) }),
         visible: Array(stop ? 3 : workload.events).fill({}), matchedVisibleClocks: stop ? 3 : workload.events,
@@ -172,6 +172,13 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
     assert.ok(result.gates.filter(gate => gate.improvementRequired).every(gate => gate.noiseExceedingPairedWins === 3));
     const good = run([`--pairs=${await manifest("four-wins", [0.30, 0.25, 0.20, 0.15, 0.01])}`, `--noise-report=${noise}`, "--require-acceptance"]);
     assert.equal(good.status, 0, good.stderr);
+    const wide = run([`--pairs=${await manifest("int64-ordered-receipt", Array(5).fill(0.30), false, report => {
+      const stop = report.cases[5];
+      stop.controllerAuthority.rows[0].process_identity_seq = "9223372036854775806";
+      stop.localStopProof.database.rows[0].process_identity_seq = "9223372036854775806";
+      stop.localStopProof.database.rows[0].process_stopped_seq = "9223372036854775807";
+    })}`, `--noise-report=${noise}`, "--require-acceptance"]);
+    assert.equal(wide.status, 0, wide.stderr);
     for (const [name, change, message] of [
       ["smoke", report => { report.qualificationOnly = true; }, /Smoke cannot qualify/],
       ["source", report => { report.serverArtifact = "source-qualification"; }, /compiled server/],
@@ -228,7 +235,12 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       ["local-provider-still-alive", report => { report.cases[5].localStopProof.processes.providerAbsent = false; }, /remains alive/],
       ["local-group-still-alive", report => { report.cases[5].localStopProof.processes.groupAbsent = false; }, /false.*true|false !== true/],
       ["local-database-ack-missing", report => { report.cases[5].localStopProof.database.rows[0].cancellation_dispatch_state = "pending"; }, /acknowledged/],
-      ["local-cleared-identity-no-receipt", report => { delete report.cases[5].localStopProof.database.rows[0].process_stopped_seq; }, /server stop receipt/],
+      ["local-cleared-identity-no-receipt", report => { delete report.cases[5].localStopProof.database.rows[0].process_stopped_seq; }, /BigInt/],
+      ["local-bigint-lexicographic-false-pass", report => {
+        report.cases[5].controllerAuthority.rows[0].process_identity_seq = "90071992547409920";
+        report.cases[5].localStopProof.database.rows[0].process_identity_seq = "90071992547409920";
+        report.cases[5].localStopProof.database.rows[0].process_stopped_seq = "9007199254740993";
+      }, /server stop receipt/],
       ["local-provider-stop-receipt", report => { report.cases[5].localStopProof.database.rows[0].process_stopped_source_event_id = "provider"; }, /null/],
       ["local-lease-cleanup-failed", report => { report.cases[5].localStopProof.lease.cleanupStatus = "failed"; }, /Local Stop lease cleanup/],
       ["local-lease-wrong-binding", report => { report.cases[5].localStopProof.lease.heartbeatRunId = "other"; }, /other/],
@@ -250,6 +262,18 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
     ]) {
       const rejected = run([`--pairs=${await manifest(name, Array(5).fill(0.30), false, change)}`, `--noise-report=${noise}`, "--require-acceptance"]);
       assert.notEqual(rejected.status, 0); assert.match(rejected.stderr, message);
+    }
+    for (const [label, value] of [["null", null], ["missing", undefined], ["invalid", "not-a-sequence"], ["fractional", 1.5]]) {
+      for (const field of ["identity", "stopped"]) {
+        const rejected = run([`--pairs=${await manifest(`bigint-${field}-${label}`, Array(5).fill(0.30), false, report => {
+          const stop = report.cases[5];
+          if (field === "identity") {
+            stop.controllerAuthority.rows[0].process_identity_seq = value;
+            stop.localStopProof.database.rows[0].process_identity_seq = value;
+          } else stop.localStopProof.database.rows[0].process_stopped_seq = value;
+        })}`, `--noise-report=${noise}`, "--require-acceptance"]);
+        assert.notEqual(rejected.status, 0); assert.match(rejected.stderr, /BigInt/);
+      }
     }
     for (const [name, change, message] of [
       ["old-noise-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; }, /different mixed protocol/],

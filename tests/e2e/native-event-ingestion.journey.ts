@@ -94,7 +94,7 @@ async function runtimeAuthority(input: {
           expect(row.checkpoint_part, "Local raw transport keeps its existing host-file journal authority").toBeNull();
           expect(row.process_identity?.targetKind).toBe("local"); expect(row.process_identity?.hostname).toBe(hostname());
           expect(row.process_identity_source_event_id).toBeNull();
-          expect(Number(row.process_identity_seq)).toBeGreaterThan(0);
+          expect(BigInt(String(row.process_identity_seq))).toBeGreaterThan(0n);
           expect(row.admitted_execution_workspace_id).toMatch(/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i);
           if (row.process_started_at) expect(row.process_identity.processStartedAt).toBe(new Date(row.process_started_at).toISOString());
         }
@@ -550,7 +550,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         const row = database.rows[0];
         expect(row.status).toBe("cancelled"); expect(row.cancellation_dispatch_state).toBe("acknowledged");
         if (!row.process_pid && !row.process_group_id) {
-          expect(row.process_stopped_seq).toBeGreaterThan(row.process_identity_seq);
+          expect(BigInt(String(row.process_stopped_seq))).toBeGreaterThan(BigInt(String(row.process_identity_seq)));
           expect(row.process_stopped?.processPid).toBe(processIdentity.runnerPid);
           expect(row.process_stopped?.processGroupId).toBe(processIdentity.processGroupId);
         }

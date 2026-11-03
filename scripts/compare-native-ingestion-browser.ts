@@ -150,7 +150,7 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
         assert.equal(row.agent_id, local.controlAgentId, "Stop did not use its separate local control agent");
         assert.equal(row.provider, "local", "Stop requires its normal local lease");
         assert.equal(row.provider_lease_id, null); assert.equal(row.checkpoint_part, null, "Local Stop must retain host-file authority without a database header");
-        assert.ok(Number.isSafeInteger(row.process_identity_seq) && row.process_identity_seq > 0);
+        assert.ok(BigInt(String(row.process_identity_seq)) > 0n);
         assert.equal(row.process_identity_source_event_id, null, "Local identity must be server-authored");
         assert.equal(row.process_identity?.targetKind, "local");
         assert.equal(row.process_identity?.processPid, row.process_pid);
@@ -199,7 +199,7 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
         "admitted_execution_workspace_id", "process_identity_seq", "process_identity_source_event_id"]) assert.equal(after?.[field], row[field], "Local stopped database identity mismatch");
       assert.equal(after.status, "cancelled"); assert.equal(after.cancellation_dispatch_state, "acknowledged");
       if (!after.process_pid && !after.process_group_id) {
-        assert.ok(after.process_stopped_seq > row.process_identity_seq, "Cleared local process identity needs its server stop receipt");
+        assert.ok(BigInt(String(after.process_stopped_seq)) > BigInt(String(row.process_identity_seq)), "Cleared local process identity needs its server stop receipt");
         assert.equal(after.process_stopped_source_event_id, null);
         assert.equal(after.process_stopped?.processPid, before.runnerPid);
         assert.equal(after.process_stopped?.processGroupId, before.processGroupId);
