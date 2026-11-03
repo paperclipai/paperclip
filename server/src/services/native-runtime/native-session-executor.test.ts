@@ -37,7 +37,7 @@ import {
 import { execFile, execFileSync, spawn, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { inspect } from "node:util";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import {
   activityLog,
@@ -3435,6 +3435,86 @@ describe("remote provider checkpoint snapshots", () => {
     expect(snapshotCommand).not.toContain("--exclude=./acpx-state");
     expect(snapshotCommand).not.toContain("--exclude=./codex-home");
     expect(syncOut).toHaveBeenCalledOnce();
+  });
+
+  it("lets the provider apply the exclusions when the sandbox disk cannot hold the snapshot", async () => {
+    const root = await mkdtemp(join(tmpdir(), "provider-cache-checkpoint-full-"));
+    try {
+      const live = join(root, "live", "acpx");
+      const backup = join(root, "backup", "acpx");
+      const sessionPath = `acpx/${acpxRuntimeSessionDirectoryName("session")}`;
+      const files: Record<string, string> = {
+        "pi-home/sessions/session.jsonl": "history",
+        "data/pnpm/config.json": "{}",
+        "home/.npm/_cacache/index": "npm-cache",
+        "data/pnpm/store/v10/files/00/blob": "pnpm-store",
+      };
+      for (const [path, contents] of Object.entries(files)) {
+        await mkdir(join(live, sessionPath, path, ".."), { recursive: true });
+        await writeFile(join(live, sessionPath, path), contents);
+      }
+      const excludeEntries = resolveNativeHarnessPersistenceProfile({
+        provider: { kind: "acpx", agent: "pi" },
+        session: { normalizedSessionId: "session", driverKind: "acpx_runtime" },
+      } as unknown as NativeExecutionInputV1).directories.find(entry => entry.name === "acpx")!.excludeEntries;
+      const commands: string[] = [];
+      const execute = vi.fn(async ({ command, args }: { command: string; args: string[] }) => {
+        const script = String(args[1]);
+        commands.push(script);
+        if (script.includes(" -cf ")) {
+          // Leave a partial copy behind, as tar does when the disk fills.
+          const snapshot = /mkdir -p '([^']+)'/.exec(script)![1]!;
+          await mkdir(join(snapshot, sessionPath), { recursive: true });
+          return { exitCode: 2, timedOut: false, stdout: "",
+            stderr: "tar: ./acpx/session/pi-home/sessions/session.jsonl: Wrote only 4096 of 10240 bytes\n" };
+        }
+        return { exitCode: 0, timedOut: false, stdout: execFileSync(command, args, { encoding: "utf8" }), stderr: "" };
+      });
+      // Provider exclusions match after any `/`, like GNU tar --exclude.
+      const syncOut = vi.fn(async (operations: Array<{ files: Array<{ sourcePath: string; targetPath: string; exclude?: string[] }> }>) => {
+        for (const operation of operations) for (const file of operation.files) {
+          await cp(file.sourcePath, file.targetPath, { recursive: true, filter: (path) => {
+            const entry = relative(file.sourcePath, path);
+            return !(file.exclude ?? []).some(pattern => entry === pattern || entry.endsWith(`/${pattern}`));
+          } });
+        }
+      });
+
+      await syncRemoteRunnerDirectoryOut({ runner: { execute, syncOut } as never,
+        sourcePath: live, targetPath: backup, mode: 0o700, excludeEntries });
+
+      expect(syncOut).toHaveBeenCalledOnce();
+      expect(syncOut.mock.calls[0]![0][0]!.files[0]).toMatchObject({ sourcePath: live, exclude: [...excludeEntries] });
+      expect(await readFile(join(backup, sessionPath, "pi-home/sessions/session.jsonl"), "utf8")).toBe("history");
+      expect(await readFile(join(backup, sessionPath, "data/pnpm/config.json"), "utf8")).toBe("{}");
+      for (const path of ["home/.npm", "data/pnpm/store"])
+        await expect(access(join(backup, sessionPath, path))).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readdir(join(root, "live"))).toEqual(["acpx"]);
+      expect(commands.filter(script => script.startsWith("rm -rf -- "))).toHaveLength(1);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { name: "a tar failure that is not a full disk", stderr: "tar: ./auth.json: Cannot open: Permission denied\n", timedOut: false },
+    { name: "a timeout", stderr: "No space left on device\n", timedOut: true },
+  ])("removes the partial snapshot and does not widen the copy after $name", async ({ stderr, timedOut }) => {
+    const execute = vi.fn()
+      .mockResolvedValueOnce({ exitCode: 0, timedOut: false, stdout: "", stderr: "" })
+      .mockResolvedValueOnce({ exitCode: 2, timedOut, stdout: "", stderr })
+      .mockResolvedValue({ exitCode: 0, timedOut: false, stdout: "", stderr: "" });
+    const syncOut = vi.fn(async () => undefined);
+    await expect(syncRemoteRunnerDirectoryOut({
+      runner: { execute, syncOut } as never,
+      sourcePath: "/remote/session/filesystem/codex-home",
+      targetPath: "/tmp/paperclip-checkpoint-test-codex-home",
+      mode: 0o700,
+      excludeEntries: ["tmp", "auth.json"],
+    })).rejects.toThrow("runner_remote_checkpoint_snapshot_failed");
+    expect(syncOut).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(3);
+    expect(String(execute.mock.calls[2]?.[0]?.args?.[1])).toMatch(
+      /^rm -rf -- '\/remote\/session\/filesystem\/\.paperclip-checkpoint-/,
+    );
   });
 
   it("rejects unsafe relative checkpoint exclusions", async () => {

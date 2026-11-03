@@ -6,7 +6,8 @@ This document describes the server defaults for an ordinary, standard trust agen
 
 | Capability | Source and limit |
 | --- | --- |
-| Agent configuration and suggestions | New standard agents receive direct, company-scoped `agents:configure` and `agents:suggest-changes` grants. Protected-change and responsible-user checks still apply. |
+| Agent configuration reads | Standard agents receive company-scoped `agents:read`. This permits redacted configuration, skill settings, instruction content, and configuration/instruction history reads. It grants no write, rollback, or environment-test authority. |
+| Agent configuration changes and suggestions | New standard agents also receive `agents:configure` and `agents:suggest-changes`. `agents:configure` permits reads and direct changes; `agents:suggest-changes` retains reads and consented changes. Protected-change and responsible-user checks still apply. |
 | Skill changes | New standard agents receive direct `skills:create` and `skills:suggest-changes` grants. |
 | Tool access and management | New standard agents receive `tools:manage_connections`, `tools:manage_profiles`, `tools:view_audit`, `tools:use`, and `tools:manage_runtime` grants. Tool, connection, profile, and runtime policy checks still apply. |
 | Audit and inbox | New standard agents receive `audit:view_agent_actions` and `inbox:manage` grants. The default inbox grant is limited to the responsible-user path and still follows that user's inbox policy. Cross-user management requires a separately configured grant or the target user's saved consent policy. |
@@ -26,7 +27,11 @@ Agent-authenticated callers cannot set process adapter configuration or switch a
 
 ## Exceptions and rollout
 
-The new direct grants are withheld from low trust agents and managed built-in agents. Low trust run or project policies can also deny privileged actions even if an agent has a grant. There is no permission backfill or upgrade migration for existing agents. A standard pending new hire receives the new default set when approved and activated. Invitation approval retains the set when it replaces a new agent's grants and preserves any explicitly scoped default grant. Existing scoped grants stay unchanged. A grant removed by an operator stays removed; ordinary updates and startup do not reapply it.
+The new direct grants are withheld from low trust agents and managed built-in agents. Low trust run or project policies can also deny privileged actions even if an agent has a grant. A standard pending new hire receives the new default set when approved and activated. Invitation approval retains the set when it replaces a new agent's grants and preserves any explicitly scoped default grant. Existing scoped grants stay unchanged. A grant removed by an operator stays removed; ordinary updates and startup do not reapply it.
+
+Migration `0423_agent_config_read_defaults` adds only `agents:read` to existing ready, paused, pausing or resuming standard agents with an active same-company membership. It skips setup holds or setup pause reasons, managed built-ins, nonstandard trust policies, pending or terminated agents, and agents with scoped configuration/suggestion grants. An existing read grant keeps its scope. Each addition has a system audit entry. Existing write grants are unchanged. The migration intentionally adds read access even when an older write grant is absent; it does not infer that a missing write grant denies the new independent read capability. Removing the read grant after this one-time migration persists across restarts and ordinary updates. `agents:configure` and `agents:suggest-changes` still independently imply reads within their scopes.
+
+Agents can read their own redacted configuration, skills and configuration history without a peer-read grant. Target-scoped reads identify the target agent, so scoped read grants also work on individual configuration and instruction routes. Company-wide configuration listings require company-wide read authority. Basic same-company agent profiles remain readable through their existing visibility rules.
 
 The standard agent configuration default supports the agent setup in the linked runner task. Enabling a warm runtime can still depend on the target agent's adapter and runtime configuration, provider availability, and any responsible-user or approval checks.
 

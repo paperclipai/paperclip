@@ -269,6 +269,47 @@ describeEmbeddedPostgres("authorization service", () => {
     expect(decision.explanation).toContain("Allowed by explicit grant tasks:assign");
   });
 
+  it.each(["agent", "user"] as const)("allows %s read-only grants without configuration write authority", async (principalType) => {
+    const company = await createCompany(db, "ReadOnlyConfig");
+    const actorAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id);
+    const userId = await createUser(db);
+    const actor: AuthorizationActor = principalType === "agent"
+      ? { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" }
+      : { type: "board", userId, source: "session" };
+    if (principalType === "agent") await grantAgentPermission(db, company.id, actorAgent.id, "agents:read");
+    else await grantUserPermission(db, company.id, userId, "agents:read");
+    const authz = authorizationService(db);
+    const resource = { type: "agent" as const, companyId: company.id, agentId: targetAgent.id };
+
+    await expect(authz.decide({ actor, action: "agent_config:read", resource })).resolves.toMatchObject({
+      allowed: true, grant: { permissionKey: "agents:read" },
+    });
+    for (const action of ["agent_config:update", "agent_instructions:update"] as const) {
+      await expect(authz.decide({ actor, action, resource, scope: { requiresChangeGrant: true } }))
+        .resolves.toMatchObject({ allowed: false });
+    }
+  });
+
+  it("restricts configuration reads to the read grant's target scope", async () => {
+    const company = await createCompany(db, "ScopedReadOnlyConfig");
+    const actor = await createAgent(db, company.id);
+    const target = await createAgent(db, company.id);
+    const other = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, actor.id, "agents:read", { agentIds: [target.id] });
+    const authz = authorizationService(db);
+    const read = (targetAgentId: string) => authz.decide({
+      actor: { type: "agent", companyId: company.id, agentId: actor.id, source: "agent_key" },
+      action: "agent_config:read",
+      resource: { type: "agent", companyId: company.id, agentId: targetAgentId },
+      scope: { targetAgentId },
+    });
+    await expect(read(target.id)).resolves.toMatchObject({ allowed: true });
+    await expect(read(other.id)).resolves.toMatchObject({ allowed: false, reason: "deny_scope" });
+    await db.delete(principalPermissionGrants).where(eq(principalPermissionGrants.principalId, actor.id));
+    await expect(read(target.id)).resolves.toMatchObject({ allowed: false, reason: "deny_missing_grant" });
+  });
+
   it("allows suggest grants to read peer agent configuration", async () => {
     const company = await createCompany(db, "AgentReadGrant");
     const actorAgent = await createAgent(db, company.id);
@@ -292,7 +333,7 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
-  it("falls back to the direct config-read grant decision when a suggest read grant is scoped away", async () => {
+  it("reports a scoped legacy read grant denial when no read grant applies", async () => {
     const company = await createCompany(db, "AgentReadScopedSuggestGrant");
     const actorAgent = await createAgent(db, company.id);
     const targetAgent = await createAgent(db, company.id);
@@ -308,8 +349,8 @@ describeEmbeddedPostgres("authorization service", () => {
 
     expect(decision).toMatchObject({
       allowed: false,
-      reason: "deny_missing_grant",
-      explanation: "Missing permission: agents:configure.",
+      reason: "deny_scope",
+      explanation: "Permission agents:suggest-changes does not cover the requested scope.",
     });
   });
 

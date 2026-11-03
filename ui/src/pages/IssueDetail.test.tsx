@@ -1,4 +1,5 @@
 import { AgentAvatar } from "../components/AgentAvatar";
+import { CoordinatorAgentSwitcher } from "../components/CoordinatorAgentSwitcher";
 import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/task-chat/TaskChatPausedTakeover";
 // @vitest-environment jsdom
 
@@ -1796,7 +1797,8 @@ describe("IssueDetail", () => {
     } finally { release(); cancel.mockRestore(); }
   });
 
-  it("keeps an existing conversation on its agent-addressed route", async () => {
+  it.each([false, true])("keeps an existing conversation on its agent-addressed route (Coordinator %s)", async (coordinator) => {
+    coordinatorPreference.enabled = coordinator;
     const agent = createAgent();
     const canonical = createIssue({ conversationAgentId: agent.id, conversationUserId: "user-1", conversationState: "waiting", status: "in_review" });
     mockIssuesApi.get.mockResolvedValue(canonical);
@@ -1807,8 +1809,15 @@ describe("IssueDetail", () => {
     expect(mockNavigate).not.toHaveBeenCalled();
     expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
     const [breadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
-    expect(breadcrumbs[0].leading.type).toBe(AgentAvatar);
-    expect(breadcrumbs[0].leading.props).toMatchObject({ agent, size: 24 });
+    if (coordinator) {
+      expect(breadcrumbs[0].control.type).toBe(CoordinatorAgentSwitcher);
+      expect(breadcrumbs[0].control.props.agent).toEqual(agent);
+      expect(breadcrumbs[0].leading).toBeUndefined();
+      expect(breadcrumbs[0].trailing).toBeUndefined();
+    } else {
+      expect(breadcrumbs[0].leading.type).toBe(AgentAvatar);
+      expect(breadcrumbs[0].leading.props).toMatchObject({ agent, size: 24 });
+    }
     expect(breadcrumbs[0].leadingKey).toBe(`agent:${agent.id}:${JSON.stringify(agent.appearance)}`);
     const updatedAgent = { ...agent, appearance: { schemaVersion: 1, characterVersion: "cap-v1", paletteId: "deep-tide" } } as Agent;
     await act(async () => {
@@ -1816,7 +1825,12 @@ describe("IssueDetail", () => {
     });
     await flushReact();
     const [updatedBreadcrumbs] = mockSetBreadcrumbs.mock.calls.at(-1)!;
-    expect(updatedBreadcrumbs[0].leading.props.agent).toEqual(updatedAgent);
+    if (coordinator) {
+      expect(updatedBreadcrumbs[0].control.props.agent).toEqual(updatedAgent);
+      expect(updatedBreadcrumbs[0].controlKey).not.toBe(breadcrumbs[0].controlKey);
+    } else {
+      expect(updatedBreadcrumbs[0].leading.props.agent).toEqual(updatedAgent);
+    }
     expect(updatedBreadcrumbs[0].leadingKey).not.toBe(breadcrumbs[0].leadingKey);
 
   });

@@ -220,6 +220,11 @@ Advanced, bind `CURSOR_API_KEY`, choose an explicit model, and supply a reposito
 or named Cursor Cloud environment. Existing Cursor Cloud agents keep their saved
 Legacy selection. The initial controller target is local; Cursor executes tools
 in its hosted VM. Native Cloud requires per-turn Runner lifecycle.
+For direct Runner use, configure `NativeProviderConfig` with
+`kind: "cursor_cloud"`, an explicit `model`, and a `cursorCloud` object using
+`paperclip.cursor-cloud.config.v1`. Supply a repository list or a named Cursor
+Cloud environment; the launch environment provides `CURSOR_API_KEY` and the
+scoped tool relay configuration.
 Agent environment bindings support `CURSOR_API_KEY` only. Configure hosted shell
 secrets in the Cursor Cloud environment. Other selected process variables are
 rejected; they are not silently omitted from the hosted run.
