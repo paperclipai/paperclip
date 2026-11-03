@@ -4471,6 +4471,49 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 
+  it("discloses immediate visibility once per live-run composer stack", () => {
+    const run = {
+      id: "run-1",
+      runtimeMode: "legacy" as const,
+      status: "running" as const,
+      invocationSource: "issue" as const,
+      triggerDetail: null,
+      startedAt: "2026-08-22T15:00:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-08-22T15:00:00.000Z",
+      agentId: "agent-1",
+      agentName: "Runner",
+      adapterType: "claude_local",
+    };
+    const composerNotice = () =>
+      container.querySelector('[data-testid="task-chat-composer-visibility-notice"]');
+    const queueNotice = () =>
+      container.querySelector('[data-testid="task-chat-queued-visibility"]');
+
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" />);
+    expect(composerNotice()).toBeNull();
+
+    render(<TaskChatThread comments={[]} onAdd={async () => {}} issueStatus="in_progress" activeRun={run} />);
+    expect(composerNotice()?.textContent).toContain("Visible as soon as you send.");
+    expect(queueNotice()).toBeNull();
+
+    act(() => render(
+      <TaskChatThread
+        comments={[queuedComment]}
+        onAdd={async () => {}}
+        issueStatus="in_progress"
+        activeRun={run}
+        queuedCommentQueue={queue}
+        onEditQueuedComment={async () => {}}
+        onReorderQueuedComments={async () => {}}
+        onSteerQueuedComment={async () => {}}
+        onDiscardQueuedComment={async () => {}}
+      />,
+    ));
+    expect(queueNotice()?.textContent).toContain("Visible now · queued for the next turn.");
+    expect(composerNotice()).toBeNull();
+  });
+
   it("hides legacy transcript interrupt actions while paused", () => {
     renderThread({
       comments: [{ ...queuedComment, queueState: "queued", queueTargetRunId: "run-1" }],

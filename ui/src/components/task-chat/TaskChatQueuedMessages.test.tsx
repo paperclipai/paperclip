@@ -9,6 +9,8 @@ import {
   reorderQueuedMessageEntries,
   TaskChatQueuedMessages,
 } from "./TaskChatQueuedMessages";
+import { createOptimisticIssueComment } from "../../lib/optimistic-issue-comments";
+import { mergePendingIssueQueuedComments } from "../../lib/issue-queued-comment-queue";
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -124,6 +126,45 @@ describe("TaskChatQueuedMessages", () => {
     await act(async () => { container.querySelector<HTMLButtonElement>(`[data-testid="task-chat-queued-${action}-comment-1"]`)!.click(); });
     if (action === "steer") expect(props.onSteer).toHaveBeenCalledWith("comment-1", "rev-1");
     else expect(props.onInterrupt).toHaveBeenCalledOnce();
+  });
+
+  it("discloses that queued messages are already visible and edits cannot recall reads", () => {
+    render({
+      queue: {
+        ...queue,
+        protocol: "legacy",
+        steeringDisposition: "unsupported",
+      },
+      onInterrupt: vi.fn().mockResolvedValue(undefined),
+    });
+    const disclosure = container.querySelector<HTMLElement>(
+      '[data-testid="task-chat-queued-visibility"]',
+    );
+    expect(disclosure?.textContent).toBe(
+      "Visible now · queued for the next turn. Edit or delete changes the thread and the next turn. It can’t undo earlier reads or actions.",
+    );
+    expect(disclosure?.textContent).not.toMatch(/\b(has read|was read|seen)\b/i);
+
+    const discard = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-queued-discard-comment-1"]',
+    );
+    const interrupt = container.querySelector<HTMLButtonElement>(
+      '[data-testid="task-chat-queued-interrupt-comment-1"]',
+    );
+    const actions = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Queued message actions: First queued message"]',
+    );
+    expect(discard?.getAttribute("aria-label")).toBe(
+      "Delete queued message and remove it from the next turn: First queued message",
+    );
+    expect(discard?.title).toBe("Delete and remove from the next turn");
+    expect(interrupt?.title).toBe(
+      "Stop the current run and start the next turn with queued messages",
+    );
+    for (const control of [discard, interrupt, actions]) {
+      expect(control?.getAttribute("aria-describedby")).toBe(disclosure?.id);
+    }
+    expect(container.textContent).not.toContain("will be sent");
   });
 
   it("reorders the complete queue and rewrites contiguous positions", () => {
@@ -262,7 +303,7 @@ describe("TaskChatQueuedMessages", () => {
         '[data-testid="task-chat-queued-message-comment-1"]',
       ),
     ).not.toBeNull();
-    expect(container.textContent).not.toContain("Queued message discarded.");
+    expect(container.textContent).not.toContain("Queued message deleted. Earlier reads or actions can’t be undone.");
 
     await act(async () => {
       acknowledgement.resolve();
@@ -273,7 +314,7 @@ describe("TaskChatQueuedMessages", () => {
         '[data-testid="task-chat-queued-message-comment-1"]',
       ),
     ).toBeNull();
-    expect(container.textContent).toContain("Queued message discarded.");
+    expect(container.textContent).toContain("Queued message deleted. Earlier reads or actions can’t be undone.");
   });
 
   it("keeps a too-late discard visible with an explicit error", async () => {
@@ -295,7 +336,7 @@ describe("TaskChatQueuedMessages", () => {
       ),
     ).not.toBeNull();
     expect(container.textContent).toContain(
-      "Too late to discard: this message is already being sent.",
+      "Too late to delete: it’s past the point where it can be withdrawn. It stays in the thread.",
     );
   });
 
@@ -315,7 +356,7 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).toContain(
       "The queue changed in another session. Review it and try again.",
     );
-    expect(container.textContent).not.toContain("Queued message discarded.");
+    expect(container.textContent).not.toContain("Queued message deleted. Earlier reads or actions can’t be undone.");
   });
 
   it("does not expose queue controls before a real queue id is acknowledged", () => {
@@ -361,6 +402,95 @@ describe("TaskChatQueuedMessages", () => {
     ).toBeNull();
   });
 
+  function unsavedComment(body: string) {
+    return createOptimisticIssueComment({
+      companyId: "company-1",
+      issueId: "issue-1",
+      body,
+      authorUserId: "user-1",
+      clientStatus: "queued",
+      queueTargetRunId: "run-1",
+    });
+  }
+  const disclosure = () =>
+    container.querySelector('[data-testid="task-chat-queued-visibility"]')
+      ?.textContent ?? "";
+
+  it("does not call a still-sending row visible before the post returns", () => {
+    const comment = unsavedComment("Synthetic in-flight message");
+    render({
+      queue: mergePendingIssueQueuedComments({
+        issueId: "issue-1",
+        authoritativeQueue: null,
+        pendingComments: [{ comment, targetRunId: "run-1" }],
+        fallbackProtocol: "legacy",
+      })!,
+    });
+    expect(disclosure()).toContain("Visible once saved · queued for the next turn.");
+    expect(disclosure()).not.toContain("Visible now");
+    expect(disclosure()).toContain("can’t undo earlier reads or actions");
+    expect(
+      container.querySelector(`[data-testid="task-chat-queued-saving-${comment.id}"]`)
+        ?.textContent,
+    ).toBe("Saving…");
+    const cancel = container.querySelector<HTMLButtonElement>(
+      `[data-testid="task-chat-queued-discard-${comment.id}"]`,
+    );
+    expect(cancel?.disabled).toBe(false);
+    expect(cancel?.getAttribute("aria-label")).toBe(
+      "Cancel sending and restore to the composer: Synthetic in-flight message",
+    );
+  });
+
+  it("keeps a saved row visible-now even while the queue is unacknowledged", () => {
+    render({ queue: { ...queue, queueId: null, entries: [queue.entries[0]] } });
+    expect(disclosure()).toContain("Visible now · queued for the next turn.");
+    expect(
+      container.querySelector('[data-testid="task-chat-queued-saving-comment-1"]'),
+    ).toBeNull();
+  });
+
+  it("marks only the unsaved row in a mixed saved/unsaved queue", async () => {
+    const comment = unsavedComment("Synthetic second message");
+    const onDiscard = vi.fn().mockResolvedValue(undefined);
+    render({
+      queue: mergePendingIssueQueuedComments({
+        issueId: "issue-1",
+        authoritativeQueue: { ...queue, entries: [queue.entries[0]] },
+        pendingComments: [{ comment, targetRunId: "run-1" }],
+        fallbackProtocol: "legacy",
+      })!,
+      onDiscard,
+    });
+    expect(disclosure()).toContain("Visible once saved · queued for the next turn.");
+    expect(
+      container.querySelector('[data-testid="task-chat-queued-saving-comment-1"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector(`[data-testid="task-chat-queued-saving-${comment.id}"]`),
+    ).not.toBeNull();
+    expect(
+      container
+        .querySelector('[data-testid="task-chat-queued-discard-comment-1"]')
+        ?.getAttribute("aria-label"),
+    ).toBe("Delete queued message and remove it from the next turn: First queued message");
+
+    await act(async () => {
+      container
+        .querySelector<HTMLButtonElement>(
+          `[data-testid="task-chat-queued-discard-${comment.id}"]`,
+        )
+        ?.click();
+    });
+    expect(onDiscard).toHaveBeenCalledWith(comment.id, "rev-1");
+    expect(container.textContent).toContain("Cancel requested. Text is back in the composer.");
+    expect(container.textContent).not.toContain("Queued message deleted");
+    expect(
+      container.querySelector('[data-testid="task-chat-queued-message-comment-1"]'),
+    ).not.toBeNull();
+    expect(disclosure()).toContain("Visible now · queued for the next turn.");
+  });
+
   it("delivers legacy queued messages to a live target", async () => {
     const targetRunId = "run-1";
     const onInterrupt = vi.fn().mockResolvedValue(undefined);
@@ -402,6 +532,17 @@ describe("TaskChatQueuedMessages", () => {
     expect(container.textContent).toContain("First queued message");
     expect(container.textContent).toContain(saved.executionWait.message);
     expect(container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]')?.disabled).toBe(false);
+  });
+  it("keeps a deferred send without a server wait message short of a delivery promise", async () => {
+    const saved = { ...queue, targetRunId: null, executionWait: null };
+    render({ queue: saved, onInterrupt: vi.fn().mockResolvedValue(saved) });
+    const send = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-queued-interrupt-comment-1"]');
+    expect(send?.title).toBe("Start the next turn with queued messages now");
+    expect(send?.getAttribute("aria-describedby")).toBe(container.querySelector('[data-testid="task-chat-queued-visibility"]')?.id);
+    await act(async () => { send!.click(); });
+    expect(container.textContent).toContain("Visible now · queued for the next turn.");
+    expect(container.textContent).toContain("Still queued for the next turn. It starts when the task is ready.");
+    expect(container.textContent).not.toMatch(/will (be )?sen[dt]/);
   });
   it("clears a deferred wait message when a refreshed queue finishes sending", async () => {
     const saved = { ...queue, targetRunId: null, executionWait: { reason: "decision_pending", message: "Resolve the pending approval before sending." } };

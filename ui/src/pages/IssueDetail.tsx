@@ -370,6 +370,14 @@ import { Badge } from "@/components/ui/badge";
 import { IssuePrivacyActions } from "@/components/IssuePrivacyActions";
 import type { ShareSheetImplicitPrincipal } from "@/components/IssueShareSheet";
 import {
+  QUEUED_CANCEL_FAILED_TOAST,
+  QUEUED_CANCEL_REQUESTED_TOAST,
+  QUEUED_CANCELED_TOAST,
+  QUEUED_DISCARDED_TOAST,
+  QUEUED_EDITED_TOAST,
+  QUEUED_LATE_DISCARD_TOAST,
+} from "@/lib/queued-comment-copy";
+import {
   deriveOriginatingActor,
   isClosedIsolatedExecutionWorkspace,
   ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
@@ -2320,6 +2328,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         await queryClient.invalidateQueries({
           queryKey: queryKeys.issues.comments(issueId),
         });
+        pushToast({ ...QUEUED_EDITED_TOAST, tone: "success" });
       } catch (error) {
         await refreshQueueAfterConflict(error);
       }
@@ -2327,6 +2336,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     [
       effectiveQueuedCommentQueue?.queueId,
       issueId,
+      pushToast,
       queryClient,
       refreshQueueAfterConflict,
       storeQueuedCommentQueue,
@@ -2514,6 +2524,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         await queryClient.invalidateQueries({
           queryKey: queryKeys.issues.comments(issueId),
         });
+        pushToast({ ...QUEUED_DISCARDED_TOAST, tone: "success" });
       } catch (error) {
         const responseBody =
           error instanceof ApiError &&
@@ -2535,8 +2546,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
               : null;
         if (code === "queued_comment_already_dispatching") {
           pushToast({
-            title: "Message is already being sent",
-            body: "The continuation started before the discard was confirmed, so Paperclip could not unsend it.",
+            ...QUEUED_LATE_DISCARD_TOAST,
             tone: "error",
             ttlMs: 15_000,
             dedupeKey: `queued-comment-already-dispatching:${issueId}:${commentId}`,
@@ -5094,14 +5104,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           invalidateIssueThreadLazily();
           invalidateIssueCollections();
           return;
-        } catch (err) {
+        } catch {
           pushToast({
-            title: "Cancel failed",
-            body:
-              err instanceof Error
-                ? err.message
-                : "Unable to cancel the queued comment",
+            ...QUEUED_CANCEL_FAILED_TOAST,
             tone: "error",
+            id: `queued-cancel:${context.optimisticCommentId}`,
+            dedupeKey: `queued-cancel-failed:${context.optimisticCommentId}`,
           });
         }
       }
@@ -5520,14 +5528,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           invalidateIssueThreadLazily();
           invalidateIssueCollections();
           return;
-        } catch (err) {
+        } catch {
           pushToast({
-            title: "Cancel failed",
-            body:
-              err instanceof Error
-                ? err.message
-                : "Unable to cancel the queued comment",
+            ...QUEUED_CANCEL_FAILED_TOAST,
             tone: "error",
+            id: `queued-cancel:${context.optimisticCommentId}`,
+            dedupeKey: `queued-cancel-failed:${context.optimisticCommentId}`,
           });
         }
       }
@@ -5637,11 +5643,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       invalidateIssueDetail();
       invalidateIssueThreadLazily();
       invalidateIssueCollections();
-      pushToast({
-        title: "Queued comment canceled",
-        body: "The queued message was restored to the composer.",
-        tone: "success",
-      });
+      pushToast({ ...QUEUED_CANCELED_TOAST, tone: "success" });
     },
     onError: (err) => {
       pushToast({
@@ -5685,18 +5687,19 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     (commentId: string) => {
       if (commentId.startsWith("optimistic-")) {
         cancelledQueuedOptimisticCommentIdsRef.current.add(commentId);
-        let cancelledCommentBody: string | null = null;
-        setOptimisticComments((current) => {
-          const next = takeOptimisticIssueComment(current, commentId);
-          cancelledCommentBody = next.comment?.body ?? null;
-          return next.comments;
-        });
+        const cancelledCommentBody =
+          takeOptimisticIssueComment(optimisticComments, commentId).comment
+            ?.body ?? null;
+        setOptimisticComments(
+          (current) => takeOptimisticIssueComment(current, commentId).comments,
+        );
         if (cancelledCommentBody) {
           restoreQueuedCommentDraft(cancelledCommentBody);
           pushToast({
-            title: "Queued comment canceled",
-            body: "The queued message was restored to the composer.",
+            ...QUEUED_CANCEL_REQUESTED_TOAST,
             tone: "success",
+            id: `queued-cancel:${commentId}`,
+            dedupeKey: `queued-cancel-requested:${commentId}`,
           });
         }
         return;
@@ -5704,7 +5707,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
       void cancelQueuedComment.mutateAsync({ commentId });
     },
-    [cancelQueuedComment, restoreQueuedCommentDraft, pushToast],
+    [cancelQueuedComment, optimisticComments, restoreQueuedCommentDraft, pushToast],
   );
 
   const feedbackVoteMutation = useMutation({

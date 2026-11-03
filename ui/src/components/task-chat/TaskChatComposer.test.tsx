@@ -2265,6 +2265,18 @@ describe("TaskChatComposer", () => {
       );
     }
 
+    it("explains that saving an edit cannot undo earlier reads", async () => {
+      render(<Harness onSave={vi.fn().mockResolvedValue(undefined)} />);
+      await flushAsync();
+      const notice = container.querySelector<HTMLElement>(
+        '[data-testid="task-chat-composer-visibility-notice"]',
+      );
+      expect(notice?.textContent).toBe(
+        "Already visible. Saving replaces the text in the thread and the next turn. It can’t undo earlier reads or actions.",
+      );
+      expect(sendButton().getAttribute("aria-describedby")).toBe(notice?.id);
+    });
+
     it("restores the existing composer draft after cancelling an edit", async () => {
       localStorage.setItem(draftKey, "Unsent normal draft");
       render(<Harness onSave={vi.fn().mockResolvedValue(undefined)} />);
@@ -3167,6 +3179,23 @@ describe("TaskChatComposer", () => {
 
 describe("composer Stop", () => {
   function stopButton() { return container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-stop"]'); }
+
+  it("discloses immediate visibility before sending while a run is live", async () => {
+    const onAdd = vi.fn(async () => {});
+    const notice = () =>
+      container.querySelector<HTMLElement>('[data-testid="task-chat-composer-visibility-notice"]');
+    render(<TaskChatComposer workMode="standard" onAdd={onAdd} onStop={vi.fn(async () => {})} liveRunActive />);
+    expect(notice()?.textContent).toBe(
+      "Visible as soon as you send. The running agent can read it now; its next turn starts after this run.",
+    );
+    typeText("Check the staging flag.");
+    expect(onAdd).not.toHaveBeenCalled();
+    expect(sendButton().getAttribute("aria-describedby")).toBe(notice()?.id);
+
+    render(<TaskChatComposer workMode="standard" onAdd={onAdd} />);
+    expect(notice()).toBeNull();
+    expect(sendButton().hasAttribute("aria-describedby")).toBe(false);
+  });
 
   it("switches Stop to Send with text, whitespace back to Stop, without interrupting on keyboard submit", async () => {
     const onStop = vi.fn(async () => {});

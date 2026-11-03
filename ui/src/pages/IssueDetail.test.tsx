@@ -4,6 +4,10 @@ import { TaskChatPausedTakeover, type TaskComposerPause } from "../components/ta
 
 import { DispositionRecoveryNotice, type DispositionRecoverySnapshot } from "../components/DispositionRecoveryNotice";
 import { RichWorkProductCard } from "../components/task-chat/RichWorkProductCard";
+import {
+  QUEUED_CANCEL_FAILED_TOAST,
+  QUEUED_CANCEL_REQUESTED_TOAST,
+} from "../lib/queued-comment-copy";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type {
   Agent,
@@ -4601,6 +4605,233 @@ describe("IssueDetail", () => {
     expect(mockHeartbeatsApi.cancel).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["succeeds", true],
+    ["fails", false],
+  ])(
+    "calls a cancel before the post resolves a request, then reports when the later server cancel %s",
+    async (_label, serverCancelSucceeds) => {
+      const postedComment = createDeferred<IssueComment>();
+      mockIssuesApi.get.mockResolvedValue(
+        createIssue({ status: "in_progress", executionRunId: "run-queued" }),
+      );
+      mockIssuesApi.addComment.mockReturnValue(postedComment.promise);
+      mockIssuesApi.cancelComment.mockReset();
+      if (serverCancelSucceeds) {
+        mockIssuesApi.cancelComment.mockResolvedValue(
+          createIssueComment({ body: "Synthetic early cancel" }),
+        );
+      } else {
+        mockIssuesApi.cancelComment.mockRejectedValue(new Error("synthetic cancel failure"));
+      }
+      mockIssuesApi.getQueuedComments.mockResolvedValue(
+        createQueuedCommentQueue({
+          queueId: null, state: null, targetRunId: null,
+          protocol: "legacy", steeringDisposition: "unsupported", entries: [],
+        }),
+      );
+      mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([
+        {
+          id: "run-queued", status: "queued", invocationSource: "issue",
+          triggerDetail: null, contextCommentId: null, contextWakeCommentId: null,
+          startedAt: null, finishedAt: null, createdAt: "2026-04-21T00:00:01.000Z",
+          agentId: "agent-1", agentName: "Coder", adapterType: "codex_local", issueId: "issue-1",
+        },
+      ]);
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      type Props = {
+        onAdd: (body: string) => Promise<void>;
+        onCancelQueued: (commentId: string) => void;
+        queuedCommentQueue?: IssueQueuedCommentQueue | null;
+      };
+      await act(async () => {
+        void (mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props).onAdd(
+          "Synthetic early cancel",
+        );
+        await Promise.resolve();
+      });
+      await flushReact();
+
+      const pending = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+      const optimisticId = pending.queuedCommentQueue?.entries[0]?.comment.id ?? "";
+      expect(optimisticId).toMatch(/^optimistic-/);
+      mockPushToast.mockClear();
+      await act(async () => {
+        pending.onCancelQueued(optimisticId);
+      });
+      await flushReact();
+
+      expect(mockIssuesApi.cancelComment).not.toHaveBeenCalled();
+      expect(mockPushToast).toHaveBeenCalledTimes(1);
+      expect(mockPushToast).toHaveBeenCalledWith({
+        ...QUEUED_CANCEL_REQUESTED_TOAST,
+        tone: "success",
+        id: `queued-cancel:${optimisticId}`,
+        dedupeKey: `queued-cancel-requested:${optimisticId}`,
+      });
+      const localToast = JSON.stringify(mockPushToast.mock.calls);
+      expect(localToast).not.toMatch(/canceled|deleted|Removed from the thread/i);
+      expect(localToast).toContain("can’t be undone");
+
+      mockPushToast.mockClear();
+      await act(async () => {
+        postedComment.resolve(createIssueComment({ body: "Synthetic early cancel" }));
+      });
+      await flushReact();
+      await flushReact();
+
+      expect(mockIssuesApi.cancelComment).toHaveBeenCalledWith("issue-1", "comment-1");
+      const after = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+      if (serverCancelSucceeds) {
+        expect(mockPushToast).not.toHaveBeenCalled();
+      } else {
+        expect(mockPushToast).toHaveBeenCalledWith({
+          ...QUEUED_CANCEL_FAILED_TOAST,
+          tone: "error",
+          id: `queued-cancel:${optimisticId}`,
+          dedupeKey: `queued-cancel-failed:${optimisticId}`,
+        });
+        expect(after.queuedCommentQueue?.entries.map((entry) => entry.comment.id)).toEqual([
+          "comment-1",
+        ]);
+      }
+    },
+  );
+
+  it.each([
+    ["comment", "already dispatching", new ApiError("Already dispatching", 409, { code: "queued_comment_already_dispatching" })],
+    ["comment", "transport failure", new TypeError("Failed to fetch")],
+    ["comment", "other rejection", new Error("Synthetic cancel failure")],
+    ["reassignment", "already dispatching", new ApiError("Already dispatching", 409, { code: "queued_comment_already_dispatching" })],
+    ["reassignment", "transport failure", new TypeError("Failed to fetch")],
+    ["reassignment", "other rejection", new Error("Synthetic cancel failure")],
+  ])(
+    "deferred cancel: %s / %s leaves removal unconfirmed",
+    async (mutationPath, _failureKind, cancellationError) => {
+      const postedComment = createDeferred<IssueComment>();
+      const postedReassignment = createDeferred<Issue & { comment: IssueComment }>();
+      mockIssuesApi.get.mockResolvedValue(
+        createIssue({ status: "in_progress", executionRunId: "run-queued" }),
+      );
+      mockIssuesApi.addComment.mockReturnValue(postedComment.promise);
+      mockIssuesApi.update.mockReturnValue(postedReassignment.promise);
+      mockIssuesApi.cancelComment.mockReset().mockRejectedValue(cancellationError);
+      mockIssuesApi.getQueuedComments.mockResolvedValue(
+        createQueuedCommentQueue({
+          queueId: null, state: null, targetRunId: null,
+          protocol: "legacy", steeringDisposition: "unsupported", entries: [],
+        }),
+      );
+      mockHeartbeatsApi.liveRunsForIssue.mockResolvedValue([
+        {
+          id: "run-queued", status: "queued", invocationSource: "issue",
+          triggerDetail: null, contextCommentId: null, contextWakeCommentId: null,
+          startedAt: null, finishedAt: null, createdAt: "2026-04-21T00:00:01.000Z",
+          agentId: "agent-1", agentName: "Coder", adapterType: "codex_local", issueId: "issue-1",
+        },
+      ]);
+
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <IssueDetail />
+          </QueryClientProvider>,
+        );
+      });
+      await flushReact();
+      await flushReact();
+
+      type Props = {
+        onAdd: (
+          body: string,
+          reopen?: boolean,
+          reassignment?: { assigneeAgentId: string | null; assigneeUserId: string | null },
+        ) => Promise<void>;
+        onCancelQueued: (commentId: string) => void;
+        queuedCommentQueue?: IssueQueuedCommentQueue | null;
+      };
+      await act(async () => {
+        void (mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props).onAdd(
+          "Synthetic early cancel",
+          undefined,
+          mutationPath === "reassignment"
+            ? { assigneeAgentId: "agent-2", assigneeUserId: null }
+            : undefined,
+        );
+        await Promise.resolve();
+      });
+      await flushReact();
+
+      const pending = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+      const optimisticId = pending.queuedCommentQueue?.entries[0]?.comment.id ?? "";
+      expect(optimisticId).toMatch(/^optimistic-/);
+      mockPushToast.mockClear();
+      await act(async () => {
+        pending.onCancelQueued(optimisticId);
+      });
+      await flushReact();
+
+      expect(mockIssuesApi.cancelComment).not.toHaveBeenCalled();
+      expect(mockPushToast).toHaveBeenCalledTimes(1);
+      expect(mockPushToast).toHaveBeenCalledWith({
+        ...QUEUED_CANCEL_REQUESTED_TOAST,
+        tone: "success",
+        id: `queued-cancel:${optimisticId}`,
+        dedupeKey: `queued-cancel-requested:${optimisticId}`,
+      });
+      const localToast = JSON.stringify(mockPushToast.mock.calls);
+      expect(localToast).not.toMatch(/canceled|deleted|Removed from the thread/i);
+      expect(localToast).toContain("can’t be undone");
+
+      mockPushToast.mockClear();
+      await act(async () => {
+        const comment = createIssueComment({ body: "Synthetic early cancel" });
+        if (mutationPath === "reassignment") {
+          postedReassignment.resolve({ ...createIssue(), comment });
+        } else {
+          postedComment.resolve(comment);
+        }
+      });
+      await flushReact();
+      await flushReact();
+
+      expect(mockIssuesApi.cancelComment).toHaveBeenCalledWith(
+        mutationPath === "reassignment" ? "PAP-1" : "issue-1", "comment-1",
+      );
+      const after = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as Props;
+      expect(mockPushToast).toHaveBeenCalledTimes(1);
+      expect(mockPushToast).toHaveBeenCalledWith({
+        ...QUEUED_CANCEL_FAILED_TOAST,
+        tone: "error",
+        id: `queued-cancel:${optimisticId}`,
+        dedupeKey: `queued-cancel-failed:${optimisticId}`,
+      });
+      const failureToast = mockPushToast.mock.calls[0][0] as { title: string; body: string };
+      expect(failureToast.title).toBe("Cancellation unconfirmed");
+      expect(failureToast.body).toContain("could not confirm removal");
+      expect(failureToast.body).toContain("may still be visible");
+      expect(failureToast.body).toContain("sending again may create a duplicate");
+      expect(failureToast.body).toContain("Earlier reads or actions can’t be undone");
+      expect(failureToast.body).not.toMatch(
+        /stays in the thread|queued for the next turn|posts it twice|was removed|has (read|seen)/i,
+      );
+      expect(after.queuedCommentQueue?.entries.map((entry) => entry.comment.id)).toEqual([
+        "comment-1",
+      ]);
+      mockIssuesApi.update.mockReset();
+    },
+  );
+
   it.each(["native", "legacy"] as const)("projects a native follow-up into the steering well before the post resolves with %s persisted mode", async (runtimeMode) => {
     const postedComment = createDeferred<IssueComment>();
     const activeRun = {
@@ -7006,7 +7237,7 @@ describe("IssueDetail", () => {
     );
     expect(mockPushToast).toHaveBeenCalledWith(
       expect.objectContaining({
-        title: "Message is already being sent",
+        title: "Too late to delete",
         tone: "error",
         ttlMs: 15_000,
       }),

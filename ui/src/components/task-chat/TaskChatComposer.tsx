@@ -40,6 +40,7 @@ import {
   Square,
   ChevronDown,
   CircleHelp,
+  Eye,
   Loader2,
   X,
 } from "lucide-react";
@@ -79,6 +80,12 @@ import { ComposerAddMenu, ComposerModeChip, ComposerPrivacyChip } from "./Compos
 import { supportsComposerModel, type ComposerRunSettings } from "./composer-run-settings";
 import { useCoordinatorPresentation } from "@/components/coordinator/CoordinatorPresentation";
 import type { Agent, IssueAssigneeAdapterOverrides } from "@paperclipai/shared";
+import {
+  QUEUED_COMPOSER_EDIT_DETAIL,
+  QUEUED_COMPOSER_EDIT_LEAD,
+  QUEUED_COMPOSER_LIVE_RUN_DETAIL,
+  QUEUED_COMPOSER_LIVE_RUN_LEAD,
+} from "@/lib/queued-comment-copy";
 
 /** Structurally identical to IssueChatThread's module-private CommentReassignment. */
 export interface CommentReassignment {
@@ -131,6 +138,7 @@ interface TaskChatComposerProps {
   };
   confirmedSubmissionIds?: ReadonlySet<string>;
   onStop?: () => Promise<void>;
+  liveRunActive?: boolean;
   stopPending?: boolean;
   stopScope?: "leaf" | "subtree";
   workMode: IssueWorkMode;
@@ -398,6 +406,7 @@ export function TaskChatComposer({
   creation,
   confirmedSubmissionIds,
   onStop,
+  liveRunActive = false,
   stopPending = false,
   workMode,
   onWorkModeChange,
@@ -921,6 +930,12 @@ export function TaskChatComposer({
     previousTakeoverVisibleRef.current = takeoverVisible;
   }, [queuedEdit, takeoverVisible]);
 
+  const visibilityNoticeId = useId();
+  const visibilityNotice = queuedEdit && !queuedEdit.stale
+    ? { lead: QUEUED_COMPOSER_EDIT_LEAD, detail: QUEUED_COMPOSER_EDIT_DETAIL }
+    : liveRunActive && !queuedEdit && !pause && !takeoverVisible && !disabled
+      ? { lead: QUEUED_COMPOSER_LIVE_RUN_LEAD, detail: QUEUED_COMPOSER_LIVE_RUN_DETAIL }
+      : null;
   const canResetPausedConversation = conversationMode && !queuedEdit && body.trim() === "/new" && attachments.length === 0;
 
   async function submit() {
@@ -1401,6 +1416,21 @@ export function TaskChatComposer({
               <p className="text-xs text-muted-foreground">Send /new to start a fresh session and resume this conversation.</p>
             </div>
           ) : null}
+          {visibilityNotice ? (
+            <p
+              id={visibilityNoticeId}
+              className="mb-1.5 flex items-start gap-2 px-1 text-xs leading-snug text-muted-foreground"
+              data-testid="task-chat-composer-visibility-notice"
+            >
+              <Eye className="mt-px h-3.5 w-3.5 shrink-0" aria-hidden />
+              <span className="min-w-0">
+                <span className="font-medium text-foreground">
+                  {visibilityNotice.lead}
+                </span>{" "}
+                {visibilityNotice.detail}
+              </span>
+            </p>
+          ) : null}
           <div data-testid="task-chat-composer-input">
             <MarkdownEditor
               ref={editorRef}
@@ -1681,6 +1711,9 @@ export function TaskChatComposer({
                   ? "bg-foreground text-background disabled:bg-foreground disabled:text-background disabled:opacity-100"
                   : "bg-primary text-primary-foreground disabled:bg-muted disabled:text-muted-foreground",
               )}
+              aria-describedby={
+                visibilityNotice && !showStop ? visibilityNoticeId : undefined
+              }
               data-testid={
                 showStop ? "task-chat-composer-stop" : "task-chat-composer-send"
               }

@@ -3485,6 +3485,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             !("clientStatus" in comment && comment.clientStatus)
                           ).map((comment) => comment.clientRequestId!))}
                           onStop={liveRun ? onCancelRun : undefined}
+                          liveRunActive={Boolean(liveRun) && !queuedMessageQueue?.entries.length}
                           stopPending={stopPending}
                           stopScope={stopScope}
                           workMode={issueWorkMode}
