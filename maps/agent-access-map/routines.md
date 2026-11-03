@@ -71,16 +71,9 @@ Gaps: No dedicated production trigger-management binding; generic `call_api`
 provides the permitted REST path. Credential replies use inline delivery and encrypted
 mutation receipts rather than shared response assets.
 
-The public Sentry alert receiver is
-`POST /api/routine-triggers/public/{publicId}/sentry-run-failures`. Only an active
-bearer-authenticated webhook trigger admits work; it never adopts an ambient
-board or agent identity. Before dispatch, it checks company/run/task binding,
-the repair agent's source-read permission, public source visibility, and bounded
-parent/creation provenance. Self-generated repair failures are acknowledged with
-no task or wake. Run-based idempotency is scoped to the routine across triggers.
-The payload retains only source identifiers and bounded event/error identifiers.
-Deterministic service and assembled HTTP tests cover these boundaries; live Sentry
-delivery remains a separate acceptance step.
+Sentry alerts use the ordinary `POST /api/routine-triggers/public/{publicId}/fire`
+endpoint and its trigger authentication. Configure filtering and loop prevention
+in Sentry; see the [Sentry repair tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
 
 The host-only `GET /api/instance/task-drain?idleSleepSafety=1&scheduledWake=1`
 extension reports the earliest supported future routine deadline under an owned

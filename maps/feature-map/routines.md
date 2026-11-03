@@ -52,11 +52,10 @@ Automated: [trigger wizard](../../ui/src/components/routine-triggers/TriggerWiza
 
 Manual: Set a near-term disposable schedule or authorized test webhook, verify one eligible execution and its source trigger, then disable it and confirm further invocations stop. Inspect a failed execution without losing its history. Remove the temporary trigger after testing.
 
-A webhook-triggered routine can receive Sentry run-failure alerts through
-`/api/routine-triggers/public/:publicId/sentry-run-failures`. Configure bearer
-authentication, send an alert for an accessible task in the same company, and
-verify one repair task for the failed run. Failures from the repair routine
-and its descendants must not trigger another repair. See the [routine API](../../docs/api/routines.md).
+Sentry alerts use the ordinary
+`/api/routine-triggers/public/:publicId/fire` webhook and its trigger authentication.
+Configure loop-prevention filters in Sentry as described in the
+[Sentry repair tutorial](../../docs/guides/board-operator/sentry-run-failure-repairs.md).
 
 ## Gotchas
 

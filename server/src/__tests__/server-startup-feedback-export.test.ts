@@ -18,6 +18,9 @@ import { decisionService, decisionRetentionService, toolAccessService, githubCon
 
 import { companies, runDatabaseBackup, type Db } from "@paperclipai/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveLocalRuntimeApiUrl } from "../runtime-api.js";
+import { onNativeWorkspaceFinalizationRelease, releaseNativeWorkspaceFinalization } from "../services/native-workspace-finalization-notifications.js";
+import { onRetainedNativeSessionCleanupRelease, releaseRetainedNativeSessionCleanup } from "../services/retained-native-session-cleanup-notifications.js";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
@@ -71,7 +74,7 @@ const {
   externalObjectsServiceFactoryMock,
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
-  fakeServer,
+  createFakeServer,
   heartbeatServiceFactoryMock,
   heartbeatServiceMock,
   issueThreadInteractionServiceFactoryMock,
@@ -237,16 +240,40 @@ const {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
-  const fakeServer = {
-    on: vi.fn().mockReturnThis(),
-    once: vi.fn().mockReturnThis(),
-    off: vi.fn().mockReturnThis(),
-    listen: vi.fn((_port: number, _host: string, callback?: () => void) => {
-      callback?.();
-      return fakeServer;
-    }),
-    close: vi.fn((callback?: (error?: Error) => void) => callback?.()),
-  };
+  function createFakeServer() {
+    const lifecycleListeners = new Map<string, Map<() => void, boolean>>();
+    const addListener = (event: string, listener: () => void, once: boolean) => {
+      const listeners = lifecycleListeners.get(event) ?? new Map<() => void, boolean>();
+      listeners.set(listener, once); lifecycleListeners.set(event, listeners);
+    };
+    const emit = (event: string) => {
+      for (const [listener, once] of [...(lifecycleListeners.get(event) ?? [])]) {
+        if (once) lifecycleListeners.get(event)?.delete(listener);
+        listener();
+      }
+    };
+    let boundAddress: { address: string; family: string; port: number } | null = null;
+    const fakeServer = {
+      listening: false,
+      address: vi.fn(() => boundAddress),
+      on: vi.fn((event: string, listener: () => void) => { addListener(event, listener, false); return fakeServer; }),
+      once: vi.fn((event: string, listener: () => void) => { addListener(event, listener, true); return fakeServer; }),
+      off: vi.fn((event: string, listener: () => void) => { lifecycleListeners.get(event)?.delete(listener); return fakeServer; }),
+      resetBoundState() { fakeServer.listening = false; boundAddress = null; },
+      resetFixture() { fakeServer.resetBoundState(); lifecycleListeners.clear(); },
+      listen: vi.fn((port: number, host: string, callback?: () => void) => {
+        boundAddress = { address: host === "::" || host === "::1" ? host : "127.0.0.1", family: host.includes(":") ? "IPv6" : "IPv4", port };
+        fakeServer.listening = true;
+        emit("listening");
+        callback?.();
+        return fakeServer;
+      }),
+      close: vi.fn((callback?: (error?: Error) => void) => {
+        fakeServer.resetBoundState(); emit("close"); callback?.();
+      }),
+    };
+    return fakeServer;
+  }
   const loadConfigMock = vi.fn();
 
   return {
@@ -268,7 +295,7 @@ const {
     externalObjectsServiceFactoryMock,
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
-    fakeServer,
+    createFakeServer,
     heartbeatServiceFactoryMock,
     heartbeatServiceMock,
     issueThreadInteractionServiceFactoryMock,
@@ -279,6 +306,8 @@ const {
     routineServiceMock,
   };
 });
+
+let fakeServer = createFakeServer();
 
 function buildTestConfig(overrides: Record<string, unknown> = {}) {
   return {
@@ -635,6 +664,11 @@ async function settleStartupHousekeeping() {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
 }
+
+beforeEach(() => {
+  fakeServer.resetFixture();
+  fakeServer = createFakeServer();
+});
 
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
@@ -1653,7 +1687,24 @@ describe("startServer feedback export wiring", () => {
     loadConfigMock.mockReturnValue(buildTestConfig({ heartbeatSchedulerEnabled: true }));
     let releaseCleanup!: () => void;
     const ready = new Promise<void>(resolve => { releaseCleanup = resolve; });
-    const stop = vi.fn();
+    const notificationDb = {};
+    const notificationScope = { companyId: "held-startup-company" };
+    const onRelease = vi.fn();
+    const unsubscribe = owner === "retained cleanup"
+      ? onRetainedNativeSessionCleanupRelease(notificationDb, onRelease)
+      : owner === "workspace finalization"
+        ? onNativeWorkspaceFinalizationRelease(notificationDb, onRelease)
+        : undefined;
+    const releaseNotification = owner === "retained cleanup"
+      ? () => releaseRetainedNativeSessionCleanup(notificationDb, notificationScope)
+      : owner === "workspace finalization"
+        ? () => releaseNativeWorkspaceFinalization(notificationDb, notificationScope)
+        : undefined;
+    const stop = vi.fn(unsubscribe);
+    if (releaseNotification) {
+      releaseNotification();
+      expect(onRelease).toHaveBeenCalledOnce();
+    }
     const register = owner === "retained cleanup" ? heartbeatServiceMock.registerRetainedNativeSessionCleanupWork
       : owner === "workspace finalization" ? heartbeatServiceMock.registerNativeWorkspaceFinalizationWork
       : owner === "environment settlement" ? heartbeatServiceMock.registerNativeEnvironmentSettlementWork
@@ -1682,15 +1733,26 @@ describe("startServer feedback export wiring", () => {
       const server = await starting;
       stopping = server.shutdown().then(() => { stopped = true; });
       await settleStartupHousekeeping();
-      if (owner === "retained cleanup" || owner === "workspace finalization") expect(stop).toHaveBeenCalledOnce();
+      if (releaseNotification) {
+        expect(stop).toHaveBeenCalled();
+        releaseNotification();
+        expect(onRelease).toHaveBeenCalledOnce();
+      }
       expect(stopped).toBe(false);
+      releaseCleanup();
+      await stopping;
+      expect(stopped).toBe(true);
+      if (releaseNotification) {
+        releaseNotification();
+        expect(onRelease).toHaveBeenCalledOnce();
+      }
     } finally {
       releaseCleanup();
       await starting;
       await stopping;
+      unsubscribe?.();
       timer.mockRestore();
     }
-    expect(stopped).toBe(true);
   });
 
   it("reports ready before startup housekeeping finishes and starts the scheduler after it", async () => {
@@ -1788,14 +1850,17 @@ describe("startServer feedback export wiring", () => {
       heartbeatSchedulerEnabled: true,
       heartbeatSchedulerIntervalMs: 30000,
     }));
-    heartbeatServiceMock.recoverNativeRunsAfterRestart.mockRejectedValueOnce(
-      new Error("native recovery unavailable"),
-    );
+    heartbeatServiceMock.recoverNativeRunsAfterRestart.mockImplementationOnce(async () => {
+      expect(fakeServer.listening).toBe(true);
+      expect(resolveLocalRuntimeApiUrl()).toBe("http://127.0.0.1:3210");
+      throw new Error("native recovery unavailable");
+    });
 
     await expect(startServer()).rejects.toThrow("native recovery unavailable");
 
     expect(fakeServer.listen).toHaveBeenCalledTimes(1);
     expect(fakeServer.close).toHaveBeenCalledTimes(1);
+    expect(() => resolveLocalRuntimeApiUrl()).toThrow("local_runtime_api_listener_unavailable");
   });
 
   it("refuses authenticated public startup without an external database URL", async () => {
