@@ -10,9 +10,9 @@ export interface SavedSkillFixture {
 /** The public request names the skill; only its saved version contains these inputs. */
 export function savedSkillFixture(identity: string, reference: string): SavedSkillFixture {
   if (!/^[a-f0-9]{32}$/.test(reference)) throw new Error("invalid_saved_skill_reference");
-  const suffix = identity.replace(/[^a-z0-9]/gi, "").slice(-32).toLowerCase();
-  if (!suffix || identity.includes(reference)) throw new Error("invalid_saved_skill_identity");
-  const slug = `qa-saved-skill-${suffix}`, key = "saved-skill-result";
+  if (!/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(identity) || identity.length > 48 || identity.includes(reference))
+    throw new Error("invalid_saved_skill_identity");
+  const slug = `qa-saved-skill-${identity}`, key = "saved-skill-result";
   const seed = createHash("sha256").update(reference).digest();
   const first = seed[0]! + 1, second = seed[1]! + 1;
   const procedure = `# Saved receipt procedure\n\nThe receipt reference is ${reference}.\n`
@@ -20,7 +20,7 @@ export function savedSkillFixture(identity: string, reference: string): SavedSki
     + `Save exactly one Paperclip task document with key ${key}. Its body must be JSON with exactly `
     + `two fields: reference (the receipt reference) and total (the sum of the two amounts).\n`
     + "Check the saved document and finish the task. Do not create other tasks or deliverables.\n";
-  return { name: `Journey QA saved skill ${identity}`, slug, key, procedure,
+  return { name: slug, slug, key, procedure,
     markdown: `---\nname: ${slug}\ndescription: Make a receipt using this saved procedure.\n---\n\n${procedure}`,
     expected: { reference, total: first + second } };
 }
@@ -30,7 +30,7 @@ export function savedSkillSourceMatches(skill: Row | undefined, version: Row | u
   if (!skill || !version || !assignments) return false;
   const files = version.fileInventory;
   const entries = assignments.desiredSkillEntries;
-  return Boolean(skill.id && skill.companyId === companyId && skill.slug === fixture.slug && skill.key
+  return Boolean(skill.id && skill.companyId === companyId && skill.name === fixture.name && skill.slug === fixture.slug && skill.key
     && skill.markdown === fixture.markdown && skill.currentVersionId
     && version.id === skill.currentVersionId && version.companyId === companyId && version.companySkillId === skill.id
     && Array.isArray(files) && files.length === 1 && files[0].path === "SKILL.md" && files[0].content === fixture.markdown

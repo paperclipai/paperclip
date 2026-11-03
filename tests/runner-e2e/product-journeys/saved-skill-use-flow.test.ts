@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { canonicalProviderEventsFromOpenCodePart } from "../../../packages/paperclip-runner/src/provider-events.js";
+import { parseFrontmatterMarkdown } from "../../../packages/shared/src/frontmatter.js";
 import { createTaskThroughUi } from "../user-actions.js";
 import { runSavedSkillUse } from "./saved-skill-use-flow.js";
 import { savedSkillFixture, type SavedSkillFixture } from "./saved-skill-use-evidence.js";
@@ -17,10 +18,11 @@ vi.mock("@playwright/test", () => ({ expect: (locator: { textContent(): Promise<
 const directories: string[] = [];
 afterEach(async () => { vi.clearAllMocks(); await Promise.all(directories.splice(0).map(directory => rm(directory, { recursive: true, force: true }))); });
 
-async function setup(change: (kind: string, row: any) => any = (_kind, row) => row) {
+async function setup(change: (kind: string, row: any) => any = (_kind, row) => row, campaignId = "campaign") {
   const directory = await mkdtemp(path.join(os.tmpdir(), "saved-skill-flow-")); directories.push(directory);
   let fixture: SavedSkillFixture;
   let skill: Row, assigned = false, issueCreated = false, reloaded = false;
+  const savedSkills: Row[] = [];
   const own = vi.fn(async (_resource: Row) => {});
   const evidence = { checks: [] } as unknown as JourneyEvidence;
   const api = {
@@ -28,9 +30,13 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
     post: vi.fn(async (route: string, body: Row) => {
       if (route === "/api/companies/company/skills") {
         const reference = /receipt reference is ([a-f0-9]{32})/.exec(body.markdown)![1]!;
-        fixture = savedSkillFixture("campaign", reference);
+        fixture = savedSkillFixture(campaignId, reference);
+        // createLocalSkill gives the parsed frontmatter name precedence over the API input name.
+        const savedName = parseFrontmatterMarkdown(body.markdown).frontmatter.name;
         skill = { id: "skill", companyId: "company", key: "local:skill", slug: fixture.slug,
+          name: typeof savedName === "string" && savedName.trim() ? savedName.trim() : body.name,
           markdown: body.markdown, currentVersionId: "version" };
+        savedSkills.push(structuredClone(skill));
         return change("create-skill", { id: skill.id });
       }
       if (route === "/api/agents/agent/skills/sync?companyId=company") {
@@ -86,8 +92,8 @@ async function setup(change: (kind: string, row: any) => any = (_kind, row) => r
   const context = { api, page, company: { id: "company", issuePrefix: "QA" }, user: { id: "owner", name: "Owner" },
     environmentId: "environment", capabilities: ["company", "board-user", "task-write", "agent", "skill-write"],
     agent: { id: "agent", name: "Owned agent", provider: "opencode", model: "model", runtimeMode: "native" } } as unknown as JourneyContext;
-  return { context, api, page, own, evidence, directory,
-    run: () => runSavedSkillUse(context, { own } as unknown as TargetSession, "campaign", evidence, { deadlineAt: Date.now() + 5000, directory }) };
+  return { context, api, page, own, evidence, directory, savedSkills,
+    run: () => runSavedSkillUse(context, { own } as unknown as TargetSession, campaignId, evidence, { deadlineAt: Date.now() + 5000, directory }) };
 }
 
 describe("saved skill journey orchestration", () => {
@@ -127,5 +133,23 @@ describe("saved skill journey orchestration", () => {
     expect(f.api.post).toHaveBeenCalledTimes(1);
     expect(f.own).toHaveBeenCalledTimes(1);
     expect(createTaskThroughUi).not.toHaveBeenCalled();
+  });
+  it("recovers the exact persisted frontmatter name after a successful creation response is lost", async () => {
+    const campaignId = "journey-1793701020304-a1b2c3d4";
+    const f = await setup((kind, row) => {
+      if (kind === "create-skill") throw new Error("Response lost after successful creation");
+      return row;
+    }, campaignId);
+    await expect(f.run()).rejects.toThrow("Response lost after successful creation");
+    expect(f.savedSkills).toHaveLength(1);
+    expect(f.api.post).toHaveBeenCalledTimes(1);
+    expect(f.own).toHaveBeenCalledTimes(1);
+    expect(createTaskThroughUi).not.toHaveBeenCalled();
+    const intent = f.own.mock.calls[0]![0];
+    const recovered = f.savedSkills.filter(row => row.companyId === f.context.company.id && row.name === intent.name);
+    expect(recovered).toEqual([f.savedSkills[0]]);
+    expect(intent.name).toContain(campaignId);
+    expect(f.savedSkills[0]!.name).toContain(campaignId);
+    expect(f.api.post.mock.calls[0]![1].name).toBe(f.savedSkills[0]!.name);
   });
 });

@@ -17,7 +17,7 @@ function readEvents(): Row[] {
     native(2, "tool.execution.completed", { ...payload, status: "completed", output: fixture.markdown, outputBytes: Buffer.byteLength(fixture.markdown), outputTruncated: false })];
 }
 function source() {
-  const skill: Row = { id: "skill", companyId: binding.companyId, key: "local:qa-skill", slug: fixture.slug,
+  const skill: Row = { id: "skill", companyId: binding.companyId, key: "local:qa-skill", name: fixture.name, slug: fixture.slug,
     markdown: fixture.markdown, currentVersionId: "version" };
   const version: Row = { id: "version", companyId: binding.companyId, companySkillId: skill.id,
     fileInventory: [{ path: "SKILL.md", kind: "skill", content: fixture.markdown }] };
@@ -38,7 +38,10 @@ describe("saved skill use evidence", () => {
   it("keeps the random output reference in the skill, independently of its discoverable name", () => {
     expect(fixture.markdown).toContain(fixture.expected.reference);
     expect(fixture.name + fixture.slug).not.toContain(fixture.expected.reference);
-    expect(savedSkillFixture("journey-1234-5678", fixture.expected.reference).name).toContain("journey-1234-5678");
+    const owned = savedSkillFixture("journey-1234-5678", fixture.expected.reference);
+    expect(owned.name).toBe(owned.slug);
+    expect(owned.name).toContain("journey-1234-5678");
+    expect(owned.markdown).toContain(`\nname: ${owned.name}\n`);
     expect(fixture.markdown).not.toContain("\\n");
     expect(() => savedSkillFixture("", fixture.expected.reference)).toThrow();
     expect(() => savedSkillFixture(fixture.expected.reference, fixture.expected.reference)).toThrow();
@@ -50,6 +53,7 @@ describe("saved skill use evidence", () => {
     const changes: Array<(value: ReturnType<typeof source>) => void> = [
       v => { v.skill.companyId = "foreign"; }, v => { v.version.companyId = "foreign"; },
       v => { v.version.companySkillId = "foreign"; }, v => { v.skill.slug = "foreign"; },
+      v => { v.skill.name = "different saved name"; },
       v => { v.skill.markdown += "changed"; }, v => { v.version.id = "stale"; },
       v => { v.version.fileInventory = []; }, v => { v.version.fileInventory[0].content += "changed"; },
       v => { v.version.fileInventory[0].encoding = "base64"; }, v => { v.assignments.desiredSkillEntries = []; },

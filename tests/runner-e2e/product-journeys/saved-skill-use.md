@@ -6,6 +6,9 @@ not enroll itself in a daily plan. Local calibration and catalog discovery are
 separate from a real staging pass.
 
 The fixture creates one synthetic company skill through the public skill API.
+The journal name, API name and Markdown frontmatter name equal its slug. Each
+contains the exact campaign ID, including its hyphens. Recovery can therefore
+find the persisted skill by name if a successful creation response is lost.
 It pins the returned version on the owned agent through the normal skill sync
 API. A separate version read must return the exact `SKILL.md` bytes. The skill's
 random receipt reference and two numeric inputs occur only in those saved bytes.
