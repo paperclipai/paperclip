@@ -130,13 +130,19 @@ export function startPersistedQueryCache(client: QueryClient, options: {
   const clear = () => {
     cancelTimer();
     const previous = owner ?? userIdOf(client.getQueryData(queryKeys.auth.session));
-    try {
-      const token = crypto.randomUUID();
+    const token = crypto.randomUUID();
+    const publish = () => {
       if (previous) storage?.setItem(revisionKey(previous), token);
       observedClear = JSON.stringify({ token, userId: previous });
       storage?.setItem(QUERY_CACHE_CLEARED, observedClear);
-    } catch {}
-    if (previous) removeUser(previous, true);
+    };
+    try { publish(); }
+    catch {
+      if (previous) removeUser(previous);
+      else safeRemove();
+      try { publish(); } catch {}
+    }
+    if (previous) removeUser(previous, revisionFor(previous) === token);
     else safeRemove();
     suspended = true;
     owner = null;
@@ -317,6 +323,7 @@ export function startPersistedQueryCache(client: QueryClient, options: {
     timer = setTimeout(flush, options.debounceMs ?? 250);
   });
   const onStorage = (event: StorageEvent) => {
+    if (owner && event.key === revisionKey(owner) && event.newValue !== ownerRevision) { suspendAccount(); return; }
     if (event.key !== QUERY_CACHE_CLEARED && !(event.key === QUERY_CACHE_ACTIVE && event.newValue !== owner)) return;
     if (event.key === QUERY_CACHE_CLEARED && event.newValue !== clearToken()) return;
     if (event.key === QUERY_CACHE_CLEARED) {

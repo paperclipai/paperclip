@@ -208,6 +208,21 @@ describe("persisted read cache", () => {
     client.clear();
   });
 
+  it("clears saved account data and publishes revocation even when storage is initially full", () => {
+    const first = setup(); seed(first.client); first.handle.flush();
+    let available = false;
+    const set = first.storage.setItem.bind(first.storage);
+    const remove = first.storage.removeItem.bind(first.storage);
+    vi.spyOn(first.storage, "setItem").mockImplementation((key, value) => {
+      if (!available) throw new Error("Quota exceeded");
+      set(key, value);
+    });
+    vi.spyOn(first.storage, "removeItem").mockImplementation(key => { remove(key); available = true; });
+    first.handle.clear();
+    expect([...first.storage.values.keys()].filter(key => key.startsWith(QUERY_CACHE_PREFIX))).toHaveLength(0);
+    expect(first.storage.getItem(QUERY_CACHE_CLEARED)).toContain('"alice"');
+  });
+
   it("clears saved account reads after a definitive session denial", async () => {
     const first = setup(); seed(first.client); first.handle.flush();
     const account = bindAccount(first.client);
@@ -230,7 +245,7 @@ describe("persisted read cache", () => {
     expect(hasUnverifiedSession(restored.client)).toBe(false);
   });
 
-  it("removes another tab's restored account data when that tab signs out", () => {
+  it.each([QUERY_CACHE_CLEARED, "paperclip:query-cache-revision:alice"])("removes another tab's restored account data on the %s sign-out event", eventKey => {
     const first = setup(); seed(first.client); first.handle.flush();
     const client = new QueryClient();
     const events = new EventTarget();
@@ -238,7 +253,7 @@ describe("persisted read cache", () => {
     handles.push(() => { handle.dispose(); client.clear(); });
     const account = bindAccount(client);
     clearPersistedQueryCache(first.client);
-    events.dispatchEvent(Object.assign(new Event("storage"), { key: QUERY_CACHE_CLEARED, newValue: first.storage.getItem(QUERY_CACHE_CLEARED) }));
+    events.dispatchEvent(Object.assign(new Event("storage"), { key: eventKey, newValue: first.storage.getItem(eventKey) }));
     expect(client.getQueryData([...queryKeys.issues.detail("task-one"), "core"])).toBeUndefined();
     expect(client.getQueryData(queryKeys.auth.session)).toBeNull();
     expect(account.isCurrentScope()).toBe(false);
