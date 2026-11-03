@@ -215,12 +215,6 @@ Automated: [setup routing](../../ui/src/pages/apps/chat/ChatEndpointSetup.routin
 [identity confirmation](../../ui/src/pages/apps/chat/ChatIdentityConfirm.test.tsx)
 cover shared UI logic with fixtures. Provider-specific live setup is not implied.
 
-The [managed Slack setup regression](../../ui/src/pages/apps/chat/slack/ManagedSlackSetup.test.tsx)
-also covers a saved draft that needs workspace reauthorization before an app
-exists. The Connect step must show **Reconnect Slack workspace** and open
-manager authorization when clicked. The managed Slack Storybook recovery case
-renders that checkpoint with provider responses simulated.
-
 [Channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
 also covers bounded Telegram subscription recovery at startup and after committed
 configuration changes, saved retry deadlines, rollback, and parking pending
