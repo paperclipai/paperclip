@@ -13,6 +13,12 @@ import {
 } from "../general-server-shard.mjs";
 
 import { assertSelectedTests, partitionTestLines } from "../test-line-shard.mjs";
+import {
+  parseShardWeights,
+  SHARD_WEIGHTS_ENV,
+  weightedShard,
+  weightedShardRange,
+} from "../../packages/paperclip-runner/scripts/vitest-shard-weights.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const script = path.join(repoRoot, "scripts", "run-vitest-stable.mjs");
@@ -469,22 +475,24 @@ function wrapperPlan(args, envOverrides = {}) {
   return JSON.parse(result.stdout);
 }
 
-test("the PR lanes separate complete package and native workloads without changing local shards", () => {
-  for (const [args, envOverrides, packageArgs, native] of [
-    [["--shard=1/2"], { GITHUB_WORKFLOW: "PR" }, [], false],
-    [["--shard=2/2"], { GITHUB_WORKFLOW: "PR" }, null, true],
-    [[], { GITHUB_WORKFLOW: "PR" }, [], true],
-    [["--shard=2/3"], { GITHUB_WORKFLOW: "PR" }, ["--shard=2/3"], false],
-    [["--shard=3/3"], { GITHUB_WORKFLOW: "PR" }, ["--shard=3/3"], true],
-    [["--shard=2/2"], { GITHUB_WORKFLOW: "Release" }, ["--shard=2/2"], false],
-    [["--shard=2/2"], {}, ["--shard=2/2"], false],
-    [[], {}, [], false],
+test("the PR lanes weight package shards toward the lane without native workloads", () => {
+  for (const [args, envOverrides, weights, native] of [
+    [["--shard=1/2"], { GITHUB_WORKFLOW: "PR" }, "3,1", false],
+    [["--shard=2/2"], { GITHUB_WORKFLOW: "PR" }, "3,1", true],
+    [[], { GITHUB_WORKFLOW: "PR" }, null, true],
+    [["--shard=2/3"], { GITHUB_WORKFLOW: "PR" }, null, false],
+    [["--shard=3/3"], { GITHUB_WORKFLOW: "PR" }, null, true],
+    [["--shard=2/2"], { GITHUB_WORKFLOW: "Release" }, null, false],
+    [["--shard=2/2"], {}, null, false],
+    [[], {}, null, false],
   ]) {
     const plan = wrapperPlan(args, envOverrides);
     assert.equal(plan.runNativeRunnerGroup, native);
-    assert.equal(plan.runPackageTests, packageArgs !== null);
+    assert.equal(plan.packageShardWeights, weights);
     const vitest = plan.plannedCommands.find(command => command.args[0] === "exec");
-    assert.deepEqual(vitest?.args ?? null, packageArgs === null ? null : ["exec", "vitest", "run", ...packageArgs]);
+    assert.deepEqual(vitest.args, ["exec", "vitest", "run", ...args]);
+    assert.deepEqual(vitest.env, weights === null ? {} : { [SHARD_WEIGHTS_ENV]: weights });
+    if (weights !== null) parseShardWeights(weights, 2);
     assert.equal(plan.plannedCommands.some(command => command.args.includes("general-server-native-runner")), native);
     assert.ok(plan.plannedCommands.some(command => command.args.includes("build:rust")), "both workloads require debug fixtures");
   }
@@ -495,6 +503,33 @@ test("the PR lanes separate complete package and native workloads without changi
     env: workflowEnv({ GITHUB_WORKFLOW: "PR" }),
   });
   assert.notEqual(malformed.status, 0, "a malformed shard flag must fail rather than guess a lane");
+});
+
+test("weighted package shards cover every file exactly once", () => {
+  for (const fileCount of [0, 1, 2, 3, 7, 289, 1000]) {
+    for (const weights of [[3, 1], [1, 1], [1, 3], [5, 2, 1]]) {
+      const files = Array.from({ length: fileCount }, (_, index) => `src/file-${index}.test.ts`);
+      const shards = weights.map((_, index) => weightedShard(files, (file) => file, index + 1, weights));
+      assert.deepEqual(shards.flat().sort(), [...files].sort());
+      const [first] = weightedShardRange(fileCount, 1, weights);
+      const [, last] = weightedShardRange(fileCount, weights.length, weights);
+      assert.deepEqual([first, last], [0, fileCount]);
+    }
+  }
+  const files = Array.from({ length: 289 }, (_, index) => `src/file-${index}.test.ts`);
+  assert.equal(weightedShard(files, (file) => file, 1, [3, 1]).length, 217);
+  assert.deepEqual(weightedShard([...files].reverse(), (file) => file, 2, [3, 1]),
+    weightedShard(files, (file) => file, 2, [3, 1]), "lane membership must not depend on discovery order");
+});
+
+test("malformed package shard weights fail instead of guessing a partition", () => {
+  assert.equal(parseShardWeights(undefined, 2), null);
+  assert.equal(parseShardWeights("", 2), null);
+  assert.deepEqual(parseShardWeights("3, 1", 2), [3, 1]);
+  for (const value of ["3", "3,1,1", "3,0", "3,-1", "3,1.5", "3,x"]) {
+    assert.throws(() => parseShardWeights(value, 2), new RegExp(SHARD_WEIGHTS_ENV));
+  }
+  assert.throws(() => weightedShardRange(10, 3, [3, 1]));
 });
 
 const lineShardFile = path.join(repoRoot, "server/src/__tests__/chat-channels.integration.test.ts");
