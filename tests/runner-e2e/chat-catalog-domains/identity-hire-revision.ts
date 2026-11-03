@@ -1,7 +1,9 @@
 import { expect } from "@playwright/test";
 import type { Approval, ApprovalComment } from "../../../packages/shared/src/types/approval.js";
 import type { ChatCatalogCase } from "../chat-catalog-contract.js";
-import { checks, entity } from "./internal-support.js";
+import { pollUntil } from "../api.js";
+import { collectConversationLinks, conversationLinkLocator } from "../chat-rendered-links.js";
+import { checks, entity, type Entity } from "./internal-support.js";
 import { identityDefinition, identityObservation, observeIdentity, openStandingChat, remainingIdentityObservationBudget, waitForReply } from "./identity-support.js";
 import { CHAT_OPENCODE_MODEL } from "../chat-runtime-profile.js";
 import { readHireModelChoice, validHireModelChoice } from "./identity-hire-model-choice.js";
@@ -49,21 +51,51 @@ export const hireRevisionIdentityCases: readonly ChatCatalogCase[] = [identityDe
   await ctx.input.page.getByRole("button", { name: "Request revision", exact: true }).click();
   await expect.poll(async () => (await ctx.input.api.get<Approval>(`/api/approvals/${originalApproval.id}`)).status).toBe("revision_requested");
   await ctx.input.page.goto(url, { waitUntil: "domcontentloaded" });
-  return { originalApproval, originalHistoryCommentId: history.id, originalModel, cheaperModel, humanId: session.user.id,
+  return { sourceIssueId: source.id, originalApproval, originalHistoryCommentId: history.id, originalModel, cheaperModel, humanId: session.user.id,
     eligibleModels: models.map(row => row.id), modelChoice, beforeAgentCount: (await ctx.input.api.get<unknown[]>(`/api/companies/${fixtures.company.id}/agents`)).length };
 }, gradeHireRevision, {
-  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.hire-revision.native1017.v3", sourceFiles: ["chat-catalog-domains/identity-hire-revision.ts", "chat-catalog-domains/identity-hire-model-choice.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-scenarios/questions-and-approvals.yaml"],
+  authentication: "human-session", oracleVersion: "paperclip.chat-catalog.hire-revision.native1017.v3", sourceFiles: ["chat-catalog-domains/identity-hire-revision.ts", "chat-catalog-domains/identity-hire-model-choice.ts", "chat-catalog-domains/identity-support.ts", "chat-catalog-domains/internal-support.ts", "chat-rendered-links.ts", "chat-scenarios/questions-and-approvals.yaml"],
   async act(ctx, state) {
-    const originalDeadlineAt = ctx.observationDeadlineAt; remainingIdentityObservationBudget(ctx);
-    await waitForReply(ctx, originalDeadlineAt); const id = entity(state, "originalApproval").id; const source = ctx.input.page.url();
-    const links = await ctx.input.page.locator('[id^="comment-"] a[href]').evaluateAll(rows => rows.map(row => row.getAttribute("href")!));
-    const link = links.find(href => new URL(href, ctx.input.api.baseURL).pathname.endsWith(`/approvals/${id}`));
-    if (!link) throw new Error("Actual pending revised proposal review link is missing");
-    await ctx.input.page.locator(`[id^="comment-"] a[href=${JSON.stringify(link)}]`).first().click();
-    await expect(ctx.input.page.getByText("pending", { exact: true }).first()).toBeVisible(); state.pendingProposalVisible = true;
-    await ctx.input.page.getByRole("button", { name: "See full request", exact: true }).click();
-    await expect(ctx.input.page.locator("pre")).toContainText(String(state.cheaperModel)); state.revisedModelVisible = true;
-    await ctx.input.page.goto(source, { waitUntil: "domcontentloaded" });
+    const remaining = () => remainingIdentityObservationBudget(ctx);
+    remaining(); await waitForReply(ctx, ctx.observationDeadlineAt); remaining();
+    const id = entity(state, "originalApproval").id, sourceId = String(state.sourceIssueId), source = ctx.input.page.url();
+    if (ctx.issue()?.id !== sourceId || entity(state, "originalApproval").companyId !== ctx.input.fixtures.company.id)
+      throw new Error("Hire review source does not match the owned proposal");
+    const frame = await pollUntil({ label: "Actual canonical pending hire review link", deadlineAt: ctx.observationDeadlineAt!,
+      load: async () => {
+        await ctx.refreshIssue(); remaining();
+        const [runs, comments, approval] = await Promise.all([
+          ctx.allRuns(), ctx.input.api.get<Entity[]>(`/api/issues/${sourceId}/comments?order=asc`, { timeout: remaining() }),
+          ctx.input.api.get<Approval>(`/api/approvals/${id}`, { timeout: remaining() }),
+        ]);
+        remaining();
+        const links = await collectConversationLinks(ctx.input.page, { origin: ctx.input.api.baseURL, companyId: ctx.input.fixtures.company.id,
+          companyPrefix: ctx.input.fixtures.company.issuePrefix, sourceId, leadId: ctx.input.fixtures.agent.id, comments, runs, projects: [], activity: [] });
+        const humans = comments.filter(row => row.authorUserId === state.humanId && !row.createdByRunId && row.body?.trim() === ctx.scenario.query.trim());
+        const run = runs[0];
+        const bound = ctx.issue()?.id === sourceId && ctx.issue()?.conversationState === "waiting" && runs.length === 1 && !!run
+          && run.companyId === ctx.input.fixtures.company.id && run.agentId === ctx.input.fixtures.agent.id && run.status === "succeeded"
+          && run.contextSnapshot?.issueId === sourceId && humans.length === 1 && run.contextSnapshot?.commentId === humans[0]?.id;
+        const link = bound && run ? links.find(row => {
+          if (row.source !== "reply" || row.conversationId !== sourceId || !comments.some(comment => comment.id === row.commentId
+            && comment.authorAgentId === run.agentId && comment.createdByRunId === run.id)) return false;
+          try { const url = new URL(row.href, ctx.input.api.baseURL); return url.origin === new URL(ctx.input.api.baseURL).origin
+            && [ `/approvals/${id}`, `/${ctx.input.fixtures.company.issuePrefix}/approvals/${id}` ].includes(url.pathname); }
+          catch { return false; }
+        }) : undefined;
+        return { approval, link };
+      },
+      accept: value => Date.now() < ctx.observationDeadlineAt! && value.approval.id === id && value.approval.companyId === ctx.input.fixtures.company.id
+        && value.approval.status === "pending" && !!value.link,
+      reject: value => value.approval.id !== id || value.approval.companyId !== ctx.input.fixtures.company.id || value.approval.status !== "pending"
+        ? "The owned revised hire proposal is not pending" : undefined,
+    });
+    remaining(); if (!frame.link) throw new Error("Actual pending revised proposal review link is missing");
+    await conversationLinkLocator(ctx.input.page, frame.link).first().click({ timeout: remaining() });
+    await expect(ctx.input.page.getByText("pending", { exact: true }).first()).toBeVisible({ timeout: remaining() }); state.pendingProposalVisible = true;
+    await ctx.input.page.getByRole("button", { name: "See full request", exact: true }).click({ timeout: remaining() });
+    await expect(ctx.input.page.locator("pre")).toContainText(String(state.cheaperModel), { timeout: remaining() }); state.revisedModelVisible = true;
+    await ctx.input.page.goto(source, { waitUntil: "domcontentloaded", timeout: remaining() }); remaining();
   },
   async observe(ctx, state) {
     const id = entity(state, "originalApproval").id;
