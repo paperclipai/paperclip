@@ -1,3 +1,5 @@
+import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
+import { NativeStartupCleanupPendingError } from "../native-runtime/native-startup-cleanup.js";
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
 import { usesNativeUsageDelivery } from "../native-runtime/native-usage-accounting.js";
@@ -112,7 +114,7 @@ export interface HeartbeatRuntimeExecutionInput {
   run: typeof heartbeatRuns.$inferSelect;
   agent: typeof agents.$inferSelect;
   options: {
-    nativeSessionBackendFactory?: (execution: NativeExecutionInput) => NativeSessionBackend;
+    nativeSessionBackendFactory?: (execution: NativeExecutionInput, context?: { recoveryPurpose: "execution" | "stop_cleanup" }) => NativeSessionBackend;
     pluginWorkerManager?: PluginWorkerManager;
   };
   task: Pick<Selection["task"], "issueContext" | "context" | "executionContinuation"> & {
@@ -604,6 +606,8 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
           nativeDispatchAtMs,
         }),
       );
+      const stopCleanup = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
+        && await readClaimedNativeStopRecovery(db, run, runOptions.nativeLeaseOwner);
       const guardedDispatch =
         await dispatchWithTiming(
           (markDispatchStarted) => {
@@ -621,7 +625,9 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
               restartRecovery: runOptions.nativeRestartRecovery,
               onExecutionLeaseAcquired: runOptions.onNativeExecutionLeaseAcquired,
               backend:
-                options.nativeSessionBackendFactory?.(nativeExecution),
+                stopCleanup
+                  ? options.nativeSessionBackendFactory?.(nativeExecution, { recoveryPurpose: "stop_cleanup" })
+                  : options.nativeSessionBackendFactory?.(nativeExecution),
               useRunnerd: agent.adapterType === "paperclip_runner",
               adapterType: agent.adapterType,
               sessionGoalControl,
@@ -1072,15 +1078,21 @@ export async function executeHeartbeatRuntime(db: Db, input: HeartbeatRuntimeExe
       && !(nativeExecution && "access" in nativeExecution.workspace && nativeExecution.workspace.access === "none")) {
       input.effects.onProviderResourceDisposition("stop_and_retain");
     }
-    await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
-      .update(heartbeatRuns)
-      .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
-      .where(
-        and(
-          eq(heartbeatRuns.id, run.id),
-          eq(heartbeatRuns.status, "running"),
-        ),
-      ), { companyId: run.companyId });
+    try {
+      await writeExecutionControl(db, DELIVERY_QUEUES.executionFinalization, tx => tx
+        .update(heartbeatRuns)
+        .set({ executionControlDeadlineAt: new Date(Date.now() + 60_000) })
+        .where(
+          and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.status, "running"),
+          ),
+        ), { companyId: run.companyId });
+    } catch (writeError) {
+      if (adapterErr instanceof NativeStartupCleanupPendingError) throw adapterErr;
+      throw writeError;
+    }
+    if (adapterErr instanceof NativeStartupCleanupPendingError) throw adapterErr;
     if (
       issueRef &&
       context.resumeSessionGoalHeartbeat === true &&

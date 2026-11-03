@@ -1245,6 +1245,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   onAccountingEvent?: (event: PrpEvent) => Promise<void>;
   onRecoveryAccountingEvent?: (event: PrpEvent, sourceIdentity: DurableRecoveryIdentity) => Promise<void>;
   recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
+  recoveryPurpose?: "execution" | "stop_cleanup";
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
   /** Explicit evaluation-only candidate selection, never derived from persisted session input. */
@@ -4111,7 +4112,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   #recoverPendingSemanticInputsWhenReady(): void {
-    if (this.#startupComplete && this.#handlerInstalled && this.#sourceRecoveryIdentity === null && this.#pendingWarmRecoveryCompletion === null) {
+    if (this.options.recoveryPurpose !== "stop_cleanup" && this.#startupComplete && this.#handlerInstalled && this.#sourceRecoveryIdentity === null && this.#pendingWarmRecoveryCompletion === null) {
       void Promise.resolve().then(() => this.#core?.recoverPendingSemanticInputs())
         .catch(error => this.#failTransport(error instanceof Error ? error : new Error(String(error))));
     }
@@ -4511,7 +4512,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
   }
 
-  async #stopProviderBeforeSuspend(deadline: number): Promise<void> {
+  async #stopProviderBeforeSuspend(deadline: number): Promise<boolean> {
     const state = this.#providerDrainState();
     const core = this.#core;
     const inferredActiveProviderTurnId =
@@ -4534,10 +4535,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       && (state === null || (state.activeProviderTurnId === null && state.providerSettled));
     if (
       state === "unreadable" ||
-      (activeProviderTurnId === null && !stopIdlePi) ||
+      (activeProviderTurnId === null && !stopIdlePi && this.options.recoveryPurpose !== "stop_cleanup") ||
       core === null
     ) {
-      return;
+      return false;
     }
     const commandId = `command_close_stop_${randomUUID().replaceAll("-", "")}`;
     core.queueCommand(
@@ -4557,29 +4558,32 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             ? "stopped idle Pi provider before runner suspension"
             : `stopped active provider turn ${activeProviderTurnId} before runner suspension`,
         );
-        return;
+        return record(record(command.result).result).providerExitConfirmed === true;
       }
       if (command !== undefined && command.status !== "pending") {
         this.#diagnostic(
           `provider turn stop ${command.status} before runner suspension`,
         );
-        return;
+        return false;
       }
-      if (await this.#runnerHasExited()) return;
+      if (await this.#runnerHasExited()) return false;
       await new Promise((resolveWait) => setTimeout(resolveWait, 5));
     }
     this.#diagnostic("provider turn stop timed out before runner suspension");
+    return false;
   }
 
   async #drainSettledProviderEventsBeforeSuspend(
     timeoutMs = 1_000,
+    providerStopConfirmed = false,
   ): Promise<boolean> {
     const core = this.#core;
     if (!core) return false;
     try {
       const drained = await awaitProviderDrainBarrier({
         readProviderState: () => this.#providerDrainState(),
-        semanticResultsSettled: () => core.semanticToolResultsSettled(),
+        semanticResultsSettled: () => core.semanticToolResultsSettled()
+          || (this.options.recoveryPurpose === "stop_cleanup" && providerStopConfirmed),
         commands: () => core.store.state.commands,
         queueDrain: (commandId) => {
           core.queueCommand("runner.drain", {}, commandId, true);
@@ -4775,6 +4779,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // `unsettled` and preserve its original bootstrap diagnostic.
     let runnerSuspended = false;
     let providerDrained = false;
+    let cleanupProviderStopConfirmed = false;
     let suspensionRequired = false;
     let lastSuspensionState: Record<string, unknown> | null = null;
     let suspensionState: {
@@ -4793,11 +4798,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // fresh run authority never inherits the prior run's pending events.
 
       if (!(await this.#runnerHasExited())) {
+        if (this.options.recoveryPurpose === "stop_cleanup") {
+          cleanupProviderStopConfirmed = await this.#stopProviderBeforeSuspend(preparationDeadline);
+        }
         // Let an already-admitted tool result reach its original provider
         // before turn.stop can retire that tool-call identity. This shares the
         // close preparation deadline; a stuck callback never stalls cleanup.
         while (
-          !this.#core.semanticToolResultsSettled() &&
+          !this.#core.semanticToolResultsSettled() && !cleanupProviderStopConfirmed &&
           Date.now() < preparationDeadline
         ) {
           this.#pumpEventsSafely();
@@ -4809,9 +4817,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // trip may need to carry. Give both cases the same budget so a
         // slow-but-idle runner is not held to a tighter deadline than a
         // runner that just stopped a turn.
-        await this.#stopProviderBeforeSuspend(preparationDeadline);
+        if (this.options.recoveryPurpose !== "stop_cleanup") {
+          await this.#stopProviderBeforeSuspend(preparationDeadline);
+        }
         providerDrained = await this.#drainSettledProviderEventsBeforeSuspend(
           Math.min(5_000, Math.max(0, preparationDeadline - Date.now())),
+          cleanupProviderStopConfirmed,
         );
       }
       // Local durable roots are reused too. Process exit alone cannot prove
@@ -4920,7 +4931,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const runnerSettled =
       preparationConfirmed && runnerSuspended &&
       providerDrained &&
-      this.#core?.semanticToolResultsSettled() === true &&
+      (this.#core?.semanticToolResultsSettled() === true || cleanupProviderStopConfirmed) &&
       (finalProviderState === null ||
         (finalProviderState !== "unreadable" &&
           finalProviderState.pendingEventCount === 0 &&
@@ -5282,8 +5293,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerVersion: runnerArtifact.version,
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
-      onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
-      recoverSemanticToolInput: call => this.#recoverSemanticToolInput(call),
+      semanticInputMode: this.options.recoveryPurpose === "stop_cleanup" ? "retain_only" : "dispatch",
+      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
+      recoverSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
         if (this.#sourceRecoveryIdentity && event.runId === this.#sourceRecoveryIdentity.runId) {
           if (!this.options.onRecoveryAccountingEvent && this.options.onAccountingEvent) throw new Error("native_runner_source_accounting_unavailable");
@@ -5775,8 +5787,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerVersion: runnerArtifact.version,
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
-      onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
-      recoverSemanticToolInput: call => this.#recoverSemanticToolInput(call),
+      semanticInputMode: this.options.recoveryPurpose === "stop_cleanup" ? "retain_only" : "dispatch",
+      onSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : (call) => this.#handleSemanticToolInput(call),
+      recoverSemanticToolInput: this.options.recoveryPurpose === "stop_cleanup" ? undefined : call => this.#recoverSemanticToolInput(call),
       onCommittedEvent: async (event) => {
         if (this.#sourceRecoveryIdentity && event.runId === this.#sourceRecoveryIdentity.runId) {
           if (!this.options.onRecoveryAccountingEvent && this.options.onAccountingEvent) throw new Error("native_runner_source_accounting_unavailable");

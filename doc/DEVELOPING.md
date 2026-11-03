@@ -1716,6 +1716,10 @@ marker is gone. Denied permissions and object locks keep a retry obligation.
 
 The sandbox holds current working files. PostgreSQL records its location,
 writer epoch, and committed snapshot; encrypted immutable snapshots live in S3.
+S3 multipart uploads stream up to four parts concurrently. One producer reads
+the source in order, and bounded stream buffers preserve backpressure. Failed
+uploads cancel and settle their active requests before multipart cleanup.
+Snapshot publication still requires full object hash and size verification.
 Preparation creates a saved baseline, and native finalization saves the stopped
 writer's files before releasing its persistence obligation. Replacing a
 webserver reconnects to the recorded allocation without copying files back to
@@ -1723,6 +1727,18 @@ a controller checkout. Saved versions restore in a new sandbox without the old
 host, sandbox, or Git remote. Files changed since the last save still depend on
 the live sandbox: losing that allocation can lose those edits. There is no
 periodic workspace backup in this release.
+
+Files reads use the current committed saved version when remote authority is
+clean and has no active writer, even while its old allocation remains recorded.
+The saved loader verifies the company, workspace, snapshot, and archive before
+reading. Dirty or writer-owned authority uses the live allocation and cannot
+substitute an older save if that allocation is unavailable. A saved read permits
+cleanup to clear its recorded allocation while the epoch, snapshot, source,
+clean state, and absent writer stay identical. A new or reintroduced allocation
+still invalidates that read. Live reads retain the full allocation fence, and
+private saved-file copies are removed after use.
+Embedders that omit the optional saved-file loader keep valid live reads. They
+still report unavailability when neither a live location nor a loader exists.
 
 Existing local task workspaces require an explicit import. Run from a source
 checkout with the deployment's database, S3, and key configuration loaded:
@@ -4010,6 +4026,11 @@ before any subsequent upload. An interrupted account-bound request stays pending
 under its original key; it is never relabelled as a provider refusal. Legacy
 unowned form drafts remain in browser storage but are not restored into another
 account. Storybook fixtures seed the same account-specific keys.
+
+New-task staged file bytes are stored in IndexedDB for the account and company.
+Writes merge the selected files with the current saved list in one read/write
+transaction. Removal and successful creation delete only the files that the
+mounted draft removed. Other open tabs keep their saved files across reloads.
 
 Successful pending-record writes have the same readable size range as browser
 storage. In particular, a large task description cannot silently drop its

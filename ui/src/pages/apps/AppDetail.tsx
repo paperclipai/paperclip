@@ -15,7 +15,7 @@ import { Check, Loader2, Pencil } from "lucide-react";
 import type {
   ToolConnection,
   ToolPolicy,
-  ToolProfileWithDetails,
+  ToolProfileConfiguration,
 } from "@paperclipai/shared";
 import {
   connectionDisplaySecondaryHint,
@@ -133,9 +133,9 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
     enabled: !!connectionId && needsCatalog,
   });
   const profilesQuery = useQuery({
-    queryKey: queryKeys.tools.profiles(selectedCompanyId ?? "__none__"),
-    queryFn: () => toolsApi.listProfiles(selectedCompanyId!),
-    enabled: !!selectedCompanyId && (activeTab === "review" || activeTab === "permissions"),
+    queryKey: queryKeys.tools.connectionProfileConfiguration(selectedCompanyId ?? "__none__", connectionId),
+    queryFn: () => toolsApi.listConnectionProfileConfiguration(connectionId),
+    enabled: !!selectedCompanyId && !!connectionId && (activeTab === "review" || activeTab === "permissions"),
   });
   const policiesQuery = useQuery({
     queryKey: queryKeys.tools.policies(selectedCompanyId ?? "__none__"),
@@ -923,7 +923,7 @@ function StatusBadge({ status }: { status: StatusInfo }) {
   );
 }
 
-function enabledCatalogIds(profile: ToolProfileWithDetails | undefined): Set<string> {
+function enabledCatalogIds(profile: ToolProfileConfiguration | undefined): Set<string> {
   const ids = new Set<string>();
   for (const entry of profile?.entries ?? []) {
     if (entry.effect === "include" && entry.catalogEntryId) ids.add(entry.catalogEntryId);
@@ -959,7 +959,7 @@ function askFirstCatalogIds(policies: ToolPolicy[], connectionId: string): Set<s
  * one that agrees with what the tab displays.
  */
 function accessFrom(
-  profile: ToolProfileWithDetails | undefined,
+  profile: ToolProfileConfiguration | undefined,
   install: InstallState,
 ): AccessDraft {
   const bindings = profile?.bindings ?? [];

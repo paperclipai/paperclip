@@ -2,7 +2,7 @@ import { expect } from "@playwright/test";
 import { taskDocumentHistoryPasses, taskDocumentMatches, type TaskDocumentExpectation, type TaskDocumentRevision, type TaskDocumentSnapshot } from "./task-document-evidence.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
-async function openDocumentAuthoring({ page }: JourneyContext) {
+export async function openDocumentAuthoring({ page }: JourneyContext) {
   const create = page.getByRole("button", { name: "New document", exact: true });
   const properties = page.getByRole("button", { name: /^(Show properties|Properties)$/ }).first();
   const artifacts = page.getByRole("tab", { name: /^Artifacts/ }).first();

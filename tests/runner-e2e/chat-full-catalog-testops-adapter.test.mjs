@@ -66,6 +66,22 @@ test('the complete 244 mapping uses compact actual IDs and preserves the legacy 
   assert.equal(value.targetSha, catalogTargetSha);
 });
 
+test('selection accepts the exact master workflow URL returned by a build-server refresh', async () => {
+  const job = { id: 11, type: 'github', name: 'Chat catalog TestOps',
+    url: 'https://github.com/paperclipai/paperclip/blob/master/.github/workflows/chat-catalog-testops.yml',
+    parameters: [{ id: 34, name: 'Branch', defaultValue: 'master' }] };
+  const refreshed = api({ '/api/job/11': job });
+  const value = await validatePilotSelection(refreshed.get, env, context, 99);
+  assert.deepEqual(value.cases.map(row => row.caseId), selected.map(row => row.caseId));
+  assert.equal(value.targetSha, catalogTargetSha);
+  for (const url of [job.url.replace('/master/', '/other-branch/'), job.url.replace('/paperclipai/', '/other-owner/'),
+    job.url.replace('chat-catalog-testops.yml', 'chat-catalog-testops-case.yml')]) {
+    const wrong = api({ '/api/job/11': { ...job, url } });
+    await assert.rejects(validatePilotSelection(wrong.get, env, context, 99), /job_mismatch/);
+    assert.equal(wrong.calls.includes('/api/jobrun/77'), false);
+  }
+});
+
 test('the actual full registration receipt fits one protected variable without a later source change', async () => {
   const prepared = { planId: 10, integrationId: 1, cases: selected.map(row => Object.fromEntries(
     ['key', 'scenario', 'executionId', 'fullName', 'registeredFullName', 'caseId'].map(key => [key, row[key]]))) };

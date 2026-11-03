@@ -204,6 +204,19 @@ if (!support.supported) console.warn(`Skipping idle sleep Postgres tests: ${supp
     }
   });
 
+  it("keeps a failed startup intent awake after its local worker counter settles", async () => {
+    const f = await seed();
+    expect(await read()).toEqual(none);
+    const finish = beginIdleTrackedWork();
+    await db.update(heartbeatRuns).set({ status: "running", runtimeMode: "native", nativePhase: "observed",
+      runnerProfileJson: { nativeStartupContext: { contextId: randomUUID(), deadlineAtMs: now - 1 } } }).where(eq(heartbeatRuns.id, f.runId));
+    finish();
+    expect(idleWorkSnapshot().active).toBe(0);
+    expect(await read()).toEqual(present);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.runId));
+    expect(await read()).toEqual(none);
+  });
+
   it("retains committed budget stop intent until its exact generation is delivered", async () => {
     const f = await seed();
     const [policy] = await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,

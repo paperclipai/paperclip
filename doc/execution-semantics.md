@@ -202,6 +202,14 @@ and review run. The server reads these records from saved review state; it does
 not depend on the parent session remembering a separate review session. These
 records are evidence and do not grant permission to resolve another review.
 
+An automatic chat-completion wake retains its exact delivery receipt when
+admission waits on a dependency, budget, or pause. It does not merge into a
+replaceable dependency signal. The same gates still prevent execution.
+Workspace readiness accepts a completed operation enclosed by a successful
+finalize from the same company, workspace, issue, and run. A nested snapshot
+that finishes before that finalize finishes does not leave a permanent wait.
+Unfinished operations and work after the finalize still require a later save.
+
 ### Answered Slack conversations
 
 An accepted scheduled-monitor yield remains unfinished task work. Its committed
@@ -264,6 +272,24 @@ so normal result and workspace finalization retain their existing ordering.
 The cancellation records the board user's identity. Its acknowledged operator
 Stop receipt keeps recovery from promoting old queued input or creating a retry
 while the task closure commits.
+
+A persisted run-only Stop can survive a controller restart before dispatch is
+acknowledged. Recovery can claim an interrupted run only for its unfinished,
+audited Stop and an authenticated existing remote session. A cleared task lock
+does not authorize new task work or replacement of another task owner. Cleanup
+reuses the run's original held budget reservation, including during a budget
+pause. It cannot create a reservation, bootstrap a runner, or submit a provider
+turn. The recovered session sends the existing Stop through the audited
+cancellation producer. Only its acknowledgement closes the execution owner.
+Cleanup skips attachment staging and warm-owner retirement. Its transport
+retains authenticated pending semantic inputs without dispatch, recovery, or a
+semantic reply. The server derives this purpose from current audited Stop,
+lease, and held-reservation authority. Closing with unanswered input requires a
+new exact provider-stop receipt confirming process exit, the durable event drain,
+and identity-checked runner suspension. The input stays unanswered; the cleanup
+purpose alone cannot certify termination. Ordinary execution retains its existing
+semantic dispatcher requirement. Missing usage remains pending accounting debt;
+a complete receipt settles the original reservation and charge once.
 
 ## 4. Agent-Owned vs User-Owned Execution
 
@@ -725,6 +751,20 @@ A workspace-coherent adapter path means:
 - the adapter will receive the same effective workspace/cwd that Paperclip resolved for the run, including the same workspace ids and `PAPERCLIP_WORKSPACE_*` environment values
 - the effective cwd exists or is provider-reachable, according to the workspace provider
 - when the adapter or workspace strategy relies on git state, the cwd is git-valid for the selected workspace: it resolves to the expected repository root, required base refs or branch metadata can be resolved, and runtime-created worktrees are still registered or explicitly recoverable
+
+Fresh remote-workspace recovery fingerprints the admitted remote strategy. A
+temporary strategy used to seed a controller directory must not become the saved
+remote configuration. An unchanged follow-up reuses that configuration without
+reporting strategy drift. Real strategy, source, mode and environment changes
+retain their existing replacement checks.
+
+Older remote Git workspaces can retain the temporary `project_primary`
+fingerprint. That fingerprint alone cannot distinguish the old preparation bug
+from a genuinely configured `project_primary` strategy; the remote workspace row
+uses `git_worktree` for either Git source. Do not rewrite those fingerprints in
+place or suppress their replacement checks. After saving and inspecting the
+retained work, an explicitly admitted fresh recovery creates a workspace with the
+correct fingerprint. Ordinary reuse of the old workspace does not migrate it.
 
 Adapter-backed liveness also requires control-plane reachability from the agent's actual mutation surface, not just from the host adapter process. If the agent is expected to use Bash, shell tools, runtime helpers, or in-sandbox command execution to update issues, create comments, upload artifacts, or submit review decisions, the `PAPERCLIP_API_URL` and `PAPERCLIP_API_KEY` visible to that surface must route to Paperclip successfully.
 
@@ -1716,6 +1756,20 @@ sources without this proof remain ineligible. The preservation owner still
 requires an independently stopped, exclusively bound allocation and no host writer;
 it saves files and resumes the existing finalizer without another provider turn.
 
+Both the legacy native copyback descriptor and the remote-workspace descriptor
+keep an unfinished export under the execution hold. Task Retry saves its intent
+behind that hold; an accepted successful result resumes its existing finalizer
+after verified preservation instead of admitting another task run. Pending human
+review remains effective when the result commits.
+
+If a later failure supersedes the original recovery action, an explicit board
+`recover-workspace` request can still preserve that exact historical export.
+The cancelled action remains historical and the current action retains attention
+ownership. Preservation checks current writers and source identity, records a
+durable snapshot, and leaves the task's newer workspace binding unchanged. It
+does not apply an older accepted result over a newer run or authorize continuation.
+Cancelled history without a saved explicit recovery request remains ineligible.
+
 Startup and the retained-workspace sweep reconstruct these obligations through
 the retained workspace index. Committed Retry, recovery admission, and recovery
 progress writes wake a separate preservation worker. It follows the persisted
@@ -1960,6 +2014,67 @@ That is the execution contract Paperclip should present to operators.
 
 ### Cancellation during native startup
 
+A retained Codex or Claude session uses the same Core-owned startup context
+for local execution and plugin execution. Core retains the selected native
+execution input. Provider, model, instructions, skills and tool selection remain
+in that input and its existing Runner launch requirements. Provider configuration defaults
+changed after selection apply to later runs. A configuration edit does not hold
+startup open or delay its commit.
+
+For a retained plugin task, this context starts inside the existing controller
+claim after its authority locks and checks. Its 30-second budget includes claim
+commit, retained cleanup, optional attachment staging and accounting setup before
+session inspection. The claim records its exact context, task lease, owner and
+deadline in the existing run profile update. Local retained sessions start the
+context after the claim; their deadline remains the smaller of the 30-second warm
+startup budget and the controller's remaining confirmed ownership budget. Fresh
+launches, checkpoint recovery, Pi and other providers retain their existing
+budgets. Inspection of a warm candidate can discover a stopped task and acquire
+a replacement within this bound. Once Core rejects reuse, the later cold launch
+uses its existing budget. Before an unsupported-plugin or incompatible warm
+candidate falls back, Core clears the matching durable context with an ownership
+check; a failed clear prevents fallback. This adds one database response only to
+that remote fallback, and none to compatible warm or local startup.
+
+A compatible plugin receives an optional transient transport projection. It
+contains an attempt ID, an absolute deadline, plugin-owned instance secrets and
+the company transport configuration. Core reads this transport once for the
+attempt. It does not put transport secrets in lease metadata, checkpoints or run
+results. The existing warm-identity update records only a run ID, context ID and
+deadline before the plugin receives a preparation request. The
+plugin uses the existing Core-selected Runner requirements, verifies its actual
+guest resources, and does not repeat Core's eligibility decision. Generic plugin
+runtime reads remain fresh. Older plugins receive no transport projection. Their initial capability lookup
+is still bounded by the Core startup context; after unsupported capability is
+detected and the matching context is cleared, subsequent startup uses the
+existing path and budgets.
+
+Cancellation aborts compatible plugin startup I/O and prevents later provider
+dispatch. The initial capability lookup retains its legacy read path and can
+finish after the caller stops waiting. Already accepted remote requests can still
+commit. A caller timeout or deadline
+does not prove that its worker or remote process stopped. Core retains its
+startup responsibility until the actual worker reply or the deadline. A worker
+that remains unsettled then requests audited cancellation and automatic cleanup
+through the existing control queues. Normal Stop joins this work. Cleanup must
+retire the exact physical task, verify that its process and preparation writes
+stopped, and drain accepted host handlers before releasing resources. A process
+stop alone is insufficient. The compatible backend fences later writes to a
+retired physical task; retries allocate a new task ID. Missing proof or an
+unreachable backend leaves visible cleanup pending and automatic retries.
+
+Restart recovery uses the claim breadcrumb only while the current run has no
+first session checkpoint and the prior controller and context deadlines have
+expired. A later preparation breadcrumb requires the stronger preparation-stop
+proof. A failed cleanup-intent write retains the original typed failure and
+rearms the existing restart retry after 30 seconds; the running run continues to
+block idle sleep. Recovery queues cleanup rather than replaying a provider. A completed result
+or a newer owner wins. The existing adopted-authentication and chat-workspace
+ownership holds retain their separate behavior. The startup budget does not bound
+the duration of remote cleanup. Existing Stop receipts and process cleanup still gate
+destructive lifecycle or binding changes. Operator plugin restarts and external
+machine changes can still interrupt startup.
+
 Cancellation records a preparation fence while holding the run row lock. Native
 runtime selection checks that fence, the running status, and the current startup
 controller lease in the same transaction that creates the native coordinator.
@@ -1997,6 +2112,15 @@ Admission atomically settles an unclaimed coordinator and admits one fresh turn,
 preserving history, unknown action outcomes, and attempt counts. Pauses, approvals,
 budgets, task ownership, and terminal task status still gate admission. No
 automatic provider replay is authorized by a cancelled startup.
+
+A failed cleanup attempt saves its next retry time in the existing control-work
+deadlines. The startup marker retains the original admission deadline. Both
+candidate batches use stable deadline order, and pending cleanup cannot enter
+ordinary forced finalization. A late replacement-task reply remains owned until
+its resource identity is durable. It is queued for cleanup instead of attached
+after cancellation. The old task's Stop receipt cannot settle cleanup of a new
+replacement task. A lost reply with no known resource identity remains unresolved
+until provider inspection or operator reconciliation establishes its outcome.
 
 ### Delivering queued messages after a legacy run stops
 
@@ -2479,6 +2603,13 @@ references and fabricated or cross-task delivery receipts. Text answers and
 accessible repository work products do not require an attachment. Publication
 failure calls for continued work or a concrete blocker, not a human confirmation
 that the task is complete.
+
+Native completion reports can cite the relative task-document links returned by
+the server. Each link must resolve to this company's current task and an attached
+document whose current revision has a matching native publication receipt.
+The same server-owned link projection supplies completion guidance and evidence
+validation. A published document link can accompany a requested file, but it
+does not replace that file's verified delivery evidence.
 
 For an explicit file output in the current request, an empty report, a
 verification-only reference, or an unregistered URL cannot satisfy delivery.
