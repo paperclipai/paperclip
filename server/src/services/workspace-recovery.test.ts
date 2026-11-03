@@ -1705,6 +1705,19 @@ describe("automatic retained workspace recovery", () => {
       const [task] = await db.select().from(issues).where(eq(issues.id, f.issueId));
       expect(await taskInterruptionPresentation(db, task)).toMatchObject({ state: "failed", canRetry: true,
         retryWait: { reason: "remote_cleanup", message: "Retry is waiting for the previous environment to stop. Your message is saved." } });
+      const commentId = randomUUID(), messageWakeId = randomUUID();
+      await db.insert(issueComments).values({ id: commentId, companyId: f.companyId, issueId: f.issueId,
+        authorType: "user", authorUserId: "board", body: "Keep my saved message while the previous environment stops." });
+      await db.insert(agentWakeupRequests).values({ id: messageWakeId, companyId: f.companyId, agentId: wake.agentId,
+        source: "automation", reason: "issue_commented", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: "board", requestedAt: new Date(wake.requestedAt.getTime() + 1),
+        payload: { issueId: f.issueId, commentId } });
+      expect(await taskInterruptionPresentation(db, task)).toMatchObject({ intentId: receipt.requestId,
+        retryWait: { reason: "remote_cleanup" } });
+      await db.update(agentWakeupRequests).set({ status: "coalesced" }).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      const newInput = await taskInterruptionPresentation(db, task);
+      expect(newInput).toMatchObject({ state: "working", intentId: messageWakeId });
+      expect(newInput).not.toHaveProperty("retryWait");
       return;
     }
     expect(turns).toHaveLength(1);

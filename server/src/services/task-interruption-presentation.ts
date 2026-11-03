@@ -19,10 +19,12 @@ type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "st
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
   Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode">>;
+type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null };
 type ProjectionState = {
   run?: ProjectionRun;
   action?: typeof issueRecoveryActions.$inferSelect;
-  wait?: { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null };
+  wait?: ProjectionWait;
+  retryWait?: ProjectionWait;
   agent?: Pick<typeof agents.$inferSelect, "status" | "pauseReason">;
   projectAccessAllowed?: boolean;
   projectAccessProjectId?: string | null;
@@ -69,6 +71,7 @@ function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | 
  * locks. The same projection is used in detail, lists and attention surfaces. */
 export function projectTaskInterruption(issue: ProjectionIssue, input: ProjectionState, now = Date.now()): TaskInterruptionPresentation | null {
   const { run, wait, action, agent, project, company } = input;
+  const retryWait = input.retryWait ?? wait;
   if (!run) return null;
   const system = readSystemRecovery(action?.evidence);
   const base: TaskInterruptionPresentation = { intentId: wait?.id ?? null, responsibility: "system",
@@ -108,9 +111,10 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
   const activeObservation = action?.evidence.systemRecoveryActiveAt;
   if (system?.state === "running" && typeof activeObservation === "number" &&
       activeObservation > now - 45_000) return { ...base, state: "working" };
-  if (wait?.sourceRunId === run.id && wait.executionWaitReason) {
-    const reason = Object.hasOwn(retryWaitMessages, wait.executionWaitReason) ? wait.executionWaitReason : "execution_recovery";
-    return { ...base, state: "failed", canRetry: true, retryWait: { reason,
+  if (retryWait?.sourceRunId === run.id && retryWait.executionWaitReason) {
+    const reason = Object.hasOwn(retryWaitMessages, retryWait.executionWaitReason) ? retryWait.executionWaitReason : "execution_recovery";
+    return { ...base, intentId: retryWait.id, state: "failed",
+      canRetry: !["cleanup_quarantined", "cancelled_by_operator"].includes(reason), retryWait: { reason,
       message: retryWaitMessages[reason] ?? "Retry is waiting for execution checks. Your message is saved." } };
   }
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
@@ -141,6 +145,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const latestRuns = db.select({ id: candidates.id }).from(candidates)
     .orderBy(desc(candidates.createdAt), desc(candidates.id)).limit(1).as("latest_interruption_runs");
   const wakeIssue = sql<string>`${agentWakeupRequests.payload}->>'issueId'`;
+  const isRetryWait = sql<boolean>`coalesce(jsonb_typeof(${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}') = 'string', false)`;
   const agentIds = selected.flatMap(issue => issue.assigneeAgentId ? [issue.assigneeAgentId] : []);
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
   const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
@@ -171,12 +176,14 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     }).from(requested).innerJoinLateral(latestRuns, sql`true`).innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, latestRuns.id)))
       .leftJoin(agents, and(eq(agents.companyId, heartbeatRuns.companyId), eq(agents.id, heartbeatRuns.agentId)))
       .orderBy(requestedIssueId),
-    db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
+    // Keep at most two candidates per task: latest Retry and latest other input.
+    // A new message must not hide an existing Retry's admission explanation.
+    db.selectDistinctOn([wakeIssue, isRetryWait], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt,
       sourceRunId: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{taskRetry,sourceRunId}'`, 160),
       executionWaitReason: boundedJsonString(sql`${agentWakeupRequests.payload}#>'{executionWait,reason}'`, 80) })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
         eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user")))
-      .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt)),
+      .orderBy(wakeIssue, isRetryWait, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)),
     agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason }).from(agents)
       .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))) : [],
     projectIds.length ? db.select({ id: projects.id, pausedAt: projects.pausedAt, pauseReason: projects.pauseReason }).from(projects)
@@ -198,7 +205,13 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
   )).orderBy(issueRecoveryActions.sourceIssueId, desc(issueRecoveryActions.createdAt)) : [];
   const byIssue = <T extends { issueId: string }>(rows: T[]) => new Map(rows.map(row => [row.issueId, row]));
-  const runMap = byIssue(runs), waitMap = byIssue(waits);
+  const runMap = byIssue(runs), waitMap = new Map<string, typeof waits[number]>();
+  const retryWaitMap = byIssue(waits.filter(wait => wait.sourceRunId));
+  for (const wait of waits) {
+    const current = waitMap.get(wait.issueId);
+    if (!current || wait.requestedAt > current.requestedAt ||
+        (wait.requestedAt.getTime() === current.requestedAt.getTime() && wait.id > current.id)) waitMap.set(wait.issueId, wait);
+  }
   // Recheck current authority, including standard trust, root-issue grants and
   // project policy. Do not reuse the failed run's frozen policy for a new retry.
   // Only denied tasks need these reads; deduplicate projects and batch per agent.
@@ -230,7 +243,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
     const required = requirements.get(issue.id);
     const denied = required?.projectIds.filter(projectId => currentAccess.get(`${issue.assigneeAgentId}:${projectId}`) !== true);
     const presentation = projectTaskInterruption(issue, {
-      run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id),
+      run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id), retryWait: retryWaitMap.get(issue.id),
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
       workspaceSelectionAvailable: required?.available ?? false,

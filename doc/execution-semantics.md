@@ -957,6 +957,9 @@ recovery or replay the failed turn. An accepted Retry that remains deferred show
 its persisted admission reason through a fixed public message. The task view
 performs bounded follow-up reads after the click so asynchronous admission can
 explain its wait without a page reload or idle polling.
+Newer saved input keeps its own receipt while the existing Retry explanation stays
+visible. Terminal waits direct the user to send new input and hide the Retry action
+that cannot continue that attempt.
 
 A continuation cancelled by the queued-run gate while waiting for review did not start a provider. Its matching dispatch-gate receipt and unclaimed execution fields keep this deliberate wait out of unknown-action reconciliation. Pending review and decision gates still apply. If an older server already created a recovery hold for this exact state, Retry or a new user message can request one fresh turn after the server verifies there is no provider, coordinator, or unfinished cleanup. Saved user input is reconsidered through the same admission path; the cancelled turn is not replayed.
 
