@@ -11,6 +11,7 @@ import { retainGitHubReviewReceipt } from "../services/chat-channels/github/task
 import { settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
 import { recordRunPresentationDecision } from "../services/heartbeat/run-completion.js";
 import { environmentService } from "../services/environments.js";
+import { reconcilePersistedRuntimeServicesOnStartup, readWorkspaceRuntimeIdleWork } from "../services/workspace-runtime.js";
 import { createAdmissionTransactionScope, createWakeAdmissionWriter } from "../modules/wake-queue/adapters/postgres.js";
 import { chatFailedRetryNoticeWork } from "../services/chat-failed-retry-notice-work.js";
 import { issueTreeControlService } from "../services/issue-tree-control.js";
@@ -1136,6 +1137,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       idleTimeoutSeconds: 0, connectTimeoutSeconds: 0, maxLifetimeSeconds: 0,
       ...(externalTestDatabaseUrl ? { maxConnections: 4 } : {}),
     });
+    // The composed local-probe inventory includes the workspace owner. Match
+    // server startup on this fresh fixture; never adopt or start a leftover.
+    const [runtimeState] = await db.execute<{ configured: boolean }>(sql`SELECT
+      EXISTS (SELECT 1 FROM workspace_runtime_services)
+      OR EXISTS (SELECT 1 FROM project_workspaces)
+      OR EXISTS (SELECT 1 FROM execution_workspaces) AS configured`);
+    expect(runtimeState.configured).toBe(false);
+    expect(await reconcilePersistedRuntimeServicesOnStartup(db)).toEqual({
+      reconciled: 0, adopted: 0, stopped: 0, backfilled: 0, restarted: 0,
+      restartFailed: 0, exposureReservationDrift: [],
+    });
+    expect(readWorkspaceRuntimeIdleWork()).toBe("none");
   }, 90_000);
 
   afterAll(async () => {
