@@ -38,7 +38,7 @@ it("keeps an expired cache change eligible when its own paged scan finishes", as
   const service = { graceMs: 2_500, dryRun: false, listCompanies: async () => [{ id: companyId }],
     pruneCompany: prune, dispose: async () => {} } as unknown as ReturnType<typeof skillVersionRetentionService>;
   const onError = vi.fn();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
   worker = registerSkillVersionRetentionWork(coordinator, service, () => true);
   await worker.ready;
@@ -79,7 +79,7 @@ it("continues a successful page when another company's grace deadline expires du
     listCompanies: async () => [{ id: dueCompany }, { id: pagedCompany }],
     pruneCompany: prune, dispose: async () => {} } as unknown as ReturnType<typeof skillVersionRetentionService>;
   const onError = vi.fn();
-  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []) });
+  const owner = installDatabaseWorkSignals({ execute: vi.fn(async () => []), transaction: vi.fn(async () => undefined) });
   coordinator = createDeliveryWorkCoordinator({ owner, canRun: () => true, onError });
   worker = registerSkillVersionRetentionWork(coordinator, service, () => true);
   await worker.ready;

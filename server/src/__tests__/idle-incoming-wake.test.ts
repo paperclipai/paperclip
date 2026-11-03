@@ -3,6 +3,7 @@ import { generateKeyPairSync, randomUUID, sign } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
+import type { InternalSetupState } from "../services/chat-channels/runtime-types.js";
 import {
   afterAll,
   afterEach,
@@ -403,7 +404,7 @@ function verified(incomingWake = capability): VerifiedIdleCapabilities {
         status: "archived", enabled: false, credentialSecretRefs: [] });
       await db.insert(chatEndpoints).values({ id: endpointId, companyId: f.companyId, connectionId,
         assignedAgentId: f.agentId, provider: "github", publicId: randomUUID(), status: "archived",
-        archivedAt: new Date(), setup: { step: "complete", runtimeGeneration: 1 } });
+        archivedAt: new Date(), setup: { step: "complete", runtimeGeneration: 1 } as InternalSetupState });
       const blocked = async () => (await db.execute(sql`SELECT EXISTS (
         ${incomingWakeWorkQuery("chat_endpoints")} AND endpoint.id = ${endpointId}::uuid) AS blocked`))[0].blocked;
       return { ...f, applicationId, connectionId, endpointId, blocked };
@@ -424,7 +425,7 @@ function verified(incomingWake = capability): VerifiedIdleCapabilities {
           SET credential_secret_refs = ${fault === "credentials" ? '[{"secretId":"retained"}]' : '{}'}::jsonb WHERE id = ${f.connectionId}::uuid`);
         if (fault === "malformed_setup") await db.execute(sql`UPDATE chat_endpoints SET setup = '"unknown"'::jsonb WHERE id = ${f.endpointId}::uuid`);
         if (fault === "missing_generation" || fault === "fractional_generation") await db.update(chatEndpoints)
-          .set({ setup: fault === "missing_generation" ? { step: "complete" } : { step: "complete", runtimeGeneration: 1.5 } })
+          .set({ setup: (fault === "missing_generation" ? { step: "complete" } : { step: "complete", runtimeGeneration: 1.5 }) as InternalSetupState })
           .where(eq(chatEndpoints.id, f.endpointId));
         if (fault === "lease" || fault === "expired_lease") await db.insert(chatEndpointLeases).values({ companyId: f.companyId,
           endpointId: f.endpointId, leaseKey: "credentials", token: randomUUID(), expiresAt: new Date(fault === "lease" ? Date.now() + 60_000 : 0) });

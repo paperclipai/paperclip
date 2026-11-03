@@ -210,7 +210,8 @@ diagnostic line on boot and continues without tracing — your server stays up.
 ## Scope
 
 The OpenTelemetry export carries **traces only**. Metrics and log exporters
-are out of scope and intentionally not configured here. Auto-instrumentations
+are out of scope. The SDK receives explicit empty metric-reader and log-processor
+lists so its default OTLP exporters cannot emit unrequested metrics or logs. Auto-instrumentations
 for `fs`, `dns`, and `net` are disabled by default because they are too chatty
 for this workload; everything else from
 `@opentelemetry/auto-instrumentations-node` is on (HTTP, Express, PG, etc.).

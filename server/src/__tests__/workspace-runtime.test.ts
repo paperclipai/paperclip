@@ -14,6 +14,7 @@ import {
   agents,
   companies,
   createDb,
+  closeRegisteredClients,
   executionWorkspaces,
   heartbeatRuns,
   issueComments,
@@ -87,6 +88,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 
 const RUNTIME_OWNED_GIT_BRANCH_METADATA = {
   createdByRuntime: true,
@@ -134,8 +136,12 @@ function workspaceBranchIncoherenceFingerprintForTest(input: {
 }
 
 const leasedRunIds = new Set<string>();
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const externalRuntimeControlDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_WORKSPACE_RUNTIME_CONTROL_TEST_DATABASE_URL");
+const embeddedPostgresSupport: Awaited<ReturnType<typeof getEmbeddedPostgresTestSupport>> = externalRuntimeControlDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
+// The explicit fixture belongs only to the service-control suite. Other DB
+// suites must not allocate an embedded or admin-owned database in this mode.
+const describeEmbeddedPostgres = !externalRuntimeControlDatabaseUrl && embeddedPostgresSupport.supported ? describe : describe.skip;
+const describeRuntimeControl = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -335,6 +341,7 @@ function buildWorkspace(cwd: string): RealizedExecutionWorkspace {
     strategy: "project_primary",
     cwd,
     branchName: null,
+    branchCreatedByRuntime: false,
     worktreePath: null,
     warnings: [],
     created: false,
@@ -405,7 +412,7 @@ function createWorkspaceOperationRecorderDouble() {
       executionWorkspaceId = nextExecutionWorkspaceId;
     },
     recordOperation: async (input) => {
-      const result = await input.run();
+      const result = await input.run(async () => {});
       operations.push({
         phase: input.phase,
         command: input.command ?? null,
@@ -6671,16 +6678,18 @@ describeEmbeddedPostgres("workspace dirty quarantine branch repair", () => {
   }, 20_000);
 });
 
-describeEmbeddedPostgres("workspace runtime service control persistence", () => {
+describeRuntimeControl("workspace runtime service control persistence", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-control-");
-    db = createDb(tempDb.connectionString);
+    if (!externalRuntimeControlDatabaseUrl) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-workspace-runtime-control-");
+    db = createDb(externalRuntimeControlDatabaseUrl ?? tempDb!.connectionString,
+      externalRuntimeControlDatabaseUrl ? { maxConnections: 4 } : undefined);
   }, 20_000);
 
   afterAll(async () => {
+    if (externalRuntimeControlDatabaseUrl) await closeRegisteredClients(externalRuntimeControlDatabaseUrl, { scope: "database" });
     await tempDb?.cleanup();
   });
 
@@ -6829,6 +6838,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         strategy: "git_worktree",
         cwd: workspaceRoot,
         branchName: "feature/runtime-control",
+        branchCreatedByRuntime: false,
         worktreePath: workspaceRoot,
         warnings: [],
         created: false,
@@ -7002,6 +7012,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
       strategy: workspace.mode === "isolated_workspace" ? "git_worktree" : "project_primary",
       cwd: workspace.cwd,
       branchName: null,
+      branchCreatedByRuntime: false,
       worktreePath: workspace.mode === "isolated_workspace" ? workspace.cwd : null,
       warnings: [],
       created: false,
@@ -7281,14 +7292,14 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
         return result[0]!;
       }));
 
-      // The two lanes claim ports concurrently in-process. The allocator guarantees
-      // distinct ports, but not which lane wins the base port. It depends on the
-      // scheduling order. So assert order-independent invariants, not array index.
+      // A free-port probe is not a reservation. Both siblings must own distinct
+      // live ports in the allocator's bounded range even if the preferred port
+      // becomes unavailable before allocation.
       const lowerPort = Math.min(first.port!, second.port!);
       const upperPort = Math.max(first.port!, second.port!);
       const maxAllocatablePort = basePort + WORKSPACE_RUNTIME_PORT_ALLOCATION_ATTEMPTS - 1;
       expect(first.port).not.toBe(second.port);
-      expect(lowerPort).toBe(basePort);
+      expect(lowerPort).toBeGreaterThanOrEqual(basePort);
       expect(upperPort).toBeGreaterThan(basePort);
       expect(upperPort).toBeLessThanOrEqual(maxAllocatablePort);
       expect(first.url).toBe(`http://127.0.0.1:${first.port}`);
@@ -7330,7 +7341,7 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
 
   it("commits fixed-port reservations across the configured database idle timeout", async () => {
     const fixture = await createRuntimeFixture();
-    const readinessDb = createDb(tempDb!.connectionString, { idleTimeoutSeconds: 1, maxConnections: 1 });
+    const readinessDb = createDb(externalRuntimeControlDatabaseUrl ?? tempDb!.connectionString, { idleTimeoutSeconds: 1, maxConnections: 1 });
     const [initialConnection] = await readinessDb.$client<{ pid: number }[]>`select pg_backend_pid() as pid`;
     const cleanupRuntimeHome = await createRuntimeHome();
     const workspace = fixture.workspaces[0]!;
@@ -8160,7 +8171,6 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
       await stopRuntimeServicesForProjectWorkspace({
         db,
         projectWorkspaceId,
-        workspaceCwd: workspaceRoot,
       }).catch(() => undefined);
       await resetRuntimeServicesForTests();
       await fs.rm(paperclipHome, { recursive: true, force: true });
@@ -9424,6 +9434,7 @@ describe("workspace realization request additionalSources", () => {
       strategy: "project_primary",
       cwd: "/anchor",
       branchName: null,
+      branchCreatedByRuntime: false,
       worktreePath: null,
       warnings: [],
       created: false,

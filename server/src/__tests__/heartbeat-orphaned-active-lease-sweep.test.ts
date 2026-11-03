@@ -23,7 +23,7 @@ vi.mock("../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClien
 
 vi.mock("../middleware/logger.js", () => ({
   logger: {
-    child: vi.fn(function child() {
+    child: vi.fn(function child(this: unknown) {
       return this;
     }),
     trace: vi.fn(),
@@ -102,7 +102,6 @@ describeEmbeddedPostgres("heartbeat sweepOrphanedActiveLeases", () => {
     });
     await db.insert(environments).values({
       id: environmentId,
-      companyId,
       name: "Fake Sandbox",
       driver: "sandbox",
       status: "active",

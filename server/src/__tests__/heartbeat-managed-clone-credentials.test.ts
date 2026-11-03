@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { ensureManagedProjectWorkspace, prepareProjectRepositoryWorkspaces } from "../services/heartbeat.ts";
+import { materializeManagedProjectWorkspace } from "../services/managed-repository-checkout.js";
 import { buildGitAuthInvocation, GIT_CREDENTIAL_TOKEN_ENV_KEY } from "../services/git-credentials.ts";
 import { sanitizeRuntimeServiceBaseEnv } from "../services/workspace-runtime.ts";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
@@ -101,8 +102,8 @@ exit 128
 `, { mode: 0o755 });
     try {
       process.env.PATH = bin;
-      const failure = await ensureManagedProjectWorkspace({
-        companyId: "checkout-failure-fixture", projectId: "project", repoUrl: "https://example.test/repo.git", repoRef: "missing-branch",
+      const failure = await materializeManagedProjectWorkspace(path.join(bin, "checkout"), {
+        repoUrl: "https://example.test/repo.git", repoRef: "missing-branch",
       }).catch((error: unknown) => error);
       expect(failure).toBeInstanceOf(Error);
       expect((failure as Error).message).toContain("Authentication failed");
@@ -432,7 +433,7 @@ exit 128
       source: "company_secret",
       secretName: "GITHUB_TOKEN",
     });
-    const cloneEnv = {
+    const cloneEnv: NodeJS.ProcessEnv = {
       ...sanitizeRuntimeServiceBaseEnv({ ...process.env, [GIT_CREDENTIAL_TOKEN_ENV_KEY]: "stale" }),
       GIT_TERMINAL_PROMPT: "0",
       ...invocation.env,

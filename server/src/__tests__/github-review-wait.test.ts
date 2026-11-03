@@ -59,7 +59,7 @@ describe("inherited GitHub review wait projection", () => {
       const f = await seedGitHubReviewWait(db);
       expect((await readInheritedGitHubReviewWait(db, f.run))?.kind).toBe("published");
       if (change === "disabled") await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, f.connectionId));
-      if (change === "inactive") await db.update(toolConnections).set({ status: "error" }).where(eq(toolConnections.id, f.connectionId));
+      if (change === "inactive") await db.update(toolConnections).set({ status: "disabled" }).where(eq(toolConnections.id, f.connectionId));
       if (change === "review_state") await db.update(chatGitHubReviews).set({ state: "queued" }).where(eq(chatGitHubReviews.id, f.reviewId));
       if (change === "review_agent" || change === "endpoint_agent") {
         const [other] = await db.insert(agents).values({ companyId: f.companyId, name: "Other", adapterType: "process" }).returning();

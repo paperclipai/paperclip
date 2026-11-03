@@ -46,7 +46,7 @@ function duplexOpenInput(directive: unknown, companyId = "company-1") {
     companyId,
     environmentId: "env-1",
     providerLeaseId: JSON.stringify(directive),
-    command: "bridge-callback",
+    command: ["bridge-callback"],
   };
 }
 

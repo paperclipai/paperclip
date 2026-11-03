@@ -51,3 +51,18 @@ export function decideSettlement(existingSettlementId: string | null, settlement
   if (existingSettlementId === null) return "settle";
   return existingSettlementId === settlementId ? "already_settled" : "settled_by_other";
 }
+
+/** A recorded complete set, or unknown: settled before admitted sets were kept. Unknown is never empty. */
+export type AdmittedProjectSet = { kind: "known"; projectIds: string[] } | { kind: "unknown" };
+
+export type RetainedSessionProjects = { kind: "retain"; projectIds: string[] } | { kind: "fresh_context_required" };
+
+/**
+ * A resumed provider session still carries the previous admission's references,
+ * so its next set is current ∪ previous. An unknown previous set cannot be
+ * bounded: the consumer must start a fresh context instead of resuming.
+ */
+export function retainedSessionProjects(previous: AdmittedProjectSet, currentProjectIds: readonly string[]): RetainedSessionProjects {
+  if (previous.kind === "unknown") return { kind: "fresh_context_required" };
+  return { kind: "retain", projectIds: [...new Set([...previous.projectIds, ...currentProjectIds])].sort() };
+}

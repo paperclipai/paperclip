@@ -8,7 +8,7 @@ import {
 } from "@paperclipai/db";
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { TaskExecutionPolicyStore } from "../application/policy.js";
-import { decideSettlement, sameAdmissionRecord, type AdmissionRecord } from "../domain/admission.js";
+import { decideSettlement, sameAdmissionRecord, type AdmissionRecord, type AdmittedProjectSet } from "../domain/admission.js";
 import { ABSENT_TASK_EXECUTION_POLICY, type TaskExecutionPolicy } from "../domain/policy.js";
 
 function assertTransaction(tx: Db) {
@@ -88,10 +88,8 @@ export async function recordAdmission(tx: Db, input: RecordAdmissionInput): Prom
   if (existing) {
     if (existing.companyId !== companyId || existing.runId !== runId) return { kind: "admission_conflict" };
     if (existing.settledAt) return { kind: "admission_settled" };
-    const charged = await tx.select({ projectId: charges.projectId }).from(charges)
-      .where(and(eq(charges.companyId, companyId), eq(charges.admissionId, admissionId))).orderBy(asc(charges.projectId));
     const stored = { primaryProjectId: existing.primaryProjectId, contextRevision: existing.contextRevision,
-      projectIds: charged.map(row => row.projectId) };
+      projectIds: existing.admittedProjectIds ?? [] };
     return sameAdmissionRecord(stored, record) ? { kind: "replayed", attempt: existing.attempt } : { kind: "admission_conflict" };
   }
   const [live] = await tx.select({ id: admissions.id }).from(admissions)
@@ -101,7 +99,7 @@ export async function recordAdmission(tx: Db, input: RecordAdmissionInput): Prom
   const [{ attempt }] = await tx.select({ attempt: sql<number>`coalesce(max(${admissions.attempt}), 0)::int + 1` })
     .from(admissions).where(eq(admissions.runId, runId));
   await tx.insert(admissions).values({ id: admissionId, companyId, runId, attempt,
-    primaryProjectId: record.primaryProjectId, contextRevision: record.contextRevision });
+    primaryProjectId: record.primaryProjectId, contextRevision: record.contextRevision, admittedProjectIds: record.projectIds });
   if (record.projectIds.length > 0) {
     await tx.insert(charges).values(record.projectIds.map(projectId => ({ admissionId, companyId, projectId })));
   }
@@ -113,8 +111,9 @@ export type SettleAdmissionOutcome =
   | { kind: "already_settled" | "settled_by_other" | "not_found" };
 
 /**
- * Storage transition only: releases the admission's whole charge set once.
- * Callers must first verify authoritative lifecycle facts. Takes no project lock.
+ * Storage transition only: releases the admission's whole charge set once and
+ * keeps its admitted project set. Callers must first verify authoritative
+ * lifecycle facts. Takes no project lock.
  */
 export async function settleAdmission(tx: Db, input: { companyId: string; admissionId: string; settlementId: string }):
 Promise<SettleAdmissionOutcome> {
@@ -130,6 +129,21 @@ Promise<SettleAdmissionOutcome> {
     .returning({ projectId: charges.projectId });
   await tx.update(admissions).set({ settlementId, settledAt: sql`now()` }).where(eq(admissions.id, admissionId));
   return { kind: "settled", releasedProjectIds: released.map(charge => charge.projectId).sort() };
+}
+
+export type AdmittedProjectsRead =
+  | { kind: "found"; runId: string; attempt: number; primaryProjectId: string | null; contextRevision: string;
+    settled: boolean; projects: AdmittedProjectSet }
+  | { kind: "not_found" };
+
+/** The admission's complete admitted set, settled or not, for retained-session resolution. */
+export async function readAdmittedProjects(db: Db, scope: { companyId: string; admissionId: string }): Promise<AdmittedProjectsRead> {
+  const [row] = await db.select().from(admissions)
+    .where(and(eq(admissions.companyId, scope.companyId), eq(admissions.id, scope.admissionId)));
+  if (!row) return { kind: "not_found" };
+  return { kind: "found", runId: row.runId, attempt: row.attempt, primaryProjectId: row.primaryProjectId,
+    contextRevision: row.contextRevision, settled: row.settledAt !== null,
+    projects: row.admittedProjectIds ? { kind: "known", projectIds: row.admittedProjectIds } : { kind: "unknown" } };
 }
 
 /** Active charge counts per project. Every stored charge is unsettled. */

@@ -15,7 +15,7 @@ const support = await getEmbeddedPostgresTestSupport();
   beforeAll(async () => {
     const database = await startEmbeddedPostgresTestDatabase("workspace-delivery-cleanup");
     db = createDb(database.connectionString, { maxConnections: 1 });
-    stopDb = database.stop;
+    stopDb = database.cleanup;
   });
   afterAll(async () => { await db?.$client.end(); await stopDb?.(); });
   afterEach(async () => { await db.update(issues).set({ status: "in_progress" }); });

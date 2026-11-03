@@ -33,7 +33,12 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
-import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
+import {
+  ONBOARDING_FIRST_TASK_ORIGIN_KIND,
+  type IssueThreadInteractionPayload,
+  type RequestCheckboxConfirmationPayload,
+  type RequestItemVerdictsPayload,
+} from "@paperclipai/shared";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
@@ -529,7 +534,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         commentIds: [commentId],
       }),
     });
-    expect(await interactionsSvc.listForIssue(fixture.companyId, fixture.issueId)).toEqual([]);
+    expect(await interactionsSvc.listForIssue(fixture.issueId)).toEqual([]);
   });
 
   it("allows a source-run question when the newer human comment is explicitly delivered", async () => {
@@ -2553,7 +2558,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     const actor = {
       agentId: resolverAgentId,
       runId: resolverRunId,
-      resolverPolicyRestriction: "not_creator",
+      resolverPolicyRestriction: "not_creator" as const,
     };
     await expect(interactionsSvc.acceptInteraction(issue, createdByResolver.id, {}, actor))
       .rejects.toThrow("requires a resolver other than its creator or creating run");
@@ -2718,7 +2723,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         options: [{ id: "file-a", label: "a.txt" }],
       },
     }, { userId: "local-board" });
-    expect(created.payload.supersedeOnUserComment).toBe(false);
+    expect((created.payload as RequestCheckboxConfirmationPayload).supersedeOnUserComment).toBe(false);
 
     const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
       { id: issueId, companyId },
@@ -2732,8 +2737,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
   it.each(["verdicts", "suggestions", "dismiss"] as const)(
     "rolls back %s when external action authorization or receipt ownership changes",
     async (kind) => {
-      const { companyId, issueId } = await seedConfirmationIssue("External form transaction");
-      const issue = { id: issueId, companyId };
+      const { companyId, goalId, issueId } = await seedConfirmationIssue("External form transaction");
+      const issue = { id: issueId, companyId, projectId: null, goalId };
       const interaction = await interactionsSvc.create(issue, kind === "verdicts"
         ? { kind: "request_item_verdicts", payload: { version: 1, prompt: "Review", items: [{ id: "api", label: "API" }] } }
         : { kind: "suggest_tasks", payload: { version: 1, tasks: [{ clientKey: "check", title: "Check the result" }] } },
@@ -3004,7 +3009,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         items: [{ id: "file-a", label: "a.txt" }],
       },
     }, { userId: "local-board" });
-    expect(created.payload.supersedeOnUserComment).toBe(false);
+    expect((created.payload as RequestItemVerdictsPayload).supersedeOnUserComment).toBe(false);
 
     const expired = await interactionsSvc.expireRequestConfirmationsSupersededByComment(
       { id: issueId, companyId },
@@ -3355,7 +3360,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       issueId,
       kind: "request_confirmation",
       status: "pending",
-      continuationPolicy: { kind: "none" },
+      continuationPolicy: "none",
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
@@ -3393,15 +3398,12 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       issueId,
       kind: "request_confirmation",
       status: "cancelled",
-      continuationPolicy: { kind: "none" },
+      continuationPolicy: "none",
       payload: {
         version: 1,
         prompt: "Proceed with the current draft?",
       },
-      result: {
-        version: 1,
-        outcome: "withdrawn_by_creator",
-      },
+      result: sql`'{"version":1,"outcome":"withdrawn_by_creator"}'::jsonb`,
       createdByUserId: "local-board",
     });
 
@@ -3445,7 +3447,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, created.id, {}, { userId: "local-board" })).rejects.toThrow(
       "Interaction is no longer actionable because the issue is closed",
     );
-    await expect(interactionsSvc.withdrawInteraction({ id: issueId, companyId, status: "done" }, created.id, {}, {
+    const closedIssue = { id: issueId, companyId, status: "done" };
+    await expect(interactionsSvc.withdrawInteraction(closedIssue, created.id, {}, {
       userId: "local-board",
     })).rejects.toThrow("Interaction is no longer actionable because the issue is closed");
   });
@@ -4132,30 +4135,35 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
         executionWorkspaceId,
       });
 
-      const payload = kind === "request_checkbox_confirmation"
+      const request = kind === "request_checkbox_confirmation"
         ? {
-            version: 1 as const,
-            prompt: "Which files should be accepted?",
-            options: [
-              { id: "file-a", label: "a.txt" },
-              { id: "file-b", label: "b.txt" },
-            ],
-            minSelected: 0,
-            maxSelected: 2,
+            kind,
+            payload: {
+              version: 1 as const,
+              prompt: "Which files should be accepted?",
+              options: [
+                { id: "file-a", label: "a.txt" },
+                { id: "file-b", label: "b.txt" },
+              ],
+              minSelected: 0,
+              maxSelected: 2,
+            },
           }
         : {
-            version: 1 as const,
-            prompt: "Mark this issue done?",
+            kind,
+            payload: {
+              version: 1 as const,
+              prompt: "Mark this issue done?",
+            },
           };
 
       const created = await interactionsSvc.create({
         id: issueId,
         companyId,
       }, {
-        kind,
+        ...request,
         continuationPolicy: "wake_assignee",
         sourceRunId,
-        payload,
       }, {
         userId: "local-board",
       });
@@ -4239,7 +4247,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       expect(interaction.acceptanceBlocker).toBeUndefined();
     });
 
-    it.each(["toolAction", "ask_user_questions"])(
+    it.each(["toolAction", "ask_user_questions"] as const)(
       "keeps live %s decisions available while the workspace is active",
       async (kind) => {
         const { companyId, executionWorkspaceId, issueId, interactionId, sourceRunId } =
@@ -4248,7 +4256,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
           companyId, executionWorkspaceId, heartbeatRunId: sourceRunId,
           phase: "worktree_prepare", status: "succeeded",
         });
-        const payload = kind === "ask_user_questions"
+        const payload: IssueThreadInteractionPayload = kind === "ask_user_questions"
           ? { version: 1, questions: [{ id: "question", prompt: "Which option?", selectionMode: "single", options: [{ id: "first", label: "First" }] }] }
           : { version: 1, prompt: "Allow this action?", [kind]: { version: 1, actionRequestId: randomUUID(), invocationId: randomUUID(), toolName: "example.write",
                 toolDisplayName: "Write", connectionId: randomUUID(), applicationId: randomUUID(),

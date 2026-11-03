@@ -9,6 +9,7 @@ import { runnerSuites } from "../catalog.js";
 import { productJourneys, parseTargetConfig, preparationPreview, isAgentJourney } from "./catalog.js";
 import { agentJourneyRunCountValid } from "./success-contract.js";
 import { journeyFixtures } from "./fixtures.js";
+import { taskEditLifecycle } from "./task-lifecycle.js";
 import { taskProperties } from "./task-properties.js";
 import { taskSearchFilter } from "./task-search-filter.js";
 import { askQuestion, taskCreate } from "./basic-flows.js";
@@ -113,7 +114,73 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
   try { sha = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { /* Packaged harnesses may not include Git metadata. */ }
   const source = resolveRunnerE2ESource({ sha, ref: null, workflowRunUrl: null });
   const definitionHash = createHash("sha256").update(JSON.stringify(productJourneys));
-  for (const name of ["observation-read.ts", "../connection-config.ts", "catalog.ts", "company-access-flow.ts", "company-access-contract.ts", "repository-continuation-flow.ts", "repository-continuation-contract.ts", "repository-continuation-evidence.ts", "../registered-artifact.ts", "../user-actions.ts", "../connection-target.ts", "../../../packages/shared/src/project-mentions.ts", "routine-schedule-flow.ts", "routine-schedule-evidence.ts", "input-file-flow.ts", "input-file-evidence.ts", "inbox-triage-flow.ts", "inbox-triage-evidence.ts", "inbox-triage-fixture.ts", "inbox-author-contract.ts", "task-properties.ts", "task-search-filter.ts", "task-search-evidence.ts", "basic-flows.ts", "basic-evidence.ts", "task-document-flow.ts", "task-document-evidence.ts", "project-context-flow.ts", "project-context-readback.ts", "project-context-evidence.ts", "agent-flows.ts", "hire-delegate-flow.ts", "hire-delegate-composer.ts", "hire-delegate-evidence.ts", "active-followup-flow.ts", "active-followup-evidence.ts", "stop-redirect-evidence.ts", "clarification-flow.ts", "clarification-evidence.ts", "../question-resume-ui.ts", "../question-resume-scoring.ts", "../runtime-question-readiness.ts", "../chat-flow.ts", "../continuation-readiness.ts", "../continuation-cases.ts", "success-contract.ts", "product-screenshot.ts", "cloud-onboarding.ts", "onboarding-connect.ts", "onboarding-first-task.ts", "workspace-deferral.ts", "onboarding-pre-acceptance.ts", "artifact-evidence.ts", "fixtures.ts", "launch.ts", "types.ts", "collection.ts", "local-target.ts", "../../../ui/src/lib/markdown-reply-content.ts", "../../../ui/src/lib/issue-reference.ts", "../../../ui/src/lib/company-routes.ts", "../../../ui/package.json"]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
+  for (const name of [
+    "task-lifecycle.ts",
+    "task-lifecycle-evidence.ts",
+    "../../../packages/shared/src/validators/issue.ts",
+    "observation-read.ts",
+    "../connection-config.ts",
+    "catalog.ts",
+    "company-access-flow.ts",
+    "company-access-contract.ts",
+    "repository-continuation-flow.ts",
+    "repository-continuation-contract.ts",
+    "repository-continuation-evidence.ts",
+    "../registered-artifact.ts",
+    "../user-actions.ts",
+    "../connection-target.ts",
+    "../../../packages/shared/src/project-mentions.ts",
+    "routine-schedule-flow.ts",
+    "routine-schedule-evidence.ts",
+    "input-file-flow.ts",
+    "input-file-evidence.ts",
+    "inbox-triage-flow.ts",
+    "inbox-triage-evidence.ts",
+    "inbox-triage-fixture.ts",
+    "inbox-author-contract.ts",
+    "task-properties.ts",
+    "task-search-filter.ts",
+    "task-search-evidence.ts",
+    "basic-flows.ts",
+    "basic-evidence.ts",
+    "task-document-flow.ts",
+    "task-document-evidence.ts",
+    "project-context-flow.ts",
+    "project-context-readback.ts",
+    "project-context-evidence.ts",
+    "agent-flows.ts",
+    "hire-delegate-flow.ts",
+    "hire-delegate-composer.ts",
+    "hire-delegate-evidence.ts",
+    "active-followup-flow.ts",
+    "active-followup-evidence.ts",
+    "stop-redirect-evidence.ts",
+    "clarification-flow.ts",
+    "clarification-evidence.ts",
+    "../question-resume-ui.ts",
+    "../question-resume-scoring.ts",
+    "../runtime-question-readiness.ts",
+    "../chat-flow.ts",
+    "../continuation-readiness.ts",
+    "../continuation-cases.ts",
+    "success-contract.ts",
+    "product-screenshot.ts",
+    "cloud-onboarding.ts",
+    "onboarding-connect.ts",
+    "onboarding-first-task.ts",
+    "workspace-deferral.ts",
+    "onboarding-pre-acceptance.ts",
+    "artifact-evidence.ts",
+    "fixtures.ts",
+    "launch.ts",
+    "types.ts",
+    "collection.ts",
+    "local-target.ts",
+    "../../../ui/src/lib/markdown-reply-content.ts",
+    "../../../ui/src/lib/issue-reference.ts",
+    "../../../ui/src/lib/company-routes.ts",
+    "../../../ui/package.json"
+  ]) definitionHash.update(await readFile(path.join(import.meta.dirname, name)));
   for (const file of ["catalog.ts", "api.ts", "run-observations.ts", "native-task-reply.ts", "native-event-envelope.ts", "user-actions.ts", "plan-revision-flow.ts", "skill-studio-flow.ts", "protected-action-flow.ts", "story-artifact.ts", "stop-redirect-flow.ts", "everyday-cases.ts", "everyday-delivery.ts", "chat-hardening.ts", "everyday-decisions.ts", "connection-guidance-evidence.ts", "everyday-artifact.py"]) definitionHash.update(await readFile(path.join(import.meta.dirname, "..", file)));
   definitionHash.update(runnerSuites.flatMap(suite => suite.tasks).find(task => task.id === "ask-question")!.buildPrompt("definition"));
   const suiteDefinitionHash = definitionHash.digest("hex");
@@ -234,6 +301,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
               } });
           } else if (id === "company-access-isolation") await companyAccessIsolation(ready, session!, campaignId, evidence);
           else if (id === "inbox-triage") await inboxTriage(ready, session!, campaignId, evidence);
+          else if (id === "task-edit-lifecycle") await taskEditLifecycle(ready, session!, campaignId, evidence,
+            { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
           else if (id === "task-create") await taskCreate(ready, session!, campaignId, evidence);
           else if (id === "task-document-persistence") await taskDocumentPersistence(ready, session!, campaignId, evidence);
           else if (id === "project-task-context") await projectTaskContext(ready, session!, campaignId, evidence);
