@@ -869,6 +869,22 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(run?.error).toBeTruthy();
   });
 
+  it("fails a provider-succeeded run with an error code when workspace retries are exhausted", async () => {
+    // The reported case: the provider turn succeeded, then the workspace
+    // copy-back failed three times. Workspace scope fails the run regardless
+    // of the provider outcome, so the run must name the cause.
+    const fixture = await seedNativeRun();
+    await db.update(heartbeatRuns).set({ resultJson: { prpRunTerminalState: "succeeded" } })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 1,
+    });
+    await exhaustWorkspaceRetries(fixture.runId);
+    const run = await readRunError(fixture.runId);
+    expect(run).toMatchObject({ status: "failed", errorCode: "native_workspace_sync_out_retry_exhausted" });
+    expect(run?.error).toMatch(/recovery action/);
+  });
+
   it("does not attach a finalization error to a provider-succeeded run when provider retries are exhausted", async () => {
     const fixture = await seedNativeRun();
     await db.update(heartbeatRuns).set({ resultJson: { prpRunTerminalState: "succeeded" } })

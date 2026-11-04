@@ -262,7 +262,9 @@ async function claimCoordinator(input: {
 
 function terminalFinalizationFailureMessage(failureCode: string, failureScope: "provider" | "workspace" | undefined) {
   if (failureCode === "native_workspace_sync_out_retry_exhausted") {
-    return "Saving the workspace failed after 3 attempts. The agent's result is kept; repair the workspace export to finish the run.";
+    // This code also covers local-directory and plugin workspaces, so the
+    // message stays general and defers to the recovery action's next step.
+    return "Saving the workspace failed after 3 attempts. The agent's result is kept; follow the run's recovery action to repair the workspace.";
   }
   if (failureCode === "native_workspace_sync_out_unrecoverable") {
     return "The sandbox holding unexported workspace changes is unavailable, so its files could not be saved.";
@@ -468,12 +470,10 @@ async function recordRetryableFailure(input: {
               // A failed run names its cause. Keep an earlier root cause, and
               // leave a run that Stop already cancelled without a failure.
               ...(terminalRunStatus === "failed"
-                ? {
-                    errorCode: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
-                      else coalesce(${heartbeatRuns.errorCode}, ${failureCode}) end`,
-                    error: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
-                      else coalesce(${heartbeatRuns.error}, ${terminalFinalizationFailureMessage(failureCode, input.failureScope)}) end`,
-                  }
+                ? explainFailedRun({
+                    errorCode: failureCode,
+                    error: terminalFinalizationFailureMessage(failureCode, input.failureScope),
+                  })
                 : {}),
             }
           : {}),
