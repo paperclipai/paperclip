@@ -103,7 +103,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
   assert.equal(repair.previousTargetSha, 'ab2019e976076ec0eb60b026844f3d9211cb0208');
-  assert.equal(manifest.targetSha, 'b1ea76b286b870bb62a80eebf3fe00feed6f12c1');
+  assert.equal(manifest.targetSha, '94aad1bc6c05e26c4b939367177bd3d8eef8e1e4');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
@@ -119,6 +119,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   [
     "activity.work-timeline",
     "oracleVersion"
+  ],
+  [
+    "activity.work-timeline",
+    "expectedOutcome"
   ],
   [
     "agents.choose-primary",
@@ -300,7 +304,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     if (Object.hasOwn(row(change.key), change.field)) assert.deepEqual(row(change.key)[change.field], change.current);
   }
   assert.deepEqual(repair.changedDefinitionFiles.map(value => value.path), [
-    'tests/runner-e2e/chat-scenarios/companies.yaml', 'tests/runner-e2e/chat-scenarios/goals.yaml', 'tests/runner-e2e/chat-scenarios/skills.yaml', 'tests/runner-e2e/chat-scenarios/app-permissions.yaml',
+    'tests/runner-e2e/chat-scenarios/companies.yaml', 'tests/runner-e2e/chat-scenarios/goals.yaml', 'tests/runner-e2e/chat-scenarios/skills.yaml', 'tests/runner-e2e/chat-scenarios/app-permissions.yaml', 'tests/runner-e2e/chat-scenarios/activity.yaml',
   ]);
   assert.ok(repair.changedDefinitionFiles.every(value => /^[a-f0-9]{64}$/.test(value.sha256)));
   for (const declaration of declarations) {
