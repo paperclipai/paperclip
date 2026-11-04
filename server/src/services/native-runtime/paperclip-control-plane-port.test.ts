@@ -3,7 +3,7 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { plugins } from "@paperclipai/db";
 import { readTaskPanelActivations } from "../plugin-task-panels.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
@@ -64,7 +64,7 @@ import { assertCurrentWakeCommentsRead } from "./current-wake-comments.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { childReviewOutcomes } from "./child-review-outcomes.js";
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
-import { materializeRuntimeQuestionFallback } from "./native-session-executor.js";
+import { createGovernedWaitEventObservation, materializeRuntimeQuestionFallback, nativeGovernedWaitResult } from "./native-session-executor.js";
 import {
   subscribeAllCompanyLiveEvents,
   subscribeCompanyLiveEvents,
@@ -314,6 +314,284 @@ describe("PaperclipControlPlanePort conformance", () => {
     }
   });
 
+  it.each(["settles", "checkpoint timeout", "unscoped terminal"] as const)("retains a durably recorded governed terminal while its postcommit observer is pending: %s", async mode => {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, issueId: randomUUID(), runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    const fixtureContractId = randomUUID();
+    await db.insert(issues).values({ id: identity.issueId, companyId: identity.companyId, title: "Human-only waiting checkpoint",
+      status: "in_progress", assigneeAgentId: identity.agentId });
+    const [baseContract] = await db.select().from(completionContracts).where(eq(completionContracts.id, contractId));
+    await db.insert(completionContracts).values({ ...baseContract!, id: fixtureContractId, issueId: identity.issueId });
+    await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+      runnerInstanceId: runnerId, completionContractId: fixtureContractId, completionContractSha256: contractSha });
+    const interaction = await issueThreadInteractionService(db).create({ id: identity.issueId, companyId: identity.companyId }, {
+      kind: "ask_user_questions", title: "Choose the format", resolverPolicy: "human_only", continuationPolicy: "none",
+      sourceRunId: identity.runId, payload: { version: 1, title: "Choose the format", questions: [{ id: "format",
+        prompt: "Which format?", required: true, selectionMode: "single", options: [{ id: "onsite", label: "On site" }] }] },
+    }, { agentId: identity.agentId, runId: identity.runId });
+    let releaseObserver!: () => void;
+    const observerGate = new Promise<void>(resolve => { releaseObserver = resolve; });
+    let terminalWasRecorded = false;
+    let terminalRecorded!: () => void;
+    const recorded = new Promise<void>(resolve => { terminalRecorded = resolve; });
+    let observerFinished!: () => void;
+    const observerDone = new Promise<void>(resolve => { observerFinished = resolve; });
+    const observation = createGovernedWaitEventObservation(async () => {
+      const [pending] = await db.select().from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.id, interaction.id), eq(issueThreadInteractions.companyId, identity.companyId),
+        eq(issueThreadInteractions.sourceRunId, identity.runId), eq(issueThreadInteractions.status, "pending"),
+      ));
+      return pending?.status === "pending" && pending.sourceRunId === identity.runId
+        ? nativeGovernedWaitResult({ interaction: pending, completionContract: contract }) : null;
+    });
+    let triggerConsumed = false;
+    const port = new PaperclipControlPlanePort(db, { ...identity,
+      completionContractId: fixtureContractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "park-control" }, {
+      async onCommittedEvent(event) {
+        await observation.observe(event, event.eventType === "item.completed");
+        if (event.eventType === "turn.interrupted") { terminalWasRecorded = true; terminalRecorded(); try { await observerGate; } finally { observerFinished(); } }
+      },
+    });
+    const contract = { revision: "phase6-v1", objective: "Conformance", criteria: [{ id: "objective", requirement: "Complete conformance" }] };
+    const yielded = nativeGovernedWaitResult({ interaction: { id: interaction.id,
+      title: interaction.title ?? null, summary: interaction.summary ?? null }, completionContract: contract });
+    const event = (sourceSeq: number, eventType: PrpEvent["eventType"], payload: Record<string, unknown>): PrpEvent => ({
+      schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceInstanceId: runnerId, sourceSeq,
+      sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId, ...(mode === "unscoped terminal" ? {} : { turnId: "park-turn" }),
+      eventType, schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(), payload,
+    });
+    let starts = 0, terminalEmitted = false;
+    const backend: NativeSessionBackend = {
+      async descriptor() { return { kind: "mock", name: "park-observer", version: "1",
+        capabilities: { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true } }; },
+      async openSession() { return { identity: () => identity,
+        async capabilities() { return { resume: false, typedEvents: true, steering: false, interruption: true, structuredResult: true }; },
+        async startTurn() { starts++; return { turnId: "park-turn" }; },
+        cancel() { return { cleanup: Promise.resolve() }; },
+        async *events() { yield event(1, "item.completed", { kind: "dynamicToolCall" }); terminalEmitted = true; yield event(2, "turn.interrupted", { status: "interrupted", error: null }); },
+        async snapshot() { return { backendKind: "mock", sessionId: identity.sessionId, identity,
+          activeTurnId: terminalEmitted ? null : "park-turn", cursor: terminalEmitted ? "2" : "1" }; },
+        async result() { return null; }, async close() {},
+      }; },
+    };
+    const options = { backend, controlPlane: port, timeoutMs: 2_000,
+      ...(mode === "checkpoint timeout" ? { checkpointTimeoutMs: 100 } : {}),
+      runnerInstanceId: runnerId, controlPlaneInstanceId: "park-control",
+      input: parseNativeExecutionInput({ schema: "paperclip.native-execution-input.v1", binding: {
+        companyId: identity.companyId, runId: identity.runId, issueId: identity.issueId, agentId: identity.agentId, executionWorkspaceId: "park-workspace" },
+        task: { identifier: "PARK-1", title: "Wait for a human", description: null, prompt: "Wait for a human", workMode: "standard" },
+        workspace: { cwd: process.cwd(), repoUrl: null, repoRef: null, branchName: null },
+        session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1 },
+        provider: { kind: "codex", model: null }, interactionResponses: [], credentialBindings: [],
+        completionContract: { id: fixtureContractId, sha256: contractSha, schemaVersion: "paperclip.completion-contract.v1", contract } }),
+      resolveGovernedWait: ({ event }: { event: PrpEvent }) => {
+        const result = observation.consume(event);
+        triggerConsumed ||= result !== null;
+        return result;
+      },
+    };
+    if (mode === "unscoped terminal") releaseObserver();
+    const execution = executeNativeSession(options);
+    const outcome = execution.then(value => ({ value }), error => ({ error }));
+    try {
+      await Promise.race([recorded, outcome.then(result => { if ("error" in result) throw result.error; throw new Error("run settled before recording terminal"); })]);
+      const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
+      expect(rows.some(row => row.eventType === "turn.interrupted")).toBe(true);
+      expect(triggerConsumed).toBe(true);
+      if (mode !== "unscoped terminal") {
+        await new Promise(resolve => setTimeout(resolve, 700));
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
+        releaseObserver();
+        await observerDone;
+        if (mode === "settles") expect(await outcome).not.toHaveProperty("error");
+        else {
+          expect(await outcome).toMatchObject({ error: { message: "native session checkpoint timed out after 100ms" } });
+          expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
+          const restored = new PaperclipControlPlanePort(db, { ...identity, completionContractId: fixtureContractId,
+            completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "park-control" });
+          const checkpoint = await restored.loadSessionCheckpoint();
+          expect(checkpoint?.governedWait?.sourceEvent).toMatchObject({ sourceSeq: 1, turnId: "park-turn" });
+          const session = await backend.openSession({ identity });
+          const recovering = { ...backend, async recoverSession() { return { recovered: true as const, session }; } };
+          await expect(executeNativeSession({ ...options, checkpointTimeoutMs: 1_000, controlPlane: restored,
+            backend: recovering, persistedSession: checkpoint })).resolves.toMatchObject({ result: yielded });
+        }
+      } else {
+        expect(await outcome).not.toHaveProperty("error");
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toHaveLength(1);
+      }
+      expect(starts).toBe(1);
+      expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0]).toMatchObject({
+        status: "pending", result: null, effectiveResolverPolicy: "human_only", continuationPolicy: "none", sourceRunId: identity.runId,
+      });
+    } finally { releaseObserver(); await outcome; if (terminalWasRecorded) await observerDone; }
+  });
+
+  async function terminalObserverFixture(options: {
+    onCommittedEvent?: (event: PrpEvent) => Promise<void>;
+    onDuplicateEvent?: (event: PrpEvent) => Promise<void>;
+    assertControllerActive?: () => void;
+  } = {}) {
+    const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
+    const runnerId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: identity.runId, companyId: identity.companyId, agentId: identity.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: identity.issueId, nativeSessionId: identity.sessionId,
+      runnerInstanceId: runnerId, completionContractId: contractId, completionContractSha256: contractSha });
+    const binding = { ...identity, completionContractId: contractId, completionContractSha256: contractSha,
+      sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "observer-control" };
+    const port = new PaperclipControlPlanePort(db, binding, options);
+    await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
+    const event: PrpEvent = { schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceInstanceId: runnerId,
+      sourceSeq: 1, sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId,
+      turnId: "observer-turn", eventType: "turn.interrupted", schemaVersion: 1, priority: 0,
+      emittedAt: new Date().toISOString(), payload: { status: "interrupted", error: null } };
+    const snapshot = { backendKind: "mock" as const, sessionId: identity.sessionId, identity };
+    const result = { result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL };
+    return { identity, runnerId, binding, port, event, snapshot, result };
+  }
+
+  it.each(["default", "deferred"] as const)("keeps %s terminal observation owned before checkpoint and result acceptance", async mode => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let observed = 0;
+    const f = await terminalObserverFixture({ async onCommittedEvent() { observed++; await gate; } });
+    const signal = new AbortController().signal;
+    let appendSettled = false;
+    const append = f.port.appendEvent(f.event, { signal, ...(mode === "deferred" ? { deferPostCommitObservers: true } : {}) })
+      .then(receipt => { appendSettled = true; return receipt; });
+    let checkpointSettled = false, resultSettled = false;
+    try {
+      if (mode === "deferred") {
+        expect(await append).toMatchObject({ disposition: "committed" });
+        const checkpoint = f.port.checkpointSession(f.snapshot, { signal }).then(() => { checkpointSettled = true; });
+        const result = f.port.completeRun(f.result, { signal }).then(() => { resultSettled = true; });
+        await new Promise(resolve => setTimeout(resolve, 30));
+        expect(checkpointSettled).toBe(false);
+        expect(resultSettled).toBe(false);
+        expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)))[0]!.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+        release(); await Promise.all([checkpoint, result]);
+      } else {
+        await new Promise(resolve => setTimeout(resolve, 30));
+        expect(appendSettled).toBe(false);
+      }
+    } finally { release(); await append; }
+    expect(observed).toBe(1);
+  });
+
+  it("returns the default committed receipt when cancellation arrives during its postcommit observer", async () => {
+    let release!: () => void, observed!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { observed = resolve; });
+    const f = await terminalObserverFixture({ async onCommittedEvent() { observed(); await gate; } });
+    const controller = new AbortController();
+    const outcome = f.port.appendEvent(f.event, { signal: controller.signal }).then(receipt => ({ receipt }), error => ({ error }));
+    try {
+      await started;
+      expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.identity.runId))).toHaveLength(1);
+      const cancellation = new Error("cancelled after event transaction committed");
+      controller.abort(cancellation);
+      release();
+      expect(await outcome).toMatchObject({ receipt: { disposition: "committed" } });
+      await expect(f.port.checkpointSession(f.snapshot, { signal: controller.signal })).rejects.toBe(cancellation);
+      await expect(f.port.completeRun(f.result, { signal: controller.signal })).rejects.toBe(cancellation);
+      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+    } finally { release(); await outcome; }
+  });
+
+  it("retains the original deferred observer rejection for checkpoint and result acceptance", async () => {
+    let reject!: (error: Error) => void;
+    const gate = new Promise<void>((_resolve, no) => { reject = no; });
+    const original = new Error("accounting persistence rejected");
+    const f = await terminalObserverFixture({ async onCommittedEvent() { await gate; } });
+    const signal = new AbortController().signal;
+    await f.port.appendEvent(f.event, { signal, deferPostCommitObservers: true });
+    const checkpoint = f.port.checkpointSession(f.snapshot, { signal }).catch(error => error);
+    const result = f.port.completeRun(f.result, { signal }).catch(error => error);
+    reject(original);
+    expect(await checkpoint).toBe(original); expect(await result).toBe(original);
+    await expect(f.port.completeRun(f.result)).rejects.toBe(original);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)))[0]!.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+  });
+
+  it.each(["abort", "detach"] as const)("revokes a checkpoint and result waiting for deferred observation on %s", async reason => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let detached = false;
+    const original = new Error("controller authority revoked");
+    const f = await terminalObserverFixture({ async onCommittedEvent() { await gate; },
+      assertControllerActive() { if (detached) throw original; } });
+    const controller = new AbortController();
+    await f.port.appendEvent(f.event, { signal: controller.signal, deferPostCommitObservers: true });
+    const checkpoint = f.port.checkpointSession(f.snapshot, { signal: controller.signal }).catch(error => error);
+    const result = f.port.completeRun(f.result, { signal: controller.signal }).catch(error => error);
+    if (reason === "abort") controller.abort(original); else detached = true;
+    release();
+    expect(await checkpoint).toBe(original); expect(await result).toBe(original);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)))[0]!.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+  });
+
+  it("keeps a later observer error visible after an aborted checkpoint stops waiting", async () => {
+    let reject!: (error: Error) => void;
+    const gate = new Promise<void>((_resolve, no) => { reject = no; });
+    const f = await terminalObserverFixture({ async onCommittedEvent() { await gate; } });
+    const controller = new AbortController();
+    await f.port.appendEvent(f.event, { signal: controller.signal, deferPostCommitObservers: true });
+    const checkpoint = f.port.checkpointSession(f.snapshot, { signal: controller.signal }).catch(error => error);
+    const stop = new Error("checkpoint authority revoked");
+    controller.abort(stop);
+    expect(await checkpoint).toBe(stop);
+    const original = new Error("retained accounting failure after revocation");
+    reject(original);
+    await expect(f.port.completeRun(f.result)).rejects.toBe(original);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.identity.runId)))[0]!.runnerProfileJson?.sessionCheckpoint).toBeUndefined();
+  });
+
+  it("joins the exact deferred observer on duplicate append and replays it after a new port opens", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let observed = 0, replayed = 0;
+    const f = await terminalObserverFixture({ async onCommittedEvent() { observed++; await gate; },
+      async onDuplicateEvent() { throw new Error("must join the original owned observation"); } });
+    const signal = new AbortController().signal;
+    await f.port.appendEvent(f.event, { signal, deferPostCommitObservers: true });
+    let duplicateSettled = false;
+    const duplicate = f.port.appendEvent(f.event, { signal }).then(value => { duplicateSettled = true; return value; });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 30)); expect(duplicateSettled).toBe(false);
+      release(); expect(await duplicate).toMatchObject({ disposition: "duplicate" });
+      expect(observed).toBe(1);
+      const restored = new PaperclipControlPlanePort(db, f.binding, { async onDuplicateEvent() { replayed++; } });
+      await restored.openRun({ identity: f.identity, backendKind: "mock", sourceInstanceId: f.runnerId });
+      await expect(restored.appendEvent(f.event)).resolves.toMatchObject({ disposition: "duplicate" });
+      expect(replayed).toBe(1);
+      expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.identity.runId))).toHaveLength(1);
+    } finally { release(); await duplicate; }
+  });
+
+  it.each(["company", "agent", "run", "session", "source", "failed", "unproven", "nonterminal", "unscoped"] as const)("does not grant deferred terminal authority to %s evidence", async fault => {
+    const f = await terminalObserverFixture();
+    const event = { ...f.event,
+      ...(fault === "run" ? { runId: randomUUID() } : {}),
+      ...(fault === "session" ? { normalizedSessionId: randomUUID() } : {}),
+      ...(fault === "source" ? { sourceInstanceId: randomUUID() } : {}),
+      ...(fault === "failed" ? { eventType: "turn.failed" as const } : {}),
+      ...(fault === "unproven" ? { payload: { providerTerminalObserved: false } } : {}),
+      ...(fault === "nonterminal" ? { eventType: "item.completed" as const } : {}),
+      ...(fault === "unscoped" ? { turnId: undefined } : {}),
+    };
+    const port = fault === "company" || fault === "agent" ? new PaperclipControlPlanePort(db, { ...f.binding,
+      ...(fault === "company" ? { companyId: randomUUID() } : { agentId: randomUUID() }) }) : f.port;
+    await expect(port.appendEvent(event, { signal: new AbortController().signal, deferPostCommitObservers: true })).rejects.toThrow();
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.identity.runId))).toEqual([]);
+    expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+  });
+
   it("publishes native recovery metadata in the existing snapshot transaction and fences stale generations", async () => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
@@ -406,6 +684,7 @@ describe("PaperclipControlPlanePort conformance", () => {
   it.each([
     ["checkpoint", "detach"], ["result", "detach"], ["event", "detach"],
     ["checkpoint", "abort"], ["result", "abort"], ["event", "abort"],
+    ["deferred event", "detach"], ["deferred event", "abort"],
   ] as const)("revokes an in-flight %s on %s", async (operation, reason) => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
@@ -424,12 +703,13 @@ describe("PaperclipControlPlanePort conformance", () => {
       assertControllerActive: () => { if (detached) throw new Error("controller_detached"); },
     });
     await port.openRun({ identity, backendKind: "mock", sourceInstanceId: runnerId });
-    const mutate = () => operation === "event" ? port.appendEvent({
+    const mutate = () => operation === "event" || operation === "deferred event" ? port.appendEvent({
       schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:1`, sourceSeq: 1,
       sourceInstanceId: runnerId, sourceKind: "runner", runId: identity.runId,
       normalizedSessionId: identity.sessionId, eventType: "turn.interrupted", schemaVersion: 1,
+      turnId: "revoked-turn",
       priority: 0, emittedAt: new Date().toISOString(), payload: { reason: "governed_wait" },
-    }, { signal: controller.signal }) : operation === "checkpoint"
+    }, { signal: controller.signal, ...(operation === "deferred event" ? { deferPostCommitObservers: true } : {}) }) : operation === "checkpoint"
       ? port.checkpointSession({ backendKind: "mock", sessionId: identity.sessionId, identity }, { signal: controller.signal })
       : port.completeRun({ result: CONTROL_PLANE_CONFORMANCE_RESULT, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL }, { signal: controller.signal });
     let pending: Promise<unknown> | undefined;

@@ -50,6 +50,8 @@ import {
 } from "../explicit-native-continuation.js";
 import { canRetryStoppedRun } from "../cancelled-native-startup.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.js";
+import { nativeManualAdmissionHoldsExecution } from "../native-runtime/native-runner-ownership.js";
+import { taskChatRetrySourceCleanupPending } from "../chat-channels/task-retry-authority.js";
 import { validateNativeWorkspaceReconstruction } from "../native-runtime/native-workspace-reconstruction.js";
 import { isConversationAdapter } from "../conversation-continuation.js";
 import { recordExecutionWait } from "../execution-wait.js";
@@ -1074,14 +1076,23 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           owner.executionRunId !== run.id && owner.executionRunId !== run.retryOfRunId) {
         return { ownsIssue, blocked: true };
       }
-      const previousRunId = run.scheduledRetryReason === "native_provider_overloaded"
+      if (ownsIssue && issueId && await taskChatRetrySourceCleanupPending(tx, run, issueId)) {
+        return { ownsIssue, blocked: true };
+      }
+      const executionOwnerId = run.scheduledRetryReason === "native_provider_overloaded"
         ? run.retryOfRunId : ownsIssue ? owner?.executionRunId : null;
-      if (previousRunId && previousRunId !== run.id) {
-        const [previous] = await tx.select({ status: heartbeatRuns.status })
+      for (const previousRunId of new Set([executionOwnerId, ownsIssue ? run.retryOfRunId : null])) {
+        if (!previousRunId || previousRunId === run.id) continue;
+        const [previous] = await tx.select({ status: heartbeatRuns.status, agentId: heartbeatRuns.agentId,
+          issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
+          contextIssueId: sql<unknown>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
+        })
           .from(heartbeatRuns).where(and(
             eq(heartbeatRuns.id, previousRunId),
             eq(heartbeatRuns.companyId, run.companyId),
           ));
+        if (previousRunId !== executionOwnerId && (previous?.agentId !== run.agentId ||
+            (previous.nativeIssueId ?? previous.issueId ?? previous.contextIssueId) !== issueId)) continue;
         // A terminal result can precede workspace/lease cleanup on this or
         // another controller. Local absence alone is not a release receipt.
         if (!isHeartbeatRunTerminalStatus(previous?.status) ||
@@ -3493,9 +3504,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 .where(eq(heartbeatRuns.id, issue.executionRunId))
                 .then((rows) => rows[0] ?? null)
             : null;
+          const manualExecutionHold = activeExecutionRun && await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+            { companyId: issue.companyId, runId: activeExecutionRun.id, issueId: issue.id });
 
           if (
             activeExecutionRun &&
+            !manualExecutionHold &&
             !EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
               activeExecutionRun.status as (typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES)[number],
             )
@@ -3527,6 +3541,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           // normally against the now-running holder.
           if (
             activeExecutionRun &&
+            !manualExecutionHold &&
             activeExecutionRun.status !== "running" &&
             issue.assigneeAgentId &&
             activeExecutionRun.agentId !== issue.assigneeAgentId

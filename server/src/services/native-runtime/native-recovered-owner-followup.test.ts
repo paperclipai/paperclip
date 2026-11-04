@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
@@ -16,6 +17,8 @@ import { prepareNativeHeartbeatRun } from "./prepare-native-run.js";
 import { buildNativeExecutionInput } from "./native-execution-input.js";
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { createNativeControllerRecovery } from "./native-controller-recovery.js";
+import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { readProcessStartedAt } from "../hot-restart.js";
 import {
   buildNativeExecutionWithCheckpoint, findNativeSessionResumeRun, nativeToolContractFingerprintForTarget,
 } from "./native-session-resume.js";
@@ -30,7 +33,8 @@ vi.mock("./paperclip-runner-tool-authority.js", () => ({
     close() {}
   },
 }));
-vi.mock("./current-wake-comments.js", () => ({
+vi.mock("./current-wake-comments.js", async importOriginal => ({
+  ...await importOriginal<typeof import("./current-wake-comments.js")>(),
   resolveCurrentWakeCommentsBinding: async () => null,
   assertCurrentWakeCommentsRead: async () => undefined,
 }));
@@ -82,7 +86,8 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
    * later committed its result and released the controller lease, but no
    * suspended Runner receipt or failover backup ever reached the controller.
    * Only the database controller checkpoint and recovery pointer survive. */
-  async function seedRecoveredPriorRun(control: "settled" | "pending-command" | "unanswered-tool" = "settled") {
+  async function seedRecoveredPriorRun(control: "settled" | "pending-command" | "unanswered-tool" = "settled",
+    options: { controller?: { bootId: string; pid: number; processStartedAt: Date } } = {}) {
     const issueId = randomUUID(), workspaceId = randomUUID(), runId = randomUUID();
     await db.insert(issues).values({ id: issueId, companyId, title: "Continue after recovery", assigneeAgentId: agentId, status: "in_progress" });
     const [row] = await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, status: "running", runtimeMode: "native",
@@ -103,10 +108,12 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const execution = executionFor(runId);
     const identity = { runId, normalizedSessionId: native.normalizedSessionId, runnerInstanceId: native.runnerInstanceId,
       environmentLeaseId: native.environmentLeaseId, turnId: native.turnId, itemId: native.itemId };
-    const owner = { companyId, issueId, runId, authorityRunId: runId, bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
+    const priorController = options.controller ?? { bootId: randomUUID(), pid: 2_147_483_000,
+      processStartedAt: new Date(Date.now() - 60_000) };
+    const owner = { companyId, issueId, runId, authorityRunId: runId, bootId: priorController.bootId, generation: 1, leaseOwner: randomUUID() };
     await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId, phase: "observed",
-      controllerBootId: owner.bootId, controllerGeneration: 1, controllerPid: 2_147_483_000,
-      controllerProcessStartedAt: new Date(Date.now() - 60_000), leaseOwner: owner.leaseOwner,
+      controllerBootId: owner.bootId, controllerGeneration: 1, controllerPid: priorController.pid,
+      controllerProcessStartedAt: priorController.processStartedAt, leaseOwner: owner.leaseOwner,
       leaseExpiresAt: new Date(Date.now() + 60_000) });
     const scratch = await mkdtemp(join(tmpdir(), "native-recovered-owner-controller-"));
     const controller = new DurablePrpControlPlane({ stateDirectory: scratch, identity,
@@ -211,6 +218,57 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       expect(existsSync(join(root, "control-plane"))).toBe(false);
       expect(await archivedOwners(root)).toEqual([prior.runId]);
       expect(followUp.logs.join("")).toContain(`Run ${prior.runId} finished without a saved runner checkpoint`);
+    }, 60_000);
+
+  async function keepLocalRootWithoutPointer(prior: Awaited<ReturnType<typeof seedRecoveredPriorRun>>,
+    followUp: Awaited<ReturnType<typeof admitFollowUp>>) {
+    await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+    expect(await followUp.start()).toBe(STRANDED);
+    const [copy] = await quarantined();
+    await rename(join(stateDirectory, "quarantine", copy!), join(stateDirectory, copy!.split(".")[0]!));
+    await rm(join(stateDirectory, "quarantine"), { recursive: true, force: true });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, prior.runId));
+    const { nativeControllerRecovery: _pointer, ...profile } = run.runnerProfileJson!;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: profile }).where(eq(heartbeatRuns.id, prior.runId));
+    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
+  }
+
+  it.each(["recovery pointer", "local journal only"] as const)(
+    "admits a follow-up in the process that finished the owner: %s", async evidence => {
+      const prior = await seedRecoveredPriorRun("settled", { controller: await currentNativeControllerIdentity() });
+      const followUp = await admitFollowUp(prior);
+      if (evidence === "local journal only") await keepLocalRootWithoutPointer(prior, followUp);
+      expect(await followUp.start()).toBe(ADMITTED);
+      expect(await quarantined()).toEqual([]);
+      expect(await archivedOwners(await sessionRoot())).toEqual([prior.runId]);
+    }, 60_000);
+
+  it("admits a local journal whose controller process has exited", async () => {
+    const prior = await seedRecoveredPriorRun();
+    const followUp = await admitFollowUp(prior);
+    await keepLocalRootWithoutPointer(prior, followUp);
+    expect(await followUp.start()).toBe(ADMITTED);
+  }, 60_000);
+
+  it.each(["another live controller", "an earlier controller in this process"] as const)(
+    "keeps a local journal held while %s may still own it", async scenario => {
+      const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60_000)"], { stdio: "ignore" });
+      try {
+        await new Promise(resolve => child.once("spawn", resolve));
+        const self = await currentNativeControllerIdentity();
+        const startedAt = await readProcessStartedAt(child.pid!);
+        expect(startedAt).toBeTruthy();
+        const controller = scenario === "another live controller"
+          ? { bootId: randomUUID(), pid: child.pid!, processStartedAt: new Date(startedAt!) }
+          : { ...self, bootId: randomUUID() };
+        const prior = await seedRecoveredPriorRun("settled", { controller });
+        const followUp = await admitFollowUp(prior);
+        await keepLocalRootWithoutPointer(prior, followUp);
+        expect(await followUp.start()).toBe(STRANDED);
+        expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
+      } finally {
+        child.kill("SIGKILL");
+      }
     }, 60_000);
 
   /** The state left by a follow-up admitted before retirement existed. Its

@@ -1,3 +1,4 @@
+import { readNativeWorkspaceMigration, migratedNativeExecutionCwd } from "../native-runtime/native-workspace-migration.js";
 import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
 import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { museRunnerBroker } from "../muse-runner-broker.js";
@@ -762,6 +763,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           codexCliVersion: codexCliVersion!,
         });
       }
+      const workspaceMigration = persistedExecutionWorkspace?.metadata?.nativeWorkspaceMigration
+        ? await readNativeWorkspaceMigration(db, { companyId: agent.companyId, id: nativeExecutionWorkspaceId }) : null;
       const buildExecution = ({ normalizedSessionId, resumedSession }: { normalizedSessionId: string; resumedSession: boolean }) =>
             buildNativeExecutionInput({
               agentKeyId: agentIdentity?.keyId,
@@ -817,7 +820,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                 // transient workspace to the run id so the native input remains durable and replayable
                 // without fabricating a project-scoped execution_workspaces row.
                 id: nativeExecutionWorkspaceId,
-                cwd: executionWorkspace.cwd,
+                cwd: migratedNativeExecutionCwd(workspaceMigration, { agentId: agent.id, issueId: issueRef.id, sessionId: normalizedSessionId }) ?? executionWorkspace.cwd,
                 repoUrl: executionWorkspace.repoUrl,
                 repoRef: executionWorkspace.repoRef,
                 branchName: executionWorkspace.branchName,

@@ -7,15 +7,16 @@ import os from "node:os";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import type { StorageService } from "../../storage/types.js";
-import { assertNativeRunnerCheckpointOwner, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
+import { lockNativeRunnerCheckpointOwner, validateNativeRunnerCheckpointOwner, type NativeRunnerCheckpointFenceOwner } from "./native-runner-checkpoint.js";
 import { loadConfig } from "../../config.js";
 import { getStorageService } from "../../storage/index.js";
 import { readNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
 import { captureNativeHarnessArchive, restoreNativeHarnessArchive, MAX_NATIVE_HARNESS_OBJECT_BYTES } from "./native-harness-backup-archive.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
+import { hasRemoteTerminationReceipt, resolveRemoteTerminationLease } from "../remote-execution-termination.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 
 const SCHEMA = "paperclip.native-harness-object.v1";
@@ -85,37 +86,62 @@ export async function nativeHarnessBackupOwner(db: Db, input: { companyId: strin
   const [row] = await db.select().from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
     eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.controllerBootId, input.bootId)));
-  if (!row?.leaseOwner) fail("owner_missing");
-  return { ...input, authorityRunId: input.runId, leaseOwner: row!.leaseOwner!, generation: row!.controllerGeneration } satisfies NativeRunnerCheckpointOwner;
+  if (!row || !row.leaseOwner && (row.phase !== "committed" || !row.resultId)) fail("owner_missing");
+  return { ...input, authorityRunId: input.runId, leaseOwner: row!.leaseOwner, generation: row!.controllerGeneration } satisfies NativeRunnerCheckpointFenceOwner;
 }
-async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner: NativeRunnerCheckpointOwner | OfflineOwner) {
+async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner: NativeRunnerCheckpointFenceOwner | OfflineOwner) {
+  const checkpointOwner = "kind" in owner ? null : await lockNativeRunnerCheckpointOwner(tx, owner);
   const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
     .where(and(eq(issues.companyId, owner.companyId), eq(issues.id, owner.issueId))).for("share");
   const authorityRunId = "kind" in owner ? owner.runId : owner.authorityRunId;
-  if (!task || !("kind" in owner) && task.executionRunId && task.executionRunId !== authorityRunId) fail("owner_superseded");
+  if (!task) fail("owner_superseded");
   if ("kind" in owner) {
     if (!owner.writersStopped) fail("offline_writers_required");
     const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(offlineMigrationExecutionWhere()).limit(1);
     if (active) fail("offline_writers_required");
-    const [run] = await tx.select({ finishedAt: heartbeatRuns.finishedAt, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
+    const [run] = await tx.select({ finishedAt: heartbeatRuns.finishedAt, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt, status: heartbeatRuns.status }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.id, owner.runId), eq(heartbeatRuns.companyId, owner.companyId),
       eq(heartbeatRuns.nativeIssueId, owner.issueId), eq(heartbeatRuns.runtimeMode, "native"))).for("share");
     const [coordinator] = await tx.select({ leaseOwner: nativeRunFinalizations.leaseOwner,
-      leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt, phase: nativeRunFinalizations.phase })
+      leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt, phase: nativeRunFinalizations.phase,
+      resultId: nativeRunFinalizations.resultId, nextAttemptAt: nativeRunFinalizations.nextAttemptAt })
       .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, owner.runId)).for("share");
     const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
     if (!run?.finishedAt || !["succeeded", "failed", "cancelled", "interrupted", "timed_out"].includes(run.status)
-      || !coordinator || coordinator.leaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt > new Date(clock.now))
-      || owner.terminalFailureOnly && (run.status !== "failed" || coordinator.phase !== "terminal_failure")) {
+      || !coordinator || coordinator.leaseOwner && (!coordinator.leaseExpiresAt || coordinator.leaseExpiresAt > new Date(clock.now))) {
       fail("offline_owner_unsettled");
+    }
+    if (owner.terminalFailureOnly) {
+      if (run.status !== "failed") fail("offline_owner_unsettled");
+      if (coordinator.phase !== "terminal_failure") {
+        // Evidence archival does not settle or resume this stale coordinator.
+        // Lease expiry alone is insufficient: every remote writer needs its
+        // exact host-owned stop receipt, recorded after execution began.
+        if (coordinator.phase !== "observed" || coordinator.resultId || coordinator.nextAttemptAt
+          || task.executionRunId === owner.runId) fail("offline_owner_unsettled");
+        const leases = await tx.select().from(environmentLeases).where(and(
+          eq(environmentLeases.companyId, owner.companyId), eq(environmentLeases.heartbeatRunId, owner.runId))).for("share");
+        const stopped = await Promise.all(leases.map(lease => resolveRemoteTerminationLease(tx as unknown as Db, lease)));
+        if (!stopped.length || stopped.some(lease => {
+          const receipt = lease.metadata?.remoteExecutionTermination as { confirmedAt?: unknown } | undefined;
+          const confirmedAt = Date.parse(String(receipt?.confirmedAt));
+          return lease.issueId !== owner.issueId || !hasRemoteTerminationReceipt(lease)
+            || !Number.isFinite(confirmedAt) || confirmedAt < (run.startedAt ?? run.createdAt).getTime() || confirmedAt > new Date(clock.now).getTime();
+        })) fail("offline_owner_unsettled");
+      }
     }
     return;
   }
-  await assertNativeRunnerCheckpointOwner(tx, owner, false);
+  const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
+  const owned = { ...checkpointOwner!, now: clock.now };
+  const committed = owned.phase === "committed" && owned.resultId !== null && owned.leaseOwner === null;
+  if (owner.leaseOwner === null && !committed) fail("owner_missing");
+  if (task.executionRunId && task.executionRunId !== authorityRunId && !committed) fail("owner_superseded");
+  await validateNativeRunnerCheckpointOwner(tx, owner, owned, false);
 }
 
 export async function persistNativeHarnessBackup(input: {
-  db: Db; storage: StorageService; owner: NativeRunnerCheckpointOwner | OfflineOwner;
+  db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner;
   scopeDigest: string; root: string; signal?: AbortSignal;
 }): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.scopeDigest)) fail("scope_invalid");

@@ -180,6 +180,7 @@ export type {
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
   PluginEnvironmentLease,
+  PluginEnvironmentWorkspaceAllocationFiles,
   PluginEnvironmentAcquireLeaseParams,
   PluginEnvironmentResumeLeaseParams,
   PluginEnvironmentReleaseLeaseParams,
@@ -461,6 +462,8 @@ export { PluginEnvironmentCreationCleanupError, environmentCreationCleanupErrorD
 export type { PluginEnvironmentCreationCleanup, PluginEnvironmentAcquisitionDiagnostic, PluginEnvironmentAcquisitionProviderState } from "./environment-creation-cleanup.js";
 export { preserveEnvironmentSyncErrorDiagnostic, environmentSyncErrorData, readEnvironmentSyncErrorDiagnostic, withEnvironmentSyncErrorCapture, withEnvironmentSyncTransferStep, recordEnvironmentSyncError } from "./environment-sync-error.js";
 export type { PluginEnvironmentSyncErrorDiagnostic } from "./environment-sync-error.js";
+export { PluginEnvironmentRunnerIngressError, environmentRunnerIngressErrorData, readEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
+export type { PluginEnvironmentRunnerIngressFailure } from "./environment-runner-ingress-error.js";
 
 export type { AiConnectionPool, AiConnectionPoolConfig, AiConnectionPoolMember, AiConnectionRouterRequest, AiConnectionRouterResult, AiConnectionRouterSelection } from "@paperclipai/shared";
 

@@ -1965,6 +1965,14 @@ failure notice. They retain the normal Retry permission and admission gates.
 Retained-folder access and trust denials use this explanation; low-trust project
 boundary denials retain their dedicated project-access action.
 
+Remote archive capture retains fixed validation failures and a closed set of
+Node filesystem codes as `remote_workspace_archive_fs_<errno>`. The transport
+accepts exact diagnostic messages from separate or combined command output.
+Paths, filenames, file contents, and unknown errors remain redacted. The existing
+full-disk and unfinished-Git messages keep their priority. These diagnostics
+describe a failed capture attempt; saving and recovery still require their
+ordinary verified receipts.
+
 A child or follow-up task can use a remote workspace inherited through its
 persisted task binding, including an isolated workspace or operator branch.
 Reservation checks current task/run access and all retained workspace sources.
@@ -4540,3 +4548,10 @@ one-time config-file seed preserves existing choices, then later starts use the
 database without loading home `.env` files or repairing worktree config. See
 [Cloud runtime configuration](cloud-runtime-configuration.md) for field ownership,
 secret handling, initialization order and migration interfaces.
+
+
+### Read resilience during deploys
+
+Read surfaces use `useQueryView` and `QueryErrorState`. Transient refetch failures keep loaded data visible. An initial outage keeps a quiet placeholder until recovery. Authorization, missing resources and validation failures still show readable errors. Exhausted first reads on a reachable server offer Retry, including task filters and hierarchy reads. Health probes and the socket own app-wide recovery; a successful component load may be an older in-flight response or a local no-op. Sensitive manual reads use `useResilientFetch`; browser viewer URLs and pairing previews remain in component memory and never enter a shared cache.
+
+Run `node scripts/check-query-error-rendering.mjs`. The guard now enforces across `ui/src`, including multiline expressions, and CI runs it as a policy check. Its small allowlist covers standalone preview/performance fixtures, transcript protocol result flags, and the existing account-resolution and Copilot discovery retry owners. These are not ordinary read-error renders. Additions require a specific reason; do not allowlist a page to hide an outage regression.

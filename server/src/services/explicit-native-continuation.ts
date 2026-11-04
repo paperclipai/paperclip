@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
-import { isCancelledNativeStartup, isFailedNativePreparation } from "./cancelled-native-startup.js";
+import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
@@ -253,6 +253,17 @@ export async function admitExplicitNativeContinuation(input: {
       sourceChecks.push({ cause: "native_continuation_requires_reconciliation", evidence: { runId: latest.id } });
     }
   }
+  if (taskRetry && !sourceChecks.some(source => (source.evidence.runId ?? source.evidence.sourceRunId) === taskRetry.sourceRunId)) {
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, taskRetry.sourceRunId),
+    )).for("update");
+    const [source] = await db.select(continuationRunFields).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, taskRetry.sourceRunId), eq(heartbeatRuns.agentId, agentId),
+    )).for("update");
+    if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
+      || adapterExecutionControls.has(source.id) || !await isFailedNativePreparation(db, source, coordinator)) return null;
+    sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
+  }
   if (!sourceChecks.length) return null;
   if (blocker && blocker.recoveryActionId === null) return null;
   const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
@@ -320,7 +331,13 @@ export async function admitExplicitNativeContinuation(input: {
       const historicalAdapter = await historicalAdapterType(db, run);
       // A settings change never converts a known process/webhook execution into
       // a conversation. Those adapters retain their reconciliation contract.
-      if (historicalAdapter && !isConversationAdapter(historicalAdapter)) return null;
+      if (historicalAdapter && !isConversationAdapter(historicalAdapter)) {
+        if (!(taskRetry && run.id !== taskRetry.sourceRunId && freshIntent && agentIsNative &&
+              historicalAdapter === "paperclip_runner" && run.status === "failed") ||
+            run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date() ||
+            await hasPendingRunCleanup(db, companyId, run.id) ||
+            !await isFailedNativePreparationRetryAncestor(db, run, coordinator)) return null;
+      }
       if (!historicalAdapter && agent.adapterType === "paperclip_runner") return null;
     }
     const interruptedByThisClick = response?.source.requiresFreshSession === true &&
@@ -445,17 +462,6 @@ export async function admitExplicitNativeContinuation(input: {
     }
     sources.push(run);
   }
-  if (taskRetry && !sources.some(run => run.id === taskRetry.sourceRunId)) {
-    const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
-      eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, taskRetry.sourceRunId),
-    )).for("update");
-    const [source] = await db.select(continuationRunFields).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, taskRetry.sourceRunId), eq(heartbeatRuns.agentId, agentId),
-    )).for("update");
-    if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
-      || adapterExecutionControls.has(source.id) || !await isFailedNativePreparation(db, source, coordinator)) return null;
-    sources.push(source);
-  }
   const nativeSources = sources.filter(run => run.runtimeMode === "native");
   const executedSources = sources.filter(run => run.runtimeMode === "native" || run.errorCode !== "execution_reconciliation_required" || run.startedAt);
   if (!executedSources.length || (retry && !sources.some(run => run.id === input.failedRunId)) ||
@@ -540,10 +546,16 @@ export async function admitExplicitNativeContinuation(input: {
   if (readiness) await persistActivity(db, { companyId, actorType: "system", actorId: "task-recovery",
     action: "issue.fresh_workspace_selected", entityType: "issue", entityId: issueId,
     details: { ...readiness, runId: input.successorRunId } });
-  if (input.taskRetryRequestId) await db.update(agentWakeupRequests).set({
-    payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}',
-      ${JSON.stringify(readiness?.mode === "fresh_isolated_workspace" ? "fresh_isolated_workspace" : "continue")}::jsonb)`,
-  }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.taskRetryRequestId)));
+  if (input.taskRetryRequestId) {
+    const payload = sql`jsonb_set(${agentWakeupRequests.payload} #- '{taskRetry,continuation}', '{taskRetry,strategy}',
+      ${JSON.stringify(readiness?.mode === "fresh_isolated_workspace" ? "fresh_isolated_workspace" : "continue")}::jsonb)`;
+    // Preserve the action ledger as the authority when it exists. Preparation
+    // can fail before that ledger exists, so only that path needs a fallback.
+    const hasActionAuthorization = actions.some(action => (action.evidence.runId ?? action.evidence.sourceRunId) === previous.id);
+    await db.update(agentWakeupRequests).set({ payload: hasActionAuthorization ? payload
+      : sql`jsonb_set(${payload}, '{taskRetry,continuation}', ${JSON.stringify(authorization)}::jsonb)`,
+    }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.taskRetryRequestId)));
+  }
   return continuation;
 }
 

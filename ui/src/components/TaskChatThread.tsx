@@ -636,8 +636,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     error: props.scrollingHistory.error,
     load: () => Promise.all([
       props.scrollingHistory?.hasMore ? props.scrollingHistory.load() : undefined,
-      !decisionReceipts.isError && decisionReceipts.hasNextPage ? decisionReceipts.fetchNextPage() : undefined,
-      !taskHandoffs.isError && taskHandoffs.hasNextPage ? taskHandoffs.fetchNextPage() : undefined,
+      decisionReceipts.status !== "error" && decisionReceipts.hasNextPage ? decisionReceipts.fetchNextPage() : undefined,
+      taskHandoffs.status !== "error" && taskHandoffs.hasNextPage ? taskHandoffs.fetchNextPage() : undefined,
     ]),
   } : undefined;
   const conversationWindowStart = props.scrollingHistory?.hasMore && comments.length

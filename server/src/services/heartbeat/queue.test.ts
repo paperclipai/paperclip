@@ -1,6 +1,6 @@
 import { claimNativeSessionResumptions } from "../native-runtime/native-finalization-reconciler.js";
 import type { Db } from "@paperclipai/db";
-import { authUsers, agents, agentWakeupRequests, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { authUsers, agents, agentWakeupRequests, caseHandoffs, cases, chatCompletionDeliveries, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issueComments, issueThreadInteractions, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
@@ -258,6 +258,94 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     await db.update(issues).set({ executionRunId: run.id, executionAgentNameKey: agent.name, executionLockedAt: new Date() }).where(eq(issues.id, issue.id));
     return { company, agent, issue, wake, run };
   }
+
+  async function pendingPredecessorFixture() {
+    const f = await fixture("queued");
+    const [source] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      issueId: f.issue.id, status: "failed", runtimeMode: "legacy", finishedAt: new Date(),
+      executionStage: "preparing", errorCode: "adapter_failed",
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      contextSnapshot: { issueId: f.issue.id } }).returning();
+    const [lease] = await db.insert(environmentLeases).values({ companyId: f.company.id, issueId: f.issue.id,
+      heartbeatRunId: source.id, provider: "daytona", providerLeaseId: crypto.randomUUID(), status: "active" }).returning();
+    const [successor] = await db.update(heartbeatRuns).set({ retryOfRunId: source.id, responsibleUserId: "queue-test-user",
+      contextSnapshot: { issueId: f.issue.id, source: "issue.continuation_recovery", retryOfRunId: source.id,
+        wakeReason: "issue_continuation_needed" } }).where(eq(heartbeatRuns.id, f.run.id)).returning();
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(f.agent);
+    return { ...f, source, lease, successor, deps, queue: createHeartbeatQueue(db, deps) };
+  }
+
+  it("keeps an automatic continuation queued while its legacy predecessor still owns cleanup", async () => {
+    const { successor, lease, queue, deps, ...f } = await pendingPredecessorFixture();
+    expect(await queue.claimQueuedRun(successor)).toBeNull();
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, successor.id)))[0].status).toBe("queued");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(successor.id);
+    expect(deps.executeRun).not.toHaveBeenCalled();
+
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success" })
+      .where(eq(environmentLeases.id, lease.id));
+    expect(await queue.claimQueuedRun(successor)).toMatchObject({ id: successor.id, status: "running" });
+    expect(await queue.claimQueuedRun(successor)).toBeNull();
+  });
+
+  it("keeps a retry queued after failed cleanup and until its local executor releases", async () => {
+    const f = await pendingPredecessorFixture();
+    await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "failed" })
+      .where(eq(environmentLeases.id, f.lease.id));
+    expect(await f.queue.claimQueuedRun(f.successor)).toBeNull();
+    await db.update(environmentLeases).set({ cleanupStatus: "success" }).where(eq(environmentLeases.id, f.lease.id));
+    f.deps.liveRunExecutions.has.mockImplementation(id => id === f.source.id);
+    expect(await f.queue.claimQueuedRun(f.successor)).toBeNull();
+    f.deps.liveRunExecutions.has.mockReturnValue(false);
+    expect(await f.queue.claimQueuedRun(f.successor)).toMatchObject({ id: f.successor.id, status: "running" });
+  });
+
+  it.each(["missing", "foreign company", "other task", "other agent", "native task overrides context"] as const)(
+    "does not hold a queued run for a %s retry source", async mismatch => {
+      const f = await pendingPredecessorFixture();
+      let sourceId = f.source.id;
+      if (mismatch === "missing") {
+        await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, sourceId));
+        expect(await f.queue.claimQueuedRun(f.successor)).toMatchObject({ id: f.successor.id, status: "running" });
+        return;
+      } else if (mismatch === "foreign company") {
+        const [company] = await db.insert(companies).values({ name: "Unrelated company", issuePrefix: "OTHER" }).returning();
+        const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Other company worker", adapterType: "process" }).returning();
+        const [source] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+          status: "failed", finishedAt: new Date() }).returning();
+        sourceId = source.id;
+        await db.insert(environmentLeases).values({ companyId: company.id, heartbeatRunId: sourceId, status: "active", provider: "daytona" });
+      } else if (mismatch === "other agent") {
+        const [other] = await db.insert(agents).values({ companyId: f.company.id, name: "Another worker", adapterType: "process" }).returning();
+        const [source] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: other.id, issueId: f.issue.id,
+          status: "failed", finishedAt: new Date() }).returning();
+        sourceId = source.id;
+        await db.insert(environmentLeases).values({ companyId: f.company.id, heartbeatRunId: sourceId, status: "active", provider: "daytona" });
+      } else {
+        const [other] = await db.insert(issues).values({ companyId: f.company.id, title: "Another task" }).returning();
+        const [source] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, issueId: other.id,
+          ...(mismatch === "native task overrides context" ? { nativeIssueId: other.id } : {}),
+          contextSnapshot: { issueId: f.issue.id }, status: "failed", finishedAt: new Date() }).returning();
+        sourceId = source.id;
+        await db.insert(environmentLeases).values({ companyId: f.company.id, heartbeatRunId: sourceId, status: "active", provider: "daytona" });
+      }
+      const [successor] = await db.update(heartbeatRuns).set({ retryOfRunId: sourceId })
+        .where(eq(heartbeatRuns.id, f.successor.id)).returning();
+      expect(await f.queue.claimQueuedRun(successor)).toMatchObject({ id: successor.id, status: "running" });
+    },
+  );
+
+  it("retains the current execution owner's hold when retry provenance is unrelated", async () => {
+    const f = await pendingPredecessorFixture();
+    const [unrelated] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+      status: "succeeded", finishedAt: new Date() }).returning();
+    const [successor] = await db.update(heartbeatRuns).set({ retryOfRunId: unrelated.id })
+      .where(eq(heartbeatRuns.id, f.successor.id)).returning();
+    await db.update(issues).set({ executionRunId: f.source.id }).where(eq(issues.id, f.issue.id));
+    expect(await f.queue.claimQueuedRun(successor)).toBeNull();
+    expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].executionRunId).toBe(f.source.id);
+  });
 
   it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
     const f = await fixture("queued");

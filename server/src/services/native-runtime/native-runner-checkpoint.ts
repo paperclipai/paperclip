@@ -1,7 +1,7 @@
 import { notifyLiveRunRecovery } from "../live-run-recovery-notifications.js";
 import { and, eq, exists, gt, isNull, lte, inArray, notExists, or, sql } from "drizzle-orm";
 import { checkpointDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunnerCheckpoints, type Db } from "@paperclipai/db";
-import { inspectDurablePrpCheckpointHeader, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { inspectDurablePrpCheckpointHeader, inspectUnclaimedBootstrapCheckpoint, decodeDurablePrpCheckpoint, type DurablePrpCheckpoint, type DurablePrpControlPlane, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 
@@ -9,18 +9,31 @@ type Binding = { companyId: string; issueId: string; runId: string };
 export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
 export const NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES = 8 * 1024 * 1024;
 export type NativeRunnerCheckpointOwner = Binding & { bootId: string; leaseOwner: string; generation: number; authorityRunId: string };
+export type NativeRunnerCheckpointFenceOwner = Omit<NativeRunnerCheckpointOwner, "leaseOwner"> & { leaseOwner: string | null };
 function encryptParts(binding: Binding, records: ReadonlyMap<string, string>) {
   if (!records.size) return [];
   const cipher = createLocalEncryptedCipher("write");
   return [...records].map(([part, contents]) => ({
     companyId: binding.companyId, issueId: binding.issueId, runId: binding.runId, part,
-    material: cipher.encrypt(JSON.stringify({ ...binding, part, contents })),
+    material: cipher.encrypt(JSON.stringify({ companyId: binding.companyId, issueId: binding.issueId, runId: binding.runId, part, contents })),
   }));
 }
 
 export async function insertMigratedNativeRunnerCheckpoint(tx: CheckpointTransaction, binding: Binding, checkpoint: DurablePrpCheckpoint) {
   if (checkpoint.runId !== binding.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
-  await tx.insert(nativeRunnerCheckpoints).values(encryptParts(binding, checkpoint.records));
+  let batch: ReturnType<typeof encryptParts> = [];
+  let batchBytes = 0;
+  for (const part of encryptParts(binding, checkpoint.records)) {
+    const bytes = Buffer.byteLength(JSON.stringify(part));
+    if (batch.length && (batch.length >= 64 || batchBytes + bytes > 512 * 1024)) {
+      await tx.insert(nativeRunnerCheckpoints).values(batch);
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(part);
+    batchBytes += bytes;
+  }
+  if (batch.length) await tx.insert(nativeRunnerCheckpoints).values(batch);
 }
 
 function decryptPart(cipher: ReturnType<typeof createLocalEncryptedCipher>, binding: Binding,
@@ -37,11 +50,12 @@ type CheckpointTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
 /** A dependent run-lock query can consume this CTE to preserve coordinator-first
  * lock order without adding a second database round trip. */
-export function nativeRunnerCheckpointOwnerLock(tx: CheckpointTransaction, owner: NativeRunnerCheckpointOwner) {
+export function nativeRunnerCheckpointOwnerLock(tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner) {
   return tx.$with("checkpoint_owner").as(tx.select({
     leaseOwner: nativeRunFinalizations.leaseOwner,
     leaseExpiresAt: nativeRunFinalizations.leaseExpiresAt,
     resultId: nativeRunFinalizations.resultId,
+    phase: nativeRunFinalizations.phase,
   }).from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, owner.companyId), eq(nativeRunFinalizations.issueId, owner.issueId),
     eq(nativeRunFinalizations.runId, owner.authorityRunId), eq(nativeRunFinalizations.controllerBootId, owner.bootId),
@@ -51,24 +65,24 @@ export function nativeRunnerCheckpointOwnerLock(tx: CheckpointTransaction, owner
 /** Locks the coordinator before callers lock a run. A caller that subsequently
  * waits for another lock must recheck the fence before writing. */
 export async function lockNativeRunnerCheckpointOwner(
-  tx: CheckpointTransaction, owner: NativeRunnerCheckpointOwner,
+  tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner,
 ) {
   // A locking CTE acquires ownership before the outer projection samples
   // wall time. Sampling in the locking SELECT can precede its lock wait.
   // Keep both steps in one statement without another database round trip.
   const locked = nativeRunnerCheckpointOwnerLock(tx, owner);
   const [owned] = await tx.with(locked).select({ leaseOwner: locked.leaseOwner,
-    leaseExpiresAt: locked.leaseExpiresAt, resultId: locked.resultId, now: sql<Date>`clock_timestamp()` }).from(locked);
+    leaseExpiresAt: locked.leaseExpiresAt, resultId: locked.resultId, phase: locked.phase, now: sql<Date>`clock_timestamp()` }).from(locked);
   if (!owned) throw new Error("native_runner_checkpoint_owner_lost");
   return owned;
 }
 
 export async function validateNativeRunnerCheckpointOwner(
-  tx: CheckpointTransaction, owner: NativeRunnerCheckpointOwner,
-  owned: Awaited<ReturnType<typeof lockNativeRunnerCheckpointOwner>>, newWork: boolean,
+  tx: CheckpointTransaction, owner: NativeRunnerCheckpointFenceOwner,
+  owned: Omit<Awaited<ReturnType<typeof lockNativeRunnerCheckpointOwner>>, "phase">, newWork: boolean,
 ): Promise<void> {
   const current = owned;
-  const activeOwner = current.leaseOwner === owner.leaseOwner
+  const activeOwner = owner.leaseOwner !== null && current.leaseOwner === owner.leaseOwner
     && current.leaseExpiresAt !== null && current.leaseExpiresAt > new Date(owned.now);
   if (!activeOwner) {
     const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
@@ -210,6 +224,22 @@ export async function loadNativeRunnerCheckpoint(db: Pick<Db, "select">, binding
   const checkpoint = decodeDurablePrpCheckpoint(parts);
   if (checkpoint.runId !== binding.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
   return checkpoint;
+}
+
+export async function loadNativeUnclaimedBootstrapCheckpoint(
+  db: Pick<Db, "select">, binding: Binding, identity: DurableRecoveryIdentity,
+) {
+  try {
+    if (binding.runId !== identity.runId) return null;
+    const rows = await db.select().from(nativeRunnerCheckpoints).where(and(
+      eq(nativeRunnerCheckpoints.companyId, binding.companyId), eq(nativeRunnerCheckpoints.issueId, binding.issueId),
+      eq(nativeRunnerCheckpoints.runId, binding.runId))).limit(5);
+    if (rows.length !== 4 || rows.reduce((bytes, row) => bytes + Buffer.byteLength(JSON.stringify(row.material)), 0)
+      > 2 * NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES) return null;
+    const cipher = createLocalEncryptedCipher("read");
+    const records = new Map(rows.map(row => [row.part, decryptPart(cipher, binding, row.part, row.material)] as const));
+    return inspectUnclaimedBootstrapCheckpoint(records, identity);
+  } catch { return null; }
 }
 
 export async function restoreNativeRunnerCheckpoint(db: Db, binding: Binding, root: string, normalizedSessionId?: string) {
