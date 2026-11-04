@@ -1251,6 +1251,8 @@ describeEmbeddedPostgres("attention service", () => {
       contextSnapshot: { issueId }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
     });
 
+    await db.execute(sql`ANALYZE heartbeat_runs, heartbeat_run_events`);
+
     const feed = await attentionService(db).list(companyId, {
       includeDismissed: true, all: true, allowUnscopedAll: true,
     });
