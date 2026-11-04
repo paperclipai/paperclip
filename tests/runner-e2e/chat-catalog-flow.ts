@@ -12,7 +12,7 @@ import { expect } from "@playwright/test";
 import { pollUntil } from "./api.js";
 import { collectChatRunEvidence, sendChatMessage } from "./chat-flow.js";
 import { prepareNativeStopCanonicalBoundary } from "./chat-native-stop-boundary.js";
-import { chatCatalogHumanHistoryMatches, verifyChatCatalogHumanQuestionAnswer, type ChatCatalogHumanQuestionAudit, validateChatCatalogGrade, type ChatCatalogSetupBoundary, type ChatCatalogContext, type ChatCatalogGrade } from "./chat-catalog-contract.js";
+import { chatCatalogHumanHistoryMatches, chatCatalogAllowsHumanQuestionAnswer, verifyChatCatalogHumanQuestionAnswer, type ChatCatalogHumanQuestionAudit, validateChatCatalogGrade, type ChatCatalogSetupBoundary, type ChatCatalogContext, type ChatCatalogGrade } from "./chat-catalog-contract.js";
 import { findChatCatalogCase, loadChatCatalogImplementation } from "./chat-catalog-registry.js";
 import { chatCatalogInventoryDigest } from "./chat-catalog-inventory.js";
 import { resolveChatCatalogQuery } from "./chat-query-bindings.js";
@@ -64,7 +64,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
     grade = validateChatCatalogGrade(implementation!.grade(observation));
     const human = evidence.comments.filter(comment => !comment.authorAgentId);
     const canonicalHuman = human[implementation!.setupHumanMessageCount ?? 0];
-    const expectedAnswer = ["secrets.personal-secret", "secrets.company-secret"].includes(scenario.id)
+    const expectedAnswer = chatCatalogAllowsHumanQuestionAnswer(scenario.id)
       ? implementation!.expectedHumanQuestionAnswer?.(observation) : undefined;
     let questionAnswer: ReturnType<typeof verifyChatCatalogHumanQuestionAnswer>;
     if (expectedAnswer && evidence.issue && canonicalHuman) {
