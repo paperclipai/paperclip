@@ -944,6 +944,36 @@ same preparation retains its directory and receipt check. A published workspace
 on the same allocation retains its recorded directory. Automatic bootstrap
 timeout retries still require a fresh allocation under the policy above.
 
+### Saved chat Retry preparation
+
+Task Retry can meet a busy chat identity or endpoint lock before its source is authorized.
+The canonical Retry and its linked chat action then retain one unadmitted request.
+The existing chat retry worker prepares that request after the lock is available.
+It checks the current board actor, source, principal, conversation, task owner,
+and canonical intent before normal admission. Stop, changed input, revoked access,
+or newer execution can reject it without adopting input or publishing a notice.
+Restoration of a certified unstarted input batch stays in the same transaction as
+source preparation. Contention cannot commit a partial restoration.
+
+Pending preparation and a prepared but unsettled action show the existing
+retry-scheduled state and the chat outbox's actual retry or stale-claim deadline.
+They do not imply that a provider started. Source authorization contention has a separate
+60-second deadline saved with the pending request, or at the first contention
+for an older action. Waiting on these locks does not consume the eight delivery
+attempts. Expiry is checked before source preparation commits and before a
+prepared action can leave its authorization wait. A lock that becomes available
+after expiry cannot complete a still-pending wait. The authorization transaction
+saves completion of that wait under the current claim before wake delivery.
+A restart rechecks current source and execution gates; elapsed time alone does
+not expire a completed wait. New contention still uses the original deadline.
+Generic delivery failure cannot put a completed wait back into the pending
+state. A lost commit acknowledgment preserves the stored phase and does not
+authorize a wake.
+Duplicate clicks and background sweeps cannot renew either limit. Preparation
+does not create a generic board wake. Only the endpoint query's lock-unavailable
+error can defer through its explicit Retry callback. Other database and
+authorization errors keep their existing behavior.
+
 ### Runner authentication and ACP startup handshake bounds
 
 The native Runner waits up to the ten-second connection setup budget for the
