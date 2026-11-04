@@ -3721,13 +3721,9 @@ describe("automatic retained workspace recovery", () => {
       await Promise.all([control.resumeRemoteStopComments(await run(f.runId)),
         control.resumeRemoteStopComments(await run(f.runId))]);
       const [afterWake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
-      expect(heldWake.status).toBe(nativeDescriptor ? "deferred_issue_execution" : "skipped");
-      if (!nativeDescriptor) {
-        expect(afterWake.status).toBe("skipped");
-        expect(deps.enqueueWakeup).not.toHaveBeenCalled();
-        expect(queueDeps.executeRun).not.toHaveBeenCalled();
-        return;
-      }
+      // A post-Stop message is saved behind either source shape and delivered
+      // once through ordinary admission; it is never dropped by the gate.
+      expect(heldWake.status).toBe("deferred_issue_execution");
       expect(afterWake).toMatchObject({ status: "coalesced", runId: expect.any(String) });
       expect(afterWake.runId).not.toBe(queued.id);
       expect((await action(f.actionId)).evidence).toMatchObject({ automaticRecovery: { replay: "explicit_user_continuation" } });
@@ -3747,8 +3743,75 @@ describe("automatic retained workspace recovery", () => {
 
   it.each([
     { nativeDescriptor: true, title: "preserves an already queued reset until real native copyback replays its saved wake" },
-    { nativeDescriptor: false, title: "does not replay a snapshot-only source without a verified native baseline" },
+    { nativeDescriptor: false, title: "saves a queued reset behind a snapshot-only source and delivers it once after recovery" },
   ])("$title", async ({ nativeDescriptor }) => exerciseQueuedReset(nativeDescriptor), 30_000);
+
+  it.each([
+    { sentAfterStop: true, title: "saves and delivers once a redirect sent during Stop settlement when the stopped source has no native baseline" },
+    { sentAfterStop: false, title: "does not let input written before the Stop restart a source without a native baseline" },
+  ])("$title", async ({ sentAfterStop }) => {
+    // A message sent after Stop is queued while the stopped run is still
+    // persisting its checkpoint. Settlement then records a workspace hold, and
+    // the dispatch gate withholds the unstarted redirect. The gate must save it,
+    // not skip it: the task would otherwise stay in progress with no run or wake.
+    const t = await queuedResetFixture(false);
+    const { f, original, reset: redirect, wake, queued, deps, control, execution, queueDeps, queue } = t;
+    await db.update(issueComments).set({ body: "Actually, stop the essay. Instead give me a 5-bullet summary." })
+      .where(eq(issueComments.id, redirect.id));
+    // Older queued input is not a new direction and must not undo the Stop.
+    if (!sentAfterStop) await db.update(heartbeatRuns).set({ finishedAt: new Date(redirect.createdAt.getTime() + 1_000) })
+      .where(eq(heartbeatRuns.id, f.runId));
+    try {
+      expect(await queue.claimQueuedRun(queued)).toBeNull();
+      expect((await run(queued.id)).status).toBe("queued");
+      await recordRequiredWorkspaceRestoreFailure(db, await run(f.runId), { workspaceRestoreFailure: "restore_failed" }, f.lease);
+      const [hold] = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, f.companyId),
+        eq(issueRecoveryActions.sourceIssueId, f.issueId), eq(issueRecoveryActions.fingerprint, `native-workspace:${f.runId}`)));
+      f.actionId = hold.id; f.input.actionId = hold.id;
+      await recoverRetainedWorkspace(f.input);
+      await db.update(environmentLeases).set({ status: "released", releasedAt: new Date(), cleanupStatus: "success", metadata: { ...f.lease.metadata,
+        remoteExecutionTermination: remoteTerminationReceipt(f.lease, { providerLeaseId: f.providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, f.lease.id));
+      await control.acknowledgeRemoteStop(f.runId, f.companyId);
+      deps.activeRunExecutions.delete(f.runId); execution.finish(); adapterExecutionControls.delete(f.runId);
+      await control.resumeRemoteStopComments(await run(f.runId));
+      await vi.waitFor(async () => {
+        await Promise.all(await reconcileRetainedWorkspaces(db, f.environmentRuntime, async current => {
+          if (current.id === f.runId) await control.resumeRemoteStopComments(current);
+        }) ?? []);
+        expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+      }, { timeout: 10_000, interval: 10 });
+
+      // The settled hold withholds the redirect that was queued before it existed.
+      expect(await queue.claimQueuedRun(await run(queued.id))).toBeNull();
+      expect(await run(queued.id)).toMatchObject({ status: "cancelled", errorCode: "execution_reconciliation_required", startedAt: null });
+      const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, wake.id));
+      if (!sentAfterStop) {
+        expect(saved.status).toBe("skipped");
+        await control.resumeRemoteStopComments(await run(f.runId));
+        await queue.resumeDeferredExecutionReceipts({ companyId: f.companyId });
+        expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+          sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+        expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+        expect(queueDeps.executeRun).not.toHaveBeenCalled();
+        return;
+      }
+      expect(saved).toMatchObject({ status: "deferred_issue_execution", runId: null,
+        payload: { executionWait: { reason: "execution_recovery", recoveryActionId: hold.id } } });
+      expect(saved.payload?._paperclipWakeContext).toMatchObject({ wakeCommentIds: [redirect.id] });
+
+      // Ordinary deferred-receipt delivery re-enters admission once.
+      await Promise.all([control.resumeRemoteStopComments(await run(f.runId)), control.resumeRemoteStopComments(await run(f.runId))]);
+      await queue.resumeDeferredExecutionReceipts({ companyId: f.companyId });
+      const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${f.issueId}`, eq(heartbeatRuns.status, "queued")));
+      expect(successors).toHaveLength(1);
+      expect(successors[0].id).not.toBe(queued.id);
+      expect(successors[0].contextSnapshot?.wakeCommentIds).toEqual([redirect.id]);
+      expect(deps.enqueueWakeup).toHaveBeenCalledWith(original.agentId,
+        expect.objectContaining({ requestedByActorType: "user", requestedByActorId: "operator" }), wake.id);
+      expect(queueDeps.executeRun).not.toHaveBeenCalled();
+    } finally { deps.activeRunExecutions.delete(f.runId); execution.finish(); adapterExecutionControls.delete(f.runId); }
+  }, 30_000);
 
   it("reaches its queued snapshot-only reset after earlier recovery candidates without starting agent work", async () => {
     const previous = db;
