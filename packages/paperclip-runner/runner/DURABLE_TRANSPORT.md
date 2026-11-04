@@ -82,6 +82,12 @@ confirms target authentication and persists its checkpoint before enabling tool
 dispatch and new turns. This protocol does not establish vendor rollout fsync
 or host-level physical process retirement by itself.
 
+If controller-local launch preparation is absent, the trusted caller can supply
+`sourceReconciliationLaunch: { requirements }` with the frozen source inputs.
+The current execution owner prepares this launch afresh. The source launch does
+not overwrite the ordinary source configuration or populate its preparation
+cache. This option requires source mode, exact source identity and a preparer.
+
 Durable mode is selected only when `paperclip-runnerd` receives
 `--connect-url`. Its executor accepts a Codex app-server descriptor and bound
 completion contract through `run.prepare`, owns the provider process group,
