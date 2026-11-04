@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "25cd5e4ebb6b955701778d2d1d702f86a573cfaa",
+  "targetSha": "1d2d8f732f73638198eaf2f8cec0fe85fb4a54bf",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -172,7 +172,7 @@
       "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
       "previousTargetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
       "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
-      "candidateDescriptorSha256": "a575dc540e21b5d799db9e0e7f1da4034b71a25aeb955c2cb5dd901fcd8bce67",
+      "candidateDescriptorSha256": "e7681aa6bb41a8b71f6e30ae3279e0579c72f55dabdaeedbf984e22268b070db",
       "changedDefinitionFiles": [
         {
           "path": "tests/runner-e2e/chat-scenarios/companies.yaml",
@@ -232,7 +232,7 @@
           "key": "activity.work-timeline",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.internal.v1",
-          "current": "paperclip.chat-catalog.work-timeline.v3"
+          "current": "paperclip.chat-catalog.work-timeline.v4"
         },
         {
           "key": "activity.work-timeline",
@@ -308,7 +308,7 @@
           "key": "app-permissions.ask-before-action",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.app-review.v3"
+          "current": "paperclip.chat-catalog.app-review.v4"
         },
         {
           "key": "app-permissions.test-as-agent",
@@ -616,6 +616,7 @@
           ],
           "current": [
             "chat-catalog-domains/external-company-secret.ts",
+            "chat-catalog-domains/external-secret-question.ts",
             "chat-catalog-domains/external-private-browser.ts",
             "chat-catalog-domains/external-private-browser-worker.ts",
             "chat-catalog-domains/external-credential-language.ts",
@@ -634,13 +635,66 @@
           "key": "secrets.configure-company-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v2"
+          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v3"
+        },
+        {
+          "key": "secrets.personal-secret",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/external-personal-secret.ts",
+            "chat-catalog-domains/external-secret-endpoint.ts",
+            "chat-catalog-domains/external-private-browser.ts",
+            "chat-catalog-domains/external-private-browser-worker.ts",
+            "chat-catalog-domains/external-credential-language.ts",
+            "chat-catalog-domains/external-secret-scan.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/identity-private-browser.ts",
+            "chat-catalog-domains/identity-private-browser-worker.ts",
+            "chat-catalog-domains/identity-wizard.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/external-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "run-observations.ts",
+            "chat-flow.ts",
+            "../../server/src/home-paths.ts",
+            "../e2e/fetch-allowed-port.ts",
+            "../../server/src/routes/secrets.ts",
+            "../../server/src/services/secrets.ts",
+            "../../server/src/services/heartbeat/run-preparation.ts",
+            "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
+            "chat-scenarios/secrets.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/external-personal-secret.ts",
+            "chat-catalog-domains/external-secret-question.ts",
+            "chat-catalog-domains/external-secret-endpoint.ts",
+            "chat-catalog-domains/external-private-browser.ts",
+            "chat-catalog-domains/external-private-browser-worker.ts",
+            "chat-catalog-domains/external-credential-language.ts",
+            "chat-catalog-domains/external-secret-scan.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/identity-private-browser.ts",
+            "chat-catalog-domains/identity-private-browser-worker.ts",
+            "chat-catalog-domains/identity-wizard.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/external-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "run-observations.ts",
+            "chat-flow.ts",
+            "../../server/src/home-paths.ts",
+            "../e2e/fetch-allowed-port.ts",
+            "../../server/src/routes/secrets.ts",
+            "../../server/src/services/secrets.ts",
+            "../../server/src/services/heartbeat/run-preparation.ts",
+            "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
+            "chat-scenarios/secrets.yaml"
+          ]
         },
         {
           "key": "secrets.personal-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.personal-secret.v2"
+          "current": "paperclip.chat-catalog.personal-secret.v3"
         },
         {
           "key": "skills.author-skill",
@@ -884,7 +938,7 @@
           "key": "activity.work-timeline",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.internal.v1",
-          "current": "paperclip.chat-catalog.work-timeline.v3"
+          "current": "paperclip.chat-catalog.work-timeline.v4"
         },
         {
           "key": "agents.choose-primary",
@@ -954,7 +1008,7 @@
           "key": "app-permissions.ask-before-action",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.app-review.v3"
+          "current": "paperclip.chat-catalog.app-review.v4"
         },
         {
           "key": "app-permissions.test-as-agent",
@@ -1238,6 +1292,7 @@
           ],
           "current": [
             "chat-catalog-domains/external-company-secret.ts",
+            "chat-catalog-domains/external-secret-question.ts",
             "chat-catalog-domains/external-private-browser.ts",
             "chat-catalog-domains/external-private-browser-worker.ts",
             "chat-catalog-domains/external-credential-language.ts",
@@ -1256,7 +1311,60 @@
           "key": "secrets.configure-company-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v2"
+          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v3"
+        },
+        {
+          "key": "secrets.personal-secret",
+          "field": "sourceFiles",
+          "previous": [
+            "chat-catalog-domains/external-personal-secret.ts",
+            "chat-catalog-domains/external-secret-endpoint.ts",
+            "chat-catalog-domains/external-private-browser.ts",
+            "chat-catalog-domains/external-private-browser-worker.ts",
+            "chat-catalog-domains/external-credential-language.ts",
+            "chat-catalog-domains/external-secret-scan.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/identity-private-browser.ts",
+            "chat-catalog-domains/identity-private-browser-worker.ts",
+            "chat-catalog-domains/identity-wizard.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/external-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "run-observations.ts",
+            "chat-flow.ts",
+            "../../server/src/home-paths.ts",
+            "../e2e/fetch-allowed-port.ts",
+            "../../server/src/routes/secrets.ts",
+            "../../server/src/services/secrets.ts",
+            "../../server/src/services/heartbeat/run-preparation.ts",
+            "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
+            "chat-scenarios/secrets.yaml"
+          ],
+          "current": [
+            "chat-catalog-domains/external-personal-secret.ts",
+            "chat-catalog-domains/external-secret-question.ts",
+            "chat-catalog-domains/external-secret-endpoint.ts",
+            "chat-catalog-domains/external-private-browser.ts",
+            "chat-catalog-domains/external-private-browser-worker.ts",
+            "chat-catalog-domains/external-credential-language.ts",
+            "chat-catalog-domains/external-secret-scan.ts",
+            "chat-catalog-domains/identity-auth.ts",
+            "chat-catalog-domains/identity-private-browser.ts",
+            "chat-catalog-domains/identity-private-browser-worker.ts",
+            "chat-catalog-domains/identity-wizard.ts",
+            "chat-catalog-domains/identity-support.ts",
+            "chat-catalog-domains/external-support.ts",
+            "chat-catalog-domains/internal-support.ts",
+            "run-observations.ts",
+            "chat-flow.ts",
+            "../../server/src/home-paths.ts",
+            "../e2e/fetch-allowed-port.ts",
+            "../../server/src/routes/secrets.ts",
+            "../../server/src/services/secrets.ts",
+            "../../server/src/services/heartbeat/run-preparation.ts",
+            "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
+            "chat-scenarios/secrets.yaml"
+          ]
         },
         {
           "key": "secrets.personal-secret",
@@ -1273,7 +1381,7 @@
           "key": "secrets.personal-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.personal-secret.v2"
+          "current": "paperclip.chat-catalog.personal-secret.v3"
         },
         {
           "key": "skills.author-skill",
@@ -1637,7 +1745,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "25cd5e4ebb6b955701778d2d1d702f86a573cfaa",
+        "targetSha": "1d2d8f732f73638198eaf2f8cec0fe85fb4a54bf",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
       }
@@ -2180,7 +2288,7 @@
         "activity/timeline"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.work-timeline.v3",
+      "oracleVersion": "paperclip.chat-catalog.work-timeline.v4",
       "sourceFiles": [
         "chat-catalog-domains/internal-definition.ts",
         "chat-catalog-domains/internal-support.ts",
@@ -3258,7 +3366,7 @@
         "questions-and-approvals/tool-review"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.app-review.v3",
+      "oracleVersion": "paperclip.chat-catalog.app-review.v4",
       "sourceFiles": [
         "chat-catalog-domains/external-app-review.ts",
         "chat-catalog-domains/external-app-review-outcomes.ts",
@@ -10972,9 +11080,10 @@
         "connection-setup/credentials"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v2",
+      "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v3",
       "sourceFiles": [
         "chat-catalog-domains/external-company-secret.ts",
+        "chat-catalog-domains/external-secret-question.ts",
         "chat-catalog-domains/external-private-browser.ts",
         "chat-catalog-domains/external-private-browser-worker.ts",
         "chat-catalog-domains/external-credential-language.ts",
@@ -11087,9 +11196,10 @@
         "secrets/user-secrets"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.personal-secret.v2",
+      "oracleVersion": "paperclip.chat-catalog.personal-secret.v3",
       "sourceFiles": [
         "chat-catalog-domains/external-personal-secret.ts",
+        "chat-catalog-domains/external-secret-question.ts",
         "chat-catalog-domains/external-secret-endpoint.ts",
         "chat-catalog-domains/external-private-browser.ts",
         "chat-catalog-domains/external-private-browser-worker.ts",
