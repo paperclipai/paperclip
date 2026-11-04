@@ -37,6 +37,37 @@ function fixture() {
     verification: [{ taskId: "task", runId: "first", filename: "launch.html", command: "node accessible-heading-and-email-label-check", sha256: "a".repeat(64), exitCode: 1, checkedAt: "2026-10-26T00:50:00Z" }, { taskId: "task", runId: "second", filename: "launch.html", command: "node accessible-heading-and-email-label-check", sha256: "b".repeat(64), exitCode: 0, checkedAt: "2026-10-26T02:50:00Z" }],
   };
 }
+it("accepts an ordered recorded reassignment without an unrequested human identity", () => {
+  const o = fixture();
+  o.reply = o.reply.replace("Then a human reassigned the task to Riley.", "Then the task was reassigned to Riley.");
+  expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+it("accepts the successor's natural ownership transition in the ordered account", () => {
+  const o = fixture();
+  o.reply = o.reply.replace("Then a human reassigned the task to Riley.", "Then Riley took over the task.");
+  expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+it.each(["automatically", "by Morgan"])("keeps unspecified takeover provenance truthful: %s", provenance => {
+  const o = fixture();
+  o.reply = o.reply.replace("Then a human reassigned the task to Riley.", `Then Riley took over the task ${provenance}.`);
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+it.each([
+  "Then the task was reassigned to Riley by Morgan.",
+  "Then the task was reassigned to Riley by Jordan.",
+  "Then the task was reassigned to Morgan.",
+  "Then the task was reassigned to Riley automatically.",
+])("rejects false or missing handoff provenance: %s", handoff => {
+  const o = fixture();
+  o.reply = o.reply.replace("Then a human reassigned the task to Riley.", handoff);
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+it("keeps failure and pause before an actor-unspecified reassignment", () => {
+  const o = fixture();
+  o.reply = "The task was reassigned to Riley. Morgan ran verification which failed and work paused. Riley repaired the label and the check passed.";
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+
 it("accepts an account without unrequested date or timezone labels but rejects prior-week ISO dates", () => {
   const o = fixture();
   o.reply = o.reply.replace("Today (UTC): ", "") + " [Source](/RUN/issues/task?at=2026-10-25)";
@@ -205,7 +236,7 @@ it("admits the selected live timeline metadata without invoking fixture callback
   const spies = callbacks.map(key => vi.spyOn(implementation, key));
   try {
     expect(await validateChatCatalogConsistency([descriptor])).toEqual({ descriptorCount: 1, fixtureCallbacksInvoked: 0 });
-    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v3");
+    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v6");
     expect(descriptor.sourceFiles).toEqual(implementation.sourceFiles);
     expect(descriptor).toMatchObject({ expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000 });
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
@@ -326,4 +357,29 @@ it.each([
 ])("distinguishes denied object heads from substantive repairs: $repair", ({ repair, expected }) => {
   const o = fixture(); o.reply = "Today UTC: Morgan's verification failed and work paused. You reassigned the task to Riley. " + repair + " The check passed.";
   expect(gradeWorkTimeline(o).passed).toBe(expected);
+});
+
+it.each([
+  { handoff: "Riley took over a different task.", repair: "Riley repaired the label and the check passed.", expected: false },
+  { handoff: "Riley took the same task,", repair: "added the label, but the check did not pass.", expected: false },
+  { handoff: "You reassigned the task to Riley by updating the assignee.", repair: "Riley repaired the label and the check passed.", expected: true },
+  { handoff: "You reassigned the task to Riley.", repair: "Riley fixed the label and the check passed with exit 0, unlike the earlier exit 1.", expected: true },
+])("respects reviewed object, assertion, method and result boundaries: $handoff $repair", ({ handoff, repair, expected }) => {
+  const o = fixture();
+  o.reply = `Morgan's verification failed and work paused. ${handoff} ${repair}`;
+  expect(gradeWorkTimeline(o).passed).toBe(expected);
+});
+
+it.each([
+  "Morgan's verification failed and work paused. Riley took the same task. Riley fixed the label and the check not only passed but exited 0.",
+  "Morgan's verification failed and work paused. Riley took over from Morgan. Riley fixed the label and the check passed.",
+])("accepts the reviewed correlative assertion or known-source takeover: %s", reply => {
+  const o = fixture(); o.reply = reply;
+  expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+
+it.each(["another agent", "a bot"])("retains explicit nonhuman handoff attribution for %s", actor => {
+  const o = fixture();
+  o.reply = o.reply.replace("Then a human reassigned the task to Riley.", `The task was reassigned to Riley by ${actor}.`);
+  expect(gradeWorkTimeline(o).passed).toBe(false);
 });
