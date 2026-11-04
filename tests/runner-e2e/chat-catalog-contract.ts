@@ -40,6 +40,7 @@ const originalClockExecutionIds = new Set([
   "chat-features.runner-opencode.local.navigation-preferences.quick-search",
   "chat-features.runner-opencode.local.navigation-preferences.edit-profile",
   "chat-features.runner-opencode.local.navigation-preferences.broken-link",
+  "chat-features.runner-opencode.local.navigation-preferences.dismiss-announcement",
   "chat-features.runner-opencode.local.projects.share-project",
   "chat-features.runner-opencode.local.access.cli-authorization",
   "chat-features.runner-opencode.local.access.other-company",

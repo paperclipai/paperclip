@@ -122,9 +122,9 @@ export const navigationBoundaryIdentityCases: readonly ChatCatalogCase[] = [
         observerBeforePublicationId: observerPublication?.id, invalidAuditCompanyStatus };
     } catch (error) { try { await observer.dispose(); } finally { observers.delete(ctx); const id = otherCompanies.get(ctx); if (id) await ctx.input.api.delete(`/api/companies/${id}`, { allowNotFound: true }); otherCompanies.delete(ctx); } throw error; }
   }, gradeNavigationBoundary, {
-    sourceFiles: [...sources, "chat-announcement-fixture.ts", "harness-env.ts", "../../packages/shared/src/announcements.ts", "../../server/src/services/announcement-feed.ts", "../../server/src/routes/announcements.ts", "../../ui/src/pages/Projects.tsx", "../../ui/src/components/AnnouncementWell.tsx"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.announcement-dismissal.v2",
+    sourceFiles: [...sources, "chat-announcement-fixture.ts", "harness-env.ts", "../../packages/shared/src/announcements.ts", "../../server/src/services/announcement-feed.ts", "../../server/src/routes/announcements.ts", "../../ui/src/pages/Projects.tsx", "../../ui/src/components/AnnouncementWell.tsx"], authentication: "human-session", oracleVersion: "paperclip.chat-catalog.announcement-dismissal.v3",
     async act(ctx, state) {
-      await waitForReply(ctx); const publication = state.publication as Publication; const source = ctx.input.page.url();
+      await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx)); const publication = state.publication as Publication; const source = ctx.input.page.url();
       state.beforeHumanPublicationId = (await ctx.input.api.get<Publication | null>("/api/announcements/current"))?.id;
       state.agentDismissStatus = await probeAgentPermission(ctx, `/api/announcements/${encodeURIComponent(publication.id)}/dismiss`, "POST", { companyId: ctx.input.fixtures.company.id });
       const response = ctx.input.page.waitForResponse(row => row.request().method() === "POST" && new URL(row.url()).pathname === `/api/announcements/${publication.id}/dismiss`);
