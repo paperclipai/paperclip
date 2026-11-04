@@ -2664,6 +2664,17 @@ is retained; complete token counters alone cannot certify a stopped provider.
 A timeout, missing accounting, or an unproven provider terminal remains a failure;
 the saved wait does not certify successful provider execution.
 
+An exact governed-cancellation terminal may return its durable event receipt
+before postcommit accounting and output observers finish. The receipt requires
+the ordinary company, run, session, source and transaction fences; it is not a
+physical-stop or accounting-completion receipt. The control plane retains the
+observer debt and joins it before accepting a checkpoint or result. The existing
+checkpoint deadline bounds that join, while the provider-terminal drain keeps its
+existing deadline. Observer rejection preserves its original cause, and abort or
+controller revocation prevents late checkpoint/result writes. A retained terminal
+and saved wait can be replayed through the same observers after restart without
+starting another model turn. Ordinary event appends still await their observers.
+
 Before either shutdown path exits, idle warm sessions close through their
 normal suspend-and-checkpoint path. Remote sessions therefore leave verified
 backup authority for the next controller even though their last run is already
