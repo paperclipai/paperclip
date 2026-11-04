@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
 import type { RunnerProviderLaunchRequirements } from "@paperclipai/paperclip-runner";
 import type { RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
-import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
+import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 
 const ingress = vi.hoisted(() => ({ connect: vi.fn() }));
@@ -597,4 +597,94 @@ describe("completed warm turn cold checkpoints", () => {
     else await expect(owner.checkpointWarmTurn("native-thread")).rejects.toThrow(/checkpoint/);
     if (["unsettled", "released", "unqualified"].includes(mode)) expect(task).not.toHaveBeenCalled();
   });
+});
+
+
+describe("hosted parked Runner ownership", () => {
+  const identity = requirements.identity;
+  const checkpoint = { schema: "paperclip.runner.cold-checkpoint.v1" as const, sourceId: "source",
+    sha256: `sha256:${"a".repeat(64)}`, runnerStateSha256: `sha256:${"b".repeat(64)}`, identity, providerSessionId: "thread" };
+  const parkedClaim = { parkId: "park", claimId: "successor-run" };
+  const authority = { store: { state: { identity, commands: [], committedEvents: [{ eventType: "run.terminal", envelope: identity }] } } };
+  it.each(["ack", "lost-reply", "uncertain", "intent-failed", "refused"])("parks without giving an old owner termination authority: %s", async mode => {
+    const order: string[] = [];
+    const task = vi.fn(async (operation: any) => {
+      order.push(operation.kind);
+      if (operation.kind === "checkpoint") return { kind: "checkpoint", taskId: "task", checkpoint };
+      if (operation.kind === "park" && mode === "lost-reply") throw new Error("lost park response");
+      if (operation.kind === "park" && mode === "refused") return { kind: "accepted", taskId: "task", parkRefused: true };
+      if (operation.kind === "status") return { kind: "status", taskId: "task", phase: "running", executionStopped: false,
+        retention: { state: mode === "uncertain" ? "parking" : "parked", parkId: "park" } };
+      return { kind: "accepted", taskId: "task" };
+    });
+    const beforePark = vi.fn(async () => { order.push("intent"); if (mode === "intent-failed") throw new Error("fence lost"); });
+    const owner = createPluginRunnerTaskOwner({ task, harness: "codex", projectIds: [], adoptIdentity: identity,
+      parkedClaim, warmCheckpointVersion: 1, hostedParkingVersion: 1, beforePark });
+    const registration = await owner.registration(authority as never, identity.runId);
+    await owner.checkpointWarmTurn("thread");
+    order.length = 0;
+    const detach = vi.fn(async () => { order.push("detach"); await registration.release("detach"); });
+    const parking = owner.parkWarmTurn(detach);
+    if (["intent-failed", "uncertain"].includes(mode)) await expect(parking).rejects.toThrow();
+    else await expect(parking).resolves.toBe(mode !== "refused");
+    if (mode === "refused") { expect(order).toEqual(["intent", "park"]); expect(detach).not.toHaveBeenCalled(); }
+    else if (mode === "intent-failed") { expect(order).toEqual(["intent"]); expect(owner.parkingControllerDetached).toBe(false); }
+    else {
+      expect(order).toEqual(["intent", "park", "status", "detach"]);
+      expect(owner.parkingControllerDetached).toBe(true);
+      task.mockClear();
+      await registration.checkpoint("settled");
+      expect(await owner.driver.adoptExistingRunner!.signal!("SIGTERM")).toBe(false);
+      expect(task).not.toHaveBeenCalled();
+    }
+  });
+  it.each(["missing", "foreign", "matching"])("validates reserved claim metadata before adopting: %s", async mode => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    task.mockImplementation(async operation => operation.kind === "status"
+      ? { kind: "status", taskId: "task", phase: "running", executionStopped: false,
+          retention: { state: "claiming", ...parkedClaim } }
+      : perform(operation));
+    const proof = mode === "missing" ? undefined : { ...parkedClaim, ...(mode === "foreign" ? { claimId: "other-run" } : {}) };
+    const inspected = verifyPluginRunnerTaskReattachment(task, identity, proof);
+    if (mode === "matching") await expect(inspected).resolves.toBeUndefined();
+    else { await expect(inspected).rejects.toThrow("claim metadata"); expect(task).toHaveBeenCalledOnce(); }
+  });
+  it("does not regenerate a claim after authentication or carry it into the next warm turn", () => {
+    const { task } = provider();
+    const input = { task, harness: "codex", projectIds: [], adoptIdentity: identity, parkedClaim };
+    const consumed = createPluginRunnerTaskOwner({ ...input, parkedClaimConsumed: true });
+    expect(consumed.driver.claimParkedRunner).toBeUndefined();
+    const owner = createPluginRunnerTaskOwner(input);
+    expect(owner.driver.claimParkedRunner).toBeDefined();
+    owner.rebind({ ...input, parkedClaim: undefined });
+    expect(owner.driver.claimParkedRunner).toBeUndefined();
+    expect(task).not.toHaveBeenCalled();
+  });
+  it("uses the newly supplied ticket only for the exact reserved source", async () => {
+    const { task } = provider();
+    const authorize = vi.fn(async () => {});
+    const owner = createPluginRunnerTaskOwner({ task, harness: "codex", projectIds: [], adoptIdentity: identity, parkedClaim,
+      revalidateAdoption: authorize });
+    await owner.driver.claimParkedRunner!({ identity, bootstrapTicket: "fresh-single-use-ticket" });
+    expect(authorize).toHaveBeenCalledOnce();
+    expect(task).toHaveBeenCalledExactlyOnceWith({ kind: "claim", ...parkedClaim, bootstrapTicket: "fresh-single-use-ticket" });
+    await expect(owner.driver.claimParkedRunner!({ identity: { ...identity, runId: "foreign" }, bootstrapTicket: "unused" })).rejects.toThrow("identity mismatch");
+    expect(task).toHaveBeenCalledOnce();
+  });
+});
+
+it.each(["codex-host", "codex-default", "claude-host"])("negotiates retention only on qualified launches: %s", async mode => {
+  const { task } = provider();
+  const harness = mode.startsWith("codex") ? "codex" : "claude";
+  const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness, accountIdentity: "account",
+    projectAuthCheckVersion: 1, warmTaskVersion: 1, warmCheckpointVersion: 1,
+    hostedParkingVersion: mode.endsWith("host") ? 1 : undefined });
+  await prepare(owner, launchRequirements(harness));
+  const spec = launchSpec(); spec.nativeRunner!.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 300_000 };
+  owner.launcher(spec);
+  await vi.waitFor(() => expect(task.mock.calls.some(([operation]) => operation.kind === "submit")).toBe(true));
+  const submitted = task.mock.calls.find(([operation]) => operation.kind === "submit")![0];
+  expect(submitted.launch.lifecyclePolicy).toEqual({ mode: "warm", idleTimeoutMs: 300_000,
+    ...(mode === "codex-host" ? { retention: "host" } : {}) });
 });

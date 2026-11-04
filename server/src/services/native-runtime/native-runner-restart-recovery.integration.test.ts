@@ -1102,11 +1102,20 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
       const recovered = new DurablePrpControlPlane({ ...artifact, stateDirectory: resolve(recoveredRoot, "control-plane"), identity });
       try {
         await register(recovered, identity);
+        const claimTicket = recovered.issueBootstrapTicket();
+        await recovered.flushCheckpoint();
+        const claimSource = (await loadNativeRunnerCheckpoint(fixture.db, binding))!;
+        const nextRestartRoot = resolve(runtimeRoot, `claim-restart-${nextRunId}`);
+        claimSource.restoreSessionDirectory(nextRestartRoot);
+        const restoredClaim = JSON.parse(await readFile(resolve(nextRestartRoot, "control-plane", "control-plane-state.json"), "utf8"));
+        expect(Object.keys(restoredClaim.tickets)).toHaveLength(1);
+        expect([...claimSource.records.values()].join("\n")).not.toContain(claimTicket);
         recovered.queueCommand("session.snapshot", {}, "restored-warm-snapshot");
         await recovered.flushCheckpoint();
         expect((await loadNativeRunnerCheckpoint(fixture.db, binding))?.records.has("command:1")).toBe(true);
         await fixture.db.update(nativeRunFinalizations).set({ controllerGeneration: 2, leaseOwner: "replacement" })
           .where(eq(nativeRunFinalizations.runId, nextRunId));
+        recovered.issueBootstrapTicket();
         recovered.queueCommand("session.snapshot", {}, "stale-warm-snapshot");
         await expect(recovered.flushCheckpoint()).rejects.toThrow("native_runner_checkpoint_owner_lost");
       } finally { await recovered.stop(); }
