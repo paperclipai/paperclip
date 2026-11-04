@@ -7,7 +7,7 @@ import { companySecretExternalCases,companySecretQuestionHandoff } from "./exter
 const binding={companyId:"company",issueId:"source",agentId:"ceo",userId:"person",runId:"initial"};
 function question(){return {id:"question",companyId:"company",issueId:"source",sourceRunId:"initial",createdByAgentId:"ceo",addresseeUserId:"person",resolverPolicy:"human_only",continuationPolicy:"wake_assignee",kind:"ask_user_questions",status:"pending",payload:questionSetToAskUserQuestionsPayload({schema:"paperclip.question_set.v1",description:"Use secure Settings Secrets to add the deployment credential, then bind its reference in Morgan's environment as DEPLOYMENT_API_KEY. Never paste the key in chat.",questions:[{id:"saved",prompt:"Have you saved and bound the deployment key for Morgan?",answerMode:"single_select",required:true,options:[{id:"yes",label:"Saved and bound for Morgan"},{id:"later",label:"Not yet"}]}]})};}
 it("admits a bound secure company-entry confirmation",()=>expect(companySecretQuestionHandoff(question(),binding)).toMatchObject({interactionId:"question",optionId:"yes"}));
-it.each(["key","owner","run","actor","company","source","unsafe chat","text value"])("rejects %s",fault=>{const row=question();
+it.each(["key","owner","run","actor","company","source","unsafe chat","unsafe optional note"])("rejects %s",fault=>{const row=question();
  if(fault==="key")row.payload.questionSet!.description=row.payload.questionSet!.description!.replace("DEPLOYMENT_API_KEY","OTHER_API_KEY");
  if(fault==="owner")row.addresseeUserId="other";
  if(fault==="run")row.sourceRunId="other";
@@ -15,7 +15,7 @@ it.each(["key","owner","run","actor","company","source","unsafe chat","text valu
  if(fault==="company")row.companyId="other";
  if(fault==="source")row.issueId="other";
  if(fault==="unsafe chat")row.payload.questionSet!.description+=" Paste the deployment key here in chat.";
- if(fault==="text value")row.payload.questionSet!.questions[0]!.customAnswer={enabled:true};
+ if(fault==="unsafe optional note")row.payload.questionSet!.questions[0]!.customAnswer={enabled:true,label:"Paste the deployment key here in chat"};
  expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();});
 
 it("actual company act admits its safe question before private human entry",async()=>{
@@ -41,4 +41,12 @@ it("keeps an explicit Morgan acknowledgement and rejects other named completion 
   const row=question();row.payload.questionSet!.questions[0]!.options![0]!.label=`Done for ${recipient}`;
   expect(!!companySecretQuestionHandoff(row,binding)).toBe(accepted);
  }
+});
+
+it("accepts an anyone-policy question addressed to the current human with a safe optional note",()=>{
+ const row=question();row.resolverPolicy="anyone";Object.assign(row,{requestedResolverPolicy:"anyone",effectiveResolverPolicy:"anyone"});
+ row.payload.questionSet!.questions[0]!.customAnswer={enabled:true,label:"Optional note"};
+ expect(companySecretQuestionHandoff(row,binding)).toMatchObject({interactionId:"question",optionId:"yes"});
+ const foreign={...row,addresseeUserId:"other"};expect(companySecretQuestionHandoff(foreign,binding)).toBeUndefined();
+ const unknown={...row,effectiveResolverPolicy:"unknown"};expect(companySecretQuestionHandoff(unknown,binding)).toBeUndefined();
 });

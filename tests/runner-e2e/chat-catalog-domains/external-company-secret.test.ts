@@ -61,15 +61,16 @@ it("requires the original controller metadata and version before and after secur
  const missing=valid();missing.state.controllerSecretBaseline=[];expect(companySecretExternalCases[0]!.grade(missing).passed).toBe(false);
 });
 
-function questionOutcome(){
- const row={id:"question",companyId:"company",issueId:"source",sourceRunId:"first",createdByAgentId:"ceo",addresseeUserId:"person",resolverPolicy:"human_only" as const,continuationPolicy:"wake_assignee" as const,kind:"ask_user_questions" as const,status:"answered" as const,resolvedByUserId:"person",resolvedAt:"2026-11-04T13:40:00Z",result:{version:1 as const,answers:[{questionId:"saved",optionIds:["yes"]}],summaryMarkdown:null},payload:questionSetToAskUserQuestionsPayload({schema:"paperclip.question_set.v1",description:"Use secure Settings Secrets for the deployment credential and bind its reference in Morgan's environment as DEPLOYMENT_API_KEY. Never paste the key here.",questions:[{id:"saved",prompt:"Have you saved and bound it?",answerMode:"single_select",required:true,options:[{id:"yes",label:"Saved and bound for Morgan"}]}]})};
+function questionOutcome(policy:"human_only"|"anyone"="human_only",optionalNote=false){
+ const row={id:"question",companyId:"company",issueId:"source",sourceRunId:"first",createdByAgentId:"ceo",addresseeUserId:"person",resolverPolicy:policy,continuationPolicy:"wake_assignee" as const,kind:"ask_user_questions" as const,status:"answered" as const,resolvedByUserId:"person",resolvedAt:"2026-11-04T13:40:00Z",result:{version:1 as const,answers:[{questionId:"saved",optionIds:["yes"]}],summaryMarkdown:null},payload:questionSetToAskUserQuestionsPayload({schema:"paperclip.question_set.v1",description:"Use secure Settings Secrets for the deployment credential and bind its reference in Morgan's environment as DEPLOYMENT_API_KEY. Never paste the key here.",questions:[{id:"saved",prompt:"Have you saved and bound it?",answerMode:"single_select",required:true,options:[{id:"yes",label:"Saved and bound for Morgan"}]}]})};
+ if(optionalNote)row.payload.questionSet!.questions[0]!.customAnswer={enabled:true,label:"Optional note"};
  const b={companyId:"company",issueId:"source",agentId:"ceo",userId:"person",runId:"first"},q=companySecretQuestionHandoff(row,b,"answered")!;
  const o=valid();
  return {...o,phaseReplies:o.phaseReplies.slice(1),runs:o.runs.map(run=>({...run,contextSnapshot:{interactionId:"question"}})),interactions:[row],secrets:[{...o.secrets[0],createdAt:"2026-11-04T13:35:00Z"}],activity:[...o.activity,{entityId:"morgan",action:"agent.updated",actorType:"user",createdAt:"2026-11-04T13:36:00Z"}],state:{...o.state,sourceIssueId:"source",currentPersonId:"person",initialQuestionId:q.interactionId,initialQuestionPayloadHash:q.payloadHash,initialQuestionOptionId:q.optionId,questionAnsweredThroughUi:true}};
 }
 it("accepts the same question answered through UI after actual saved company entry and Morgan binding",()=>expect(companySecretExternalCases[0]!.grade(questionOutcome()).passed).toBe(true));
 it.each(["foreign owner","changed payload","before creation","before binding","wrong continuation","missing UI","missing reference"])("rejects conditional completion with %s",fault=>{
- const o=questionOutcome();
+ const o=questionOutcome("anyone",true);
  if(fault==="foreign owner")o.interactions[0]!.resolvedByUserId="other";
  if(fault==="changed payload")o.interactions[0]!.payload.questionSet!.description+=" Changed";
  if(fault==="before creation")o.interactions[0]!.resolvedAt="2026-11-04T13:34:00Z";
@@ -81,7 +82,7 @@ it.each(["foreign owner","changed payload","before creation","before binding","w
 });
 
 it("accounts for one real company question answer plus one chat request only after the full proof",()=>{
- const o=questionOutcome(),definition=companySecretExternalCases[0]!,expected=definition.expectedHumanQuestionAnswer!(o);
+ const o=questionOutcome("anyone",true),definition=companySecretExternalCases[0]!,expected=definition.expectedHumanQuestionAnswer!(o);
  expect(expected).toEqual({interactionId:"question",sourceRunId:"first",userId:"person"});
  const raw={expected:expected!,companyId:"company",issueId:"source",agentId:"ceo",canonicalComment:{id:"human",authorUserId:"person"},interactions:o.interactions,
   activity:[{companyId:"company",entityId:"source",action:"issue.thread_interaction_answered",actorType:"user",actorId:"person",details:{interactionId:"question",interactionKind:"ask_user_questions",interactionStatus:"answered"}}],
@@ -93,4 +94,11 @@ it("accounts for one real company question answer plus one chat request only aft
  expect(verifyChatCatalogHumanQuestionAnswer({...raw,expected:{...expected!,interactionId:"other"}})).toBeUndefined();
  o.state.savedReferenceMatches=false;expect(definition.expectedHumanQuestionAnswer!(o)).toBeUndefined();
  expect(definition.expectedHumanQuestionAnswer!(valid())).toBeUndefined();
+});
+
+it("accepts a saved company binding acknowledged by its addressed human under anyone",()=>{
+ const o=questionOutcome("anyone",true);expect(companySecretExternalCases[0]!.grade(o).passed).toBe(true);
+ expect(companySecretExternalCases[0]!.expectedHumanQuestionAnswer!(o)).toEqual({interactionId:"question",sourceRunId:"first",userId:"person"});
+ Object.assign(o.interactions[0]!.result.answers[0]!,{otherText:"a submitted note"});
+ expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);expect(companySecretExternalCases[0]!.expectedHumanQuestionAnswer!(o)).toBeUndefined();
 });
