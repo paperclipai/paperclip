@@ -12,6 +12,7 @@ export * from "./conformance/harness-driver.js";
 export { startOpenCodeMcpBridge } from "./drivers/opencode/mcp-bridge.js";
 export { prepareIsolatedCodexHome, releaseMaterializedNativeRuntimeSkills } from "./drivers/runtime-context-materializer.js";
 export { resolveRunnerdCodexSkillInputs } from "./live/runnerd-codex-transport.js";
+export { spawnRunner } from "./control-plane/durable-prp-control-plane.js";
 export * from "./conformance/semantic-conformance.js";
 export * from "./mock-core/deterministic-harness-driver.js";
 export * from "./mock-core/mock-control-plane-adapter.js";
