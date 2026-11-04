@@ -1,8 +1,10 @@
+import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/src/question-set.js";
 import { expect, it } from "vitest";
 import {
   gradePersonalSecret,
   personalSecretGuidance,
   personalSecretConfirmation,
+  personalSecretQuestionHandoff,
 } from "./external-personal-secret.js";
 function valid() {
   return {
@@ -39,7 +41,8 @@ function valid() {
     runs: [
       { id: "initial", status: "succeeded" },
       {
-        id: "worker",
+        id: "worker", companyId: "company", responsibleUserId: "person",
+        startedAt: "2026-11-04T00:00:00.000Z", finishedAt: "2026-11-04T00:00:10.000Z",
         status: "succeeded",
         agentId: "morgan",
         runtimeMode: "native",
@@ -74,6 +77,15 @@ function valid() {
       taskResponsibleUserId: "person",
       taskAfterStatus: "done",
       workerReceiptBound: true,
+      workerReceiptEvidence: {
+        task: { id: "task", companyId: "company", assigneeAgentId: "morgan", responsibleUserId: "person", status: "done" },
+        calls: [{ authorized: true, agentId: "", runId: "", method: "GET", pathname: "/publishing-check", status: 200,
+          createdAt: "2026-11-04T00:00:05.000Z", receiptId: "a".repeat(48) }],
+        events: [{ runId: "worker", companyId: "company", agentId: "morgan", seq: 1, eventType: "tool.execution.completed",
+          createdAt: "2026-11-04T00:00:06.000Z", payload: { prpEvent: { runId: "worker", eventType: "tool.execution.completed",
+            payload: { name: "bash", status: "completed", exitCode: 0, outputTruncated: false,
+              output: JSON.stringify({ ok: true, status: 200, check: "publishing endpoint", receiptId: "a".repeat(48) }) } } } }],
+      },
       workerRunId: "worker",
       morganId: "morgan",
       taskId: "task",
@@ -169,4 +181,46 @@ it("handles natural warnings without accepting another-person reuse or negative/
     "Your personal publishing credential is not yet configured.",
   ])
     expect(personalSecretConfirmation(reply)).toBe(false);
+});
+
+function answeredQuestionValue() {
+  const base = valid();
+  const row = { id: "question", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo",
+    addresseeUserId: "person", resolverPolicy: "human_only", continuationPolicy: "wake_assignee", kind: "ask_user_questions", status: "answered",
+    resolvedByUserId: "person", resolvedAt: "2026-11-04T13:30:00Z", result: { version: 1, summaryMarkdown: null, answers: [{ questionId: "saved", optionIds: ["yes"] }] },
+    payload: questionSetToAskUserQuestionsPayload({ schema: "paperclip.question_set.v1", description: "Set your own personal publishing value securely in My secrets. Never paste your credential in chat.", questions: [{ id: "saved", prompt: "Have you saved your own value?", helpText: "Settings Secrets My secrets Set my value definition PERSONAL_PUBLISHING_KEY", answerMode: "single_select", required: true,
+      options: [{ id: "yes", label: "Yes", description: "My personal value is saved." }, { id: "later", label: "Not yet" }] }] }),
+  };
+  const admitted = personalSecretQuestionHandoff(row, { companyId: "company", issueId: "source", agentId: "ceo", userId: "person", runId: "initial", definitionId: "definition" }, "answered");
+  if (!admitted) throw Error("Invalid question test prerequisite");
+  return { ...base, interactions: [row], comments: [
+    { id: "query", companyId: "company", issueId: "source", authorUserId: "person", body: "Set up my personal publishing credential for this task." },
+    { id: "reply", companyId: "company", issueId: "source", authorAgentId: "ceo", createdByRunId: "confirmed", body: base.reply },
+  ], activity: [...base.activity,
+    { companyId: "company", action: "issue.thread_interaction_answered", entityId: "source", actorType: "user", actorId: "person", details: { interactionId: "question", interactionKind: "ask_user_questions", interactionStatus: "answered" } },
+    { companyId: "company", action: "issue.question_response_delivered", entityId: "source", actorType: "system", actorId: "question-response-delivery", details: { interactionId: "question", sourceRunId: "initial", targetRunId: "confirmed", deliveryStatus: "delivered" } },
+  ],
+    phaseReplies: base.phaseReplies.slice(1), runs: base.runs.map(run => run.id === "confirmed" ? { ...run, companyId: "company", agentId: "ceo", contextSnapshot: { issueId: "source", interactionId: "question" } } : run),
+    state: { ...base.state, sourceIssueId: "source", definitionId: "definition", initialQuestionId: row.id, initialQuestionOptionId: "yes", initialQuestionPayloadHash: admitted.payloadHash,
+      currentSecret: { ...base.state.currentSecret, createdAt: "2026-11-04T13:29:00Z" } } };
+}
+it("accepts the production answer shape without a commentId or human answer comment, with owner audit and delivery evidence", () => {
+  const row = answeredQuestionValue(); expect(row.comments).toHaveLength(2); expect(row.comments.filter(comment => comment.authorUserId === "person")).toHaveLength(1); expect(row.interactions[0]!.result).not.toHaveProperty("commentId");
+  expect(gradePersonalSecret(answeredQuestionValue()).passed).toBe(true);
+});
+it.each(["foreign resolver", "changed payload", "before save", "wrong continuation", "missing UI"])("rejects question completion with %s", fault => {
+  const value = answeredQuestionValue();
+  if (fault === "foreign resolver") value.interactions[0]!.resolvedByUserId = "other-person";
+  if (fault === "changed payload") value.state.initialQuestionPayloadHash = "wrong";
+  if (fault === "before save") value.interactions[0]!.resolvedAt = "2026-11-04T13:28:00Z";
+  if (fault === "wrong continuation") { const run = value.runs.find(row => row.id === "confirmed"); if (run?.contextSnapshot && "interactionId" in run.contextSnapshot) run.contextSnapshot.interactionId = "other"; }
+  if (fault === "missing UI") value.state.humanSubmittedSecurely = false;
+  expect(gradePersonalSecret(value).passed).toBe(false);
+});
+
+it("rejects missing or mismatched endpoint receipts despite a copied successful-worker flag", () => {
+  const missing = valid(); missing.state.workerReceiptEvidence.calls = [];
+  expect(gradePersonalSecret(missing).passed).toBe(false);
+  const mismatch = valid(); mismatch.state.workerReceiptEvidence.calls[0]!.receiptId = "b".repeat(48);
+  expect(gradePersonalSecret(mismatch).passed).toBe(false);
 });

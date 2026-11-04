@@ -861,6 +861,25 @@ describe("Secrets page layout", () => {
     });
   });
 
+  it("opens the current person's Set value form through My secrets without admin definitions", async () => {
+    const definition = makeUserSecretDefinition({ key: "PERSONAL_PUBLISHING_KEY", name: "Personal publishing credential" });
+    mockSecretsApi.listUserSecretDefinitions.mockRejectedValue(new ApiError("Forbidden", 403, null));
+    mockSecretsApi.listMyUserSecrets.mockResolvedValue([{ definition, secret: null }]);
+    const root = await renderSecrets(container, { path: "/company/settings/secrets" });
+    const mine = [...container.querySelectorAll('[role="tab"]')].find(node => node.textContent === "My secrets") as HTMLElement | undefined;
+    expect(mine).toBeDefined();
+    await act(async () => { mine!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true })); mine!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "Enter" })); mine!.click(); });
+    await flushReact();
+    const row = [...container.querySelectorAll("li")].find(node => node.textContent?.includes("PERSONAL_PUBLISHING_KEY"));
+    const set = [...(row?.querySelectorAll("button") ?? [])].find(node => node.textContent === "Set value");
+    expect(set).toBeDefined();
+    await act(async () => { set!.click(); }); await flushReact();
+    expect(document.body.textContent).toContain("Set your value");
+    expect(document.body.querySelector('[role="dialog"]')?.textContent).toContain("Personal publishing credential");
+    expect(mockSecretsApi.createMyUserSecret).not.toHaveBeenCalled();
+    await act(async () => { root.unmount(); });
+  });
+
   it("keeps the new secret value textarea width-constrained for long tokens", async () => {
     const root = await renderSecrets(container);
 

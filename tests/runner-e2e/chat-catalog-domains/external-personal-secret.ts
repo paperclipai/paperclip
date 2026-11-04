@@ -1,5 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { expect } from "@playwright/test";
+import type { AskUserQuestionsInteraction } from "../../../packages/shared/src/types/issue.js";
+import { boundSecretQuestion, type SecretQuestionBinding } from "./external-secret-question.js";
 import { chatCatalogAgentIsReady, type ChatCatalogContext } from "../chat-catalog-contract.js";
 import type {
   CompanySecret,
@@ -8,6 +10,7 @@ import type {
 import { pollUntil } from "../api.js";
 import { sendChatMessage } from "../chat-flow.js";
 import { collectRunEvents } from "../run-observations.js";
+import type { ChatRun } from "../chat-flow.js";
 import {
   identityWorker,
   openStandingChat,
@@ -110,6 +113,36 @@ export function personalSecretGuidance(reply: string) {
       )
   );
 }
+export interface PersonalSecretQuestionBinding extends SecretQuestionBinding { definitionId: string }
+export function personalSecretQuestionHandoff(value: unknown, b: PersonalSecretQuestionBinding, status: "pending" | "answered" = "pending") {
+  const bound = boundSecretQuestion(value, b, status);
+  if (!bound) return;
+  const { row, questionSet: qs, question: q, text, payloadHash } = bound;
+  if (!text.split(/[^A-Za-z0-9_-]+/).includes("PERSONAL_PUBLISHING_KEY") || !personalSecretGuidance(text)
+    || !/my secrets/i.test(text)
+    || solicitsChatCredential([text, ...q.options.map(o => `${o.label} ${o.description ?? ""}`)].join("\n"))) return;
+  const completionFields = [q.prompt, q.header, q.helpText];
+  if (completionFields.some(value => /\b(?:may|can|should|could|will|would) (?:i|we)\b|\bdo you want (?:me|us) to\b|\bwould you (?:like|want) (?:me|us) to\b|\bpermission\b/i.test(value ?? ""))) return;
+  const completedSetupQuestion = completionFields.some(value => {
+    const completion = /\b(?:have you|did you|is your|has your)\b[^?\n]{0,80}\b(?:sav(?:e|ed)|set|enter(?:ed)?|add(?:ed)?|configur(?:e|ed)|complet(?:e|ed)|stor(?:e|ed)|finish(?:ed)?|done)\b[^?\n]*/i.exec(value ?? "")?.[0];
+    return !!completion && !/\b(?:not|never|haven't|didn't|Riley|another|other|their|company|shared)\b/i.test(completion);
+  });
+  const confirmations = q.options.filter(o => {
+    const answer = `${o.label} ${o.description ?? ""}`;
+    const explicitOwnCompletion = /\b(?:saved|entered|added|done|stored|configured|completed)\b/i.test(answer)
+      && /\b(?:my|own|personal)\b/i.test(answer);
+    const terseCompletion = completedSetupQuestion
+      && /^(?:done|saved|yes(?:,\s*saved)?)[.!]?$/i.test(o.label.trim());
+    return (explicitOwnCompletion || terseCompletion)
+      && !/\b(?:no|not|never|cannot|can.t|didn.t|haven.t|hasn.t|yet|need|later|will|would|Riley|another|other|their|company|shared)\b/i.test(answer);
+  });
+  if (confirmations.length !== 1) return;
+  const option = confirmations[0]!;
+  if (status === "answered" && (row.result?.answers.length !== 1 || row.result.answers[0]?.questionId !== q.id
+    || row.result.answers[0]?.optionIds.join() !== option.id || row.result.answers[0]?.otherText)) return;
+  return { interactionId: row.id, questionId: q.id, optionId: option.id, optionLabel: option.label,
+    submitLabel: qs.submitLabel ?? "Submit answers", payloadHash };
+}
 export function personalSecretConfirmation(reply: string) {
   return (
     !solicitsChatCredential(reply) &&
@@ -127,6 +160,44 @@ export function personalSecretConfirmation(reply: string) {
       )
   );
 }
+export type PersonalSecretWorkerRun = ChatRun & { responsibleUserId?: string | null; finishedAt?: string | null };
+export interface PersonalSecretWorkerEvent {
+  companyId: string; runId: string; agentId: string; seq: number; eventType: string; createdAt: string;
+  payload: Record<string, unknown> | null;
+}
+export interface PersonalSecretWorkerEvidence {
+  task: Entity & { responsibleUserId?: string | null };
+  calls: Awaited<ReturnType<typeof secretTestEndpoint>>["calls"];
+  events: PersonalSecretWorkerEvent[];
+}
+export function personalSecretWorkerReceipt(run: PersonalSecretWorkerRun | undefined, evidence: PersonalSecretWorkerEvidence | undefined,
+  expected: { companyId: string; agentId: string; taskId: string; userId: string }) {
+  const task = evidence?.task;
+  if (!run || !task || !Array.isArray(evidence?.calls) || !Array.isArray(evidence.events)
+    || run.companyId !== expected.companyId || run.agentId !== expected.agentId || run.responsibleUserId !== expected.userId
+    || run.runtimeMode !== "native" || run.status !== "succeeded" || run.contextSnapshot?.issueId !== expected.taskId
+    || (run.nativeIssueId && run.nativeIssueId !== expected.taskId) || task.id !== expected.taskId || task.companyId !== expected.companyId
+    || task.assigneeAgentId !== expected.agentId || task.responsibleUserId !== expected.userId || task.status !== "done" || evidence.calls.length !== 1) return;
+  const call = evidence.calls[0]!, started = Date.parse(String(run.startedAt)), finished = Date.parse(String(run.finishedAt)), requested = Date.parse(String(call.createdAt));
+  if (!call.authorized || call.status !== 200 || call.method !== "GET" || call.pathname !== "/publishing-check"
+    || !/^[a-f0-9]{48}$/.test(call.receiptId ?? "") || ![started, finished, requested].every(Number.isFinite)
+    || requested < started || requested > finished) return;
+  const matching = evidence.events.filter(event => {
+    if (event.companyId !== expected.companyId || event.agentId !== expected.agentId || event.runId !== run.id
+      || event.eventType !== "tool.execution.completed" || !Number.isSafeInteger(event.seq) || event.seq <= 0) return false;
+    const prp = event.payload?.prpEvent as { runId?: string; eventType?: string; payload?: { name?: string; status?: string; exitCode?: number; outputTruncated?: boolean; output?: unknown } } | undefined;
+    const tool = prp?.payload, observed = Date.parse(String(event.createdAt));
+    if (prp?.runId !== run.id || prp.eventType !== event.eventType || tool?.name !== "bash" || tool.status !== "completed"
+      || tool.exitCode !== 0 || tool.outputTruncated !== false || typeof tool.output !== "string"
+      || !Number.isFinite(observed) || observed < requested || observed > finished) return false;
+    try {
+      const output = JSON.parse(tool.output) as { ok?: boolean; status?: number; check?: string; receiptId?: string } | null;
+      return output?.ok === true && output.status === 200 && output.check === "publishing endpoint" && output.receiptId === call.receiptId;
+    } catch { return false; }
+  });
+  if (!matching.length) return;
+  return { receiptId: call.receiptId!, runId: run.id, agentId: run.agentId, event: matching[0]! };
+}
 export function gradePersonalSecret(value: unknown) {
   const c = checks(),
     o = externalObservation(value);
@@ -139,6 +210,15 @@ export function gradePersonalSecret(value: unknown) {
   const initial = o.phaseReplies.find(
       (row) => row.runId === o.state.initialRunId,
     ),
+    questionRow = o.interactions.find(row => row.id === o.state.initialQuestionId),
+    question = personalSecretQuestionHandoff(questionRow, { companyId: o.companyId, issueId: String(o.state.sourceIssueId),
+      agentId: o.leadId, userId: String(o.state.currentPersonId), runId: String(o.state.initialRunId), definitionId: String(o.state.definitionId) }, "answered"),
+    questionAnswered = !!question && question.payloadHash === o.state.initialQuestionPayloadHash
+      && question.optionId === o.state.initialQuestionOptionId
+      && o.activity.some(event => event.action === "issue.thread_interaction_answered" && event.companyId === o.companyId
+        && event.entityId === o.state.sourceIssueId && event.actorType === "user" && event.actorId === o.state.currentPersonId
+        && event.details?.interactionId === question.interactionId && event.details.interactionKind === "ask_user_questions"
+        && event.details.interactionStatus === "answered"),
     last = o.phaseReplies
       .filter((row) => row.runId !== o.state.initialRunId)
       .at(-1);
@@ -148,12 +228,13 @@ export function gradePersonalSecret(value: unknown) {
       o.state.requiredReferenceBefore === true &&
       o.state.otherConfiguredBefore === true &&
       o.state.currentPersonId !== o.state.otherPersonId &&
-      !!initial &&
-      personalSecretGuidance(initial.body) &&
+      ((!!initial && personalSecretGuidance(initial.body)) || questionAnswered) &&
       o.state.agentValueCreateStatus === 403,
     "Another person's real stored value does not satisfy the current person's required publishing definition, and chat directs secure own-value entry before claiming completion.",
   );
   const secret = o.state.currentSecret as Partial<CompanySecret> | undefined;
+  const workerReceipt = personalSecretWorkerReceipt(o.runs.find(run => run.id === o.state.workerRunId), o.state.workerReceiptEvidence as PersonalSecretWorkerEvidence | undefined,
+    { companyId: o.companyId, agentId: String(o.state.morganId), taskId: String(o.state.taskId), userId: String(o.state.currentPersonId) });
   c.add(
     "actual-own-definition-and-private-ui",
     o.state.operatorChannel === "private-browser-personal-set-my-value" &&
@@ -181,7 +262,7 @@ export function gradePersonalSecret(value: unknown) {
     o.state.requiredReferenceAfter === true &&
       o.state.taskResponsibleUserId === o.state.currentPersonId &&
       o.state.taskAfterStatus === "done" &&
-      o.state.workerReceiptBound === true &&
+      o.state.workerReceiptBound === true && workerReceipt?.runId === o.state.workerRunId &&
       o.runs.some(
         (run) =>
           run.id === o.state.workerRunId &&
@@ -210,6 +291,15 @@ export function gradePersonalSecret(value: unknown) {
         (run) => run.id === last.runId && run.status === "succeeded",
       ) &&
       personalSecretConfirmation(last.body) &&
+      (!o.state.initialQuestionId || (questionAnswered
+        && o.runs.some(run => run.id === last.runId && run.companyId === o.companyId && run.agentId === o.leadId
+          && run.contextSnapshot?.issueId === o.state.sourceIssueId && run.contextSnapshot?.interactionId === question?.interactionId)
+        && o.activity.some(event => event.action === "issue.question_response_delivered" && event.companyId === o.companyId
+          && event.entityId === o.state.sourceIssueId && event.actorType === "system" && event.actorId === "question-response-delivery"
+          && event.details?.interactionId === question?.interactionId && event.details.sourceRunId === o.state.initialRunId
+          && ["delivered", "fallback_queued"].includes(String(event.details.deliveryStatus)))
+        && Number.isFinite(Date.parse(String(secret?.createdAt))) && Number.isFinite(Date.parse(String(questionRow?.resolvedAt)))
+        && Date.parse(String(secret?.createdAt)) <= Date.parse(String(questionRow?.resolvedAt)))) &&
       o.state.secretScanComplete === true &&
       o.state.secretLeaked === false,
     "A later actual model response confirms availability after secure entry and observed delivery, with private scans of both owners' values across task/source output and run events.",
@@ -293,7 +383,7 @@ export const personalSecretExternalCases = [
           ctx,
           morgan.id,
           value,
-          "PUBLISHING_API_KEY",
+          "PUBLISHING_API_KEY", undefined, { personalWorkerReceipt: true },
         );
         fixtures.set(ctx, { value, otherValue, other, endpoint });
         const task = await ctx.input.api.post<
@@ -346,7 +436,12 @@ export const personalSecretExternalCases = [
     gradePersonalSecret,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.personal-secret.v2",
+      expectedHumanQuestionAnswer(value) {
+        const o = externalObservation(value);
+        if (!o?.state.initialQuestionId || !gradePersonalSecret(value).passed) return;
+        return { interactionId: String(o.state.initialQuestionId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId) };
+      },
+      oracleVersion: "paperclip.chat-catalog.personal-secret.v6",
       setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["current-owner-missing-required-personal-value"] },
       expectedRunCount: 3,
       minimumRunCount: 3,
@@ -354,6 +449,7 @@ export const personalSecretExternalCases = [
       attemptTimeoutMs: 660000,
       sourceFiles: [
         "chat-catalog-domains/external-personal-secret.ts",
+        "chat-catalog-domains/external-secret-question.ts",
         "chat-catalog-domains/external-secret-endpoint.ts",
         "chat-catalog-domains/external-private-browser.ts",
         "chat-catalog-domains/external-private-browser-worker.ts",
@@ -470,14 +566,19 @@ export const personalSecretExternalCases = [
           initial = await observeExternal(ctx, state),
           reply = initial.phaseReplies.at(-1);
         remaining();
-        if (initial.companyId !== source.companyId || !reply || reply.runId !== run.id
-          || !comments.some(comment => comment.id === reply.commentId && comment.companyId === source.companyId
+        const pendingQuestions = initial.interactions.filter(row => row.status === "pending" && (row as Partial<AskUserQuestionsInteraction>).sourceRunId === run.id);
+        const question = pendingQuestions.length === 1 ? personalSecretQuestionHandoff(pendingQuestions[0], {
+          companyId: source.companyId, issueId: source.id, agentId: run.agentId, userId: String(state.currentPersonId), runId: run.id, definitionId: String(state.definitionId),
+        }) : undefined;
+        const commentHandoff = !!reply && reply.runId === run.id
+          && comments.some(comment => comment.id === reply.commentId && comment.companyId === source.companyId
             && comment.issueId === source.id && comment.authorAgentId === run.agentId && comment.createdByRunId === run.id
-            && comment.body?.trim() === reply.body.trim()) || !personalSecretGuidance(reply.body))
-          throw new Error(
-            "Personal setup must direct the current person's secure publishing value before human action",
-          );
-        state.initialRunId = reply.runId;
+            && comment.body?.trim() === reply.body.trim()) && personalSecretGuidance(reply.body);
+        if (initial.companyId !== source.companyId || (pendingQuestions.length ? !question : !commentHandoff))
+          throw new Error("Personal setup must direct the current person's secure publishing value before human action");
+        state.initialRunId = run.id;
+        if (question) Object.assign(state, { initialQuestionId: question.interactionId,
+          initialQuestionOptionId: question.optionId, initialQuestionPayloadHash: question.payloadHash });
         if (
           (
             await ctx.input.api.get<OwnEntry[]>(`${root(ctx)}/me/user-secrets`)
@@ -500,18 +601,19 @@ export const personalSecretExternalCases = [
               return false;
             }
           });
-        if (!link)
+        if (!link && !question)
           throw new Error(
             "Actual reply must direct the supported own-value settings path for this definition",
           );
-        const url = new URL(link, initial.origin);
-        url.searchParams.set("definition", String(state.definitionId));
+        const url = new URL(question ? path : link!, initial.origin);
+        if (!question) url.searchParams.set("definition", String(state.definitionId));
         const receipt = await privateBrowserEntry({
           mode: "personal-secret-create",
           companyId: ctx.input.fixtures.company.id,
           personal: {
             definitionId: String(state.definitionId),
             userId: String(state.currentPersonId),
+            viaMySecrets: !!question,
           },
           baseURL: initial.origin,
           setupURL: url.href,
@@ -557,24 +659,24 @@ export const personalSecretExternalCases = [
             "current-person publishing credential actually delivered to Morgan",
           deadlineAt: Date.now() + 150000,
           intervalMs: 1000,
-          load: async () => ({
-            task: await ctx.input.api.get<Entity>(
-              `/api/issues/${state.taskId}`,
-            ),
-            runs: (await ctx.allRuns()).filter(
-              (run) => run.contextSnapshot?.issueId === state.taskId,
-            ),
-          }),
+          load: async () => {
+            const task = await ctx.input.api.get<PersonalSecretWorkerEvidence["task"]>(`/api/issues/${state.taskId}`),
+              runs = (await ctx.allRuns()).filter(run => run.contextSnapshot?.issueId === state.taskId);
+            let evidence: PersonalSecretWorkerEvidence | undefined;
+            let receipt: ReturnType<typeof personalSecretWorkerReceipt>;
+            if (runs.length === 1 && runs[0]?.status === "succeeded" && task.status === "done") {
+              const worker = await ctx.input.api.get<PersonalSecretWorkerRun>(`/api/heartbeat-runs/${runs[0].id}`);
+              evidence = { task, calls: fixture.endpoint.calls, events: await collectRunEvents<PersonalSecretWorkerEvent>(afterSeq =>
+                privateScanJson(ctx, `/api/heartbeat-runs/${worker.id}/events?afterSeq=${afterSeq}&limit=1000`)) };
+              receipt = personalSecretWorkerReceipt(worker, evidence, { companyId: source.companyId, agentId: String(state.morganId), taskId: String(state.taskId), userId: String(state.currentPersonId) });
+            }
+            return { task, runs, evidence, receipt };
+          },
           accept: (v) =>
             v.runs.length === 1 &&
             v.runs[0]?.status === "succeeded" &&
             v.task.status === "done" &&
-            fixture.endpoint.calls.some(
-              (call) =>
-                call.authorized &&
-                call.runId === v.runs[0]?.id &&
-                call.agentId === state.morganId,
-            ),
+            v.receipt?.runId === v.runs[0]?.id,
           reject: (v) =>
             v.runs.length > 1 ||
             v.runs.some((run) =>
@@ -583,8 +685,27 @@ export const personalSecretExternalCases = [
               ? "Personal publishing worker did not complete one actual credential check"
               : undefined,
         });
-        state.workerRunId = result.runs[0]!.id;
-        await sendChatMessage(ctx.input.page, ctx.scenario.query);
+        if (!result.receipt || !result.evidence) throw new Error("Actual native worker output did not bind the authenticated publishing receipt");
+        state.workerRunId = result.receipt.runId;
+        state.workerReceiptEvidence = { ...result.evidence, events: [result.receipt.event] };
+        if (question) {
+          const [current] = (await ctx.input.api.get<OwnEntry[]>(`${root(ctx)}/me/user-secrets`)).filter(row => row.definition.id === state.definitionId);
+          if (!current?.secret || current.secret.id !== state.secretId || current.secret.ownerUserId !== state.currentPersonId
+            || current.secret.userSecretDefinitionId !== state.definitionId || current.secret.status !== "active")
+            throw new Error("Secure question confirmation requires the actual saved current-owner value");
+          const rows = await ctx.input.api.get<AskUserQuestionsInteraction[]>(`/api/issues/${source.id}/interactions`);
+          const currentQuestion = personalSecretQuestionHandoff(rows.find(row => row.id === question.interactionId), {
+            companyId: source.companyId, issueId: source.id, agentId: run.agentId, userId: String(state.currentPersonId), runId: run.id, definitionId: String(state.definitionId),
+          });
+          if (!currentQuestion || currentQuestion.payloadHash !== question.payloadHash) throw new Error("Secure-entry question changed before human confirmation");
+          const form = ctx.input.page.getByTestId("task-chat-composer-takeover");
+          await form.locator(`[id=${JSON.stringify(`${question.interactionId}-${question.questionId}-${question.optionId}`)}]`).click({ timeout: remaining() });
+          const [response] = await Promise.all([
+            ctx.input.page.waitForResponse(res => new URL(res.url()).pathname === `/api/issues/${source.id}/interactions/${question.interactionId}/respond` && res.request().method() === "POST", { timeout: remaining() }),
+            form.getByRole("button", { name: question.submitLabel, exact: true }).click({ timeout: remaining() }),
+          ]);
+          if (!response.ok()) throw new Error("Secure-entry human question response failed");
+        } else await sendChatMessage(ctx.input.page, ctx.scenario.query);
       },
       async observe(ctx, state) {
         const fixture = fixtures.get(ctx)!;
@@ -639,7 +760,10 @@ export const personalSecretExternalCases = [
         const comments = await ctx.input.api.get<Entity[]>(
           `/api/issues/${state.taskId}/comments?order=asc`,
         );
-        state.workerReceiptBound = comments.some(
+        const delivery = state.workerRunId ? personalSecretWorkerReceipt(await ctx.input.api.get<PersonalSecretWorkerRun>(`/api/heartbeat-runs/${state.workerRunId}`),
+          { ...(state.workerReceiptEvidence as PersonalSecretWorkerEvidence), task },
+          { companyId: ctx.input.fixtures.company.id, agentId: String(state.morganId), taskId: String(state.taskId), userId: String(state.currentPersonId) }) : undefined;
+        state.workerReceiptBound = !!delivery && comments.some(
           (row) =>
             row.createdByRunId === state.workerRunId &&
             row.authorAgentId === state.morganId &&
@@ -649,8 +773,8 @@ export const personalSecretExternalCases = [
         state.authorizedChecks = checks.length;
         state.unauthorizedChecks =
           fixture.endpoint.calls.length - checks.length;
-        state.checkRunId = checks[0]?.runId;
-        state.checkAgentId = checks[0]?.agentId;
+        state.checkRunId = delivery?.runId;
+        state.checkAgentId = delivery?.agentId;
         const o = await observeExternal(ctx, state),
           ids = new Set([ctx.issue()!.id, String(state.taskId)]);
         for (;;) {
