@@ -877,17 +877,19 @@ export async function removePluginWorkspace(
   const binding = readWorkspaceProviderBinding(workspace.metadata);
   if (!binding) throw conflict("Workspace storage binding is unavailable");
   const inspection = await inspectBinding(db, workers, workspace, recoveryPullRequest);
-  if (
-    inspection.hasDirtyTrackedFiles ||
-    inspection.hasUntrackedFiles ||
-    inspection.hasLocalOnlyData ||
-    inspection.headSha !== expectedHeadSha ||
-    (inspection.remotelyRecoverable !== true &&
-      inspection.isMergedIntoBase !== true)
-  ) {
-    throw conflict(
-      "Workspace has local changes or cannot be recovered remotely",
-    );
+  // 报错指名具体条件——归档失败排障时(cleanupReason 落库/500 响应体)直接可读,
+  // 不用再逐条件猜(2026-11-04 wt 生命周期验收曾因此排查数小时)。
+  const removalBlockers = [
+    inspection.hasDirtyTrackedFiles && "dirty tracked files",
+    inspection.hasUntrackedFiles && "untracked files",
+    inspection.hasLocalOnlyData && "ignored local-only data",
+    inspection.headSha !== expectedHeadSha &&
+      `head sha mismatch (expected ${expectedHeadSha?.slice(0, 12) ?? "none"}, found ${inspection.headSha?.slice(0, 12) ?? "none"})`,
+    (inspection.remotelyRecoverable !== true && inspection.isMergedIntoBase !== true) &&
+      "not merged into base and not remotely recoverable",
+  ].filter((x): x is string => typeof x === "string");
+  if (removalBlockers.length > 0) {
+    throw conflict(`Workspace cannot be safely removed: ${removalBlockers.join("; ")}`);
   }
   await beforeRemove?.();
   const generation = workspace.metadata?.lifecycleGeneration ?? 0;
