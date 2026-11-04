@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "249b487a2d2451763913038cc009f7090580d1f1",
+  "targetSha": "5aa9e3349295dd30b6d674c9b0133e2c32db258c",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -172,7 +172,7 @@
       "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
       "previousTargetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
       "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
-      "candidateDescriptorSha256": "e9c59dade7aeffd5b23c05b66bf52ed11988a897d8a160e75d0435052733abf6",
+      "candidateDescriptorSha256": "f83a36c8aff7c933dd6b2d9f9613c1c5778e9bf742a1098c1e1abe5d9a3349b4",
       "changedDefinitionFiles": [
         {
           "path": "tests/runner-e2e/chat-scenarios/companies.yaml",
@@ -232,7 +232,7 @@
           "key": "activity.work-timeline",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.internal.v1",
-          "current": "paperclip.chat-catalog.work-timeline.v5"
+          "current": "paperclip.chat-catalog.work-timeline.v6"
         },
         {
           "key": "activity.work-timeline",
@@ -635,7 +635,7 @@
           "key": "secrets.configure-company-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v4"
+          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v5"
         },
         {
           "key": "secrets.personal-secret",
@@ -694,7 +694,7 @@
           "key": "secrets.personal-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.personal-secret.v5"
+          "current": "paperclip.chat-catalog.personal-secret.v6"
         },
         {
           "key": "skills.author-skill",
@@ -899,6 +899,30 @@
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
           "current": "paperclip.chat-catalog.team-configure.v2"
+        },
+        {
+          "key": "connection-setup.secure-api-key",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v2"
+        },
+        {
+          "key": "secrets.least-scope-delivery",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v2"
+        },
+        {
+          "key": "secrets.secret-proposal",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v2"
+        },
+        {
+          "key": "secrets.vault-reference",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v2"
         }
       ],
       "candidateDescriptorSnapshot": "fixtures/chat-repair-candidate-descriptors.json",
@@ -938,7 +962,7 @@
           "key": "activity.work-timeline",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.internal.v1",
-          "current": "paperclip.chat-catalog.work-timeline.v5"
+          "current": "paperclip.chat-catalog.work-timeline.v6"
         },
         {
           "key": "agents.choose-primary",
@@ -1311,7 +1335,7 @@
           "key": "secrets.configure-company-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v4"
+          "current": "paperclip.chat-catalog.company-secret-controller-baseline.v5"
         },
         {
           "key": "secrets.personal-secret",
@@ -1381,7 +1405,7 @@
           "key": "secrets.personal-secret",
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
-          "current": "paperclip.chat-catalog.personal-secret.v5"
+          "current": "paperclip.chat-catalog.personal-secret.v6"
         },
         {
           "key": "skills.author-skill",
@@ -1630,6 +1654,30 @@
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
           "current": "paperclip.chat-catalog.team-configure.v2"
+        },
+        {
+          "key": "connection-setup.secure-api-key",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v2"
+        },
+        {
+          "key": "secrets.least-scope-delivery",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v2"
+        },
+        {
+          "key": "secrets.secret-proposal",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v2"
+        },
+        {
+          "key": "secrets.vault-reference",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.external.v2"
         }
       ],
       "runtimeConditions": {
@@ -1745,7 +1793,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "249b487a2d2451763913038cc009f7090580d1f1",
+        "targetSha": "5aa9e3349295dd30b6d674c9b0133e2c32db258c",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
       }
@@ -2288,7 +2336,7 @@
         "activity/timeline"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.work-timeline.v5",
+      "oracleVersion": "paperclip.chat-catalog.work-timeline.v6",
       "sourceFiles": [
         "chat-catalog-domains/internal-definition.ts",
         "chat-catalog-domains/internal-support.ts",
@@ -6510,7 +6558,7 @@
         "connection-setup/credentials"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.external.v2",
       "sourceFiles": [
         "chat-catalog-domains/external-secure-key.ts",
         "chat-query-attachments.ts",
@@ -11080,7 +11128,7 @@
         "connection-setup/credentials"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v4",
+      "oracleVersion": "paperclip.chat-catalog.company-secret-controller-baseline.v5",
       "sourceFiles": [
         "chat-catalog-domains/external-company-secret.ts",
         "chat-catalog-domains/external-secret-question.ts",
@@ -11132,7 +11180,7 @@
         "secrets/runtime-delivery"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.external.v2",
       "sourceFiles": [
         "chat-catalog-domains/external-secret-delivery.ts",
         "chat-catalog-domains/external-secret-endpoint.ts",
@@ -11196,7 +11244,7 @@
         "secrets/user-secrets"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.personal-secret.v5",
+      "oracleVersion": "paperclip.chat-catalog.personal-secret.v6",
       "sourceFiles": [
         "chat-catalog-domains/external-personal-secret.ts",
         "chat-catalog-domains/external-secret-question.ts",
@@ -11257,7 +11305,7 @@
         "secrets/proposals"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.external.v2",
       "sourceFiles": [
         "chat-catalog-domains/external-secret-proposal.ts",
         "chat-catalog-domains/external-secret-scan.ts",
@@ -11320,7 +11368,7 @@
         "secrets/vault-import"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.external.v2",
       "sourceFiles": [
         "chat-catalog-domains/external-vault-reference.ts",
         "chat-catalog-domains/external-fixtures.ts",
