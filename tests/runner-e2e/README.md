@@ -649,7 +649,10 @@ paths to their owned canonical files with byte counts and SHA-256 hashes.
 Original status, errors, and nested user steps remain unchanged. Sealed originals
 retain all owned attachments. The final-results tree references those originals
 instead of storing another copy of registered Playwright output attachments.
-The downloader verifies each reference against the sealed original inventory.
+The downloader verifies each reference against the sealed original inventory,
+then restores exact referenced bytes into the derived selected report tree.
+Neither sealed inventory changes. Registered metadata and attachments are not
+silently rewritten: JSON values that need privacy redaction fail closed.
 Unknown, missing, changed, or foreign attachments fail validation. Native
 snapshots and other unregistered evidence are not removed. The existing physical
 byte, entry, archive, ZIP expansion, time, and privacy bounds remain unchanged.

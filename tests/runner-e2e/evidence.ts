@@ -215,6 +215,9 @@ export async function packageEvidence(input: {
     byKind: Object.fromEntries(evidenceBudgetKinds.map(kind => [kind, { files: 0, bytes: 0 }])) } : undefined;
   if (input.privateCell && standard.length > 4096) throw budgetFailure("Private cell evidence exceeds entry allowance", budget!, "entries");
   const privateSecrets = input.privateCell ? normalizedSecrets(input.secrets).flatMap(value => [value, encodeURIComponent(value), Buffer.from(value).toString("base64"), Buffer.from(value).toString("base64url")]) : [];
+  const compact = input.privateCell?.layout === "original" && standard.includes(PRIVATE_FRAMEWORK_REPORT)
+    ? await validatePrivateFrameworkReport(input.privateDir) : undefined;
+  const registeredAttachments = new Set(compact?.attachments.map(row => row.path) ?? []);
   let privateBytes = 0;
   for (const relative of standard) {
     const source = path.join(input.privateDir, relative);
@@ -247,7 +250,10 @@ export async function packageEvidence(input: {
       continue;
     } else if (TEXT_EXTENSIONS.has(extension)) {
       const raw = await readFile(source, "utf8");
-      if (input.privateCell) inspectPrivateFrameworkMetadata(relative.split(path.sep).join("/"), raw, input.secrets);
+      if (input.privateCell && inspectPrivateFrameworkMetadata(relative.split(path.sep).join("/"), raw, input.secrets)) {
+        assertSecretFree(raw, input.secrets, "private framework metadata");
+        await copyFile(source, destination); files.push(relative); continue;
+      }
       if (extension === ".html") {
         const issue = await inspectEmbeddedReport(raw, input.secrets);
         if (issue) { if (budget && budget.bound === "none") budget.bound = scannerBudgetBound(issue); leaks.push({ file: relative, reason: issue }); continue; }
@@ -258,6 +264,11 @@ export async function packageEvidence(input: {
           ? findSecretLeakInJsonValues(parsed, input.secrets)
           : findSecretLeak(raw, input.secrets);
       if (leak) leaks.push({ file: relative, reason: leak });
+      if (registeredAttachments.has(relative.split(path.sep).join("/"))) {
+        if (JSON.stringify(sanitizeJson(parsed ?? raw, input.secrets)) !== JSON.stringify(parsed ?? raw)) throw new Error("Private framework attachment requires redaction");
+        if (!leak) { await copyFile(source, destination); files.push(relative); }
+        continue;
+      }
       // Redacting an already serialized JSON string can change escape
       // boundaries around shell commands. Sanitize parsed values instead so
       // uploaded snapshots stay valid JSON.
@@ -303,8 +314,6 @@ export async function packageEvidence(input: {
   }
 
   if (budget) { budget.inventoryComplete = true; budget.scanFinished = true; }
-  const compact = input.privateCell?.layout === "original" && files.includes(PRIVATE_FRAMEWORK_REPORT)
-    ? await validatePrivateFrameworkReport(input.privateDir) : undefined;
   const missing = input.expectPassScreenshot
     ? [
         ...REQUIRED_PASS_FILES.filter((required) => !files.includes(required) && !(compact && required === path.join("html-report", "index.html"))),

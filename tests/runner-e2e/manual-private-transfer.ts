@@ -1,4 +1,4 @@
-import { PRIVATE_FRAMEWORK_REPORT, validatePrivateFrameworkReport } from "./private-framework-report.js";
+import { PRIVATE_FRAMEWORK_REPORT, validatePrivateFrameworkReport, materializePrivateFrameworkAttachments } from "./private-framework-report.js";
 import { createHash } from "node:crypto";
 import { appendFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -171,9 +171,20 @@ async function downloadCell(env: NodeJS.ProcessEnv) {
     const originals = await validateSealedOriginals(directory, id, { ...identity, root: directory }), summary = cellCompleteness(id, originals);
     if (hash(JSON.stringify(identity.evidenceCompleteness)) !== hash(JSON.stringify(summary))
       || hash(JSON.stringify(receipt.evidenceCompleteness)) !== hash(JSON.stringify(summary))) throw new Error("Private evidence completeness receipt differs from archive");
-    await validateSealedInventory(path.join(directory, "sealed-results", "html-report"), "../result-evidence-inventory.json", undefined, "standard", { ...identity, root: directory });
-    await cp(path.join(directory, "sealed-results", "html-report"), path.join(selected, manualCellKind(id)), { recursive: true, errorOnExist: true, force: false });
+    await stageSealedPrivateCell(directory, selected, id, { ...identity, root: directory });
     await writeFile(path.join(root, `manual-cell-completeness-${index}.json`), JSON.stringify(summary), { mode: 0o600, flag: "wx" });
+  }
+}
+export async function stageSealedPrivateCell(directory: string, selected: string, id: string, context: ManualPrivateHandoff) {
+  await validateSealedOriginals(directory, id, context);
+  const inventory = await validateSealedInventory(path.join(directory, "sealed-results", "html-report"), "../result-evidence-inventory.json", undefined, "standard", context);
+  const destination = path.join(selected, manualCellKind(id));
+  await cp(path.join(directory, "sealed-results", "html-report"), destination, { recursive: true, errorOnExist: true, force: false });
+  for (const row of inventory.files) {
+    if (row.path === PRIVATE_FRAMEWORK_REPORT || row.path.endsWith(`/${PRIVATE_FRAMEWORK_REPORT}`)) {
+      const cell = path.join(destination, row.path.slice(0, -PRIVATE_FRAMEWORK_REPORT.length));
+      await materializePrivateFrameworkAttachments(cell, path.join(directory, "originals", manualCellKind(id)), id);
+    }
   }
 }
 async function verifyDownloads(env: NodeJS.ProcessEnv) {

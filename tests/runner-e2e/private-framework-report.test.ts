@@ -1,5 +1,6 @@
 import type { ManualPrivateHandoff } from "./manual-private-handoff.js";
 import { afterAll, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { createRequire } from "node:module";
 import { cp, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -54,7 +55,12 @@ it("uses the real official Playwright JSON producer with failed errors, user ste
   await promisify(execFile)(process.execPath, [path.join(path.dirname(pkg), "cli.js"), "test", "--config", config], { cwd: tests, env: { PATH: process.env.PATH, CI: "1", NODE_OPTIONS: "", NODE_PATH: "" }, timeout: 30000 }).then(() => { throw new Error("Original should fail"); }, error => { expect(error.code).toBe(1); });
   await rm(path.join(f.cell, "playwright-output"), { recursive: true });
   await cp(path.join(f.source, "playwright-output"), path.join(f.cell, "playwright-output"), { recursive: true });
+  const { sanitizePrivateReporterArtifacts } = await import("./private-reporter-artifacts.js");
+  const produced = await readFile(path.join(f.source, "framework-report.json"));
+  expect(await sanitizePrivateReporterArtifacts(f.source, [])).toEqual([]);
+  expect(await readFile(path.join(f.source, "framework-report.json"))).toEqual(produced);
   await copyPrivateFrameworkReport(f.source, f.cell, []);
+  expect(await readFile(path.join(f.cell, "snapshots/playwright-framework-original.txt"))).toEqual(produced);
   const retained = await validatePrivateFrameworkReport(f.cell), result = (retained.report.suites as any)[0].specs[0].tests[0].results[0];
   expect(result.status).toBe("failed"); expect(result.errors.length).toBeGreaterThan(0); expect(result.steps[0].title).toBe("owned failed step");
   expect(retained.attachments.some(a => a.path.endsWith("/trace.zip"))).toBe(true);
@@ -64,7 +70,7 @@ it("keeps the unchanged 256MiB packaging/archive caps with one canonical large a
   const { inspectCellReportProducer, privateCellEvidenceOwner } = await import("./manual-private-report-assets.js");
   const { archivePrivateEvidence } = await import("./private-history.js");
   const { sealStandardOriginalEvidence, sealManualResultEvidence } = await import("./manual-private-handoff.js");
-  const { validateSealedOriginals, validateSealedInventory } = await import("./manual-private-transfer.js");
+  const { validateSealedOriginals, validateSealedInventory, stageSealedPrivateCell } = await import("./manual-private-transfer.js");
   const { MANUAL_PRIVATE_PROTOCOL, manualCellKind } = await import("./manual-private-retention.js");
   const f = await fixture(), id = "chat-features.runner-opencode.local.activity.agent-feedback";
   const context: ManualPrivateHandoff = { root: await (await import("node:fs/promises")).realpath(f.root), private: true as const, protocol: MANUAL_PRIVATE_PROTOCOL,
@@ -73,7 +79,7 @@ it("keeps the unchanged 256MiB packaging/archive caps with one canonical large a
   await promisify(execFile)("python3", ["-c", "import zipfile,sys;z=zipfile.ZipFile(sys.argv[1],'w',compression=zipfile.ZIP_STORED);f=z.open('synthetic.trace','w');[f.write(b'0'*1048576) for _ in range(140)];f.close();z.close()", zip], { timeout: 30000 });
   const tests = path.join(f.root, "budget-tests"); await mkdir(tests);
   const require = createRequire(import.meta.url), pkg = require.resolve("@playwright/test/package.json"), entry = require.resolve("@playwright/test");
-  await writeFile(path.join(tests, "failed.spec.cjs"), `const {test,expect}=require(${JSON.stringify(entry)});test('owned failed large attachment',async({},info)=>{await info.attach('owned trace',{path:${JSON.stringify(zip)},contentType:'application/zip'});await test.step('actual failed assertion',async()=>expect(1).toBe(2));});`);
+  await writeFile(path.join(tests, "failed.spec.cjs"), `const {test,expect}=require(${JSON.stringify(entry)});test('owned failed large attachment',async({},info)=>{await info.attach('owned trace',{path:${JSON.stringify(zip)},contentType:'application/zip'});await test.step('actual failed assertion',async()=>{throw new Error('The --token option requires a value');});});`);
   const config = path.join(tests, "config.cjs");
   await writeFile(config, `module.exports=${JSON.stringify({ testDir: tests, testMatch: "failed.spec.cjs", workers: 1, use: { trace: "retain-on-failure" }, outputDir: path.join(f.source, "playwright-output"), reporter: [["json", { outputFile: path.join(f.source, "framework-report.json") }], ["html", { outputFolder: path.join(f.source, "html-report"), open: "never" }], ["blob", { outputDir: path.join(f.source, "blob-report") }]] })};`);
   await promisify(execFile)(process.execPath, [path.join(path.dirname(pkg), "cli.js"), "test", "--config", config], { cwd: tests, timeout: 30000, env: { PATH: process.env.PATH, CI: "1", NODE_OPTIONS: "", NODE_PATH: "" } }).then(() => { throw new Error("Original should fail"); }, error => { expect(error.code).toBe(1); });
@@ -86,7 +92,10 @@ it("keeps the unchanged 256MiB packaging/archive caps with one canonical large a
   for (const folder of ["html-report", "blob-report"]) await rm(path.join(f.cell, folder), { recursive: true });
   await copyPrivateFrameworkReport(f.source, f.cell, []);
   await writeFile(path.join(f.cell, "result.json"), '{"status":"failed","error":"original failed assertion"}');
-  const evidence = await packageEvidence(input); expect(evidence.leaks).toEqual([]); expect(evidence.budget?.bytesExamined).toBeLessThan(256 * 1024 * 1024);
+  const rawFramework = await readFile(path.join(f.cell, "snapshots/playwright-framework-original.txt"));
+  const { redactText } = await import("./redaction.js"); expect(redactText(rawFramework.toString("utf8"), [])).not.toBe(rawFramework.toString("utf8"));
+  const evidence = await packageEvidence(input); expect(evidence.leaks).toEqual([]);
+  expect(await readFile(path.join(upload, "snapshots/playwright-framework-original.txt"))).toEqual(rawFramework); expect(evidence.budget?.bytesExamined).toBeLessThan(256 * 1024 * 1024);
   await sealStandardOriginalEvidence({ context, executionId: id, source: f.cell, evidence, secrets: [], expectPassScreenshot: false });
   const original = path.join(context.root, "originals", manualCellKind(id));
   await referenceSealedFrameworkAttachments(upload, original, id);
@@ -102,6 +111,14 @@ it("keeps the unchanged 256MiB packaging/archive caps with one canonical large a
   await expect(validateSealedOriginals(restored, id, downloaded)).resolves.toMatchObject({ complete: true });
   await expect(validateSealedInventory(path.join(restored, "sealed-results/html-report"), "../result-evidence-inventory.json", undefined, "standard", downloaded)).resolves.toMatchObject({ complete: true });
   expect(JSON.parse(await readFile(path.join(restored, "originals", manualCellKind(id), "result.json"), "utf8")).status).toBe("failed");
+  const selected = path.join(f.root, "selected-runner-e2e"); await mkdir(selected);
+  const sealedInventory = await readFile(path.join(restored, "sealed-results/result-evidence-inventory.json"));
+  await stageSealedPrivateCell(restored, selected, id, downloaded);
+  const derived = path.join(selected, manualCellKind(id), prefix);
+  for (const attachment of (await validatePrivateFrameworkReport(derived, path.join(restored, "originals", manualCellKind(id)), id)).attachments) {
+    expect(createHash("sha256").update(await readFile(path.join(derived, attachment.path))).digest("hex")).toBe(attachment.sha256);
+  }
+  expect(await readFile(path.join(restored, "sealed-results/result-evidence-inventory.json"))).toEqual(sealedInventory);
 }, 30000);
 
 it.each(["literal", "escaped", "base64-body", "escaped-json-body"])("deep-scans registered immutable raw JSON text: %s", async kind => {
@@ -137,4 +154,33 @@ it("rejects a symbolic attachment and changed final framework outcome", async ()
   sidecar.report.suites[0].specs[0].tests[0].results[0].status = "passed";
   await writeFile(path.join(f.cell, PRIVATE_FRAMEWORK_REPORT), JSON.stringify(sidecar));
   await expect(validatePrivateFrameworkReport(f.cell, original, "owned")).rejects.toThrow();
+});
+
+it("preserves exact registered official JSON whitespace through sanitizer and copier", async () => {
+  const f = await fixture(); const raw = Buffer.from("\n" + JSON.stringify(f.report) + "\n\n");
+  const trace = path.join(f.source, "playwright-output/owned/trace.zip");
+  const traceBytes = await readFile(trace); await rm(trace);
+  await writeFile(path.join(f.source, "framework-report.json"), raw);
+  const { sanitizePrivateReporterArtifacts } = await import("./private-reporter-artifacts.js");
+  expect(await sanitizePrivateReporterArtifacts(f.source, [])).toEqual([]);
+  expect(await readFile(path.join(f.source, "framework-report.json"))).toEqual(raw);
+  await writeFile(trace, traceBytes);
+  await copyPrivateFrameworkReport(f.source, f.cell, []);
+  expect(await readFile(path.join(f.cell, "snapshots/playwright-framework-original.txt"))).toEqual(raw);
+});
+
+it("rejects sensitive JSON keys in registered metadata and JSON attachments without rewriting them", async () => {
+  const f = await fixture(); (f.report.config as any).metadata = { password: "unrecognized-private-value" };
+  await writeFile(path.join(f.source, "framework-report.json"), JSON.stringify(f.report));
+  await expect(copyPrivateFrameworkReport(f.source, f.cell, [])).rejects.toThrow();
+  delete (f.report.config as any).metadata;
+  const file = path.join(f.cell, "snapshots/owned.json"); await mkdir(path.dirname(file), { recursive: true }); await writeFile(file, '{"password":"unrecognized-private-value"}');
+  f.report.suites[0]!.specs[0]!.tests[0]!.results[0]!.attachments[0]!.path = file;
+  await writeFile(path.join(f.source, "framework-report.json"), JSON.stringify(f.report));
+  await copyPrivateFrameworkReport(f.source, f.cell, []);
+  const { packageEvidence } = await import("./evidence.js");
+  const { inspectCellReportProducer, privateCellEvidenceOwner } = await import("./manual-private-report-assets.js");
+  const owner = await privateCellEvidenceOwner({ root: f.root, private: true, runId: "123", attempt: "1", executionIds: ["chat-features.runner-opencode.local.activity.agent-feedback"], cellReportProducer: await inspectCellReportProducer() }, "chat-features.runner-opencode.local.activity.agent-feedback");
+  await expect(packageEvidence({ privateDir: f.cell, uploadDir: path.join(f.root, "upload"), secrets: [], expectPassScreenshot: false, privateCell: { owner, layout: "original" } })).rejects.toThrow("requires redaction");
+  expect(await readFile(file, "utf8")).toBe('{"password":"unrecognized-private-value"}');
 });

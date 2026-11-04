@@ -37,7 +37,7 @@ export async function sanitizePrivateReporterArtifacts(root: string, values: rea
     } else if (text.has(extension)) {
       if (info.size > 128 * 1024 * 1024) { await rm(filename); issues.push({ file: safeName, disposition: "omitted", reason: "reporter text exceeds inspection bound" }); return; }
       const raw = await readFile(filename, "utf8");
-      if (relative === "framework-report.json") inspectPrivateFrameworkMetadata(relative, raw, secrets);
+      if (relative === "framework-report.json") { inspectPrivateFrameworkMetadata(relative, raw, secrets); return; }
       const opaque = extension === ".html" ? await inspectEmbeddedReport(raw, secrets) : null;
       if (opaque) { await rm(filename); issues.push({ file: safeName, disposition: "omitted", reason: opaque }); return; }
       const leak = findSecretLeak(raw, secrets);
