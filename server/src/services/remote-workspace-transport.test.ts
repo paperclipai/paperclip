@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { deflateSync } from "node:zlib";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import {
@@ -525,6 +526,119 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       await cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: restored.stagingRoot, operationId: restored.operationId });
       expect(execute.mock.calls.every(([input]) => input.bypassSession === true)).toBe(true);
     } finally { await captured.cleanup(); }
+  });
+
+  it.each(["full", "shallow", "partial", "partial-sparse"] as const)("restores offline %s Git state through the archive reader", async kind => {
+    const origin = await repository({ revisions: true });
+    for (const name of ["selected", "omitted"]) {
+      await fs.mkdir(path.join(origin, name));
+      await fs.writeFile(path.join(origin, name, "file.txt"), `${name} committed work\n`);
+    }
+    await git(origin, "add", "."); await git(origin, "commit", "-qm", "Add sparse paths");
+    await git(origin, "config", "uploadpack.allowFilter", "true");
+    const repo = path.join(workspace, "repository");
+    const shallow = ["shallow", "partial-sparse"].includes(kind), partial = kind.startsWith("partial");
+    await git(scratch, "clone", "-q", ...(shallow ? ["--depth=1"] : []),
+      ...(partial ? ["--filter=blob:none"] : []), ...(kind === "partial-sparse" ? ["--sparse"] : []), pathToFileURL(origin).href, repo);
+    if (kind === "partial-sparse") await git(repo, "sparse-checkout", "set", "selected");
+    await git(repo, "remote", "set-url", "origin", "https://example.invalid/source.git");
+    const missing = async (directory: string) => (await git(directory, "rev-list", "--objects", "--all", "--missing=print"))
+      .stdout.split("\n").filter(line => line.startsWith("?")).sort();
+    const missingBefore = await missing(repo);
+    if (partial) expect(missingBefore.length).toBeGreaterThan(0);
+    else expect(missingBefore).toEqual([]);
+    await fs.writeFile(path.join(repo, "selected", "file.txt"), "staged accepted work\n");
+    await git(repo, "add", "selected/file.txt");
+    await fs.writeFile(path.join(repo, "selected", "file.txt"), "dirty accepted work\n");
+    await fs.writeFile(path.join(repo, "untracked.txt"), "untracked accepted work\n");
+    const beforeStatus = (await git(repo, "status", "--porcelain=v2")).stdout;
+    const beforeHead = (await git(repo, "rev-parse", "HEAD")).stdout;
+    await fs.rm(origin, { recursive: true });
+    const template = path.join(scratch, "unrelated-template"); await fs.mkdir(path.join(template, "hooks"), { recursive: true });
+    await fs.writeFile(path.join(template, "config"), "[credential]\n helper = SYNTHETIC_PRIVATE_TEMPLATE\n[http]\n extraHeader = SYNTHETIC_PRIVATE_TEMPLATE\n");
+    await fs.writeFile(path.join(template, "hooks", "template-hook"), "SYNTHETIC_PRIVATE_TEMPLATE\n", { mode: 0o700 });
+    // Only local file transport is permitted. Capture must not fetch promised
+    // blobs or replace the original partial checkout with extra remote history.
+    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file", GIT_INDEX_FILE: path.join(scratch, "unrelated-index"), GIT_TEMPLATE_DIR: template }, "one-shot");
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      expect(await missing(repo)).toEqual(missingBefore);
+      expect(await fs.readFile(path.join(repo, "selected", "file.txt"), "utf8")).toBe("dirty accepted work\n");
+      await fs.rm(workspace, { recursive: true }); remote.remoteCwd = scratch;
+      const restoredRoot = path.join(scratch, "offline-restored"), restoredRepo = path.join(restoredRoot, "repository");
+      await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: restoredRoot, archivePath: captured.archivePath,
+        manifestDigest: captured.manifestDigest, restorationIdentity: "d".repeat(64) });
+      expect(await fs.readFile(path.join(restoredRepo, "selected", "file.txt"), "utf8")).toBe("dirty accepted work\n");
+      expect(await fs.readFile(path.join(restoredRepo, "untracked.txt"), "utf8")).toBe("untracked accepted work\n");
+      expect((await git(restoredRepo, "show", ":selected/file.txt")).stdout).toBe("staged accepted work\n");
+      expect((await git(restoredRepo, "rev-parse", "HEAD")).stdout).toBe(beforeHead);
+      expect((await git(restoredRepo, "status", "--porcelain=v2")).stdout).toBe(beforeStatus);
+      expect((await git(restoredRepo, "rev-parse", "--is-shallow-repository")).stdout.trim()).toBe(String(shallow));
+      expect(await missing(restoredRepo)).toEqual(missingBefore);
+      expect(await fs.readFile(path.join(restoredRepo, ".git", "config"), "utf8")).not.toContain("SYNTHETIC_PRIVATE_TEMPLATE");
+      await expect(fs.access(path.join(restoredRepo, ".git", "hooks", "template-hook"))).rejects.toMatchObject({ code: "ENOENT" });
+      if (partial) {
+        expect((await git(restoredRepo, "config", "--get", "remote.origin.promisor")).stdout.trim()).toBe("true");
+        expect((await git(restoredRepo, "config", "--get", "remote.origin.partialclonefilter")).stdout.trim()).toBe("blob:none");
+      }
+      if (kind === "partial-sparse") {
+        expect((await git(restoredRepo, "sparse-checkout", "list")).stdout.trim()).toBe("selected");
+        await expect(fs.access(path.join(restoredRepo, "omitted"))).rejects.toMatchObject({ code: "ENOENT" });
+      }
+      await git(restoredRepo, "fsck", "--connectivity-only", "--no-dangling");
+    } finally { await captured.cleanup(); }
+  });
+
+  it.each(["ordinary", "unmarked-promisor"])("rejects missing objects in an %s repository instead of allowing corruption", async kind => {
+    await git(workspace, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(workspace, "saved.txt"), "accepted work remains available\n");
+    await git(workspace, "add", "."); await git(workspace, "commit", "-qm", "Initial work");
+    const blob = (await git(workspace, "rev-parse", "HEAD:saved.txt")).stdout.trim();
+    await fs.rm(path.join(workspace, ".git", "objects", blob.slice(0, 2), blob.slice(2)));
+    if (kind === "unmarked-promisor") {
+      await git(workspace, "config", "remote.origin.url", "https://example.invalid/source.git");
+      await git(workspace, "config", "remote.origin.promisor", "true");
+      await git(workspace, "config", "remote.origin.partialclonefilter", "blob:none");
+    }
+    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file" }, "one-shot");
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })).rejects.toThrow();
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("accepted work remains available\n");
+  });
+
+  it.each(["full", "shallow", "partial"] as const)("rejects corrupt available objects in %s Git before publishing a receipt", async kind => {
+    const origin = await repository({ revisions: true }); await git(origin, "config", "uploadpack.allowFilter", "true");
+    const repo = path.join(workspace, "repository");
+    await git(scratch, "clone", "-q", ...(kind === "shallow" ? ["--depth=1"] : []),
+      ...(kind === "partial" ? ["--filter=blob:none"] : []), pathToFileURL(origin).href, repo);
+    await git(repo, "remote", "set-url", "origin", "https://example.invalid/source.git");
+    await fs.writeFile(path.join(repo, "staged.txt"), "accepted staged work\n"); await git(repo, "add", "staged.txt");
+    const oid = (await git(repo, "rev-parse", ":staged.txt")).stdout.trim();
+    const file = path.join(repo, ".git", "objects", oid.slice(0, 2), oid.slice(2)), corrupt = Buffer.from("different bytes\n");
+    await fs.chmod(file, 0o600); await fs.writeFile(file, deflateSync(Buffer.concat([Buffer.from(`blob ${corrupt.length}\0`), corrupt])));
+    // Valid zlib with the wrong object hash passes connectivity-only fsck.
+    // A successful receipt must also establish available object integrity.
+    await git(repo, "fsck", "--connectivity-only", "--no-dangling");
+    await expect(git(repo, "fsck", "--full", "--no-dangling")).rejects.toThrow();
+    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file" }, "one-shot");
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() })).rejects.toThrow();
+    expect(await fs.readFile(path.join(repo, "staged.txt"), "utf8")).toBe("accepted staged work\n");
+  });
+
+  it.each(["unsupported-filter", "alternate-store", "object-symlink"] as const)("retains a partial source with unsupported %s state", async fault => {
+    const origin = await repository(); await git(origin, "config", "uploadpack.allowFilter", "true");
+    const repo = path.join(workspace, "repository");
+    await git(scratch, "clone", "-q", "--filter=blob:none", "--depth=1", pathToFileURL(origin).href, repo);
+    await git(repo, "remote", "set-url", "origin", "https://example.invalid/source.git");
+    await fs.writeFile(path.join(repo, "saved.txt"), "retained accepted work\n");
+    const outside = path.join(scratch, "SYNTHETIC_PRIVATE_OBJECT_PATH"); await fs.writeFile(outside, "outside sentinel\n");
+    if (fault === "unsupported-filter") await git(repo, "config", "remote.origin.partialclonefilter", "SYNTHETIC_PRIVATE_FILTER");
+    if (fault === "alternate-store") await fs.writeFile(path.join(repo, ".git", "objects", "info", "alternates"), `${scratch}\n`);
+    if (fault === "object-symlink") await fs.symlink(outside, path.join(repo, ".git", "objects", "pack", "unrelated-link"));
+    const { remote } = target({ GIT_ALLOW_PROTOCOL: "file" }, "one-shot");
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(fault === "object-symlink" ? /^remote_workspace_archive_unsafe_git_link$/ : /^remote_workspace_archive_unsupported_git_setting$/);
+    expect(await fs.readFile(path.join(repo, "saved.txt"), "utf8")).toBe("retained accepted work\n");
+    expect(await fs.readFile(outside, "utf8")).toBe("outside sentinel\n");
   });
 
   it("identifies a timed-out preparation without exposing transport output or retrying it", async () => {

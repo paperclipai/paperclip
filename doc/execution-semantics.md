@@ -862,6 +862,18 @@ receipt. A changed source or cancelled capture removes its incomplete archive;
 an existing archive remains untouched. Temporary space must still hold the
 normalized Git metadata and the complete archive together.
 
+Shallow and partial Git checkouts retain their available object files instead
+of asking a mirror clone to transfer promised or index-only objects. Capture
+does not fetch missing objects. It preserves the shallow boundary, promisor pack
+markers, portable promisor settings, and the selected sparse-checkout settings
+and patterns. Both source and saved Git state must pass connectivity checks.
+Missing objects in an ordinary repository remain a failure. Partial or shallow
+repositories with alternate object stores, unsupported filters, or unsafe object
+links remain protected sources and do not receive a successful save receipt.
+This uses the existing archive format and ordinary Git files, so earlier archive
+readers restore the same state. It does not add remote history or change the
+authority to resume work, publish a result, or remove a source.
+
 ### Remote Codex model compatibility
 
 Fresh remote Codex Runner runs check the selected image CLI before saving the
