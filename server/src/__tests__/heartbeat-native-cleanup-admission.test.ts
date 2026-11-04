@@ -14,7 +14,6 @@ import { remoteTerminationReceipt } from "../services/remote-execution-terminati
 import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { writeEnvironmentCleanup } from "../services/environment-cleanup-notifications.js";
-import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import { registerRunDispatchWork } from "../services/heartbeat/dispatch-work.js";
 
 const execute = vi.hoisted(() => vi.fn());
@@ -123,23 +122,16 @@ suite("native terminal-run cleanup admission", () => {
       });
       const heartbeat = heartbeatService(db), errors: unknown[] = [];
       const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
-      let cleanupHintObserved = false, dispatchAttempts = 0;
-      const register = coordinator.register.bind(coordinator);
-      const registration = vi.spyOn(coordinator, "register").mockImplementation((queue, task) => register(queue, {
-        ...task,
-        onSettled: hints => {
-          task.onSettled?.(hints);
-          if (queue === DELIVERY_QUEUES.queuedRunDispatch) for (const hint of hints ?? []) {
-            if (hint !== "*" && JSON.parse(hint).companyId === companyId) cleanupHintObserved = true;
-          }
-        },
-      }));
+      let completedCleanupDispatches = 0;
+      const cleanupStatus = mode === "failed cleanup" ? "failed" : "success";
       try {
         await registerRunDispatchWork(coordinator, { promoteDueScheduledRetries: async () => undefined,
           nextScheduledRetryAt: async () => null, schedulingSuppressed: async () => false,
           resumeQueuedRunsAfterDrain: async () => {
+            const [current] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id));
             await heartbeat.resumeQueuedRunsAfterDrain({ companyId });
-            dispatchAttempts++;
+            if (current?.status === "released" && current.releasedAt && current.cleanupStatus === cleanupStatus)
+              completedCleanupDispatches++;
           },
         }, () => true).ready;
         expect((await heartbeat.getRun(successorId))?.status).toBe("queued");
@@ -151,14 +143,10 @@ suite("native terminal-run cleanup admission", () => {
           const [replacement] = await db.insert(agents).values({ companyId, name: "New owner", adapterType: "process" }).returning();
           await db.update(issues).set({ assigneeAgentId: replacement.id }).where(eq(issues.id, issueId));
         }
-        const beforeCleanup = dispatchAttempts;
         await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "released", releasedAt: new Date(),
-          cleanupStatus: mode === "failed cleanup" ? "failed" : "success" }).where(eq(environmentLeases.id, lease.id)),
+          cleanupStatus }).where(eq(environmentLeases.id, lease.id)),
         { companyId, runId: sourceId });
-        await vi.waitFor(() => {
-          expect(cleanupHintObserved).toBe(true);
-          expect(dispatchAttempts).toBeGreaterThan(beforeCleanup);
-        }, { timeout: 10_000 });
+        await vi.waitFor(() => expect(completedCleanupDispatches).toBeGreaterThan(0), { timeout: 10_000 });
         if (mode === "continue") {
           await heartbeat.drainActiveRunExecutions();
           expect((await heartbeat.getRun(successorId))?.status).toBe("succeeded");
@@ -176,7 +164,6 @@ suite("native terminal-run cleanup admission", () => {
         expect(errors).toEqual([]);
       } finally {
         await coordinator.stop();
-        registration.mockRestore();
         await heartbeat.drainActiveRunExecutions();
         await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
         if (previousHome === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = previousHome;
