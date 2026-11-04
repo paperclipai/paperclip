@@ -85,5 +85,8 @@ describe("rolling controller qualification", () => {
         .toEqual(new Set(warmIds.has(profile.id) ? ["per_turn", "warm-controller-outage-v1"] : ["per_turn"]));
     }
     expect(executions.every(execution => execution.suite.definitionMetadata?.retainedControllerContinuation === true)).toBe(true);
+    for (const execution of executions) {
+      expect(controllerOutageForExecution(execution, {})).toBeUndefined();
+    }
   });
 });
