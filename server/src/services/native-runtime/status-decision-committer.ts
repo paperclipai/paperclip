@@ -1063,7 +1063,8 @@ async function materializeDecisionEffect(input: {
           eq(heartbeatRuns.id, input.runId),
           eq(heartbeatRuns.companyId, input.companyId),
         ),
-      );
+      )
+      .for("update");
     const [run] = await input.tx
       .update(heartbeatRuns)
       .set({

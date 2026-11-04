@@ -78,6 +78,17 @@ describeEmbeddedPostgres("cancel_continuations run attribution", () => {
       contextSnapshot: { issueId },
       completionContractId: contractId,
       completionContractSha256: `contract:${label}`,
+      resultJson: {
+        preservedMarker: `preserved:${runId}`,
+        bridgeToolReceipts: {
+          "preserved-receipt-key": {
+            digest: `digest:${runId}`,
+            tool: "workspace_write",
+            state: "completed",
+            result: { outcome: "completed" },
+          },
+        },
+      },
     });
     await db.insert(completionContracts).values({
       id: contractId,
@@ -207,6 +218,15 @@ describeEmbeddedPostgres("cancel_continuations run attribution", () => {
       cancelledByActorId: "native-status-committer",
       cancelledWakeRequestIds: [seeded.wakeId],
       cancelledInteractionIds: [seeded.interactionId],
+      preservedMarker: `preserved:${seeded.runId}`,
+      bridgeToolReceipts: {
+        "preserved-receipt-key": {
+          digest: `digest:${seeded.runId}`,
+          tool: "workspace_write",
+          state: "completed",
+          result: { outcome: "completed" },
+        },
+      },
     });
 
     const activity = await db.select().from(activityLog)
