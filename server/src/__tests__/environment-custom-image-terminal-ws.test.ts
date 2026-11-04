@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { createServer, type Server as HttpServer } from "node:http";
 import { createRequire } from "node:module";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
 vi.mock("../services/environment-custom-images.js", () => ({
   environmentCustomImageService: vi.fn(() => {
@@ -77,6 +77,10 @@ class FakeSshShell extends EventEmitter implements EnvironmentCustomImageSshShel
 function futureDate(minutes = 60) {
   return new Date(Date.now() + minutes * 60 * 1000);
 }
+
+type CustomImageTerminalService = NonNullable<
+  NonNullable<Parameters<typeof setupEnvironmentCustomImageTerminalWebSocketServer>[2]>["customImageService"]
+>;
 
 function createSession(overrides: Record<string, unknown> = {}) {
   return {
@@ -178,8 +182,8 @@ describe("custom image terminal websocket bridge", () => {
   let connectionRegistry: EnvironmentCustomImageTerminalConnectionRegistry;
   let fakeShell: FakeSshShell;
   let customImages: {
-    getSessionById: ReturnType<typeof vi.fn>;
-    refreshSetupSession: ReturnType<typeof vi.fn>;
+    getSessionById: Mock<CustomImageTerminalService["getSessionById"]>;
+    refreshSetupSession: Mock<CustomImageTerminalService["refreshSetupSession"]>;
   };
   let connector: EnvironmentCustomImageSshConnector & { connect: ReturnType<typeof vi.fn> };
 

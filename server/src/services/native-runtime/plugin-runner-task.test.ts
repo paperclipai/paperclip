@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RunnerProviderLaunchRequirements } from "@paperclipai/paperclip-runner";
 import type { RunnerProcessLaunchSpec } from "../../vendor/paperclip-runner/index.js";
 import { createPluginRunnerTaskOwner } from "./plugin-runner-task.js";
+import { NativeExecutionContext } from "./native-execution-context.js";
 
 const ingress = vi.hoisted(() => ({ connect: vi.fn() }));
 vi.mock("../../realtime/runner-prp-outbound.js", () => ({ connectRunnerPrpIngress: ingress.connect }));
@@ -32,6 +33,8 @@ async function prepare(owner: ReturnType<typeof createPluginRunnerTaskOwner>, cu
 function provider() {
   let stopped = false;
   const task = vi.fn(async (operation: any): Promise<unknown> => {
+    if (operation.kind === "describe") return { kind: "description", taskId: "task", githubCredentialBrokerVersion: 1,
+      runner: {version: "fixture", digest: `sha256:${"a".repeat(64)}`} };
     if (operation.kind === "check_project_auth") return { kind: "project_auth", taskId: "task", allowed: true,
       provider: operation.provider, configurationId: operation.configurationId };
     if (operation.kind === "prepare") return { kind: "prepared", taskId: "task", launch: {
@@ -51,6 +54,137 @@ function provider() {
 }
 
 describe("plugin native Runner ownership", () => {
+  it.each(["finish", "rebind"])("does not send startup Stop after the context %s", mode => {
+    const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
+    const next = new NativeExecutionContext(context.execution, 1_000);
+    const remove = vi.spyOn(context.signal, "removeEventListener");
+    const { task } = provider();
+    const input = { task, projectIds: [], harness: "codex", executionContext: context, adoptIdentity: requirements.identity };
+    const owner = createPluginRunnerTaskOwner(input);
+    try {
+      if (mode === "finish") context.finish();
+      else { owner.rebind({ ...input, executionContext: next }); expect(remove).toHaveBeenCalledWith("abort", expect.any(Function)); }
+      context.abort(new Error("later lease loss"));
+      expect(task).not.toHaveBeenCalled();
+    } finally { context.finish(); next.finish(); }
+  });
+  it("rechecks revoked grants for unchanged project IDs before adopting retained resources", async () => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    let allowed = true;
+    task.mockImplementation(async op => op.kind === "check_project_auth"
+      ? { ...await perform(op) as object, allowed } : perform(op));
+    const input = { task, projectIds: ["project-retained"], harness: "codex", projectAuthCheckVersion: 1 as const,
+      adoptIdentity: requirements.identity };
+    const owner = createPluginRunnerTaskOwner(input);
+    await owner.driver.authorizeRunnerAdoption!("retained-configuration", requirements.identity);
+    allowed = false;
+    owner.rebind({ ...input });
+    await expect(owner.driver.authorizeRunnerAdoption!("retained-configuration", requirements.identity)).rejects.toThrow("project authentication conflicts");
+    expect(task.mock.calls.map(([op]) => op)).toEqual(Array(2).fill({ kind: "check_project_auth",
+      configurationId: "retained-configuration", provider: "openai", projectIds: ["project-retained"] }));
+  });
+  it.each(["identity", "unsupported", "released", "late-release"])("refuses adoption authorization after %s", async mode => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    let finish!: () => void;
+    const gate = new Promise<void>(resolve => { finish = resolve; });
+    task.mockImplementation(async op => { if (mode === "late-release" && op.kind === "check_project_auth") await gate; return perform(op); });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: ["project-current"], harness: "codex",
+      projectAuthCheckVersion: mode === "unsupported" ? undefined : 1, adoptIdentity: requirements.identity });
+    const registration = await owner.registration({} as never, "run");
+    if (mode === "released") await registration.release("detach");
+    const attempt = owner.driver.authorizeRunnerAdoption!("retained-configuration",
+      mode === "identity" ? { ...requirements.identity, runId: "unrelated" } : requirements.identity);
+    const rejection = expect(attempt).rejects.toThrow(mode === "identity" ? "identity mismatch"
+      : mode === "unsupported" ? "validation unavailable" : "preparation cancelled");
+    if (mode === "late-release") { await registration.release("detach"); finish(); }
+    await rejection;
+    await registration.release("detach");
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(mode === "late-release" ? ["check_project_auth"] : []);
+  });
+  it("adopts the saved task and detaches without preparing, submitting, or stopping it", async () => {
+    const { task } = provider();
+    const close = vi.fn(async () => {});
+    ingress.connect.mockReturnValue({ ready: Promise.resolve(), close });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+      adoptIdentity: requirements.identity });
+    const registration = await owner.registration({} as never, "run");
+    registration.activate(); await registration.ready();
+    expect(await owner.driver.adoptExistingRunner!.isAlive()).toBe(true);
+    expect(owner.driver.adoptExistingRunner!.pid).toBeNull();
+    expect(() => owner.launcher(launchSpec())).toThrow("replacement requires a new task lease");
+    await registration.release("detach");
+    expect(close).toHaveBeenCalledOnce();
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(["status", "read_state", "connection", "status"]);
+  });
+  it.each(["stopped", "wrong-identity", "revoked", "cancelled"])("refuses adoption when the saved task is %s", async mode => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    const abort = new AbortController();
+    task.mockImplementation(async op => {
+      if (mode === "revoked" && op.kind === "read_state") throw new Error("execution lease is not active");
+      const result = await perform(op) as any;
+      if (mode === "stopped" && op.kind === "status") result.executionStopped = true;
+      if (mode === "wrong-identity" && op.kind === "read_state") result.state.runId = "other-run";
+      if (mode === "cancelled" && op.kind === "read_state") abort.abort();
+      return result;
+    });
+    ingress.connect.mockClear();
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+      adoptIdentity: requirements.identity });
+    const registration = await owner.registration({} as never, "run", abort.signal);
+    registration.activate();
+    await expect(registration.ready()).rejects.toThrow();
+    await registration.release("detach");
+    expect(ingress.connect).not.toHaveBeenCalled();
+    expect(task.mock.calls.some(([op]) => ["prepare", "submit", "stop", "complete"].includes(op.kind))).toBe(false);
+  });
+  it("settles an adopted task through confirmed termination and retained-session ownership", async () => {
+    const { task } = provider();
+    const retained = vi.fn(async () => {});
+    ingress.connect.mockReturnValue({ ready: Promise.resolve(), close: async () => {} });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+      adoptIdentity: requirements.identity, onSessionRetained: retained });
+    const registration = await owner.registration({} as never, "run");
+    registration.activate(); await registration.ready();
+    await registration.release(); await registration.checkpoint("settled");
+    expect(retained).toHaveBeenCalledWith(expect.objectContaining(requirements.identity));
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(["status", "read_state", "connection", "stop", "status", "read_state", "complete"]);
+  });
+  it.each(["settled", "unsettled"] as const)("proves retirement independently of %s checkpoint reuse", async settlement => {
+    const { task } = provider();
+    const retained = vi.fn(async () => {});
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex",
+      adoptIdentity: requirements.identity, onSessionRetained: retained });
+    const registration = await owner.registration({} as never, "run");
+    expect(owner.isRetired()).toBe(false);
+    await registration.release();
+    expect(owner.isRetired()).toBe(false);
+    await registration.checkpoint(settlement);
+    expect(owner.isRetired()).toBe(true);
+    expect(retained).toHaveBeenCalledTimes(settlement === "settled" ? 1 : 0);
+    expect(task.mock.calls.map(([op]) => op.kind)).toEqual(settlement === "settled"
+      ? ["stop", "status", "read_state", "complete"] : ["stop", "status", "complete"]);
+  });
+
+  it.each(["credentials", "read_state", "complete"])("does not prove retirement when %s obligations fail after execution stops", async failingOperation => {
+    const { task } = provider();
+    const perform = task.getMockImplementation()!;
+    task.mockImplementation(async operation => {
+      if (operation.kind === failingOperation) throw new Error("handoff failed");
+      if (operation.kind === "credentials") return { kind: "credentials", taskId: "task", credential: null };
+      return perform(operation);
+    });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex", accountIdentity: "account",
+      adoptIdentity: requirements.identity, onCredentials: async () => {}, onSessionRetained: async () => {} });
+    const registration = await owner.registration({} as never, "run");
+    await registration.release();
+    await expect(registration.checkpoint("settled")).rejects.toThrow("handoff failed");
+    expect(await owner.driver.adoptExistingRunner!.isAlive()).toBe(false);
+    expect(owner.isRetired()).toBe(false);
+  });
+
   it("submits only a prepared identity and configuration ID", async () => {
     const { task } = provider();
     const owner = createPluginRunnerTaskOwner({ projectAuthCheckVersion: 1, task, projectIds: [], harness: "codex", pollMs: 1 });
@@ -97,6 +231,22 @@ describe("plugin native Runner ownership", () => {
     await registration.release(); finish();
     await expect(prepared).rejects.toThrow("preparation cancelled");
     expect(task.mock.calls.some(([op]) => op.kind === "submit")).toBe(false);
+  });
+  it("sends Stop before a late preparation can publish a launch", async () => {
+    const context = new NativeExecutionContext({ binding: { companyId: "company", agentId: "agent", runId: "run" } } as never, 1_000);
+    const { task } = provider(), perform = task.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    task.mockImplementation(async operation => { if (operation.kind === "prepare") await gate; return perform(operation); });
+    const owner = createPluginRunnerTaskOwner({ task, projectIds: [], harness: "codex", projectAuthCheckVersion: 1, executionContext: context });
+    const preparing = prepare(owner);
+    await vi.waitFor(() => expect(task).toHaveBeenCalledWith(expect.objectContaining({ kind: "prepare" })));
+    context.abort(new Error("operator Stop"));
+    expect(task).toHaveBeenCalledWith({ kind: "stop" });
+    release();
+    await expect(preparing).rejects.toThrow("preparation cancelled");
+    expect(task.mock.calls.some(([operation]) => ["check_project_auth", "connection", "submit"].includes(operation.kind))).toBe(false);
+    context.finish();
   });
   it.each(["unsupported", "denied", "wrong-configuration", "wrong-provider"])("withholds credentials when project validation is %s", async mode => {
     const { task } = provider(); const perform = task.getMockImplementation()!;
@@ -331,7 +481,7 @@ it.each(["codex", "claude"])("reuses a warm %s process across run authorities wi
   ingress.connect.mockReturnValue({ready:Promise.resolve(),close:async()=>{}});
   const retained = vi.fn(async()=>{});
   const input = {task,projectIds:[],harness,projectAuthCheckVersion:1 as const,warmTaskVersion:1 as const,
-    accountIdentity:"account",credentialIdentity:"revision",pollMs:1,onSessionRetained:retained};
+    accountIdentity:"account",credentialIdentity:"revision",pollMs:1,onSessionRetained:retained, githubBroker:{url:"https://core.example.test",token:"first-run-capability"}};
   const owner = createPluginRunnerTaskOwner(input);
   await prepare(owner, launchRequirements(harness));
   const registration = await owner.registration({} as never,"run");
@@ -345,12 +495,13 @@ it.each(["codex", "claude"])("reuses a warm %s process across run authorities wi
     const result=await originalTask(op) as Record<string,unknown>;
     return op.kind === "prepare" ? {...result,projectAuthCheckAtSubmit:true} : result;
   });
-  owner.rebind({...input,task:nextTask});
+  owner.rebind({...input,task:nextTask,githubBroker:{url:"https://core.example.test",token:"next-run-capability"}});
   const nextRegistration=await owner.registration({} as never,"next-run");
   const nextIdentity={...requirements.identity,runId:"next-run",turnId:"next-turn",itemId:"next-item"};
   await owner.driver.prepareLaunch!({...launchRequirements(harness),identity:nextIdentity});
-  expect(nextTask.mock.calls[0][0]).toMatchObject({kind:"prepare",priorIdentity:requirements.identity,accountIdentity:"account"});
-  expect(nextTask.mock.calls.map(([op])=>op.kind)).toEqual(["prepare","check_project_auth"]);
+  expect(nextTask.mock.calls[1][0]).toMatchObject({kind:"prepare",priorIdentity:requirements.identity,accountIdentity:"account",githubBroker:{url:"https://core.example.test",token:"next-run-capability"}});
+  expect(task.mock.calls.find(([op])=>op.kind === "prepare")?.[0]).toMatchObject({githubBroker:input.githubBroker});
+  expect(nextTask.mock.calls.map(([op])=>op.kind)).toEqual(["describe","prepare","check_project_auth"]);
   await registration.release(); nextRegistration.activate(); await nextRegistration.ready();
   expect(nextTask.mock.calls.some(([op])=>op.kind==="submit" || op.kind==="stop" || op.kind==="complete")).toBe(false);
   await nextRegistration.release(); await nextRegistration.checkpoint("settled"); await handle.completion;
@@ -401,4 +552,16 @@ it.each(["codex", "claude"])("refuses warm %s account, harness, project, or cred
   expect(()=>owner.rebind({...input,projectIds:["foreign"]})).toThrow("cannot be rebound");
   const registration=await owner.registration({} as never,"run");
   await registration.checkpoint("unsettled"); await process.completion;
+});
+
+ it("rejects a missing broker capability before handing authority to a plugin", async () => {
+  const {task} = provider();
+  const implementation = task.getMockImplementation()!;
+  task.mockImplementation(async operation => operation.kind === "describe"
+    ? {kind:"description",taskId:"task",runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`}}
+    : implementation(operation));
+  const owner = createPluginRunnerTaskOwner({task,projectIds:[],harness:"codex",
+    githubBroker:{url:"https://core.example.test",token:"runtime-capability"}});
+  await expect(prepare(owner)).rejects.toThrow("credential broker v1");
+  expect(task.mock.calls.map(([op])=>op.kind)).toEqual(["describe"]);
 });

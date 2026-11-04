@@ -11,6 +11,13 @@ vi.mock("../services/tool-access/connections/projection.js", () => ({
   }),
 }));
 
+// This unit fixture owns GitHub error projection; the health-worker suite
+// exercises the real transaction and notification boundary with PostgreSQL.
+vi.mock("../services/tool-connection-health-notifications.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../services/tool-connection-health-notifications.js")>(),
+  writeToolConnectionHealthChange: async <T>(db: Db, _target: unknown, write: (transaction: Db) => Promise<T>) => write(db),
+}));
+
 const SUSPENDED_INSTALLATION_URL = "https://github.com/organizations/paperclipai/settings/installations/101";
 
 function json(value: unknown): Response {

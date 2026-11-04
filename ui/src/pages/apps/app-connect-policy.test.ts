@@ -11,6 +11,12 @@ import {
 } from "./app-connect-policy";
 
 describe("app connect policy", () => {
+  it("admits a saved AI login handoff without a catalog source", () => {
+    expect(canEnterAppsConnect(new URLSearchParams("aiLogin=saved-login"))).toBe(true);
+    expect(canEnterAppsConnect(new URLSearchParams("aiLogin="))).toBe(false);
+    expect(canEnterAppsConnect(new URLSearchParams("aiLogin=%20"))).toBe(false);
+  });
+
   it("derives automatic OAuth entry points from app capabilities", () => {
     expect(MCP_DIRECT_OAUTH_CONNECT_SLUGS).toEqual(expect.arrayContaining(["jira", "notion", "sentry"]));
     expect(isMcpDirectOAuthConnectSlug("notion")).toBe(true);

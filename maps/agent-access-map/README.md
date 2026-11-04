@@ -53,12 +53,19 @@ REST operations use the same route authorization as legacy agent REST. Dedicated
 tools remain optional for those operations; protocol endpoints still need their
 existing clients. Board-only routes remain restricted for agent identity.
 
-Native `search_api` / `call_api` requires operator rollout admission, a running
+Native `search_api` / `call_api` is enabled by default, but explicit server,
+company-allowlist and binding settings can narrow admission. It requires a running
 authorized native run, current task assignment and execution-run binding, company
 and budget authority, task privacy, and a permitted work mode. Ask and Plan retain
 mutation restrictions, and runs retain their admitted JWT scope during restart
 recovery even when task mode changes. A waiting
 agent does not gain independent native control just because a REST route exists.
+Connection-management reads support Standard, Ask and Plan; mutations require
+Standard. Skill-test runs and nonstandard task-bridge keys cannot administer
+connections. These gates supplement each operation's grants, resolved resource
+and target scope, and responsible-user authority. See the
+[rollout policy](../../server/src/services/native-runtime/runner-api-rollout.ts)
+and [connection authorization](../../server/src/services/connection-management.ts).
 
 Credential-bearing replies, including company exports and their legacy alias,
 stay inline under a 10 MiB limit and use encrypted mutation receipts. Other saved

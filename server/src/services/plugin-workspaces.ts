@@ -1,3 +1,4 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { effectiveProjectWorkspacePolicy, isWorkspaceProvider } from "./project-workspace-provider.js";
 import { releaseProviderRecoveryTransfers, stageProviderFreshWorkspace } from "./provider-fresh-workspace.js";
 import { randomUUID, createHash } from "node:crypto";
@@ -20,6 +21,7 @@ import {
   parseWorkspaceProviderResult,
   workspaceProviderOperationSchema,
   type PluginWorkspaceOperation,
+  type PluginWorkspaceRecoveryPullRequest,
   type PluginWorkspaceParams,
   type PluginFreshWorkspace,
 } from "@paperclipai/plugin-sdk";
@@ -69,6 +71,13 @@ async function provider(
   return plugin;
 }
 
+export async function pluginWorkspaceSupportsMergeAncestry(db: Db, workers: WorkspaceWorkers | undefined, workspace: Workspace) {
+  const pluginId = readWorkspaceProviderBinding(workspace.metadata)?.pluginId;
+  if (!pluginId) return true;
+  const selected = await provider(db, workers, workspace.companyId, pluginId);
+  return selected.manifestJson.workspaceProvider?.supportsMergeAncestry !== false;
+}
+
 /** No paths or provider credentials are accepted from task callers. */
 export async function callWorkspaceProvider(
   db: Db,
@@ -80,6 +89,7 @@ export async function callWorkspaceProvider(
     advanceGeneration?: boolean;
     runId?: string | null;
     agentId?: string | null;
+    removalOperationId?: string;
   },
 ) {
   const { workspace } = input;
@@ -99,6 +109,11 @@ export async function callWorkspaceProvider(
       : 0;
   const operationGeneration = generation + (input.advanceGeneration ? 1 : 0);
   const operation = workspaceProviderOperationSchema.parse(input.operation);
+  if (input.removalOperationId !== undefined && (operation.kind !== "remove" ||
+    input.removalOperationId !== createHash("sha256").update(JSON.stringify([workspace.id, operationGeneration, operation])).digest("hex")))
+    throw conflict("Workspace removal identity does not match its recorded payload");
+  if ((operation.kind === "inspect" || operation.kind === "remove") && input.removalOperationId === undefined
+    && selectedProvider.manifestJson.workspaceProvider?.recoveryPullRequestVersion !== 1) delete operation.recoveryPullRequest;
   if (operation.kind === "prepare" && operation.fresh) {
     if (!workspace.sourceIssueId) throw conflict("Fresh workspace task ownership is missing");
     operation.fresh = await stageProviderFreshWorkspace({ db, companyId: workspace.companyId,
@@ -109,7 +124,7 @@ export async function callWorkspaceProvider(
     companyId: workspace.companyId,
     projectId: workspace.projectId,
     executionWorkspaceId: workspace.id,
-    operationId:
+    operationId: input.removalOperationId ?? (
       operation.kind === "inspect"
         ? randomUUID()
         : createHash("sha256")
@@ -117,7 +132,7 @@ export async function callWorkspaceProvider(
               JSON.stringify([workspace.id, operationGeneration, operation,
                 ...(operation.kind === "finalize" ? [input.runId, input.agentId] : [])]),
             )
-            .digest("hex"),
+            .digest("hex")),
     generation: operationGeneration,
     deadline: new Date(Date.now() + (operation.kind === "finalize" ? 30_000 : 300_000)).toISOString(),
     runId: input.runId ?? null,
@@ -418,6 +433,7 @@ export async function preparePluginWorkspace(
           },
         })
         .returning();
+      await notifyStatusCardIssueChange(tx, task.companyId);
       await tx
         .update(issues)
         .set({
@@ -504,6 +520,7 @@ export async function preparePluginWorkspace(
           ...workspace.metadata,
           workspaceProvider: result.binding,
           workspaceProviderBaseSha: result.baseSha,
+          ...(result.destinationRef !== undefined ? { workspaceProviderDestinationRef: result.destinationRef } : {}),
           workspaceProviderSource: sourceInput,
           workspaceProviderRemoved: false,
           createdByRuntime: result.branchCreatedByRuntime,
@@ -574,6 +591,7 @@ async function reconcilePluginWorkspaceReservation(
           ...workspace.metadata,
           workspaceProvider: result.binding,
           workspaceProviderBaseSha: result.baseSha,
+          ...(result.destinationRef !== undefined ? { workspaceProviderDestinationRef: result.destinationRef } : {}),
           createdByRuntime: result.branchCreatedByRuntime,
         },
       })
@@ -596,12 +614,13 @@ async function inspectBinding(
   db: Db,
   workers: WorkspaceWorkers | undefined,
   workspace: Workspace,
+  recoveryPullRequest?: PluginWorkspaceRecoveryPullRequest,
 ) {
   const binding = readWorkspaceProviderBinding(workspace.metadata);
   if (!binding) throw conflict("Workspace storage binding is unavailable");
   const result = await callWorkspaceProvider(db, workers, {
     workspace,
-    operation: { kind: "inspect", binding },
+    operation: { kind: "inspect", binding, ...(recoveryPullRequest ? { recoveryPullRequest } : {}) },
   });
   if (result.kind !== "inspection")
     throw conflict("Workspace inspection is incomplete");
@@ -621,10 +640,10 @@ async function withRetainedWorkspace<T>(db: Db, workers: WorkspaceWorkers | unde
   });
 }
 
-export async function inspectPluginWorkspace(db: Db, workers: WorkspaceWorkers | undefined, workspace: Workspace) {
+export async function inspectPluginWorkspace(db: Db, workers: WorkspaceWorkers | undefined, workspace: Workspace, recoveryPullRequest?: PluginWorkspaceRecoveryPullRequest) {
   return withRetainedWorkspace(db, workers, workspace, (current) =>
     current.metadata?.workspaceProviderRemoved === true
-      ? Promise.resolve(removedInspection()) : inspectBinding(db, workers, current));
+      ? Promise.resolve(removedInspection()) : inspectBinding(db, workers, current, recoveryPullRequest));
 }
 
 /** Completion does not need the deletion-safety proof supplied by inspect. */
@@ -701,6 +720,7 @@ async function finishPendingRestoration(
           lifecycleGeneration: generation + 1,
           workspaceProvider: result.binding,
           workspaceProviderBaseSha: result.baseSha,
+          ...(result.destinationRef !== undefined ? { workspaceProviderDestinationRef: result.destinationRef } : {}),
           workspaceProviderRemoved: false,
           workspaceProviderRestoration: null,
         },
@@ -729,7 +749,7 @@ async function finishPendingRemoval(
 ): Promise<Workspace> {
   if (workspace.metadata?.workspaceProviderRemoved === true) return workspace;
   const pending = workspace.metadata?.workspaceProviderRemoval as
-    | { generation?: unknown; operation?: unknown }
+    | { generation?: unknown; operation?: unknown; operationId?: unknown }
     | undefined;
   const parsed = workspaceProviderOperationSchema.safeParse(pending?.operation);
   const binding = readWorkspaceProviderBinding(workspace.metadata);
@@ -740,9 +760,15 @@ async function finishPendingRemoval(
     JSON.stringify(parsed.data.binding) !== JSON.stringify(binding)
   )
     throw conflict("Workspace removal intent is unavailable or stale");
+  if (pending.operationId === undefined && parsed.data.recoveryPullRequest)
+    throw conflict("Workspace removal identity is ambiguous; reconciliation requires the original request");
+  const operationId = createHash("sha256").update(JSON.stringify([workspace.id, pending.generation, parsed.data])).digest("hex");
+  if (pending.operationId !== undefined && pending.operationId !== operationId)
+    throw conflict("Workspace removal identity does not match its recorded payload");
   const result = await callWorkspaceProvider(db, workers, {
     workspace,
     operation: parsed.data,
+    removalOperationId: operationId,
   });
   if (result.kind !== "removed")
     throw conflict("Workspace removal is incomplete");
@@ -782,6 +808,8 @@ export async function removePluginWorkspace(
   workers: WorkspaceWorkers | undefined,
   workspace: Workspace,
   expectedHeadSha: string | null,
+  recoveryPullRequest?: PluginWorkspaceRecoveryPullRequest,
+  beforeRemove?: () => Promise<void>,
 ) {
   workspace = await reconcilePluginWorkspaceReservation(db, workers, workspace);
   if (workspace.metadata?.workspaceProviderRestoration)
@@ -797,7 +825,7 @@ export async function removePluginWorkspace(
   }
   const binding = readWorkspaceProviderBinding(workspace.metadata);
   if (!binding) throw conflict("Workspace storage binding is unavailable");
-  const inspection = await inspectBinding(db, workers, workspace);
+  const inspection = await inspectBinding(db, workers, workspace, recoveryPullRequest);
   if (
     inspection.hasDirtyTrackedFiles ||
     inspection.hasUntrackedFiles ||
@@ -810,8 +838,12 @@ export async function removePluginWorkspace(
       "Workspace has local changes or cannot be recovered remotely",
     );
   }
+  await beforeRemove?.();
   const generation = workspace.metadata?.lifecycleGeneration ?? 0;
-  const operation = { kind: "remove" as const, binding, expectedHeadSha };
+  const selectedProvider = await provider(db, workers, workspace.companyId, binding.pluginId);
+  const operation = workspaceProviderOperationSchema.parse({ kind: "remove", binding, expectedHeadSha,
+    ...(recoveryPullRequest && selectedProvider.manifestJson.workspaceProvider?.recoveryPullRequestVersion === 1 ? { recoveryPullRequest } : {}) });
+  const operationId = createHash("sha256").update(JSON.stringify([workspace.id, generation, operation])).digest("hex");
   const [pending] = await db.transaction(async (tx) => {
     await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
     return tx
@@ -819,7 +851,7 @@ export async function removePluginWorkspace(
       .set({
         metadata: {
           ...workspace.metadata,
-          workspaceProviderRemoval: { generation, operation },
+          workspaceProviderRemoval: { generation, operation, operationId },
         },
         updatedAt: new Date(),
       })
@@ -953,5 +985,6 @@ export async function restorePluginWorkspace(
     workspaceProviderRemoved: false,
     workspaceProviderRestoration: null,
     workspaceProviderBaseSha: result.baseSha,
+    ...(result.destinationRef !== undefined ? { workspaceProviderDestinationRef: result.destinationRef } : {}),
   };
 }

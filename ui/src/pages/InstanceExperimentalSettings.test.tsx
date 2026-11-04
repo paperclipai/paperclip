@@ -22,6 +22,8 @@ vi.mock("@/api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
 
+vi.mock("@/components/CoordinatorWorkspaceSetting", () => ({ CoordinatorWorkspaceSetting: () => null }));
+
 vi.mock("@/context/CompanyContext", () => ({
   useCompany: () => ({ selectedCompany: { id: "butter", issuePrefix: "BUT" } }),
 }));
@@ -77,6 +79,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
   return {
     enableEnvironments: false,
     enableNativeRunner: false,
+    remoteWorkspaceStorageEnabled: false,
     enableAiConnectionRouters: false,
     enableManagedSandboxOnly: false,
     enableIsolatedWorkspaces: false,

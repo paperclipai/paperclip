@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 
 #[cfg(test)]
 use crate::durable::QualifiedLaunchArtifact;
-use crate::durable::{redact_text, OpenCodeLaunchProfile};
+use crate::durable::{redact_text, CursorCloudLaunchProfile, OpenCodeLaunchProfile};
 use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
     is_node_interpreter, BoundedLogBuffer, ProcessExitFact, ProcessOutput, SupervisedProcess,
@@ -23,8 +23,60 @@ use crate::provider_events::normalized_codex_terminal_event_type;
 use crate::qualified_launch::verify_launch_artifact;
 use crate::question_response::validate_question_response;
 
+#[cfg(unix)]
+pub(crate) fn runtime_notification_codex_args(
+    args: &[String],
+    profile: &str,
+    paths: &[PathBuf; 4],
+) -> Vec<String> {
+    let prefix = "shell_environment_policy.include_only=";
+    let Some(keys) = args.iter().rev().find_map(|arg| arg.strip_prefix(prefix)) else {
+        return vec![];
+    };
+    let Ok(mut keys) = serde_json::from_str::<Vec<String>>(keys) else {
+        return vec![];
+    };
+    for key in [
+        crate::runtime_notifications::CONTEXT_ENV,
+        crate::runtime_notifications::HELPER_ENV,
+    ] {
+        if !keys.iter().any(|existing| existing == key) {
+            keys.push(key.into());
+        }
+    }
+    let mut extra = vec![
+        "-c".into(),
+        format!("{prefix}{}", serde_json::to_string(&keys).unwrap()),
+        "-c".into(),
+        "shell_environment_policy.inherit=\"all\"".into(),
+    ];
+    for profile in BTreeSet::from([profile, "paperclip-runner-workspace-read-only"]) {
+        let prefix = format!("permissions.{profile}.filesystem=");
+        let Some(value) = args.iter().rev().find_map(|arg| arg.strip_prefix(&prefix)) else {
+            continue;
+        };
+        let Ok(mut config) = format!("filesystem={value}").parse::<toml_edit::DocumentMut>() else {
+            continue;
+        };
+        let Some(filesystem) = config["filesystem"].as_inline_table_mut() else {
+            continue;
+        };
+        let Some(channel_directory) = paths[3].parent().filter(|path| path.parent().is_some())
+        else {
+            continue;
+        };
+        filesystem.insert(channel_directory.to_string_lossy().as_ref(), "write".into());
+        for path in &paths[..3] {
+            filesystem.insert(path.to_string_lossy().as_ref(), "read".into());
+        }
+        extra.extend(["-c".into(), format!("{prefix}{filesystem}")]);
+    }
+    extra
+}
+
 pub const CODEX_APP_SERVER_MAX_FRAME_BYTES: usize = 4 * 1024 * 1024;
 const QUALIFIED_OPENCODE_VERSION: &str = "1.18.34";
+const CURSOR_CLOUD_PROXY_VERSION: &str = "cursor-cloud-v1";
 const DEFAULT_PROVIDER_TRACE_MAX_BYTES: usize = 64 * 1024 * 1024;
 const MAX_BUFFERED_MESSAGES: usize = 1_024;
 const MAX_BUFFERED_MESSAGE_BYTES: usize = 16 * 1024 * 1024;
@@ -32,6 +84,14 @@ const WARM_ATTACHMENT_TAIL_DRAIN_LIMIT: usize = 256;
 const WARM_ATTACHMENT_QUIET_WINDOW: Duration = Duration::from_millis(10);
 const WARM_ATTACHMENT_DRAIN_DEADLINE: Duration = Duration::from_millis(100);
 const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "PAPERCLIP_OBSERVABILITY_OPENCODE",
+    "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+    "OTEL_RESOURCE_ATTRIBUTES",
+    "OTEL_LOG_USER_PROMPTS",
+    "OTEL_LOG_ASSISTANT_RESPONSES",
+    "OTEL_LOG_TOOL_DETAILS",
+    "OTEL_LOG_TOOL_CONTENT",
     "PAPERCLIP_AI_PROVIDER_KEY",
     "PAPERCLIP_AI_PROVIDER_URL",
     "PAPERCLIP_AGENT_KEY_ID",
@@ -43,6 +103,20 @@ const OPENCODE_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
     "PAPERCLIP_NATIVE_MCP_TOKEN",
     "PAPERCLIP_OPENCODE_PERMISSION_MODE",
     "PAPERCLIP_OPENCODE_RUNTIME_DIR",
+    "PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS",
+    "PAPERCLIP_RUNNER_INSTANCE_ID",
+    "PAPERCLIP_RUN_ID",
+    "PAPERCLIP_NORMALIZED_SESSION_ID",
+    "PAPERCLIP_NATIVE_RUNTIME_CONTEXT_PATH",
+];
+const CURSOR_CLOUD_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
+    "CURSOR_API_KEY",
+    "PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH",
+    "PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_URL",
+    "PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT",
     "PAPERCLIP_RUNNER_INSTANCE_ID",
     "PAPERCLIP_RUN_ID",
     "PAPERCLIP_NORMALIZED_SESSION_ID",
@@ -435,10 +509,12 @@ impl CodexProviderConfig {
         }
         if !matches!(
             (self.provider.as_str(), self.driver.as_str()),
-            ("codex", "codex_app_server") | ("opencode", "opencode_server")
+            ("codex", "codex_app_server")
+                | ("opencode", "opencode_server")
+                | ("cursor_cloud", "cursor_cloud_api")
         ) {
             return Err(LocalRunnerError::invalid(
-                "local runner provider must be codex through codex_app_server or opencode through opencode_server",
+                "runner facade provider/driver pair must be codex/codex_app_server, opencode/opencode_server, or cursor_cloud/cursor_cloud_api",
             ));
         }
         if self.provider_version.trim().is_empty() || self.provider_version.len() > 120 {
@@ -450,6 +526,18 @@ impl CodexProviderConfig {
             return Err(LocalRunnerError::invalid(format!(
                 "OpenCode providerVersion must equal the qualified {QUALIFIED_OPENCODE_VERSION} release",
             )));
+        }
+        if self.provider == "cursor_cloud"
+            && (self.provider_version != CURSOR_CLOUD_PROXY_VERSION
+                || self.model.as_ref().is_none_or(|model| {
+                    model.trim().is_empty() || model.chars().any(char::is_control)
+                })
+                || self.approval_policy != "never"
+                || self.read_only)
+        {
+            return Err(LocalRunnerError::invalid(
+                "Cursor Cloud requires cursor-cloud-v1, an exact model, provider-managed permissions, and no local read-only claim",
+            ));
         }
         if self.externally_sandboxed && self.provider != "codex" {
             return Err(LocalRunnerError::invalid(
@@ -705,6 +793,8 @@ pub struct CodexProvider {
     trace: Option<ProviderTraceSink>,
     last_trace_frame_id: Option<u64>,
     opencode_launch_profile: Option<OpenCodeLaunchProfile>,
+    cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
+    provider_termination_receipt: Option<Value>,
     completion_contract: Option<ProviderCompletionContract>,
     permission_profile: &'static str,
     exit_drain: Option<ProviderExitDrain>,
@@ -840,7 +930,9 @@ const CODEX_PROVIDER_ENVIRONMENT_KEYS: &[&str] = &[
 ];
 
 fn codex_permission_profile(provider: &str, external_sandbox: bool) -> &'static str {
-    if provider == "codex" && external_sandbox {
+    if provider == "cursor_cloud" {
+        "paperclip-runner-provider-managed"
+    } else if provider == "codex" && external_sandbox {
         "paperclip-runner-external-sandbox"
     } else {
         "paperclip-runner-workspace-only"
@@ -863,6 +955,7 @@ impl CodexProvider {
             1,
             None,
             None,
+            None,
         )
     }
 
@@ -878,6 +971,7 @@ impl CodexProvider {
             1,
             None,
             None,
+            None,
         )
     }
 
@@ -887,6 +981,7 @@ impl CodexProvider {
         resume_thread_id: Option<&str>,
         process_generation: u64,
         opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
+        cursor_cloud_launch_profile: Option<&CursorCloudLaunchProfile>,
         completion_contract: Option<(&str, &[String])>,
     ) -> Result<Self, LocalRunnerError> {
         Self::start_with_tools_observed(
@@ -895,6 +990,7 @@ impl CodexProvider {
             resume_thread_id,
             process_generation,
             opencode_launch_profile,
+            cursor_cloud_launch_profile,
             completion_contract,
             &mut |_| Ok(()),
         )
@@ -906,6 +1002,7 @@ impl CodexProvider {
         resume_thread_id: Option<&str>,
         process_generation: u64,
         opencode_launch_profile: Option<&OpenCodeLaunchProfile>,
+        cursor_cloud_launch_profile: Option<&CursorCloudLaunchProfile>,
         completion_contract: Option<(&str, &[String])>,
         observe: &mut dyn FnMut(ProviderStartupObservation) -> Result<(), LocalRunnerError>,
     ) -> Result<Self, LocalRunnerError> {
@@ -952,16 +1049,21 @@ impl CodexProvider {
             "all_proxy",
             "RUST_BACKTRACE",
         ];
-        let provider_environment_keys = if config.provider == "opencode" {
-            OPENCODE_PROVIDER_ENVIRONMENT_KEYS
+        let provider_environment_keys = match config.provider.as_str() {
+            "opencode" => OPENCODE_PROVIDER_ENVIRONMENT_KEYS,
+            "cursor_cloud" => CURSOR_CLOUD_PROVIDER_ENVIRONMENT_KEYS,
+            _ => CODEX_PROVIDER_ENVIRONMENT_KEYS,
+        };
+        let github_environment_keys = if config.provider == "cursor_cloud" {
+            &[][..]
         } else {
-            CODEX_PROVIDER_ENVIRONMENT_KEYS
+            GITHUB_CREDENTIAL_ENVIRONMENT_KEYS
         };
         let environment_keys = common_environment_keys
             .iter()
             .copied()
             .chain(provider_environment_keys.iter().copied())
-            .chain(GITHUB_CREDENTIAL_ENVIRONMENT_KEYS.iter().copied())
+            .chain(github_environment_keys.iter().copied())
             .collect::<Vec<_>>();
         let runtime_request_scope = new_runtime_request_scope()?;
         let stdio_mcp = if config.provider == "codex" && !config.read_only {
@@ -983,8 +1085,41 @@ impl CodexProvider {
                     .map_err(|e| LocalRunnerError::invalid(e.to_string()))?,
             );
         }
+        #[cfg(unix)]
+        if config.provider == "codex" {
+            if let Some(paths) = crate::runtime_notifications::access_paths() {
+                let extra =
+                    runtime_notification_codex_args(&launch_args, &permission_profile, &paths);
+                let position = launch_args
+                    .iter()
+                    .position(|arg| arg == "app-server")
+                    .unwrap_or(launch_args.len());
+                launch_args.splice(position..position, extra);
+            }
+        }
         let spawn = (|| {
-            if config.provider == "opencode" {
+            if config.provider == "cursor_cloud" {
+                let profile = cursor_cloud_launch_profile.ok_or_else(|| {
+                    LocalRunnerError::invalid(
+                        "Cursor Cloud runner startup omitted its qualified launch profile",
+                    )
+                })?;
+                let proxy_script = profile.proxy_script.path.to_string_lossy();
+                if config.command != profile.command.path
+                    || config.args.as_slice() != [proxy_script.as_ref()]
+                {
+                    return Err(LocalRunnerError::invalid(
+                        "Cursor Cloud launch does not match the runner-owned qualified profile",
+                    ));
+                }
+                let launch = verified_cursor_cloud_launch(profile)?;
+                SupervisedProcess::spawn_verified_with_environment_keys(
+                    &launch,
+                    Duration::from_secs(2),
+                    CODEX_APP_SERVER_MAX_FRAME_BYTES,
+                    &environment_keys,
+                )
+            } else if config.provider == "opencode" {
                 let profile = opencode_launch_profile.ok_or_else(|| {
                     LocalRunnerError::invalid(
                         "OpenCode runner startup omitted its qualified launch profile",
@@ -1078,6 +1213,8 @@ impl CodexProvider {
             trace: ProviderTraceSink::from_environment(),
             last_trace_frame_id: None,
             opencode_launch_profile: opencode_launch_profile.cloned(),
+            cursor_cloud_launch_profile: cursor_cloud_launch_profile.cloned(),
+            provider_termination_receipt: None,
             completion_contract: completion_contract.map(|(revision, criterion_ids)| {
                 ProviderCompletionContract {
                     revision: revision.to_owned(),
@@ -1122,7 +1259,13 @@ impl CodexProvider {
             } else {
                 "baseInstructions"
             };
-            params_object.insert(instruction_field.to_owned(), json!(config.instructions));
+            params_object.insert(
+                instruction_field.to_owned(),
+                json!(crate::task_memory::instructions_with_memory_note(
+                    &config.instructions,
+                    MAX_INSTRUCTIONS_BYTES,
+                )),
+            );
             if provider.permission_profile == "paperclip-runner-external-sandbox" {
                 // The execution target (for example Daytona) is the OS sandbox.
                 // Codex must not try to create nested user/network namespaces,
@@ -1131,7 +1274,7 @@ impl CodexProvider {
             } else {
                 params_object.insert("permissions".to_owned(), json!(provider.permission_profile));
             }
-            if config.provider == "opencode" {
+            if matches!(config.provider.as_str(), "opencode" | "cursor_cloud") {
                 if let Some(mode) = &config.conversation_mode {
                     params_object.insert("conversationMode".to_owned(), json!(mode));
                 }
@@ -1275,7 +1418,11 @@ impl CodexProvider {
         &mut self,
         authorized_tools: impl IntoIterator<Item = AuthorizedTool>,
         completion_contract: Option<(&str, &[String])>,
+        accounting: &mut Vec<(String, Value)>,
     ) -> Result<bool, LocalRunnerError> {
+        if self.config.provider == "cursor_cloud" {
+            return Ok(false);
+        }
         let authorized_tools = authorized_tools.into_iter().collect::<Vec<_>>();
         let completion_contract =
             completion_contract.map(|(revision, criterion_ids)| ProviderCompletionContract {
@@ -1287,7 +1434,15 @@ impl CodexProvider {
         {
             return Ok(false);
         }
-        let blockers = self.warm_run_attachment_blockers(true)?;
+        let (tail, result) = self.drain_completed_turn_tail_for_warm_attachment();
+        accounting.extend(tail);
+        result?;
+        if !accounting.is_empty() {
+            return Err(LocalRunnerError::invalid(
+                "Codex warm run attachment requires pending accounting reconciliation",
+            ));
+        }
+        let blockers = self.warm_run_attachment_blockers()?;
         if !blockers.is_empty() {
             return Err(LocalRunnerError::invalid(
                 format!(
@@ -1308,49 +1463,53 @@ impl CodexProvider {
         Ok(true)
     }
 
-    fn drain_completed_turn_tail_for_warm_attachment(&mut self) -> Result<(), LocalRunnerError> {
-        let Some(completed_turn_id) = self
-            .completed_turn_authority
-            .as_ref()
-            .map(|authority| authority.provider_turn_id.clone())
-        else {
-            return Ok(());
-        };
-        if self.active_provider_turn_id.is_some() {
-            return Ok(());
-        }
-
-        // Readiness probes run over the PRP command channel while provider
-        // stdout is drained by runnerd's adjacent control-loop iteration. A
-        // final usage/warning/item frame can therefore land after the last
-        // successful probe but before run.attach executes. Close that race in
-        // the same critical section as authority rotation. Only bounded tail
-        // notifications for the already-settled turn may be discarded: a new
-        // turn, provider request, process exit, or mismatched turn remains a
-        // fail-closed attachment error.
-        let deadline = std::time::Instant::now() + WARM_ATTACHMENT_DRAIN_DEADLINE;
-        let mut quiet_since: Option<std::time::Instant> = None;
-        let mut drained = 0usize;
-        loop {
-            if std::time::Instant::now() >= deadline {
-                return Err(LocalRunnerError::invalid(
-                    "Codex warm run attachment tail did not become quiescent",
-                ));
+    pub(crate) fn drain_completed_turn_tail_for_warm_attachment(
+        &mut self,
+    ) -> (Vec<(String, Value)>, Result<(), LocalRunnerError>) {
+        let mut accounting = Vec::new();
+        let result = (|| {
+            let Some(completed_turn_id) = self
+                .completed_turn_authority
+                .as_ref()
+                .map(|authority| authority.provider_turn_id.clone())
+            else {
+                return Ok(());
+            };
+            if self.active_provider_turn_id.is_some() {
+                return Ok(());
             }
-            match self.poll()? {
-                Some(CodexProviderEvent::Notification { method, params }) => {
-                    quiet_since = None;
-                    drained = drained.saturating_add(1);
-                    if drained > WARM_ATTACHMENT_TAIL_DRAIN_LIMIT {
-                        return Err(LocalRunnerError::invalid(
-                            "Codex warm run attachment tail exceeded its bounded frame limit",
-                        ));
-                    }
-                    let names_other_turn = notification_turn_id(&params)
-                        .is_some_and(|turn_id| turn_id != completed_turn_id);
-                    let safe_tail_method = matches!(
-                        method.as_str(),
-                        "warning"
+
+            // Readiness probes run over the PRP command channel while provider
+            // stdout is drained by runnerd's adjacent control-loop iteration. A
+            // final usage/warning/item frame can therefore land after the last
+            // successful probe but before run.attach executes. Close that race in
+            // the same critical section as authority rotation. Only bounded tail
+            // notifications for the already-settled turn may be discarded: a new
+            // turn, provider request, process exit, or mismatched turn remains a
+            // fail-closed attachment error.
+            let deadline = std::time::Instant::now() + WARM_ATTACHMENT_DRAIN_DEADLINE;
+            let mut quiet_since: Option<std::time::Instant> = None;
+            let mut drained = 0usize;
+            loop {
+                if std::time::Instant::now() >= deadline {
+                    return Err(LocalRunnerError::invalid(
+                        "Codex warm run attachment tail did not become quiescent",
+                    ));
+                }
+                match self.poll()? {
+                    Some(CodexProviderEvent::Notification { method, params }) => {
+                        quiet_since = None;
+                        drained = drained.saturating_add(1);
+                        if drained > WARM_ATTACHMENT_TAIL_DRAIN_LIMIT {
+                            return Err(LocalRunnerError::invalid(
+                                "Codex warm run attachment tail exceeded its bounded frame limit",
+                            ));
+                        }
+                        let names_other_turn = notification_turn_id(&params)
+                            .is_some_and(|turn_id| turn_id != completed_turn_id);
+                        let safe_tail_method = matches!(
+                            method.as_str(),
+                            "warning"
                             | "configWarning"
                             | "remoteControl/status/changed"
                             | "mcpServer/startupStatus/updated"
@@ -1369,73 +1528,82 @@ impl CodexProvider {
                             | "thread/status/changed"
                             | "turn/diff/updated"
                             | "turn/plan/updated"
-                    );
-                    if names_other_turn || !safe_tail_method {
-                        return Err(LocalRunnerError::invalid(format!(
+                        );
+                        if names_other_turn || !safe_tail_method {
+                            return Err(LocalRunnerError::invalid(format!(
                             "Codex warm run attachment observed unsafe post-terminal provider method {}",
                             bounded_method(&method)
                         )));
-                    }
-                    if let Some(frame_id) = self.take_provider_trace_frame_id() {
-                        self.record_provider_trace_interpretation(
+                        }
+                        if matches!(
+                            method.as_str(),
+                            "thread/tokenUsage/updated" | "paperclip/resumeUsageSnapshot"
+                        ) {
+                            accounting.push((method, params));
+                            continue;
+                        }
+                        if let Some(frame_id) = self.take_provider_trace_frame_id() {
+                            self.record_provider_trace_interpretation(
                             frame_id,
                             "codex.warm_attachment.completed_turn_tail",
                             "ignored",
                             Vec::new(),
                             "Provider emitted a bounded tail notification after the prior turn terminal and before run attachment",
                         );
+                        }
                     }
-                }
-                Some(CodexProviderEvent::ResourceLimit { .. }) => {
-                    return Err(LocalRunnerError::invalid("Codex descendant capacity requires reconciliation before fresh-session continuation"));
-                }
-                Some(CodexProviderEvent::ProtocolFailure { .. }) => {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex protocol integrity failed during warm attachment",
-                    ));
-                }
-                Some(CodexProviderEvent::DescendantNotification { .. }) => {
-                    // Child output cannot certify a quiescent root attachment.
-                    return Err(LocalRunnerError::invalid(
-                        "Codex descendant remains active during warm run attachment",
-                    ));
-                }
-                Some(CodexProviderEvent::ToolCall { .. })
-                | Some(CodexProviderEvent::RuntimeRequest { .. })
-                | Some(CodexProviderEvent::McpPermissionRequest { .. }) => {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex warm run attachment observed a post-terminal provider request",
-                    ));
-                }
-                Some(CodexProviderEvent::Exited { .. }) => {
-                    return Err(LocalRunnerError::invalid(
-                        "Codex exited while quiescing for warm run attachment",
-                    ));
-                }
-                None => {
-                    let now = std::time::Instant::now();
-                    let quiet_start = quiet_since.get_or_insert(now);
-                    if now.duration_since(*quiet_start) >= WARM_ATTACHMENT_QUIET_WINDOW {
-                        return Ok(());
+                    Some(CodexProviderEvent::ResourceLimit { .. }) => {
+                        return Err(LocalRunnerError::invalid("Codex descendant capacity requires reconciliation before fresh-session continuation"));
                     }
-                    std::thread::sleep(Duration::from_millis(1));
+                    Some(CodexProviderEvent::ProtocolFailure { .. }) => {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex protocol integrity failed during warm attachment",
+                        ));
+                    }
+                    Some(CodexProviderEvent::DescendantNotification { .. }) => {
+                        // Child output cannot certify a quiescent root attachment.
+                        return Err(LocalRunnerError::invalid(
+                            "Codex descendant remains active during warm run attachment",
+                        ));
+                    }
+                    Some(CodexProviderEvent::ToolCall { .. })
+                    | Some(CodexProviderEvent::RuntimeRequest { .. })
+                    | Some(CodexProviderEvent::McpPermissionRequest { .. }) => {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex warm run attachment observed a post-terminal provider request",
+                        ));
+                    }
+                    Some(CodexProviderEvent::Exited {
+                        completed_turn_authoritative,
+                        completion_reconciles_exit,
+                        ..
+                    }) if completion_reconciles_exit
+                        || (completed_turn_authoritative && self.process.stdout_drained()) =>
+                    {
+                        return Ok(())
+                    }
+                    Some(CodexProviderEvent::Exited { .. }) => {
+                        return Err(LocalRunnerError::invalid(
+                            "Codex exited while quiescing for warm run attachment",
+                        ));
+                    }
+                    None => {
+                        let now = std::time::Instant::now();
+                        let quiet_start = quiet_since.get_or_insert(now);
+                        if now.duration_since(*quiet_start) >= WARM_ATTACHMENT_QUIET_WINDOW {
+                            return Ok(());
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
                 }
             }
-        }
+        })();
+        (accounting, result)
     }
 
     pub(crate) fn warm_run_attachment_blockers(
         &mut self,
-        quiesce_completed_tail: bool,
     ) -> Result<Vec<&'static str>, LocalRunnerError> {
-        // Only an explicit attachment-readiness probe may consume the bounded,
-        // already-settled provider suffix. Ordinary checkpoint snapshots run
-        // immediately after a terminal frame while the provider can still be
-        // unwinding; turning those observations into quiescence barriers can
-        // quarantine an otherwise reusable runner before its next turn.
-        if quiesce_completed_tail {
-            self.drain_completed_turn_tail_for_warm_attachment()?;
-        }
         let mut blockers = Vec::new();
         if self.process.try_wait()?.is_some() {
             blockers.push("process_exited");
@@ -1450,7 +1618,18 @@ impl CodexProvider {
             blockers.push("ambiguous_turn_start");
         }
         if !self.pending_messages.is_empty() {
-            blockers.push("pending_messages");
+            blockers.push(
+                if self.pending_messages.iter().any(|message| {
+                    matches!(
+                        message.value.get("method").and_then(Value::as_str),
+                        Some("paperclip/resumeUsageSnapshot" | "thread/tokenUsage/updated")
+                    )
+                }) {
+                    "pending_accounting_reconciliation"
+                } else {
+                    "pending_messages"
+                },
+            );
         }
         if !self.deferred_ambiguous_messages.is_empty() {
             blockers.push("deferred_messages");
@@ -1575,6 +1754,7 @@ impl CodexProvider {
             Some(&thread_id),
             next_generation,
             self.opencode_launch_profile.as_ref(),
+            self.cursor_cloud_launch_profile.as_ref(),
             completion_contract.as_ref().map(|contract| {
                 (
                     contract.revision.as_str(),
@@ -1744,7 +1924,7 @@ impl CodexProvider {
         cwd: &str,
         options: CodexTurnOptions<'_>,
     ) -> Result<Value, LocalRunnerError> {
-        self.start_turn_with_options_and_effort(message, cwd, options, None)
+        self.start_turn_with_options_and_effort(message, cwd, options, None, None)
     }
 
     pub(crate) fn start_turn_with_options_and_effort(
@@ -1753,6 +1933,7 @@ impl CodexProvider {
         cwd: &str,
         options: CodexTurnOptions<'_>,
         effort: Option<&Value>,
+        run_id: Option<&str>,
     ) -> Result<Value, LocalRunnerError> {
         let CodexTurnOptions {
             skills,
@@ -1824,6 +2005,13 @@ impl CodexProvider {
         let turn_params_object = turn_params
             .as_object_mut()
             .expect("Codex turn parameters are an object");
+        // The retained proxy's launch environment belongs to its first run.
+        // Only runnerd's rotated authority supplies the current run identity.
+        if self.config.provider == "opencode" {
+            if let Some(run_id) = run_id {
+                turn_params_object.insert("paperclipRunId".to_owned(), json!(run_id));
+            }
+        }
         if let Some(effort) = effort {
             turn_params_object.insert("effort".to_owned(), effort.clone());
         }
@@ -1940,6 +2128,7 @@ impl CodexProvider {
         // Retain the prior settled identity while the next turn runs. Besides
         // recognizing delayed prior-turn requests, this fails closed if a
         // provider ambiguously reuses the same turn id for fresh work.
+        self.provider_termination_receipt = None;
         self.active_provider_turn_id = Some(provider_turn_id);
         self.runtime_request_scope = runtime_request_scope;
     }
@@ -1992,6 +2181,59 @@ impl CodexProvider {
             "turn/interrupt",
             json!({"threadId": self.thread_id, "turnId": turn_id}),
         )
+    }
+
+    pub(crate) fn cursor_cloud_terminal_delivery(
+        &mut self,
+    ) -> Result<Option<crate::cursor_cloud_proxy::TerminalDelivery>, LocalRunnerError> {
+        if self.config.provider != "cursor_cloud" {
+            return Ok(None);
+        }
+        let snapshot = self.read_thread()?;
+        if snapshot.pointer("/thread/id").and_then(Value::as_str) != Some(self.thread_id.as_str()) {
+            return Err(LocalRunnerError::invalid(
+                "Cursor Cloud terminal snapshot changed its thread",
+            ));
+        }
+        let Some(value) = snapshot
+            .get("cursorCloudTerminalDelivery")
+            .filter(|value| !value.is_null())
+        else {
+            return Ok(None);
+        };
+        if latest_active_turn_id(&snapshot).is_some() {
+            return Err(LocalRunnerError::invalid(
+                "Cursor Cloud terminal snapshot also reports active work",
+            ));
+        }
+        let delivery = crate::cursor_cloud_proxy::TerminalDelivery::parse(value, &self.thread_id)?;
+        self.active_provider_turn_id = None;
+        Ok(Some(delivery))
+    }
+
+    pub(crate) fn acknowledge_cursor_cloud_terminal(
+        &mut self,
+        delivery: &crate::cursor_cloud_proxy::TerminalDelivery,
+    ) -> Result<(), LocalRunnerError> {
+        if self.config.provider != "cursor_cloud" || delivery.thread_id != self.thread_id {
+            return Err(LocalRunnerError::invalid(
+                "Cursor Cloud terminal receipt changed its provider",
+            ));
+        }
+        let response = self.request(
+            "paperclip/ackTerminal",
+            json!({"turnId":delivery.turn_id,"receiptId":delivery.receipt_id}),
+        )?;
+        if response.get("acknowledged") != Some(&Value::Bool(true))
+            || response.get("turnId").and_then(Value::as_str) != Some(delivery.turn_id.as_str())
+            || response.get("receiptId").and_then(Value::as_str)
+                != Some(delivery.receipt_id.as_str())
+        {
+            return Err(LocalRunnerError::invalid(
+                "Cursor Cloud terminal receipt was not acknowledged",
+            ));
+        }
+        Ok(())
     }
 
     pub fn read_thread(&mut self) -> Result<Value, LocalRunnerError> {
@@ -2844,13 +3086,11 @@ impl CodexProvider {
                 .and_then(Value::as_str);
             if notification_turn_id.is_some()
                 && notification_turn_id != self.active_provider_turn_id.as_deref()
-                && notification_turn_id
+                && (notification_turn_id
                     .is_some_and(|turn_id| self.settled_provider_turn_ids.contains(turn_id))
+                    || (self.active_provider_turn_id.is_none()
+                        && method == "thread/tokenUsage/updated"))
             {
-                self.notification_identity_diagnostics += 1;
-                if self.notification_identity_diagnostics > 32 {
-                    return Ok(None);
-                }
                 // Resume replays the cumulative usage of the last settled turn.
                 // Keep its identity and baseline, but never bill its `last`
                 // measurement to the newly attached run.
@@ -2865,6 +3105,10 @@ impl CodexProvider {
                             "total": params.pointer("/tokenUsage/total"),
                         }),
                     }));
+                }
+                self.notification_identity_diagnostics += 1;
+                if self.notification_identity_diagnostics > 32 {
+                    return Ok(None);
                 }
                 return Ok(Some(CodexProviderEvent::Notification {
                     method: "warning".to_owned(),
@@ -3010,14 +3254,76 @@ impl CodexProvider {
     }
 
     pub fn shutdown(&mut self) -> Result<(), LocalRunnerError> {
+        self.shutdown_with_cursor_cloud_delivery(|_| Ok(false))
+    }
+
+    pub(crate) fn shutdown_with_cursor_cloud_delivery(
+        &mut self,
+        mut retain: impl FnMut(
+            &crate::cursor_cloud_proxy::TerminalDelivery,
+        ) -> Result<bool, LocalRunnerError>,
+    ) -> Result<(), LocalRunnerError> {
         self.expected_shutdown = true;
         // A failed courtesy response must never prevent process fencing.
         let cancellation = self.cancel_pending_requests();
-        let result = self.process.terminate_group().map(|_| ()).and(cancellation);
+        let remote_termination = if self.config.provider == "cursor_cloud" {
+            let expected_turn = self.active_provider_turn_id.clone().or_else(|| {
+                self.completed_turn_authority
+                    .as_ref()
+                    .map(|authority| authority.provider_turn_id.clone())
+            });
+            self.request_classified_until(
+                "paperclip/shutdown",
+                json!({ "threadId": self.thread_id, "turnId": expected_turn }),
+                Some(std::time::Instant::now() + crate::cursor_cloud_proxy::SHUTDOWN_TIMEOUT),
+            )
+            .map_err(ProviderRequestError::into_inner)
+            .and_then(|receipt| {
+                let normalized = crate::cursor_cloud_proxy::shutdown_receipt(
+                    &receipt,
+                    &self.thread_id,
+                    expected_turn.as_deref(),
+                )?;
+                if let Some(value) = receipt
+                    .get("cursorCloudTerminalDelivery")
+                    .filter(|value| !value.is_null())
+                {
+                    let delivery =
+                        crate::cursor_cloud_proxy::TerminalDelivery::parse(value, &self.thread_id)?;
+                    if Some(delivery.turn_id.as_str()) != expected_turn.as_deref()
+                        || receipt.get("remoteRunId").and_then(Value::as_str)
+                            != Some(delivery.provider_run_id.as_str())
+                        || receipt.get("status").and_then(Value::as_str)
+                            != Some(delivery.status.as_str())
+                    {
+                        return Err(LocalRunnerError::invalid(
+                            "Cursor Cloud shutdown changed its terminal delivery",
+                        ));
+                    }
+                    if retain(&delivery)? {
+                        let _ = self.acknowledge_cursor_cloud_terminal(&delivery);
+                    }
+                }
+                self.provider_termination_receipt = Some(normalized);
+                Ok(())
+            })
+        } else {
+            Ok(())
+        };
+        let result = self
+            .process
+            .terminate_group()
+            .map(|_| ())
+            .and(remote_termination)
+            .and(cancellation);
         if let Some(trace) = self.trace.as_mut() {
             trace.finish();
         }
         result
+    }
+
+    pub(crate) fn provider_termination_receipt(&self) -> Option<&Value> {
+        self.provider_termination_receipt.as_ref()
     }
 
     fn cancel_pending_requests(&mut self) -> Result<(), LocalRunnerError> {
@@ -3094,6 +3400,15 @@ impl CodexProvider {
         method: &str,
         params: Value,
     ) -> Result<Value, ProviderRequestError> {
+        self.request_classified_until(method, params, None)
+    }
+
+    fn request_classified_until(
+        &mut self,
+        method: &str,
+        params: Value,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Value, ProviderRequestError> {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.checked_add(1).ok_or_else(|| {
             ProviderRequestError::Rejected(LocalRunnerError::invalid("Codex request id exhausted"))
@@ -3101,8 +3416,16 @@ impl CodexProvider {
         self.send_frame(&json!({"id": request_id, "method": method, "params": params}))
             .map_err(ProviderRequestError::Ambiguous)?;
         loop {
+            let remaining = deadline.map_or(Duration::from_secs(30), |deadline| {
+                deadline.saturating_duration_since(std::time::Instant::now())
+            });
+            if remaining.is_zero() {
+                return Err(ProviderRequestError::Ambiguous(LocalRunnerError::invalid(
+                    format!("Provider {method} exceeded its bounded response deadline"),
+                )));
+            }
             let line = self
-                .receive_provider_stdout_line(Duration::from_secs(30))
+                .receive_provider_stdout_line(remaining)
                 .map_err(ProviderRequestError::Ambiguous)?;
             let Some(line) = line else {
                 let exit = self
@@ -3160,9 +3483,21 @@ impl CodexProvider {
                             format!("Codex {method} returned an invalid error response"),
                         )));
                     }
-                    return Err(ProviderRequestError::Rejected(LocalRunnerError::invalid(
-                        format!("Codex {method} failed: {}", redact_text(&error.to_string())),
-                    )));
+                    return Err(ProviderRequestError::Rejected(
+                        LocalRunnerError::invalid(format!(
+                            "Codex {method} failed: {}",
+                            redact_text(&error.to_string())
+                        ))
+                        .with_provider_failure(
+                            if self.config.provider == "codex"
+                                && matches!(method, "initialize" | "thread/start" | "thread/resume")
+                            {
+                                crate::provider_failure::codex_startup_failure(error)
+                            } else {
+                                None
+                            },
+                        ),
+                    ));
                 }
                 return Ok(message.get("result").cloned().unwrap_or(Value::Null));
             }
@@ -3273,6 +3608,21 @@ fn verified_opencode_launch(
         VerifiedProcessArgument::ExecutableArtifact(executable),
     ];
     Ok(VerifiedProcessLaunch::new(command, args))
+}
+
+fn verified_cursor_cloud_launch(
+    profile: &CursorCloudLaunchProfile,
+) -> Result<VerifiedProcessLaunch, LocalRunnerError> {
+    let command = verify_launch_artifact(&profile.command, "Cursor Cloud proxy command")
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+    let proxy = verify_launch_artifact(&profile.proxy_script, "Cursor Cloud proxy script")
+        .map_err(|error| LocalRunnerError::invalid(error.to_string()))?;
+    let proxy = if is_node_interpreter(&profile.command.path) {
+        VerifiedProcessArgument::CommonJsArtifact(proxy)
+    } else {
+        VerifiedProcessArgument::Artifact(proxy)
+    };
+    Ok(VerifiedProcessLaunch::new(command, vec![proxy]))
 }
 
 fn json_size(value: &Value, label: &str) -> Result<usize, LocalRunnerError> {
@@ -4159,6 +4509,78 @@ fn codex_question_response(
 mod tests {
     use super::*;
 
+    #[test]
+    #[cfg(unix)]
+    fn runtime_notification_policy_grants_only_discovery_files_and_ipc() {
+        let mut args = vec![
+            "shell_environment_policy.include_only=[\"PATH\",\"LANG\",\"PAPERCLIP_API_KEY\"]"
+                .into(),
+        ];
+        for name in [
+            "paperclip-runner-workspace-only",
+            "paperclip-runner-workspace-read-only",
+        ] {
+            args.push(format!(
+                "permissions.{name}.filesystem={{\":root\"=\"none\",\"/state/private\"=\"none\"}}"
+            ));
+        }
+        let paths = [
+            PathBuf::from("/runtime/runnerd"),
+            PathBuf::from("/state/private/runtime-notifications.json"),
+            PathBuf::from("/tmp/prn-channel/activity.lock"),
+            PathBuf::from("/tmp/prn-channel/activity.fifo"),
+        ];
+        let extra =
+            runtime_notification_codex_args(&args, "paperclip-runner-workspace-only", &paths);
+        let keys: Vec<String> = serde_json::from_str(
+            extra[1]
+                .strip_prefix("shell_environment_policy.include_only=")
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            keys,
+            [
+                "PATH",
+                "LANG",
+                "PAPERCLIP_API_KEY",
+                crate::runtime_notifications::CONTEXT_ENV,
+                crate::runtime_notifications::HELPER_ENV
+            ]
+        );
+        let serialized = extra.join("\n");
+        for profile in [
+            "paperclip-runner-workspace-only",
+            "paperclip-runner-workspace-read-only",
+        ] {
+            let prefix = format!("permissions.{profile}.filesystem=");
+            let value = extra
+                .iter()
+                .find_map(|arg| arg.strip_prefix(&prefix))
+                .unwrap();
+            let config = format!("filesystem={value}")
+                .parse::<toml_edit::DocumentMut>()
+                .unwrap();
+            let filesystem = config["filesystem"].as_inline_table().unwrap();
+            for (path, mode) in [
+                (":root", "none"),
+                ("/state/private", "none"),
+                ("/runtime/runnerd", "read"),
+                ("/state/private/runtime-notifications.json", "read"),
+                ("/tmp/prn-channel/activity.lock", "read"),
+                ("/tmp/prn-channel", "write"),
+            ] {
+                assert_eq!(
+                    filesystem.get(path).and_then(toml_edit::Value::as_str),
+                    Some(mode)
+                );
+            }
+            assert!(filesystem.get("/tmp/prn-channel/activity.fifo").is_none());
+        }
+        assert!(!serialized.contains("network."));
+        assert!(!serialized.contains("PAPERCLIP_RUN_ID"));
+    }
+
     #[cfg(unix)]
     fn completion_tail_provider() -> CodexProvider {
         completion_tail_provider_with_stdout_flood(false)
@@ -4246,9 +4668,58 @@ done
             });
         // poll() normalizes settled-turn usage to paperclip/resumeUsageSnapshot.
         // That accounting fact is not new work and must not force replacement.
-        let result = provider.drain_completed_turn_tail_for_warm_attachment();
+        let (accounting, result) = provider.drain_completed_turn_tail_for_warm_attachment();
         provider.shutdown().unwrap();
-        result.expect("historical usage must not break provider continuity");
+        result.expect("historical usage must remain available to its owner");
+        assert_eq!(accounting.len(), 1);
+        assert_eq!(accounting[0].1["total"]["inputTokens"], 120);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn failed_warm_drain_retains_consumed_usage_before_unsafe_tail() {
+        for attach in [false, true] {
+            let mut provider = completion_tail_provider();
+            provider
+                .restore_completed_turn_authority(true, Some(1), Some("reader-tail-1"))
+                .unwrap();
+            provider.active_provider_turn_id = None;
+            for value in [
+                json!({"method":"thread/tokenUsage/updated","params":{"threadId":"reader-tail-thread","turnId":"reader-tail-1","tokenUsage":{"total":{"inputTokens":120,"outputTokens":12}}}}),
+                json!({"method":"turn/started","params":{"threadId":"reader-tail-thread","turn":{"id":"unsafe-next-turn"}}}),
+            ] {
+                provider
+                    .pending_messages
+                    .push_back(BufferedProviderMessage {
+                        value,
+                        trace_frame_id: None,
+                    });
+            }
+            let (accounting, result) = if attach {
+                let mut accounting = Vec::new();
+                let tools = provider.authorized_tools.clone();
+                let contract = provider.completion_contract.clone();
+                let result = provider
+                    .attach_run_in_place(
+                        tools,
+                        contract.as_ref().map(|contract| {
+                            (
+                                contract.revision.as_str(),
+                                contract.criterion_ids.as_slice(),
+                            )
+                        }),
+                        &mut accounting,
+                    )
+                    .map(|_| ());
+                (accounting, result)
+            } else {
+                provider.drain_completed_turn_tail_for_warm_attachment()
+            };
+            provider.shutdown().unwrap();
+            assert!(result.is_err());
+            assert_eq!(accounting.len(), 1);
+            assert_eq!(accounting[0].1["total"]["inputTokens"], 120);
+        }
     }
 
     #[cfg(unix)]
@@ -4610,6 +5081,7 @@ done
             1,
             None,
             None,
+            None,
             &mut |observation| match observation {
                 ProviderStartupObservation::Spawned {
                     process_id,
@@ -4644,6 +5116,7 @@ done
     }
 
     #[test]
+    #[cfg_attr(windows, ignore = "verified launch is not supported on Windows yet")]
     fn verified_opencode_proxy_executes_the_descriptor_safe_commonjs_bundle() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -4681,6 +5154,115 @@ done
             Some(VerifiedProcessArgument::ExecutableArtifact(_))
         ));
         fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn cursor_cloud_proxy_launch_verifies_node_and_script_without_a_native_executable() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-cursor-cloud-launch-{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let command = directory.join("node");
+        let proxy = directory.join("cursor-cloud-proxy.cjs");
+        fs::write(&command, b"qualified node").unwrap();
+        fs::write(&proxy, b"module.exports = {};\n").unwrap();
+        let profile = CursorCloudLaunchProfile {
+            command: qualified_artifact(&command),
+            proxy_script: qualified_artifact(&proxy),
+        };
+        let launch = verified_cursor_cloud_launch(&profile);
+        if cfg!(target_os = "windows") {
+            let error = match launch {
+                Ok(_) => panic!("Cursor Cloud Windows launch must remain unsupported"),
+                Err(error) => error,
+            };
+            assert!(error
+                .to_string()
+                .contains("verified process snapshots are supported only on Linux and macOS"));
+            fs::remove_dir_all(directory).unwrap();
+            return;
+        }
+        let launch = launch.unwrap();
+        assert_eq!(launch.arguments().len(), 1);
+        assert!(matches!(
+            launch.arguments().first(),
+            Some(VerifiedProcessArgument::CommonJsArtifact(_))
+        ));
+        fs::write(&proxy, b"unqualified replacement").unwrap();
+        assert!(verified_cursor_cloud_launch(&profile).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn cursor_cloud_admission_requires_its_exact_proxy_model_and_provider_permission_boundary() {
+        let mut config: CodexProviderConfig = serde_json::from_value(json!({
+            "provider": "cursor_cloud", "driver": "cursor_cloud_api",
+            "providerVersion": CURSOR_CLOUD_PROXY_VERSION, "command": "node",
+            "cwd": std::env::current_dir().unwrap(), "model": "caller-selected-model",
+            "conversationMode": "prepared", "approvalPolicy": "never"
+        }))
+        .unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.skill_instructions_config(), None);
+        assert_eq!(
+            codex_permission_profile("cursor_cloud", false),
+            "paperclip-runner-provider-managed"
+        );
+        for (field, value) in [
+            ("driver", json!("codex_app_server")),
+            ("providerVersion", json!("unqualified-version")),
+            ("model", Value::Null),
+            ("model", json!(" ")),
+            ("approvalPolicy", json!("on-request")),
+            ("readOnly", json!(true)),
+            ("externallySandboxed", json!(true)),
+        ] {
+            let mut invalid = serde_json::to_value(&config).unwrap();
+            invalid[field] = value;
+            assert!(
+                serde_json::from_value::<CodexProviderConfig>(invalid)
+                    .unwrap()
+                    .validate()
+                    .is_err(),
+                "{field}"
+            );
+        }
+        config.model = Some("different-explicit-model".to_owned());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn cursor_cloud_environment_contains_only_its_selected_provider_and_private_relay_bindings() {
+        for name in [
+            "CURSOR_API_KEY",
+            "PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH",
+            "PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH",
+            "PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN",
+            "PAPERCLIP_CURSOR_CLOUD_RELAY_URL",
+            "PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT",
+        ] {
+            assert!(
+                CURSOR_CLOUD_PROVIDER_ENVIRONMENT_KEYS.contains(&name),
+                "{name}"
+            );
+        }
+        for name in [
+            "CURSOR_AUTH_TOKEN",
+            "OPENAI_API_KEY",
+            "CODEX_API_KEY",
+            "OPENROUTER_API_KEY",
+            "GITHUB_TOKEN",
+            "PAPERCLIP_API_KEY",
+            "PAPERCLIP_NATIVE_MCP_TOKEN",
+            "NODE_OPTIONS",
+            "NODE_PATH",
+        ] {
+            assert!(
+                !CURSOR_CLOUD_PROVIDER_ENVIRONMENT_KEYS.contains(&name),
+                "{name}"
+            );
+        }
     }
 
     #[test]

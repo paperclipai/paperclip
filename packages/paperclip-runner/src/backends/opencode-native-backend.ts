@@ -1,5 +1,5 @@
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
-import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9 } from "../contracts/native-execution.js";
+import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10 } from "../contracts/native-execution.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { NativeSessionBackend } from "../contracts/native-session-backend.js";
 import { OpenCodeServerDriver, type OpenCodeServerDriverOptions } from "../drivers/opencode/opencode-server-driver.js";
@@ -15,7 +15,7 @@ export function createOpenCodeNativeSessionBackend(
   }
   const preparedContext = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA
     || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7
-    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9;
+    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
   const constraints = nativeTaskConstraints(input);
 
   return new HarnessDriverBackend(new OpenCodeServerDriver({

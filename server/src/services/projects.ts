@@ -1,3 +1,5 @@
+import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
+import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "./project-workspace-provider.js";
 import { retireRemovedPluginWorkspaceDependents } from "./plugin-workspaces.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
@@ -41,6 +43,7 @@ import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-poli
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
 import { recordProjectLifecycleEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
+import { hasUnsettledProjectCharges } from "../modules/execution-admission/index.js";
 
 type ProjectTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -80,12 +83,11 @@ export async function ensureProjectAccessMember(
     subjectId: string;
   },
 ) {
-  return dbOrTx
-    .insert(projectAccessMembers)
-    .values(input)
-    .onConflictDoNothing()
-    .returning()
-    .then((rows: Array<typeof projectAccessMembers.$inferSelect>) => rows[0] ?? null);
+  return dbOrTx.transaction(async (tx: Db) => {
+    await notifyChatInboundWakeNotices(tx, { companyId: input.companyId });
+    return tx.insert(projectAccessMembers).values(input).onConflictDoNothing().returning()
+      .then(rows => rows[0] ?? null);
+  });
 }
 
 /**
@@ -1013,6 +1015,8 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
 
       const row = await db.transaction(async (tx) => {
         if (updates.visibility !== undefined) {
+          await notifyStatusCardIssueChange(tx, existingProject.companyId);
+          await notifyChatInboundWakeNotices(tx, { companyId: existingProject.companyId });
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${existingProject.companyId}`}, 0))`);
         }
         const [updated] = await tx.update(projects).set(updates).where(eq(projects.id, id)).returning();
@@ -1082,9 +1086,15 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       const [retained] = await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
         .where(eq(executionWorkspaces.projectId, id)).limit(1);
       if (retained) throw conflict("This project still supplies access policy for retained task workspaces. Archive the project or explicitly clean up its workspaces before deleting it.");
+      if (await hasUnsettledProjectCharges(tx as unknown as Db, { companyId: project.companyId, projectId: id })) {
+        throw conflict("Task executions admitted to this project have not finished saving. Wait for them to settle before deleting the project.", {
+          code: "project_execution_admission_pending",
+        });
+      }
       await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
       await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+      await notifyStatusCardIssueChange(tx, project.companyId);
       const [row] = await tx.delete(projects).where(eq(projects.id, id)).returning();
       return row ? { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) } : null;
     }),

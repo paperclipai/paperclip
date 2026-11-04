@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, open, readFile, readdir, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, mkdir, open, readFile, readdir, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -19,124 +19,48 @@ const { readRegularFile, replaceEvidenceFile } = await import(new URL('./evidenc
 
 import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runner-protocol-eval-campaign.mjs';
 
-const { build } = createRequire(new URL('../../../../package.json', import.meta.url))('esbuild');
 
-const childScript = options => `
-import assert from 'node:assert/strict';
-import {createHash} from 'node:crypto';
-import {spawn} from 'node:child_process';
-import {once} from 'node:events';
-import {readFile,writeFile,rm,readdir,symlink,truncate,mkdir} from 'node:fs/promises';
-import {dirname,join} from 'node:path';
-import {execFileSync} from 'node:child_process';
-const args=new Map();for(let i=2;i<process.argv.length;i+=2)args.set(process.argv[i],process.argv[i+1]);
-const request=JSON.parse(await readFile(args.get('--request'),'utf8'));
-if(${Boolean(options.failChild)})process.exit(3);
-if(${Boolean(options.resistantDescendant)}) {
- const orphan=${Boolean(options.orphanExit)};
- const descendant=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});"+(orphan?"process.send('ready');":"process.stdout.write('ready');")+"setInterval(()=>{},1000)"],{stdio:orphan?['ignore','inherit','inherit','ipc']:['ignore','pipe','ignore']});
- if(orphan)await once(descendant,'message');else await once(descendant.stdout,'data');
- await writeFile(request.session.workingDirectory+'/descendant.pid',String(descendant.pid));
-}
+import { childScript, fixture, success } from './controller-fixture.mjs';
 
-const descriptorRaw=await readFile(args.get('--gateway-config'),'utf8'),descriptor=JSON.parse(descriptorRaw);
-for(const key of ['OPENAI_API_KEY','ANTHROPIC_API_KEY','BRAINTRUST_API_KEY','GH_TOKEN','NODE_OPTIONS','PYTHONPATH'])assert.equal(process.env[key],undefined);
-const statuses=[];
-for(let i=0;i<${options.requests ?? 3};i++){
- const response=await fetch(descriptor.baseUrl+(descriptor.provider==='openai'?'/v1/responses':'/v1/messages'),{method:'POST',headers:{authorization:'Bearer '+process.env.PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN,'content-type':'application/json'},body:JSON.stringify({model:request.model,input:'synthetic fixture'})});
- statuses.push(response.status);await response.text();
-}
-let nativeObservability;
-if(args.has('--observability-config')) {
- const raw=await readFile(args.get('--observability-config'),'utf8'),config=JSON.parse(raw);
- const parent=decodeURIComponent(config.launch.environment.OTEL_EXPORTER_OTLP_TRACES_HEADERS.slice('x-bt-parent='.length));
- for(const signal of ['logs','traces'])for(let i=0;i<${options.otelRequests ?? 1};i++) {
-  const body=signal==='logs'?{resourceLogs:[{scopeLogs:[{logRecords:[{body:{stringValue:'synthetic-native-content'}}]}]}]}:{resourceSpans:[{scopeSpans:[{spans:[{traceId:'1'.repeat(32),spanId:'2'.repeat(16),name:'synthetic-native-span'}]}]}]};
-  const response=await fetch(config.baseUrl+'/v1/'+signal,{method:'POST',headers:{authorization:'Bearer '+process.env.PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN,'x-bt-parent':parent,'content-type':'application/json'},body:JSON.stringify(body)});
-  await response.arrayBuffer();
- }
- nativeObservability={mode:'controller_otlp',configured:true,verification:'unverified',projectId:config.projectId,traceId:config.traceId,spanId:config.spanId,descriptorSha256:createHash('sha256').update(raw).digest('hex')};
- if(${Boolean(options.realObservabilityValidator)}) {
-  const {prepareEvalObservabilityRuntime}=await import(${JSON.stringify(options.observabilityValidatorModule ?? '')});
-  await mkdir(process.env.HOME+'/codex',{recursive:true});
-  const prepared=await prepareEvalObservabilityRuntime(args.get('--observability-config'),request,
-   {evidence:{campaignId:descriptor.campaignId,executionId:descriptor.executionId},transportOptions:{environment:{CODEX_HOME:process.env.HOME+'/codex'}}},process.env);
-  assert.deepEqual(prepared.evidence,nativeObservability);
-  for(const signal of ['LOGS','TRACES'])assert(prepared.transportOptions.environment['OTEL_EXPORTER_OTLP_'+signal+'_HEADERS'].includes(encodeURIComponent('Bearer '+process.env.PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN)));
-  nativeObservability=prepared.evidence;
- }
-
-}
-if(${Boolean(options.waitForever)})await new Promise(()=>setInterval(()=>{},1000));
-if(!${Boolean(options.missingArtifact)})await writeFile(args.get('--output'),JSON.stringify({schema:'paperclip-runner/eval-session-artifact/v1',attemptId:request.attemptId,requestedModel:request.model,
- requestRouting:${options.missingRoute ? 'null' : "{mode:'controller_gateway',provider:descriptor.provider,declaredUpstreamRoute:descriptor.upstreamRoute,campaignId:descriptor.campaignId,executionId:descriptor.executionId,attemptId:descriptor.attemptId,descriptorSha256:createHash('sha256').update(descriptorRaw).digest('hex')}"},
- nativeObservability, snapshot:{status:'closed',process:{runnerExited:true,runnerPid:process.pid,providerPid:process.pid}},statuses,
- leaked:${options.leakToken ? 'process.env.PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN' : options.leakOtlpToken ? 'process.env.PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN' : 'null'}}));
-if(${Boolean(options.invalidEvidence)}) {
- const root=dirname(args.get('--output'));
- const name=${JSON.stringify(options.invalidEvidence ?? '')};
- const file=name==='receipt'?join(root,'receipts',(await readdir(join(root,'receipts')))[0]):join(root,name);
- await rm(file);
- const kind=${JSON.stringify(options.invalidFileType ?? '')};
- if(kind==='fifo')execFileSync('mkfifo',[file]);
- else if(kind==='symlink')await symlink('/dev/zero',file);
- else {await writeFile(file,'');await truncate(file,16*1024*1024+1);}
-}
-
-if(${Boolean(options.orphanExit)})process.exit(0);
-`;
-
-async function fixture(t, { count = 1, allocation = '0.01', providerProfile = 'codex', route = 'direct', ...options } = {}) {
-  const root = await mkdtemp(join(tmpdir(), 'runner-controller-test-'));
-  t.after(() => rm(root, { recursive: true, force: true }));
-  const cli = join(root, 'fake-cli.mjs'), binary = join(root, 'runnerd'), archive = join(root, 'runner.tgz');
-  if (options.realObservabilityValidator) {
-    options.observabilityValidatorModule = join(root, 'eval-observability-runtime.mjs');
-    await build({ entryPoints: [fileURLToPath(new URL('../../src/cli/eval-observability-runtime.ts', import.meta.url))],
-      outfile: options.observabilityValidatorModule, bundle: true, platform: 'node', format: 'esm', target: 'node24', logLevel: 'silent' });
+test('expected ACPX profile reaches the child through function and command-line entrypoints', async t => {
+  const profile = { agent: 'claude', agentRuntimeVersion: '0.3.286' };
+  for (const mode of ['function', 'cli']) for (const stale of [false, true]) {
+    const requests = mode === 'function' ? 1 : 0;
+    const f = await fixture(t, { providerProfile: 'claude', builtAcpxProfile: profile, requests });
+    const expectedAcpxProfile = { ...profile, ...(stale ? { agentRuntimeVersion: '0.3.263' } : {}) };
+    let calls = 0;
+    let result;
+    if (mode === 'function') {
+      result = await runControlledEval({ manifestPath: f.manifestPath, ...f.requests[0], environment: f.environment, expectedAcpxProfile,
+        transport: async () => { calls++; return success('anthropic'); } });
+    } else {
+      let code = 0;
+      try {
+        await promisify(execFile)(process.execPath, [fileURLToPath(new URL('./run.mjs', runtime)), '--request', f.requests[0].requestPath,
+          '--output', f.requests[0].outputPath, '--expected-acpx-profile', JSON.stringify(expectedAcpxProfile)], {
+          env: { PATH: process.env.PATH, ANTHROPIC_API_KEY: f.environment.ANTHROPIC_API_KEY, PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST: f.manifestPath }, timeout: 15000,
+        });
+      } catch (error) { if (typeof error.code !== 'number') throw error; code = error.code; }
+      result = { code, report: JSON.parse(await readFile(f.requests[0].outputPath, 'utf8')).controllerAccounting };
+    }
+    assert.equal(calls, stale ? 0 : requests);
+    assert.equal(result.code === 0, !stale);
+    assert.equal(result.report.accounting.requests.length, stale ? 0 : requests);
   }
-  await writeFile(cli, childScript(options)); await writeFile(binary, 'synthetic daemon'); await writeFile(archive, 'synthetic package');
-  const provenance = async path => ({ path, sha256: sha256(await readFile(path)) });
-  const now = Date.now(), verifiedAt = new Date(now - 1000).toISOString(), expiresAt = new Date(now + 86_400_000).toISOString();
-  const overhead = { version: 1, reference: 'synthetic-allowance', runner: 'github-hosted', verifiedAt, expiresAt,
-    components: costRuntime.EVAL_OVERHEAD_COMPONENTS.map(component => ({ component, maxUsd: '0.001', reference: 'synthetic-proof' })) };
-  const bound = configuration => ({ version: 1, scope: 'full_lifecycle', evidenceSha256: 'a'.repeat(64), configurationSha256: sha256(canonical(configuration)) });
-  for (const component of overhead.components) component.provisionalBound = bound({ reference: overhead.reference, runner: overhead.runner, verifiedAt, expiresAt, component: { ...component } });
-  const biller = providerProfile === 'claude' ? 'anthropic' : 'openai';
-  const price = { provider: biller, model: 'fixture', version: 'synthetic-pricing', sourceUrl: 'https://provider.invalid/pricing', inputUsdPerMillion: '2', cachedReadUsdPerMillion: '1', outputUsdPerMillion: '10', ...(biller === 'openai' ? { cacheWrite30mUsdPerMillion: '2', cacheWrite12hUsdPerMillion: '2' } : { cacheWrite5mUsdPerMillion: '2', cacheWrite1hUsdPerMillion: '2' }) };
-  const model = { provider: biller, price, maximumInputTokens: 1000, maximumOutputTokens: 100, timeoutMs: 1000 };
-  model.provisionalBound = bound({ provider: model.provider, mode: route, price, maximumInputTokens: 1000, maximumOutputTokens: 100, reservation: '0.003000000' });
-  const manifest = { schema: 'paperclip.runner-eval.controller/v1', campaignId: 'synthetic-controller', maxUsd: '1',
-    deadlineAt: new Date(now + 60_000).toISOString(), pricingVerifiedAt: verifiedAt, pricingExpiresAt: expiresAt, overhead,
-    sourceRevision: 'a'.repeat(40), definitionsRevision: 'b'.repeat(40), runnerCli: await provenance(cli), runnerPackage: await provenance(archive), runnerd: await provenance(binary),
-    outputDirectory: join(root, 'controller'), route, ...(route === 'braintrust' ? { projectId: '11111111-1111-4111-8111-111111111111' } : {}), models: [model], attempts: [] };
-  const requests = [];
-  for (let index = 0; index < count; index++) {
-    const workspace = join(root, `workspace-${index}`); await mkdir(workspace);
-    const request = { schema: 'paperclip-runner/eval-session-request/v1', attemptId: `attempt-${index}`, prompt: 'synthetic', provider: providerProfile === 'claude' ? 'acpx' : 'codex', ...(providerProfile === 'claude' ? { acpxAgent: 'claude' } : {}), model: 'fixture',
-      runnerd: { path: binary, sha256: manifest.runnerd.sha256 }, limits: { turnTimeoutMs: 5000, maxAgentTurns: 1, maxEstimatedCostNanodollars: 1_000_000_000 }, session: { workingDirectory: workspace } };
-    const requestPath = join(root, `request-${index}.json`), outputPath = join(root, `output-${index}.json`);
-    await writeFile(requestPath, JSON.stringify(request)); requests.push({ request, requestPath, outputPath });
-    manifest.attempts.push({ executionId: `execution-${index}`, attemptId: request.attemptId, requestSha256: requestBindingSha256(request), provider: request.provider, ...(request.acpxAgent ? { acpxAgent: request.acpxAgent } : {}), model: 'fixture', maxUsd: allocation, maxRequests: 2, maxConcurrent: 1, timeoutMs: 5000 });
+});
+
+test('malformed profile arguments fail before opening controlled evidence', async t => {
+  for (const [providerProfile, profiles] of [
+    ['claude', [null, [], 'profile', { overflow: 'x'.repeat(4097) }]],
+    ['codex', [{}]],
+  ]) {
+    const f = await fixture(t, { providerProfile });
+    for (const expectedAcpxProfile of profiles) {
+      await assert.rejects(runControlledEval({ manifestPath: f.manifestPath, ...f.requests[0], environment: {}, expectedAcpxProfile }), /Expected ACPX profile/);
+    }
+    await assert.rejects(stat(f.manifest.outputDirectory), { code: 'ENOENT' });
   }
-  if (options.observability) {
-    manifest.observability = { projectId: '11111111-1111-4111-8111-111111111111',
-      capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false },
-      nativeLimits: { maxRequests: 4, maxRequestBytes: 16384, maxTotalBytes: 32768, maxConcurrent: 1, maxExpandedBytes: 65536, maxRecords: 16 } };
-    manifest.observability.provisionalBound = bound(observabilityBoundConfiguration(manifest));
-  }
-  const manifestPath = join(root, 'manifest.json');
-  const save = () => writeFile(manifestPath, JSON.stringify(manifest)); await save();
-  const environment = { PATH: process.env.PATH, OPENAI_API_KEY: 'synthetic-upstream-private', ANTHROPIC_API_KEY: 'other-private', BRAINTRUST_API_KEY: 'other-braintrust', GH_TOKEN: 'other-github', NODE_OPTIONS: '--require must-not-inherit', PYTHONPATH: '/must-not-inherit' };
-  return { root, manifest, manifestPath, requests, environment, save,
-    run: (index = 0, transport = () => success(biller), signal) => runControlledEval({ manifestPath, ...requests[index], environment, transport, signal, otlpTransport: options.otlpTransport ?? (async () => Response.json({})) }) };
-}
-let sequence = 0;
-function success(provider = 'openai') {
-  if (provider === 'anthropic') return Response.json({ type: 'message', id: `synthetic-${++sequence}`, model: 'fixture', usage: { input_tokens: 8, cache_read_input_tokens: 2, cache_creation_input_tokens: 0, output_tokens: 5, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } } }, { headers: { 'x-bt-used-endpoint': 'ANTHROPIC_API_KEY', 'x-bt-cached': 'MISS' } });
-  return Response.json({ object: 'response', id: `synthetic-${++sequence}`, status: 'completed', model: 'fixture', usage: {
-    input_tokens: 10, input_tokens_details: { cache_write_tokens: 0, cached_tokens: 2 }, output_tokens: 5, output_tokens_details: { reasoning_tokens: 3 } } });
-}
+});
 
 test('real child requests reserve before dispatch, stop at the cap and retain only controller credentials', async t => {
   const f = await fixture(t);
@@ -526,13 +450,30 @@ test('campaign collection retains and audits private archives, while public proj
   await rm(f.manifest.outputDirectory, { recursive: true });
   const input = { catalogPath, downloadsRoot: join(f.root, 'downloads'), evalsRoot: f.root,
     runsOut: join(f.root, 'collected'), campaignOut: join(f.root, 'campaign.json'),
-    source: { paperclip: { sha: f.manifest.sourceRevision }, evals: { sha: f.manifest.definitionsRevision } } };
+    source: { paperclip: { sha: f.manifest.sourceRevision }, evals: { sha: f.manifest.definitionsRevision } },
+    controllerArchiveCli: process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME ? join(process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME, 'archive.mjs') : undefined };
   const result = await aggregateProtocolEvalCampaign(input);
   assert.equal(result.controlledCosts.knownUsd, '0.000068000');
   assert.equal(result.controlledCosts.costStatus, 'incomplete');
   assert.equal(result.controlledCosts.committedUsd, '0.014068000');
   assert.equal(result.controlledCosts.incompleteAttempts, 1);
   assert.deepEqual(JSON.parse(await readFile(join(input.runsOut, 'attempt-0', 'controller-evidence.json'), 'utf8')), bundle);
+  const isolated = join(f.root, 'isolated-reporter'); await mkdir(join(isolated, 'controlled-evals'), { recursive: true });
+  for (const file of ['runner-protocol-eval-campaign.mjs', 'runner-protocol-eval-metrics.mjs', 'public-eval-chat.mjs']) {
+    await cp(new URL('../' + file, import.meta.url), join(isolated, file));
+  }
+  await writeFile(join(isolated, 'controlled-evals/archive.mjs'), "throw new Error('Source dependencies must not be loaded by the reporter');");
+  const isolatedInput = join(f.root, 'isolated-input.json');
+  await writeFile(isolatedInput, JSON.stringify({ ...input, controllerArchiveCli: undefined, runsOut: join(f.root, 'isolated-collected'), campaignOut: join(f.root, 'isolated-campaign.json') }));
+  const isolatedResult = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `
+    import {readFile} from 'node:fs/promises';
+    const {aggregateProtocolEvalCampaign}=await import(${JSON.stringify(pathToFileURL(join(isolated, 'runner-protocol-eval-campaign.mjs')).href)});
+    const result=await aggregateProtocolEvalCampaign(JSON.parse(await readFile(${JSON.stringify(isolatedInput)},'utf8')));
+    console.log(JSON.stringify(result.controlledCosts));
+  `], { cwd: isolated, env: { PATH: process.env.PATH,
+    PAPERCLIP_RUNNER_EVAL_ARCHIVE_CLI: input.controllerArchiveCli ?? fileURLToPath(new URL('./archive.mjs', import.meta.url)) }, timeout: 20000 });
+  assert.equal(JSON.parse(isolatedResult.stdout).knownUsd, result.controlledCosts.knownUsd);
+  assert.equal(JSON.parse(isolatedResult.stdout).heldUsd, result.controlledCosts.heldUsd);
   const publicRoot = join(f.root, 'public');
   await sanitizeProtocolEvalRuns({ runsRoot: input.runsOut, publicRunsRoot: publicRoot });
   assert.deepEqual((await readdir(join(publicRoot, 'attempt-0'))).sort(), ['artifact.json', 'case.json', 'config.json', 'score.json']);
@@ -885,4 +826,43 @@ test('retained failure codes distinguish native startup, child exit and invalid 
   assert.equal((await child.run()).report.failure, 'child_failed');
   const artifact = await fixture(t, { missingRoute: true, requests: 0 });
   assert.equal((await artifact.run()).report.failure, 'artifact_invalid');
+});
+
+
+test('model readiness rejects a missing terminal model receipt even when its reservation has a reviewed bound', async t => {
+  const f = await fixture(t, { requests: 1 });
+  f.manifest.overhead.accountingReadiness = 'model_requests';
+  for (const component of f.manifest.overhead.components) delete component.provisionalBound;
+  await f.save();
+  const result = await f.run(0, async () => Response.json({ error: 'synthetic refusal' }, { status: 429 }));
+  assert.equal(result.report.failure, 'request_accounting_unbounded');
+  const summary = await summarizeControlledCampaign(f.manifest);
+  assert.equal(summary.incompleteAttempts, 1);
+  assert.equal(summary.heldUsd, '0.014000000');
+  assert.equal(summary.operatingReconciliation, 'pending');
+});
+
+
+test('model readiness rejects zero model requests and keeps the full allocation', async t => {
+  const f = await fixture(t, { requests: 0 });
+  f.manifest.overhead.accountingReadiness = 'model_requests';
+  for (const component of f.manifest.overhead.components) delete component.provisionalBound;
+  await f.save();
+  const result = await f.run();
+  assert.equal(result.report.failure, 'request_accounting_unbounded');
+  assert.equal(result.report.accounting.requests.length, 0);
+  const summary = await summarizeControlledCampaign(f.manifest);
+  assert.equal(summary.incompleteAttempts, 1); assert.equal(summary.heldUsd, '0.014000000');
+});
+
+test('mixed-policy private histories keep the pending operating reconciliation warning', async t => {
+  const model = await fixture(t, { requests: 1 }), strict = await fixture(t, { requests: 1 });
+  model.manifest.campaignId = 'model-readiness-history';
+  model.manifest.overhead.accountingReadiness = 'model_requests';
+  for (const component of model.manifest.overhead.components) delete component.provisionalBound;
+  await model.save(); await model.run(); await strict.run();
+  const bundles = await Promise.all([model, strict].map(f => packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0', environment: f.environment })));
+  const history = await summarizeControlledEvidence(bundles);
+  assert.equal(history.incompleteAttempts, 0); assert.equal(history.operatingHeldUsd, '0.008000000');
+  assert.equal(history.accountingReadiness, undefined); assert.equal(history.operatingReconciliation, 'pending');
 });

@@ -19,6 +19,37 @@ cleanup run. This includes descriptor reads that fail inside runtime selection. 
 preparation failure; another owner or a stale claim prevents cleanup. Settling
 that claim and recording file retention share a transaction.
 
+Modern `remoteWorkspace` preparation references use the same failure-retention
+producer as workspace-sync descriptors. A failed native run can also retain an
+expired `awaiting_runner_reattach` coordinator after its task execution lock was
+released. The orphan-lease owner may record a file-only preservation obligation
+for that historical state only when the exact allocation remains active,
+unreleased and ephemeral. It rechecks the task, run, coordinator generation,
+prepared workspace writer, complete allocation history, current controller and
+cleanup state under short row locks. A reusable allocation, accepted result,
+competing writer, manual recovery state or ambiguous cleanup stays held. The
+presence of a Stop-only marker remains a hold even when its value is invalid.
+
+The transaction pins the existing StopAndRetain intent before provider I/O. The
+ordinary cleanup owner stops only the recorded allocation and rechecks all its
+current owners before dispatch. Normal checkpoint restart must first publish its
+task and coordinator claim; that claim prevents preservation intake. After a pin,
+the released task execution lock prevents an observed run from resuming itself.
+No row lock spans provider or archive I/O. Conflicting native or cleanup owners
+produce a nonblocking busy result after transaction rollback.
+
+Only matching source and generation fingerprints plus the exact stopped-and-retained
+receipt let the native environment settlement owner retire that stale coordinator
+into manual terminal reconciliation. The existing workspace worker then verifies
+and saves the original files. The interrupted provider checkpoint and its unknown
+effects remain unknown; this path admits no provider turn, accepts no result and
+changes no task status. A changed or malformed modern workspace claim remains a
+cleanup hold even when it is ineligible for automatic preservation. It cannot fall
+through to destructive orphan cleanup. Invalid workspace authority is refused
+without throwing or stopping preservation of the next source in the batch.
+Already released or mismatched historical
+sources require their owning reconciliation and are not rearmed by this path.
+
 The reconciliation candidate scan selects the complete workspace-sync record and
 the native status wake identifier from each saved run. It keeps their JSON types
 and reads full evidence later where finalization or recovery needs it. Saved
@@ -79,6 +110,32 @@ keeps a live copyback from losing its lock only because filesystem work has no
 database statements. It does not disable the database timeout or reconnect a
 failed lock session. Publication still requires the physical connection and
 the exact durable owner token. A disabled timeout adds no periodic probe.
+
+## Remote startup cancellation and retained uncertainty
+
+Remote artifact staging can outlast the transport's shutdown preparation wait.
+The remote launcher keeps cancellation until staging settles and checks it
+before launch dispatch. A cancelled, undispatched launch starts no process. A
+stop during an in-flight launch waits for the exact process identity before the
+existing guarded signal path can run. An accepted signal request does not prove
+that the process stopped.
+
+Read-only health retries are bounded by three attempts and 30 seconds. An
+unavailable health RPC, missing identity, or changed process generation retains
+the allocation and its files. A healthy listener alone is not identity or stop
+proof. Confirmed predecessor exit can permit bounded transport recovery, but an
+unrelated listener must remain untouched. A close timeout does not certify
+cleanup settlement, file restoration, or provider continuation admission.
+
+A runner receipt that its reconnect grace expired ends that incident. The
+transport recognizes both the coded error and the runner's plain-text message.
+It must not open another recovery window after that receipt.
+
+Verify file restoration independently of runner connection and provider activity.
+A file hash receipt proves the restored bytes only. The normal continuation gates
+must still check current ownership, pause, approval and budget state. Retained
+unknown effects remain unknown; successful file recovery does not authorize
+replay of a historical turn.
 
 ## Automatic cloud recovery
 

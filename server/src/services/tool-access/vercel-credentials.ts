@@ -1,3 +1,4 @@
+import { connectionActorUserId } from "./actor.js";
 import type { ActorInfo } from "./types.js";
 import { remoteEndpoint } from "./connection-methods.js";
 import { and, eq } from "drizzle-orm";
@@ -140,7 +141,7 @@ export function createVercelCredentialService(db: Db, now: () => Date, vercelCon
     actor?: ActorInfo,
   ) {
     const actorUserId =
-      actor?.actorType === "user" ? (actor.actorId ?? null) : null;
+      connectionActorUserId(actor);
     if (actorUserId) {
       const [personal] = await db
         .select()

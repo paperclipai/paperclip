@@ -1,3 +1,4 @@
+import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { and, eq, sql } from "drizzle-orm";
 import { heartbeatRuns, issueComments, issueRecoveryActions, type Db } from "@paperclipai/db";
 import { writeExecutionControl } from "./execution-control-notifications.js";
@@ -11,6 +12,7 @@ export async function adoptSystemRecovery(db: Db, source: WorkspaceRecoverySourc
       .where(and(eq(issueRecoveryActions.companyId, source.companyId), eq(issueRecoveryActions.id, source.actionId),
         eq(issueRecoveryActions.sourceIssueId, source.issueId))).for("update");
     if (!existing || existing.evidence.systemRecovery) return;
+    await notifyIssueRecovery(tx, { companyId: source.companyId });
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
     const state = createSystemRecovery(source.runId);
     // Atomic, once per source. An exhausted previous execution budget is history;
@@ -71,7 +73,7 @@ export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySour
       sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,revision}' = ${String(previous.revision)}`))
       .returning({ id: issueRecoveryActions.id });
     return Boolean(updated);
-  });
+  }, { companyId: source.companyId });
 }
 
 export async function loadSystemRecovery(db: Db, source: WorkspaceRecoverySourceIdentity) {

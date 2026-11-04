@@ -67,7 +67,7 @@ function suiteSummaryFor(
   return campaign.suites.find((suite) => suite.suiteId === suiteId);
 }
 
-export function renderReportHistory(history: RunnerE2EHistoryIndex | undefined) {
+export function renderReportHistory(history: RunnerE2EHistoryIndex | undefined, options: { chartsOnly?: boolean } = {}) {
   if (!history || history.campaigns.length === 0) {
     return `<section class="history-section" id="history"><div class="section-heading"><div><p class="eyebrow">History</p><h2>Campaign trends</h2></div><p>No historical campaigns have been published yet.</p></div></section>`;
   }
@@ -211,7 +211,7 @@ export function renderReportHistory(history: RunnerE2EHistoryIndex | undefined) 
     </nav>
     <div class="trend-grid">${charts}</div>
     ${suiteCharts}
-    <div class="history-filters">
+    ${options.chartsOnly ? "" : `<div class="history-filters">
       <label>Search <input type="search" data-history-query placeholder="SHA, model, profile, case"></label>
       <label>Suite <select data-history-suite><option value="">All suites</option>${suiteIds.map((suiteId) => `<option value="${html(suiteId)}">${html(suiteId)}</option>`).join("")}</select></label>
       <label>Status <select data-history-status><option value="">All statuses</option><option value="passed">Passed</option><option value="failed">Failed</option><option value="incomplete">Incomplete</option></select></label>
@@ -220,7 +220,7 @@ export function renderReportHistory(history: RunnerE2EHistoryIndex | undefined) 
       <label class="history-checkbox"><input type="checkbox" data-history-partial> Include partial campaigns</label>
     </div>
     <div class="history-table-wrap"><table class="history-table"><thead><tr><th>Campaign</th><th>Paperclip SHA</th><th>Result</th><th>Tokens</th><th>Cost</th><th>Execution</th></tr></thead><tbody>${rows}</tbody></table></div>
-    <p class="history-empty" data-history-empty hidden>No campaigns match these filters.</p>
+    <p class="history-empty" data-history-empty hidden>No campaigns match these filters.</p>`}
   </section>`;
 }
 

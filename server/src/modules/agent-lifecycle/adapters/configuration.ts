@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { conflict } from "../../../errors.js";
+import { agentConfigurationRevision } from "../../../lib/agent-configuration-revision.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { agents, type Db } from "@paperclipai/db";
@@ -13,6 +14,9 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
   assertConfigurationFields(data);
   const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("no key update");
   if (!current) return null;
+  if (options?.expectedConfigurationRevision && options.expectedConfigurationRevision !== agentConfigurationRevision(current)) {
+    throw conflict("Agent configuration changed while you were editing. Reload the saved configuration and apply your changes again.");
+  }
   if (options?.expectedConfiguration && Object.entries(options.expectedConfiguration).some(([key, value]) =>
     !isDeepStrictEqual(current[key as keyof typeof current], value))) {
     throw conflict("Agent configuration changed while saving. Refresh the roster and review the changes again.");
@@ -24,7 +28,9 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
   const prepareSetup = changed && current.lifecycleHolds.length === 1 && current.lifecycleHolds[0] === "setup"
     && ["paused", "preparing", "verifying"].includes(current.lifecycleState)
     && await effects.setupRequiresPreparation(tx, current.companyId,
-      Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId") ? patch.defaultEnvironmentId : current.defaultEnvironmentId);
+      Object.prototype.hasOwnProperty.call(patch, "defaultEnvironmentId") ? patch.defaultEnvironmentId : current.defaultEnvironmentId,
+      { adapterType: patch.adapterType ?? current.adapterType,
+        adapterConfig: Object.prototype.hasOwnProperty.call(patch, "adapterConfig") ? patch.adapterConfig : current.adapterConfig });
   const invalidate = changed && (["preparing", "verifying", "resuming"].includes(current.lifecycleState) || prepareSetup);
   if (invalidate) await effects.notifyWork(tx);
   const [updated] = await tx.update(agents).set({ ...patch, updatedAt: new Date(), ...(invalidate ? {
@@ -33,7 +39,8 @@ export async function updateAgentConfiguration(tx: Db, effects: LifecycleEffects
     ...(!prepareSetup && current.lifecycleHolds.includes("setup") && ["preparing", "verifying"].includes(current.lifecycleState)
       ? { lifecycleState: "pausing" as const } : {}),
     lifecycleOperation: { ...current.lifecycleOperation!, id: randomUUID(), hostComplete: false,
-      completedPluginIds: [], leaseOwner: undefined, leaseUntil: undefined, retryAt: undefined },
+      completedPluginIds: [], attempts: 0, leaseOwner: undefined, leaseUntil: undefined,
+      retryAt: undefined, retryRequired: undefined, verificationFailures: undefined },
   } : {}) }).where(eq(agents.id, id)).returning();
   await effects.completeConfiguration(tx, current, updated, patch, options, publications);
   return agentRecordQueries(tx).getById(id);

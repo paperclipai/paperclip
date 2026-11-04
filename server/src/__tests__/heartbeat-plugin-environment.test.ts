@@ -113,7 +113,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
         workspaceProvider: { modes: ["shared_workspace", "isolated_workspace", "operator_branch"], strategies: ["project_primary", "git_worktree"] },
         entrypoints: { worker: "worker.js" },
         environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", supportsTasks: true, warmTaskVersion: 1, configSchema: { type: "object" } }] } });
-    await db.insert(environments).values({ id: environmentId, companyId, name: "Tasks", driver: "plugin", status: "active",
+    await db.insert(environments).values({ id: environmentId, name: "Tasks", driver: "plugin", status: "active",
       config: { pluginKey, driverKey: "tasks", driverConfig: {} } });
     await db.insert(agents).values({ id: agentId, companyId, name: "Task agent", role: "engineer", status: "idle",
       adapterType: "paperclip_runner", adapterConfig: { provider: "codex", model: "gpt-6.1-sol", lifecycleMode: "warm" }, runtimeConfig: {},
@@ -234,7 +234,6 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     } as any);
     await db.insert(environments).values({
       id: environmentId,
-      companyId,
       name: "Plugin Sandbox",
       driver: "plugin",
       status: "active",
@@ -278,6 +277,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     }, { timeout: 5_000 });
 
     expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentAcquireLease", {
+      creationOperationId: expect.any(String),
       driverKey: "sandbox",
       companyId,
       environmentId,
@@ -527,7 +527,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       expect(latestOverride?.status).toBe("succeeded");
     }, { timeout: 5_000 });
 
-    const acquireCalls = workerManager.call.mock.calls
+    const acquireCalls = vi.mocked(workerManager.call).mock.calls
       .filter(([, method]) => method === "environmentAcquireLease");
     const acquirePayloads = acquireCalls.map(([, , payload]) => payload);
 
@@ -647,7 +647,6 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     await db.insert(environments).values([
       {
         id: oldEnvironmentId,
-        companyId,
         name: "QA SSH",
         driver: "plugin",
         status: "active",
@@ -663,7 +662,6 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
       },
       {
         id: newEnvironmentId,
-        companyId,
         name: "QA E2B",
         driver: "plugin",
         status: "active",
@@ -745,6 +743,7 @@ describeEmbeddedPostgres("heartbeat plugin environments", () => {
     }, { timeout: 5_000 });
 
     expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentAcquireLease", {
+      creationOperationId: expect.any(String),
       driverKey: "sandbox",
       companyId,
       environmentId: newEnvironmentId,

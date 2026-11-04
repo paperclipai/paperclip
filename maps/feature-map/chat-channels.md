@@ -29,6 +29,10 @@ Message the configured bot/address from its external provider and follow the cor
 
 ### `endpoint-management`
 
+Delegated setup can save ordinary bot tokens and API keys. Provider verification
+keys require the addressed human credential-entry step or verified provider
+provisioning. Open the saved setup link as that person to complete the request.
+
 Open `/apps/chat/:endpointId/settings` and the endpoint’s other available tabs; identity confirmation uses `/chat-identity/confirm`.
 
 ### `outbound-agentmail`
@@ -177,6 +181,12 @@ covers these views, pending/failure/success, mobile, and light theme with simula
 provider responses. Verify actual credential validity and restored delivery
 separately against GitHub; a Storybook success does not establish live recovery.
 
+For an agent-requested GitHub credential handoff, open the saved link as the
+addressed human. A fresh App opens import; a configured App opens replacement
+through reconnect and retains credentials omitted from the request. Complete
+the requested credential entry and confirm the endpoint identity before
+expecting task continuation.
+
 For GitHub, submit a disposable PR and verify the summary heading uses the bot's
 display name and the check remains **Paperclip Review**. For two separate bots on one PR, verify
 their App-scoped checks and comments remain independent.
@@ -256,3 +266,7 @@ verified controller and environment cleanup; an unknown executor remains held.
 After successful admission, reload and verify that the prior skipped receipt does
 not strand a later real provider reply or tree resume. Provider fixtures support
 this behavior; live fixed-source runtime and destination proof remain separate.
+
+### `delegated-configuration`
+
+See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).

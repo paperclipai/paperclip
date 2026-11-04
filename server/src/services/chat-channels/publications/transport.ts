@@ -9,7 +9,6 @@ import type { EndpointRow, DbOrTransaction } from "../runtime-types.js";
 
 import { createChatPublicationReplacement } from "../publication-replacement.js";
 
-import { voiceSessionService } from "../../voice/voice-session-service.js";
 
 import { voiceSessionStore } from "../../voice/voice-session-store.js";
 import { type ChatRuntime } from "../../chat-runtime.js";
@@ -88,12 +87,10 @@ type PublicationTransportOptions = {
   runtimeFor: (endpoint: EndpointRow) => Promise<ChatEndpointRuntime>;
   runtimeGeneration: (setup: ChatEndpointSetupState) => number;
   CAPABILITIES: Record<ChatProvider, ChatAdapterCapabilities>;
-  voice: Pick<ReturnType<typeof voiceSessionService>, "pushReplies">;
   voiceStore: Pick<ReturnType<typeof voiceSessionStore>, "enqueuePublication">;
-  scheduleMessageProcessing: (task: () => Promise<void>) => void;
 };
 export function createChatPublicationTransport(db: Db, options: PublicationTransportOptions) {
-  const { endpointRecord, fetchImpl, getTaskBaseUrl, publicationFiles, receiptReactionCompletionRunId, runIdFromMilestonePublication, runtime, runtimeFor, runtimeGeneration, CAPABILITIES, voice, voiceStore, scheduleMessageProcessing } = options;
+  const { endpointRecord, fetchImpl, getTaskBaseUrl, publicationFiles, receiptReactionCompletionRunId, runIdFromMilestonePublication, runtime, runtimeFor, runtimeGeneration, CAPABILITIES, voiceStore } = options;
   const { deliverPhotonPublication } = createPhotonPublicationDelivery(db, { endpointRecord, runtimeGeneration, runtime, receiptReactionCompletionRunId, getTaskBaseUrl });
 
 
@@ -193,7 +190,6 @@ function safeCardForPublication(
   async function postSafePublication(input: PublicationTransportInput) {
     if (input.endpoint.provider === "speko") {
       const receipt = await voiceStore.enqueuePublication(input.endpoint.companyId, input.publication.id);
-      scheduleMessageProcessing(() => voice.pushReplies(25, input.endpoint.companyId, input.endpoint.id).then(() => undefined));
       return receipt;
     }
     if (input.endpoint.provider === "github" && ["failed", "completed"].includes(input.payload.progressState ?? "") &&

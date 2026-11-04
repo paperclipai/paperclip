@@ -33,6 +33,47 @@ export async function hasPublishedGitHubReview(db: Db, binding: {
 type WaitRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "companyId" | "agentId" | "responsibleUserId" | "activeIdentityContextId" | "nativeIssueId" | "issueId" | "contextSnapshot">;
 
+const inheritedReviewQueries = new WeakMap<Db, ReturnType<typeof prepareInheritedReviewQuery>>();
+
+function prepareInheritedReviewQuery(db: Db) {
+  return db.select({
+    id: chatGitHubReviews.id, endpointId: chatGitHubReviews.endpointId,
+    state: chatGitHubReviews.state, repository: chatGitHubReviews.repository,
+    repositoryId: chatGitHubReviews.repositoryId, headSha: chatGitHubReviews.headSha,
+    reviewedCommit: sql<unknown>`${chatGitHubReviews.assessment}->'reviewedCommit'`, reviewRunId: chatGitHubReviews.runId,
+    connectionEnabled: toolConnections.enabled, connectionStatus: toolConnections.status,
+    reviewAgentId: heartbeatRuns.agentId, reviewCompanyId: heartbeatRuns.companyId,
+    resourceRepository: chatEndpointResources.providerResourceId,
+    resourceRepositoryId: sql<string | null>`${chatEndpointResources.metadata}->>'providerRepositoryId'`,
+    pullNumber: chatGitHubReviews.pullNumber, thread: chatConversations.externalThreadId,
+  }).from(chatMessageLinks)
+    .innerJoin(chatConversations, and(eq(chatConversations.id, chatMessageLinks.conversationId),
+      eq(chatConversations.companyId, sql.placeholder("companyId")), eq(chatConversations.issueId, sql.placeholder("issueId"))))
+    .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatConversations.endpointId),
+      eq(chatEndpoints.companyId, sql.placeholder("companyId")), eq(chatEndpoints.provider, "github"),
+      eq(chatEndpoints.assignedAgentId, sql.placeholder("agentId"))))
+    .leftJoin(toolConnections, and(eq(toolConnections.id, chatEndpoints.connectionId),
+      eq(toolConnections.companyId, sql.placeholder("companyId"))))
+    .innerJoin(chatEndpointResources, and(eq(chatEndpointResources.id, chatConversations.resourceId),
+      eq(chatEndpointResources.companyId, sql.placeholder("companyId")), eq(chatEndpointResources.endpointId, chatEndpoints.id)))
+    .innerJoin(chatGitHubReviews, and(eq(chatGitHubReviews.endpointId, chatEndpoints.id),
+      eq(chatGitHubReviews.companyId, sql.placeholder("companyId")), eq(chatGitHubReviews.issueId, sql.placeholder("issueId"))))
+    .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, chatGitHubReviews.runId))
+    .where(and(eq(chatMessageLinks.companyId, sql.placeholder("companyId")), eq(chatMessageLinks.commentId, sql.placeholder("commentId")),
+      eq(chatMessageLinks.direction, "inbound")))
+    .orderBy(desc(chatGitHubReviews.createdAt), desc(chatGitHubReviews.id)).limit(1)
+    .prepare("inherited_github_review_wait");
+}
+
+function inheritedReviewQuery(db: Db) {
+  let query = inheritedReviewQueries.get(db);
+  if (!query) {
+    query = prepareInheritedReviewQuery(db);
+    inheritedReviewQueries.set(db, query);
+  }
+  return query;
+}
+
 /** Passive review waits inherit the same accepted requester lineage as GitHub
  * tools. This is not a grant to publish, run a monitor, or reuse attachments. */
 export async function readInheritedGitHubReviewWait(db: Db, run: WaitRun) {
@@ -45,37 +86,14 @@ export async function readInheritedGitHubReviewWait(db: Db, run: WaitRun) {
     throw error;
   }
   if (!commentId) return null;
-  const [review] = await db.select({
-    id: chatGitHubReviews.id, endpointId: chatGitHubReviews.endpointId,
-    state: chatGitHubReviews.state, repository: chatGitHubReviews.repository,
-    repositoryId: chatGitHubReviews.repositoryId, headSha: chatGitHubReviews.headSha,
-    assessment: chatGitHubReviews.assessment, reviewRunId: chatGitHubReviews.runId,
-    connectionEnabled: toolConnections.enabled, connectionStatus: toolConnections.status,
-    reviewAgentId: heartbeatRuns.agentId, reviewCompanyId: heartbeatRuns.companyId,
-    resourceRepository: chatEndpointResources.providerResourceId,
-    resourceRepositoryId: sql<string | null>`${chatEndpointResources.metadata}->>'providerRepositoryId'`,
-    pullNumber: chatGitHubReviews.pullNumber, thread: chatConversations.externalThreadId,
-  }).from(chatMessageLinks)
-    .innerJoin(chatConversations, and(eq(chatConversations.id, chatMessageLinks.conversationId),
-      eq(chatConversations.companyId, run.companyId), eq(chatConversations.issueId, run.nativeIssueId)))
-    .innerJoin(chatEndpoints, and(eq(chatEndpoints.id, chatConversations.endpointId),
-      eq(chatEndpoints.companyId, run.companyId), eq(chatEndpoints.provider, "github"),
-      eq(chatEndpoints.assignedAgentId, run.agentId)))
-    .leftJoin(toolConnections, and(eq(toolConnections.id, chatEndpoints.connectionId),
-      eq(toolConnections.companyId, run.companyId)))
-    .innerJoin(chatEndpointResources, and(eq(chatEndpointResources.id, chatConversations.resourceId),
-      eq(chatEndpointResources.companyId, run.companyId), eq(chatEndpointResources.endpointId, chatEndpoints.id)))
-    .innerJoin(chatGitHubReviews, and(eq(chatGitHubReviews.endpointId, chatEndpoints.id),
-      eq(chatGitHubReviews.companyId, run.companyId), eq(chatGitHubReviews.issueId, run.nativeIssueId)))
-    .leftJoin(heartbeatRuns, eq(heartbeatRuns.id, chatGitHubReviews.runId))
-    .where(and(eq(chatMessageLinks.companyId, run.companyId), eq(chatMessageLinks.commentId, commentId),
-      eq(chatMessageLinks.direction, "inbound")))
-    .orderBy(desc(chatGitHubReviews.createdAt), desc(chatGitHubReviews.id)).limit(1);
+  const [review] = await inheritedReviewQuery(db).execute({
+    companyId: run.companyId, issueId: run.nativeIssueId, agentId: run.agentId, commentId,
+  });
   // A newer unreviewed head cannot inherit the prior head's publication.
   if (!review) return null;
   if (!review.connectionEnabled || review.connectionStatus !== "active" || review.state !== "completed" ||
       review.reviewCompanyId !== run.companyId || review.reviewAgentId !== run.agentId ||
-      review.assessment?.reviewedCommit !== review.headSha ||
+      review.reviewedCommit !== review.headSha ||
       review.resourceRepository.toLowerCase() !== review.repository.toLowerCase() ||
       review.resourceRepositoryId !== review.repositoryId ||
       review.thread.toLowerCase() !== `github:${review.repository}:${review.pullNumber}`.toLowerCase()) return { kind: "revoked" as const };

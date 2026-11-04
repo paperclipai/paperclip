@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { useState } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { createRoot, type Root } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -20,6 +21,8 @@ import { CodexLocalConfigFields } from "../adapters/codex-local/config-fields";
 import type { AdapterConfigFieldsProps } from "../adapters/types";
 import { buildClaudeLocalConfig } from "@paperclipai/adapter-claude-local/ui";
 import { DEFAULT_CODEX_LOCAL_MODEL } from "@paperclipai/adapter-codex-local";
+import { ConfigurationTab } from "../pages/AgentDetail";
+import { ConfigurationTab as ClassicConfigurationTab } from "../pages/AgentDetail.production";
 
 const mockAgentsApi = vi.hoisted(() => ({
   get: vi.fn(),
@@ -103,9 +106,9 @@ vi.mock("../lib/clipboard", () => ({
 
 vi.mock("../context/CompanyContext", () => ({
   useCompany: () => ({
-    companies: [{ id: "company-1", name: "Paperclip" }],
+    companies: [{ id: "company-1", name: "Paperclip", issuePrefix: "CO" }],
     selectedCompanyId: "company-1",
-    selectedCompany: { id: "company-1", name: "Paperclip" },
+    selectedCompany: { id: "company-1", name: "Paperclip", issuePrefix: "CO" },
     selectionSource: "bootstrap",
     loading: false,
     error: null,
@@ -764,7 +767,7 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed saved agent" });
   });
 
-  it.each(["codex_local", "claude_local"])("upgrades a saved %s in one click with pending edits", async adapterType => {
+  it.each(["codex_local", "claude_local", "grok_local"])("upgrades a saved %s in one click with pending edits", async adapterType => {
     mockAdaptersApi.list.mockResolvedValueOnce([{ type: adapterType, supportedRunners: ["legacy", "paperclip"], defaultRunner: "paperclip" }]);
     const result = await renderForm([], { adapterType, adapterConfig: { model: "existing-model", effort: "high" } });
     roots.push(result.root);
@@ -976,8 +979,21 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.container.textContent).toContain("is ignored. The agent can still run.");
   });
 
-  it.each(["codex", "claude"].flatMap(harness => ["modelReasoningEffort", "reasoningEffort", "effort"].map(key => ({ harness, key }))))("hydrates saved effort and clears explicit Auto for $harness ($key)", async ({ harness, key }) => {
-    const profile = harness === "codex" ? { provider: "codex", model: "gpt-5.6-sol" } : { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" };
+  it.each(["cursor_cloud", "paperclip_runner"])("does not offer unsupported thinking effort for saved Cursor Cloud on %s", async adapterType => {
+    const result = await renderForm([], { adapterType, adapterConfig: {
+      ...(adapterType === "paperclip_runner" ? { provider: "cursor_cloud", lifecycleMode: "per_turn" } : {}),
+      model: "caller-model", repoUrl: "https://github.com/acme/repo",
+    } });
+    roots.push(result.root);
+    expect(result.container.querySelector('[aria-label="Thinking effort"]')).toBeNull();
+    if (adapterType === "paperclip_runner") {
+      expect(result.container.querySelector('[aria-label="Model"]')).not.toBeNull();
+      expect(result.container.textContent).toContain("Experimental");
+    }
+  });
+
+  it.each(["codex", "claude", "grok"].flatMap(harness => ["modelReasoningEffort", "reasoningEffort", "effort"].map(key => ({ harness, key }))))("hydrates saved effort and clears explicit Auto for $harness ($key)", async ({ harness, key }) => {
+    const profile = harness === "codex" ? { provider: "codex", model: "gpt-5.6-sol" } : { provider: "acpx", acpxAgent: harness, model: harness === "grok" ? "grok-4.7" : "claude-opus-5-5" };
     const result = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: { ...profile, [key]: "high" } });
     roots.push(result.root);
     const effort = result.container.querySelector('[aria-label="Thinking effort"]');
@@ -1279,8 +1295,8 @@ describe("AgentConfigForm environment selector", () => {
     }
   });
 
-  it("saves Grok 4.7 reasoning effort using the runtime key", async () => {
-    const result = await renderForm([], { adapterType: "grok_local", adapterConfig: { model: "grok-4.7", reasoningEffort: "high" } });
+  it.each(["grok_local", "paperclip_runner"])("saves Grok 4.7 reasoning effort using the runtime key on %s", async adapterType => {
+    const result = await renderForm([], { adapterType, adapterConfig: { ...(adapterType === "paperclip_runner" ? { provider: "acpx", acpxAgent: "grok" } : {}), model: "grok-4.7", reasoningEffort: "high" } });
     roots.push(result.root);
     const effort = [...result.container.querySelectorAll("button")].find(button => button.textContent?.trim() === "High")!;
     expect(effort).toBeTruthy();
@@ -1306,6 +1322,89 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).not.toContain("Environment override");
     expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
+  });
+
+  it.each([null, "saved-computer"])("tests native Cursor Cloud without a Computer when the saved target is %s", async defaultEnvironmentId => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockInstanceSettingsApi.get.mockResolvedValue({ defaultEnvironmentId: "instance-computer" });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "cursor_cloud", supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" }]);
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner", defaultEnvironmentId,
+      adapterConfig: { provider: "cursor_cloud", model: "claude-sonnet-4-5", repoUrl: "https://github.com/example/qualification" },
+    }, { showAdapterTestEnvironmentButton: true });
+    roots.push(result.root);
+
+    expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
+    await runTest(result.container);
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-1", "paperclip_runner", expect.objectContaining({ environmentId: null, agentId: "agent-1" }));
+    expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
+    expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
+  });
+
+  it("clears a Computer inherited by a new native Cursor Cloud draft", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "cursor_cloud", supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" }]);
+    const result = await renderCreateForm([], {
+      adapterType: "paperclip_runner", runner: "paperclip", defaultEnvironmentId: "previous-computer",
+      adapterSchemaValues: { provider: "cursor_cloud", model: "claude-sonnet-4-5" },
+    });
+    roots.push(result.root);
+    expect(result.onChange).toHaveBeenCalledWith({ defaultEnvironmentId: "" });
+    expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
+  });
+
+  it("tests the native default explicitly when creating Cursor Cloud with automatic runner selection", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableEnvironments: true, enableManagedSandboxOnly: true });
+    mockAdaptersApi.list.mockResolvedValue([{ type: "cursor_cloud", supportedRunners: ["paperclip"], defaultRunner: "paperclip" }]);
+    const result = await renderCreateForm([], {
+      adapterType: "cursor_cloud", runner: "auto", model: "claude-sonnet-4-5",
+      adapterSchemaValues: { provider: "cursor_cloud", repoUrl: "https://github.com/example/qualification" },
+    }, { showAdapterTestEnvironmentButton: true });
+    roots.push(result.root);
+    await runTest(result.container);
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledExactlyOnceWith("company-1", "cursor_cloud", expect.objectContaining({
+      environmentId: null, runner: "paperclip",
+    }));
+  });
+
+  it("requests the native Kimi model catalog while preserving an explicit saved model", async () => {
+    mockAgentsApi.adapterModels.mockResolvedValue([]);
+    const result = await renderForm([], {
+      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi", model: "explicit-kimi-model" },
+    });
+    roots.push(result.root);
+    await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ provider: "acpx", acpxAgent: "kimi" })));
+    expect(result.container.textContent).toContain("explicit-kimi-model");
+  });
+
+  it.each(["api_key", "subscription"] as const)("loads saved Antigravity %s models through its selected connection without a Claude fallback", async method => {
+    const binding = { provider: "google", method, mode: "responsible_user" } as const;
+    const accounts = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({ currentUserId: "you", canManageConnections: true, connections: [{
+      id: "google-account", grantId: "google-grant", companyId: "company-1", provider: "google", method, name: "Verified Google",
+      ownership: "personal", ownerUserId: "you", isDefault: true, status: "connected",
+    }] });
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "google-exact-model", label: "My Google model" }]);
+    try {
+      const result = await renderForm([makeEnvironment({ id: "local-1", name: "Local", driver: "local" })], {
+        adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "antigravity", model: "google-exact-model" }, runtimeConfig: { aiConnection: binding },
+      });
+      roots.push(result.root);
+      await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({
+        provider: "acpx", acpxAgent: "antigravity", aiConnection: binding, agentId: "agent-1",
+      })));
+      expect(result.container.textContent).toContain("My Google model");
+      expect(mockAgentsApi.adapterModels.mock.calls.every(call => call[1] === "paperclip_runner" && call[2]?.acpxAgent === "antigravity")).toBe(true);
+      await clickByText(result.container, "My Google model");
+      const search = document.body.querySelector<HTMLInputElement>('[placeholder="Search models... (type to create)"]');
+      expect(search).not.toBeNull();
+      await act(() => setInputValue(search!, "manual-exact-google-model"));
+      await flushReact();
+      await clickElement(Array.from(document.body.querySelectorAll('[role="option"]')).find(option => option.textContent?.includes("Use manual model")));
+      await clickByText(result.container, "Save");
+      expect(result.onSave).toHaveBeenCalledWith(expect.objectContaining({ adapterConfig: expect.objectContaining({
+        provider: "acpx", acpxAgent: "antigravity", model: "manual-exact-google-model",
+      }) }));
+    } finally { accounts.mockRestore(); }
   });
 
   it("refreshes Copilot models after reconnecting the same responsible-user account", async () => {
@@ -1480,8 +1579,38 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
 
     expect(result.container.textContent).toContain("Secret access");
-    expect(result.container.textContent).toContain("No secrets are bound to this agent yet.");
+    expect(result.container.textContent).toContain("No company secret references are bound to this agent yet.");
     expect(result.container.textContent).not.toContain("Environment variables");
+  });
+
+  it.each([
+    { variant: "current", adapterType: "paperclip_runner" },
+    { variant: "current", adapterType: "claude_local" },
+    { variant: "classic", adapterType: "paperclip_runner" },
+    { variant: "classic", adapterType: "claude_local" },
+  ])("shows saved $adapterType environment credentials on the $variant agent Secrets page", async ({ variant, adapterType }) => {
+    mockEnvironmentsApi.list.mockResolvedValue([]);
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const agent = { ...makeAgent({ adapterType, adapterConfig: {
+      provider: "acpx", acpxAgent: "claude",
+      env: { RELEASE_WEBHOOK: { type: "plain", value: "***REDACTED***" } },
+    } }), chainOfCommand: [], access: { canAssignTasks: false, taskAssignSource: "none" as const, membership: null, grants: [] } };
+    const Settings = variant === "current" ? ConfigurationTab : ClassicConfigurationTab;
+    await act(async () => renderFormView(root, createFormQueryClient(), <MemoryRouter>
+      <Settings agent={agent} companyId="company-1" content="secrets"
+        onDirtyChange={vi.fn()} onSaveActionChange={vi.fn()} onCancelActionChange={vi.fn()} onSavingChange={vi.fn()}
+        updatePermissions={{ mutate: vi.fn(), isPending: false }} />
+    </MemoryRouter>));
+    await flushReact();
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Variable name"]')?.value).toBe("RELEASE_WEBHOOK");
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Variable value"]')?.value).toBe("***REDACTED***");
+    expect(container.textContent).toContain("Environment variables");
+    expect(container.textContent).toContain("Secret access");
+    expect(container.textContent).not.toContain("No environment variables");
   });
 
   it("shows concise Environment copy when one runnable non-local environment exists", async () => {
@@ -1659,6 +1788,23 @@ describe("AgentConfigForm environment selector", () => {
     expect(mockAgentsApi.qualifyRunner).toHaveBeenCalledWith("agent-1", computer.id, "company-1");
     expect(order).toEqual(["qualification", "runtime"]);
     expect(result.onSave).not.toHaveBeenCalled();
+  });
+
+  it("tests an available managed runner directly without a separate qualification request", async () => {
+    const computer = makeEnvironment({ id: "managed-computer", driver: "sandbox", status: "active",
+      config: { provider: "daytona", snapshot: "replacement-snapshot" }, metadata: { managedByPaperclip: true } });
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "opencode_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "paperclip" },
+      { type: "paperclip_runner", supportedRunners: ["paperclip"], defaultRunner: "paperclip" },
+    ]);
+    mockAgentsApi.qualifyRunner.mockRejectedValue(new Error("Separate qualification is unavailable."));
+    const result = await renderForm([computer], { adapterType: "paperclip_runner", defaultEnvironmentId: computer.id,
+      adapterConfig: { provider: "opencode", model: "example/model" } }, { showAdapterTestEnvironmentButton: true });
+    roots.push(result.root);
+    await runTest(result.container);
+    expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
+    expect(mockAgentsApi.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner",
+      expect.objectContaining({ environmentId: computer.id }));
   });
 
   it.each(["failed", "missing-proof"])("does not run the native runtime test after %s saved-computer qualification", async state => {

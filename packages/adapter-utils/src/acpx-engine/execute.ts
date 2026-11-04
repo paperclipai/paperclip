@@ -3623,9 +3623,22 @@ async function emitAcpxFailure(input: {
   childStderrTail: string | null;
 }> {
   const { ctx, prepared, err, phase, messageOverride, suppressChildStderrTail } = input;
+  const requestError = parseObject(err);
+  const data = parseObject(requestError.data);
+  const detail = typeof requestError.data === "string"
+    ? requestError.data
+    : asString(data.details, asString(data.message, ""));
   const rawMessage = err instanceof Error ? err.message : String(err);
-  const message = messageOverride ?? rawMessage;
+  const message = messageOverride ?? (detail
+    ? sanitizeTerminalSessionFailure({
+      category: "unknown",
+      title: rawMessage.includes(detail) ? rawMessage : `${rawMessage}\n${detail}`,
+    }, prepared.env, ctx.authToken, parseObject(ctx.config.env)).title ?? "ACP request failed."
+    : rawMessage);
   const classified = classifyError(err, phase);
+  if (typeof requestError.code === "number" && Number.isSafeInteger(requestError.code)) {
+    classified.errorMeta = { ...classified.errorMeta, rpcCode: requestError.code };
+  }
   const childStderrTail = suppressChildStderrTail
     ? null
     : await readChildStderrTail({ logPath: prepared.childStderrLogPath });
