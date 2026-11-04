@@ -91,3 +91,10 @@ it.each(["2:51:50 PM —", "14:51:50:", "14:51:50"])("reads an equivalent displa
 it.each(["## Repair (Riley)\n\n", "**Repair (Riley)** "])("reads an adjacent heading layout %s", heading => {
   expect(grade(account.replace("**Repair (Riley)**\n", heading))).toBe(true);
 });
+
+it.each(["on Monday's run", "during Today's run"])("does not turn a possessive day into the command actor: %s", day => {
+  expect(grade(account.replace("failed with exit 1", `failed ${day} with exit 1`))).toBe(true);
+});
+it.each(["engineer", "reviewer"])("rejects an explicit %s runner without assigning that role to the heading", role => {
+  expect(grade(account.replace("The verification command failed", `The verification command that the ${role} ran failed`))).toBe(false);
+});
