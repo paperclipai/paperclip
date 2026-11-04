@@ -525,6 +525,12 @@ describe("automatic retained workspace recovery", () => {
     if (mode === "inherited_session") await db.update(heartbeatRuns).set({ errorCode: "adapter_failed",
       sessionIdBefore: randomUUID() }).where(eq(heartbeatRuns.id, f.runId));
     const source = await run(f.runId);
+    const [completed] = mode === "inherited_session" ? await db.insert(heartbeatRuns).values({
+      companyId: f.companyId, issueId: f.issueId, agentId: source.agentId, status: "succeeded",
+      createdAt: new Date(source.createdAt.getTime() - 1000), finishedAt: source.createdAt,
+      sessionIdAfter: source.sessionIdBefore, resultJson: { summary: "Earlier turn completed" },
+    }).returning() : [];
+    if (completed) await db.update(heartbeatRuns).set({ retryOfRunId: completed.id }).where(eq(heartbeatRuns.id, source.id));
     const [failed] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, issueId: f.issueId,
       agentId: source.agentId, runtimeMode: "legacy", status: "failed", retryOfRunId: source.id,
       sessionIdBefore: source.sessionIdBefore,
@@ -534,7 +540,7 @@ describe("automatic retained workspace recovery", () => {
       contextSnapshot: { issueId: f.issueId, source: "issue.continuation_recovery" },
       resultJson: { stopReason: "adapter_failed", executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
     }).returning();
-    return { ...f, source, failed };
+    return { ...f, source, failed, completed };
   }
 
   it.each(["certified", "inherited_session"] as const)("admits one HTTP Retry through a failed automatic successor after its preparation ancestor is recovered: %s", async mode => {
@@ -560,6 +566,7 @@ describe("automatic retained workspace recovery", () => {
     finally { await saved.cleanup(); }
     expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body.requestId).toBe(receipt.requestId);
     expect((await run(f.runId)).error).toBe(f.source.error);
+    if (f.completed) expect(await run(f.completed.id)).toEqual(f.completed);
   }, 30_000);
 
   it.each(["foreign_company", "foreign_task", "foreign_agent", "conflicting_binding", "missing_edge", "cycle", "forged_context",
