@@ -1615,9 +1615,10 @@ recording the proof and successor lineage. Retained provider files are not edite
 Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Exact-checkpoint resumes retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
 A due failed remote retry can retain its provider PID after heartbeat completion
-releases the task execution lock. Both remote workspace reference formats route
-that retry to remote restart recovery. A PID from another host is never checked
-or cleared through the local process table. Before remote inspection, recovery
+releases the task execution lock. Both remote workspace reference formats and
+exact company/task/run plugin task leases route that retry to remote restart
+recovery. Plugin leases do not require a workspace reference. A PID from another
+host is never checked or cleared through the local process table. Before remote inspection, recovery
 can reclaim the original task execution only for an explicit exact-checkpoint
 retry with a fenced previous controller, matching durable authority and ordinary
 resumption eligibility. A newer run for the task, another execution or checkout,

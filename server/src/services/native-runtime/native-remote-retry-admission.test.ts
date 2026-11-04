@@ -35,7 +35,7 @@ import { claimCancellationRequest } from "./native-cancellation-request.js";
 describeEmbeddedPostgres("remote native retry execution admission", () => {
   const environment = nativeRestartFixture();
 
-  async function failedRemoteRun(storage: "classic" | "remote") {
+  async function failedRemoteRun(storage: "classic" | "remote" | "plugin") {
     const { companyId, agentId, runtimeRoot } = environment.current;
     const fixture = await environment.seedRun(`REMOTE-RETRY-${storage}-${randomUUID()}`);
     await fixture.db.update(agents).set({ status: "active" }).where(eq(agents.id, agentId));
@@ -65,12 +65,17 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       providerSessionId: "provider-session", activeTurnId: "retained-turn", semanticResult: null,
       pendingRuntimeRequests: [], terminalTurns: [], identity: { companyId, agentId,
         issueId: fixture.issueId, runId: fixture.runId, sessionId: fixture.native.normalizedSessionId } };
+    const [pluginLease] = storage === "plugin" ? await fixture.db.insert(environmentLeases).values({ companyId,
+      issueId: fixture.issueId, heartbeatRunId: fixture.runId, provider: "daytona", providerLeaseId: randomUUID(),
+      status: "active", leasePolicy: "ephemeral", metadata: { runnerTaskLease: true },
+    }).returning({ id: environmentLeases.id }) : [];
     await fixture.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
       processPid: 1386, processStartedAt: new Date("2026-11-01T12:00:00Z"),
       nativePhase: "retryable_failure", errorCode: "native_session_interrupted",
       runnerProfileJson: { ...fixture.preparedProfile, nativeExecutionInput: { binding: {
         companyId, agentId, issueId: fixture.issueId, runId: fixture.runId } }, sessionCheckpoint: checkpoint,
-        ...(storage === "classic" ? { nativeWorkspaceSync: classic } : { remoteWorkspace: remote }) },
+        ...(storage === "plugin" ? { nativeWorkspaceSync: null, remoteWorkspace: null }
+          : storage === "classic" ? { nativeWorkspaceSync: classic } : { remoteWorkspace: remote }) },
     }).where(eq(heartbeatRuns.id, fixture.runId));
     await fixture.db.update(nativeRunFinalizations).set({ phase: "retryable_failure", attempt: 1,
       leaseOwner: null, leaseExpiresAt: null, recoveryState: "resuming_session",
@@ -80,7 +85,7 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     }).where(eq(nativeRunFinalizations.runId, fixture.runId));
     await fixture.db.update(issues).set({ executionRunId: null, checkoutRunId: null })
       .where(eq(issues.id, fixture.issueId));
-    return { ...fixture, companyId, agentId, checkpoint };
+    return { ...fixture, companyId, agentId, checkpoint, pluginLeaseId: pluginLease?.id };
   }
 
   async function manuallyHeldRemoteRun() {
@@ -229,7 +234,7 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
   });
 
-  it.each(["classic", "remote"] as const)("reclaims the exact failed %s execution before remote inspection", async storage => {
+  it.each(["classic", "remote", "plugin"] as const)("reclaims the exact failed %s execution before remote inspection", async storage => {
     const fixture = await failedRemoteRun(storage);
     expect(await claimNativeSessionResumptions({ db: fixture.db, runnerInstanceId: "ordinary-resumer",
       runIds: [fixture.runId] })).toEqual([]);
@@ -246,11 +251,36 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       .toMatchObject({ attempt: 2, phase: "observed", recoveryState: "awaiting_runner_reattach" });
   });
 
-  it.each(["done", "cancelled", "blocked", "paused-agent", "pending-agent-approval", "reassigned",
+  it.each(["company", "run", "issue"] as const)("does not use a plugin lease from another %s", async scope => {
+    const f = await failedRemoteRun("plugin");
+    if (!f.pluginLeaseId) throw new Error("Expected a plugin allocation");
+    const foreignId = randomUUID();
+    if (scope === "company") {
+      await f.db.insert(companies).values({ id: foreignId, name: "Other company", issuePrefix: foreignId.slice(0, 8) });
+      await f.db.update(environmentLeases).set({ companyId: foreignId }).where(eq(environmentLeases.id, f.pluginLeaseId));
+    } else if (scope === "run") {
+      await f.db.insert(heartbeatRuns).values({ id: foreignId, companyId: f.companyId, agentId: f.agentId, status: "failed" });
+      await f.db.update(environmentLeases).set({ heartbeatRunId: foreignId }).where(eq(environmentLeases.id, f.pluginLeaseId));
+    } else {
+      await f.db.insert(issues).values({ id: foreignId, companyId: f.companyId, title: "Other task" });
+      await f.db.update(environmentLeases).set({ issueId: foreignId }).where(eq(environmentLeases.id, f.pluginLeaseId));
+    }
+    const onClaim = vi.fn();
+    expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", runIds: [f.runId], onClaim }))
+      .toMatchObject([{ kind: "blocked", runId: f.runId, reason: "issue_execution_lock_changed" }]);
+    expect(onClaim).not.toHaveBeenCalled();
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+      .toMatchObject({ executionRunId: null, checkoutRunId: null });
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "retryable_failure", attempt: 1 });
+  });
+
+  it.each((["remote", "plugin"] as const).flatMap(storage => (["done", "cancelled", "blocked", "paused-agent", "pending-agent-approval", "reassigned",
     "dependency", "tree-pause", "native-stop", "operator-stop", "execution-owner", "checkout-owner",
-    "queued-input", "newer-completed-input", "wrong-checkpoint", "missing-authority"] as const)
-  ("preserves a remote retry held by %s", async gate => {
-    const f = await failedRemoteRun("remote");
+    "queued-input", "newer-completed-input", "wrong-checkpoint", "missing-authority"] as const).map(gate => [storage, gate] as const)))
+  ("preserves a %s retry held by %s", async (storage, gate) => {
+    const f = await failedRemoteRun(storage);
     const { db } = f;
     if (["done", "cancelled", "blocked"].includes(gate)) {
       await db.update(issues).set({ status: gate }).where(eq(issues.id, f.issueId));
@@ -315,8 +345,8 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     else expect(afterOwner.nextAttemptAt!.getTime()).toBeGreaterThan(beforeOwner.nextAttemptAt!.getTime());
   });
 
-  it("waits for the exact old controller lease and keeps future retries quiet", async () => {
-    const f = await failedRemoteRun("remote");
+  it.each(["remote", "plugin"] as const)("waits for the exact old %s controller lease and keeps future retries quiet", async storage => {
+    const f = await failedRemoteRun(storage);
     const now = new Date(), deadline = new Date(now.getTime() + 60_000);
     await f.db.update(nativeRunFinalizations).set({ nextAttemptAt: deadline })
       .where(eq(nativeRunFinalizations.runId, f.runId));
@@ -330,8 +360,8 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
     expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].status).toBe("failed");
   });
 
-  it("grants two competing controllers only one original remote execution", async () => {
-    const f = await failedRemoteRun("remote");
+  it.each(["remote", "plugin"] as const)("grants two competing controllers only one original %s execution", async storage => {
+    const f = await failedRemoteRun(storage);
     const claims = (await Promise.all([environment.current.successor,
       { ...environment.current.successor, bootId: randomUUID() }].map(controller =>
       claimNativeRestartRecoveries({ db: f.db, controller, restartKind: "hard", runIds: [f.runId] })))).flat();
@@ -342,8 +372,8 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")))).toHaveLength(1);
   });
 
-  it("rolls back the task, owner, run, and recovery event together", async () => {
-    const f = await failedRemoteRun("remote");
+  it.each(["remote", "plugin"] as const)("rolls back the %s task, owner, run, and recovery event together", async storage => {
+    const f = await failedRemoteRun(storage);
     await expect(f.db.transaction(async tx => {
       const claims = await claimNativeRestartRecoveries({ db: tx as unknown as typeof f.db,
         controller: environment.current.successor, restartKind: "hard", runIds: [f.runId] });
@@ -384,8 +414,9 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       .toBe(superseded ? null : f.runId);
   });
 
-  it.each(["released", "retained"] as const)("exhausts the existing attempt budget after repeated remote snapshot failures with a %s task lock", async lock => {
-    const f = await failedRemoteRun("remote");
+  it.each((["remote", "plugin"] as const).flatMap(storage => (["released", "retained"] as const).map(lock => [storage, lock] as const)))
+  ("exhausts the existing attempt budget after repeated %s snapshot failures with a %s task lock", async (storage, lock) => {
+    const f = await failedRemoteRun(storage);
     if (lock === "retained") await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
     const [issue] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
     const [contract] = await f.db.select().from(completionContracts).where(eq(completionContracts.issueId, f.issueId));
@@ -430,8 +461,9 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
         processPid: 1386, runnerProfileJson: { sessionCheckpoint: f.checkpoint } });
   });
 
-  it.each(["released", "retained"] as const)("does not admit another failed retry when the persisted provider budget is already exhausted with a %s task lock", async lock => {
-    const f = await failedRemoteRun("remote");
+  it.each((["remote", "plugin"] as const).flatMap(storage => (["released", "retained"] as const).map(lock => [storage, lock] as const)))
+  ("does not admit another failed %s retry when the persisted provider budget is already exhausted with a %s task lock", async (storage, lock) => {
+    const f = await failedRemoteRun(storage);
     if (lock === "retained") await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
     await f.db.update(nativeRunFinalizations).set({ attempt: 3 }).where(eq(nativeRunFinalizations.runId, f.runId));
     expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,

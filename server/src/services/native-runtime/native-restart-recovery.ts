@@ -638,8 +638,14 @@ export async function claimNativeRestartRecoveries(input: {
       const storedRemoteWorkspace = remoteWorkspaceRunReferenceSchema.safeParse(profile.remoteWorkspace);
       const remoteWorkspace = readNativeWorkspaceSyncReference(profile.nativeWorkspaceSync)
         ?? (storedRemoteWorkspace.success ? storedRemoteWorkspace.data : null);
+      const [pluginTask] = await tx.select({ id: environmentLeases.id,
+        metadata: sql<Record<string, unknown>>`jsonb_build_object('runnerTaskStartup', ${environmentLeases.metadata}->'runnerTaskStartup')`,
+      }).from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, row.run.companyId), eq(environmentLeases.issueId, issue.id),
+        eq(environmentLeases.heartbeatRunId, row.run.id), sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
+      )).orderBy(desc(environmentLeases.createdAt)).limit(1);
       const failedRemoteRetry = row.run.status === "failed" && row.coordinator.phase === "retryable_failure"
-        && row.coordinator.failureDetail?.recoveryMode === "exact_checkpoint_resume" && remoteWorkspace !== null;
+        && row.coordinator.failureDetail?.recoveryMode === "exact_checkpoint_resume" && (remoteWorkspace !== null || pluginTask !== undefined);
       const releasedRemoteRetry = failedRemoteRetry && row.issueExecutionRunId === null;
       const exhaustedRemoteRetry = failedRemoteRetry && row.coordinator.attempt >= 3;
       const needsResumptionAdmission = releasedRemoteRetry || exhaustedRemoteRetry ||
@@ -738,10 +744,6 @@ export async function claimNativeRestartRecoveries(input: {
         return { kind: "awaiting_evidence", runId: row.run.id, reason: "native_startup_cleanup_pending", retryAt: startupRetryAt } as const;
       }
 
-      const [pluginTask] = await tx.select({ id: environmentLeases.id, metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
-        eq(environmentLeases.companyId, row.run.companyId), eq(environmentLeases.heartbeatRunId, row.run.id),
-        sql`${environmentLeases.metadata}->>'runnerTaskLease' = 'true'`,
-      )).orderBy(desc(environmentLeases.createdAt)).limit(1);
       const startup = pluginTask?.metadata?.runnerTaskStartup as { contextId?: unknown; deadlineAtMs?: unknown; runId?: unknown } | undefined;
       if (startup?.runId === row.run.id && typeof startup.contextId === "string" &&
           Number.isSafeInteger(startup.deadlineAtMs) && Number(startup.deadlineAtMs) <= now.getTime() &&
