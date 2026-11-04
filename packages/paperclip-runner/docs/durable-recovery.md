@@ -164,6 +164,22 @@ refuses their old launch identities.
 
 ## External controller checkpoints
 
+New controllers create `paperclip.runner.durable.control-plane-state.v2` with
+`paperclip.runner.bootstrap-history.v1`. This history retains its original full
+run identity, issued credential count and adoption flag across run rotations.
+Every launch persists credential issuance before handing the ticket to a process.
+Credential pruning cannot remove this history. Older controllers reject v2 state;
+current controllers can still restore v1 state without granting it this proof.
+Checkpoint decoding and external persistence never add missing origin history.
+
+`inspectUnclaimedBootstrapCheckpoint` validates the complete four-part bootstrap
+journal and exact identity. Only pending `run.prepare` and `session.open` commands
+are allowed. Any credential issuance, connection, command delivery, event, warm
+transition or unsupported history prevents the proof. Its fingerprint lets an
+embedding owner recheck the exact revision under its execution fence. The proof
+describes provider usage only. It does not authorize replay or prove that a
+sandbox, callback bridge or other process has terminated.
+
 The optional controller persistence callback stores recovery control state, not
 an output transcript. Text deltas do not trigger callbacks; usage updates are
 coalesced into the next control checkpoint. Authentication, command intents and
