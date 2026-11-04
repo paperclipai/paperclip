@@ -277,6 +277,16 @@ export function errorHandler(
     return;
   }
 
+  // A route that cancels its work when the response closes (for example a
+  // storage read) rejects with AbortError after the client has gone. That
+  // rejection is the cancellation, not a server fault. An AbortError while
+  // the client is still connected is still reported.
+  if (rootError.name === "AbortError" && res.destroyed && !res.writableFinished) {
+    if (!res.headersSent) res.status(499);
+    res.end();
+    return;
+  }
+
   // Shutdown drains the HTTP listener before it ends the pool, but a handler
   // whose client already disconnected (or whose socket the drain timeout
   // closed) keeps running. Its next query then fails with CONNECTION_ENDED
