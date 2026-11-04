@@ -53,3 +53,8 @@ it("keeps the captured audit immutable and leaves non-SDK/missing-audit paths un
  await expect(f.reject()).rejects.toThrow("Source SDK evidence privacy check failed");await f.copy();const original=await readFile(f.destination);
  await expect(f.copy()).rejects.toThrow();expect(await readFile(f.destination)).toEqual(original);
 });
+
+it("rejects a malformed present framework report instead of hiding it as a missing setup report",async()=>{
+ const f=await fixture();await writeFile(path.join(f.capture,"framework-report.json"),"{");
+ await expect(f.copy()).rejects.toThrow();
+});

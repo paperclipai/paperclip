@@ -634,6 +634,33 @@ matching API-key or subscription credential.
 Never put credentials in `catalog.ts`, screenshots, fixture metadata, workflow
 inputs, or a tracked env file.
 
+## Private framework evidence
+
+The protected TestOps reporter (`PAPERCLIP_CHAT_COMPLETION_TESTOPS=v1`) uses
+Playwright's official JSON and JUnit reporters only with an approved private-cell
+preflight. Other runs, including generic private full-stack runs, keep the existing
+HTML and blob reporters. A setup failure can retain its SDK audit without a
+framework report; a malformed present framework report still fails closed. The immutable
+JSON source is retained in `snapshots/playwright-framework-original.txt` and is
+parsed and deeply inspected as registered Playwright JSON, including decoded
+inline text/JSON attachment bodies. The text suffix preserves source bytes; it
+does not exempt the file from JSON privacy checks. Unsupported inline carriers
+fail closed.
+
+`snapshots/playwright-framework.json` preserves the report and maps attachment
+paths to their owned canonical files with byte counts and SHA-256 hashes.
+Original status, errors, and nested user steps remain unchanged. Sealed originals
+retain all owned attachments. The final-results tree references those originals
+instead of storing another copy of registered Playwright output attachments.
+The downloader verifies each reference against the sealed original inventory,
+then restores exact referenced bytes into the derived selected report tree.
+Neither sealed inventory changes. Registered metadata and attachments are not
+silently rewritten: JSON values that need privacy redaction fail closed.
+Unknown, missing, changed, or foreign attachments fail validation. Native
+snapshots and other unregistered evidence are not removed. The existing physical
+byte, entry, archive, ZIP expansion, time, and privacy bounds remain unchanged.
+A complete evidence transfer does not attest that the feature passed.
+
 ## Local commands
 
 When the host cannot start embedded Postgres, set
