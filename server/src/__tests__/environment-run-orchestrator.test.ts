@@ -192,6 +192,10 @@ function makeRealizeInput(overrides: {
 function makeMockRuntime(overrides: Partial<EnvironmentRuntimeService> = {}): EnvironmentRuntimeService {
   return {
     acquireRunLease: vi.fn(),
+    resumeRunLease: vi.fn(async ({ lease, requestedCwd }: Parameters<EnvironmentRuntimeService["resumeRunLease"]>[0]) => ({
+      providerLeaseId: lease.providerLeaseId,
+      metadata: { ...lease.metadata, remoteCwd: requestedCwd ?? lease.metadata?.remoteCwd },
+    })),
     releaseRunLeases: vi.fn(),
     execute: vi.fn().mockResolvedValue({
       exitCode: 0,
@@ -906,16 +910,67 @@ describe("live remote runner lease reattachment", () => {
     mockGetEnvironment.mockResolvedValue({ ...makeEnvironment("sandbox"), config: { provider: "daytona", reuseLease: false } });
     mockGetLease.mockResolvedValue(originalLease());
   });
-  it("reattaches the original active ephemeral lease without acquiring or resuming a sandbox", async () => {
+  it("readies the original active ephemeral lease without acquiring a replacement", async () => {
     const savedLease = originalLease();
     mockGetLease.mockResolvedValue(savedLease);
     const runtime = makeMockRuntime();
     const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input);
     expect(mockGetLease).toHaveBeenCalledWith("lease-1");
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(runtime.resumeRunLease).toHaveBeenCalledWith({
+      environment: result.environment, lease: savedLease, requestedCwd: "/remote/workspace",
+    });
     expect(result.lease).toEqual(savedLease);
     expect(result.leaseContext.executionWorkspaceId).toBe("ew-1");
     expect(result.environment.config.reuseLease).toBe(false);
+  });
+  it("does not return the retained sandbox to preparation while its lifecycle resume is pending", async () => {
+    let ready = false;
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const savedLease = originalLease();
+    const before = structuredClone(savedLease);
+    mockGetLease.mockResolvedValue(savedLease);
+    const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => {
+      await gate;
+      ready = true;
+      return { providerLeaseId: "original-sandbox", metadata: { remoteCwd: "/remote/workspace" } };
+    }) });
+    const pending = environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input);
+    try {
+      const state = await Promise.race([
+        pending.then(() => "returned"),
+        new Promise<string>(resolve => setImmediate(() => resolve("pending"))),
+      ]);
+      expect(state).toBe("pending");
+      expect(ready).toBe(false);
+    } finally { release(); }
+    expect((await pending).lease).toEqual(before);
+    expect(ready).toBe(true);
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(runtime.execute).not.toHaveBeenCalled();
+    expect(mockUpdateLeaseMetadata).not.toHaveBeenCalled();
+  });
+  it.each([
+    null,
+    { providerLeaseId: "replacement", metadata: { remoteCwd: "/remote/workspace" } },
+    { providerLeaseId: "original-sandbox", metadata: { remoteCwd: "/other/workspace" } },
+    { providerLeaseId: "original-sandbox" },
+  ])("holds recovery when the retained lease resume cannot confirm its original location (%j)", async receipt => {
+    const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => receipt) });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .rejects.toThrow("native_remote_recovery_lease_mismatch");
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(runtime.execute).not.toHaveBeenCalled();
+    expect(mockUpdateLeaseMetadata).not.toHaveBeenCalled();
+  });
+  it("preserves a retained sandbox startup failure without acquiring a replacement", async () => {
+    const error = new Error("retained sandbox startup timed out");
+    const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => { throw error; }) });
+    await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
+      .rejects.toBe(error);
+    expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(runtime.execute).not.toHaveBeenCalled();
   });
   it.each(["active", "foreign-company", "revoked", "undispatched", "stopped"])("inspects the original plugin task lease (%s)", async state => {
     mockGetEnvironment.mockResolvedValue(makeEnvironment("plugin"));
@@ -932,6 +987,7 @@ describe("live remote runner lease reattachment", () => {
     if (state === "active") await expect(acquired).resolves.toMatchObject({ lease });
     else await expect(acquired).rejects.toThrow("native_remote_recovery_lease_mismatch");
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(runtime.resumeRunLease).not.toHaveBeenCalled();
   });
   it.each([
     { companyId: "foreign" }, { environmentId: "foreign" }, { heartbeatRunId: "another-run" },
@@ -946,6 +1002,7 @@ describe("live remote runner lease reattachment", () => {
     await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
       .rejects.toThrow("native_remote_recovery_lease_mismatch");
     expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+    expect(runtime.resumeRunLease).not.toHaveBeenCalled();
   });
   it("never replaces a missing original lease", async () => {
     mockGetLease.mockResolvedValue(null);
