@@ -435,9 +435,23 @@ impl CumulativeAckPersistence {
 }
 
 pub fn run_durable_runner<E: CommandExecutor>(
+    config: DurableRunnerConfig,
+    bootstrap_ticket: BootstrapTicket,
+    executor: E,
+) -> Result<(), DurableRunnerError> {
+    run_durable_runner_with_host_control(config, bootstrap_ticket, executor, None)
+}
+
+#[cfg(not(unix))]
+pub struct HostControl;
+#[cfg(unix)]
+use crate::host_control::{HostControl, HostIdentity, HostRequest};
+
+pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
     mut config: DurableRunnerConfig,
     bootstrap_ticket: BootstrapTicket,
     mut executor: E,
+    #[allow(unused_mut, unused_variables)] mut host_control: Option<HostControl>,
 ) -> Result<(), DurableRunnerError> {
     let started = Instant::now();
     config.validate()?;
@@ -492,7 +506,34 @@ pub fn run_durable_runner<E: CommandExecutor>(
     let mut disconnected_since: Option<Instant> = None;
     let mut reconnect_attempt = 0_u32;
 
-    loop {
+    'session: loop {
+        #[cfg(unix)]
+        if let Some(control) = host_control.as_mut() {
+            if control.park_id.is_some() {
+                let remaining = (!config.max_runtime.is_zero())
+                    .then(|| config.max_runtime.saturating_sub(started.elapsed()));
+                if remaining.is_some_and(|duration| duration.is_zero()) {
+                    shutdown_preserving_cleanup(&state, &mut executor)?;
+                    return Ok(());
+                }
+                match process_host_control(control, &state, &store, &mut executor, true, remaining)
+                {
+                    Ok(HostAction::Claim(ticket)) => {
+                        bootstrap_ticket = Some(ticket);
+                        lease = None;
+                        authenticated_once = false;
+                        disconnected_since = None;
+                        reconnect_attempt = 0;
+                    }
+                    Ok(HostAction::Retire) => return Ok(()),
+                    Ok(_) => continue,
+                    Err(error) => {
+                        let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                        return Err(error);
+                    }
+                }
+            }
+        }
         if authenticated_once {
             let disconnected_at = disconnected_since.get_or_insert_with(Instant::now);
             if config
@@ -540,6 +581,22 @@ pub fn run_durable_runner<E: CommandExecutor>(
         }
 
         let using_bootstrap = lease.is_none();
+        #[cfg(unix)]
+        if let Some(control) = host_control.as_mut() {
+            match process_host_control(control, &state, &store, &mut executor, false, None) {
+                Ok(HostAction::Park) => {
+                    lease = None;
+                    bootstrap_ticket = None;
+                    continue 'session;
+                }
+                Ok(HostAction::Retire) => return Ok(()),
+                Err(error) => {
+                    let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                    return Err(error);
+                }
+                _ => {}
+            }
+        }
         let connect_deadline = connection_attempt_deadline(&config, started, disconnected_since);
         let connection = AuthenticatedTransport::connect(
             &endpoint,
@@ -689,6 +746,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
                             &mut endpoint,
                             next,
                         )?;
+                        #[cfg(unix)]
+                        if let Some(control) = host_control.as_mut() {
+                            control.claiming = None;
+                        }
                     }
                     Err(error) => {
                         state.record_diagnostic(format!(
@@ -807,6 +868,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
         }
         if let Some(next) = authority_rotation {
             apply_authority_rotation(&mut state, &store, &mut config, &mut endpoint, next)?;
+            #[cfg(unix)]
+            if let Some(control) = host_control.as_mut() {
+                control.claiming = None;
+            }
             disconnected_since = Some(Instant::now());
             continue;
         }
@@ -932,6 +997,28 @@ pub fn run_durable_runner<E: CommandExecutor>(
             // Consuming the last cumulative ACK must not let a new output
             // suffix overtake the stop/suspend already queued behind it.
             let control_message = transport.receive_json();
+            #[cfg(unix)]
+            if matches!(control_message, Ok(None)) {
+                if let Some(control) = host_control.as_mut() {
+                    match process_host_control(control, &state, &store, &mut executor, false, None)
+                    {
+                        Ok(HostAction::Park) => {
+                            // The private owner now holds the exact idle cut. No
+                            // old PRP frame, lease renewal, or provider poll may follow.
+                            lease = None;
+                            bootstrap_ticket = None;
+                            drop(transport);
+                            continue 'session;
+                        }
+                        Ok(HostAction::Retire) => return Ok(()),
+                        Err(error) => {
+                            let _ = shutdown_preserving_cleanup(&state, &mut executor);
+                            return Err(error);
+                        }
+                        _ => {}
+                    }
+                }
+            }
             poll_executor_events_when_control_idle(
                 &mut state,
                 &store,
@@ -1072,6 +1159,10 @@ pub fn run_durable_runner<E: CommandExecutor>(
                             &mut endpoint,
                             next,
                         )?;
+                        #[cfg(unix)]
+                        if let Some(control) = host_control.as_mut() {
+                            control.claiming = None;
+                        }
                         disconnected_since = Some(Instant::now());
                         break;
                     }
@@ -1163,6 +1254,116 @@ pub fn run_durable_runner<E: CommandExecutor>(
         let reconnect_deadline = connection_attempt_deadline(&config, started, disconnected_since);
         sleep_before_deadline(config.reconnect_delay, reconnect_deadline);
     }
+}
+
+#[cfg(unix)]
+enum HostAction {
+    None,
+    Park,
+    Claim(BootstrapTicket),
+    Retire,
+}
+
+#[cfg(unix)]
+fn process_host_control<E: CommandExecutor>(
+    control: &mut HostControl,
+    state: &DurableState,
+    _store: &DurableStateStore,
+    executor: &mut E,
+    parked: bool,
+    remaining: Option<Duration>,
+) -> Result<HostAction, DurableRunnerError> {
+    let Some(request) = control.receive(parked, remaining)? else {
+        return Ok(HostAction::None);
+    };
+    if control.replay(&request)? {
+        return Ok(HostAction::None);
+    }
+    match &request {
+        HostRequest::Park {
+            id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+        } if !parked
+            && control.park_id.is_none()
+            && control.claiming.is_none()
+            && host_park_cut_matches(
+                state,
+                identity,
+                *last_controller_command_seq,
+                *acked_source_seq,
+            )
+            && executor.host_park_ready()? =>
+        {
+            control.park_id = Some(id.clone());
+            control.reply(&request, "parked")?;
+            Ok(HostAction::Park)
+        }
+        HostRequest::Claim {
+            id,
+            park_id,
+            bootstrap_ticket,
+            ..
+        } if parked && control.park_id.as_ref() == Some(park_id) => {
+            let ticket = BootstrapTicket::new(bootstrap_ticket.clone())?;
+            control.claiming = Some((park_id.clone(), id.clone()));
+            control.park_id = None;
+            control.reply(&request, "claimed")?;
+            Ok(HostAction::Claim(ticket))
+        }
+        HostRequest::Retire {
+            park_id,
+            claim_id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+            ..
+        } if match (
+            claim_id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+        ) {
+            (None, None, None, None) => parked && control.park_id.as_ref() == Some(park_id),
+            _ => false,
+        } =>
+        {
+            executor.shutdown()?;
+            control.reply(&request, "retired")?;
+            Ok(HostAction::Retire)
+        }
+        _ => {
+            control.reply(&request, "conflict")?;
+            Ok(HostAction::None)
+        }
+    }
+}
+
+#[cfg(unix)]
+fn host_park_cut_matches(
+    state: &DurableState,
+    identity: &HostIdentity,
+    command_seq: u64,
+    acked_seq: u64,
+) -> bool {
+    identity.runner_instance_id == state.runner_instance_id
+        && identity.environment_lease_id == state.environment_lease_id
+        && identity.run_id == state.run_id
+        && identity.normalized_session_id == state.normalized_session_id
+        && identity.turn_id == state.turn_id
+        && identity.item_id == state.item_id
+        && command_seq == state.last_controller_command_seq
+        && acked_seq == state.acked_source_seq
+        && state.outbox.is_empty()
+        && state.acked_source_seq == state.highest_source_seq()
+        && state.warm_transition.is_none()
+        && state.pending_terminal_delivery.is_none()
+        && state.pending_provider_cleanup.is_none()
+        && state
+            .processed_commands
+            .values()
+            .all(|command| !matches!(command.status.as_str(), "pending" | "indeterminate"))
 }
 
 fn lease_renewal_deadline(now: u64, expires_at: u64) -> u64 {
@@ -2592,6 +2793,197 @@ mod tests {
             deadline_at: None,
             precondition: None,
             payload: json!({}),
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hosted_parking_requires_exact_cut_and_replays_claim_without_reusing_ticket() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        struct IdleExecutor {
+            proofs: usize,
+            shutdowns: usize,
+            ready: bool,
+        }
+        impl CommandExecutor for IdleExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("private control cannot execute PRP commands");
+            }
+            fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+                self.proofs += 1;
+                Ok(self.ready)
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.shutdowns += 1;
+                Ok(())
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-host-retirement-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&config.state_dir).unwrap();
+        let mut state = DurableState::new(&config);
+        let (socket, mut host) = UnixStream::pair().unwrap();
+        let mut reader = BufReader::new(host.try_clone().unwrap());
+        let mut control = HostControl::new(socket).unwrap();
+        let mut executor = IdleExecutor {
+            proofs: 0,
+            shutdowns: 0,
+            ready: true,
+        };
+        let park = json!({"op":"park","id":"park-1","identity":{
+            "runnerInstanceId":state.runner_instance_id,"environmentLeaseId":state.environment_lease_id,
+            "runId":state.run_id,"normalizedSessionId":state.normalized_session_id,"turnId":state.turn_id,"itemId":state.item_id,
+        },"lastControllerCommandSeq":0,"ackedSourceSeq":0});
+        let mut exchange = |request: &Value,
+                            state: &DurableState,
+                            control: &mut HostControl,
+                            executor: &mut IdleExecutor,
+                            parked: bool| {
+            writeln!(host, "{request}").unwrap();
+            let action = process_host_control(
+                control,
+                state,
+                &store,
+                executor,
+                parked,
+                Some(Duration::from_secs(1)),
+            )
+            .unwrap();
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            (action, serde_json::from_str::<Value>(&line).unwrap())
+        };
+        state.last_controller_command_seq = 1;
+        assert_eq!(
+            exchange(&park, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        state.last_controller_command_seq = 0;
+        assert!(matches!(
+            exchange(&park, &state, &mut control, &mut executor, false).0,
+            HostAction::Park
+        ));
+        assert!(matches!(
+            exchange(&park, &state, &mut control, &mut executor, true).0,
+            HostAction::None
+        ));
+        assert_eq!(executor.proofs, 1);
+        let claim = json!({"op":"claim","id":"claim-1","parkId":"park-1","bootstrapTicket":"fresh-private-ticket"});
+        assert!(matches!(
+            exchange(&claim, &state, &mut control, &mut executor, true).0,
+            HostAction::Claim(_)
+        ));
+        assert!(matches!(
+            exchange(&claim, &state, &mut control, &mut executor, false).0,
+            HostAction::None
+        ));
+        let mut changed = claim;
+        changed["bootstrapTicket"] = json!("different-private-ticket");
+        assert_eq!(
+            exchange(&changed, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        assert_eq!(executor.shutdowns, 0);
+        let mut premature_park = park.clone();
+        premature_park["id"] = json!("park-before-attach");
+        assert_eq!(
+            exchange(&premature_park, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        let retire = json!({"op":"retire","id":"retire-park","parkId":"park-1"});
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        // Simulate completed run.attach before a later exact parked cut.
+        control.claiming = None;
+        let mut next_park = park.clone();
+        next_park["id"] = json!("park-2");
+        assert!(matches!(
+            exchange(&next_park, &state, &mut control, &mut executor, false).0,
+            HostAction::Park
+        ));
+        let retire = json!({"op":"retire","id":"retire-park","parkId":"park-2"});
+        assert!(matches!(
+            exchange(&retire, &state, &mut control, &mut executor, true).0,
+            HostAction::Retire
+        ));
+        assert_eq!(executor.shutdowns, 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn hosted_park_blocks_without_provider_polls_and_retires_on_eof_or_lifetime() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::unix::net::UnixStream;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        struct ParkedExecutor(Arc<AtomicUsize>);
+        impl CommandExecutor for ParkedExecutor {
+            fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
+                panic!("parked provider cannot execute");
+            }
+            fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+                Ok(true)
+            }
+            fn poll_events(&mut self) -> Result<Vec<PolledEvent>, DurableRunnerError> {
+                panic!("parked provider cannot poll");
+            }
+            fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                self.0.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        for eof in [false, true] {
+            let directory = std::env::temp_dir().join(format!(
+                "paperclip-hosted-park-stop-{}-{eof}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&directory);
+            let mut config = config(directory.clone());
+            config.max_runtime = if eof {
+                Duration::ZERO
+            } else {
+                // Include durable startup under parallel-suite filesystem load.
+                Duration::from_secs(2)
+            };
+            let (socket, mut host) = UnixStream::pair().unwrap();
+            let control = HostControl::new(socket).unwrap();
+            writeln!(host,"{}",json!({"op":"park","id":"park-stop","identity":{
+                "runnerInstanceId":config.runner_instance_id,"environmentLeaseId":config.environment_lease_id,
+                "runId":config.run_id,"normalizedSessionId":config.normalized_session_id,"turnId":config.turn_id,"itemId":config.item_id,
+            },"lastControllerCommandSeq":0,"ackedSourceSeq":0})).unwrap();
+            let shutdowns = Arc::new(AtomicUsize::new(0));
+            let executor = ParkedExecutor(shutdowns.clone());
+            let task = std::thread::spawn(move || {
+                run_durable_runner_with_host_control(
+                    config,
+                    BootstrapTicket::new("unused-bootstrap".to_owned()).unwrap(),
+                    executor,
+                    Some(control),
+                )
+            });
+            let mut reply = String::new();
+            BufReader::new(&host).read_line(&mut reply).unwrap();
+            assert_eq!(
+                serde_json::from_str::<Value>(&reply).unwrap()["status"],
+                "parked"
+            );
+            if eof {
+                drop(host);
+                assert!(task.join().unwrap().is_err());
+            } else {
+                assert!(task.join().unwrap().is_ok());
+            }
+            assert_eq!(shutdowns.load(Ordering::SeqCst), 1);
+            fs::remove_dir_all(directory).unwrap();
         }
     }
 
