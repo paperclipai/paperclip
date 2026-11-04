@@ -9951,7 +9951,10 @@ describe("native warm session supervision", () => {
       }
     } finally {
       releaseClose();
-      await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" });
+      close.mockResolvedValue(undefined);
+      expect(await closeWarmNativeSessionsForEnvironment({ environmentId: identity, reason: "test cleanup" }))
+        .toEqual({ closed: changed && !closeFails ? 0 : 1, busy: 0, failed: 0 });
+      expect(collectStopped).toHaveBeenCalledOnce();
     }
   });
 
