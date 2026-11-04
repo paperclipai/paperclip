@@ -7,8 +7,10 @@ export type JourneyId =
   | "task-properties"
   | "task-create"
   | "project-task-context"
+  | "task-dependency-resume"
   | "task-document-persistence"
   | "ask-question"
+  | "chat-continuity"
   | "cloud-onboarding"
   | "question-answer-resume"
   | "task-search-filter"
@@ -19,11 +21,13 @@ export type JourneyId =
   | "create-skill-studio"
   | "stop-redirect"
   | "hire-delegate-reuse"
+  | "agent-settings-persistence"
   | "file-input-answer"
   | "inbox-triage"
   | "routine-scheduled-run"
   | "repository-continuation"
-  | "company-access-isolation";
+  | "company-access-isolation"
+  | "saved-skill-use";
 export type TargetMode = "managed-self-hosted" | "existing-cloud" | "new-cloud";
 export interface DeploymentIdentity {
   kind: "self-hosted" | "cloud";

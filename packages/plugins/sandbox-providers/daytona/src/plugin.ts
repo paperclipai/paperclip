@@ -33,6 +33,7 @@ import type {
   PluginEnvironmentGetInteractiveSetupParams,
   PluginEnvironmentInteractiveSetupSession,
   PluginEnvironmentLease,
+  PluginEnvironmentWorkspaceAllocationFiles,
   PluginEnvironmentProbeParams,
   PluginEnvironmentProbeResult,
   PluginEnvironmentRealizeWorkspaceParams,
@@ -197,6 +198,7 @@ interface DaytonaDriverConfig {
 type WorkspaceSentinelResult = {
   path: string;
   token: string | null;
+  allocationFiles?: PluginEnvironmentWorkspaceAllocationFiles;
   runId?: string;
   providerLeaseId?: string;
   result: "written" | "matched" | "missing" | "mismatch" | "skipped";
@@ -633,23 +635,26 @@ async function writeWorkspaceSentinel(input: {
     return { path: sentinelPath, token: null, result: "skipped" };
   }
   await input.sandbox.fs.createFolder(path.posix.dirname(sentinelPath), "755");
+  const content = Buffer.from(JSON.stringify({
+    version: 1,
+    token,
+    companyId: input.params.companyId,
+    environmentId: input.params.environmentId,
+    agentId: input.params.agentId,
+    executionWorkspaceId: input.params.executionWorkspaceId,
+    ...(input.params.executionWorkspaceId ? {} : { projectlessIssueId: input.params.issueId }),
+    adapterType: input.params.adapterType ?? null,
+    provider: "daytona",
+    writtenAt: new Date().toISOString(),
+  }, null, 2), "utf8");
   await input.sandbox.fs.uploadFile(
-    Buffer.from(JSON.stringify({
-      version: 1,
-      token,
-      companyId: input.params.companyId,
-      environmentId: input.params.environmentId,
-      agentId: input.params.agentId,
-      executionWorkspaceId: input.params.executionWorkspaceId,
-      ...(input.params.executionWorkspaceId ? {} : { projectlessIssueId: input.params.issueId }),
-      adapterType: input.params.adapterType ?? null,
-      provider: "daytona",
-      writtenAt: new Date().toISOString(),
-    }, null, 2), "utf8"),
+    content,
     sentinelPath,
     input.timeoutSeconds,
   );
   return { path: sentinelPath, token, result: "written",
+    allocationFiles: { providerLeaseId: input.sandbox.id, remoteCwd: input.remoteCwd,
+      files: [{ relativePath: WORKSPACE_SENTINEL_RELATIVE_PATH, sha256: createHash("sha256").update(content).digest("hex") }] },
     ...(!input.config.reuseLease ? { runId: input.params.runId!, providerLeaseId: input.sandbox.id } : {}) };
 }
 
@@ -734,6 +739,7 @@ function leaseMetadata(input: {
     ...(input.config.disk != null ? { disk: input.config.disk } : {}),
     ...(input.config.gpu != null ? { gpu: input.config.gpu } : {}),
     ...(input.workspaceSentinel ? { workspaceSentinel: input.workspaceSentinel } : {}),
+    ...(input.workspaceSentinel?.allocationFiles ? { workspaceAllocationFiles: input.workspaceSentinel.allocationFiles } : {}),
   };
 }
 

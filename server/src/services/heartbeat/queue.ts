@@ -50,6 +50,7 @@ import {
 } from "../explicit-native-continuation.js";
 import { canRetryStoppedRun } from "../cancelled-native-startup.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.js";
+import { nativeManualAdmissionHoldsExecution } from "../native-runtime/native-runner-ownership.js";
 import { taskChatRetrySourceCleanupPending } from "../chat-channels/task-retry-authority.js";
 import { validateNativeWorkspaceReconstruction } from "../native-runtime/native-workspace-reconstruction.js";
 import { isConversationAdapter } from "../conversation-continuation.js";
@@ -113,6 +114,7 @@ import {
   notFound,
 } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
+import { isUniqueViolation } from "../../db-errors.js";
 import { publishLiveEvent } from "../live-events.js";
 import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
 import {
@@ -1105,7 +1107,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         executionAgentNameKey: normalizeAgentNameKey(agent.name),
         executionLockedAt: claimedAt,
         updatedAt: claimedAt,
-      }).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+      }).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).catch((error: unknown) => {
+        // Another open task of the same routine holds its execution slot, for
+        // example a failed run that waits for its scheduled resume. Roll back
+        // this claim and keep the run queued until that slot is released.
+        if (isUniqueViolation(error, "issues_open_routine_execution_uq")) {
+          throw conflict("Another execution for this routine is already in progress");
+        }
+        throw error;
+      });
     }
     const nativeReviewContext = readNativeReviewAssignmentContext(context);
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
@@ -3488,9 +3498,12 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 .where(eq(heartbeatRuns.id, issue.executionRunId))
                 .then((rows) => rows[0] ?? null)
             : null;
+          const manualExecutionHold = activeExecutionRun && await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+            { companyId: issue.companyId, runId: activeExecutionRun.id, issueId: issue.id });
 
           if (
             activeExecutionRun &&
+            !manualExecutionHold &&
             !EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
               activeExecutionRun.status as (typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES)[number],
             )
@@ -3522,6 +3535,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           // normally against the now-running holder.
           if (
             activeExecutionRun &&
+            !manualExecutionHold &&
             activeExecutionRun.status !== "running" &&
             issue.assigneeAgentId &&
             activeExecutionRun.agentId !== issue.assigneeAgentId

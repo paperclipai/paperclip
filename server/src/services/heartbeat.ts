@@ -1993,7 +1993,8 @@ export function heartbeatService(
     const preserveNativeWorkspaceOnFailure = async () => {
       const failureRun = await getRun(run.id);
       if (failureRun?.runtimeMode === "native"
-        && parseObject(failureRun.runnerProfileJson?.nativeWorkspaceSync).state === "prepared") {
+        && (parseObject(failureRun.runnerProfileJson?.nativeWorkspaceSync).state === "prepared"
+          || parseObject(failureRun.runnerProfileJson?.remoteWorkspace).state === "prepared")) {
         if (!nativeRunHasNoWorkspaceAccess(failureRun)) providerResourceDispositionForRun = "stop_and_retain";
         try {
           await preserveNativeFailedWorkspace(db, failureRun, {
@@ -3914,7 +3915,8 @@ export function heartbeatService(
             });
           }
         }
-        if (latestRun?.status === "interrupted" && latestRun.errorCode === "server_shutdown_interrupted") {
+        if (latestRun?.status === "interrupted" && latestRun.runtimeMode === "legacy" &&
+            !latestRun.runtimeModeResolvedAt && latestRun.executionStage === "preparing") {
           latestRun = await settleInterruptedNativeBootstrap(db, { run: latestRun,
             providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
           }) ?? latestRun;

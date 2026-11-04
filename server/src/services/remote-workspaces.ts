@@ -1,3 +1,5 @@
+import { workspaceAllocationFiles } from "./remote-workspace-allocation.js";
+import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, statfs } from "node:fs/promises";
@@ -5,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
-  environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, workspaceOperations, type Db,
+  companies, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, workspaceOperations, type Db,
 } from "@paperclipai/db";
 import {
   readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema,
@@ -73,28 +75,22 @@ export function shouldUseRemoteWorkspaces(input: {
   return configuredRemoteWorkspacePersistence() !== null;
 }
 
-/** Deployment profile admission belongs beside workspace authority. A warm
- * remote controller may replace its local projection; host-owned execution
- * cannot make that promise. External conversation providers own no task disk. */
 export function assertEphemeralWorkspaceExecution(input: {
   externalConversation: boolean; adapterType: string;
   pluginTaskWorkspace: boolean; remoteAuthority: boolean;
 }) {
   if (process.env.PAPERCLIP_EPHEMERAL_SERVER !== "true" || input.externalConversation) return;
   // Runtime selection has not promoted a fresh run yet. Validate storage here;
-  // the runtime selector separately admits only its resolved warm native policy.
   if (input.adapterType !== "paperclip_runner"
     || (!input.pluginTaskWorkspace && !input.remoteAuthority)) {
-    throw unprocessable("Volume-free servers require warm Paperclip Runner execution with remote workspace storage.",
+    throw unprocessable("Volume-free servers require native Paperclip Runner execution with remote workspace storage.",
       { code: "ephemeral_execution_configuration_required" });
   }
 }
 
-/** The runtime selector calls this after environment, credentials and saved
- * execution policy have resolved. Raw agent settings are not lifecycle authority. */
-export function assertEphemeralNativeLifecycle(mode: "warm" | "per_turn" | undefined) {
-  if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && mode !== "warm") {
-    throw unprocessable("Volume-free servers require warm Paperclip Runner execution with remote workspace storage.",
+export function assertEphemeralNativeRuntime(native: boolean) {
+  if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && !native) {
+    throw unprocessable("Volume-free servers require native Paperclip Runner execution with remote workspace storage.",
       { code: "ephemeral_execution_configuration_required" });
   }
 }
@@ -131,6 +127,28 @@ async function currentWorkspace(tx: Transaction, companyId: string, workspaceId:
   return workspace;
 }
 
+async function lockWorkspaceRunParents(tx: Transaction, companyId: string, runId: string, expectedIssueId?: string | null) {
+  const fields = { nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
+    contextIssueId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'issueId'` };
+  const [selected] = await tx.select(fields).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)));
+  if (!selected) throw new Error("remote_workspace_run_missing");
+  const issueId = selected.nativeIssueId ?? selected.issueId ?? (typeof selected.contextIssueId === "string" ? selected.contextIssueId : null);
+  if (expectedIssueId !== undefined && issueId !== expectedIssueId) throw new Error("remote_workspace_run_binding_changed");
+  const [company] = await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("key share");
+  if (!company) throw new Error("remote_workspace_run_missing");
+  if (issueId) {
+    const [issue] = await tx.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.id, issueId))).for("update");
+    if (!issue) throw new Error("remote_workspace_run_binding_changed");
+  }
+  const [current] = await tx.select(fields).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId))).for("update");
+  const currentIssueId = current?.nativeIssueId ?? current?.issueId ?? (typeof current?.contextIssueId === "string" ? current.contextIssueId : null);
+  if (!current || currentIssueId !== issueId) throw new Error("remote_workspace_run_binding_changed");
+  return issueId;
+}
+
 export class RemoteWorkspaceWriterActiveError extends HttpError {
   constructor(
     readonly workspaceId: string,
@@ -153,8 +171,9 @@ export async function reserveRemoteWorkspace(input: {
   assertRemoteWorkspacePersistence(input.storage ?? getStorageService());
   const source = remoteWorkspaceSourceSchema.parse(input.source);
   return input.db.transaction(async tx => {
+    await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, input.companyId)).for("key share");
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId))).for("update");
-    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
+    const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId))).for("update");
     if (!issue || !run || run.agentId !== input.agentId || run.status !== "running" ||
       ![run.nativeIssueId, run.issueId, object(run.contextSnapshot).issueId].includes(input.issueId)) throw forbidden("Workspace preparation requires its current task execution.");
     if (input.fresh && (issue.executionWorkspaceId !== input.fresh.previousWorkspaceId
@@ -327,8 +346,22 @@ function isSavedWorkspaceRepository(workspace: Workspace, authority: RemoteWorks
     && (saved.readOnly ?? false) === (repository.readOnly ?? false));
 }
 
+function publishedWorkspaceDirectory(workspace: Workspace & Pick<typeof executionWorkspaces.$inferSelect, "providerRef">,
+  authority: RemoteWorkspaceAuthority) {
+  const publishedRoot = authority.snapshotId && (authority.location?.remoteCwd ?? workspace.providerRef);
+  if (!publishedRoot) return null;
+  const directory = path.posix.basename(publishedRoot);
+  const suffix = directory.slice(workspace.id.length);
+  if (!path.posix.isAbsolute(publishedRoot) || path.posix.basename(path.posix.dirname(publishedRoot)) !== ".paperclip-workspaces"
+    || !directory.startsWith(workspace.id) || (suffix !== "" && !/^-[1-9][0-9]*-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(suffix))) {
+    throw new Error("remote_workspace_published_path_invalid");
+  }
+  return directory;
+}
+
 export async function prepareRemoteWorkspace(input: {
-  db: Db; workspace: Workspace; runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
+  db: Db; workspace: Workspace & Pick<typeof executionWorkspaces.$inferSelect, "providerRef">;
+  runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
   source?: RemoteWorkspaceSource; assertOwned?: () => Promise<void>;
   provisionCommand?: string | null; runtimeProvisionCommand?: string | null; storage?: StorageService;
 }) {
@@ -344,7 +377,11 @@ export async function prepareRemoteWorkspace(input: {
   const sameAllocation = initial.location?.providerLeaseId === input.lease.providerLeaseId
     && initial.location?.environmentId === input.lease.environmentId;
   if (initial.location && !sameAllocation && initial.dirty) throw conflict("The prior workspace has unsaved work; recover it before replacing its allocation.");
-  const remoteRoot = sameAllocation ? initial.location!.remoteCwd : path.posix.join(target.remoteCwd, ".paperclip-workspaces", input.workspace.id);
+  const migration = input.workspace.metadata?.nativeWorkspaceMigration
+    ? await readNativeWorkspaceMigration(input.db, input.workspace) : null;
+  if (migration && migration.remoteCwd !== target.remoteCwd) throw new Error("native_workspace_migration_target_changed");
+  const remoteRoot = sameAllocation ? initial.location!.remoteCwd : migration?.remoteCwd ?? path.posix.join(target.remoteCwd, ".paperclip-workspaces",
+    publishedWorkspaceDirectory(input.workspace, initial) ?? `${input.workspace.id}-${initial.epoch}-${input.lease.id}`);
   const preparationIdentity = createHash("sha256").update(JSON.stringify([input.workspace.companyId, input.workspace.id,
     input.runId, initial.epoch, input.lease.id, input.lease.providerLeaseId, remoteRoot, initial.source])).digest("hex");
   let restoredExport: Awaited<ReturnType<typeof restoreRemoteWorkspaceDirectory>> | null = null;
@@ -360,7 +397,8 @@ export async function prepareRemoteWorkspace(input: {
         const archivePath = path.join(scratch, "workspace.pcws");
         await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
         restoredExport = await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
-          restorationIdentity: preparationIdentity });
+          restorationIdentity: preparationIdentity, allowEmptyRoot: migration !== null,
+          allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [] });
       } finally { await rm(scratch, { recursive: true, force: true }); }
     } else {
       try {
@@ -418,6 +456,7 @@ export async function prepareRemoteWorkspace(input: {
   }
   await input.assertOwned?.();
   const prepared = await input.db.transaction(async tx => {
+    await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId);
     const workspace = await currentWorkspace(tx, input.workspace.companyId, input.workspace.id);
     const current = readRemoteWorkspaceAuthority(workspace.metadata);
     if (!current || current.epoch !== initial.epoch || current.writerRunId !== input.runId) throw new Error("remote_workspace_authority_changed");
@@ -550,6 +589,7 @@ export async function saveRemoteWorkspace(input: {
   await input.assertOwned();
   const invocationId = randomUUID();
   const operation = await input.db.transaction(async tx => {
+    const issueId = await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId);
     const workspace = await currentWorkspace(tx, input.workspace.companyId, input.workspace.id);
     const current = readRemoteWorkspaceAuthority(workspace.metadata);
     if (!current || current.epoch !== expected.epoch || (current.writerRunId !== input.runId && current.dirty)) throw new Error("remote_workspace_authority_changed");
@@ -558,6 +598,7 @@ export async function saveRemoteWorkspace(input: {
       eq(workspaceOperations.phase, "remote_workspace_snapshot"), sql`${workspaceOperations.metadata}->>'boundary' = ${boundary}`,
       sql`${workspaceOperations.metadata}->>'epoch' = ${String(current.epoch)}`)).limit(1).for("update");
     if (previous) {
+      if (previous.issueId !== issueId) throw new Error("remote_workspace_run_binding_changed");
       if (object(previous.metadata?.retiredSave).schema === RETIRED_SAVE_SCHEMA) throw new Error("remote_workspace_snapshot_retired");
       const work = readSaveWork(previous.metadata);
       const [registered] = await tx.update(workspaceOperations).set({ metadata: { ...previous.metadata,
@@ -565,11 +606,6 @@ export async function saveRemoteWorkspace(input: {
           unknown: work?.unknown ?? true, quiescedAt: null } }, updatedAt: new Date() }).where(eq(workspaceOperations.id, previous.id)).returning();
       return registered!;
     }
-    const [run] = await tx.select({ nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
-      contextSnapshot: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.companyId, workspace.companyId), eq(heartbeatRuns.id, input.runId)));
-    if (!run) throw new Error("remote_workspace_run_missing");
-    const issueId = run.nativeIssueId ?? run.issueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     // The workspace lock serializes generation reservations. Failed/deleted
     // snapshots still own their generation, and an operation can be committed
     // before beginWorkspaceSnapshot creates its ledger row. Count both journals
@@ -612,6 +648,7 @@ export async function saveRemoteWorkspace(input: {
     await input.assertOwned();
     const at = new Date();
     await input.db.transaction(async tx => {
+      await lockWorkspaceRunParents(tx, input.workspace.companyId, input.runId, operation.issueId);
       const workspace = await currentWorkspace(tx, input.workspace.companyId, input.workspace.id);
       const current = readRemoteWorkspaceAuthority(workspace.metadata);
       if (!current || current.epoch !== expected.epoch || current.writerRunId !== input.runId || current.snapshotId !== snapshot.parentSnapshotId) {
@@ -772,6 +809,7 @@ export async function provisionRemoteWorkspace(input: {
     await input.assertOwned?.();
     const digest = createHash("sha256").update(command).digest("hex");
     const operation = await input.db.transaction(async tx => {
+      const issueId = await lockWorkspaceRunParents(tx, input.companyId, input.runId);
       const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))).for("update");
       const authority = readRemoteWorkspaceAuthority(workspace?.metadata);
       const [run] = await tx.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId)));
@@ -785,7 +823,7 @@ export async function provisionRemoteWorkspace(input: {
         return null;
       }
       const [created] = await tx.insert(workspaceOperations).values({ companyId: input.companyId, executionWorkspaceId: input.workspaceId,
-        heartbeatRunId: input.runId, issueId: workspace!.sourceIssueId, phase: "remote_workspace_provision", status: "running",
+        heartbeatRunId: input.runId, issueId, phase: "remote_workspace_provision", status: "running",
         metadata: { epoch: input.epoch, index, commandSha256: digest, uncertain: true } }).returning();
       return created!;
     });

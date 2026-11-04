@@ -966,7 +966,9 @@ test('native dependency caches are target-bound and unmerged master callers cann
   const cache = producer.split('      - name: Cache native Rust dependencies\n')[1].split('\n      - ')[0];
   assert.match(cache, /Swatinem\/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6/);
   assert.match(cache, /workspaces: \$\{\{ steps.native_rust_workspace.outputs.path \}\} -> target/);
-  assert.match(cache, /shared-key: release-native-v2-\$\{\{ matrix.host \}\}-\$\{\{ matrix.target \}\}-\$\{\{ hashFiles\('packages\/paperclip-runner\/protocol\/\*\*', 'packages\/paperclip-runner\/src\/\*\*', 'packages\/paperclip-runner\/\*.json'\) \}\}/);
+  const key = cache.match(/^\s*shared-key: (.+)$/m)?.[1];
+  assert.ok(key?.startsWith("release-native-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', "));
+  assert.ok(key?.endsWith("-${{ matrix.host }}-${{ matrix.target }}-${{ hashFiles('packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/*.json') }}"));
   for (const option of ['cache-workspace-crates', 'cache-bin', 'cache-on-failure']) {
     assert.match(cache, new RegExp(option + ': false'));
   }

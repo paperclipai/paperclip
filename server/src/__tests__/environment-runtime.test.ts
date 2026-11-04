@@ -17,6 +17,7 @@ import {
 } from "@paperclipai/adapter-utils/ssh";
 import {
   activityLog,
+  workspaceOperations,
   costEvents,
   agents,
   builtInManagedResources,
@@ -238,6 +239,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       await stopSshEnvLabFixture(path.join(root, "state.json")).catch(() => undefined);
       await rm(root, { recursive: true, force: true }).catch(() => undefined);
     }
+    await db.delete(workspaceOperations);
     await db.delete(activityLog);
     await db.delete(environmentLeases);
     await db.delete(issues);
@@ -854,6 +856,23 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
 
     return { pluginId, companyId, agentId, environment, runId, executionWorkspaceId, reusableLease };
   }
+
+  it.each(["active", "released"] as const)("does not select an ephemeral allocation for warm reuse (%s)", async status => {
+    const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
+    await db.update(environmentLeases).set({ leasePolicy: "ephemeral", status,
+      releasedAt: status === "released" ? new Date() : null }).where(eq(environmentLeases.id, seeded.reusableLease.id));
+    const workerManager = createFreshPluginLeaseWorker(seeded.pluginId);
+    const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
+    const acquired = await runtimeWithPlugin.acquireRunLease({
+      companyId: seeded.companyId, environment: seeded.environment, agentId: seeded.agentId,
+      issueId: null, adapterType: "paperclip_runner", heartbeatRunId: seeded.runId,
+      persistedExecutionWorkspace: { id: seeded.executionWorkspaceId, mode: "shared_workspace" },
+    });
+    expect(seeded.environment.config.reuseLease).toBe(true);
+    expect(acquired.lease.providerLeaseId).toBe("fresh-plugin-lease");
+    expect(acquired.lease.providerLeaseId).not.toBe(seeded.reusableLease.providerLeaseId);
+    expect(workerManager.call).toHaveBeenCalledExactlyOnceWith(seeded.pluginId, "environmentAcquireLease", expect.any(Object), expect.any(Number));
+  });
 
   it("gives a bootstrap retry a fresh allocation even when the failed lease was reusable", async () => {
     const seeded = await seedReusablePluginSandboxLease("paperclip_runner");
@@ -3808,17 +3827,23 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     } as unknown as PluginWorkerManager;
     const runtimeWithPlugin = environmentRuntimeService(db, { pluginWorkerManager: workerManager });
 
-    await expect(runtimeWithPlugin.acquireRunLease({
-      companyId,
-      environment,
-      issueId: null,
-      agentId,
-      heartbeatRunId: runId,
-      persistedExecutionWorkspace: {
-        id: executionWorkspaceId,
-        mode: "shared_workspace",
-      },
-    })).rejects.toThrow("the lease was preserved and no replacement was created");
+    // Keep the exact configured budget stable across deadline creation and RPC dispatch.
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.now());
+    try {
+      await expect(runtimeWithPlugin.acquireRunLease({
+        companyId,
+        environment,
+        issueId: null,
+        agentId,
+        heartbeatRunId: runId,
+        persistedExecutionWorkspace: {
+          id: executionWorkspaceId,
+          mode: "shared_workspace",
+        },
+      })).rejects.toThrow("the lease was preserved and no replacement was created");
+    } finally {
+      now.mockRestore();
+    }
 
     expect(workerManager.call).toHaveBeenNthCalledWith(1, pluginId, "environmentResumeLease", expect.objectContaining({
       driverKey: "fake-plugin",
@@ -4435,7 +4460,7 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
   });
 
-  it("does not resume released reusable plugin sandbox leases after provider config drift", async () => {
+  it.each(["provider config", "workspace migration"])("does not resume released reusable plugin sandbox leases after %s drift", async drift => {
     const pluginId = randomUUID();
     const { companyId, agentId, environment: baseEnvironment, runId } = await seedEnvironment();
     const providerConfig = {
@@ -4482,12 +4507,13 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     await insertReusableProject(projectId, companyId);
     await insertReusableExecutionWorkspace(executionWorkspaceId, companyId, projectId);
 
+    let acquisitions = 0;
     const workerManager = {
       isRunning: vi.fn((id: string) => id === pluginId),
       call: vi.fn(async (_pluginId: string, method: string, params: any) => {
         if (method === "environmentAcquireLease") {
           return {
-            providerLeaseId: `lease-${params.config.image}`,
+            providerLeaseId: `lease-${params.config.image}${++acquisitions > 1 ? "-replacement" : ""}`,
             metadata: {
               provider: "fake-plugin",
               image: params.config.image,
@@ -4526,13 +4552,27 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     });
     await runtimeWithPlugin.releaseRunLeases(runId);
 
+    if (drift === "workspace migration") {
+      const operationId = randomUUID();
+      await db.insert(workspaceOperations).values({ id: operationId, companyId, executionWorkspaceId,
+        phase: "remote_workspace_migration", status: "succeeded", metadata: {
+          schema: "paperclip.remote-workspace-migration.v1", snapshotId: randomUUID(), nativeSessionContinuity: {
+            schema: "paperclip.native-workspace-migration.v1", remoteCwd: "/workspace", sessions: [{
+              sourceRunId: runId, agentId, issueId: randomUUID(), sessionId: randomUUID(), logicalCwd: "/old/controller/workspace",
+            }],
+          },
+        } });
+      await db.update(executionWorkspaces).set({ metadata: { nativeWorkspaceMigration: {
+        schema: "paperclip.native-workspace-migration.v1", operationId,
+      } } }).where(eq(executionWorkspaces.id, executionWorkspaceId));
+    }
     const nextRunId = randomUUID();
     await insertRunningManualRun(nextRunId, companyId, agentId);
     const updatedEnvironment: Environment = {
       ...environment,
       config: {
         ...providerConfig,
-        image: "template-b",
+        image: drift === "provider config" ? "template-b" : "template-a",
       },
     };
     await environmentService(db).update(environment.id, {
@@ -4551,7 +4591,8 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
       },
     });
 
-    expect(second.lease.providerLeaseId).toBe("lease-template-b");
+    expect(second.lease.providerLeaseId).toBe(`lease-${updatedEnvironment.config.image}-replacement`);
+    expect(second.lease.metadata?.reusableSandboxLease).not.toEqual(first.lease.metadata?.reusableSandboxLease);
     expect(workerManager.call).not.toHaveBeenCalledWith(
       pluginId,
       "environmentResumeLease",

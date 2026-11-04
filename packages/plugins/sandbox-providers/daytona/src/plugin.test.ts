@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -1347,7 +1348,7 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
-  it("acquires a lease from a created sandbox", async () => {
+  it.each([true, false])("records allocation bytes for reuseLease=%s", async reuseLease => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockCreate.mockResolvedValue(sandbox);
@@ -1363,7 +1364,7 @@ describe("Daytona sandbox provider plugin", () => {
       config: {
         image: "node:20",
         timeoutMs: 300000,
-        reuseLease: true,
+        reuseLease,
       },
     });
 
@@ -1374,13 +1375,21 @@ describe("Daytona sandbox provider plugin", () => {
         shellCommand: "bash",
         sandboxId: "sandbox-123",
         remoteCwd: "/home/daytona/paperclip-workspace",
-        reuseLease: true,
+        reuseLease,
         workspaceSentinel: {
           path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
           result: "written",
         },
       },
     });
+    const uploaded = sandbox.fs.uploadFile.mock.calls.find(call => call[1] ===
+      "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json")?.[0];
+    expect(Buffer.isBuffer(uploaded)).toBe(true);
+    expect(lease?.metadata?.workspaceAllocationFiles).toEqual({ providerLeaseId: "sandbox-123",
+      remoteCwd: "/home/daytona/paperclip-workspace", files: [{
+        relativePath: ".paperclip-runtime/reusable-sandbox-lease.json",
+        sha256: createHash("sha256").update(uploaded as Buffer).digest("hex"),
+      }] });
     expect(sandbox.fs.createFolder).toHaveBeenCalledWith(
       "/home/daytona/paperclip-workspace/.paperclip-runtime",
       "755",

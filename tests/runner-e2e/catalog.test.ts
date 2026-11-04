@@ -127,6 +127,7 @@ describe("runner E2E catalog", () => {
 
   it("exports deployment journeys separately from the model matrix and default selection", () => {
     expect(productJourneys.map(journey => journey.id)).toEqual([
+      "saved-skill-use",
       "task-edit-lifecycle",
       "company-access-isolation",
       "repository-continuation",
@@ -135,7 +136,9 @@ describe("runner E2E catalog", () => {
       "file-input-answer",
       "task-create",
       "project-task-context",
+      "task-dependency-resume",
       "ask-question",
+      "chat-continuity",
       "question-answer-resume",
       "task-properties",
       "task-document-persistence",
@@ -147,6 +150,7 @@ describe("runner E2E catalog", () => {
       "stop-redirect",
       "followup-while-running",
       "hire-delegate-reuse",
+      "agent-settings-persistence",
       "cloud-onboarding"
     ]);
     expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
@@ -308,11 +312,11 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      1, 1, 4, 2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 20, 2, 1, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
+      1, 9, 9, 9, 9, 4, 2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 20, 2, 1, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
 
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(802);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(802);
+    expect(validateRunnerCatalog()).toHaveLength(837);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(837);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);
