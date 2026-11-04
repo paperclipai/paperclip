@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { HttpError } from "../../errors.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
-import { createRunDispatch, isResolvedInteractionContinuationWakeContext, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
+import { createRunDispatch, isResolvedInteractionContinuationWakeContext, planDueQuotaRecoveryReleases, type PostCommitEffect } from "../../modules/run-dispatch/index.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import * as legacy from "../heartbeat.js";
 import { createHeartbeatRunState } from "./run-state.js";
@@ -16,6 +16,15 @@ import type { HeartbeatRetryDependencies } from "./retries.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 type Agent = typeof agents.$inferSelect;
+
+/**
+ * A release plan the sweep would have produced for an empty queue. The
+ * promotion result carries one on every path, so the injected fake returns a
+ * real plan rather than a hand-built stub that drifts from the domain type.
+ */
+function emptyReleasePlan(now = new Date()) {
+  return planDueQuotaRecoveryReleases({ due: [], now, inflightByAgent: new Map(), seed: now.getTime() });
+}
 
 function callbacks() {
   return {
@@ -37,7 +46,7 @@ function callbacks() {
     runDispatch: {
       nextScheduledRetryAt: vi.fn(async () => null),
       evaluateScheduledRetryGate: vi.fn<HeartbeatRetryDependencies["runDispatch"]["evaluateScheduledRetryGate"]>(async () => ({ allowed: true })),
-      promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [] })),
+      promoteDueScheduledRetries: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteDueScheduledRetries"]>(async () => ({ promoted: 0, runIds: [], postCommitEffects: [], releasePlan: emptyReleasePlan() })),
       promoteScheduledRetry: vi.fn<HeartbeatRetryDependencies["runDispatch"]["promoteScheduledRetry"]>(async () => ({ outcome: "not_promoted" })),
     },
   } satisfies HeartbeatRetryDependencies;
@@ -154,7 +163,7 @@ describe("heartbeat retry module callbacks", () => {
       invocationSource: "automation", triggerDetail: "system", wakeupRequestId: "wake",
     };
     deps.getWorktreeExecutionCutoff.mockResolvedValue(cutoff);
-    deps.runDispatch.promoteDueScheduledRetries.mockResolvedValue({ promoted: 1, runIds: ["retry"], postCommitEffects: [effect] });
+    deps.runDispatch.promoteDueScheduledRetries.mockResolvedValue({ promoted: 1, runIds: ["retry"], postCommitEffects: [effect], releasePlan: emptyReleasePlan(now) });
     expect(await extracted.createHeartbeatRetries(database.db, deps).promoteDueScheduledRetries(now)).toEqual({ promoted: 1, runIds: ["retry"] });
     expect(deps.runDispatch.promoteDueScheduledRetries).toHaveBeenCalledWith({ now, cutoff });
     expect(deps.applyRunDispatchPostCommitEffects).toHaveBeenCalledWith([effect]);

@@ -117,6 +117,7 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { budgetService } from "../budgets.js";
 import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
+import { decorrelateRetryAt } from "../../modules/run-dispatch/index.js";
 import { PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS } from "../system-recovery-state.js";
 import { parseProviderQuotaClockReset } from "../provider-quota-reset.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
@@ -589,6 +590,14 @@ const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = PROVIDER_LIMIT_DEFAULT_COOLDOWN_MS;
+/**
+ * Extra spread added on top of the flat quota backoff, so a cohort of retries
+ * enqueued during one quota incident does not come due in the same instant one
+ * hour later.
+ */
+const PROVIDER_QUOTA_RECOVERY_DECORRELATION_WINDOW_MS = 30 * 60 * 1000;
+/** Fixed so the spread is reproducible across processes and restarts. */
+const PROVIDER_QUOTA_RECOVERY_DECORRELATION_SEED = 0x70717063;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your (?:\w+ )?limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
@@ -2614,7 +2623,11 @@ export function recoveryService(
     return action;
   }
 
-  function readProviderQuotaRetryAt(latestRun: LatestIssueRun, now: Date) {
+  function readProviderQuotaRetryAt(
+    latestRun: LatestIssueRun,
+    now: Date,
+    cohortKey: string,
+  ) {
     const result = parseObject(latestRun?.resultJson);
     const context = parseObject(latestRun?.contextSnapshot);
     const raw =
@@ -2632,7 +2645,13 @@ export function recoveryService(
       if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > now.getTime())
         return parsed;
     }
-    return new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
+    return decorrelateRetryAt({
+      now,
+      baseBackoffMs: PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
+      windowMs: PROVIDER_QUOTA_RECOVERY_DECORRELATION_WINDOW_MS,
+      cohortKey,
+      seed: PROVIDER_QUOTA_RECOVERY_DECORRELATION_SEED,
+    });
   }
 
   async function ensureProviderQuotaWaitRecoveryMonitor(input: {
@@ -2658,7 +2677,11 @@ export function recoveryService(
     if (existing) return existing;
 
     const now = new Date();
-    const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
+    const retryAt = readProviderQuotaRetryAt(
+      input.latestRun,
+      now,
+      `${input.issue.companyId}:${input.agentId}:${input.issue.id}`,
+    );
     return database.transaction(async (tx) => {
       await notifyScheduledRetryDispatch(tx, { companyId: input.issue.companyId });
       const wakeup = await tx

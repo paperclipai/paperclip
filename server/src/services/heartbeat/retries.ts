@@ -1731,6 +1731,21 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       cutoff,
     });
     applyRunDispatchPostCommitEffects(result.postCommitEffects);
+    const { decisions, agents, degraded, capPerAgent } = result.releasePlan;
+    const summary = {
+      now: result.releasePlan.now.toISOString(),
+      promoted: result.promoted,
+      released: result.releasePlan.released.length,
+      deferred: result.releasePlan.deferred.length,
+      degraded,
+      capPerAgent,
+      agents: agents.length,
+    };
+    if (degraded) {
+      logger.warn({ ...summary, decisions }, "scheduled retry sweep degraded: in-flight state unreadable, no quota-recovery retry released");
+    } else {
+      logger.info(summary, "scheduled retry sweep");
+    }
     return { promoted: result.promoted, runIds: result.runIds };
   }
 
