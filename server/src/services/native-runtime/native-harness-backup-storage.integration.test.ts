@@ -2,7 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, stat, symlink, readlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { and, eq } from "drizzle-orm";
-import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations } from "@paperclipai/db";
+import { agentTaskSessions, environmentLeases, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunResults } from "@paperclipai/db";
 import { afterEach, expect, it, vi } from "vitest";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
@@ -14,6 +14,7 @@ import { buildNativeHarnessBackupManifest } from "./native-session-executor.js";
 import { createNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp, verifyNativeHarnessBackupStampAsync } from "./native-harness-backup-stamp.js";
 import { hasLocalNativeHarnessObligations, migrateNativeHarnessBackups } from "./native-harness-backup-migration.js";
 import { nativeHarnessBackupExpirationService } from "./native-harness-backup-expiration.js";
+import { legacyControllerBootId } from "../legacy-controller-lease.js";
 
 describeEmbeddedPostgres("durable native provider backups", () => {
   const environment = nativeRestartFixture();
@@ -69,6 +70,116 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     expect(rows.filter(row => row.status === "current").map(row => row.id)).toEqual([before.id]);
     expect(rows.filter(row => row.status === "pending")).toHaveLength(1);
     expect(await readFile(join(f.root, "manifest.json"), "utf8")).toContain("native-harness-backup");
+  });
+  async function commitWarmRun(f: Awaited<ReturnType<typeof fixture>>) {
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [result] = await f.db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      completionContractId: run.completionContractId!, serverFingerprint: "completed-warm-turn", schemaStatus: "accepted",
+      resultJson: { summary: "Retained provider history" }, canonicalSha256: "completed-warm-turn" }).returning();
+    await f.db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, f.runId));
+    await f.db.update(nativeRunFinalizations).set({ phase: "committed", resultId: result.id, leaseOwner: null,
+      leaseExpiresAt: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+    return result;
+  }
+  it.each(["idle", "preparing", "native"])("preserves a released committed warm session with a %s successor", async state => {
+    const f = await fixture();
+    const result = await commitWarmRun(f);
+    let nextRunId: string | null = null;
+    if (state !== "idle") {
+      nextRunId = randomUUID();
+      await f.db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId, agentId: environment.current.agentId,
+        issueId: f.issueId, status: "running", runtimeMode: state === "native" ? "native" : "legacy", executionStage: "preparing",
+        ...(state === "native" ? { nativeIssueId: f.issueId } : {}),
+        controllerBootId: legacyControllerBootId, controllerLeaseExpiresAt: new Date(Date.now() + 120_000) });
+      if (state === "native") await f.db.insert(nativeRunFinalizations).values({ runId: nextRunId,
+        companyId: f.companyId, issueId: f.issueId, phase: "observed", controllerBootId: environment.current.successor.bootId,
+        controllerGeneration: 1, leaseOwner: "preparing-warm-successor", leaseExpiresAt: new Date(Date.now() + 120_000) });
+    }
+    await f.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, f.issueId));
+    const owner = await nativeHarnessBackupOwner(f.db, { companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, bootId: environment.current.successor.bootId });
+    await persistNativeHarnessBackup({ ...f, owner });
+    const replacement = join(environment.current.runtimeRoot, randomUUID(), "restored-warm-session"); ownedHomes.push(replacement);
+    expect(await restoreDurableNativeHarnessBackup({ ...f, backupRoot: replacement })).toBe(true);
+    expect(JSON.parse(await readFile(join(replacement, "current", "codex", "sessions", "history.json"), "utf8"))).toEqual(f.identity);
+    const [coordinator] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(coordinator).toMatchObject({ phase: "committed", resultId: result.id, leaseOwner: null, leaseExpiresAt: null });
+    const [task] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+    expect(task.executionRunId).toBe(nextRunId);
+  });
+  it.each(["unaccepted", "uncommitted", "wrong_boot"])("rejects a released warm owner with %s completion evidence", async state => {
+    const f = await fixture(); await commitWarmRun(f);
+    if (state === "unaccepted") await f.db.update(nativeRunFinalizations).set({ resultId: null }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (state === "uncommitted") await f.db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+    await expect(nativeHarnessBackupOwner(f.db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId,
+      bootId: state === "wrong_boot" ? randomUUID() : environment.current.successor.bootId })).rejects.toThrow("native_harness_storage_owner_missing");
+  });
+  it("rejects an active predecessor after the task moves to a successor", async () => {
+    const f = await fixture();
+    const nextRunId = randomUUID();
+    await f.db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId, agentId: environment.current.agentId,
+      nativeIssueId: f.issueId, issueId: f.issueId, status: "running", runtimeMode: "native" });
+    await f.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, f.issueId));
+    await expect(persistNativeHarnessBackup(f)).rejects.toThrow("native_harness_storage_owner_superseded");
+    expect(await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest))).toEqual([]);
+  });
+  it.each(["foreign_preparation", "expired_preparation", "dispatching_successor", "foreign_native"])("keeps the selected backup when a released owner has a %s", async state => {
+    const f = await fixture(); await persistNativeHarnessBackup(f); await commitWarmRun(f);
+    const [before] = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    const nextRunId = randomUUID();
+    await f.db.insert(heartbeatRuns).values({ id: nextRunId, companyId: f.companyId, agentId: environment.current.agentId,
+      issueId: f.issueId, status: "running", runtimeMode: state === "foreign_native" ? "native" : "legacy",
+      ...(state === "foreign_native" ? { nativeIssueId: f.issueId } : {}),
+      executionStage: state === "dispatching_successor" ? "dispatching" : "preparing",
+      controllerBootId: state === "foreign_preparation" ? randomUUID() : legacyControllerBootId,
+      controllerLeaseExpiresAt: state === "expired_preparation" ? new Date(0) : new Date(Date.now() + 120_000) });
+    if (state === "foreign_native") await f.db.insert(nativeRunFinalizations).values({ runId: nextRunId,
+      companyId: f.companyId, issueId: f.issueId, phase: "observed", controllerBootId: randomUUID(),
+      controllerGeneration: 1, leaseOwner: "foreign-warm-successor", leaseExpiresAt: new Date(Date.now() + 120_000) });
+    await f.db.update(issues).set({ executionRunId: nextRunId }).where(eq(issues.id, f.issueId));
+    const owner = await nativeHarnessBackupOwner(f.db, { companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, bootId: environment.current.successor.bootId });
+    await expect(persistNativeHarnessBackup({ ...f, owner })).rejects.toThrow("native_runner_checkpoint_owner_lost");
+    expect((await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
+      eq(nativeHarnessBackups.status, "current")))).map(row => row.id)).toEqual([before.id]);
+  });
+  it.each(["generation", "result", "phase"])("rechecks a released owner's %s after object upload", async state => {
+    const f = await fixture(); await persistNativeHarnessBackup(f); await commitWarmRun(f);
+    await f.db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+    const [before] = await f.db.select().from(nativeHarnessBackups).where(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest));
+    const owner = await nativeHarnessBackupOwner(f.db, { companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, bootId: environment.current.successor.bootId });
+    const put = f.storage.putFile.bind(f.storage);
+    f.storage.putFile = async input => {
+      const result = await put(input);
+      await f.db.update(nativeRunFinalizations).set(state === "generation" ? { controllerGeneration: 2 }
+        : state === "result" ? { resultId: null } : { phase: "observed" }).where(eq(nativeRunFinalizations.runId, f.runId));
+      return result;
+    };
+    await expect(persistNativeHarnessBackup({ ...f, owner })).rejects.toThrow(state === "generation"
+      ? "native_runner_checkpoint_owner_lost" : "native_harness_storage_owner_missing");
+    expect((await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
+      eq(nativeHarnessBackups.status, "current")))).map(row => row.id)).toEqual([before.id]);
+  });
+  it("cannot replace a newer conversation backup with a released predecessor's late upload", async () => {
+    const f = await fixture(); await commitWarmRun(f);
+    await f.db.update(issues).set({ executionRunId: null }).where(eq(issues.id, f.issueId));
+    const owner = await nativeHarnessBackupOwner(f.db, { companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, bootId: environment.current.successor.bootId });
+    const next = await fixture();
+    const put = f.storage.putFile.bind(f.storage);
+    f.storage.putFile = async input => {
+      const result = await put(input);
+      await persistNativeHarnessBackup({ ...next, scopeDigest: f.scopeDigest });
+      return result;
+    };
+    await expect(persistNativeHarnessBackup({ ...f, owner })).rejects.toThrow("native_harness_storage_owner_superseded");
+    const [current] = await f.db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.scopeDigest, f.scopeDigest),
+      eq(nativeHarnessBackups.status, "current")));
+    expect(current.runId).toBe(next.runId);
+    const replacement = join(environment.current.runtimeRoot, randomUUID(), "latest-conversation"); ownedHomes.push(replacement);
+    expect(await restoreDurableNativeHarnessBackup({ ...f, backupRoot: replacement })).toBe(true);
+    expect(JSON.parse(await readFile(join(replacement, "current", "codex", "sessions", "history.json"), "utf8"))).toEqual(next.identity);
   });
   it("fences an old controller whose upload finishes after ownership changes", async () => {
     const f = await fixture(); await persistNativeHarnessBackup(f);

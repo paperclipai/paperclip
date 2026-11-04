@@ -10,7 +10,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import { heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import type { StorageService } from "../../storage/types.js";
-import { assertNativeRunnerCheckpointOwner, type NativeRunnerCheckpointOwner } from "./native-runner-checkpoint.js";
+import { lockNativeRunnerCheckpointOwner, validateNativeRunnerCheckpointOwner, type NativeRunnerCheckpointFenceOwner } from "./native-runner-checkpoint.js";
 import { loadConfig } from "../../config.js";
 import { getStorageService } from "../../storage/index.js";
 import { readNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
@@ -85,14 +85,15 @@ export async function nativeHarnessBackupOwner(db: Db, input: { companyId: strin
   const [row] = await db.select().from(nativeRunFinalizations).where(and(
     eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.issueId, input.issueId),
     eq(nativeRunFinalizations.runId, input.runId), eq(nativeRunFinalizations.controllerBootId, input.bootId)));
-  if (!row?.leaseOwner) fail("owner_missing");
-  return { ...input, authorityRunId: input.runId, leaseOwner: row!.leaseOwner!, generation: row!.controllerGeneration } satisfies NativeRunnerCheckpointOwner;
+  if (!row || !row.leaseOwner && (row.phase !== "committed" || !row.resultId)) fail("owner_missing");
+  return { ...input, authorityRunId: input.runId, leaseOwner: row!.leaseOwner, generation: row!.controllerGeneration } satisfies NativeRunnerCheckpointFenceOwner;
 }
-async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner: NativeRunnerCheckpointOwner | OfflineOwner) {
+async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner: NativeRunnerCheckpointFenceOwner | OfflineOwner) {
+  const checkpointOwner = "kind" in owner ? null : await lockNativeRunnerCheckpointOwner(tx, owner);
   const [task] = await tx.select({ executionRunId: issues.executionRunId }).from(issues)
     .where(and(eq(issues.companyId, owner.companyId), eq(issues.id, owner.issueId))).for("share");
   const authorityRunId = "kind" in owner ? owner.runId : owner.authorityRunId;
-  if (!task || !("kind" in owner) && task.executionRunId && task.executionRunId !== authorityRunId) fail("owner_superseded");
+  if (!task) fail("owner_superseded");
   if ("kind" in owner) {
     if (!owner.writersStopped) fail("offline_writers_required");
     const [active] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(offlineMigrationExecutionWhere()).limit(1);
@@ -111,11 +112,16 @@ async function fence(tx: Parameters<Parameters<Db["transaction"]>[0]>[0], owner:
     }
     return;
   }
-  await assertNativeRunnerCheckpointOwner(tx, owner, false);
+  const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
+  const owned = { ...checkpointOwner!, now: clock.now };
+  const committed = owned.phase === "committed" && owned.resultId !== null && owned.leaseOwner === null;
+  if (owner.leaseOwner === null && !committed) fail("owner_missing");
+  if (task.executionRunId && task.executionRunId !== authorityRunId && !committed) fail("owner_superseded");
+  await validateNativeRunnerCheckpointOwner(tx, owner, owned, false);
 }
 
 export async function persistNativeHarnessBackup(input: {
-  db: Db; storage: StorageService; owner: NativeRunnerCheckpointOwner | OfflineOwner;
+  db: Db; storage: StorageService; owner: NativeRunnerCheckpointFenceOwner | OfflineOwner;
   scopeDigest: string; root: string; signal?: AbortSignal;
 }): Promise<void> {
   if (!/^[a-f0-9]{64}$/.test(input.scopeDigest)) fail("scope_invalid");

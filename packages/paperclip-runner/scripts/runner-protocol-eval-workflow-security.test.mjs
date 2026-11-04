@@ -321,6 +321,87 @@ test('controlled admission rejects missing policy, automatic retries and job rer
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('controlled workers keep the required GitHub-hosted origin even when the legacy AWS fleet is enabled', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const script = workflowShell(workflow.slice(0, workflow.indexOf('\n  target_lock:')), 'Select paid test runner');
+  const root = await mkdtemp(resolve(tmpdir(), 'runner-controlled-origin-'));
+  try {
+    for (const [mode, aws, runner] of [['controlled', 'true', 'ubuntu-latest'], ['controlled', 'false', 'ubuntu-latest'],
+      ['legacy', 'true', 'runs-on/fleet=paperclip-public-pr-x64/env=public-ci'], ['legacy', 'false', 'ubuntu-latest']]) {
+      const output = resolve(root, `${mode}-${aws}`);
+      const result = spawnSync('bash', ['-euc', script], { encoding: 'utf8', env: { PATH: process.env.PATH,
+        ACCOUNTING_MODE: mode, AWS_PAID_RUNNER_ENABLED: aws, GITHUB_OUTPUT: output } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(await readFile(output, 'utf8'), new RegExp(`^runner=${runner}$`, 'm'));
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('TestOps admission preserves the selected mode gates, current source and dedicated roster', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const script = workflowShell(workflow, 'Validate accounting mode and retry envelope');
+  const root = await mkdtemp(resolve(tmpdir(), 'runner-testops-admission-'));
+  try {
+    for (const [mode, source, roster, policy, retries, expected] of [
+      ['legacy', 'a', 'protocol-live-testops-claude', true, '0', 0],
+      ['controlled', 'a', 'protocol-live-testops-claude', true, '0', 0],
+      ['controlled', 'a', 'protocol-live-testops-claude', false, '0', 1],
+      ['controlled', 'a', 'protocol-live-testops-claude', true, '1', 1],
+      ['controlled', 'b', 'protocol-live-testops-claude', true, '0', 1],
+      ['legacy', 'b', 'protocol-live-testops-claude', true, '0', 1],
+      ['legacy', 'a', 'all', true, '0', 1],
+    ]) {
+      const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { PATH: process.env.PATH,
+        ACCOUNTING_MODE: mode, EVENT_NAME: 'workflow_dispatch', GITHUB_RUN_ATTEMPT: '1', RETRIES: retries,
+        TESTOPS_REQUESTED: 'true', REQUESTED_ROSTERS: roster,
+        CONTROLLER_POLICY_JSON: policy ? JSON.stringify({schema:'paperclip.runner-eval.hosted-policy/v1',controllerLockSha256:'e'.repeat(64)}) : '',
+        TARGET_SHA: source.repeat(40), GITHUB_SHA: 'a'.repeat(40), GITHUB_OUTPUT: resolve(root, 'output') } });
+      assert.equal(result.status, expected, `${mode}/${source}/${roster}: ${result.stderr}`);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('TestOps receives only a closed projection created inside the report boundary', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const report = workflow.slice(workflow.indexOf('  report:'), workflow.indexOf('  testops_report:'));
+  const publisher = workflow.slice(workflow.indexOf('  testops_report:'), workflow.indexOf('  publish_history:'));
+  const publicationCondition = publisher.match(/^    if: (.+)$/mu)?.[1];
+  assert.ok(publicationCondition);
+  const admits = (cancelled, enabled = true, selected = true) => Function('always', 'cancelled', 'needs',
+    `return ${publicationCondition}`)(() => true, () => cancelled,
+    { authorize: { outputs: { testops_enabled: String(enabled) } }, testops_selection: { result: selected ? 'success' : 'failure' } });
+  assert.equal(admits(false), true);
+  assert.equal(admits(true), false);
+  assert.equal(admits(false, false), false);
+  assert.equal(admits(false, true, false), false);
+  assert.match(report, /environment:.*runner-e2e-private-history/u);
+  assert.match(report, /Create the closed TestOps projection inside the report boundary[\s\S]*runner-protocol-testops\.mjs export/u);
+  assert.match(report, /Transfer only the closed TestOps results and receipt[\s\S]*path: runner-protocol-testops-projection\//u);
+  assert.match(publisher, /name: runner-protocol-testops-projection-/u);
+  assert.doesNotMatch(publisher, /runner-protocol-eval-public-|runner-protocol-merged|private-history|AWS_ACCESS_KEY_ID|BRAINTRUST_API_KEY/u);
+  assert.match(publisher, /steps\.projection\.outcome != 'success'/u);
+});
+
+test('controlled capacity counts the filtered selection before any provider work', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const filter = workflow.indexOf('      - name: Apply the exact selected protocol cases before fan-out');
+  const limit = workflow.indexOf('      - name: Enforce controlled limits against the selected catalog');
+  const upload = workflow.indexOf('      - name: Upload immutable campaign catalog');
+  assert.ok(filter > 0 && filter < limit && limit < upload);
+  const script = workflowShell(workflow, 'Enforce controlled limits against the selected catalog');
+  const cell = { provider: 'acpx', acpxAgent: 'claude', driver: 'acpx_runtime' };
+  const root = await mkdtemp(resolve(tmpdir(), 'runner-selected-capacity-'));
+  try {
+    for (const [cells, maximum, expected] of [[[cell], 1, 0], [Array(41).fill(cell), 1, 1],
+      [[cell, cell], 1, 1], [[{ ...cell, provider: 'unsupported' }], 1, 1], [[cell], 0, 1]]) {
+      await writeFile(resolve(root, 'runner-protocol-eval-catalog.json'), JSON.stringify({ cells }));
+      const result = spawnSync('bash', ['-euc', script], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH,
+        CONTROLLER_POLICY_JSON: JSON.stringify({ maxCells: maximum }) } });
+      assert.equal(result.status === 0, expected === 0, result.stderr);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('controlled evidence uses private storage and cloud credentials stay out of provider execution', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
   const paid = workflow.slice(workflow.indexOf('    steps: &direct_eval_steps'), workflow.indexOf('  eval_shard_1:'));

@@ -415,9 +415,13 @@ describe("company decision service", () => {
     const f = await fixture(), runId = randomUUID();
     await db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId,
       status: "running", invocationSource: "on_demand", responsibleUserId: "alice" });
-    let unlock!: () => void, locked!: (pid: number) => void;
+    let unlock!: () => void, locked!: (pid: number) => void, finishProvider!: () => void;
     const gate = new Promise<void>(resolve => { unlock = resolve; });
     const acquired = new Promise<number>(resolve => { locked = resolve; });
+    const providerGate = new Promise<void>(resolve => { finishProvider = resolve; });
+    // Keep the admitted reservation held while deletion checks it. A provider
+    // that already settled may legitimately allow deletion past this guard.
+    f.provider.mockImplementationOnce(async () => { await providerGate; return structuredClone(outcome); });
     const blocker = db.transaction(async tx => {
       await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("no key update");
       const [row] = await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`);
@@ -440,10 +444,11 @@ describe("company decision service", () => {
       }, { timeout: 3000 });
       unlock(); await blocker;
       expect(await deletion).toMatchObject({ status: 409, details: { code: "agent_decision_accounting_pending" } });
+      finishProvider();
       expect(await pending).toMatchObject({ status: "succeeded" });
       expect((await db.select().from(agents).where(eq(agents.id, f.agentId)))[0]).toBeDefined();
       expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId))).toHaveLength(1);
-    } finally { unlock(); await blocker; await deletion; await pending.catch(() => undefined); }
+    } finally { unlock(); finishProvider(); await blocker; await deletion; await pending.catch(() => undefined); }
   });
   it("blocks agent deletion while an in-flight or unknown decision retains a budget hold", async () => {
     const f = await fixture(), runId = randomUUID();

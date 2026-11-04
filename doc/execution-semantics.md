@@ -370,6 +370,13 @@ The active-lock lifecycle is part of the checkout contract:
 
 Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clear or adopt locks held by non-terminal runs. After stale cleanup, a checkout `409` should mean a real live owner, status/assignee mismatch, unresolved blocker, or active gate still prevents checkout. Agents must treat that `409` as an ownership conflict and stop rather than retrying the same checkout.
 
+A queued retry waits for its same-company, same-task and same-agent predecessor
+to finish execution and cleanup, including when the task execution lock already
+names the retry. This also applies to failures before native runtime selection.
+Committed cleanup notifications reconsider that same queued run through ordinary
+admission. Failed cleanup, Stop, reassignment and independent recovery gates
+retain their existing effect; a terminal run row alone cannot release the wait.
+
 Stopping a queued legacy run before runtime selection clears only its own task
 locks. It preserves deferred messages without promoting another run. The stop
 must have a recorded, expected operator cancellation and no runtime selection,
@@ -861,6 +868,18 @@ Capture rechecks the complete source inventory and Git state before returning a
 receipt. A changed source or cancelled capture removes its incomplete archive;
 an existing archive remains untouched. Temporary space must still hold the
 normalized Git metadata and the complete archive together.
+
+Shallow and partial Git checkouts retain their available object files instead
+of asking a mirror clone to transfer promised or index-only objects. Capture
+does not fetch missing objects. It preserves the shallow boundary, promisor pack
+markers, portable promisor settings, and the selected sparse-checkout settings
+and patterns. Both source and saved Git state must pass connectivity checks.
+Missing objects in an ordinary repository remain a failure. Partial or shallow
+repositories with alternate object stores, unsupported filters, or unsafe object
+links remain protected sources and do not receive a successful save receipt.
+This uses the existing archive format and ordinary Git files, so earlier archive
+readers restore the same state. It does not add remote history or change the
+authority to resume work, publish a result, or remove a source.
 
 ### Remote Codex model compatibility
 
@@ -2652,6 +2671,14 @@ complete. Busy sessions use active-run adoption while they remain active; if a
 turn finishes during shutdown, its release checkpoints the session before
 returning instead of leaving a new idle owner behind. If checkpointing fails,
 the retained state continues to block unverified reuse.
+
+Object-backed provider backups use the same completed-run fence during warm
+retirement. A committed result can preserve its provider files after its live
+controller lease is released. The boot ID and controller generation must still
+match. A successor must pass the existing same-controller preparation or native
+ownership checks. The backup transaction checks this authority again after
+upload, and a late predecessor cannot replace a newer conversation backup.
+This grants no new lease or permission to start provider work.
 
 Local durable control-plane state is bounded at 256 MiB in the server,
 runnerd recovery, and durable control-plane readers. These paths synchronously
