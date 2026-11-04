@@ -3422,11 +3422,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   });
   const { configure, configureWithCredentialLease, runtimeConfig } = createChatConfiguration(db, {
     onConfigurationCommitted: stageSlackCloudEnrollmentIntent,
-    onConfigurationSettled: async (endpointId, actor, lease) => {
-      await slackCloudEnrollment(endpointId, actor, lease).catch(() => {
-        logger.warn({ endpointId, reason: "slack_enrollment_retry_pending" }, "Slack enrollment responsibility retained");
-      });
-    },
     endpointRecord, get, withCredentialMutationLease, getWebhookPublicBaseUrl, invalidateRuntime,
     nativeBotIdentityMatches, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict,
     legacyGitHubLabelsMatchVerifiedCredentials, normalizedCredentials, verifyCredentials,

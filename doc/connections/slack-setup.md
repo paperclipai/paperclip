@@ -195,21 +195,29 @@ credential/endpoint identity reuses its immutable vault ref across generations;
 rotation and current registration authority remain separately fenced. Removal
 retires exact queue membership and prevents an old generation from reenrolling.
 The local configuration transaction first saves nonsecret enrollment or
-retirement intent and signals the existing connection-events owner. Configure,
-pause and removal can complete locally while Cloud is unavailable. The owner
+retirement intent and signals the existing connection-events owner. Broker work
+runs through that owner after commit; configuration APIs do not await an optional
+Cloud request. Configure, pause and removal can complete locally while Cloud is unavailable. The owner
 retries only retained due intent and reconstructs it after restart, including
 removal for archived endpoints after credential cleanup. Confirmation replaces
 only the same current intent and generation; a completed remote call with a
 lost response remains pending. Current authorization errors retain visible
-attention debt instead of claiming registration succeeded.
+attention debt instead of claiming registration succeeded. Each owner pass admits
+one due enrollment operation before normal event draining, then schedules only
+the earliest retained responsibility. Rollback leaves no committed intent to run.
 
 Retirement sends the original responsible subject and the exact instance,
 company, endpoint, public ID, connection and monotonic generation. Cloud can
 publish a nonreceiving generation floor without a signing key, live descriptor
 or previously returned binding ID. This fences delayed enrollment after local
 removal. Normal current broker authority still applies; the subject alone does
-not authorize an operation. No Cloud configuration creates no new intent or
-background retry. Unsupported capability retains bounded retry responsibility.
+not authorize an operation. An instance that never enrolled with Cloud creates
+no new intent or background retry when Cloud is absent. Previously configured
+retirement responsibility retains its original instance identity as visible
+attention if that identity becomes unavailable. Unsupported capability or disabled
+new enrollment retains bounded retry responsibility; a closed generation or
+identity conflict requires attention. Current authorized confirmation is required
+before clearing the exact pending intent.
 
 Only authenticated `event_callback` messages use this durable lane. The sealed
 queue retains original bytes, signature, timestamp and acceptance time. The app

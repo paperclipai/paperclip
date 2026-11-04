@@ -153,6 +153,9 @@ const BROKER_REJECTION_REASONS = new Set([
   "AUDIENCE_MISMATCH", "OPERATION_MISMATCH", "PAYLOAD_MISMATCH",
   "MALFORMED_REQUEST", "UNSUPPORTED_ALGORITHM", "RATE_LIMITED",
   "PROVIDER_OPERATION_FAILED", "PROVIDER_REAUTHORIZATION_REQUIRED",
+  "SLACK_ENROLLMENT_GENERATION_CHANGED", "SLACK_ENROLLMENT_IDENTITY_CHANGED",
+  "SLACK_ENROLLMENT_CHANGED", "SLACK_ENROLLMENT_UNSETTLED", "SLACK_ENROLLMENT_DISABLED",
+  "SLACK_COMPANY_MISMATCH", "SLACK_EVENTS_UNAVAILABLE",
 ]);
 const UNKNOWN_BROKER_REASON = "UNKNOWN_BROKER_ERROR";
 
@@ -198,6 +201,7 @@ export class PaperclipCloudConnectorError extends Error {
     readonly code: string,
     readonly status?: number,
     readonly retryAt?: number,
+    readonly brokerReason?: string,
   ) {
     super(message);
     this.name = "PaperclipCloudConnectorError";
@@ -339,6 +343,7 @@ export function createPaperclipCloudConnector(input: {
         response.status === 409 ? "REAUTHORIZATION_REQUIRED" : "CONNECTOR_REQUEST_FAILED",
         response.status,
         providerRetryAt(response.headers.get("retry-after"), now()),
+        reason,
       );
     }
     try {

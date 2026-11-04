@@ -30,7 +30,11 @@ function fixture() {
     const write = () => {
       if (rejectWrite) return [];
       for (const value of jsonValues(values.setup)) {
-        if (value && typeof value === "object" && "active" in value && "id" in value) endpoint.setup.slackCloudIntent = value as NonNullable<InternalSetupState["slackCloudIntent"]>;
+        if (value && typeof value === "object" && "active" in value && "id" in value) {
+          endpoint.setup.slackCloudIntent = value as NonNullable<InternalSetupState["slackCloudIntent"]>;
+          endpoint.setup.slackCloudInstanceId = endpoint.setup.slackCloudIntent.instanceId;
+          endpoint.setup.slackCloudSubject = endpoint.setup.slackCloudIntent.subject;
+        }
         else if (value && typeof value === "object" && "bindingId" in value) { delete endpoint.setup.slackCloudIntent; endpoint.setup.slackCloudEvents = value as NonNullable<InternalSetupState["slackCloudEvents"]>; }
         else if (typeof value === "number") { delete endpoint.setup.slackCloudIntent; endpoint.setup.slackCloudRetiredGeneration = value; }
       }
@@ -104,4 +108,23 @@ it("receipt identity mismatch and failed transaction guard cannot publish a live
 it("an absent Cloud configuration creates no new intent or background retry", async () => {
   const f = fixture(); for (const key of ["BASE_URL", "INSTANCE_ID", "SIGN_PRIVATE_KEY", "SEAL_PRIVATE_KEY", "ENVIRONMENT"]) vi.stubEnv(`PAPERCLIP_CLOUD_CONNECTOR_${key}`, "");
   await f.stage(); expect(f.update).not.toHaveBeenCalled(); expect(f.endpoint.setup.slackCloudIntent).toBeUndefined();
+});
+
+it.each(["SLACK_ENROLLMENT_GENERATION_CHANGED", "SLACK_ENROLLMENT_DISABLED"])("closed broker reason %s distinguishes permanent authority from rollout retry", async reason => {
+  const f = fixture(); await f.stage();
+  f.connector.slackEventEnrollment.mockRejectedValueOnce(new PaperclipCloudConnectorError("rejected", "REAUTHORIZATION_REQUIRED", 409, undefined, reason));
+  await f.run(f.endpoint.id, undefined, f.lease);
+  expect(f.endpoint.setup.slackCloudEvents).toBeUndefined();
+  expect(f.endpoint.setup.slackCloudIntent!.nextAttemptAt === null).toBe(reason === "SLACK_ENROLLMENT_GENERATION_CHANGED");
+  expect(f.endpoint.setup.slackCloudIntent!.failureCode).toBe(reason === "SLACK_ENROLLMENT_DISABLED" ? "enrollment_disabled" : "authority_required");
+});
+
+it("losing Cloud identity retains configured retirement responsibility as attention without an empty retry", async () => {
+  const f = fixture(); await f.stage(); await f.run(f.endpoint.id, undefined, f.lease);
+  f.endpoint.status = "archived"; f.connection.enabled = false; f.endpoint.setup.runtimeGeneration = 2;
+  for (const key of ["BASE_URL", "INSTANCE_ID", "SIGN_PRIVATE_KEY", "SEAL_PRIVATE_KEY", "ENVIRONMENT"]) vi.stubEnv(`PAPERCLIP_CLOUD_CONNECTOR_${key}`, "");
+  await f.stage();
+  expect(f.endpoint.setup.slackCloudIntent).toMatchObject({ active: false, instanceId: "instance", runtimeGeneration: 2,
+    failureCode: "connector_configuration_unavailable", nextAttemptAt: null });
+  expect(f.connector.slackEventEnrollment).toHaveBeenCalledOnce();
 });

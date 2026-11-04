@@ -50,6 +50,7 @@ export type InternalSetupState = ChatEndpointSetupState & {
   slackVerificationSigningFingerprint?: string;
 
   slackCloudSubject?: string;
+  slackCloudInstanceId?: string;
   slackCloudRetiredGeneration?: number;
   slackCloudIntent?: {
     version: 1;
