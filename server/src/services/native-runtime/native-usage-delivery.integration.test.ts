@@ -15,7 +15,7 @@ import { flushBudgetEvaluationWork } from "../budgets.js";
 import { accountingIntegrityService } from "../accounting-integrity.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { usageReceiptSpoolPath, type UsageReceiptEnvelope } from "../usage-receipts.js";
-import { createNativeUsageContinuationDelivery, createNativeUsageDelivery } from "./native-usage-delivery.js";
+import { captureLateUsageForOwner, createNativeUsageContinuationDelivery, createNativeUsageDelivery } from "./native-usage-delivery.js";
 
 const runnerRoot = fileURLToPath(new URL("../../../../packages/paperclip-runner/runner/", import.meta.url));
 const fixtureProfile = process.env.CI ? "release" : "debug";
@@ -278,6 +278,17 @@ describe("producer-owned native usage", () => {
       expect(activity.details).toMatchObject({ attribution, reportedByRunId: current.runId, inputTokens: 30 });
       const inspection = await accountingIntegrityService(db).inspect(owner.input.companyId);
       expect(inspection.findings.filter(finding => finding.entityId === owner.input.runId)).toEqual([]);
+    });
+
+    it("posts a local Runner's late usage to its owner through the direct capture", async () => {
+      const owner = await finalizedSource();
+      const current = await successor(owner);
+      const report = lateReport(current, { runId: owner.input.runId, normalizedSessionId: sessionId });
+      const { runDelta, reconciliation } = report.payload as Record<string, unknown>;
+      expect(await captureLateUsageForOwner(db, current, { ...report, eventType: "harness.diagnostic" }, { code: "codex_late_usage", runDelta, reconciliation })).toBe(true);
+      expect(await accountRunCost(db, owner.input.runId)).toBe(true);
+      expect((await ledger(owner.input.runId)).map(row => row.inputTokens).sort((a, b) => a - b)).toEqual([30, 120]);
+      expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, current.runId))).toHaveLength(0);
     });
 
     it("waits for the owner's charge before posting its late usage", async () => {

@@ -30,6 +30,21 @@ export function observeCodexUsage(
   return { baseline, latest };
 }
 
+/** Usage that belongs to an earlier run raises both counters, so the attached
+ * run's delta stays unchanged. The Runner has already measured the increment. */
+export function absorbLateCodexUsage(
+  state: CodexUsageBaseline | null,
+  total: unknown,
+  increment: unknown,
+): CodexUsageBaseline {
+  const observed = observeCodexUsage(state, total, false);
+  const baseline = { ...observed.baseline };
+  for (const [key, value] of Object.entries(codexUsageMeasurement(increment))) {
+    baseline[key] = (baseline[key] ?? 0) + value;
+  }
+  return { baseline, latest: observed.latest };
+}
+
 export function codexRunUsage(
   state: CodexUsageBaseline,
 ): Record<string, unknown> {

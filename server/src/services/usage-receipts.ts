@@ -219,6 +219,13 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
 
 const receiptTokenKeys = ["inputTokens", "cachedInputTokens", "outputTokens"] as const;
 
+function lateDeltaTotals(usage: Record<string, unknown>) {
+  const saved = (usage.accountingLateDeltas ?? {}) as Record<string, unknown>;
+  const count = (key: string) => typeof saved[key] === "number" ? saved[key] as number : 0;
+  return { tokens: { inputTokens: count("inputTokens"), cachedInputTokens: count("cachedInputTokens"), outputTokens: count("outputTokens") },
+    units: typeof saved.units === "string" ? BigInt(saved.units) : 0n };
+}
+
 function formatUsdUnits(units: bigint) {
   return `${units / 1_000_000_000n}.${String(units % 1_000_000_000n).padStart(9, "0")}`;
 }
@@ -239,8 +246,10 @@ function lateUsageGrowth(previous: Record<string, unknown>, late: UsageReceiptEn
     || receipt.provider !== event.provider || (receipt.biller ?? receipt.provider) !== event.biller || billingType !== event.billingType) return null;
   if (!late.lateDelta && (!newer || late.sourceId !== previous.accountingReceiptSourceId)) return null;
   const reported = (key: typeof receiptTokenKeys[number]) => receipt.usage?.[key] ?? 0;
+  const deltas = lateDeltaTotals(previous);
+  // A source's cumulative receipts never include increments from later runs.
   const tokens = Object.fromEntries(receiptTokenKeys.map(key =>
-    [key, late.lateDelta ? reported(key) : reported(key) - accepted(key)])) as Record<typeof receiptTokenKeys[number], number>;
+    [key, late.lateDelta ? reported(key) : reported(key) - (accepted(key) - deltas.tokens[key])])) as Record<typeof receiptTokenKeys[number], number>;
   if (receiptTokenKeys.some(key => tokens[key] < 0) || receiptTokenKeys.every(key => tokens[key] === 0)) return null;
   const moneyValue = (value: unknown) => typeof value === "number" || typeof value === "string" ? usdToUnits(value) : null;
   const acceptedUnits = moneyValue(previous.cacheAdjustedCostUsd) ?? moneyValue(previous.costUsdExact) ?? moneyValue(previous.costUsd);
@@ -249,13 +258,19 @@ function lateUsageGrowth(previous: Record<string, unknown>, late: UsageReceiptEn
   // A price correction already moved the accepted total, so measure from it.
   const correctedTotal = reconciled ? moneyValue(reconciled.cacheAdjustedCostUsd) ?? moneyValue(reconciled.costUsdExact) ?? moneyValue(reconciled.costUsd) : null;
   const units = subscription ? 0n : reportedUnits === null ? null
-    : late.lateDelta ? reportedUnits : reportedUnits - (correctedTotal ?? acceptedUnits ?? 0n);
+    : late.lateDelta ? reportedUnits : reportedUnits - (correctedTotal ?? (acceptedUnits ?? 0n) - deltas.units);
   if (units !== null && units < 0n) return null;
   const totalUnits = units === null ? acceptedUnits : (acceptedUnits ?? 0n) + units;
   return { tokens, units, pricingProvenance: receipt.pricingProvenance, costStatus: receipt.costStatus, usage: {
     inputTokens: accepted("inputTokens") + tokens.inputTokens,
     cachedInputTokens: accepted("cachedInputTokens") + tokens.cachedInputTokens,
     outputTokens: accepted("outputTokens") + tokens.outputTokens,
+    ...(late.lateDelta ? { accountingLateDeltas: {
+      inputTokens: deltas.tokens.inputTokens + tokens.inputTokens,
+      cachedInputTokens: deltas.tokens.cachedInputTokens + tokens.cachedInputTokens,
+      outputTokens: deltas.tokens.outputTokens + tokens.outputTokens,
+      units: String(deltas.units + (units ?? 0n)),
+    } } : {}),
     // Keep the integrity check's receipt total equal to the run's charges.
     ...(subscription || units === null || totalUnits === null ? {} : { cacheAdjustedCostUsd: null, costUsd: null, costUsdExact: formatUsdUnits(totalUnits) }),
     ...(units === null && !subscription ? { costStatus: "unpriced" } : {}),
@@ -288,8 +303,9 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
     .where(and(eq(costAdjustments.companyId, run.companyId), eq(costAdjustments.costEventId, events[0].event.id),
       sql`not (${costAdjustments.actorId} = 'cost_accounting'
         and left(${costAdjustments.idempotencyKey}, length(${automaticCorrectionPrefix})) = ${automaticCorrectionPrefix})`)).limit(1) : [];
-  const sameTokens = receipt?.usage && ["inputTokens", "cachedInputTokens", "outputTokens"].every(key =>
-    Number(previous[key] ?? 0) === Number(receipt.usage?.[key as keyof typeof receipt.usage] ?? 0));
+  const lateDeltas = lateDeltaTotals(previous);
+  const sameTokens = receipt?.usage && receiptTokenKeys.every(key =>
+    Number(previous[key] ?? 0) - lateDeltas.tokens[key] === Number(receipt.usage?.[key] ?? 0));
   const authoritative = receipt?.pricingProvenance && !["rate_card", "unknown"].includes(receipt.pricingProvenance.source);
   const billingType = receipt?.billingType === "api" ? "metered_api"
     : receipt?.billingType === "subscription" ? "subscription_included" : receipt?.billingType ?? "unknown";
@@ -349,7 +365,7 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
   if (late && !late.lateDelta && late.sourceId === previous.accountingReceiptSourceId && late.sequence <= acceptedSequence && receipt?.usage
     && receipt.usageBasis !== "session_cumulative" && events.length === 1 && receipt.model === events[0].event.model
     && receipt.provider === events[0].event.provider && biller === events[0].event.biller && billingType === events[0].event.billingType
-    && receiptTokenKeys.every(key => (receipt.usage?.[key] ?? 0) <= Number(previous[key] ?? 0))) {
+    && receiptTokenKeys.every(key => (receipt.usage?.[key] ?? 0) <= Number(previous[key] ?? 0) - lateDeltas.tokens[key])) {
     await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: events[0].event.projectId });
     await updateDebtState(true, false);
     if (Object.keys(debts).length === 0) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAgentStatus,
@@ -362,7 +378,7 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
   const lateCharges = await tx.select({ exact: sql<string>`${costEvents.costCents}::text` }).from(costEvents).where(and(
     eq(costEvents.companyId, run.companyId), eq(costEvents.heartbeatRunId, run.id),
     sql`left(${costEvents.idempotencyKey}, length(${automaticCorrectionPrefix})) = ${automaticCorrectionPrefix}`));
-  const correctedUnits = usdToUnits(rawAmount) - lateCharges.reduce((sum, charge) => sum + centsToUnits(charge.exact), 0n);
+  const correctedUnits = usdToUnits(rawAmount) + lateDeltas.units - lateCharges.reduce((sum, charge) => sum + centsToUnits(charge.exact), 0n);
   if (correctedUnits < 0n) { await updateDebtState(false); return false; }
   const corrected = receipt.billingType === "subscription_included" || receipt.billingType === "subscription"
     ? "0.0000000" : unitsToCents(correctedUnits);

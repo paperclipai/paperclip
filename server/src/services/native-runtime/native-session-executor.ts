@@ -9,7 +9,7 @@ import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js"
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { durableNativeHarnessStorage, nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { rehydratePinnedSkillAssets } from "./runtime-context.js";
-import { createNativeUsageDelivery } from "./native-usage-delivery.js";
+import { captureLateUsageForOwner, createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
 import { createNativeTurnAccounting, nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage, usesNativeUsageDelivery, isNativeUsageAccountingEvent } from "./native-usage-accounting.js";
 export { nativeUsageCostUsd, nativeUsageBiller, normalizeNativeUsage } from "./native-usage-accounting.js";
@@ -9233,6 +9233,15 @@ async function executePaperclipNativeSessionWithinScope(
   // appendEvent awaits this receipt before the runtime may commit completeRun.
   // Replayed events must rebuild it too after a stop between event and receipt.
   const observeAccountingEvent = async (event: PrpEvent) => {
+    if (event.eventType === "harness.diagnostic" && record(event.payload).code === "codex_late_usage") {
+      // Producer delivery already routes the Runner's own report for remote runs.
+      if (!producerOwnsUsage) {
+        await captureLateUsageForOwner(input.db, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId,
+          runnerInstanceId: effectiveRunnerInstanceId, provider: input.execution.provider,
+          billing: resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity) }, event, record(event.payload));
+      }
+      return;
+    }
     if (cursorCloudAccounting) {
       const complete = observeCursorCloudAccounting(event);
       if (complete !== undefined) await persistAccountingUsage(null, complete);

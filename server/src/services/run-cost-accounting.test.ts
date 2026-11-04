@@ -222,6 +222,23 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId)))[0].costAccountingPending).toBe(false);
   });
 
+  it.each(["cumulative first", "delta first"])("adds a later run's increment to a queued source total: %s", async order => {
+    const sourceId = randomUUID();
+    const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
+    await persistUsageReceipt(db, receipt(owner, sourceId, 1, 1, 100));
+    await accountRunCost(db, owner.runId);
+    const cumulative = receipt(owner, sourceId, 2, 1.2, 120);
+    const delta: UsageReceiptEnvelope = { ...receipt(owner, randomUUID(), 1, 0.1, 10), lateDelta: { attribution: "exact", reportedByRunId: randomUUID() } };
+    for (const item of order === "cumulative first" ? [cumulative, delta] : [delta, cumulative]) await persistUsageReceipt(db, item);
+    for (let attempt = 0; attempt < 3; attempt++) await accountRunCost(db, owner.runId);
+    const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId));
+    expect(charges.reduce((sum, charge) => sum + charge.inputTokens, 0)).toBe(130);
+    expect(charges.reduce((sum, charge) => sum + charge.costCents, 0)).toBeCloseTo(130);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(run.usageJson).toMatchObject({ inputTokens: 130, accountingLateReceiptPending: false });
+    expect((await accountingIntegrityService(db).inspect(owner.companyId)).findings.filter(finding => finding.entityId === owner.runId)).toEqual([]);
+  });
+
   it("clears an older growth receipt that a newer cumulative receipt already covers", async () => {
     const sourceId = randomUUID();
     const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });

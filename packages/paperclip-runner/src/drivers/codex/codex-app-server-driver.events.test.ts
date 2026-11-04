@@ -404,6 +404,29 @@ describe("Codex app-server Codex driver", () => {
     expect(await session.usage()).toMatchObject({ runDeltaComplete: false });
   });
 
+  it("publishes late usage for its owner without billing the active turn", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-late-usage", normalizedSessionId: "normalized-late-usage", workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Work." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    const usage = (inputTokens: number, outputTokens: number) => ({ threadId: "thread-1", turnId: turn.turnId, tokenUsage: { total: { inputTokens, outputTokens } } });
+    transport.push("thread/tokenUsage/updated", usage(50, 5));
+    const reconciliation = { reason: "accounting_reconciliation_required", receivedTurnId: "prior-turn", priorOrigin: { runId: "run-prior" } };
+    transport.push("thread/tokenUsage/updated", {
+      threadId: "thread-1", turnId: turn.turnId, reconciliation,
+      tokenUsage: { total: { inputTokens: 80, outputTokens: 5 }, runDelta: { inputTokens: 30, outputTokens: 0 }, runDeltaComplete: false },
+    });
+    transport.push("thread/tokenUsage/updated", usage(90, 7));
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const late = events.find(event => event.payload.code === "codex_late_usage");
+    expect(late?.payload).toMatchObject({ runDelta: { inputTokens: 30 }, reconciliation: { priorOrigin: { runId: "run-prior" } } });
+    expect(events.filter(event => event.payload.kind === "usage").at(-1)?.payload.usage)
+      .toMatchObject({ runDelta: { inputTokens: 60, outputTokens: 7 }, runDeltaComplete: true });
+  });
+
   it("accepts a thread usage snapshot replayed before a resumed turn starts", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({

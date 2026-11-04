@@ -1,4 +1,4 @@
-import { observeCodexUsage, codexRunUsage } from "./codex-usage-baseline.js";
+import { absorbLateCodexUsage, observeCodexUsage, codexRunUsage } from "./codex-usage-baseline.js";
 import { classifyCodexNotification } from "./codex-notification-identity.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
 import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
@@ -567,6 +567,17 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       } else if (notification.method === "turn/diff/updated") {
         recordTurnDiff(state, turnId, params.diff);
       }
+      return;
+    }
+    if (notification.method === "thread/tokenUsage/updated" && state.driverKind === "codex_app_server"
+      && Object.keys(record(params.reconciliation)).length > 0) {
+      // This usage belongs to an earlier run. Never bill it to the active turn;
+      // publish it so the host can post it to the run that owns it.
+      const tokenUsage = record(params.tokenUsage);
+      state.codexUsageBaseline = absorbLateCodexUsage(state.codexUsageBaseline, tokenUsage.total, tokenUsage.runDelta);
+      state.usageSnapshot = { ...state.usageSnapshot, ...codexRunUsage(state.codexUsageBaseline) };
+      state.emit("harness.diagnostic", { code: "codex_late_usage", runDelta: boundedPayload(record(tokenUsage.runDelta)),
+        reconciliation: boundedPayload(record(params.reconciliation)) });
       return;
     }
     if (notification.method === "thread/tokenUsage/updated") {
