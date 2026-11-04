@@ -94,7 +94,7 @@ function browserReport(revision, latency) {
       tls: { peerVerification: true, caSha256: "e".repeat(64), serverCertificateSha256: "f".repeat(64) },
       runner: { sha256: "d".repeat(64), metadata: { prpTransportModes: ["dial_wss"] } },
       provider: { nodeSha256: "b".repeat(64), wrapperSha256: "c".repeat(64), fixtureSha256: "a".repeat(64) } },
-    fixtureSha256: "a".repeat(64), admissionProtocol: "sequential-provider-and-clock-readiness-before-common-epoch", setupReadinessPollingMs: 50, complete: true, cleanup: { complete: true, errors: [] }, qualificationOnly: false, diagnosticOnly: false, performanceAcceptanceEligible: true, browserRecording: { trace: "off", video: "off", screencast: false },
+    fixtureSha256: "a".repeat(64), admissionProtocol: "two-at-a-time-provider-and-clock-readiness-before-common-epoch", setupActivationConcurrency: 2, setupReadinessPollingMs: 50, complete: true, cleanup: { complete: true, errors: [] }, qualificationOnly: false, diagnosticOnly: false, performanceAcceptanceEligible: true, browserRecording: { trace: "off", video: "off", screencast: false },
     sourceRevision: revision, compiledBuildRevision: revision, serverArtifact: "compiled", serverEntrySha256: `${revision}-compiled`,
     measurementSha256: "synthetic-fixed-fixture", compiledHotPathHashes: { append: "append", port: "port", runtime: "runtime" },
     cases: workloads.map((workload, caseIndex) => {
@@ -118,7 +118,21 @@ function browserReport(revision, latency) {
         provider: "local", providerLeaseId: null, status: "released", releasedAt: "2026-11-03T00:00:01.000Z", cleanupStatus: null };
       const localProcesses = { runnerPid: pid - 1, processGroupId: pid - 1, providerPid: pid, hostname: "fixture-host",
         checkedAtMs: 999, runnerAlive: true, groupAlive: true, providerAlive: true };
+      const activations = rows.map((row, index) => {
+        const waveIndex = index ? Math.floor((index - 1) / 2) : null, startedAtMs = index ? 110 + waveIndex * 10 : 50;
+        return { index, issueId: row.issue_id, token: String(index), waveIndex, startedAtMs,
+          requestSettledAtMs: startedAtMs + (index ? 3 : 5), providerReadyAtMs: startedAtMs + (index ? 1 : 10),
+          clockHelloAtMs: startedAtMs + (index ? 2 : 20), readinessObservedAtMs: index ? startedAtMs + 6 : 700,
+          settledAtMs: index ? startedAtMs + 7 : 700, status: "fulfilled" };
+      });
+      const activationWaves = Array.from({ length: Math.ceil((workload.runs - 1) / 2) }, (_, index) => ({
+        index, indices: Array.from({ length: Math.min(2, workload.runs - 1 - index * 2) }, (_, offset) => 1 + index * 2 + offset),
+        startedAtMs: 110 + index * 10, settledAtMs: 118 + index * 10,
+        statuses: Array(Math.min(2, workload.runs - 1 - index * 2)).fill("fulfilled"),
+      }));
       return { ...workload, stop, transport: stop ? "local" : "sandbox-remote", environmentId: actualEnvironmentId, persistedAfterReload: true,
+        setupActivationConcurrency: 2, setupReadinessStartedAtMs: 100, readinessDeadlineMs: 300100, allReadyObservedAtMs: 700,
+        participants: workload.runs, activations, activationWaves,
         epochMs: 1000, preludeProof: workload.prelude ? { individualDeltas: workload.prelude, uniqueSourceIdentities: workload.prelude, verifiedAtMs: 999 } : undefined,
         settledAtMs: 1000 + latency, stopRequestedAtMs: stop ? 1000 : undefined,
         stopAcknowledgedAtMs: stop ? 1000 + latency : undefined, remoteLeasesCheckedAtMs: stop ? undefined : 1001 + latency,
@@ -126,7 +140,9 @@ function browserReport(revision, latency) {
           ...(stop ? { localJournal: { schema: "paperclip.runner.durable.control-plane-state.v1", sha256: "8".repeat(64), bytes: 512, checkedAtMs: 999,
             identity: { runId: rows[0].run_id, runnerInstanceId: rows[0].runner_instance_id, normalizedSessionId: rows[0].native_session_id, environmentLeaseId: rows[0].admitted_execution_workspace_id } } } : {}) },
         providerClocks: rows.map((row, index) => ({ runId: row.run_id, nonce: String(index), launcher, providerPid: pid + index })),
-        clockEvidence: rows.map((row, index) => ({ nonce: String(index), launcher, providerPid: pid + index })),
+        clockEvidence: rows.map((row, index) => ({ nonce: String(index), launcher, providerPid: pid + index,
+          hello: true, providerReadyAtMs: activations[index].providerReadyAtMs, clockHelloAtMs: activations[index].clockHelloAtMs,
+          readinessObservedAtMs: activations[index].readinessObservedAtMs })),
         ...(stop ? { localProcesses, localStopProof: { checkedAtMs: 1001 + latency, lease,
           processes: { ...localProcesses, runnerAbsent: true, groupAbsent: true, providerAbsent: true },
           database: { ...snapshot, checkedBeforeMeasuredEpoch: false, checkedAtMs: 1000 + latency, connectionClosedAtMs: 1000 + latency,
@@ -250,6 +266,24 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       ["lease-check-before-timing", report => { report.cases[3].remoteLeasesCheckedAtMs = report.cases[3].settledAtMs - 1; }, /after recorded timing boundaries/],
       ["stop-timing-restamped", report => { report.cases[5].stopAcknowledgedAtMs++; }, /timing boundary changed/],
       ["unqualified-admission", report => { delete report.admissionProtocol; }, /admission protocol/],
+      ["old-sequential-admission", report => { report.admissionProtocol = "sequential-provider-and-clock-readiness-before-common-epoch"; }, /admission protocol/],
+      ["missing-activation-concurrency", report => { delete report.setupActivationConcurrency; }, /activation concurrency of two/],
+      ["excessive-activation-concurrency", report => { report.setupActivationConcurrency = 10; }, /activation concurrency of two/],
+      ["serial-activation-concurrency", report => { report.setupActivationConcurrency = 1; }, /activation concurrency of two/],
+      ["wrong-case-activation-concurrency", report => { report.cases[3].setupActivationConcurrency = 1; }, /case's qualified setup activation/],
+      ["extended-shared-readiness-deadline", report => { report.cases[3].readinessDeadlineMs++; }, /unchanged shared readiness deadline/],
+      ["authority-before-all-ready", report => { report.cases[3].controllerAuthority.checkedAtMs = 699; }, /authority after every provider/],
+      ["missing-live-provider-get", report => { report.cases[3].participants--; }, /provider GET must remain open/],
+      ["missing-activation-record", report => { report.cases[3].activations.pop(); }, /activation timing/],
+      ["wrong-activation-task", report => { report.cases[3].activations[99].issueId = "other"; }, /task must match actual controller/],
+      ["wrong-activation-token", report => { report.cases[3].activations[99].token = "other"; }, /actual provider clock/],
+      ["unfinished-activation", report => { report.cases[3].activations[99].status = "pending"; }, /unfinished setup activation/],
+      ["unfinished-wave", report => { report.cases[3].activationWaves[49].statuses = ["rejected"]; }, /failed or unfinished setup wave/],
+      ["overlapping-waves", report => { report.cases[3].activationWaves[1].startedAtMs = 110; }, /whole setup wave before/],
+      ["oversized-wave", report => { report.cases[3].activationWaves[0].indices.push(3); }, /Wrong setup wave participants/],
+      ["late-readiness-observation", report => { report.cases[3].activations[99].readinessObservedAtMs = 1001; }, /pre-epoch activation/],
+      ["missing-provider-clock-hello", report => { report.cases[3].clockEvidence[99].hello = false; }, /actual provider needs its clock hello/],
+      ["restamped-provider-readiness", report => { report.cases[3].clockEvidence[99].readinessObservedAtMs++; }, /actual clock observations/],
       ["unqualified-readiness-observation", report => { delete report.setupReadinessPollingMs; }, /readiness observation interval/],
       ["unfinished-cleanup", report => { report.cleanup.complete = false; }, /completed fixture cleanup/],
       ["cleanup-error", report => { report.cleanup.errors.push({ step: "restore", message: "timeout" }); }, /cleanup errors/],
@@ -280,6 +314,7 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       ["local-noise-transport", report => { report.transport = "local"; }, /different transport/],
       ["changed-noise-budget", report => { report.resourceBudgets.providerReadinessMs++; }, /budgets changed after A\/A/],
       ["changed-noise-transport-policy", report => { report.transportPolicy.operatorStop = "sandbox-remote"; }, /Transport policy changed after A\/A/],
+      ["changed-noise-activation-concurrency", report => { report.setupActivationConcurrency = 10; }, /concurrency changed after A\/A/],
     ]) {
       const changed = JSON.parse(await readFile(noise, "utf8")); change(changed);
       const file = await save(name + ".json", changed);

@@ -17,10 +17,16 @@ type ClockStream = { nonce: string; markerCode: string; opened: boolean; hello: 
   providerReadyAtMs?: number; clockHelloAtMs?: number; readinessObservedAtMs?: number };
 type ClockCase = { events: number; intervalMs: number; epochMs?: number; streams: Map<string, ClockStream>; errors: string[] };
 type Case = { name: string; runs: number; events: number; intervalMs: number; prelude: number };
+type SetupActivation = { index: number; issueId: string; token: string; waveIndex: number | null; startedAtMs: number;
+  requestSettledAtMs?: number; providerReadyAtMs?: number; clockHelloAtMs?: number; readinessObservedAtMs?: number;
+  settledAtMs?: number; status: "pending" | "fulfilled" | "rejected"; failure?: string };
+type SetupWave = { index: number; indices: number[]; startedAtMs: number; settledAtMs?: number;
+  statuses?: Array<"fulfilled" | "rejected"> };
 const smoke = process.env.PAPERCLIP_INGESTION_SMOKE === "1";
 const transport = process.env.PAPERCLIP_INGESTION_TRANSPORT ?? "sandbox-remote-with-local-stop";
 const providerReadinessMs = 300_000;
-const cases: Case[] = smoke ? [{ name: "qualification", runs: 1, events: 16, intervalMs: 25, prelude: 0 }] : [
+const setupActivationConcurrency = 2;
+const cases: Case[] = smoke ? [{ name: "qualification", runs: 3, events: 16, intervalMs: 25, prelude: 0 }] : [
   { name: "paced", runs: 1, events: 128, intervalMs: 25, prelude: 0 },
   { name: "burst16", runs: 1, events: 16, intervalMs: 0, prelude: 0 },
   { name: "burst128", runs: 10, events: 128, intervalMs: 0, prelude: 0 },
@@ -270,7 +276,8 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       realCloudStop: "Separate required qualification; fake-plugin void receipts grant no remote Stop authority" },
     resourceBudgets: { providerReadinessMs, fullInvocationMs: info.timeout, streamingMs: 120_000,
       terminalDrainageMs: 180_000, stopAcknowledgementMs: 30_000, remoteLeaseCleanupMs: 30_000 },
-    admissionProtocol: "sequential-provider-and-clock-readiness-before-common-epoch",
+    admissionProtocol: "two-at-a-time-provider-and-clock-readiness-before-common-epoch",
+    setupActivationConcurrency,
     setupReadinessPollingMs: 50,
     dependency: "Deterministic Codex app-server fixture; real application/runtime/port/PostgreSQL/live WebSocket/shipped UI",
     variant: process.env.PAPERCLIP_INGESTION_VARIANT ?? "unlabelled", qualificationOnly: smoke,
@@ -402,6 +409,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       await page.getByRole("listbox", { name: "Assignees", exact: true }).getByRole("option")
         .filter({ has: page.getByText(caseAgents[0].name, { exact: true }) }).click();
       await expect(dialog.getByRole("button", { name: "Select assignee" })).toContainText(caseAgents[0].name);
+      const foregroundActivationStartedAtMs = Date.now();
       await dialog.getByRole("button", { name: "Create task", exact: true }).click();
       let issue: any;
       await expect.poll(async () => {
@@ -410,6 +418,11 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       }).toBe(true);
       const issueIds = [issue.id];
       active.issueIds = issueIds;
+      const activations: SetupActivation[] = [{ index: 0, issueId: issue.id, token: nonce, waveIndex: null,
+        startedAtMs: foregroundActivationStartedAtMs, requestSettledAtMs: Date.now(), status: "pending" }];
+      const activationWaves: SetupWave[] = [];
+      active.activations = activations; active.activationWaves = activationWaves;
+      active.setupActivationConcurrency = setupActivationConcurrency;
       const issuedTokens = new Map<string, string>([[issue.id, nonce]]);
       for (let index = 1; index < workload.runs; index++) {
         const backgroundToken = randomUUID().replaceAll("-", ""), backgroundCode = nextMarkerCode();
@@ -421,17 +434,38 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         issueIds.push(background.id);
         issuedTokens.set(background.id, backgroundToken);
       }
-      const readinessDeadlineMs = Date.now() + providerReadinessMs;
+      const setupReadinessStartedAtMs = Date.now();
+      const readinessDeadlineMs = setupReadinessStartedAtMs + providerReadinessMs;
+      active.setupReadinessStartedAtMs = setupReadinessStartedAtMs; active.readinessDeadlineMs = readinessDeadlineMs;
       active.phase = "activation-and-provider-readiness";
-      for (let index = 1; index < issueIds.length; index++) {
-        const id = issueIds[index], token = issuedTokens.get(id)!;
-        active.activation = { index, issueId: id, token, startedAtMs: Date.now(), readinessDeadlineMs };
-        await json(await request.patch(`/api/issues/${id}`, { data: { status: "todo" } }));
-        // PATCH schedules wakeup asynchronously. Wait for this actual provider,
-        // while the common emission gate remains closed, before scheduling more.
-        await expect.poll(() => pending.get(key)!.has(token) && state.streams.get(token)!.hello,
-          { timeout: Math.max(1, readinessDeadlineMs - Date.now()), intervals: [50] }).toBe(true);
-        state.streams.get(token)!.readinessObservedAtMs = Date.now();
+      for (let firstIndex = 1; firstIndex < issueIds.length; firstIndex += setupActivationConcurrency) {
+        expect(Date.now(), "Do not activate a later wave after the shared readiness deadline").toBeLessThanOrEqual(readinessDeadlineMs);
+        const indices = Array.from({ length: Math.min(setupActivationConcurrency, issueIds.length - firstIndex) }, (_, offset) => firstIndex + offset);
+        const wave: SetupWave = { index: activationWaves.length, indices, startedAtMs: Date.now() };
+        activationWaves.push(wave); active.activationWave = wave;
+        const settled = await Promise.allSettled(indices.map(async index => {
+          const id = issueIds[index], token = issuedTokens.get(id)!;
+          const activation: SetupActivation = { index, issueId: id, token, waveIndex: wave.index,
+            startedAtMs: Date.now(), status: "pending" };
+          activations.push(activation);
+          try {
+            await json(await request.patch(`/api/issues/${id}`, { data: { status: "todo" } }));
+            activation.requestSettledAtMs = Date.now();
+            // Keep the gate closed until both actual providers in this wave have
+            // opened their GET and clock hello; never overlap a later wave.
+            await expect.poll(() => pending.get(key)!.has(token) && state.streams.get(token)!.hello,
+              { timeout: Math.max(1, readinessDeadlineMs - Date.now()), intervals: [50] }).toBe(true);
+            const stream = state.streams.get(token)!;
+            stream.readinessObservedAtMs = Date.now();
+            Object.assign(activation, { providerReadyAtMs: stream.providerReadyAtMs, clockHelloAtMs: stream.clockHelloAtMs,
+              readinessObservedAtMs: stream.readinessObservedAtMs, status: "fulfilled" });
+          } catch (error) {
+            activation.status = "rejected"; activation.failure = String(error); throw error;
+          } finally { activation.settledAtMs = Date.now(); }
+        }));
+        wave.settledAtMs = Date.now(); wave.statuses = settled.map(result => result.status);
+        const failure = settled.find(result => result.status === "rejected");
+        if (failure?.status === "rejected") throw failure.reason;
       }
       const route = `/${company.issuePrefix}/issues/${issue.identifier}`;
       await page.goto(route);
@@ -440,6 +474,11 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         clocks: [...state.streams.values()].filter(stream => stream.hello).length }),
       { timeout: Math.max(1, readinessDeadlineMs - Date.now()), intervals: [50] }).toEqual({ providers: workload.runs, clocks: workload.runs });
       expect(Date.now(), "All participants must be ready within the shared activation/readiness budget").toBeLessThanOrEqual(readinessDeadlineMs);
+      const allReadyObservedAtMs = Date.now(), foregroundStream = state.streams.get(nonce)!;
+      foregroundStream.readinessObservedAtMs = allReadyObservedAtMs;
+      Object.assign(activations[0], { providerReadyAtMs: foregroundStream.providerReadyAtMs, clockHelloAtMs: foregroundStream.clockHelloAtMs,
+        readinessObservedAtMs: allReadyObservedAtMs, settledAtMs: allReadyObservedAtMs, status: "fulfilled" });
+      active.allReadyObservedAtMs = allReadyObservedAtMs;
       let preludeProof: Record<string, unknown> | undefined;
       if (workload.prelude) {
         await expect(page.getByText(`PRELUDE_${nonce}_READY`, { exact: false }).first()).toBeVisible({ timeout: 120_000 });
@@ -483,9 +522,10 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
           groupAlive: !processAbsent(-row.process_group_id), providerAlive: !processAbsent(providerPid) };
         expect(localProcesses.runnerAlive && localProcesses.groupAlive && localProcesses.providerAlive).toBe(true);
       }
+      const participants = [...pending.get(key)!.keys()];
+      expect(participants, "Every actual provider GET must still be open after the authority snapshot").toHaveLength(workload.runs);
       const epochMs = Date.now() + 1000;
       state.epochMs = epochMs; active.epochMs = epochMs; active.phase = "streaming";
-      const participants = [...pending.get(key)!.keys()];
       active.participants = participants;
       for (const response of pending.get(key)!.values()) response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ epochMs }));
       const observed = () => page.evaluate(code => (window as unknown as { nativeIngestionVisible: SeenMarker[] }).nativeIngestionVisible.filter(item => item.markerCode === code), markerCode);
@@ -578,6 +618,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       const interChunkGaps = { paintCount: paintTimes.length, count, medianMs, maxMs };
       const clockEvidence: Array<Record<string, unknown>> = [];
       const result = { ...workload, stop, transport: caseTransport, environmentId: caseEnvironment.id,
+        setupActivationConcurrency, setupReadinessStartedAtMs, readinessDeadlineMs, allReadyObservedAtMs, activations, activationWaves,
         nonce, markerCode, epochMs, settledAtMs: settledAt, stopRequestedAtMs: stopRequestedAt,
         stopAcknowledgedAtMs: acknowledgedAt, preludeProof, controllerAuthority, clockEvidence, interChunkGaps,
         providerClocks, localProcesses, localStopProof,

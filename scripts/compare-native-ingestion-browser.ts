@@ -79,7 +79,8 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
   for (const [group, field] of [["runner", "sha256"], ["provider", "nodeSha256"], ["provider", "wrapperSha256"], ["provider", "fixtureSha256"]]) {
     assert.equal(remote[group][field], first.baseline.remote[group][field], "Remote provider/daemon artifact changed across matched samples");
   }
-  assert.equal(report.admissionProtocol, "sequential-provider-and-clock-readiness-before-common-epoch", "Use the qualified pre-measurement admission protocol");
+  assert.equal(report.admissionProtocol, "two-at-a-time-provider-and-clock-readiness-before-common-epoch", "Use the qualified pre-measurement admission protocol");
+  assert.equal(report.setupActivationConcurrency, 2, "Keep the qualified setup activation concurrency of two");
   assert.equal(report.setupReadinessPollingMs, 50, "Keep the qualified setup readiness observation interval");
   assert.equal(report.complete, true); assert.equal(report.qualificationOnly, false, "Smoke cannot qualify performance");
   assert.equal(report.cleanup?.complete, true, "Acceptance requires completed fixture cleanup");
@@ -105,6 +106,7 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
     for (const field of ["runs", "events", "intervalMs", "prelude", "stop"] as const) assert.equal(result[field], fixed[field], `Fixed workload changed: ${name}.${field}`);
     assert.equal(result.transport, result.stop ? "local" : "sandbox-remote", "Wrong per-case transport; fake-plugin does not qualify remote Stop");
     assert.equal(result.environmentId, result.stop ? local.environmentId : remote.environmentId, "Wrong per-case normal environment");
+    assert.equal(result.setupActivationConcurrency, 2, "Keep each case's qualified setup activation concurrency of two");
     assert.equal(result.persistedAfterReload, true);
     assert.equal(result.matchedVisibleClocks, result.visible?.length, "Every observed marker needs its original provider clock");
     assert.ok(result.matchedVisibleClocks >= (result.stop ? 3 : result.events), "Missing foreground render/clock observations");
@@ -170,6 +172,55 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
       assert.equal(stream?.launcher, clock.launcher, "Clock hello launcher proof missing");
       assert.equal(stream?.providerPid, clock.providerPid, "Clock hello provider PID proof missing");
       assert.equal(result.durable.find((proof: any) => proof.runId === clock.runId)?.token, clock.nonce);
+    }
+    assert.equal(result.participants, result.runs, "Every provider GET must remain open before the common epoch");
+    assert.ok(Number.isSafeInteger(result.setupReadinessStartedAtMs) && result.setupReadinessStartedAtMs > 0);
+    assert.equal(result.readinessDeadlineMs, result.setupReadinessStartedAtMs + report.resourceBudgets.providerReadinessMs,
+      "Keep one unchanged shared readiness deadline");
+    assert.ok(Number.isSafeInteger(result.allReadyObservedAtMs) && result.allReadyObservedAtMs >= result.setupReadinessStartedAtMs
+      && result.allReadyObservedAtMs <= result.readinessDeadlineMs && result.allReadyObservedAtMs < result.epochMs,
+    "All actual providers and clocks must be ready before the epoch and shared deadline");
+    assert.ok(authority.checkedAtMs >= result.allReadyObservedAtMs, "Check actual controller authority after every provider is ready");
+    assert.equal(result.activations?.length, result.runs, "Every actual participant needs its setup activation timing");
+    assert.deepEqual(result.activations.map((entry: any) => entry.index).sort((a: number, b: number) => a - b),
+      Array.from({ length: result.runs }, (_, index) => index), "Setup activation indices must cover every participant once");
+    const waves = result.activationWaves;
+    assert.equal(waves?.length, Math.ceil((result.runs - 1) / 2), "Background setup must use bounded waves of two");
+    for (let waveIndex = 0; waveIndex < waves.length; waveIndex++) {
+      const wave = waves[waveIndex], firstIndex = 1 + waveIndex * 2;
+      const indices = Array.from({ length: Math.min(2, result.runs - firstIndex) }, (_, offset) => firstIndex + offset);
+      assert.equal(wave.index, waveIndex); assert.deepEqual(wave.indices, indices, "Wrong setup wave participants");
+      assert.deepEqual(wave.statuses, indices.map(() => "fulfilled"), "A failed or unfinished setup wave cannot qualify");
+      assert.ok(Number.isSafeInteger(wave.startedAtMs) && Number.isSafeInteger(wave.settledAtMs)
+        && wave.startedAtMs >= (waveIndex ? waves[waveIndex - 1].settledAtMs : result.setupReadinessStartedAtMs)
+        && wave.settledAtMs >= wave.startedAtMs && wave.settledAtMs <= result.allReadyObservedAtMs,
+      "Finish the whole setup wave before starting the next one");
+    }
+    for (const activation of result.activations) {
+      const row = authority.rows.find((row: any) => row.issue_id === activation.issueId);
+      assert.ok(row, "Setup activation task must match actual controller authority");
+      const clock = result.providerClocks.find((clock: any) => clock.runId === row.run_id);
+      assert.equal(activation.token, clock.nonce, "Setup activation must match its actual provider clock");
+      assert.equal(activation.status, "fulfilled", "An unfinished setup activation cannot qualify");
+      for (const field of ["startedAtMs", "requestSettledAtMs", "providerReadyAtMs", "clockHelloAtMs", "readinessObservedAtMs", "settledAtMs"]) {
+        assert.ok(Number.isSafeInteger(activation[field]) && activation[field] > 0 && activation[field] < result.epochMs,
+          "Missing actual pre-epoch activation/readiness timing");
+      }
+      assert.ok(activation.requestSettledAtMs >= activation.startedAtMs && activation.providerReadyAtMs >= activation.startedAtMs
+        && activation.clockHelloAtMs >= activation.startedAtMs
+        && activation.readinessObservedAtMs >= Math.max(activation.requestSettledAtMs, activation.providerReadyAtMs, activation.clockHelloAtMs)
+        && activation.settledAtMs >= activation.readinessObservedAtMs && activation.settledAtMs <= result.allReadyObservedAtMs,
+      "Actual provider GET and hello must precede observed readiness");
+      const stream = result.clockEvidence.find((stream: any) => stream.nonce === activation.token);
+      assert.equal(stream.hello, true, "Every actual provider needs its clock hello");
+      for (const field of ["providerReadyAtMs", "clockHelloAtMs", "readinessObservedAtMs"]) assert.equal(stream[field], activation[field], "Readiness metadata must match actual clock observations");
+      if (activation.index === 0) assert.equal(activation.waveIndex, null);
+      else {
+        const waveIndex = Math.floor((activation.index - 1) / 2), wave = waves[waveIndex];
+        assert.equal(activation.waveIndex, waveIndex);
+        assert.ok(activation.startedAtMs >= wave.startedAtMs && activation.settledAtMs <= wave.settledAtMs,
+          "Keep each activation inside its settled setup wave");
+      }
     }
     assert.equal(result.settledAtMs, result.epochMs + result.drainThroughTerminalMs, "Terminal timing boundary changed");
     if (result.stop) {
@@ -274,6 +325,7 @@ const measurements = names.flatMap(name => {
 const result: Record<string, any> = {
   scope: "Compiled-app remote streaming and original local Stop performance; additional real cloud Stop qualification is required separately",
   transportPolicy: first.baseline.transportPolicy, additionalRealCloudStopQualificationRequired: true,
+  admissionProtocol: first.baseline.admissionProtocol, setupActivationConcurrency: first.baseline.setupActivationConcurrency,
   protocolVersion: first.baseline.protocolVersion, transport: first.baseline.transport,
   resourceBudgets: first.baseline.resourceBudgets,
   phase, expectation, pairCount: pairs.length, baselineRevision: first.baseline.sourceRevision,
@@ -290,6 +342,8 @@ if (phase === "compare") {
   assert.equal(noise.protocolVersion, result.protocolVersion, "Noise report uses a different mixed protocol");
   assert.equal(noise.transport, result.transport, "Noise report uses a different transport");
   assert.deepEqual(noise.transportPolicy, result.transportPolicy, "Transport policy changed after A/A calibration");
+  assert.equal(noise.admissionProtocol, result.admissionProtocol, "Admission protocol changed after A/A calibration");
+  assert.equal(noise.setupActivationConcurrency, result.setupActivationConcurrency, "Setup activation concurrency changed after A/A calibration");
   assert.deepEqual(noise.resourceBudgets, result.resourceBudgets, "Resource budgets changed after A/A calibration");
   assert.equal(noise.baselineRevision, result.baselineRevision); assert.equal(noise.measurementSha256, result.measurementSha256);
   assert.equal(noise.gatesSha256, result.gatesSha256, "Acceptance gates changed after A/A calibration");
