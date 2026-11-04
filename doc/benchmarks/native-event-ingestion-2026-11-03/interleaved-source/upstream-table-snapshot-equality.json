@@ -1,0 +1,29 @@
+{
+  "scope": "Recorded migration snapshot equality in upstream normal merge; separate from direct SOURCE\u2192APP selected-source checks",
+  "before": "75dbd6497438baeac0b7060ce1c31283613dddaa",
+  "after": "d8cd3be0aeed4f9fb93ecc3cf725f1d46d5a0310",
+  "upstream": "ce332ecec0fa165c75261946d238a9035fd2ac71",
+  "tables": {
+    "public.heartbeat_runs": {
+      "beforeSha256": "70def29c6c9d97093071356343b970e9f65130b7c2fba4795f2ec7ca7d31d9a3",
+      "afterSha256": "70def29c6c9d97093071356343b970e9f65130b7c2fba4795f2ec7ca7d31d9a3",
+      "equal": true
+    },
+    "public.heartbeat_run_events": {
+      "beforeSha256": "ea4139388b273d3108c4e2e730d7689591402ef43eb93181a30ae4e0f988b6bd",
+      "afterSha256": "ea4139388b273d3108c4e2e730d7689591402ef43eb93181a30ae4e0f988b6bd",
+      "equal": true
+    },
+    "public.heartbeat_run_event_cursors": {
+      "beforeSha256": "fa883d4daffca32538001953a52013e29633f26ce03dfc92f3662be61fae3069",
+      "afterSha256": "fa883d4daffca32538001953a52013e29633f26ce03dfc92f3662be61fae3069",
+      "equal": true
+    },
+    "public.heartbeat_run_event_source_ranges": {
+      "beforeSha256": "6f2e13fdb9444a87cceba49276c2dbfe465c82d7ad85308a6b7100f360a5eb90",
+      "afterSha256": "6f2e13fdb9444a87cceba49276c2dbfe465c82d7ad85308a6b7100f360a5eb90",
+      "equal": true
+    }
+  },
+  "originalManifestSha256": "75161e6233f1e425ae55ff7186d0c46cae9864042365b995f4211b751d118204"
+}

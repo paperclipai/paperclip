@@ -1,0 +1,559 @@
+{
+  "scope": "Real source append service only, active append interval sums under preregistered8x64 interleaving; no browser/batching/production claim",
+  "baselineRevision": "5337df423e622755d44f3ece5447d1e0beef5f40",
+  "candidateRevision": "e9b909015ad3d517f28c45f0c66c8f41d6112b4b",
+  "measurementSha256": "c8adaf5ac16cab67513d6c8b888afa44d95fa3688d4831b8126fe3d997f1d039",
+  "protocolSha256": "302c11ec61d5170822c08e47f798ca582b8e5afefd9d223fb9023d9ead7a2ad3",
+  "workloadSha256": "ca4894b0723d0bffff0fc88d1596d64aa8fd75aa1dd8d861372ea993db24e164",
+  "gateSha256": "ded8bcbb8f05732348f6520b9c5e41b7c35bc098997eb263a9dcb174eede75fc",
+  "aaRepeatabilityPassed": true,
+  "aaMaximumPairedNoiseAcrossNineCasesPercent": 11.830110496052082,
+  "aaMaximumMedianDriftAcrossNineCasesPercent": 6.132813294289431,
+  "samplesPerCaseArm": 5,
+  "traceCompleteness": {
+    "service-aa-b0": {
+      "recordTypes": {
+        "run-start": 1,
+        "warmup-start": 36,
+        "warmup-complete": 36,
+        "pair-plan": 60,
+        "block-start": 750,
+        "block-complete": 750,
+        "final-verification-start": 120,
+        "pair-complete": 60,
+        "cleanup-complete": 1
+      },
+      "measuredAppendAttempts": 46110,
+      "measuredNonLateGapAttempts": 46080,
+      "measuredLateGapAttempts": 30,
+      "excludedWarmupAttempts": 18432
+    },
+    "service-b0-b1": {
+      "recordTypes": {
+        "run-start": 1,
+        "warmup-start": 36,
+        "warmup-complete": 36,
+        "pair-plan": 60,
+        "block-start": 750,
+        "block-complete": 750,
+        "final-verification-start": 120,
+        "pair-complete": 60,
+        "cleanup-complete": 1
+      },
+      "measuredAppendAttempts": 46110,
+      "measuredNonLateGapAttempts": 46080,
+      "measuredLateGapAttempts": 30,
+      "excludedWarmupAttempts": 18432
+    }
+  },
+  "cases": [
+    {
+      "history": 1000,
+      "scenario": "ordered",
+      "baselineMedianActiveMs": 3823.2426909999995,
+      "candidateMedianActiveMs": 3554.4297090000036,
+      "baselineMinMaxMs": [
+        3660.1935169999997,
+        3890.539190999989
+      ],
+      "candidateMinMaxMs": [
+        3522.6579420000126,
+        3603.657418999999
+      ],
+      "reductionPercent": 7.0310206211284365,
+      "pairedBeyondNoise": 5,
+      "noisePercent": 1.4079047972212446,
+      "gate": "nonregression",
+      "passed": true,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            512,
+            0
+          ]
+        ],
+        "candidate": [
+          [
+            512,
+            0
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 5
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 1000,
+      "scenario": "replay",
+      "baselineMedianActiveMs": 3164.471254999982,
+      "candidateMedianActiveMs": 3002.7086030000064,
+      "baselineMinMaxMs": [
+        3069.5773009999975,
+        3184.937432000006
+      ],
+      "candidateMinMaxMs": [
+        2943.1245840000047,
+        3046.233085
+      ],
+      "reductionPercent": 5.1118382492615355,
+      "pairedBeyondNoise": 3,
+      "noisePercent": 3.9822120206785225,
+      "gate": "nonregression",
+      "passed": true,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            256,
+            256
+          ]
+        ],
+        "candidate": [
+          [
+            256,
+            256
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 4,
+        "candidate": 4
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 1000,
+      "scenario": "late-gap",
+      "baselineMedianActiveMs": 7.402558999994653,
+      "candidateMedianActiveMs": 9.506674999996903,
+      "baselineMinMaxMs": [
+        4.523847000004025,
+        8.067190000001574
+      ],
+      "candidateMinMaxMs": [
+        8.462973000001512,
+        11.00232299999334
+      ],
+      "reductionPercent": -28.424170614564105,
+      "pairedBeyondNoise": 0,
+      "noisePercent": 15.945874769827368,
+      "gate": "structural-only",
+      "passed": null,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            1,
+            0
+          ]
+        ],
+        "candidate": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 7
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 1000,
+      "scenario": "warm-suffix",
+      "baselineMedianActiveMs": 4152.802396999992,
+      "candidateMedianActiveMs": 3542.40763099998,
+      "baselineMinMaxMs": [
+        3944.2845539999835,
+        4266.957552999986
+      ],
+      "candidateMinMaxMs": [
+        3468.830302999995,
+        3605.3644960000674
+      ],
+      "reductionPercent": 14.698382144090571,
+      "pairedBeyondNoise": 5,
+      "noisePercent": 1.8842439321434798,
+      "gate": "nonregression",
+      "passed": true,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            512,
+            0
+          ]
+        ],
+        "candidate": [
+          [
+            512,
+            0
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 6,
+        "candidate": 5
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "ordered",
+      "baselineMedianActiveMs": 4209.649118000001,
+      "candidateMedianActiveMs": 3530.6375980000594,
+      "baselineMinMaxMs": [
+        4049.0527909999655,
+        4255.424076000025
+      ],
+      "candidateMinMaxMs": [
+        3528.6497000000672,
+        3597.892884000001
+      ],
+      "reductionPercent": 16.12988401091584,
+      "pairedBeyondNoise": 5,
+      "noisePercent": 1.7474622955774097,
+      "gate": "improvement",
+      "passed": true,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            512,
+            0
+          ]
+        ],
+        "candidate": [
+          [
+            512,
+            0
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 5
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "replay",
+      "baselineMedianActiveMs": 3575.641203999985,
+      "candidateMedianActiveMs": 3016.318643000035,
+      "baselineMinMaxMs": [
+        3542.3359069999424,
+        3624.188894000021
+      ],
+      "candidateMinMaxMs": [
+        2948.329679999937,
+        3070.961685999995
+      ],
+      "reductionPercent": 15.642580703406395,
+      "pairedBeyondNoise": 5,
+      "noisePercent": 1.6304743570125815,
+      "gate": "improvement",
+      "passed": true,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            256,
+            256
+          ]
+        ],
+        "candidate": [
+          [
+            256,
+            256
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 4,
+        "candidate": 4
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "late-gap",
+      "baselineMedianActiveMs": 7.701110000023618,
+      "candidateMedianActiveMs": 8.573146000009729,
+      "baselineMinMaxMs": [
+        7.188416999997571,
+        9.012380000000121
+      ],
+      "candidateMinMaxMs": [
+        6.192671999975573,
+        8.915757999988273
+      ],
+      "reductionPercent": -11.32351050671183,
+      "pairedBeyondNoise": 0,
+      "noisePercent": 23.08985200646279,
+      "gate": "structural-only",
+      "passed": null,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            1,
+            0
+          ]
+        ],
+        "candidate": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 7
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 10000,
+      "scenario": "warm-suffix",
+      "baselineMedianActiveMs": 4614.03645500011,
+      "candidateMedianActiveMs": 3592.809363000095,
+      "baselineMinMaxMs": [
+        4464.443957999989,
+        4736.473729000078
+      ],
+      "candidateMinMaxMs": [
+        3571.7655579999555,
+        3615.229942000122
+      ],
+      "reductionPercent": 22.133052089203552,
+      "pairedBeyondNoise": 5,
+      "noisePercent": 11.830110496052082,
+      "gate": "improvement",
+      "passed": true,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            512,
+            0
+          ]
+        ],
+        "candidate": [
+          [
+            512,
+            0
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 6,
+        "candidate": 5
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "ordered",
+      "baselineMedianActiveMs": 8029.154580999981,
+      "candidateMedianActiveMs": 3540.048427999951,
+      "baselineMinMaxMs": [
+        7985.540289000026,
+        8157.268998000014
+      ],
+      "candidateMinMaxMs": [
+        3503.1252190000378,
+        3586.664618000097
+      ],
+      "reductionPercent": 55.91007257006802,
+      "pairedBeyondNoise": 5,
+      "noisePercent": 1.0693214938958222,
+      "gate": "improvement",
+      "passed": true,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            512,
+            0
+          ]
+        ],
+        "candidate": [
+          [
+            512,
+            0
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 5
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "replay",
+      "baselineMedianActiveMs": 7456.020750999975,
+      "candidateMedianActiveMs": 2989.0107820000267,
+      "baselineMinMaxMs": [
+        7350.074664000131,
+        7471.52871100005
+      ],
+      "candidateMinMaxMs": [
+        2938.5112860000227,
+        3000.5278340000077
+      ],
+      "reductionPercent": 59.911447649885474,
+      "pairedBeyondNoise": 5,
+      "noisePercent": 0.9332642395176317,
+      "gate": "improvement",
+      "passed": true,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            256,
+            256
+          ]
+        ],
+        "candidate": [
+          [
+            256,
+            256
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 4,
+        "candidate": 4
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "late-gap",
+      "baselineMedianActiveMs": 24.45493699994404,
+      "candidateMedianActiveMs": 9.347156999981962,
+      "baselineMinMaxMs": [
+        23.453166999970563,
+        27.683694000006653
+      ],
+      "candidateMinMaxMs": [
+        8.141280999989249,
+        9.645160000072792
+      ],
+      "reductionPercent": 61.77803688472658,
+      "pairedBeyondNoise": 5,
+      "noisePercent": 39.768871890266304,
+      "gate": "structural-only",
+      "passed": null,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            1,
+            0
+          ]
+        ],
+        "candidate": [
+          [
+            1,
+            0
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 5,
+        "candidate": 7
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    },
+    {
+      "history": 100000,
+      "scenario": "warm-suffix",
+      "baselineMedianActiveMs": 8347.43800100009,
+      "candidateMedianActiveMs": 3402.361554999836,
+      "baselineMinMaxMs": [
+        7836.916214999976,
+        8611.93426499993
+      ],
+      "candidateMinMaxMs": [
+        3119.3996940000216,
+        3627.8794139999663
+      ],
+      "reductionPercent": 59.240648992035574,
+      "pairedBeyondNoise": 5,
+      "noisePercent": 0.7615089382403567,
+      "gate": "improvement",
+      "passed": true,
+      "newDuplicateCountsPerSample": {
+        "baseline": [
+          [
+            512,
+            0
+          ]
+        ],
+        "candidate": [
+          [
+            512,
+            0
+          ]
+        ]
+      },
+      "diagnosticSqlCallsPerAttempt": {
+        "baseline": 6,
+        "candidate": 5
+      },
+      "diagnosticTransactionsPerAttempt": {
+        "baseline": 1,
+        "candidate": 1
+      }
+    }
+  ],
+  "limitations": {
+    "warmups": 2,
+    "pairedOrder": "8x64 blocks interleaved; first arm alternates per pair",
+    "cache": "warm; seed and projection preparation excluded",
+    "databaseCpuResolutionMillis": 10,
+    "databaseCpuSource": "/proc/PID/stat utime+stime clock ticks",
+    "databaseCpuAggregateWorstQuantizationMillis": 80,
+    "databaseCpuCaution": "Each block is tick-quantized (typically 10ms on Linux); an eight-block sum has up to eight ticks of quantization uncertainty. Do not infer sub-tick CPU precision.",
+    "memoryCaution": "Heap deltas, RSS and process CPU describe shared-process intervals; heap deltas do not identify owned allocations.",
+    "activeInterval": "invoke() including append receipt checks, excluding generator, CPU probes, independent verification, trace writes and inter-arm gaps",
+    "pairInterval": "pair plan through final independent database verification; final pair-complete log and scenario diagnostics are outside this interval"
+  },
+  "excludedPriorMonolithicAA": {
+    "sha256": "cfcfeb3c12812dbe48c2afe6013320922d5670a410d033d6ad9a3a2f91236ef8",
+    "status": "failed unchanged noise gates; notcalibration for thisschedule; no specific warmupcause inferred"
+  }
+}

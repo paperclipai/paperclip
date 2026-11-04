@@ -89,8 +89,13 @@ function openIngestionClock(plan, gate) {
     closed = true;
     try { request.end(); } catch (error) { fail(error); }
   };
+  const launcher = process.env.PAPERCLIP_INGESTION_FIXTURE_LAUNCHER;
+  const providerPid = Number(process.env.PAPERCLIP_INGESTION_FIXTURE_PID);
+  if (!['host-local', 'staged-remote'].includes(launcher) || providerPid !== process.pid) {
+    throw new Error('Ingestion fixture requires its actual wrapper launcher and process identity');
+  }
   write({ type: 'hello', nonce: plan.nonce, markerCode: plan.markerCode,
-    events: plan.events, intervalMs: plan.intervalMs });
+    events: plan.events, intervalMs: plan.intervalMs, launcher, providerPid });
   return { write, close, done };
 }
 

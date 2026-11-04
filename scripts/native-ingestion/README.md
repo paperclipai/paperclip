@@ -1,5 +1,7 @@
 # Native ingestion experiment helpers
 
+For fresh cursor results and the current interleaved source reproduction, see [the new source report](../../doc/benchmarks/2026-11-03-native-event-ingestion-interleaved.md). The frozen runner below preserves the earlier experiment. Current application performance requires the separately qualified H4c driver and fresh comparisons; its gates remain open.
+
 These helpers reproduce the experiment registered on November 3, 2026. They
 retain its immutable application revisions, harness revision, workload hashes,
 acceptance checks and failure behavior. They are not a benchmark against an
@@ -22,7 +24,7 @@ Packaging changes: the diagnostic runner imports its renamed adjacent
 `diagnostic-preload.mjs`; its dry-run message uses the committed path; the
 acceptance runner rejects both the original and packaged preload filenames in
 `NODE_OPTIONS`. Application, protocol, compiled-anchor and gate hashes are
-unchanged. The runtime comparison helper and diagnostic preload are exact copies.
+unchanged. The diagnostic preload remains an exact original copy. The runtime comparison helper later gained the optional explicit CI base described below; its SHA above records its original-copy provenance.
 
 The frozen experiment revisions are:
 
@@ -151,12 +153,7 @@ python3 "$TOOLS_CHECKOUT/scripts/native-ingestion/verify-delivery-runtime.py" \
   --delivery=3b77c1ca29467fbd742e9b6df4885bccef0acf08
 ```
 
-For B2, supply its frozen and delivery commits instead. This is a read-only Git
-source/input comparison with the two documented test-typecheck script exceptions
-and genuine CI helpers pinned to `8ab89f41e499032e3e55d261f457a3463d754a1d`.
-It does not compare installed dependencies or compiled artifacts; those require
-their separate build/equivalence receipts. Later delivery revisions must remain
-explicit full commit IDs.
+For B2, supply its frozen and delivery commits instead. This read-only Git source/input comparison preserves the two documented test-typecheck script exceptions. CI helpers and those two scripts must match the immutable `--ci-base` commit, which defaults to `8ab89f41e499032e3e55d261f457a3463d754a1d` for historical reproduction. Later upstream helpers require an explicit full commit ID; the current evidence-only914→d05 comparison uses the tested frozen914 commit. The result reports both the selected-base match and the independent historical8ab match. Installed dependencies and compiled artifacts need separate equivalence receipts. Later delivery revisions must remain explicit full commit IDs.
 
 ## Evidence retention
 

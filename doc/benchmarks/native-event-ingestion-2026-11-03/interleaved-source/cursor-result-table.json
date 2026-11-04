@@ -1,0 +1,134 @@
+[
+  {
+    "history": 1000,
+    "scenario": "ordered",
+    "baselineMedianActiveMs": 3823.2426909999995,
+    "cursorMedianActiveMs": 3554.4297090000036,
+    "reductionPercent": 7.031020621128439,
+    "pairedBeyondNoise": 5,
+    "baselineNoisePercent": 1.4079047972212446,
+    "gate": "nonregression",
+    "passed": true
+  },
+  {
+    "history": 1000,
+    "scenario": "replay",
+    "baselineMedianActiveMs": 3164.471254999982,
+    "cursorMedianActiveMs": 3002.7086030000064,
+    "reductionPercent": 5.11183824926154,
+    "pairedBeyondNoise": 3,
+    "baselineNoisePercent": 3.9822120206785225,
+    "gate": "nonregression",
+    "passed": true
+  },
+  {
+    "history": 1000,
+    "scenario": "late-gap",
+    "baselineMedianActiveMs": 7.402558999994653,
+    "cursorMedianActiveMs": 9.506674999996903,
+    "reductionPercent": -28.424170614564098,
+    "pairedBeyondNoise": 0,
+    "baselineNoisePercent": 15.945874769827368,
+    "gate": "structural-only",
+    "passed": null
+  },
+  {
+    "history": 1000,
+    "scenario": "warm-suffix",
+    "baselineMedianActiveMs": 4152.802396999992,
+    "cursorMedianActiveMs": 3542.40763099998,
+    "reductionPercent": 14.698382144090575,
+    "pairedBeyondNoise": 5,
+    "baselineNoisePercent": 1.8842439321434798,
+    "gate": "nonregression",
+    "passed": true
+  },
+  {
+    "history": 10000,
+    "scenario": "ordered",
+    "baselineMedianActiveMs": 4209.649118000001,
+    "cursorMedianActiveMs": 3530.6375980000594,
+    "reductionPercent": 16.129884010915838,
+    "pairedBeyondNoise": 5,
+    "baselineNoisePercent": 1.7474622955774097,
+    "gate": "improvement",
+    "passed": true
+  },
+  {
+    "history": 10000,
+    "scenario": "replay",
+    "baselineMedianActiveMs": 3575.641203999985,
+    "cursorMedianActiveMs": 3016.318643000035,
+    "reductionPercent": 15.6425807034064,
+    "pairedBeyondNoise": 5,
+    "baselineNoisePercent": 1.6304743570125815,
+    "gate": "improvement",
+    "passed": true
+  },
+  {
+    "history": 10000,
+    "scenario": "late-gap",
+    "baselineMedianActiveMs": 7.701110000023618,
+    "cursorMedianActiveMs": 8.573146000009729,
+    "reductionPercent": -11.323510506711836,
+    "pairedBeyondNoise": 0,
+    "baselineNoisePercent": 23.08985200646279,
+    "gate": "structural-only",
+    "passed": null
+  },
+  {
+    "history": 10000,
+    "scenario": "warm-suffix",
+    "baselineMedianActiveMs": 4614.03645500011,
+    "cursorMedianActiveMs": 3592.809363000095,
+    "reductionPercent": 22.133052089203552,
+    "pairedBeyondNoise": 5,
+    "baselineNoisePercent": 11.830110496052082,
+    "gate": "improvement",
+    "passed": true
+  },
+  {
+    "history": 100000,
+    "scenario": "ordered",
+    "baselineMedianActiveMs": 8029.154580999981,
+    "cursorMedianActiveMs": 3540.048427999951,
+    "reductionPercent": 55.91007257006802,
+    "pairedBeyondNoise": 5,
+    "baselineNoisePercent": 1.0693214938958222,
+    "gate": "improvement",
+    "passed": true
+  },
+  {
+    "history": 100000,
+    "scenario": "replay",
+    "baselineMedianActiveMs": 7456.020750999975,
+    "cursorMedianActiveMs": 2989.0107820000267,
+    "reductionPercent": 59.911447649885474,
+    "pairedBeyondNoise": 5,
+    "baselineNoisePercent": 0.9332642395176317,
+    "gate": "improvement",
+    "passed": true
+  },
+  {
+    "history": 100000,
+    "scenario": "late-gap",
+    "baselineMedianActiveMs": 24.45493699994404,
+    "cursorMedianActiveMs": 9.347156999981962,
+    "reductionPercent": 61.77803688472658,
+    "pairedBeyondNoise": 5,
+    "baselineNoisePercent": 39.768871890266304,
+    "gate": "structural-only",
+    "passed": null
+  },
+  {
+    "history": 100000,
+    "scenario": "warm-suffix",
+    "baselineMedianActiveMs": 8347.43800100009,
+    "cursorMedianActiveMs": 3402.361554999836,
+    "reductionPercent": 59.240648992035574,
+    "pairedBeyondNoise": 5,
+    "baselineNoisePercent": 0.7615089382403567,
+    "gate": "improvement",
+    "passed": true
+  }
+]

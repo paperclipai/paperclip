@@ -1,0 +1,5 @@
+{
+  "originalSha256": "3225b891fa2d7f76408037100dc65a17f6fcd25ab9b070c419095ef2994f0ad9",
+  "publicSha256": "c3f8207cc2199be4eec09b1b4cb08781ff6658e05415b304d75b41aa961d1c3a",
+  "adaptation": "Repository, immutable before/after refs and exclusive output are arguments; role labels renamed before/after; static graph comparison logic unchanged. Read-only Git, no benchmark/app/provider work."
+}

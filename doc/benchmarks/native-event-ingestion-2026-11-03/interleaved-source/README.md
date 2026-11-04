@@ -1,0 +1,12 @@
+# Source-only evidence index
+
+This bundle contains the fresh interleaved B0 A/A and B0→B1 real-PostgreSQL append-service comparison. See [the report](../../2026-11-03-native-event-ingestion-interleaved.md) for commands, results, gates and limitations. It does not establish application/browser/batching or production improvement, and the full task remains incomplete.
+
+- `measurement-source.ts`, `prospective-protocol.md` and `gates.mjs` preserve the exact prospective measurement, protocol and unchanged acceptance logic. The canonical measurement also lives at `scripts/benchmark-native-event-ingestion-interleaved.ts`.
+- `service-*.json.gz` and `.blocks.jsonl.gz` restore exact original bytes with `gzip -dc`. Gzip metadata is deterministic (mtime zero). The command, repeatability, release and quiet receipts are unchanged originals.
+- `summary.json` and `cursor-result-table.json` are compact derived views. Acceptance uses the raw samples and unchanged gates. Twelve cases have five samples per arm; late-gap is structural-only. Mixed replay is 256 new and 256 exact duplicate events per 512 attempts.
+- `excluded-monolithic-service-aa-b0.json.gz` is a complete earlier failed A/A, explicitly excluded from calibration. A passing new interleaving does not establish its failure cause.
+- The selected source/table and static locked dependency-graph receipts support attribution only within their named scope. `compare-runtime-dependencies.cjs` is the original static helper with explicit repository/ref/output arguments and role labels; its projection record preserves both hashes. No whole-application or whole-closure equivalence is claimed.
+- `manifest.json` records every packaged file, plus the two owning files outside this directory. Compressed entries also record exact decompressed hashes and sizes. No raw measurement projection/redaction was required. Original absolute Linux paths are task-owned disposable fixture locations, not reproduction defaults.
+
+Packaging checks parsed every JSON/JSONL file, recomputed all twelve case medians and 120 sample event counts, reapplied the unchanged A/A gates (new PASS, excluded old FAIL), verified exact source/protocol/gate hashes and compared compressed payloads with their originals. Source/helper syntax checks launch no application or database. All packaged/decompressed content was scanned for the actual approved qualification credential and credential/account/private-user-path patterns: zero matches. This scan is an evidence hygiene check, not a new performance measurement.

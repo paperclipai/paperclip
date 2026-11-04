@@ -1,0 +1,31 @@
+{
+  "scope": "Offline packaging checks only; no new database, application, provider or benchmark execution",
+  "exactFrozenHashesVerified": {
+    "measurement-source.ts": "c8adaf5ac16cab67513d6c8b888afa44d95fa3688d4831b8126fe3d997f1d039",
+    "prospective-protocol.md": "302c11ec61d5170822c08e47f798ca582b8e5afefd9d223fb9023d9ead7a2ad3",
+    "gates.mjs": "ded8bcbb8f05732348f6520b9c5e41b7c35bc098997eb263a9dcb174eede75fc"
+  },
+  "allFiveCompressedPayloadsEqualOriginalBytes": true,
+  "newAaRepeatabilityPassed": true,
+  "excludedOldAaRepeatabilityPassed": false,
+  "candidatePassedTimingCases": 9,
+  "candidateStructuralCases": 3,
+  "candidateFailedCases": 0,
+  "allTwelveMediansAnd120SampleCountsVerified": true,
+  "syntaxChecks": [
+    "node --check scripts/benchmark-native-event-ingestion-interleaved.ts",
+    "node --check compare-runtime-dependencies.cjs",
+    "node --check gates.mjs"
+  ],
+  "scan": {
+    "files": 26,
+    "decompressedBytes": 15713136,
+    "actualCredentialSourcePresent": true,
+    "actualCredentialMatches": 0,
+    "patternMatches": {
+      "credential_literal": 0,
+      "vault_or_person_path": 0,
+      "nonloopback_credential_url": 0
+    }
+  }
+}
