@@ -64,6 +64,15 @@ workspace strategy for that run. It does not borrow another run's strategy or
 skip any hold's independent containment and effect checks. Attaching a Retry to
 active automatic recovery preserves its generation, attempt count and deadline.
 
+A deliberate Retry can bind that intent to failed historical predecessors within
+a 32-run chain of persisted retry edges. Every run must retain the same company, task and
+agent, a terminal state and an ordered creation time. Missing, cyclic, contradictory
+or overlong lineage stays held; transcript hints confer no authority. Completed
+ancestors retain their existing recovery generation. A failed historical native
+source with an inherited session requires verified saved work, settled ownership
+and exact stop receipts before a fresh user turn. Prior action outcomes remain
+recorded and are never replayed by this authorization.
+
 A deliberate board Retry can continue a failed native preparation after its
 saved remote workspace is verified. The source must retain its unresolved native
 adapter claim and the server's failed-preparation settlement records, with no

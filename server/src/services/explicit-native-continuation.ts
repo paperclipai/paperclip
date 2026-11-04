@@ -331,7 +331,11 @@ export async function admitExplicitNativeContinuation(input: {
       const historicalAdapter = await historicalAdapterType(db, run);
       // A settings change never converts a known process/webhook execution into
       // a conversation. Those adapters retain their reconciliation contract.
-      if (historicalAdapter && !isConversationAdapter(historicalAdapter)) return null;
+      if (historicalAdapter && !isConversationAdapter(historicalAdapter)) {
+        if (!(taskRetry && freshIntent && agentIsNative && historicalAdapter === "paperclip_runner" && run.status === "failed") ||
+            run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date() ||
+            await hasPendingRunCleanup(db, companyId, run.id) || !await hasVerifiedWorkspaceRepair(db, run)) return null;
+      }
       if (!historicalAdapter && agent.adapterType === "paperclip_runner") return null;
     }
     const interruptedByThisClick = response?.source.requiresFreshSession === true &&
