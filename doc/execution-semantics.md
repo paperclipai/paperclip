@@ -1555,7 +1555,11 @@ failed or cancelled even when the agent already reported completed work.
 The final assistant message is the visible task response. Response selection runs
 after preceding event persistence completes; the completion summary cannot replace
 an available final answer. Existing fallback and explicit-comment precedence still
-apply. Stream closure without a turn terminal is not proof of success. Event
+apply. A progress-only promise to investigate does not replace an available final
+response backed by an accepted completed semantic result. Substantive explicit
+outcomes keep precedence. A yielded result or missing final response does not
+cause a second comment. The presentation decision records this selection.
+Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
 
