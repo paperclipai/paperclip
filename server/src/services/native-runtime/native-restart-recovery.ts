@@ -179,6 +179,13 @@ export async function currentNativeControllerIdentity(): Promise<NativeControlle
   };
 }
 
+export function isCurrentNativeControllerProcess(owner: {
+  controllerBootId: string | null;
+  controllerPid: number | null;
+}): boolean {
+  return owner.controllerBootId === controllerBootId && owner.controllerPid === process.pid;
+}
+
 function sameProcessStart(left: Date | null, right: Date | null): boolean {
   return left !== null && right !== null && left.getTime() === right.getTime();
 }

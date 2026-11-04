@@ -1863,7 +1863,10 @@ All of these must be true:
 
 - The prior run is terminal and its coordinator committed a result.
 - The coordinator has no lease owner and no recovery state.
-- The prior controller is proven stopped.
+- The prior controller is proven stopped. The controller runs inside the
+  webserver, so when this same server process finished the owner, its live
+  PID proves nothing. The owner's exact controller boot identity, with no
+  in-process session or startup left for that run, proves it stopped instead.
 - The journal has a delivered terminal, only completed commands, and an
   answer for each tool input.
 - No local Runner lifecycle evidence exists for the old owner.
