@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeOwnFailedAttachment, isSettledRemoteWarmControlState, summarizePostTerminalEvents } from "./remote-warm-session-recovery.js";
+import { describeFailedAttachment, describeOwnFailedAttachment, isSettledRemoteWarmControlState, summarizePostTerminalEvents } from "./remote-warm-session-recovery.js";
 
 const identity = { runId: "run", normalizedSessionId: "session", runnerInstanceId: "runner", environmentLeaseId: "lease", turnId: "turn", itemId: "item" };
 const terminal = { eventType: "run.terminal", envelope: { ...identity } };
@@ -76,6 +76,16 @@ describe("settled remote warm control evidence", () => {
     expect(summarizePostTerminalEvents(state([terminal]))).toBeNull();
     expect(summarizePostTerminalEvents(state([terminal, lateNotice, lateNotice, snapshot])))
       .toBe("provider.notice.recorded x2, session.goal.snapshot x1");
+  });
+
+  it("points a failed attachment at the reviewed docs with its real cause", () => {
+    const stored = 'native_session_recovery_failed: Error: PRP command run.attach failed: {"commandType":"run.attach","result":{"code":"command_execution_failed","message":"run.attach requires a settled Codex provider session: active_turn"},"status":"failed"}';
+    const pointer = describeFailedAttachment(stored);
+    expect(pointer).toContain("run.attach requires a settled Codex provider session: active_turn");
+    expect(pointer).toContain("https://github.com/paperclipai/paperclip/blob/master/doc/execution-semantics.md#session-settlement-after-a-run");
+    expect(describeFailedAttachment("run.attach requires the restored Codex provider process")).toContain("restored Codex provider process");
+    expect(describeFailedAttachment("Plugin Runner operation failed; reconcile the saved task")).toBeNull();
+    expect(describeFailedAttachment(null)).toBeNull();
   });
 
   it("names the original failure when a same-run retry finds its own failed attachment", () => {

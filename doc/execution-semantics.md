@@ -1693,7 +1693,9 @@ Runner keeps its pending events and commits them under the prior authority befor
 rotates. Core accepts any authenticated event after the terminal, except one that
 starts work, and the next run's log names what was recorded. Identity, source and
 ownership checks are unchanged. A failed attachment reports its original cause; the
-same run does not attach again.
+same run does not attach again. A later run may start a new provider thread, and the
+run's log and events link here when this happens. Whether a later run should keep
+that thread is tracked in [#19047](https://github.com/paperclipai/paperclip/issues/19047).
 
 ### Provider continuity and bounded finalization
 
