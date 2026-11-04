@@ -66,7 +66,6 @@ async function inspect(tx: Transaction, input: {
       !current || current.status !== "running" || current.nativeIssueId !== binding.issueId || current.agentId !== binding.agentId || current.resultJson?.nativeCancellation ||
       !source || source.status !== "succeeded" || !source.finishedAt || source.runtimeMode !== "native" || source.agentId !== binding.agentId || source.nativeIssueId !== binding.issueId ||
       source.runnerInstanceId !== input.identity.runnerInstanceId || source.nativeSessionId !== input.identity.normalizedSessionId ||
-      source.runnerProfileJson?.environmentLeaseId !== input.identity.environmentLeaseId || source.runnerProfileJson?.turnId !== input.identity.turnId || source.runnerProfileJson?.itemId !== input.identity.itemId ||
       !issue || issue.executionRunId !== binding.runId || issue.assigneeAgentId !== binding.agentId || issue.status !== "in_progress" ||
       company?.status !== "active" || agent?.lifecycleState !== "ready" || ["paused", "terminated", "pending_approval"].includes(agent.status) ||
       !lease || lease.heartbeatRunId !== binding.runId || lease.issueId !== binding.issueId || lease.status !== "active" || lease.releasedAt ||

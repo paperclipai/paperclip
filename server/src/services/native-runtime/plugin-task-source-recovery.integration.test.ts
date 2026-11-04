@@ -59,7 +59,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("stopped source admission un
       controllerPid: controller.pid, controllerProcessStartedAt: controller.processStartedAt, controllerGeneration: oldOwner.generation,
       leaseOwner: oldOwner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000) });
     const identity = { runnerInstanceId: native.runnerInstanceId, environmentLeaseId: sourceLeaseId, runId: sourceRunId,
-      normalizedSessionId: native.normalizedSessionId, turnId: native.turnId, itemId: native.itemId };
+      normalizedSessionId: native.normalizedSessionId, turnId: `turn-${sourceRunId}`, itemId: `item-${sourceRunId}` };
     const oldWriter = nativeRunnerCheckpointWriter(db, { companyId, issueId, runId: sourceRunId, authorityRunId: sourceRunId, ...oldOwner });
     let checkpoint!: DurablePrpCheckpoint;
     const core = new DurablePrpControlPlane({ stateDirectory: join(root, sourceRunId), identity,
