@@ -101,3 +101,25 @@ it.each([
 ])("rejects a mixed or nested external exception: %s", reply => {
   expect(reviewOutcomeReply(reply, "rejected")).toBe(false);
 });
+
+it.each(["**not**", "__not__", "*not*", "_not_", "***not***", "___not___"])(
+  "reads paired emphasis around negation as visible prose: %s", negation => {
+    expect(reviewOutcomeReply(`You declined. The update was ${negation} applied.`, "rejected")).toBe(true);
+  },
+);
+it.each([
+  "You declined. I **applied** the update.",
+  "You declined. The update was __applied__.",
+  "You declined. I *saved* the update in the notes app.",
+  "You declined. The update was **not** applied, but I **saved** it to the notes app.",
+  "You declined. Nothing was **saved**, but I **applied** the update.",
+  "You declined. The draft was saved **in the notes app** for your review.",
+])("paired emphasis does not hide external completion: %s", reply => {
+  expect(reviewOutcomeReply(reply, "rejected")).toBe(false);
+});
+it.each([
+  "You declined. The update was not** applied.",
+  String.raw`You declined. The update was \**not** applied.`,
+])("does not strip unmatched or escaped emphasis markers: %s", reply => {
+  expect(reviewOutcomeReply(reply, "rejected")).toBe(false);
+});

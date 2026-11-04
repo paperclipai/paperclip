@@ -85,6 +85,7 @@ function claimsExternalCompletion(reply: string) {
 }
 
 export function reviewOutcomeReply(reply: string, kind: ReviewKind) {
+  reply = reply.replace(/(?<![\\\w*_])(\*{1,3}|_{1,3})(?=\S)([^\r\n]*?\S)(?<!\\)\1(?![\w*_])/g, "$2");
   const clauses = reply.split(/[.!?;\n]+|\b(?:but|and)\b/i),
     affirmative = clauses.some(
       (clause) =>

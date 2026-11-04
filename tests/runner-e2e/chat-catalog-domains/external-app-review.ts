@@ -210,7 +210,7 @@ export function gradeAppReview(value: unknown) {
           request?.id === phase.actionRequestId &&
           request.status === ["rejected", "failed", "executed"][index] &&
           v.status === ["denied", "failed", "succeeded"][index] &&
-          (index !== 1 || v.errorCode === "tool_error") &&
+          (index !== 1 || v.errorCode === "tool_execution_failed") &&
           phase.beforeWrites === [0, 0, 1][index] &&
           phase.afterWrites === [0, 1, 2][index] &&
           (index < 2
@@ -299,6 +299,19 @@ export const appReviewExternalCases = [
       try {
         const connection = await connectNotes(ctx, provider, "ask-first");
         provider.failWrites();
+        const agentPath = `/api/agents/${ctx.input.fixtures.agent.id}`;
+        const agent = await ctx.input.api.get<{
+          runtimeConfig: { heartbeat?: Record<string, unknown>; [key: string]: unknown };
+        }>(agentPath);
+        await ctx.input.api.patch(agentPath, {
+          runtimeConfig: {
+            ...agent.runtimeConfig,
+            heartbeat: { ...agent.runtimeConfig.heartbeat, maxDailyRuns: 6 },
+          },
+        });
+        const savedAgent = await ctx.input.api.get<typeof agent>(agentPath);
+        if (savedAgent.runtimeConfig.heartbeat?.maxDailyRuns !== 6)
+          throw new Error("Tool review fixture requires its declared six-turn daily allowance");
         const project = await ctx.input.api.post<{ id: string }>(
             `${root(ctx)}/projects`,
             { name: "Launch notes review", status: "in_progress" },
@@ -347,7 +360,7 @@ export const appReviewExternalCases = [
     gradeAppReview,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.app-review.v3",
+      oracleVersion: "paperclip.chat-catalog.app-review.v6",
       queryAttachments: [{ stateKey: "factualContextAttachment", filename: "launch-update.md" }],
       expectedRunCount: 6,
       minimumRunCount: 6,
