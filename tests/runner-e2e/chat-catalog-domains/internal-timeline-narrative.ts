@@ -45,7 +45,7 @@ export function truthfulTimelineAccount(input: {
       if (knownHuman.test(after) || knownWorker.test(after)) return true;
       if (!actor[1] && /^[a-z]+ing\b/.test(after)) return false;
       const word = /^[\p{L}]+/u.exec(after)?.[0]?.toLowerCase();
-      return !calendarWords.has(word ?? "") && (/^(?:(?:native|test)\s+)?(?:agent|worker|runner|system|automation|harness|CEO)\b/i.test(after)
+      return !calendarWords.has(word ?? "") && (/^(?:(?:another|other|different)\s+)?(?:(?:native|test)\s+)?(?:agent|worker|bot|runner|system|automation|harness|CEO)\b/i.test(after)
         || /^[A-Z][\p{L}'-]+\b/u.test(after));
     });
     if (byActors.some(actor => !knownHuman.test(text.slice(actor.index + actor[0].length)))) return [];
