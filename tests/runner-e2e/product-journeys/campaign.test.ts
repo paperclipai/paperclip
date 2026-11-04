@@ -38,7 +38,7 @@ import { regenerateRunnerDashboard } from "../dashboard-regenerate.js";
 const roots: string[]=[];
 afterEach(async()=>{vi.useRealTimers(); vi.restoreAllMocks(); persistenceFault.kind=null; persistenceFault.active=false; persistenceFault.latestReport=null; process.exitCode=0; await Promise.all(roots.splice(0).map(root=>rm(root,{recursive:true,force:true})));});
 type Hook = "collect" | "release" | "stop" | "finalizeEvidence" | "checkpointEvidence";
-async function run(options:{search?:boolean;authFailure?:boolean;onboardingFailure?:boolean;preAcceptanceFailure?:boolean;missingArtifact?:boolean;drift?:boolean;cleanupFailure?:boolean;cleanupCode?:string;collectionFailure?:boolean;mini?:boolean;missingReceipt?:boolean;zeroRequests?:boolean;missingCheck?:boolean;finalizationFailure?:boolean;persistenceFailure?:"write"|"rename";persistenceAfter?:"collection"|"release";stallHook?:Hook;onHook?:(hook:Hook,signal?:AbortSignal)=>void}={}) {
+async function run(options:{search?:boolean;authFailure?:boolean;onboardingFailure?:boolean;preAcceptanceFailure?:boolean;missingArtifact?:boolean;drift?:boolean;cleanupFailure?:boolean;cleanupCode?:string;stopCode?:string;collectionFailure?:boolean;mini?:boolean;missingReceipt?:boolean;zeroRequests?:boolean;missingCheck?:boolean;finalizationFailure?:boolean;persistenceFailure?:"write"|"rename";persistenceAfter?:"collection"|"release";stallHook?:Hook;onHook?:(hook:Hook,signal?:AbortSignal)=>void}={}) {
   const root=await mkdtemp(path.join(os.tmpdir(),"journey-campaign-test-")); roots.push(root);
   const module=path.join(root,"provider.mjs");
   const proof = createConnectionProof();
@@ -52,7 +52,7 @@ async authenticate(){${options.authFailure ? "throw {outcome:'failed',code:'logi
 async onboard(evidence){${options.preAcceptanceFailure ? `evidence.onboardingPreAcceptance=${JSON.stringify(preAcceptanceEvidence)};throw {outcome:'failed',code:'onboarding_work_before_acceptance'};` : options.onboardingFailure ? "throw {outcome:'failed',code:'onboarding_failed'};" : `${options.missingArtifact ? "" : `evidence.artifact=${JSON.stringify(artifact)};`}evidence.checks.push(...['fresh-workspace','ui-connection-and-native-agent','first-task-complete','downloadable-artifact-verified'${options.missingCheck ? "" : ",'native-trace-verified'"}].map(id=>({id,passed:true})));onboarded=true;return context;`}},
 async prepare(){throw Error('onboarding receipt was not reused')},
 async identity(){return {...identity,commit:'${(options.drift?"b":"a").repeat(40)}'}},
-async collect(){${options.collectionFailure ? "throw Error('private collection error');" : options.missingReceipt ? "return [];" : `return onboarded?[{journeyId:'cloud-onboarding',runIds:['run-1'],usage:{runs:[{runId:'run-1',usage:{costUsd:0.01}}]},operations:{campaignId:input.campaignId,attemptId:input.campaignId+':cloud-onboarding:1',modelCostUsd:0.01,setupCostUsd:0.005,requestCount:${options.zeroRequests ? 0 : 2},feedback:{collection:'complete',complaints:0,suggestions:0},traceIds:['a'.repeat(32)]}}]:[];`}}, async own(){}, async release(){${options.cleanupFailure ? `throw Object.assign(Error('private raw error'),${JSON.stringify(options.cleanupCode ? { code: options.cleanupCode } : {})});` : "return 'released';"}}, async stop(){}
+async collect(){${options.collectionFailure ? "throw Error('private collection error');" : options.missingReceipt ? "return [];" : `return onboarded?[{journeyId:'cloud-onboarding',runIds:['run-1'],usage:{runs:[{runId:'run-1',usage:{costUsd:0.01}}]},operations:{campaignId:input.campaignId,attemptId:input.campaignId+':cloud-onboarding:1',modelCostUsd:0.01,setupCostUsd:0.005,requestCount:${options.zeroRequests ? 0 : 2},feedback:{collection:'complete',complaints:0,suggestions:0},traceIds:['a'.repeat(32)]}}]:[];`}}, async own(){}, async release(){${options.cleanupFailure ? `throw Object.assign(Error('private raw error'),${JSON.stringify(options.cleanupCode ? { code: options.cleanupCode } : {})});` : "return 'released';"}}, async stop(){${options.stopCode ? `throw Object.assign(Error('private stop error'),${JSON.stringify({ code: options.stopCode })});` : ""}}
 , async finalizeEvidence(){
 const report=JSON.parse(await readFile(input.outputDir+'/normalized-results.json','utf8'));
 if(report.results.some(r=>r.cleanup==='not_started'))throw Error('final evidence preceded cleanup');
@@ -75,7 +75,7 @@ await writeFile(input.outputDir+'/failure-checkpoint.json',JSON.stringify(report
       return { ...session,
         async collect(input?: {signal:AbortSignal}) { options.onHook?.("collect",input?.signal); if(options.stallHook==="collect")await new Promise(()=>{}); try { return await session.collect(); } finally { if (options.persistenceAfter !== "release" && options.persistenceFailure) persistenceFault.active=true; } },
         async release(outcome: string,input?: {signal:AbortSignal}) { lifecycle.push(`release:${outcome}`); artifactBeforeRelease=JSON.parse(await readFile(path.join(output,"normalized-results.json"),"utf8")).results[0].productJourney.artifact; options.onHook?.("release",input?.signal); if(options.stallHook==="release")await new Promise(()=>{}); try { return await session.release(outcome); } finally { if (options.persistenceAfter === "release" && options.persistenceFailure) persistenceFault.active=true; } },
-        async stop(input?: {signal:AbortSignal}) { lifecycle.push("stop"); options.onHook?.("stop",input?.signal); if(options.stallHook==="stop")await new Promise(()=>{}); },
+        async stop(input?: {signal:AbortSignal}) { lifecycle.push("stop"); options.onHook?.("stop",input?.signal); if(options.stallHook==="stop")await new Promise(()=>{}); if(options.stopCode) await session.stop?.(); },
         async finalizeEvidence(input?: {signal:AbortSignal}) { lifecycle.push("finalizeEvidence"); options.onHook?.("finalizeEvidence",input?.signal); if(options.stallHook==="finalizeEvidence")await new Promise(()=>{}); return session.finalizeEvidence(); },
         async checkpointEvidence(input?: {signal:AbortSignal}) { lifecycle.push("checkpointEvidence"); options.onHook?.("checkpointEvidence",input?.signal); if(options.stallHook==="checkpointEvidence")await new Promise(()=>{}); return session.checkpointEvidence(); },
       };
@@ -172,6 +172,14 @@ describe("product journey campaign boundary outcomes",()=>{
       expect(r.productJourney.phases).toContainEqual({phase:"cleanup",outcome:"failed",code:"cause.fixture_cleanup_not_confirmed"});
     }
     expect(JSON.stringify(traced)).not.toContain("private raw error");
+    const stopped=await run({cleanupFailure:true,cleanupCode:"fixture_cleanup_not_confirmed",stopCode:"owned_work_stop_unconfirmed"});
+    for (const r of stopped.results) {
+      expect(r.error).toBe("target_cleanup_failed");
+      expect(r.productJourney.phases).toContainEqual({phase:"cleanup",outcome:"failed",code:"target_stop_failed"});
+      expect(r.productJourney.phases).toContainEqual({phase:"cleanup",outcome:"failed",code:"cause.fixture_cleanup_not_confirmed"});
+      expect(r.productJourney.phases).toContainEqual({phase:"cleanup",outcome:"failed",code:"cause.owned_work_stop_unconfirmed"});
+    }
+    expect(JSON.stringify(stopped)).not.toMatch(/private (raw|stop) error/);
     const untraced=await run({cleanupFailure:true,cleanupCode:"private detail: tenant-42"});
     expect(JSON.stringify(untraced)).not.toContain("tenant-42");
     expect(untraced.results.every((r:any)=>!r.productJourney.phases.some((p:any)=>String(p.code).startsWith("cause.")))).toBe(true);
