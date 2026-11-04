@@ -7,16 +7,7 @@ export interface LoginLeaseScope {
   environmentId: string;
   leaseId?: string;
   namespace: string;
-  /**
-   * Best-effort pod name captured at lease-remember time. NOT used by
-   * `connectKubernetesLoginPty` to skip pod-readiness resolution — see
-   * login-pty-exec.ts, which always re-resolves/waits for the pod
-   * regardless of this field (a cached name here is not a guarantee the
-   * pod is actually Ready; using it as a shortcut caused a real bug fixed
-   * in this same change). Kept for diagnostics/future callers only.
-   */
   podName: string | null;
-  /** Attested lease expiry (ISO 8601); the sandbox pod stops at this instant. */
   expiresAt?: string | null;
   config: { inCluster?: boolean; kubeconfig?: string };
 }
@@ -36,14 +27,7 @@ const COMMANDS = {
 } as const;
 const MAX_CHUNK = 64 * 1024;
 const MAX_TOTAL = 4 * 1024 * 1024;
-/** Global cap across all companies, to bound this worker's total exec fanout. */
 const GLOBAL_MAX_SESSIONS = 16;
-/**
- * Per-company cap. `routes`/`sessions` are shared module-level state across
- * every tenant handled by this plugin-worker singleton, so a single global
- * cap alone lets one company's login attempts starve every other company's
- * login attempts. Bound each company independently as well.
- */
 const PER_COMPANY_MAX_SESSIONS = 4;
 
 export function createLoginPtyManager(connect: LoginPtyConnector, events: Events) {

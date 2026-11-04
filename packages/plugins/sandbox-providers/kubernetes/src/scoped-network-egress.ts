@@ -35,9 +35,7 @@ export async function createScopedNetworkEgressPolicy(input: {
   workloadName: string;
   ownerReference: Record<string, unknown>;
   grant: ScopedNetworkEgressGrant;
-  /** Policy name suffix; distinct per policy kind on the same workload. */
   suffix?: string;
-  /** Also allow DNS and the Paperclip callback; the policy is created even with an empty grant. */
   baseRules?: { paperclipServerNamespace: string; paperclipServerPodSelector?: Record<string, string> };
 }): Promise<string | null> {
   if (!input.baseRules && input.grant.allowFqdns.length === 0 && input.grant.allowCidrs.length === 0) return null;

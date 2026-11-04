@@ -13,8 +13,6 @@ const REGISTRY: Record<string, AdapterDefaults> = {
   claude_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-claude:git-38d8f371722b315d2fb3bbaa512518742e33ce2f",
     envKeys: ["ANTHROPIC_API_KEY"],
-    // Claude Code setup-token invokes ConsoleOAuthFlow; its OAuth constants name
-    // claude.com/cai/oauth/authorize, claude.ai/oauth/authorize, and platform.claude.com/v1/oauth/token.
     allowFqdns: [
       "api.anthropic.com",
       "claude.com",
@@ -27,9 +25,6 @@ const REGISTRY: Record<string, AdapterDefaults> = {
   codex_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-codex:v1",
     envKeys: ["OPENAI_API_KEY"],
-    // Codex device-login and subscription authentication endpoints:
-    // auth.openai.com for device auth token exchange, api.openai.com for REST API/models,
-    // chatgpt.com for subscriber auth/quota backend (backend-api/wham/usage).
     allowFqdns: [
       "api.openai.com",
       "auth.openai.com",
@@ -42,8 +37,6 @@ const REGISTRY: Record<string, AdapterDefaults> = {
   gemini_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-gemini:v1",
     envKeys: ["GOOGLE_API_KEY", "GEMINI_API_KEY"],
-    // generativelanguage.googleapis.com for Gemini API;
-    // oauth2.googleapis.com and sts.googleapis.com for Google Auth Library token refresh/federation.
     allowFqdns: [
       "generativelanguage.googleapis.com",
       "oauth2.googleapis.com",
@@ -54,8 +47,6 @@ const REGISTRY: Record<string, AdapterDefaults> = {
   cursor_local: {
     runtimeImage: "ghcr.io/paperclipai/agent-runtime-cursor:v1",
     envKeys: ["ANTHROPIC_API_KEY", "OPENAI_API_KEY"],
-    // cursor.com for CLI install / assets; api2.cursor.sh for Cursor backend services;
-    // api.anthropic.com and api.openai.com for model inference endpoints.
     allowFqdns: [
       "api.anthropic.com",
       "api.openai.com",

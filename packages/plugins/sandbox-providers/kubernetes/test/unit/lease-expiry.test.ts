@@ -10,16 +10,15 @@ const NOW_SEC = NOW_MS / 1000;
 
 describe("computeBoundedLeaseDeadline", () => {
   it("bounds the deadline to the caller's requested expiry, rounding down", () => {
-    const requested = new Date(NOW_MS + 90_500).toISOString(); // 90.5s out
+    const requested = new Date(NOW_MS + 90_500).toISOString();
     const result = computeBoundedLeaseDeadline(requested, NOW_MS)!;
-    // Rounds DOWN so the pod deadline never lands after the requested time.
     expect(result.activeDeadlineSec).toBe(90);
     expect(result.hardStopAtEpochSec).toBe(NOW_SEC + 90);
     expect(result.expiresAt).toBe(new Date(NOW_MS + 90_000).toISOString());
   });
 
   it("keeps the hard stop and expiresAt on whole seconds at or before the requested expiry", () => {
-    const now = NOW_MS + 700; // sub-second clock
+    const now = NOW_MS + 700;
     const requested = new Date(now + 60_000).toISOString();
     const result = computeBoundedLeaseDeadline(requested, now)!;
     expect(Date.parse(result.expiresAt)).toBe(result.hardStopAtEpochSec * 1000);

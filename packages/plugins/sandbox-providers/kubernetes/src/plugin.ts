@@ -348,16 +348,8 @@ const plugin = definePlugin({
       }
     }
 
-    // A caller-requested deadline (e.g. a setup-token login) must be bounded by
-    // the provider. Compute it before any cluster side effect so an invalid or
-    // too-close deadline fails closed without provisioning anything. Leases
-    // without a requested deadline keep a long-lived pod and no expiresAt.
-    // See lease-expiry.ts for the bounding rules.
     const boundedDeadline = computeBoundedLeaseDeadline(params.requestedExpiresAt);
     if (boundedDeadline && config.backend !== "sandbox-cr") {
-      // A Job's activeDeadlineSeconds is relative to its start, and the job
-      // backend has no exec channel for the login PTY that requests deadlines.
-      // Refuse rather than attest an expiry the Job would outlive.
       throw new Error(
         "The Kubernetes job backend cannot honor a requested lease deadline; use the sandbox-cr backend.",
       );
@@ -380,10 +372,6 @@ const plugin = definePlugin({
       paperclipServerPodSelector: config.paperclipServerPodSelector,
       serviceAccountAnnotations: config.serviceAccountAnnotations,
       egressMode: config.egressMode,
-      // The tenant-wide egress policy is shared by every environment and
-      // adapter of the company, so it only carries the base rules (DNS and the
-      // Paperclip callback). This lease's adapter and config destinations go in
-      // a per-lease policy below, owned by the workload.
       egressAllowFqdns: [],
       egressAllowCidrs: [],
       resourceQuota: DEFAULT_RESOURCE_QUOTA,
@@ -459,10 +447,6 @@ const plugin = definePlugin({
       },
     };
     const releaseWorkload = () => orchestrator.release(clients, namespace, jobName);
-    // Adapter defaults (API + login hosts) and the environment's configured
-    // destinations, scoped to this lease's pod and garbage-collected with it,
-    // so environments and adapters sharing the tenant never affect each other
-    // and a config change applies to every new lease.
     await createScopedNetworkEgressPolicyOrReleaseWorkload(
       {
         ...leasePolicyBase,
@@ -541,8 +525,6 @@ const plugin = definePlugin({
     return {
       providerLeaseId: jobName,
       metadata: leaseMetadata as unknown as Record<string, unknown>,
-      // Attested only for a requested deadline, which only the sandbox-cr
-      // backend accepts; its entrypoint enforces the same absolute instant.
       ...(boundedDeadline ? { expiresAt: boundedDeadline.expiresAt } : {}),
     };
   },
@@ -602,7 +584,6 @@ const plugin = definePlugin({
       readySandboxesByLease.add(params.providerLeaseId);
     }
 
-    // A bounded lease keeps its original attested expiry across resumes.
     const resumedExpiresAt =
       typeof params.leaseMetadata?.expiresAt === "string" ? params.leaseMetadata.expiresAt : null;
     const leaseMetadata: KubernetesLeaseMetadata = {

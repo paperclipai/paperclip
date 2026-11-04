@@ -63,7 +63,6 @@ describe("buildSandboxCrManifest", () => {
     const script = spec.containers[0].command[4];
     expect(spec.containers[0].command.slice(0, 4)).toEqual(["/usr/bin/tini", "--", "/bin/sh", "-c"]);
     expect(script).toContain("deadline=1767225690;");
-    // A restart after the deadline exits immediately instead of sleeping again.
     expect(script).toContain('[ "$now" -lt "$deadline" ] || exit 0');
     expect(script).toContain('exec sleep "$((deadline - now))"');
     expect(script).not.toContain("infinity");

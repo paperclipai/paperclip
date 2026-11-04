@@ -7,7 +7,6 @@ vi.mock("@kubernetes/client-node", () => ({
   Exec: class {
     async exec(_ns: string, _pod: string, _container: string, command: string[], stdout: PassThrough, _stderr: PassThrough, stdin: PassThrough, tty: boolean, callback: typeof capture.callback) {
       const socket = Object.assign(new EventEmitter(), { close: vi.fn(), bufferedAmount: 0 });
-      // SDK immediately forwards data to socket.send; stdin.writableLength drains.
       stdin.on("data", (chunk: Buffer) => { socket.bufferedAmount += chunk.length + 1; });
       capture = { command, stdout, stdin, tty, callback, socket };
       return socket;
@@ -16,10 +15,6 @@ vi.mock("@kubernetes/client-node", () => ({
 }));
 const { connectKubernetesLoginPty } = await import("../../src/login-pty-exec.js");
 const scope = { companyId: "co", environmentId: "env", leaseId: "lease", namespace: "ns", podName: "pod", config: { inCluster: true } };
-// BUGFIX (see login-pty-exec.ts): the runner now ALWAYS waits for the Sandbox
-// CR to reach Ready via `resolvePod`, even when `scope.podName` was already
-// known — a cached podName does not mean the pod is Ready yet. Every test
-// therefore supplies a `resolvePod` stub standing in for that readiness wait.
 const resolveReady = vi.fn(async () => "pod");
 
 describe("Kubernetes Exec PTY transport", () => {

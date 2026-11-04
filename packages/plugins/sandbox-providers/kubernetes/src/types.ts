@@ -4,8 +4,6 @@ import { KNOWN_ADAPTER_TYPES } from "./adapter-defaults.js";
 
 const cidrRegex = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
 
-// Kubernetes label syntax: an optional DNS-subdomain prefix plus a name of at
-// most 63 alphanumeric/-_. characters that starts and ends alphanumeric.
 const labelNameRegex = /^[A-Za-z0-9]([-A-Za-z0-9_.]{0,61}[A-Za-z0-9])?$/;
 const labelPrefixRegex = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
 
@@ -35,7 +33,6 @@ export const kubernetesProviderConfigSchema = z
     egressAllowFqdns: z.array(z.string()).default([]),
     egressAllowCidrs: z.array(z.string().regex(cidrRegex, "Invalid CIDR")).default([]),
     egressMode: z.enum(["cilium", "standard"]).default("standard"),
-    /** Labels on the Paperclip API pod accepting callbacks; defaults to the upstream app label. */
     paperclipServerPodSelector: z
       .record(
         z.string().refine(isValidLabelKey, "paperclipServerPodSelector keys must be valid Kubernetes label keys"),
@@ -129,9 +126,5 @@ export interface KubernetesLeaseMetadata {
    * sync may be used when the worker advertises the verbs.
    */
   nativeFileSyncUnsupported?: boolean;
-  /**
-   * Provider-attested expiry (ISO 8601) for a lease acquired with a requested
-   * deadline. The sandbox pod stops at this instant. Absent for unbounded leases.
-   */
   expiresAt?: string;
 }
