@@ -11,7 +11,8 @@ if (!process[key]) {
   const pgPorts = new Set([5432, 55448]);
   for (const name of ['PAPERCLIP_SLACK_TEST_DATABASE_URL', 'SLACK_EVENT_TEST_DATABASE_URL']) {
     if (!process.env[name]) continue;
-    const url = new URL(process.env[name]);
+    let url;
+    try { url = new URL(process.env[name]); } catch { throw new Error('Invalid Slack fixture database target'); }
     if (!['postgres:', 'postgresql:'].includes(url.protocol) || !loopback.has(url.hostname)
       || !/^[a-zA-Z0-9_]+_test$/.test(decodeURIComponent(url.pathname.slice(1)))
       || ['options', 'database', 'dbname'].some(k => url.searchParams.has(k))) throw new Error('Invalid Slack fixture database target');

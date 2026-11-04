@@ -11,7 +11,8 @@ const guard = path.join(server, 'src/services/chat-channels/slack/cloud-test-pre
 const names = ['PAPERCLIP_SLACK_TEST_DATABASE_URL', 'SLACK_EVENT_TEST_DATABASE_URL'];
 const urls = names.map(name => {
   if (!process.env[name]) throw new Error(`Set ${name} to an owned dedicated PostgreSQL test database`);
-  const url = new URL(process.env[name]);
+  let url;
+  try { url = new URL(process.env[name]); } catch { throw new Error(`${name} must name an explicit loopback *_test database`); }
   if (!['postgres:', 'postgresql:'].includes(url.protocol) || !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname)
     || !/^[a-zA-Z0-9_]+_test$/.test(decodeURIComponent(url.pathname.slice(1)))
     || ['options', 'database', 'dbname'].some(k => url.searchParams.has(k))) throw new Error(`${name} must name an explicit loopback *_test database`);
