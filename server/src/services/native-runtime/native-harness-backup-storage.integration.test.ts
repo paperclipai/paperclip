@@ -19,6 +19,11 @@ import { legacyControllerBootId } from "../legacy-controller-lease.js";
 describeEmbeddedPostgres("durable native provider backups", () => {
   const environment = nativeRestartFixture();
   const ownedHomes: string[] = [];
+  function deferred() {
+    let resolve!: () => void;
+    const promise = new Promise<void>(done => { resolve = done; });
+    return { promise, resolve };
+  }
   afterEach(async () => {
     for (const home of ownedHomes.splice(0)) await removeNativeHarnessBackup(home);
     vi.unstubAllEnvs();
@@ -75,7 +80,7 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     return fixtures.sort((a, b) => a.scopeDigest.localeCompare(b.scopeDigest));
   }
   it("overlaps verified offline backups within a four-transfer bound and restores their bytes", async () => {
-    const fixtures = await offlineFixtures(6), f = fixtures[0], gate = Promise.withResolvers<void>();
+    const fixtures = await offlineFixtures(6), f = fixtures[0], gate = deferred();
     const put = f.storage.putFile.bind(f.storage); let active = 0, peak = 0, entered = 0;
     vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
       active++; entered++; peak = Math.max(peak, active);
@@ -93,8 +98,8 @@ describeEmbeddedPostgres("durable native provider backups", () => {
     }
   });
   it("waits for cancelled peer transfers before returning failure and permits a complete retry", async () => {
-    const fixtures = await offlineFixtures(2), f = fixtures[0], peerEntered = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
-    const failed = Promise.withResolvers<void>(), put = f.storage.putFile.bind(f.storage); let entered = 0, active = 0, settled = false;
+    const fixtures = await offlineFixtures(2), f = fixtures[0], peerEntered = deferred(), release = deferred();
+    const failed = deferred(), put = f.storage.putFile.bind(f.storage); let entered = 0, active = 0, settled = false;
     const spy = vi.spyOn(f.storage, "putFile").mockImplementation(async input => {
       const ordinal = ++entered; active++;
       try {
