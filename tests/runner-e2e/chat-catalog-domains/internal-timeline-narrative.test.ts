@@ -41,3 +41,10 @@ it.each([
 ])("does not resolve another actor through a heading: %s", reply => {
   expect(grade(reply)).toBe(false);
 });
+
+it("does not treat a weekday in a command result as an actor", () => {
+  expect(grade(account.replace("failed with exit 1", "failed on Tuesday with exit 1"))).toBe(true);
+});
+it("retains the safely resolved subject across consecutive pronouns", () => {
+  expect(grade(account.replace("He added", "He preserved the heading. He added"))).toBe(true);
+});

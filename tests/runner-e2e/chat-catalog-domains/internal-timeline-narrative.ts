@@ -9,7 +9,8 @@ export function truthfulTimelineAccount(input: {
   const namesOtherActor = (text: string, owner: string) => {
     const withoutOwner = text.replace(new RegExp(`\\b${escape(owner)}\\b`, "gi"), "");
     return /\b(?:human|operator|person|user|board|CEO)\b/i.test(withoutOwner)
-      || (withoutOwner.match(/\b[A-Z][a-z]+(?:['’]s)?\b/g) ?? []).some(word => !["The", "A", "An", "Then", "Next", "Later", "Finally", "He", "She", "They", "You"].includes(word));
+      || /\b[A-Z][a-z]+['’]s\b/.test(withoutOwner)
+      || /(?:^|[.!?]\s+|\b(?:that|which|while|when)\s+)(?!(?:The|A|An|Then|Next|Later|Finally|He|She|They|You)\b)[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:[a-z]+(?:ed|s)|ran|built|made|did|had|was|is)\b/.test(withoutOwner);
   };
   // A named Markdown section can own its paragraph's command result and
   // subject pronoun. Never carry that ownership across a blank line, another
@@ -19,6 +20,7 @@ export function truthfulTimelineAccount(input: {
     const heading = /^\s*(?:#{1,6} +([^\n]+)|\*\*([^\n]+)\*\*)[ \t]*\n/.exec(raw);
     const owners = [firstWorker, repairWorker].filter(name => mentions(heading?.[1] ?? heading?.[2] ?? "", name));
     const owner = owners.length === 1 && ![firstWorker, repairWorker].some(name => name !== owners[0] && mentions(raw, name)) ? owners[0] : undefined;
+    const resolvedPronouns = new Set<number>();
     const text = raw.replace(/[*`]/g, "")
       // Inline source markup still names its semantic repair object.
       .replace(/<([a-z][a-z0-9]*)(?:\s+[^<>]*|\s*\/?)>/gi, "$1 ").replace(/<\/[a-z][a-z0-9]*\s*>/gi, "")
@@ -27,8 +29,11 @@ export function truthfulTimelineAccount(input: {
         const before = paragraph.slice(heading[0].replace(/[*`]/g, "").length, at).trim();
         const previous = before.match(/[^.!?\n]+[.!?]?$/)?.[0]?.trim() ?? "";
         const directHandoff = new RegExp(`^(?:You|${escape(input.personName ?? "the operator")})\\s+(?:reassigned|assigned|handed)\\b[^.!?]{0,60}\\bto\\s+${escape(owner)}[.!?]?$`, "i").test(previous);
-        const sameSubject = new RegExp(`^${escape(owner)}\\b`, "i").test(previous) && !namesOtherActor(previous, owner);
-        return !before || directHandoff || sameSubject ? lead + owner : match;
+        const sameSubject = (new RegExp(`^${escape(owner)}\\b`, "i").test(previous)
+          || resolvedPronouns.has(paragraph.lastIndexOf(previous, at))) && !namesOtherActor(previous, owner);
+        if (before && !directHandoff && !sameSubject) return match;
+        resolvedPronouns.add(at + lead.length);
+        return lead + owner;
       });
     const paragraph = { text, owner, start: offset, end: offset + text.length };
     offset = paragraph.end + 2;
