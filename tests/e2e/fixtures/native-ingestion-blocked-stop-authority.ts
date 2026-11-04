@@ -50,9 +50,12 @@ export async function runtimeAuthority(input: {
         r.native_session_id, r.runner_instance_id, r.status, r.process_pid, r.process_group_id, r.process_started_at,
         r.runner_profile_json->'nativeExecutionInput'->'binding'->>'executionWorkspaceId' as admitted_execution_workspace_id,
         r.result_json->'nativeCancellation'->>'dispatchState' as cancellation_dispatch_state,
+        r.result_json->'nativeCancellation' as native_cancellation,
         i.seq as process_identity_seq, i.payload as process_identity, i.source_event_id as process_identity_source_event_id,
         s.seq as process_stopped_seq, s.payload as process_stopped, s.source_event_id as process_stopped_source_event_id,
+        p.seq as process_lifecycle_seq, p.event_type as process_lifecycle_event_type, p.source_event_id as process_lifecycle_source_event_id,
         l.id as lease_id, l.environment_id, l.provider, l.provider_lease_id,
+        l.status as lease_status, l.cleanup_status as lease_cleanup_status, l.released_at as lease_released_at,
         c.part as checkpoint_part, octet_length(c.material::text) as checkpoint_header_bytes
         from heartbeat_runs r
         join environment_leases l on l.heartbeat_run_id = r.id and l.company_id = r.company_id
@@ -64,6 +67,10 @@ export async function runtimeAuthority(input: {
         left join lateral (select seq, payload, source_event_id from heartbeat_run_events e where e.run_id = r.id
           and e.company_id = r.company_id and e.event_type = 'native.local_process_stopped'
           and e.source_event_id is null order by seq desc limit 1) s on true
+        left join lateral (select seq, event_type, source_event_id from heartbeat_run_events e where e.run_id = r.id
+          and e.company_id = r.company_id and e.event_type in ('native.process_start_requested',
+            'native.process_identity_recorded', 'native.local_process_stopped')
+          and e.source_event_id is null order by seq desc limit 1) p on true
         where r.company_id = ${input.companyId} and r.native_issue_id = any(${input.issueIds}::uuid[])`;
       expect(rows).toHaveLength(input.issueIds.length);
       expect(new Set(rows.map((row: any) => row.issue_id)).size).toBe(input.issueIds.length);

@@ -7,7 +7,7 @@ import { json } from "./agent-chat.shared";
 import { runtimeAuthority, processAbsent } from "./fixtures/native-ingestion-blocked-stop-authority";
 import { openClock } from "./fixtures/native-ingestion-blocked-stop-clock";
 import { ownedDatabase, cancellationSnapshot, blockers } from "./fixtures/native-ingestion-blocked-stop-db";
-import { PROTOCOL, WORKLOAD as W, WORKLOAD_SHA256, assertHeldSample, assertIntentAudit, isAppendLockQuery, metrics, assertFunctional, cleanupOwnedRunBeforeClockClose }
+import { PROTOCOL, WORKLOAD as W, WORKLOAD_SHA256, assertHeldSample, assertIntentAudit, isAppendLockQuery, metrics, assertFunctional, assertAuthoritativeRetirement, cleanupOwnedRunBeforeClockClose }
   from "./fixtures/native-ingestion-blocked-stop-protocol.mjs";
 import { observeRunSettlement } from "./fixtures/native-ingestion-h5.mjs";
 
@@ -241,14 +241,6 @@ test("existing-history Stop preserves its durable barrier behind a real blocked 
     await expect.poll(() => stopSettled, { timeout: W.acknowledgementAfterSettlementMs,
       intervals: [W.pollIntervalMs] }).toBe(true);
     const response = await stopRequest.response(); expect(response?.ok()).toBe(true); report.stopHttpStatus = response!.status();
-    report.authorityAfter = await runtimeAuthority({ appRoot, companyId: company.id, environmentId: environment.id,
-      issueIds: [issue.id], transport: "local", afterStop: true });
-    const stopped = report.authorityAfter.rows[0];
-    expect(stopped.status).toBe("cancelled"); expect(stopped.cancellation_dispatch_state).toBe("acknowledged");
-    expect(BigInt(stopped.process_stopped_seq)).toBeGreaterThan(BigInt(row.process_identity_seq));
-    expect(stopped.process_stopped_source_event_id).toBeNull();
-    expect(stopped.process_stopped.processPid).toBe(processes.runner.pid);
-    expect(stopped.process_stopped.processGroupId).toBe(processes.group);
     let lease: any;
     await expect.poll(async () => {
       lease = (await json(await request.get(`/api/environments/${environment.id}/leases`)))
@@ -257,6 +249,9 @@ test("existing-history Stop preserves its durable barrier behind a real blocked 
     }, { timeout: W.leaseAfterSettlementMs }).toBe(true);
     expect(lease.provider).toBe("local"); expect(lease.providerLeaseId).toBeNull();
     report.lease = lease;
+    report.authorityAfter = await runtimeAuthority({ appRoot, companyId: company.id, environmentId: environment.id,
+      issueIds: [issue.id], transport: "local", afterStop: true });
+    report.authoritativeRetirementState = assertAuthoritativeRetirement(report);
     const seen = await visible(), events = await readEvents();
     const deltas = events.map(event => event.payload?.prpEvent).filter(event => event?.eventType === "item.delta"
       && String(event.payload?.text).startsWith(`[${code}`));

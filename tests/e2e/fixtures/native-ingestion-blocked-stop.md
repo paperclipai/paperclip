@@ -1,11 +1,11 @@
-# Existing-history blocked Stop companion (prospective instrumentation v2)
+# Existing-history blocked Stop companion (prospective instrumentation v3)
 
-Status: v2 local source and pure oracle calibration only. No v2 application, browser,
+Status: v3 local source and pure oracle calibration only. No v3 application, browser,
 PostgreSQL, VM or quantitative arm has run. No runtime qualification or performance
 claim follows from the pure tests. Execution needs lead release after independent
 source review. This is separate from the immutable H5c 50-arm campaign.
 
-## Preserved v1 qualification failure and v2 correction
+## Preserved v1/v2 qualification failures and prospective corrections
 
 The one v1 qualification at `200396d5` failed before the emission epoch because
 the probe assumed the provider shared the Runner process group. Actual Runner
@@ -29,6 +29,46 @@ cancellation metadata, and then closes the clock. No manual process kill belongs
 to a passed functional oracle; exact owned cleanup after a failed qualification
 is separate negative evidence. New source review and runtime qualification are
 required. Protocol name, workload, precision rule and all deadlines are unchanged.
+
+The one v2 qualification at `6e5349cd` reached acknowledged native cancellation,
+cancelled settlement and independently observed Runner/provider PID and group
+absence. It then failed the probe's unconditional requirement for an immediate
+`native.local_process_stopped` event: the row still retained original PID/group
+2286265, its latest server identity sequence was 19, and the stop receipt was NULL.
+Transcript, reload and the later lease gate were not reached. That requirement
+exceeded the supported product contract. The failed trial and
+its observed timings remain negative evidence, cannot supply a v3 timing arm or
+noise sample, and are not reclassified as a qualified measurement.
+
+V3 reads final authority after the existing lease-release poll in one existing
+READ ONLY REPEATABLE READ snapshot, including the native cancellation intent,
+lease cleanup and latest server-authored process lifecycle fence. It adds no
+poll, wait budget or timing shift: ACK and physical-absence observations retain
+their original boundaries. `assertAuthoritativeRetirement` records either
+`retained-identity-after-physical-exit` or
+`cleared-identity-with-authoritative-retirement`. Both require cancelled state,
+the same own audited ACK, the original owned local lease released without failed
+cleanup, and independently observed absence of both exact PIDs and both groups.
+Retained mutable PID/group/birth and latest server identity must exactly match
+the captured original identity. An absent retirement receipt is valid only in
+that retained state. If a receipt is present, it must still bind to the original
+PID/group/birth. Cleared mutable identity requires that bound server-authored
+retirement receipt, later than the latest identity, with no later process start
+or identity event. Partial, changed or relaunched identity is rejected.
+
+The authoritative product basis is
+`server/src/services/acknowledged-native-stop.ts`,
+`acknowledgedNativeStopExecutionHasStopped`: after local lease cleanup, retained
+PID/group use the host's ESRCH observations; cleared fields require
+`hasNativeLocalProcessStop`. In `native-local-process-stop.ts`,
+`recordNativeLocalProcessStop` records the original PID/group/birth before identity
+clearing, while `hasNativeLocalProcessStop` rejects a later server start/identity.
+`releaseSettledNativeRunProcess` separately gates retirement on coordinator,
+provider and lease state. Native cancellation ACK persistence in
+`native-session-executor.ts` does not itself retire process identity. The event is
+authoritative identity-clearing evidence, not a universal immediate Stop receipt
+or a substitute for physical process observation. This is a probe correction;
+it includes no product change or attribution of a product defect.
 
 ## Registration and ownership
 
@@ -77,10 +117,11 @@ Release records both COMMIT request and COMMIT response acknowledgement. Neither
 is claimed to be the exact PostgreSQL commit instant. Independent observations
 then require the cancellation intent and its own matching committed audit,
 native acknowledged dispatch and its own matching acknowledgement audit,
-normal cancelled settlement, successful Stop HTTP, server-authored
-`native.local_process_stopped` receipt for the exact prior PID/group, independently
-absent runner/group/provider/provider-group, and the exact owned local lease released without
-failed cleanup. Transcript checks require complete compact payloads, unique source
+normal cancelled settlement, successful Stop HTTP, independently absent
+runner/group/provider/provider-group, and the exact owned local lease released
+without failed cleanup. The coherent final snapshot must meet the retained or
+cleared identity contract above; cleared fields require the bound server-authored
+`native.local_process_stopped` retirement receipt. Transcript checks require complete compact payloads, unique source
 identities, ordered canonical prefix, original emission clocks, zero accepted
 results, and persistence after reload. The raw transport recovery policy stays
 unchanged: raw fixture emissions after the canonical prefix are not represented

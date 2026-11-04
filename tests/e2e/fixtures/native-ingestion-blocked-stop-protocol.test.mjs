@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PROTOCOL, WORKLOAD as W, WORKLOAD_SHA256, METRICS, isAppendLockQuery, assertHeldSample,
-  assertIntentAudit, metrics, registration, noiseEnvelope, comparePairs, assertFunctional, observerBrackets, assertNoiseEnvelope, PRECISION_RULE, cleanupCancellationEligible, cleanupOwnedRunBeforeClockClose } from './native-ingestion-blocked-stop-protocol.mjs';
+  assertIntentAudit, metrics, registration, noiseEnvelope, comparePairs, assertFunctional, assertAuthoritativeRetirement, observerBrackets, assertNoiseEnvelope, PRECISION_RULE, cleanupCancellationEligible, cleanupOwnedRunBeforeClockClose } from './native-ingestion-blocked-stop-protocol.mjs';
 const evidence = (shift = 0) => ({ protocol: PROTOCOL, workloadSha256: WORKLOAD_SHA256, complete: true, cleanup: { complete: true },
   timing: { actionAtMs: 1000, requestAtMs: 1005, releaseRequestedAtMs: 2005, releaseCommitAckAtMs: 2007,
     absenceObservedAtMs: 2030 + shift, ackObservedAtMs: 2040 + shift } });
@@ -57,7 +57,10 @@ test('registered companion is 50 separate alternating arms with fresh B0 and B1 
 });
 
 const functional = () => {
-  const e = evidence(), identity = { company_id: 'c', run_id: 'r', runtime_mode: 'native', process_pid: 10, process_group_id: 10 };
+  const e = evidence(), identity = { company_id: 'c', run_id: 'r', issue_id: 'i', runtime_mode: 'native', process_pid: 10, process_group_id: 10,
+    process_started_at: '2026-11-04T00:00:00.000Z', process_identity_seq: '1', process_identity_source_event_id: null,
+    process_identity: { targetKind: 'local', hostname: 'fixture-host', processPid: 10, processGroupId: 10, processStartedAt: '2026-11-04T00:00:00.000Z' },
+    lease_id: 'lease', environment_id: 'environment', provider: 'local', provider_lease_id: null };
   return { ...e, variant: 'b0', startedAtMs: 100, finishedAtMs: 3000, companyId: 'c', runId: 'r', issueId: 'i', epochMs: 900,
     prelude: { individualDeltas: 1000, uniqueIdentities: 1000, verifiedBeforeEpochAtMs: 850 },
     visibleBeforeLock: [0,1,2], lock: { id: 'r', company_id: 'c', holder_pid: 88 },
@@ -69,10 +72,14 @@ const functional = () => {
       { kind: 'ack-query', startedAtMs: 2039, completedAtMs: 2040, durationMs: 1, value: true },
       { kind: 'process-check', startedAtMs: 2025, completedAtMs: 2026, durationMs: 1, value: false },
       { kind: 'process-check', startedAtMs: 2029, completedAtMs: 2030, durationMs: 1, value: true }], processesBefore: processes(), processesAfter: { runnerAbsent: true, groupAbsent: true, providerAbsent: true, providerGroupAbsent: true, group: 10, providerGroup: 11 },
-    authorityBefore: { rows: [{ ...identity, process_identity_seq: '1' }] },
-    authorityAfter: { rows: [{ ...identity, status: 'cancelled', cancellation_dispatch_state: 'acknowledged', process_stopped_seq: '20',
-      process_stopped_source_event_id: null, process_stopped: { processPid: 10, processGroupId: 10 } }] },
-    lease: { heartbeatRunId: 'r', companyId: 'c', provider: 'local', providerLeaseId: null, releasedAt: 'time', status: 'released', cleanupStatus: 'success' },
+    authorityBefore: { rows: [{ ...identity }] },
+    authorityAfter: { rows: [{ ...structuredClone(identity), status: 'cancelled', cancellation_dispatch_state: 'acknowledged', native_cancellation: intentRow().intent,
+      process_pid: null, process_group_id: null, process_started_at: null, process_stopped_seq: '20',
+      process_stopped_source_event_id: null, process_stopped: { processPid: 10, processGroupId: 10, processStartedAt: identity.process_started_at },
+      process_lifecycle_seq: '20', process_lifecycle_event_type: 'native.local_process_stopped', process_lifecycle_source_event_id: null,
+      lease_status: 'released', lease_cleanup_status: 'success', lease_released_at: 'time' }] },
+    authoritativeRetirementState: 'cleared-identity-with-authoritative-retirement',
+    lease: { id: 'lease', heartbeatRunId: 'r', companyId: 'c', provider: 'local', providerLeaseId: null, releasedAt: 'time', status: 'released', cleanupStatus: 'success' },
     transcript: { individualDeltas: 3, uniqueSourceIdentities: 3, persistedAfterReload: true, ordered: true, resultAcceptedEvents: 0,
       preludeCount: 1000, seen: [{ index: 0 },{ index: 1 },{ index: 2 }], deltas: [0,1,2].map(index => ({ runId: 'r', eventType: 'item.delta',
         sourceInstanceId: 'source', sourceEventId: `id${index}`, sourceSeq: index+1, payload: { text: `[00${index}] ` } })) },
@@ -88,6 +95,78 @@ test('functional oracle accepts complete correlated proof and rejects plausible 
     e => { e.transcript.deltas[1].sourceEventId = 'id0'; e.transcript.deltas[1].sourceSeq = 1; },
     e => { e.transcript.persistedAfterReload = false; }, e => { e.measurement.recording.trace = 'on'; }];
   for (const mutate of mutations) { const e = functional(); mutate(e); assert.throws(() => assertFunctional(e)); }
+});
+
+const retained = (e = functional(), receipt = false) => {
+  const before = e.authorityBefore.rows[0], after = e.authorityAfter.rows[0];
+  Object.assign(after, { process_pid: before.process_pid, process_group_id: before.process_group_id, process_started_at: before.process_started_at });
+  if (!receipt) Object.assign(after, { process_stopped_seq: null, process_stopped: null, process_stopped_source_event_id: null,
+    process_lifecycle_seq: before.process_identity_seq, process_lifecycle_event_type: 'native.process_identity_recorded' });
+  e.authoritativeRetirementState = 'retained-identity-after-physical-exit'; return e;
+};
+test('retained original identity with NULL retirement receipt passes only with independent exit, own ACK and released lease', () => {
+  const e = retained();
+  assert.equal(assertAuthoritativeRetirement(e), 'retained-identity-after-physical-exit'); assertFunctional(e);
+  assert.equal(e.authorityAfter.rows[0].process_stopped, null);
+});
+test('cleared identity requires bound server retirement; a bound optional receipt also validates for retained identity', () => {
+  const cleared = functional(); assert.equal(assertAuthoritativeRetirement(cleared), 'cleared-identity-with-authoritative-retirement');
+  assertFunctional(cleared); assertFunctional(retained(functional(), true));
+});
+test('both states require valid captured authoritative original birth, including before JSON serialization', () => {
+  for (const factory of [functional, retained]) {
+    const valid = factory(), before = valid.authorityBefore.rows[0], after = valid.authorityAfter.rows[0];
+    before.process_started_at = new Date(before.process_started_at);
+    if (after.process_started_at !== null) after.process_started_at = new Date(after.process_started_at);
+    assertFunctional(valid); assertFunctional(JSON.parse(JSON.stringify(valid)));
+    for (const mutate of [e => {
+      const original = e.authorityBefore.rows[0], current = e.authorityAfter.rows[0];
+      original.process_started_at = null; original.process_identity.processStartedAt = null;
+      current.process_identity.processStartedAt = null; current.process_started_at = null;
+      if (current.process_stopped) current.process_stopped.processStartedAt = null;
+    }, e => { delete e.authorityBefore.rows[0].process_started_at; },
+    e => { e.authorityBefore.rows[0].process_started_at = 'not-a-birth'; e.authorityBefore.rows[0].process_identity.processStartedAt = 'not-a-birth'; }]) {
+      const invalid = factory(); mutate(invalid);
+      assert.throws(() => assertFunctional(invalid));
+    }
+  }
+});
+test('cleared identity rejects absent, unbound, partial or later-invalidated retirement evidence', () => {
+  const mutations = [
+    row => { row.process_stopped_seq = null; row.process_stopped = null; },
+    row => { row.process_stopped_seq = null; }, row => { row.process_stopped_source_event_id = 'provider-event'; },
+    row => { row.process_stopped.processPid = 99; }, row => { row.process_stopped.processGroupId = 99; },
+    row => { row.process_stopped.processStartedAt = '2026-11-04T00:00:01.000Z'; }, row => { delete row.process_stopped.processStartedAt; },
+    row => { row.process_stopped_seq = '1'; }, row => { row.process_started_at = '2026-11-04T00:00:00.000Z'; },
+    row => { row.process_lifecycle_seq = '21'; row.process_lifecycle_event_type = 'native.process_start_requested'; },
+    row => { row.process_identity_seq = '21'; }, row => { row.process_lifecycle_seq = '21'; },
+    row => { row.process_lifecycle_source_event_id = 'provider-event'; }];
+  for (const mutate of mutations) { const e = functional(); mutate(e.authorityAfter.rows[0]); assert.throws(() => assertAuthoritativeRetirement(e)); }
+});
+test('retained identity rejects changed PID, group, birth, server identity or later launch and verifies optional receipts', () => {
+  const mutations = [row => { row.process_pid = null; }, row => { row.process_group_id = null; },
+    row => { row.process_pid = 99; }, row => { row.process_group_id = 99; },
+    row => { row.process_started_at = '2026-11-04T00:00:01.000Z'; }, row => { row.process_started_at = null; },
+    row => { row.process_identity.processStartedAt = 'other'; }, row => { row.process_identity_seq = '2'; },
+    row => { row.process_lifecycle_seq = '2'; row.process_lifecycle_event_type = 'native.process_start_requested'; },
+    row => { row.process_identity_source_event_id = 'provider-event'; }, row => { delete row.process_stopped; }];
+  for (const mutate of mutations) { const e = retained(); mutate(e.authorityAfter.rows[0]); assert.throws(() => assertAuthoritativeRetirement(e)); }
+  const optional = retained(functional(), true); optional.authorityAfter.rows[0].process_stopped.processPid = 99;
+  assert.throws(() => assertAuthoritativeRetirement(optional));
+});
+test('neither retirement state bypasses physical process/group absence, own audited ACK or exact lease cleanup', () => {
+  const mutations = [e => { delete e.processesAfter.providerGroupAbsent; }, e => { e.processesAfter.groupAbsent = false; },
+    e => { e.processesAfter.runnerAbsent = false; }, e => { e.processesAfter.providerAbsent = false; },
+    e => { e.authorityAfter.rows[0].native_cancellation.intentId = 'other'; }, e => { e.ack.audits.pop(); },
+    e => { e.authorityAfter.rows[0].status = 'failed'; }, e => { e.lease.id = 'other'; },
+    e => { e.authorityAfter.rows[0].lease_id = 'other'; }, e => { e.lease.releasedAt = null; },
+    e => { e.authorityAfter.rows[0].lease_released_at = null; }, e => { e.authorityAfter.rows[0].lease_cleanup_status = 'failed'; },
+    e => { e.authorityAfter.rows[0].provider = 'remote'; }];
+  for (const factory of [functional, retained]) for (const mutate of mutations) {
+    const e = factory(); mutate(e); assert.throws(() => assertAuthoritativeRetirement(e));
+  }
+  const forged = retained(); forged.authoritativeRetirementState = 'cleared-identity-with-authoritative-retirement';
+  assert.throws(() => assertFunctional(forged));
 });
 
 test('shared decision is correlated when present and absent run-only decisions stay valid', () => {

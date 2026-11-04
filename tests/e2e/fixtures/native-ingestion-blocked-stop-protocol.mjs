@@ -277,6 +277,74 @@ function assertOptionalShared(row, companyId, runId) {
     assert(timestamp(cancellation.recordedAt));
   }
 }
+// Mirrors acknowledgedNativeStopExecutionHasStopped's two local identity states;
+// independent PID/group absence is mandatory in either state, never inferred from ACK.
+export function assertAuthoritativeRetirement(e) {
+  const before = e.authorityBefore?.rows?.[0], after = e.authorityAfter?.rows?.[0];
+  for (const row of [before, after]) {
+    assert.equal(row?.company_id, e.companyId); assert.equal(row?.run_id, e.runId);
+    assert.equal(row.issue_id, e.issueId); assert.equal(row.runtime_mode, 'native');
+  }
+  assert.equal(after.status, 'cancelled'); assert.equal(after.cancellation_dispatch_state, 'acknowledged');
+  assertIntentAudit(e.ack); assert.equal(e.ack.intent.dispatchState, 'acknowledged');
+  assert.equal(e.ack.company_id, e.companyId); assert.equal(e.ack.run_id, e.runId); assert.equal(e.ack.issue_id, e.issueId);
+  assert.deepEqual(after.native_cancellation, e.ack.intent, 'Snapshot must contain the same audited own ACK');
+  assert.deepEqual([e.processesAfter?.runnerAbsent, e.processesAfter?.groupAbsent,
+    e.processesAfter?.providerAbsent, e.processesAfter?.providerGroupAbsent], [true,true,true,true]);
+  assert.equal(e.processesAfter.group, e.processesBefore.group);
+  assert.equal(e.processesAfter.providerGroup, e.processesBefore.providerGroup);
+  for (const process of [e.processesBefore.runner, e.processesBefore.provider]) {
+    assert(Number.isSafeInteger(process.pid) && process.pid > 1 && process.birth);
+    assert(Number.isSafeInteger(process.group) && process.group > 1);
+  }
+  assert.equal(e.processesBefore.runner.group, e.processesBefore.group);
+  assert.equal(e.processesBefore.group, before.process_group_id);
+  assert.equal(e.processesBefore.runner.pid, before.process_pid);
+  assert.equal(e.processesBefore.provider.group, e.processesBefore.providerGroup);
+  const birth = value => {
+    if (value === null) return null;
+    assert(value instanceof Date || typeof value === 'string');
+    assert(Number.isFinite(new Date(value).getTime())); return new Date(value).toISOString();
+  };
+  const sequence = value => { assert(/^[1-9]\d*$/.test(String(value))); return BigInt(value); };
+  const originalBirth = birth(before.process_started_at), identitySeq = sequence(before.process_identity_seq);
+  assert(originalBirth !== null, 'Missing captured authoritative original process birth');
+  assert.equal(before.process_identity_source_event_id, null);
+  assert.equal(before.process_identity?.targetKind, 'local'); assert(before.process_identity.hostname);
+  assert.equal(before.process_identity.processPid, before.process_pid);
+  assert.equal(before.process_identity.processGroupId, before.process_group_id);
+  assert.equal(before.process_identity.processStartedAt, originalBirth);
+  assert.equal(after.process_identity_source_event_id, null);
+  assert.equal(sequence(after.process_identity_seq), identitySeq, 'A later identity is a different launch');
+  assert.deepEqual(after.process_identity, before.process_identity);
+  assert.equal(e.lease?.heartbeatRunId, e.runId); assert.equal(e.lease.companyId, e.companyId);
+  assert.equal(e.lease.id, before.lease_id); assert(before.lease_id);
+  assert.equal(after.lease_id, before.lease_id); assert.equal(after.environment_id, before.environment_id);
+  assert.equal(e.lease.provider, 'local'); assert.equal(e.lease.providerLeaseId, null);
+  assert.equal(after.provider, 'local'); assert.equal(after.provider_lease_id, null);
+  for (const lease of [e.lease, { releasedAt: after.lease_released_at, status: after.lease_status, cleanupStatus: after.lease_cleanup_status }]) {
+    assert(lease.releasedAt && ['released','expired','failed'].includes(lease.status)); assert.notEqual(lease.cleanupStatus, 'failed');
+  }
+  const cleared = after.process_pid === null && after.process_group_id === null;
+  if (cleared) assert.equal(after.process_started_at, null);
+  else {
+    assert.equal(after.process_pid, before.process_pid); assert.equal(after.process_group_id, before.process_group_id);
+    assert.equal(birth(after.process_started_at), originalBirth);
+  }
+  const noReceipt = [after.process_stopped_seq, after.process_stopped, after.process_stopped_source_event_id].every(value => value === null);
+  if (noReceipt) assert.equal(cleared, false, 'Cleared identity requires authoritative retirement evidence');
+  else {
+    assert(sequence(after.process_stopped_seq) > sequence(after.process_identity_seq));
+    assert.equal(after.process_stopped_source_event_id, null);
+    assert.deepEqual(after.process_stopped, { processPid: before.process_pid, processGroupId: before.process_group_id,
+      processStartedAt: originalBirth });
+  }
+  assert.equal(after.process_lifecycle_source_event_id, null);
+  assert.equal(after.process_lifecycle_event_type, noReceipt ? 'native.process_identity_recorded' : 'native.local_process_stopped');
+  assert.equal(sequence(after.process_lifecycle_seq), noReceipt ? identitySeq : sequence(after.process_stopped_seq),
+    'A later process start or identity invalidates prior retirement evidence');
+  return cleared ? 'cleared-identity-with-authoritative-retirement' : 'retained-identity-after-physical-exit';
+}
 export function assertFunctional(e) {
   metrics(e); observerBrackets(e);
   assert.equal(e.prelude?.individualDeltas, WORKLOAD.prelude); assert.equal(e.prelude?.uniqueIdentities, WORKLOAD.prelude);
@@ -302,28 +370,8 @@ export function assertFunctional(e) {
   }
   assert.equal(e.ack.company_id, e.companyId); assert.equal(e.ack.run_id, e.runId); assert.equal(e.ack.issue_id, e.issueId);
   assert.equal(e.stopHttpStatus, 200);
-  assert.deepEqual([e.processesAfter?.runnerAbsent, e.processesAfter?.groupAbsent, e.processesAfter?.providerAbsent, e.processesAfter?.providerGroupAbsent], [true,true,true,true]);
-  assert.equal(e.processesAfter.group, e.processesBefore.group);
-  assert.equal(e.processesAfter.providerGroup, e.processesBefore.providerGroup);
   assert(e.timing.httpSettledAtMs >= e.timing.releaseRequestedAtMs);
-  const before = e.authorityBefore?.rows?.[0], after = e.authorityAfter?.rows?.[0];
-  for (const row of [before, after]) { assert.equal(row?.company_id, e.companyId); assert.equal(row?.run_id, e.runId); assert.equal(row.runtime_mode, 'native'); }
-  assert.equal(after.status, 'cancelled'); assert.equal(after.cancellation_dispatch_state, 'acknowledged');
-  assert(BigInt(after.process_stopped_seq) > BigInt(before.process_identity_seq));
-  assert.equal(after.process_stopped_source_event_id, null);
-  assert.equal(after.process_stopped.processPid, e.processesBefore.runner.pid);
-  assert.equal(after.process_stopped.processGroupId, e.processesBefore.group);
-  for (const process of [e.processesBefore.runner, e.processesBefore.provider]) {
-    assert(Number.isSafeInteger(process.pid) && process.pid > 1 && process.birth);
-    assert(Number.isSafeInteger(process.group) && process.group > 1);
-  }
-  assert.equal(e.processesBefore.runner.group, e.processesBefore.group);
-  assert.equal(e.processesBefore.group, before.process_group_id);
-  assert.equal(e.processesBefore.runner.pid, before.process_pid);
-  assert.equal(e.processesBefore.provider.group, e.processesBefore.providerGroup);
-  assert.equal(e.lease?.heartbeatRunId, e.runId); assert.equal(e.lease.companyId, e.companyId);
-  assert.equal(e.lease.provider, 'local'); assert.equal(e.lease.providerLeaseId, null);
-  assert(e.lease.releasedAt && ['released','expired','failed'].includes(e.lease.status)); assert.notEqual(e.lease.cleanupStatus, 'failed');
+  assert.equal(e.authoritativeRetirementState, assertAuthoritativeRetirement(e));
   const transcript = e.transcript;
   assert.equal(transcript?.persistedAfterReload, true); assert.equal(transcript?.ordered, true);
   assert.equal(transcript.resultAcceptedEvents, 0); assert.equal(transcript.preludeCount, WORKLOAD.prelude);
