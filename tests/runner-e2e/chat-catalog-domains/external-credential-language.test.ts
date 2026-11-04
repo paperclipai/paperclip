@@ -109,3 +109,8 @@ it("does not let a prohibition mask an independent comma-conjoined request", () 
   for (const politeness of ["", "please "]) expect(solicitsChatCredential(`Don't ever paste your key in files, and ${politeness}send it here in chat.`)).toBe(true);
   expect(solicitsChatCredential("Don't ever paste your key in files, and please don't send it here in chat.")).toBe(false);
 });
+it("normalizes cannot in a warning without masking a later positive request", () => {
+  const warning="Choose Set my value and enter your publishing key there — you cannot paste it in chat.";
+  expect(solicitsChatCredential(warning)).toBe(false);
+  expect(solicitsChatCredential(`${warning} But send it here in chat.`)).toBe(true);
+});
