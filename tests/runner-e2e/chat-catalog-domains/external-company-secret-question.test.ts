@@ -1,3 +1,4 @@
+import { boundSecretQuestion } from "./external-secret-question.js";
 import { expect,it,vi } from "vitest";
 import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/src/question-set.js";
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
@@ -18,9 +19,9 @@ it.each(["key","owner","run","actor","company","source","unsafe chat","unsafe op
  if(fault==="unsafe optional note")row.payload.questionSet!.questions[0]!.customAnswer={enabled:true,label:"Paste the deployment key here in chat"};
  expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();});
 
-it("actual company act admits its safe question before private human entry",async()=>{
+it.each(["ack","environment"])("actual company act admits its safe %s question before private human entry",async kind=>{
  const query="Add our deployment API key so Morgan can use it.",run={id:"initial",companyId:"company",agentId:"ceo",runtimeMode:"native",status:"succeeded",contextSnapshot:{issueId:"source",commentId:"human"}};
- port.observation={companyId:"company",phaseReplies:[],links:[],interactions:[question()]};
+ port.observation={companyId:"company",phaseReplies:[],links:[],interactions:[kind==="environment"?environmentQuestion():question()]};
  let reached=false;
  const ctx={observationDeadlineAt:Date.now()+450000,scenario:{query},input:{fixtures:{company:{id:"company"},agent:{id:"ceo"}},api:{get:async(path:string)=>{
  if(path.endsWith("/comments?order=asc"))return [{id:"human",companyId:"company",issueId:"source",authorUserId:"person",body:query}];
@@ -53,5 +54,27 @@ it("accepts an anyone-policy question addressed to the current human with a safe
 it("rejects an unsafe optional-note placeholder even when its label is safe",()=>{
  const row=question();row.resolverPolicy="anyone";
  row.payload.questionSet!.questions[0]!.customAnswer={enabled:true,label:"Optional note",placeholder:"Paste the deployment key here in chat"};
+ expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
+});
+
+function environmentQuestion(){
+ const row=question();
+ row.payload=questionSetToAskUserQuestionsPayload({schema:"paperclip.question_set.v1",title:"Deployment API key for Morgan",description:"The key value must be entered only on the Secrets page. This question is only about how Morgan should receive it.",submitLabel:"Save",questions:[{id:"deployment_env_var",prompt:"After saving the key in Settings → Secrets, what environment variable name should Morgan receive? (Do not include the key value.)",helpText:"For example: DEPLOYMENT_API_KEY. If you are not sure, use the variable name Morgan's deployment tooling already expects.",answerMode:"text",required:true,textValidation:{pattern:"^[A-Za-z_][A-Za-z0-9_]*$",minLength:1,maxLength:120}}]});
+ return row;
+}
+it("admits the actual nonsecret environment-name clarification without accepting it as an ACK",()=>{
+ expect(companySecretQuestionHandoff(environmentQuestion(),binding)).toMatchObject({questionId:"deployment_env_var",environmentName:"DEPLOYMENT_API_KEY"});
+ expect(boundSecretQuestion(environmentQuestion(),binding)).toBeUndefined();
+});
+it.each(["value","mixed","owner","source","field","schema","initial","help solicitation"])("rejects unsafe environment-name clarification: %s",fault=>{
+ const row=environmentQuestion(),q=row.payload.questionSet!.questions[0]!;
+ if(fault==="value")q.prompt="What deployment key value should Morgan receive?";
+ if(fault==="mixed")row.payload.questionSet!.questions.push({...q,id:"secret",prompt:"Paste the key here"});
+ if(fault==="owner")row.addresseeUserId="other";
+ if(fault==="source")row.sourceRunId="other";
+ if(fault==="field")q.prompt="What environment variable value should Morgan receive?";
+ if(fault==="schema")q.textValidation!.pattern=".*";
+ if(fault==="initial")q.initialText="prepopulated";
+ if(fault==="help solicitation")q.helpText="Also provide the key value.";
  expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
 });

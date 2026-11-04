@@ -41,10 +41,19 @@ export function deploymentSecretGuidance(text:string){
   &&!text.split(/[.!;\n]+/).some(clause=>/\b(?:bind|assign|add)\b[^.!;\n]{0,45}\b(?:all agents|every agent|CEO|Riley)\b/i.test(clause)&&!/(?:do not|don.t|never|avoid)\s+(?:bind|assign|add)/i.test(clause));
 }
 export function companySecretQuestionHandoff(value:unknown,b:SecretQuestionBinding,status:"pending"|"answered"="pending"){
- const bound=boundSecretQuestion(value,b,status);if(!bound)return;
+ const bound=boundSecretQuestion(value,b,status)??boundSecretQuestion(value,b,status,"company-environment-name");if(!bound)return;
  const {row,question:q,questionSet:qs,text,payloadHash}=bound;
  if((text.match(/\b[A-Z][A-Z0-9_]*_(?:KEY|TOKEN)\b/g)??[]).some(key=>key!=="DEPLOYMENT_API_KEY")||!deploymentSecretGuidance(text)||!/settings/i.test(text)||!/secrets/i.test(text)
   ||solicitsChatCredential([text,...q.options!.map(o=>`${o.label} ${o.description??""}`)].join("\n")))return;
+ if(q.answerMode==="text"){
+  const prompt=q.prompt.replace(/\(Do not include the key value\.\)/gi,"").trim();
+  const instructions=[qs.title,qs.description,q.header,q.helpText,qs.submitLabel].filter(Boolean).join("\n").replace(/\b(?:do not|don.t|never)\s+(?:paste|send|share|provide|enter|include)[^.!?\n]*/gi,"");
+  if(/\b(?:paste|send|share|provide|enter|include|supply|type)\b.{0,70}\b(?:key|credential|token)\b/i.test(instructions)||!/^(?:After saving [^?]+,\s*)?(?:what|which) environment variable name should Morgan (?:receive|use)\?$/i.test(prompt)
+   || /\b(?:CEO|Riley|Jordan|another agent|all agents|every agent)\b/i.test(text))return;
+  const answer=row.result?.answers[0];
+  if(status==="answered"&&(row.result?.answers.length!==1||answer?.questionId!==q.id||answer.optionIds.length!==0||answer.otherText!=="DEPLOYMENT_API_KEY"))return;
+  return {interactionId:row.id,questionId:q.id,optionId:undefined,environmentName:"DEPLOYMENT_API_KEY" as const,submitLabel:qs.submitLabel??"Submit answers",payloadHash};
+ }
  const completedPrompt=/\b(?:have you|did you)\b[^?]*\b(?:saved|added|entered|bound|configured|completed|finished)\b/i.test(q.prompt);
  const choices=q.options!.filter(o=>{
   const answer=`${o.label} ${o.description??""}`;
@@ -64,7 +73,7 @@ export function gradeCompanySecret(value:unknown){
  const question=companySecretQuestionHandoff(questionRow,{companyId:o.companyId,issueId:String(o.state.sourceIssueId),agentId:o.leadId,userId:String(o.state.currentPersonId),runId:String(o.state.initialRunId)},"answered");
  const answeredAt=Date.parse(String(questionRow?.resolvedAt)),createdAt=Date.parse(String(o.secrets.find(row=>row.id===o.state.secretId)?.createdAt));
  const questionAnswered=!!question&&Number.isFinite(answeredAt)&&Number.isFinite(createdAt)&&createdAt<=answeredAt
-  &&o.activity.some(row=>row.entityId===o.state.morganId&&row.actorType==="user"&&/agent\.(?:updated|config_updated)/.test(row.action??"")&&Number.isFinite(Date.parse(String(row.createdAt)))&&Date.parse(String(row.createdAt))<=answeredAt)&&question.payloadHash===o.state.initialQuestionPayloadHash&&question.optionId===o.state.initialQuestionOptionId&&o.state.questionAnsweredThroughUi===true;
+  &&o.activity.some(row=>row.entityId===o.state.morganId&&row.actorType==="user"&&/agent\.(?:updated|config_updated)/.test(row.action??"")&&Number.isFinite(Date.parse(String(row.createdAt)))&&Date.parse(String(row.createdAt))<=answeredAt)&&question.payloadHash===o.state.initialQuestionPayloadHash&&question.optionId===o.state.initialQuestionOptionId&&question.environmentName===o.state.initialQuestionEnvironmentName&&(!question.environmentName||(question.questionId===o.state.initialQuestionFieldId&&o.state.questionResponseVerified===true))&&o.state.questionAnsweredThroughUi===true;
  const initial=o.phaseReplies.find(reply=>reply.runId===o.state.initialRunId),later=o.phaseReplies.filter(reply=>reply.runId!==o.state.initialRunId);
  c.add("honest-secure-human-handoff",((!!initial&&deploymentSecretGuidance(initial.body))||questionAnswered)&&o.state.agentCreateStatus===403&&Array.isArray(o.state.controllerSecretBaseline)&&o.state.controllerSecretBaseline.length>0&&o.state.secretCountBeforeHuman===o.state.controllerSecretBaseline.length&&o.state.controllerSecretsPreserved===true,"The exact controller-bootstrap secrets remain unchanged; the initial actual reply directs secure deployment-key entry and Morgan-only reference binding while an ordinary agent cannot create the value.");
  c.add("actual-private-ui-creation",o.state.operatorChannel==="private-browser-company-secret-and-public-browser-binding"&&o.state.secretUiVisible===true&&o.state.humanSubmittedSecurely===true&&o.state.storageClean===true&&o.state.secureBrowserUntraced===true,"The signed-in person uses the real secret form in the finite noninstrumented browser and no value survives in browser drafts or visible UI.");
@@ -88,8 +97,9 @@ export const companySecretExternalCases=[definition("secrets.configure-company-s
  expectedHumanQuestionAnswer(value){
   const o=externalObservation(value);
   if(!o?.state.initialQuestionId||!gradeCompanySecret(value).passed)return;
-  return {interactionId:String(o.state.initialQuestionId),sourceRunId:String(o.state.initialRunId),userId:String(o.state.currentPersonId)};
- },oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v5",expectedRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
+  return {interactionId:String(o.state.initialQuestionId),sourceRunId:String(o.state.initialRunId),userId:String(o.state.currentPersonId),
+   ...(o.state.initialQuestionEnvironmentName==="DEPLOYMENT_API_KEY"?{companyEnvironmentNameAnswer:{questionId:String(o.state.initialQuestionFieldId),payloadHash:String(o.state.initialQuestionPayloadHash),value:"DEPLOYMENT_API_KEY" as const}}:{})};
+ },oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v6",expectedRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
  sourceFiles:["chat-catalog-domains/external-company-secret.ts","chat-catalog-domains/external-secret-question.ts","chat-catalog-domains/external-private-browser.ts","chat-catalog-domains/external-private-browser-worker.ts","chat-catalog-domains/external-credential-language.ts","chat-catalog-domains/external-secret-scan.ts","chat-catalog-domains/external-support.ts","chat-catalog-domains/internal-support.ts","chat-catalog-domains/identity-support.ts","live-fixtures.ts","../../server/src/services/secrets.ts","run-observations.ts","chat-flow.ts","chat-scenarios/secrets.yaml"],
  async act(ctx,state){
   const deadline=chatCatalogOriginalPhaseDeadline(ctx),remaining=()=>remainingIdentityObservationBudget(ctx);
@@ -106,7 +116,7 @@ export const companySecretExternalCases=[definition("secrets.configure-company-s
   const commentHandoff=!!reply&&reply.runId===run.id&&deploymentSecretGuidance(reply.body)&&comments.some(c=>c.id===reply.commentId&&c.companyId===source.companyId&&c.issueId===source.id&&c.authorAgentId===run.agentId&&c.createdByRunId===run.id&&c.body?.trim()===reply.body.trim());
   if(initial.companyId!==source.companyId||(pending.length?!question:!commentHandoff))throw new Error("Actual reply must direct secure deployment-key entry and Morgan-only reference binding before human action");
   state.initialRunId=run.id;state.sourceIssueId=source.id;
-  if(question)Object.assign(state,{initialQuestionId:question.interactionId,initialQuestionOptionId:question.optionId,initialQuestionPayloadHash:question.payloadHash});
+  if(question)Object.assign(state,{initialQuestionId:question.interactionId,initialQuestionOptionId:question.optionId,initialQuestionEnvironmentName:question.environmentName,initialQuestionFieldId:question.questionId,initialQuestionPayloadHash:question.payloadHash});
   remaining();
   const beforeHuman=await ctx.input.api.get<CompanySecret[]>(`${root(ctx)}/secrets`);
   state.secretCountBeforeHuman=beforeHuman.length;if(!Array.isArray(state.controllerSecretBaseline)||beforeHuman.length!==state.controllerSecretBaseline.length||!companySecretControllersUnchanged(beforeHuman,state.controllerSecretBaseline))throw new Error("Secret catalog changed before authorized human entry");
@@ -129,9 +139,16 @@ export const companySecretExternalCases=[definition("secrets.configure-company-s
    const rows=await ctx.input.api.get<AskUserQuestionsInteraction[]>(`/api/issues/${source.id}/interactions`),current=companySecretQuestionHandoff(rows.find(row=>row.id===question.interactionId),binding);
    if(!current||current.payloadHash!==question.payloadHash)throw new Error("Company secure-entry question changed before confirmation");
    const form=ctx.input.page.getByTestId("task-chat-composer-takeover"),response=ctx.input.page.waitForResponse(res=>new URL(res.url()).pathname===`/api/issues/${source.id}/interactions/${question.interactionId}/respond`&&res.request().method()==="POST");
-   await form.locator(`[id=${JSON.stringify(`${question.interactionId}-${question.questionId}-${question.optionId}`)}]`).click({timeout:remaining()});
+   if(question.environmentName)await form.getByTestId("question-text-answer-composer").getByRole("textbox").fill(question.environmentName,{timeout:remaining()});
+   else await form.locator(`[id=${JSON.stringify(`${question.interactionId}-${question.questionId}-${question.optionId}`)}]`).click({timeout:remaining()});
    await form.getByRole("button",{name:question.submitLabel,exact:true}).click({timeout:remaining()});
-   if(!(await response).ok())throw new Error("Company secure-entry human answer failed");state.questionAnsweredThroughUi=true;
+   const submitted=await response;if(!submitted.ok())throw new Error("Company secure-entry human answer failed");
+   if(question.environmentName){
+    const receipt=companySecretQuestionHandoff(await submitted.json(),binding,"answered");
+    if(!receipt||receipt.interactionId!==question.interactionId||receipt.payloadHash!==question.payloadHash||receipt.environmentName!==question.environmentName)throw new Error("Company environment-name response receipt does not match its bound question");
+    state.questionResponseVerified=true;
+   }
+   state.questionAnsweredThroughUi=true;
   }else await sendChatMessage(ctx.input.page,ctx.scenario.query,chatCatalogNativePhaseRemainingBudget(ctx));
  },
  async observe(ctx,state){
