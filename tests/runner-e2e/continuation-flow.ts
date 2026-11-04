@@ -93,6 +93,7 @@ export async function runContinuationFlow(input: {
         const idle =
           continuationAnswerCommitted(state.interactions, answeredInteractionId) &&
           continuationCheckpointReady({
+            requireCompletedTurn: migration,
             issue: { status: state.issue.status, executionRunId: state.issue.executionRunId },
             runs: state.runs.map(r => ({ id: r.id, status: r.status, runtimeMode: r.runtimeMode })),
             interactions: state.interactions,

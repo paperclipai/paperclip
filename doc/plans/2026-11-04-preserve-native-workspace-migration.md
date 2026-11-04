@@ -51,3 +51,24 @@ the allocation-marker restore failure; that attempt remains failed. The exact
 owned sandboxes, temporary credentials, database and object bucket were cleaned.
 The original task remains staging enrollment, active handoff, and admission of
 new work with existing warm/per-turn policies; staging has not yet been enrolled.
+
+The `91db767eb8` live attempt successfully restored the workspace and preserved
+its reference bytes, but the next turn incorrectly selected a fresh provider
+session. Its recorded admission reason was an adapter-configuration change.
+A no-provider reproduction isolated the cause: importing unchanged managed
+instructions creates a durable head, after which normal fingerprints omit the
+old local instruction paths. Session preparation now compares the complete old
+fingerprint using the verified imported content hash and the still-recorded
+paths. It does not waive content, model, credential or other configuration
+changes. Ordinary future turns retain the location-independent fingerprint.
+
+Migration qualification also waits for a live question to become a saved
+handoff and for its task lock to release before requesting offline enrollment.
+The maintenance owner's active-run rejection remains unchanged.
+
+The same failed attempt also exposed a fixture conflict: it requested a generated
+reference file but forbade delivering it, and completion stayed blocked. The
+migration journey now asks for that exact reference as an attachment after the
+answer, alongside the confirmation. The byte/session/path preservation oracle
+is unchanged; initial delivery remains forbidden and final task completion is
+still required. This is fixture setup, not a relaxation of product completion.

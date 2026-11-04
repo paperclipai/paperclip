@@ -9,7 +9,8 @@ export function isLegacyWorkspaceMigration(execution: MatrixExecution) {
 }
 
 export function legacyWorkspaceMigrationPrompt(prompt: string) {
-  return `Work in this task's own workspace. Before asking the question, create migration-reference.txt containing a fresh random 32-character lowercase hexadecimal reference and a trailing newline. Keep it as a private intermediate file, not a deliverable. Do not print its contents in chat. After I answer, read this same file before finishing. Keep its original bytes. ${prompt}`;
+  const continuation = prompt.replace("Do not create other tasks or deliverables.", "Do not create other tasks.");
+  return `Work in this task's own workspace. Before asking the question, create migration-reference.txt containing a fresh random 32-character lowercase hexadecimal reference and a trailing newline. Do not deliver any files or documents before I answer. After I answer, read this same file, keep its original bytes, and attach the original migration-reference.txt as an additional deliverable alongside the confirmation document. ${continuation}`;
 }
 
 export interface MigrationPoint {
@@ -46,5 +47,5 @@ export function gradeLegacyWorkspaceMigration(before?: MigrationPoint, after?: M
     && before.providerType !== "cloud_sandbox" && after.providerType === "cloud_sandbox" && before.workspaceId === after.workspaceId
     && before.runId !== after.runId && before.sessionId === after.sessionId && before.logicalCwd === after.logicalCwd
     && before.remoteCwd === after.remoteCwd && before.proofSha256 === after.proofSha256 && before.providerSessionSha256 === after.providerSessionSha256),
-  detail: "A new turn retains the exact native session, logical and provider paths, workspace, and private file bytes after offline migration and destruction of the old home." }];
+  detail: "A new turn retains the exact native session, logical and provider paths, workspace, and reference file bytes after offline migration and destruction of the old home." }];
 }
