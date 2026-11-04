@@ -1882,6 +1882,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     let claimed = claimedCandidate;
     const previousAttemptCount = Number(candidate.result?.attemptCount ?? 0);
     const attemptCount = previousAttemptCount + 1;
+    let observedIdentityContention = false;
     let contentionResult: Record<string, unknown> = {
       ...(candidate.result?.identityContentionDeadlineAt !== undefined
         ? { identityContentionDeadlineAt: candidate.result.identityContentionDeadlineAt } : {}),
@@ -1892,6 +1893,11 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     const settle = async (status: string, result: Record<string, unknown>) => {
       const settledResult = { ...contentionResult, ...result };
       if (["processed", "failed", "cancelled"].includes(status)) delete settledResult.identityContentionPending;
+      const durableResult = !observedIdentityContention && settledResult.identityContentionPending === true
+        ? sql`(${JSON.stringify(settledResult)}::jsonb - 'identityContentionPending') || case
+            when ${chatActions.result}->'identityContentionPending' = 'true'::jsonb
+            then jsonb_build_object('identityContentionPending', true) else '{}'::jsonb end`
+        : settledResult;
       const [current] = await db.transaction(async (tx) => {
         if (typeof claimed.payload.taskRetryIntentId === "string") await notifyTaskRetrySettlement(tx, {
           companyId: claimed.companyId, requestId: claimed.payload.taskRetryIntentId,
@@ -1902,7 +1908,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         });
         return tx
           .update(chatActions)
-          .set({ status, result: settledResult, updatedAt: new Date() })
+          .set({ status, result: durableResult, updatedAt: new Date() })
           .where(
             and(
               eq(chatActions.id, claimed.id),
@@ -1928,7 +1934,15 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       };
       const source = await db.transaction(async tx => {
         const authorized = await authorizeFailedChatRunRetry(tx, scope);
-        if (contentionResult.identityContentionPending === true) assertIdentityContentionDeadline(claimed);
+        if (contentionResult.identityContentionPending === true) {
+          await notifyChatActionWork(tx, "failed_run_retry");
+          assertIdentityContentionDeadline(claimed);
+          const [advanced] = await tx.update(chatActions).set({
+            result: sql`coalesce(${chatActions.result}, '{}'::jsonb) - 'identityContentionPending'`,
+          }).where(and(eq(chatActions.companyId, claimed.companyId), eq(chatActions.id, claimed.id),
+            eq(chatActions.status, "processing"), eq(chatActions.updatedAt, now))).returning({ id: chatActions.id });
+          if (!advanced) throw failedChatRetryDenied();
+        }
         return authorized;
       });
       delete contentionResult.identityContentionPending;
@@ -2056,6 +2070,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         });
       }
       if (error instanceof NativeChatReviewPresentationContentionError) {
+        observedIdentityContention = true;
         const contendedAt = Date.now();
         const identityContentionDeadlineAt = contentionResult.identityContentionDeadlineAt
           ?? new Date(contendedAt + FAILED_RUN_RETRY_IDENTITY_CONTENTION_MS).toISOString();

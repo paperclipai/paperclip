@@ -962,11 +962,17 @@ They do not imply that a provider started. Source authorization contention has a
 for an older action. Waiting on these locks does not consume the eight delivery
 attempts. Expiry is checked before source preparation commits and before a
 prepared action can leave its authorization wait. A lock that becomes available
-after expiry cannot permit late input adoption. Worker restart, duplicate clicks,
-and background sweeps cannot renew either limit. Preparation does not create a
-generic board wake. Only the endpoint query's lock-unavailable error can defer
-through its explicit Retry callback. Other database and authorization errors keep
-their existing behavior.
+after expiry cannot complete a still-pending wait. The authorization transaction
+saves completion of that wait under the current claim before wake delivery.
+A restart rechecks current source and execution gates; elapsed time alone does
+not expire a completed wait. New contention still uses the original deadline.
+Generic delivery failure cannot put a completed wait back into the pending
+state. A lost commit acknowledgment preserves the stored phase and does not
+authorize a wake.
+Duplicate clicks and background sweeps cannot renew either limit. Preparation
+does not create a generic board wake. Only the endpoint query's lock-unavailable
+error can defer through its explicit Retry callback. Other database and
+authorization errors keep their existing behavior.
 
 ### Runner authentication and ACP startup handshake bounds
 
