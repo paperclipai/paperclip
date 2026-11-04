@@ -176,7 +176,16 @@ export function verifiedTeamSkillRecovery(state: Record<string, unknown>, compan
 }
 function namedTeamSkillClauses(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): string[] {
   const names = [skill.slug, skill.slug.replaceAll("-", " "), skill.name].map(name => name.toLowerCase());
-  return reply.split(/[.!?;\n]+/).filter(clause => names.some(name => clause.toLowerCase().includes(name)));
+  const bound: string[] = [];
+  for (const paragraph of reply.split(/\n\s*\n/)) {
+    let previousNamesTarget = false;
+    for (const clause of paragraph.split(/[.!?;\n]+/).map(text => text.trim()).filter(Boolean)) {
+      const named = names.some(name => clause.toLowerCase().includes(name));
+      if (named || previousNamesTarget && /^(?:it|(?:this|that) skill)\b/i.test(clause)) bound.push(clause);
+      previousNamesTarget = named;
+    }
+  }
+  return bound;
 }
 function truthfulTeamRecovery(reply: string, skill: Pick<CatalogSkill, "slug" | "name">): boolean {
   return namedTeamSkillClauses(reply, skill).some(clause => [...clause.matchAll(/\b(?:installed|available|resolved|recovered)\b/gi)].some(match =>

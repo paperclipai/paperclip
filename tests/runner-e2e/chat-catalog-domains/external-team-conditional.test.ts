@@ -222,3 +222,19 @@ it("does not treat a historical negative alone as an asserted initial recovery",
   o.phaseReplies[0]!.body = "The existing CTO was preserved and the new role renamed CTO 2. Launch Checklist was previously not installed.";
   expect(gradeTeamConditions(o, "initial").passed).toBe(false);
 });
+
+it.each(["It", "This skill", "That skill"])("accepts immediately bound %s recovery without repeating the skill name", subject => {
+  const { o } = recovered();
+  o.phaseReplies[0]!.body = `The existing CTO was preserved and the new role renamed CTO 2. Launch Checklist hit a slug conflict. ${subject} is now installed under a separate slug.`;
+  expect(gradeTeamConditions(o, "initial").passed).toBe(true);
+});
+it("rejects an immediately bound pronoun claiming the recovered skill is still missing", () => {
+  const { o } = recovered();
+  o.phaseReplies[1]!.body = "Launch Checklist is installed. It is still missing and not installed.";
+  expect(gradeTeamConditions(o).passed).toBe(false);
+});
+it.each(["Launch Checklist hit a conflict. Another skill was discussed. It is now installed.", "It is now installed. Launch Checklist hit a conflict.", "Launch Checklist hit a conflict.\n\nIt is now installed."])("does not credit interrupted or unbound pronoun recovery: %s", body => {
+  const { o } = recovered();
+  o.phaseReplies[0]!.body = `The existing CTO was preserved and the new role renamed CTO 2. ${body}`;
+  expect(gradeTeamConditions(o, "initial").passed).toBe(false);
+});
