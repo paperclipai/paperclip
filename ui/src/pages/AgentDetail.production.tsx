@@ -2804,9 +2804,14 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     setClaudeLoginResult(null);
   }, [run.id]);
 
+  const stopRequest = useRef<{ runId: string; id: string } | null>(null);
   const cancelRun = useMutation({
-    mutationFn: () => heartbeatsApi.cancel(run.id),
-    onSuccess: () => {
+    mutationFn: () => {
+      if (run.status !== "failed") return heartbeatsApi.cancel(run.id);
+      if (stopRequest.current?.runId !== run.id) stopRequest.current = { runId: run.id, id: crypto.randomUUID() };
+      return heartbeatsApi.cancel(run.id, { cancellationRequestId: stopRequest.current.id });
+    },
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(run.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
     },

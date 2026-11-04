@@ -11,9 +11,10 @@ import { ToastProvider } from "../context/ToastContext";
 import { PanelProvider } from "../context/PanelContext";
 
 const { get, cancel, grokStop } = vi.hoisted(() => ({ get: vi.fn(), cancel: vi.fn(), grokStop: vi.fn() }));
-vi.mock("../api/heartbeats", () => ({ heartbeatsApi: { get, cancel, events: async () => [], workspaceOperations: async () => [] } }));
+vi.mock("../api/heartbeats", async importOriginal => ({ heartbeatsApi: { ...(await importOriginal<typeof import("../api/heartbeats")>()).heartbeatsApi,
+  get, events: async () => [], workspaceOperations: async () => [] } }));
 vi.mock("../api/grokBot", () => ({ grokBotApi: { stop: grokStop } }));
-vi.mock("../api/client", () => ({ api: { get: async () => [] } }));
+vi.mock("../api/client", () => ({ api: { get: async () => [], post: cancel } }));
 vi.mock("../api/access", () => ({ accessApi: { getCurrentBoardAccess: async () => ({ companyIds: ["company-1"], memberships: [] }) } }));
 vi.mock("../context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: false }) }));
 vi.mock("../context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company-1", selectedCompany: { id: "company-1", issuePrefix: "TEST" }, companies: [] }) }));
@@ -31,19 +32,38 @@ const states = [
   { status: "running", eligibility: undefined, label: "Cancel" },
   { status: "queued", eligibility: undefined, label: "Cancel" },
   { status: "failed", eligibility: true, label: "Stop", denial: true },
+  { status: "failed", eligibility: true, label: "Stop", unchanged: true },
+  { status: "failed", eligibility: true, label: "Stop", pending: true },
+  { status: "failed", eligibility: true, label: "Stop", pending: true, wrongIntent: "run" },
+  { status: "failed", eligibility: true, label: "Stop", pending: true, wrongIntent: "request" },
+  { status: "failed", eligibility: true, label: "Stop", uncertain: true },
   { status: "failed", eligibility: true, label: null, driverKind: "grok_bot_mcp" },
   { status: "running", eligibility: undefined, label: "Cancel", driverKind: "grok_bot_mcp" },
   { status: "queued", eligibility: undefined, label: "Cancel", driverKind: "grok_bot_mcp" },
 ];
 it.each([RunsTab, ProductionRunsTab].flatMap(Tab => states.map(state => ({ Tab, ...state }))))("renders and submits only eligible run cancellation (%#)", async ({ Tab, status, eligibility, label, ...state }) => {
-  const run = { id: "failed-native-run", companyId: "company-1", agentId: "agent-1", status, driverKind: state.driverKind, invocationSource: "manual",
+  const run = { id: "failed-native-run", companyId: "company-1", agentId: "agent-1", issueId: "issue-1", status, driverKind: state.driverKind, invocationSource: "manual",
     createdAt: "2026-01-01T00:00:00Z", updatedAt: "2026-01-01T00:00:00Z", usageJson: null, resultJson: null,
     contextSnapshot: null, exitCode: 1, error: "Runner ingress unavailable", logRef: null, startedAt: null, finishedAt: null,
     execution: { canStop: eligibility, phase: "reconnecting", label: "Reconnecting", recoveryOwner: "agent", retryAt: "2026-01-01T00:00:01Z" },
   } as unknown as HeartbeatRun;
   get.mockResolvedValue(run);
-  cancel.mockImplementation(async () => {
+  cancel.mockImplementation(async (_path, body) => {
     if (state.denial) throw new Error("Native retry changed; Stop was not accepted");
+    if (state.uncertain && cancel.mock.calls.length === 1) throw new Error("Stop outcome is unknown");
+    if (state.unchanged) {
+      const unchanged = { ...run, execution: { ...run.execution, canStop: false } };
+      get.mockResolvedValue(unchanged);
+      return unchanged;
+    }
+    if (state.pending || state.uncertain) {
+      const pending = { ...run, execution: { ...run.execution, canStop: false }, resultJson: { nativeCancellation: {
+        schema: "paperclip.native-cancellation.v1", runId: state.wrongIntent === "run" ? "another-run" : run.id, companyId: run.companyId, issueId: run.issueId,
+        intentId: `native-cancellation:${state.wrongIntent === "request" ? "another-request" : body.cancellationRequestId}`, scope: "run", dispatchState: "pending", dispatched: false, intentAuditId: "recorded-intent",
+      } } };
+      get.mockResolvedValue(pending);
+      return pending;
+    }
     const stopped = { ...run, status: "cancelled", execution: { ...run.execution, canStop: false } };
     get.mockResolvedValue(stopped);
     return stopped;
@@ -68,16 +88,29 @@ it.each([RunsTab, ProductionRunsTab].flatMap(Tab => states.map(state => ({ Tab, 
       await act(async () => control()!.click());
       await vi.waitFor(() => usesGrokStop
         ? expect(grokStop).toHaveBeenCalledExactlyOnceWith("company-1", "agent-1", "failed-native-run")
-        : expect(cancel).toHaveBeenCalledExactlyOnceWith("failed-native-run"));
+        : expect(cancel).toHaveBeenCalledExactlyOnceWith("/heartbeat-runs/failed-native-run/cancel",
+          status === "failed" ? { cancellationRequestId: expect.stringMatching(/^[a-f0-9-]{36}$/) } : {}));
       expect(usesGrokStop ? cancel : grokStop).not.toHaveBeenCalled();
+      if (state.uncertain) {
+        await vi.waitFor(async () => {
+          await act(async () => {});
+          expect(element.querySelector('[role="alert"]')?.textContent).toContain("Stop outcome is unknown");
+          expect(control()?.textContent).toBe(expectedLabel);
+        });
+        const firstRequest = cancel.mock.calls[0][1];
+        await act(async () => control()!.click());
+        await vi.waitFor(() => expect(cancel).toHaveBeenCalledTimes(2));
+        expect(cancel.mock.calls[1][1]).toEqual(firstRequest);
+      }
       await vi.waitFor(async () => {
         await act(async () => {});
-        if (state.denial) {
+        if (state.denial || state.unchanged || state.wrongIntent) {
           expect(element.querySelector('[role="alert"]')?.textContent).toContain("Stop was not accepted");
-          expect(control()?.textContent).toBe(expectedLabel);
+          if (state.denial) expect(control()?.textContent).toBe(expectedLabel);
         } else {
           expect(control()).toBeUndefined();
-          expect(element.textContent).toContain("cancelled");
+          expect(element.textContent).toContain(state.pending || state.uncertain ? "failed" : "cancelled");
+          expect(element.querySelector('[role="alert"]')).toBeNull();
         }
       });
     } else {

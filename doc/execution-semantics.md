@@ -3325,5 +3325,11 @@ place. A false or absent hint does not remove the existing queued
 or running Cancel action. This presentation hint grants no permission; the existing
 company, actor and locked cancellation checks remain authoritative. A changed
 retry can reject Stop, which the run detail displays without claiming cleanup.
-A successful request refreshes the selected run and its history. Stop does not
-resume the provider or change a manual task hold.
+Failed-native Stop uses one request identity per selected run, including after an
+uncertain response. The server locks and checks the current retry before it
+accepts that identity. A stale request returns a conflict before cancellation
+activity is recorded. The client also rejects an unchanged successful HTTP
+response with no matching cancellation intent. A matching durable pending intent
+can be accepted without a terminal acknowledgement. The selected run and its
+history refresh after either outcome. Stop does not resume the provider or change
+a manual task hold.
