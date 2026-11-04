@@ -75,3 +75,8 @@ it("does not inherit a prior prohibition for an independent omitted-object reque
 it("retains an explicit noncredential object", () => {
   expect(solicitsChatCredential("Send your key via secure form and instead share progress here.")).toBe(false);
 });
+
+it("distinguishes an explicit message object from a credential destination", () => {
+  expect(solicitsChatCredential("Enter your personal publishing credential in the secure form, not in chat. Share this message with Morgan.")).toBe(false);
+  expect(solicitsChatCredential("Send your key via secure form and instead share in the chat.")).toBe(true);
+});
