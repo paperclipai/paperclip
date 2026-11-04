@@ -8,7 +8,7 @@ import { updateAgentConfiguration } from "./adapters/configuration.js";
 import type { AgentConfigurationPatch, UpdateAgentOptions } from "../../lib/agent-records.js";
 import { purgeAgent } from "./adapters/deletion.js";
 import { agentRecords } from "./adapters/records.js";
-import { assertRootDatabase, createLifecycleStore } from "./adapters/postgres.js";
+import { assertRootDatabase, createLifecycleStore, pendingLifecycleWork } from "./adapters/postgres.js";
 import { hasCompanyHoldMismatch, projectCompanyHolds } from "./adapters/company-policy.js";
 import { createLifecycleWorker } from "./application/worker.js";
 import type { LifecycleDriver } from "./application/ports.js";
@@ -16,12 +16,11 @@ import type { LifecycleDriver } from "./application/ports.js";
 export { applyAgentPolicyHoldsInTransaction } from "./adapters/postgres.js";
 export { companyHoldMismatch, fenceActiveCompanyAgentStopsInTransaction } from "./adapters/company-policy.js";
 
-export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup } from "./domain/policy.js";
+export { AgentLifecycleConflict, canConfigureAgentConnection, isAgentAwaitingSetup, isAgentSetupDraft } from "./domain/policy.js";
 
 export type { HireDecisionTarget } from "./adapters/approvals.js";
 export type { LifecycleDriver, LifecycleAgent, LifecycleFailure } from "./application/ports.js";
 
-const pendingStates = ["preparing", "verifying", "pausing", "resuming", "terminating", "cleaning_up"] as const;
 const wakes = new WeakMap<Db, () => void>();
 
 const workers = new WeakMap<Db, ReturnType<typeof createLifecycleWorker>>();
@@ -116,7 +115,7 @@ export function startAgentLifecycle(db: Db, effects: LifecycleEffects, driver: L
       const [pending] = await db.select({ due: sql<number | null>`min(greatest(
         coalesce(extract(epoch from (${agents.lifecycleOperation}->>'leaseUntil')::timestamptz) * 1000, 0),
         coalesce(extract(epoch from (${agents.lifecycleOperation}->>'retryAt')::timestamptz) * 1000, 0)))::double precision` })
-        .from(agents).where(inArray(agents.lifecycleState, pendingStates));
+        .from(agents).where(pendingLifecycleWork);
       const due = pending?.due == null ? null : Number(pending.due);
       const now = Date.now();
       // Already-due work uses the coordinator's bounded retry. A zero-delay

@@ -29,6 +29,7 @@ export function healthFailureHttpStatus(failure: {
   if (failure.code === "oauth_insufficient_scope") return 422;
   if (failure.code === "slack_mcp_access_disabled") return 422;
   if (failure.code === "user_authorization_required") return 422;
+  if (failure.code === "github_installation_required") return 422;
   if (failure.code === "composio_broker_retired") return 422;
   if (failure.code === "tool_connection_transport_unsupported") return 422;
   if (failure.code === "cognee_access_unverified" || failure.code === "memory_api_key_rejected") return 422;
@@ -59,7 +60,7 @@ export function sanitizeHttpFailure(error: unknown): {
     if (code === "slack_mcp_access_disabled" || code === "google_workspace_services_unavailable") {
       return { status: "error", message: error.message, code };
     }
-    if (code === "user_authorization_required") {
+    if (code === "user_authorization_required" || code === "github_installation_required") {
       return { status: "error", message: error.message, code };
     }
     if (code === "tool_connection_transport_unsupported") {

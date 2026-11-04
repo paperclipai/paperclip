@@ -51,6 +51,12 @@ describe("checkpoint finalization boundary", () => {
       runs: [{ ...run, status: "running" }], interactions: [{ ...pending[0], sourceRunId: "run",
         payload: { runtimeRequestId: "provider-request" } }] };
     expect(continuationCheckpointReady(input)).toBe(true);
+    expect(continuationCheckpointReady({ ...input, requireCompletedTurn: true })).toBe(false);
+    expect(continuationCheckpointReady({ ...input, requireCompletedTurn: true,
+      runs: [run], issue: { status: "in_review", executionRunId: "run" } })).toBe(false);
+    expect(continuationCheckpointReady({ ...input, requireCompletedTurn: true,
+      runs: [run], issue: { status: "in_review", executionRunId: null } })).toBe(true);
+
     expect(continuationCheckpointReady({ ...input, interactions: pending })).toBe(false);
     expect(continuationCheckpointReady({ ...input, issue: { ...input.issue, executionRunId: "other" } })).toBe(false);
     expect(continuationCheckpointReady({ ...input, runs: [{ ...input.runs[0], runtimeMode: "legacy" }] })).toBe(false);

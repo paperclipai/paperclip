@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/dialog";
 import { SearchableSelect, type SearchableSelectGroup } from "@/components/SearchableSelect";
 import { Skeleton } from "@/components/ui/skeleton";
+import { QueryErrorState, useQueryView } from "@/components/QueryView";
 import { agentsApi } from "@/api/agents";
 import { accessApi } from "@/api/access";
 import { issuesApi } from "@/api/issues";
@@ -295,9 +296,10 @@ export function IssueShareSheet({
     addMutation.mutate({ subjectType, subjectId });
   }
 
-  const isLoading = grantsQuery.isLoading;
-  const isError = grantsQuery.isError;
-  const isEmpty = !isLoading && !isError && activeGrants.length === 0 && implicitPrincipals.length === 0;
+  const grantsView = useQueryView(grantsQuery);
+  const isLoading = grantsQuery.isLoading || grantsView.kind === "reconnecting";
+  const loadFailed = grantsView.kind === "error";
+  const isEmpty = !isLoading && !loadFailed && activeGrants.length === 0 && implicitPrincipals.length === 0;
 
   return (
     <Dialog open={open} onOpenChange={resetAndClose}>
@@ -324,18 +326,14 @@ export function IssueShareSheet({
                   </div>
                 ))}
               </div>
-            ) : isError ? (
-              <div
-                className="flex items-center justify-between gap-2 rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
-                data-testid="share-sheet-error"
-              >
-                <span className="flex items-center gap-1.5">
-                  <AlertTriangle className="h-4 w-4 shrink-0" aria-hidden="true" />
-                  Couldn't load access.
-                </span>
-                <Button variant="ghost" size="sm" onClick={() => grantsQuery.refetch()}>
-                  <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" /> Retry
-                </Button>
+            ) : loadFailed ? (
+              <div data-testid="share-sheet-error">
+                <QueryErrorState
+                  error={grantsQuery.error}
+                  action="load access"
+                  onRetry={grantsView.retry}
+                  retrying={grantsView.isFetching}
+                />
               </div>
             ) : isEmpty ? (
               <p className="py-3 text-sm text-muted-foreground" data-testid="share-sheet-empty">

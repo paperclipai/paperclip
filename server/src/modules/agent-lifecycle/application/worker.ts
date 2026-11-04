@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { LifecycleDriver, LifecycleStore, LifecycleFailure } from "./ports.js";
 import { isLifecycleWorkPending } from "../domain/policy.js";
-import { lifecycleFailureMessage } from "./failure.js";
+import { lifecycleFailureCode, lifecycleFailureMessage, lifecycleVerificationNeedsRetry } from "./failure.js";
 
 /** Database leases protect each attempt across server processes. */
 export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDriver, reportFailure: (context: LifecycleFailure, error: unknown) => void, canRun = () => true) {
@@ -20,7 +20,8 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
       const agent = await attempt({ stage: "claim", agentId: id }, () => store.claim(id, owner, new Date()));
       if (!agent || !isLifecycleWorkPending(agent.lifecycleState)) return;
       const context = { agentId: agent.id, companyId: agent.companyId, phase: agent.lifecycleState,
-        operationId: agent.lifecycleOperation?.id, version: agent.lifecycleVersion };
+        operationId: agent.lifecycleOperation?.id, version: agent.lifecycleVersion,
+        attempts: agent.lifecycleOperation?.attempts };
       let failureContext: LifecycleFailure = { ...context, stage: "host" };
       const runStep = <T>(stage: LifecycleFailure["stage"], work: () => Promise<T>, pluginId?: string) => {
         const stepContext = { ...context, stage, ...(pluginId ? { pluginId } : {}) };
@@ -70,8 +71,16 @@ export function createLifecycleWorker(store: LifecycleStore, driver: LifecycleDr
         }
         if (changed && !isLifecycleWorkPending(changed.lifecycleState)) return;
       } catch (error) {
+        // Claims can defer before runHost. Only a failed host test spends this budget.
+        const verificationFailures = failureContext.stage === "host" && agent.lifecycleState === "verifying"
+          && lifecycleFailureCode(error) === "harness_test_failed"
+          ? (agent.lifecycleOperation?.verificationFailures ?? 0) + 1 : undefined;
+        failureContext = { ...failureContext, verificationFailures };
         const message = lifecycleFailureMessage(failureContext, error);
-        if (!await runStep("defer", () => store.defer(agent, owner, message, new Date()))) continue;
+        const retryRequired = lifecycleVerificationNeedsRetry(failureContext, error);
+        if (!await runStep("defer", () => retryRequired || verificationFailures !== undefined
+          ? store.defer(agent, owner, message, new Date(), { retryRequired, ...(verificationFailures !== undefined ? { verificationFailures } : {}) })
+          : store.defer(agent, owner, message, new Date()))) continue;
         return;
       } finally {
         clearInterval(renewal);

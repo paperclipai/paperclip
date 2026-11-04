@@ -30,6 +30,26 @@ Use Inbox links or the corresponding task views when the combined list is enable
 
 Open `/decisions`, then a queue at `/decisions/queues/:key` and its source item.
 
+With **Settings → Experimental → Coordinator workspace** enabled, `/decisions`
+is **Needs You**. Pending cards use the existing attention feed and canonical
+resolvers. **Tasks → Needs attention** projects the same feed as distinct tasks.
+Search, filter by agent/project, sort, and group by task/agent/project apply to
+both open decisions and the visible Recent Decisions receipts. Successful
+resolutions resize into compact receipts while the same contained Gather Light
+effect used for task creation runs concurrently. The receipt stays in its card
+position until that treatment finishes, then settles under **Recent Decisions**.
+Motion follows the saved history result; failed saves retain the actionable card,
+reduced motion settles immediately, and revisiting history does not replay it. The initial
+24-hour display window is an experimental assumption, not data deletion.
+Resolving an artifact decision does not itself complete its task. If the task
+remains in review without a maintained reviewer or continuation, its separate
+canonical stalled-review item stays in Needs You and Tasks → Needs attention.
+Coordinator presents the existing recovery actions with **Mark task done** as
+the task-level verdict, distinct from the saved artifact receipt.
+
+Open **Decision history** on this surface for the paginated history sidebar;
+it merges answered questions and confirmations with Decisions-v1 outcomes.
+
 ### `search`
 
 Open `/search` or the navigation search entry.
@@ -57,7 +77,7 @@ The source regressions also create an addressed request through the service for 
 human assignee. They check unread lists, flags, and counts, plus exclusion of
 historical questions and closed requests while preserving authorization requests.
 
-Manual: Seed GitHub, Slack, scheduled routine, and manual routine tasks. Attribution, imported comments, and reading alone keep them outside Mine. Direct board/API comments, human assignment, and open addressed requests admit them. Resolve the request and check that another valid reason is needed. Inbox discovery and Blocked hide unrelated automation by default; the **show agent-created tasks** checkbox reveals it without subscribing the user. Reload and verify membership, unread badges, archive/resurfacing, and preference persistence.
+Manual: Seed GitHub, Slack, scheduled routine, and manual routine tasks. Attribution, imported comments, and reading alone keep them outside Mine. Direct board/API comments, human assignment, and open addressed requests admit them. Resolve the request and check that another valid reason is needed. Inbox discovery and Blocked hide unrelated automation by default; the **Show agent-created tasks** checkbox reveals it without subscribing the user. Reload and verify membership, unread badges, archive/resurfacing, and preference persistence.
 
 Manual: Read an unread task, return to Unread, archive a handled item, and reload. Verify personal triage state changes while task status stays correct. Switch users and companies to check isolation.
 
@@ -67,11 +87,40 @@ participation, while the cleanup remains in activity history. Record an explicit
 user recovery decision on a separate task and verify it still counts. This
 browser journey remains manual.
 
+Cold-open verification: load Mine with its snapshot response delayed while
+approvals resolve. Only the stable list placeholder should appear until the
+initial sources settle; a failed-run row must not jump when tasks arrive. Release
+visible-row details separately and compare row/title bounds. Mine reads its own
+100-row snapshot with parent/run context; sidebar badges use the count endpoint.
+The [Inbox component checks](../../ui/src/pages/Inbox.test.tsx) cover the source
+barrier and selected-source query; [badge tests](../../server/src/__tests__/inbox-dismissals.test.ts)
+cover unread counts. Browser timing and layout proof remain separate from these tests.
+
 ### `decisions`
 
 Automated: [decision queues](../../server/src/__tests__/decision-queues-routes.test.ts) covers route behavior. End-to-end queue-to-source navigation is manual.
 
 Manual: Open a pending decision, follow its source, resolve it through the supported control, and reload the queue. Confirm it retires only after the decision persisted and unrelated pending items remain.
+
+Coordinator regression sources: [canonical history](../../server/src/__tests__/decision-history.test.ts)
+exercises real PostgreSQL cross-source pagination, answered-question retention,
+company/private-task isolation, and private v1 targets.
+[Attention service regressions](../../server/src/__tests__/attention-service.test.ts)
+cover pending question forms and confirmations in persistent agent chats, removal
+after an answer with retained history, and company/task-visibility/addressee checks.
+Idle chats without structured requests remain absent. The
+[Needs You component test](../../ui/src/components/coordinator/CoordinatorNeedsYou.test.tsx)
+checks that a chat-sourced canonical question reaches its original resolver and context.
+It also checks simultaneous resize/light and delayed movement to Recent Decisions.
+[Shared card-motion tests](../../ui/src/components/coordinator/CoordinatorTaskCommitment.test.tsx)
+cover reduced-motion settlement and returning to a resolved card without replay.
+The [decision-motion stories](../../ui/storybook/stories/design-proposals/coordinator-decision-motion.stories.tsx)
+exercise real Needs You/resolver components with isolated approval, question, and failed-save responses.
+[Projection helpers](../../ui/src/lib/coordinator-attention.test.ts) cover distinct
+pending task membership and presentation-only recency decay. Browser verification
+must additionally approve copy, approve a visual, and answer a question; confirm
+three retained receipts, task/chat consistency, resize/collapse motion, and exact
+task context on receipt click. Turning the setting off restores the classic surface.
 
 ### `search`
 

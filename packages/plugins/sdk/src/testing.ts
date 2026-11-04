@@ -1032,6 +1032,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     projects: {
+      async resolveGitCredential() {
+        requireCapability(manifest, capabilitySet, "projects.git-credentials");
+        throw new Error("Git credentials require a matching host project operation");
+      },
       async getInstanceSecrets(projectId, companyId) {
         requireCapability(manifest, capabilitySet, "projects.instance-secrets");
         requireCapability(manifest, capabilitySet, "events.subscribe");
@@ -2097,6 +2101,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     agents: {
+      async getRuntimeIdentity() {
+        requireCapability(manifest, capabilitySet, "agents.lifecycle.manage");
+        throw new Error("Agent runtime identity requires a host service fixture");
+      },
       async getRuntime() {
         requireCapability(manifest, capabilitySet, "agents.lifecycle.manage");
         throw new Error("Agent runtime state requires a host service fixture");

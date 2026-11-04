@@ -278,6 +278,7 @@ describe("Read-only cases list", () => {
     })));
     expect(container.querySelector('[data-testid="location"]')?.textContent).toBe("/PAP/cases?sort=title&dir=asc");
     await escape();
+    await waitFor(() => expect(document.activeElement).toBe(labelledButton("Sort")));
     await click(labelledButton("Group"));
     const type = [...document.body.querySelectorAll('[aria-label="Group cases"] button')]
       .find(element => element.textContent === "Type")!;

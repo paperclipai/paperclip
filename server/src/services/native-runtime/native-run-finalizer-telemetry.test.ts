@@ -1,5 +1,7 @@
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
+import { verifyCommittedReplayPayloadReads } from "./__tests__/helpers/committed-replay.js";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -34,6 +36,12 @@ const mockTelemetryClient = vi.hoisted(() => ({
 }));
 vi.mock("../../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
+const reconcileMuseAssignments = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../muse-runner-broker.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../muse-runner-broker.js")>(),
+  museRunnerBroker: () => ({ reconcileTerminalAssignments: reconcileMuseAssignments }),
+}));
+
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../../sentry.ts", async () => {
   const actual = await vi.importActual<typeof import("../../sentry.ts")>("../../sentry.ts");
@@ -64,7 +72,8 @@ import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION, type NativeStatusDecision } from "./status-arbiter.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_NATIVE_FINALIZER_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -82,8 +91,8 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
   let agentId: string;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-native-finalizer-telemetry-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-native-finalizer-telemetry-");
+    db = createDb(external ?? tempDb!.connectionString);
     companyId = randomUUID();
     agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Telemetry", issuePrefix: "TLM" });
@@ -97,6 +106,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
   }, 30_000);
 
   afterAll(async () => {
+    await db?.$client.end({ timeout: 1 });
     await tempDb?.cleanup();
   });
 
@@ -261,18 +271,23 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       projectRunStatus: true,
     });
 
-    const callsBefore = mockTelemetryClient.track.mock.calls.length;
-    // The coordinator is already "committed", so this second call takes the
-    // projectCommittedRun short-circuit. A succeeded row is eligible so stale
-    // cleanup errors can be projected separately; an unchanged terminal state
-    // must still never emit a second agent.task_run event.
-    await finalizeNativeRun({
-      db,
-      runId: fixture.runId,
-      workspaceFinalizeStatus: "succeeded",
-      projectRunStatus: true,
+    await verifyCommittedReplayPayloadReads(db, { runId: fixture.runId, companyId, agentId }, async () => {
+      const callsBefore = mockTelemetryClient.track.mock.calls.length;
+      reconcileMuseAssignments.mockClear();
+      await finalizeNativeRun({
+        db,
+        runId: fixture.runId,
+        workspaceFinalizeStatus: "succeeded",
+        projectRunStatus: true,
+      });
+      expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
+      expect(reconcileMuseAssignments).toHaveBeenCalledExactlyOnceWith(companyId, agentId, fixture.runId);
+      await db.insert(workspaceOperations).values({ companyId, issueId: fixture.issueId,
+        heartbeatRunId: fixture.runId, phase: "workspace_finalize", status: "succeeded" });
+      const reconciled = await reconcileNativeFinalizations(db, [fixture.runId]);
+      expect(reconciled).toContainEqual(expect.objectContaining({ runId: fixture.runId, phase: "committed" }));
+      expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
     });
-    expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
   });
 
   it("repairs a stale succeeded-run error once without duplicate telemetry or destroying retained owner evidence", async () => {
@@ -432,7 +447,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
         selection: any,
       ) => {
         const query = select(selection);
-        return selection?.resultJson === nativeRunResults.resultJson
+        return selection?.terminalState
           ? wrap(query)
           : query;
       }) as typeof db.select);
@@ -946,6 +961,26 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     );
     expect(alreadyEmittedByCommittedDecision).toBe(true);
     expect(agentTaskRunCalls(callsBefore)).toHaveLength(1);
+  });
+
+  it.each([true, false])("signals instruction collection only when native failure projects terminal status (%s)", async projectRunStatus => {
+    const fixture = await seedNativeRun();
+    await driveToCompleteResult(fixture);
+    const settled = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.instructionCollection, settled);
+    try {
+      await recordNativeFinalizationFailure({ db, runId: fixture.runId,
+        error: new Error("native_fixture_permanent_failure"), permanent: true, projectRunStatus });
+      expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, fixture.runId)))[0].phase).toBe("terminal_failure");
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+      if (projectRunStatus) {
+        expect(run.status).not.toBe("running");
+        expect(settled).toHaveBeenCalled();
+      } else {
+        expect(run.status).toBe("running");
+        expect(settled).not.toHaveBeenCalled();
+      }
+    } finally { unsubscribe(); }
   });
 
   it("signals durable accounting when native commitment or permanent failure makes a receipt actionable", async () => {

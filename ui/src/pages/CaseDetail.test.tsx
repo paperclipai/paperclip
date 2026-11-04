@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CaseDetail as CaseDetailData, CaseHandoffView } from "@/api/cases";
 import { ApiError } from "@/api/client";
+import { queryKeys } from "@/lib/queryKeys";
 import { CaseDetail } from "./CaseDetail";
 
 const cases = vi.hoisted(() => ({
@@ -260,6 +261,18 @@ describe("read-only CaseDetail", () => {
     expect(container.querySelector('a[href="/activity?entityType=case&entityId=case-1"]')?.textContent).toBe("View in Audit");
   });
 
+  it("keeps a loaded case visible after a transient background refresh fails", async () => {
+    render();
+    await waitFor(() => expect(container.textContent).toContain("Hermes agent launch post"));
+    cases.get.mockRejectedValue(new ApiError("Rate limited", 429, {}));
+    const client = clients.at(-1)!;
+    await client.refetchQueries({ queryKey: queryKeys.cases.detail("PAP-C7"), exact: true });
+    await waitFor(() => expect(client.getQueryState(queryKeys.cases.detail("PAP-C7"))?.status).toBe("error"));
+    await settle();
+    expect(container.textContent).toContain("Hermes agent launch post");
+    expect(container.querySelector('table[aria-label="Case fields"]')).not.toBeNull();
+    expect(container.textContent).not.toContain("Case not found");
+  });
   it("uses the same unavailable state for missing and inaccessible cases", async () => {
     cases.get.mockRejectedValue(new ApiError("Denied", 403, {}));
     render(); await waitFor(() => expect(container.textContent).toContain("Case not found"));

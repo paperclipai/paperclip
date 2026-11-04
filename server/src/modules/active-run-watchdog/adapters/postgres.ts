@@ -1,3 +1,11 @@
+import { notifyActiveRunSilence, notifyLiveRunRecovery, notifyLiveResourceRecovery } from "../../../services/live-run-recovery-notifications.js";
+import { notifyStatusCardIssueChange } from "../../../services/status-card-notifications.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../../services/delivery-work-notifications.js";
+import { notifyExternalAgentSettlement } from "../../external-agents/index.js";
+import { notifyNativeStatusReassessment } from "../../../services/native-status-reassessment-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../../../services/unsafe-workspace-export-notifications.js";
+import { notifyCancelledWorkspacePreservation } from "../../../services/cancelled-workspace-preservation-notifications.js";
+import { notifyInstructionCollection } from "../../../services/instruction-collection-notifications.js";
 import { and, asc, desc, eq, gt, gte, inArray, ne, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -94,6 +102,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
 
   async function findCandidateSilentRuns(input: {
     companyId?: string;
+    runId?: string;
     suspicionBefore: Date;
     issueCreatedAtGte?: Date | null;
   }): Promise<RunSnapshot[]> {
@@ -103,6 +112,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
       .where(
         and(
           input.companyId ? eq(heartbeatRuns.companyId, input.companyId) : undefined,
+          input.runId ? eq(heartbeatRuns.id, input.runId) : undefined,
           eq(heartbeatRuns.status, "running"),
           sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.processStartedAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) <= ${input.suspicionBefore.toISOString()}::timestamptz`,
         ),
@@ -276,8 +286,9 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
   }
 
   async function recordDecision(companyId: string, input: RecordDecisionInput): Promise<WatchdogDecisionRecord> {
-    const [row] = await db
-      .insert(heartbeatRunWatchdogDecisions)
+    const [row] = await db.transaction(async tx => {
+      await notifyActiveRunSilence(tx, { companyId, runId: input.runId });
+      return tx.insert(heartbeatRunWatchdogDecisions)
       .values({
         companyId,
         runId: input.runId,
@@ -290,6 +301,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
         createdByRunId: input.createdByRunId,
       })
       .returning();
+    });
 
     await logActivity(db, {
       companyId,
@@ -337,6 +349,14 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
     };
 
     const transactionResult = await db.transaction(async (tx) => {
+      await notifyLiveRunRecovery(tx, input.run);
+      await notifyLiveResourceRecovery(tx, input.run);
+      await notifyInstructionCollection(tx, { companyId, runId: input.run.id });
+      await notifyExternalAgentSettlement(tx, { companyId, runId: input.run.id });
+      await notifyCancelledWorkspacePreservation(tx, { companyId, runId: input.run.id });
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId, issueId: input.sourceIssue.id });
+      await notifyNativeStatusReassessment(tx, { companyId, issueId: input.sourceIssue.id });
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
       const [updatedRun] = await tx
         .update(heartbeatRuns)
         .set({
@@ -373,6 +393,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
           ));
       }
 
+      await notifyStatusCardIssueChange(tx, companyId);
       await tx
         .update(issues)
         .set({
@@ -480,6 +501,7 @@ export function createPostgresWatchdogAdapter(db: Db): WatchdogRunReader & Watch
         ));
       const runningCount = Number(runningCountRow?.count ?? 0);
       const nextAgentStatus = runningCount > 0 ? "running" : "idle";
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
       await tx
         .update(agents)
         .set({ status: nextAgentStatus, lastHeartbeatAt: new Date(), updatedAt: new Date() })

@@ -72,6 +72,23 @@ describe("configured environment authority", () => {
     expect(projected.PAPERCLIP_API_KEY).toBeUndefined();
   });
 
+  it("reserves Kimi credentials for the selected provider instead of the generic task projection", async () => {
+    const { createSanitizedAcpxSpawnInput } = await import("./drivers/acpx/environment.js");
+    const projected = configuredEnvironmentProjection({ KIMI_API_KEY: "selected-kimi-secret", CUSTOM_FLAG: "allowed" });
+    expect(projected.KIMI_API_KEY).toBeUndefined();
+    expect(JSON.parse(projected[CONFIGURED_ENVIRONMENT_KEYS]!)).toEqual(["CUSTOM_FLAG"]);
+    expect(() => configuredEnvironment({ [CONFIGURED_ENVIRONMENT_KEYS]: '["KIMI_API_KEY"]', KIMI_API_KEY: "selected-kimi-secret" }))
+      .toThrow("Invalid configured environment projection");
+    const selected = { ...projected, KIMI_API_KEY: "selected-kimi-secret" };
+    expect(createSanitizedCodexEnvironment(selected).KIMI_API_KEY).toBeUndefined();
+    for (const agent of ["claude", "codex", "grok", "cursor", "copilot"] as const) {
+      expect(createSanitizedAcpxSpawnInput(selected, agent).env.KIMI_API_KEY).toBeUndefined();
+    }
+    expect(createSanitizedAcpxSpawnInput(selected, "kimi").env).toMatchObject({ KIMI_API_KEY: "selected-kimi-secret", CUSTOM_FLAG: "allowed" });
+    // Pi already supports this credential through its explicit SDK allowlist.
+    expect(createSanitizedAcpxSpawnInput(selected, "pi").env.KIMI_API_KEY).toBe("selected-kimi-secret");
+  });
+
   it("does not accept an ambient projection in the provider or shell policy", () => {
     vi.stubEnv(CONFIGURED_ENVIRONMENT_KEYS, JSON.stringify(["PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY"]));
     vi.stubEnv("PAPERCLIP_PAGE_AWS_SECRET_ACCESS_KEY", "ambient-secret");
@@ -81,7 +98,7 @@ describe("configured environment authority", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
-  it.each(["not-json", "[1]", '["NODE_OPTIONS"]', '["PAPERCLIP_API_KEY"]', '["PAPERCLIP_RUNNER_BOOTSTRAP_TICKET"]', '["OPENAI_API_KEY"]', '["LD_PRELOAD"]', '["bad=name"]', '["CUSTOM","CUSTOM"]', '["MISSING"]'])
+  it.each(["not-json", "[1]", '["NODE_OPTIONS"]', '["PAPERCLIP_API_KEY"]', '["PAPERCLIP_RUNNER_BOOTSTRAP_TICKET"]', '["OPENAI_API_KEY"]', '["KIMI_API_KEY"]', '["LD_PRELOAD"]', '["bad=name"]', '["CUSTOM","CUSTOM"]', '["MISSING"]'])
     ("rejects malformed or reserved projection %s", raw => {
       expect(() => configuredEnvironment({ [CONFIGURED_ENVIRONMENT_KEYS]: raw })).toThrow("Invalid configured environment");
     });

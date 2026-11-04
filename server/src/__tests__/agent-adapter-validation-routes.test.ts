@@ -1,6 +1,7 @@
 import express from "express";
 import os from "node:os";
 import path from "node:path";
+import { readFile } from "node:fs/promises";
 import request from "supertest";
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import type { ServerAdapterModule } from "../adapters/index.js";
@@ -67,7 +68,7 @@ const mockApprovalService = vi.hoisted(() => ({
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(async () => ({ defaultEnvironmentId: null })),
   getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false })),
-  getExperimental: vi.fn(async (): Promise<{ enableNativeRunner: boolean; enableOpenAiDot?: boolean }> => ({ enableNativeRunner: false })),
+  getExperimental: vi.fn(async (): Promise<{ enableNativeRunner: boolean; enableOpenAiDot?: boolean; enableManagedSandboxOnly?: boolean }> => ({ enableNativeRunner: false })),
 }));
 
 const mockManagedAgentProfileService = vi.hoisted(() => ({
@@ -79,6 +80,8 @@ const mockRemoteAgentProfileService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockAntigravityModels = vi.hoisted(() => vi.fn());
+vi.mock("../services/antigravity-connection-models.js", () => ({ antigravityConnectionModels: mockAntigravityModels }));
 
 vi.mock("../services/index.js", () => ({
   agentService: () => mockAgentService,
@@ -114,6 +117,7 @@ vi.mock("../services/remote-agent-profiles.js", () => ({
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/antigravity-connection-models.js", () => ({ antigravityConnectionModels: mockAntigravityModels }));
   vi.doMock("../services/index.js", () => ({
     agentService: () => mockAgentService,
     agentInstructionsService: () => mockAgentInstructionsService,
@@ -242,6 +246,7 @@ async function unregisterTestAdapter(type: string) {
 
 describe("agent routes adapter validation", () => {
   beforeEach(async () => {
+    vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", undefined);
     vi.resetModules();
     vi.doUnmock("../routes/agents.js");
     vi.doUnmock("../routes/authz.js");
@@ -263,6 +268,7 @@ describe("agent routes adapter validation", () => {
     mockAccessService.setPrincipalPermission.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue(undefined);
+    mockInstanceSettingsService.get.mockResolvedValue({ defaultEnvironmentId: null });
     mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: false });
     mockManagedAgentProfileService.requireQualified.mockResolvedValue({
       id: "managed-primary",
@@ -334,9 +340,99 @@ describe("agent routes adapter validation", () => {
     await unregisterTestAdapter(missingAdapterType);
   });
 
+  it("round-trips the protected YAML projection and forwards its revision to the write lock", async () => {
+    const existing = {
+      ...(await mockAgentService.getById()),
+      adapterConfig: { model: "old", removeMe: true, env: { DEMO_VALUE: "private-fixture" } },
+      metadata: { token: "private-metadata-fixture" },
+    };
+    mockAgentService.getById.mockResolvedValue(existing);
+    const app = await createApp();
+    const loaded = await requestApp(app, base => request(base).get(`/api/agents/${existing.id}/configuration`));
+    expect(loaded.status).toBe(200);
+    expect(loaded.body.configurationRevision).toMatch(/^[a-f0-9]{64}$/);
+    expect(JSON.stringify(loaded.body)).not.toContain("private-fixture");
+    expect(JSON.stringify(loaded.body)).not.toContain("private-metadata-fixture");
+    const adapterConfig = { ...loaded.body.adapterConfig, model: "new" };
+    delete adapterConfig.removeMe;
+    const saved = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      adapterConfig, replaceAdapterConfig: true, metadata: { ...loaded.body.metadata, label: "new" },
+      expectedConfigurationRevision: loaded.body.configurationRevision,
+    }));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(mockAgentService.update).toHaveBeenCalledWith(existing.id, expect.objectContaining({
+      adapterConfig: expect.objectContaining({ model: "new", env: existing.adapterConfig.env }),
+      metadata: { ...existing.metadata, label: "new" },
+    }), expect.objectContaining({ expectedConfigurationRevision: loaded.body.configurationRevision }));
+    expect(mockAgentService.update.mock.calls[0][1].adapterConfig).not.toHaveProperty("removeMe");
+    expect(saved.body.configurationRevision).not.toBe(loaded.body.configurationRevision);
+    expect(JSON.stringify(saved.body)).not.toContain("private-fixture");
+    expect(JSON.stringify(saved.body)).not.toContain("private-metadata-fixture");
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "agent.updated" }));
+  });
+
+  it("rejects stale and unauthorized YAML saves before calling the update service", async () => {
+    const existing = await mockAgentService.getById();
+    const app = await createApp();
+    const loaded = await requestApp(app, base => request(base).get(`/api/agents/${existing.id}/configuration`));
+    const stale = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      title: "Stale", expectedConfigurationRevision: "0".repeat(64),
+    }));
+    expect(stale.status).toBe(409);
+    mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "deny_missing_grant", explanation: "No configuration permission" });
+    const denied = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      title: "Denied", expectedConfigurationRevision: loaded.body.configurationRevision,
+    }));
+    expect(denied.status).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("routes narrow roster edits through authorization, config merging and audit history", async () => {
+    const existing = { ...(await mockAgentService.getById()), adapterConfig: { model: "old", cwd: "/workspace" }, runtimeConfig: { heartbeat: { intervalSec: 900 } } };
+    mockAgentService.getById.mockResolvedValue(existing);
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({ runtimeSettings: {
+      harness: "codex_local", model: "new", expected: { model: "old", aiConnection: null },
+    } }));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body.adapterConfig).toMatchObject({ model: "new", cwd: "/workspace" });
+    expect(response.body.runtimeConfig).toEqual(existing.runtimeConfig);
+    expect(mockAgentService.update).toHaveBeenCalledWith(existing.id, expect.not.objectContaining({ runtimeSettings: expect.anything() }), expect.objectContaining({ expectedConfiguration: expect.objectContaining({ adapterConfig: existing.adapterConfig }), recordRevision: expect.anything() }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "agent.updated", entityId: existing.id }));
+  });
+
+  it("refuses a roster edit without configuration permission", async () => {
+    mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "deny_missing_grant", explanation: "No configuration permission" });
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).patch("/api/agents/11111111-1111-4111-8111-111111111111").send({ runtimeSettings: {
+      harness: "codex_local", model: "new", expected: { model: null, aiConnection: null },
+    } }));
+    expect(response.status).toBe(403);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
   afterEach(async () => {
+    vi.unstubAllEnvs();
     await unregisterTestAdapter("external_test");
     await unregisterTestAdapter(missingAdapterType);
+  });
+
+  it("omits the default marker from the native Grok catalog while retaining Legacy defaults", async () => {
+    const adapters = await import("../adapters/index.js");
+    const models = [{ id: "grok-build", label: "Default" }, { id: "grok-4.7", label: "Grok 4.7" }];
+    const list = vi.spyOn(adapters, "listAdapterModels").mockResolvedValue(models);
+    const refresh = vi.spyOn(adapters, "refreshAdapterModels").mockResolvedValue(models);
+    try {
+      const app = await createApp();
+      for (const suffix of ["", "&refresh=true"]) {
+        const native = await requestApp(app, baseUrl => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx&acpxAgent=grok${suffix}`));
+        expect(native.status).toBe(200);
+        expect(native.body).toEqual([models[1]]);
+        const legacy = await requestApp(app, baseUrl => request(baseUrl).get(`/api/companies/company-1/adapters/grok_local/models?refresh=${Boolean(suffix)}`));
+        expect(legacy.status).toBe(200);
+        expect(legacy.body).toEqual(models);
+      }
+    } finally { list.mockRestore(); refresh.mockRestore(); }
   });
 
   it("selects and refreshes the runner provider catalog independently", async () => {
@@ -345,7 +441,7 @@ describe("agent routes adapter validation", () => {
     const refresh = vi.spyOn(adapters, "refreshAdapterModels").mockImplementation(async (type) => [{ id: `${type}-fresh`, label: type }]);
     try {
       const app = await createApp();
-      for (const [provider, adapter] of [["acpx", "claude_local"], ["codex", "codex_local"], ["opencode", "opencode_local"]]) {
+      for (const [provider, adapter] of [["acpx", "claude_local"], ["acpx&acpxAgent=grok", "grok_local"], ["codex", "codex_local"], ["opencode", "opencode_local"]]) {
         const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=${provider}`));
         expect(res.status).toBe(200);
         expect(res.body).toEqual([{ id: adapter, label: adapter }]);
@@ -356,6 +452,77 @@ describe("agent routes adapter validation", () => {
       const invalid = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx_codex"));
       expect(invalid.status).toBe(422);
     } finally { list.mockRestore(); refresh.mockRestore(); }
+  });
+
+  it("loads setup-only Antigravity account metadata without consulting another harness", async () => {
+    const adapters = await import("../adapters/index.js");
+    const list = vi.spyOn(adapters, "listAdapterModels");
+    const refresh = vi.spyOn(adapters, "refreshAdapterModels");
+    const catalog = [{ id: "caller-exact-google-model", label: "Google account model" }];
+    mockAntigravityModels.mockResolvedValue(catalog);
+    try {
+      const app = await createApp();
+      for (const suffix of ["", "&refresh=true"]) {
+        const response = await requestApp(app, base => request(base).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx&acpxAgent=antigravity${suffix}`));
+        expect(response.status, JSON.stringify(response.body)).toBe(200);
+        expect(response.body).toEqual(catalog);
+        expect(mockAntigravityModels).toHaveBeenLastCalledWith(expect.anything(), expect.objectContaining({
+          companyId: "company-1", binding: { provider: "google", method: "subscription", mode: "responsible_user" },
+        }));
+      }
+      expect(list).not.toHaveBeenCalled();
+      expect(refresh).not.toHaveBeenCalled();
+    } finally { list.mockRestore(); refresh.mockRestore(); }
+  });
+
+  it("refuses another provider binding before Antigravity model discovery", async () => {
+    const app = await createApp();
+    const binding = encodeURIComponent(JSON.stringify({ provider: "openai", method: "subscription", mode: "responsible_user" }));
+    const response = await requestApp(app, base => request(base).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx&acpxAgent=antigravity&aiConnection=${binding}`));
+    expect(response.status).toBe(422);
+    expect(response.body.error).toContain("Google runtime connection");
+    expect(mockAntigravityModels).not.toHaveBeenCalled();
+  });
+
+  it.each(["create", "hire", "edit"])("refuses pending Antigravity %s before persistence", async action => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const app = await createApp();
+    const adapterConfig = { provider: "acpx", acpxAgent: "antigravity", model: "exact-antigravity-model" };
+    const response = action === "edit"
+      ? await requestApp(app, base => request(base).patch("/api/agents/11111111-1111-4111-8111-111111111111").send({ adapterType: "paperclip_runner", adapterConfig }))
+      : await requestApp(app, base => request(base).post(`/api/companies/company-1/${action === "hire" ? "agent-hires" : "agents"}`).send({ name: "Antigravity", adapterType: "paperclip_runner", adapterConfig }));
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body.details).toMatchObject({ code: "paperclip_runner_acpx_agent_unavailable" });
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it.runIf(process.platform === "darwin" && process.arch === "arm64")("saves only the exact company-authorized Antigravity candidate without persisting operator authority", async () => {
+    const [{ QUALIFIED_ACPX_PROFILES }, distributionJson] = await Promise.all([
+      import("../vendor/paperclip-runner/index.js"),
+      readFile(new URL("../../../packages/paperclip-runner/antigravity-distributions.json", import.meta.url), "utf8"),
+    ]);
+    const distributions = JSON.parse(distributionJson);
+    const adapterConfig = { provider: "acpx", acpxAgent: "antigravity", model: "exact-antigravity-model" };
+    const admission = { schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-1", agent: "antigravity",
+      model: adapterConfig.model, profileDigest: QUALIFIED_ACPX_PROFILES.antigravity.commandDigest,
+      nativeClosureDigest: `sha256:${distributions.platforms["darwin-arm64"].closureSha256}`,
+      platform: "darwin", architecture: "arm64", expiresAt: Date.now() + 60_000 };
+    vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", JSON.stringify(admission));
+    const app = await createApp();
+    const created = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send({ name: "Antigravity candidate", adapterType: "paperclip_runner", adapterConfig }));
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(mockAgentService.create).toHaveBeenCalledWith("company-1", expect.objectContaining({ adapterConfig: expect.objectContaining(adapterConfig) }), expect.any(Object));
+    expect(JSON.stringify(mockAgentService.create.mock.calls)).not.toContain("paperclip.acpx-candidate-admission");
+    expect(QUALIFIED_ACPX_PROFILES.antigravity.qualificationStatus).toBe("pending");
+    mockAgentService.create.mockClear();
+    for (const changed of [{ ...admission, companyId: "another-company" }, { ...admission, model: "another-model" }]) {
+      vi.stubEnv("PAPERCLIP_ACPX_CANDIDATE_ADMISSION", JSON.stringify(changed));
+      const denied = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send({ name: "Antigravity candidate", adapterType: "paperclip_runner", adapterConfig }));
+      expect(denied.status, JSON.stringify(denied.body)).toBe(422);
+    }
+    expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
   it("creates agents for dynamically registered external adapter types", async () => {
@@ -722,7 +889,7 @@ describe("agent routes adapter validation", () => {
       const app = await createApp();
       const res = await requestApp(app, baseUrl => request(baseUrl)
         .post("/api/companies/company-1/adapters/paperclip_runner/test-environment")
-        .send({ agentId: "11111111-1111-4111-8111-111111111111", adapterConfig: { provider: "acpx", acpxAgent: "grok" } }));
+        .send({ agentId: "11111111-1111-4111-8111-111111111111", adapterConfig: { provider: "acpx", acpxAgent: "cursor" } }));
       expect(res.status, JSON.stringify(res.body)).toBe(422);
       expect(res.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
       expect(probe).not.toHaveBeenCalled();
@@ -793,6 +960,46 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.create).not.toHaveBeenCalled();
   });
 
+  it("selects the native Cursor API controller from the ordinary held Cloud setup card without a Computer", async () => {
+    const settings = { defaultEnvironmentId: null, experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
+    mockInstanceSettingsService.get.mockResolvedValue(settings);
+    mockInstanceSettingsService.getExperimental.mockResolvedValue(settings.experimental);
+    const environments = await import("../services/environments.js");
+    const findManaged = vi.fn(async () => null);
+    const getEnvironment = vi.fn(async () => null);
+    vi.spyOn(environments, "environmentService").mockReturnValue({ findManagedSandboxEnvironment: findManaged,
+      getById: getEnvironment, listBoundCompanyIds: vi.fn(async () => []) } as never);
+    const existing = { ...(await mockAgentService.getById()), adapterType: "process", adapterConfig: {},
+      status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] };
+    mockAgentService.getById.mockResolvedValue(existing);
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      name: "Cursor setup", adapterType: "cursor_cloud", runner: "auto", adapterConfig: {}, metadata: { setupAdapterPending: false },
+    }));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] });
+    expect(mockAgentService.update).toHaveBeenCalledWith(existing.id, expect.objectContaining({
+      adapterType: "paperclip_runner", defaultEnvironmentId: null,
+      adapterConfig: expect.objectContaining({ provider: "cursor_cloud", lifecycleMode: "per_turn" }),
+    }), expect.anything());
+    expect(findManaged).not.toHaveBeenCalled();
+    expect(getEnvironment).not.toHaveBeenCalled();
+    mockAgentService.update.mockClear();
+    mockAgentService.getById.mockResolvedValue({ ...existing, status: "idle", lifecycleState: "ready", pauseReason: null, lifecycleHolds: [] });
+    const active = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      adapterType: "cursor_cloud", runner: "auto", adapterConfig: {}, setupOnly: true,
+    }));
+    expect(active.status).toBe(422);
+    expect(active.body.details?.code).toBe("managed_sandbox_unavailable");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+    const incompleteActive = await requestApp(app, base => request(base).patch(`/api/agents/${existing.id}`).send({
+      adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: { provider: "cursor_cloud" }, setupOnly: true,
+    }));
+    expect(incompleteActive.status).toBe(422);
+    expect(incompleteActive.body.details?.code).toBe("paperclip_runner_cursor_cloud_model_required");
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
   it.each(["auto", "legacy"] as const)("creates Pi through the public route with %s selection and the experimental flag off", async runner => {
     const selection = await import("../services/agent-runner-selection.js");
     vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
@@ -836,6 +1043,52 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "" } });
   });
 
+  it("keeps Kimi draft models unset through the public create route", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const originalCreate = mockAgentService.create.getMockImplementation()!;
+    mockAgentService.create.mockImplementation(async (...args) => ({ ...await originalCreate(...args), lifecycleHolds: ["setup"] }));
+    const app = await createApp();
+    const input = { name: "Kimi draft", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi" } };
+    const draft = await requestApp(app, base => request(base).post("/api/companies/company-1/agents")
+      .send({ ...input, setupId: "00000000-0000-4000-8000-000000000092" }));
+    expect(draft.status, JSON.stringify(draft.body)).toBe(201);
+    const saved = mockAgentService.create.mock.calls.at(-1)?.[1];
+    expect(saved).toMatchObject(input);
+    expect(saved.adapterConfig.model).toBeUndefined();
+    expect(mockAgentService.create.mock.calls.at(-1)?.[2]).toMatchObject({ setupOnly: true, runnerResolved: true });
+    mockAgentService.create.mockClear();
+    const active = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send(input));
+    expect(active.status).toBe(422);
+    expect(mockAgentService.create).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["process", undefined, ""],
+    ["kimi_local", "kimi-for-coding", "kimi-for-coding"],
+    ["pi_local", "openrouter/anthropic/claude-sonnet-4.6", ""],
+  ] as const)("preserves Kimi model selection only from the same harness: %s", async (previousAdapterType, previousModel, expectedModel) => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    mockAgentService.getById.mockResolvedValue({ ...(await mockAgentService.getById()), adapterType: previousAdapterType,
+      adapterConfig: previousModel === undefined ? {} : { model: previousModel },
+      status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] });
+    const app = await createApp();
+    const response = await requestApp(app, base => request(base).patch("/api/agents/11111111-1111-4111-8111-111111111111")
+      .send({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "kimi" } }));
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toMatchObject({ adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "kimi", model: expectedModel } });
+  });
+
+  it("persists an explicit Kimi model through the public create route", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true });
+    const app = await createApp();
+    const input = { name: "Kimi", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "acpx", acpxAgent: "kimi", model: "kimi-for-coding" } };
+    const response = await requestApp(app, base => request(base).post("/api/companies/company-1/agents").send(input));
+    expect(response.status, JSON.stringify(response.body)).toBe(201);
+    expect(mockAgentService.create.mock.calls.at(-1)?.[1]).toMatchObject(input);
+  });
+
   it.each([{ thinking: "high", status: 200 }, { thinking: "medium", status: 422 }, { command: "custom-pi", status: 422 }])("validates saved Pi settings during direct adapter conversion: %j", async ({ status, ...settings }) => {
     const selection = await import("../services/agent-runner-selection.js");
     vi.spyOn(selection, "resolveNewAgentRunnerForCompany").mockImplementation(async (_db, _companyId, input) =>
@@ -851,7 +1104,7 @@ describe("agent routes adapter validation", () => {
 
   it("keeps other native provider selection behind its existing flag", async () => {
     const app = await createApp();
-    const response = await requestApp(app, baseUrl => request(baseUrl).post("/api/companies/company-1/agents").send({ name: "Native Grok", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "openrouter/deepseek/deepseek-v4-flash-0731" } }));
+    const response = await requestApp(app, baseUrl => request(baseUrl).post("/api/companies/company-1/agents").send({ name: "Native Cursor", adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "cursor", model: "provider-model" } }));
     expect(response.status).toBe(422);
     expect(response.body.details).toMatchObject({ code: "paperclip_runner_rollout_disabled" });
   });
@@ -893,6 +1146,34 @@ describe("agent routes adapter validation", () => {
       expect.any(Object),
       expect.objectContaining({ entryFile: "AGENTS.md", replaceExisting: false }),
     );
+  });
+
+  it("saves and reopens native Cursor API setup under managed-only policy without a Computer", async () => {
+    mockInstanceSettingsService.getExperimental.mockResolvedValue({ enableNativeRunner: true, enableManagedSandboxOnly: true });
+    let existing = { ...(await mockAgentService.getById()), adapterType: "cursor_cloud", adapterConfig: {}, defaultEnvironmentId: "33333333-3333-4333-8333-333333333333",
+      status: "paused", lifecycleState: "paused", pauseReason: "setup", lifecycleHolds: ["setup"] };
+    mockAgentService.getById.mockImplementation(async () => existing);
+    mockAgentService.update.mockImplementation(async (_id, patch) => { existing = { ...existing, ...patch }; return existing; });
+    const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo", repoStartingRef: "feature",
+      env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "22222222-2222-4222-8222-222222222222", version: "latest" } } };
+    const app = await createApp();
+    const saved = await requestApp(app, baseUrl => request(baseUrl).patch(`/api/agents/${existing.id}`)
+      .send({ adapterType: "cursor_cloud", runner: "paperclip", adapterConfig: config }));
+    expect(saved.status, JSON.stringify(saved.body)).toBe(200);
+    expect(saved.body).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: {
+      provider: "cursor_cloud", model: config.model, repoUrl: config.repoUrl, repoRef: "feature", env: config.env, lifecycleMode: "per_turn",
+    } });
+    expect(saved.body.adapterConfig).not.toHaveProperty("codexPermissionMode");
+    expect(saved.body.defaultEnvironmentId).toBeNull();
+    const reopened = await requestApp(app, baseUrl => request(baseUrl).get(`/api/agents/${existing.id}/configuration`));
+    expect(reopened.status, JSON.stringify(reopened.body)).toBe(200);
+    expect(reopened.body.adapterConfig).toEqual(saved.body.adapterConfig);
+    const resaved = await requestApp(app, baseUrl => request(baseUrl).patch(`/api/agents/${existing.id}`)
+      .send({ adapterType: "paperclip_runner", runner: "paperclip", adapterConfig: reopened.body.adapterConfig }));
+    expect(resaved.status, JSON.stringify(resaved.body)).toBe(200);
+    const { resolvePaperclipRunnerNativeProviderInput } = await import("../services/native-runtime/provider-profile.js");
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "cursor_cloud_api", adapterConfig: resaved.body.adapterConfig }))
+      .toMatchObject({ provider: "cursor_cloud", model: config.model, cursorCloud: { repos: [{ url: config.repoUrl, startingRef: "feature" }] } });
   });
 
   it.each(["dotAttachmentAccess", "dotWorkspaceAccess", "dotBindingId", "homeMode"])("refuses an agent granting itself the operator-owned setting %s", async key => {
@@ -997,6 +1278,43 @@ describe("agent routes adapter validation", () => {
     expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toMatchObject({ adapterConfig: { provider: "codex" } });
   });
 
+  it.each([{ maxTurns: 5 }, { disableWebSearch: "invalid" }])("rejects a direct Grok conversion with incompatible saved settings %j", async unsupported => {
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({ ...existing, adapterType: "grok_local",
+      adapterConfig: { model: "grok-4.7", reasoningEffort: "high", ...unsupported } });
+    const app = await createApp();
+    const res = await requestApp(app, baseUrl => request(baseUrl).patch(`/api/agents/${existing.id}`)
+      .send({ adapterType: "paperclip_runner" }));
+    expect(res.status, JSON.stringify(res.body)).toBe(422);
+    expect(mockAgentService.update).not.toHaveBeenCalled();
+  });
+
+  it("translates compatible settings during a direct Grok conversion", async () => {
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({ ...existing, adapterType: "grok_local",
+      adapterConfig: { model: "grok-4.7", reasoningEffort: "high", command: "grok", disableWebSearch: true } });
+    const app = await createApp();
+    const res = await requestApp(app, baseUrl => request(baseUrl).patch(`/api/agents/${existing.id}`)
+      .send({ adapterType: "paperclip_runner" }));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const saved = mockAgentService.update.mock.calls.at(-1)?.[1];
+    expect(saved).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", reasoningEffort: "high", disableWebSearch: true } });
+    expect(saved.adapterConfig).not.toHaveProperty("command");
+  });
+
+  it.each([undefined, "acpx"])("preserves an explicitly selected ACPX agent when converting Grok (provider: %s)", async provider => {
+    const existing = await mockAgentService.getById();
+    mockAgentService.getById.mockResolvedValue({ ...existing, adapterType: "grok_local", adapterConfig: { model: "grok-4.7" } });
+    const app = await createApp();
+    const res = await requestApp(app, baseUrl => request(baseUrl).patch(`/api/agents/${existing.id}`)
+      .send({ adapterType: "paperclip_runner", replaceAdapterConfig: true,
+        adapterConfig: { ...(provider ? { provider } : {}), acpxAgent: "claude", model: "claude-opus-5-5" } }));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockAgentService.update.mock.calls.at(-1)?.[1]).toMatchObject({
+      adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" },
+    });
+  });
+
   it.each(["codex_local", "claude_local"])("upgrades an existing %s through runner selection with its saved settings", async adapterType => {
     const existing = await mockAgentService.getById();
     const env = { MIGRATION_MARKER: { type: "plain", value: "keep" } };
@@ -1032,6 +1350,24 @@ describe("agent routes adapter validation", () => {
     expect(res.body.details).toMatchObject({ code: "agent_runner_config_incompatible", fields: ["extraArgs"] });
     expect(mockAgentService.update).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalled();
+  });
+
+  it("upgrades a legacy Claude agent with a turn limit, warning instead of rejecting it", async () => {
+    const existing = await mockAgentService.getById();
+    const env = { ANTHROPIC_API_KEY: { type: "plain", value: "synthetic-fixture" } };
+    mockAgentService.getById.mockResolvedValue({ ...existing, adapterType: "claude_local",
+      adapterConfig: { model: "claude-opus-5-5", effort: "high", maxTurnsPerRun: 1000,
+        dangerouslySkipPermissions: true, timeoutSec: 0, graceSec: 15, env } });
+    const app = await createApp();
+    const res = await requestApp(app, baseUrl => request(baseUrl)
+      .patch(`/api/agents/${existing.id}`).send({ runner: "paperclip" }));
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    const patch = mockAgentService.update.mock.calls[0][1];
+    expect(patch.adapterType).toBe("paperclip_runner");
+    expect(patch.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5",
+      modelReasoningEffort: "high", acpxPermissionMode: "approve-all", timeoutSec: 0, graceSec: 15, env });
+    expect(patch.adapterConfig).not.toHaveProperty("maxTurnsPerRun");
+    expect(res.body.configurationWarnings).toEqual([expect.objectContaining({ field: "maxTurnsPerRun", code: "runner_option_ignored" })]);
   });
 
   it("normalizes legacy skills and permissions when switching to paperclip_runner", async () => {

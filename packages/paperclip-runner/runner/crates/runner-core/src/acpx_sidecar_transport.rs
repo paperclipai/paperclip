@@ -14,6 +14,7 @@ use crate::local_runner::LocalRunnerError;
 use crate::process_supervisor::{
     BoundedLogBuffer, ProcessOutput, SupervisedProcess, VerifiedProcessLaunch,
 };
+use crate::provider_failure::validated_provider_failure;
 use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE_ID_CHARS};
 
 pub const ACPX_SIDECAR_MAX_FRAME_BYTES: usize = 1024 * 1024;
@@ -216,6 +217,11 @@ impl AcpxSidecarTransport {
             "pi" => &[],
             "cursor" => &["CURSOR_API_KEY", "CURSOR_AUTH_TOKEN"],
             "copilot" => &["COPILOT_GITHUB_TOKEN"],
+            "kimi" => &["KIMI_API_KEY"],
+            "antigravity" => &[
+                "GEMINI_API_KEY",
+                "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET",
+            ],
             _ => {
                 return Err(LocalRunnerError::invalid(
                     "ACPX sidecar credentials require a known agent profile",
@@ -250,13 +256,18 @@ impl AcpxSidecarTransport {
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT",
             "PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST",
         ];
-        if matches!(agent, "pi" | "cursor" | "copilot") {
+        if matches!(agent, "pi" | "cursor" | "copilot" | "kimi" | "antigravity") {
             // Credential values alone are not proof of an explicit task binding.
             // The sidecar checks this controller-minted provider/session marker.
             keys.push("PAPERCLIP_ACPX_CREDENTIAL_BINDING");
         }
         if agent == "claude" {
             keys.extend_from_slice(&[
+                // Launcher/controller-owned helper paths; credentials stay behind the broker.
+                "BASH_ENV",
+                "ZDOTDIR",
+                "GH_CONFIG_DIR",
+                "PAPERCLIP_GITHUB_LAUNCHER_DIR",
                 "ANTHROPIC_BASE_URL",
                 "CLAUDE_CODE_ENABLE_TELEMETRY",
                 "CLAUDE_CODE_ENHANCED_TELEMETRY_BETA",
@@ -302,6 +313,8 @@ impl AcpxSidecarTransport {
                 "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
                 "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT",
                 "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
+                "OTEL_EXPORTER_OTLP_LOGS_HEADERS",
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
             ]);
         }
         let pi_keys = if agent == "pi" {
@@ -324,6 +337,10 @@ impl AcpxSidecarTransport {
                 "XDG_DATA_HOME",
                 "XDG_CACHE_HOME",
             ]);
+        }
+        if agent == "claude" && std::env::var_os("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME").is_some()
+        {
+            keys.push("PAPERCLIP_RUNNER_PREPARED_HARNESS_HOME");
         }
         keys.extend_from_slice(credential_keys);
         // Pi owns a native distribution copy, including a pending refresh at
@@ -501,6 +518,7 @@ impl AcpxSidecarTransport {
                         ));
                     }
                     let error = response.error.expect("failed response has validated error");
+                    let provider_failure = error.provider_failure.clone();
                     return Ok(CommandOutcome::Rejected(LocalRunnerError::invalid(
                         format!(
                             "ACPX sidecar command {} was rejected (retryable={}, classification={})",
@@ -508,7 +526,7 @@ impl AcpxSidecarTransport {
                             error.retryable,
                             response_error_classification(&error),
                         ),
-                    )));
+                    ).with_provider_failure(provider_failure)));
                 }
             }
         }
@@ -708,11 +726,13 @@ struct ResponseFrame {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ResponseError {
     code: String,
     message: String,
     retryable: bool,
+    #[serde(default)]
+    provider_failure: Option<Value>,
 }
 
 #[derive(Deserialize)]
@@ -889,8 +909,43 @@ fn stderr_diagnostic_categories(value: &str) -> BTreeSet<&'static str> {
     categories
 }
 
+// A typed ensure rejection names its provider-failure category, so a limit at
+// session start is distinguishable from other startup failures. Only the
+// schema-validated enum crosses here, never the cause's text.
+fn typed_provider_classification(error: &ResponseError) -> Option<&'static str> {
+    let failure = validated_provider_failure(error.provider_failure.clone())?;
+    Some(match failure.get("category")?.as_str()? {
+        "rate_limit" => "provider_rate_limit",
+        "quota_exhausted" => "provider_quota_exhausted",
+        "authentication" => "provider_authentication",
+        "permission" => "provider_permission",
+        "model_unavailable" => "provider_model_unavailable",
+        "invalid_request" => "provider_invalid_request",
+        "overloaded" => "provider_overloaded",
+        "timeout" => "provider_timeout",
+        _ => return None,
+    })
+}
+
 fn response_error_classification(error: &ResponseError) -> &'static str {
     match error.code.as_str() {
+        "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING" => return "grok_effort_acknowledgement_missing",
+        "GROK_EFFORT_MISMATCH" => return "grok_effort_mismatch",
+        "GROK_MODEL_MISMATCH" => return "grok_model_mismatch",
+        "GROK_SESSION_MISMATCH" => return "grok_session_mismatch",
+        "GROK_CONFIGURATION_CONFLICT" => return "grok_configuration_conflict",
+        "GROK_CONFIGURATION_DRIFT" => return "grok_configuration_drift",
+        "GROK_ADMISSION_PROTOCOL_VIOLATION" => return "grok_admission_protocol_violation",
+        "ACPX_ADMISSION_BINDING" => return "admission_binding",
+        "ACPX_ADMISSION_INSTALLATION" => return "admission_installation",
+        "ACPX_ADMISSION_SANDBOX" => return "admission_sandbox",
+        "ACPX_ADMISSION_CREDENTIAL" => return "admission_credential",
+        "ACPX_ADMISSION_CONFIGURATION" => return "admission_configuration",
+        "ACPX_ADMISSION_SKILLS" => return "admission_skills",
+        "ACPX_ADMISSION_COMMAND" => return "admission_command",
+        "ACPX_ADMISSION_TOOL_BRIDGE" => return "admission_tool_bridge",
+        "ACPX_ADMISSION_RUNTIME" => return "admission_runtime",
+        "ACPX_ADMISSION_IDENTITY" => return "admission_identity",
         "ACPX_RUNTIME_PACKAGE_MISSING" => return "runtime_package_missing",
         "ACP_MODEL_UNSUPPORTED" => return "requested_model_unsupported",
         "AGENT_STARTUP_FAILED" => return "agent_startup_failed",
@@ -919,7 +974,9 @@ fn response_error_classification(error: &ResponseError) -> &'static str {
         "SESSION_CONFIG_OPTION_REPLAY_FAILED" => return "session_config_option_replay_failed",
         "CLAUDE_ACP_SESSION_CREATE_TIMEOUT" => return "claude_session_create_timeout",
         "ACPX_SESSION_HANDSHAKE_TIMEOUT" => return "session_handshake_timeout",
-        "ACPX_SESSION_ENSURE_FAILED" => return "session_ensure_failed",
+        "ACPX_SESSION_ENSURE_FAILED" => {
+            return typed_provider_classification(error).unwrap_or("session_ensure_failed")
+        }
         "ACPX_SESSION_ENSURE_TYPE_ERROR" => return "session_ensure_type_error",
         "ACPX_SESSION_ENSURE_NON_ERROR" => return "session_ensure_non_error",
         "ACP_SESSION_INIT_FAILED" => return "acp_session_init_failed",
@@ -1043,6 +1100,46 @@ mod tests {
     use super::*;
 
     #[test]
+    #[cfg(unix)]
+    fn managed_claude_helpers_reach_the_sidecar_without_host_credentials() {
+        const CHILD: &str = "PAPERCLIP_TEST_MANAGED_HELPER_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "acpx_sidecar_transport::tests::managed_claude_helpers_reach_the_sidecar_without_host_credentials"])
+                .env_clear()
+                .env(CHILD, "1")
+                .env("PATH", "/usr/bin:/bin")
+                .env("BASH_ENV", "/managed/.bashrc")
+                .env("ZDOTDIR", "/managed")
+                .env("GH_CONFIG_DIR", "/managed")
+                .env("PAPERCLIP_GITHUB_LAUNCHER_DIR", "/managed")
+                .env("GH_TOKEN", "unbound-secret")
+                .env("PAPERCLIP_GITHUB_BROKER_TOKEN", "unbound-capability")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+            return;
+        }
+        let config = AcpxSidecarTransportConfig {
+            command: PathBuf::from("/bin/sh"),
+            args: vec!["-c".into(), "printf '%s|%s|%s|%s|%s|%s\\n' \"$BASH_ENV\" \"$ZDOTDIR\" \"$GH_CONFIG_DIR\" \"$PAPERCLIP_GITHUB_LAUNCHER_DIR\" \"$GH_TOKEN\" \"$PAPERCLIP_GITHUB_BROKER_TOKEN\"".into()],
+            verified_launch: None,
+            request_timeout: Duration::from_secs(1),
+            shutdown_grace: Duration::from_millis(100),
+        };
+        let mut transport = AcpxSidecarTransport::start_for_agent(&config, "claude").unwrap();
+        let line = transport
+            .receive_stdout_line(Duration::from_secs(2), "managed-helper test")
+            .unwrap()
+            .expect("sidecar did not report its environment");
+        assert_eq!(line, "/managed/.bashrc|/managed|/managed|/managed||");
+    }
+
+    #[test]
     fn parse_frame_does_not_echo_untrusted_deserialization_details() {
         let cases = [
             (
@@ -1103,6 +1200,7 @@ mod tests {
                     "private-token-canary COPILOT_AUTH_REQUIRED https://user:secret@example.invalid"
                         .to_owned(),
                 retryable: false,
+                provider_failure: None,
             };
             let classification = response_error_classification(&error);
             assert_eq!(classification, expected);
@@ -1112,12 +1210,76 @@ mod tests {
     }
 
     #[test]
+    fn session_ensure_names_only_a_typed_provider_category() {
+        let ensure = |provider_failure: Option<Value>| ResponseError {
+            code: "ACPX_SESSION_ENSURE_FAILED".to_owned(),
+            message: "private-token-canary".to_owned(),
+            retryable: false,
+            provider_failure,
+        };
+        let cause = |category: &str| {
+            json!({ "schema": "paperclip.provider-failure.v1", "provider": "anthropic", "phase": "startup",
+                "category": category, "message": "private-token-canary", "retryability": "unknown" })
+        };
+        for (category, expected) in [
+            ("quota_exhausted", "provider_quota_exhausted"),
+            ("rate_limit", "provider_rate_limit"),
+            ("authentication", "provider_authentication"),
+            ("unknown", "session_ensure_failed"),
+        ] {
+            assert_eq!(
+                response_error_classification(&ensure(Some(cause(category)))),
+                expected
+            );
+        }
+        assert_eq!(
+            response_error_classification(&ensure(None)),
+            "session_ensure_failed"
+        );
+        // A cause outside the schema cannot select a classification.
+        let mut invented = cause("quota_exhausted");
+        invented["category"] = json!("private-token-canary");
+        assert_eq!(
+            response_error_classification(&ensure(Some(invented))),
+            "session_ensure_failed"
+        );
+        let mut extra = cause("quota_exhausted");
+        extra["headers"] = json!({ "authorization": "private-token-canary" });
+        assert_eq!(
+            response_error_classification(&ensure(Some(extra))),
+            "session_ensure_failed"
+        );
+        // Other closed codes keep their own classification.
+        let mut admission = ensure(Some(cause("quota_exhausted")));
+        admission.code = "ACPX_ADMISSION_CREDENTIAL".to_owned();
+        assert_eq!(
+            response_error_classification(&admission),
+            "admission_credential"
+        );
+    }
+
+    #[test]
     fn classifies_only_allowlisted_internal_sidecar_failures() {
         let error = |code: &str, message: &str| ResponseError {
             code: code.to_owned(),
             message: message.to_owned(),
             retryable: false,
+            provider_failure: None,
         };
+        for (code, expected) in [
+            ("ACPX_ADMISSION_SANDBOX", "admission_sandbox"),
+            ("ACPX_ADMISSION_CREDENTIAL", "admission_credential"),
+            ("ACPX_ADMISSION_RUNTIME", "admission_runtime"),
+            (
+                "GROK_EFFORT_ACKNOWLEDGEMENT_MISSING",
+                "grok_effort_acknowledgement_missing",
+            ),
+        ] {
+            assert_eq!(
+                response_error_classification(&error(code, "private-token-canary")),
+                expected
+            );
+        }
         assert_eq!(
             response_error_classification(&error(
                 "acpx_sidecar_command_failed",

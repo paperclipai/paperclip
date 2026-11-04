@@ -469,10 +469,6 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
             eq(issueThreadInteractions.id, payload.interactionId),
             eq(issueThreadInteractions.companyId, publication.companyId),
             eq(issueThreadInteractions.issueId, publication.issueId),
-            inArray(issueThreadInteractions.kind, [
-              "ask_user_questions",
-              "request_confirmation",
-            ]),
           ),
         );
       runId = interaction?.runId ?? null;
@@ -643,10 +639,6 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
           eq(issueThreadInteractions.id, payload.interactionId),
           eq(issueThreadInteractions.companyId, publication.companyId),
           eq(issueThreadInteractions.issueId, publication.issueId),
-          inArray(issueThreadInteractions.kind, [
-            "ask_user_questions",
-            "request_confirmation",
-          ]),
         ),
       )
       .then((rows) => rows[0] ?? null);
@@ -711,10 +703,6 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
           eq(issueThreadInteractions.companyId, publication.companyId),
           eq(issueThreadInteractions.issueId, publication.issueId),
           eq(issueThreadInteractions.sourceRunId, sourceRunId),
-          inArray(issueThreadInteractions.kind, [
-            "ask_user_questions",
-            "request_confirmation",
-          ]),
         ),
       )
       .then((rows) => rows.map((row) => row.id));
@@ -940,7 +928,6 @@ export function createChatPublicationReplacement(db: Db, options: ChatPublicatio
               where consuming_interaction.company_id = ${publication.companyId}::uuid
                 and consuming_interaction.issue_id = ${publication.issueId}::uuid
                 and consuming_interaction.source_run_id = ${lane.runId}::uuid
-                and consuming_interaction.kind in ('ask_user_questions', 'request_confirmation')
                 and ${chatPublications.payload}->>'interactionId' = consuming_interaction.id::text
                 and ${chatPublications.idempotencyKey} = 'interaction:' || consuming_interaction.id::text || ':' || ${publication.endpointId}
             )`,
