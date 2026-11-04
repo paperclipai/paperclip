@@ -355,9 +355,11 @@ export function environmentRunOrchestrator(
           environment, lease, requestedCwd: expected.remoteCwd,
         });
         if (!resumed || resumed.providerLeaseId !== expected.providerLeaseId ||
-            resumed.metadata?.remoteCwd !== expected.remoteCwd) {
+            resumed.metadata?.expired === true) {
           throw new Error("native_remote_recovery_lease_mismatch");
         }
+        // Resume confirms allocation readiness. Its optional metadata may
+        // describe the allocation root; keep the validated lease's workspace.
       }
       leaseRecord = { environment, lease, leaseContext: buildEnvironmentLeaseContext(input) };
     } else {

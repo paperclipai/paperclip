@@ -954,9 +954,8 @@ describe("live remote runner lease reattachment", () => {
   it.each([
     null,
     { providerLeaseId: "replacement", metadata: { remoteCwd: "/remote/workspace" } },
-    { providerLeaseId: "original-sandbox", metadata: { remoteCwd: "/other/workspace" } },
-    { providerLeaseId: "original-sandbox" },
-  ])("holds recovery when the retained lease resume cannot confirm its original location (%j)", async receipt => {
+    { providerLeaseId: "original-sandbox", metadata: { expired: true } },
+  ])("holds recovery when the retained lease resume cannot confirm its original allocation (%j)", async receipt => {
     const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => receipt) });
     await expect(environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input))
       .rejects.toThrow("native_remote_recovery_lease_mismatch");
@@ -964,6 +963,21 @@ describe("live remote runner lease reattachment", () => {
     expect(runtime.execute).not.toHaveBeenCalled();
     expect(mockUpdateLeaseMetadata).not.toHaveBeenCalled();
   });
+  it.each([undefined, { remoteCwd: "/allocation/root" }])(
+    "keeps the recorded workspace when resume returns allocation metadata (%j)", async metadata => {
+      const savedLease = originalLease();
+      mockGetLease.mockResolvedValue(savedLease);
+      const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => ({
+        providerLeaseId: "original-sandbox", metadata,
+      })) });
+      const result = await environmentRunOrchestrator({} as never, { environmentRuntime: runtime }).acquireForRun(input);
+      expect(result.lease).toBe(savedLease);
+      expect(result.lease.metadata?.remoteCwd).toBe("/remote/workspace");
+      expect(runtime.resumeRunLease).toHaveBeenCalledOnce();
+      expect(runtime.acquireRunLease).not.toHaveBeenCalled();
+      expect(mockUpdateLeaseMetadata).not.toHaveBeenCalled();
+    },
+  );
   it("preserves a retained sandbox startup failure without acquiring a replacement", async () => {
     const error = new Error("retained sandbox startup timed out");
     const runtime = makeMockRuntime({ resumeRunLease: vi.fn(async () => { throw error; }) });
