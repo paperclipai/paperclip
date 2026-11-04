@@ -142,6 +142,7 @@ WorkingDirectory=%h
 Restart=always
 RestartSec=5
 TimeoutStopSec=300
+KillMode=mixed
 
 [Install]
 WantedBy=default.target

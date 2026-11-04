@@ -37,6 +37,12 @@ describe("service definition generation", () => {
     expect(unit).not.toContain("API_KEY");
   });
 
+  it("signals only the main process on stop so the server can shut embedded PostgreSQL down in order", () => {
+    const manager = new SystemdServiceManager("team-a", async () => ({ stdout: "", stderr: "" }), "/home/alice/.paperclip", "/home/alice/.local/bin/paperclipai", "/home/alice");
+    const serviceSection = manager.renderDefinition().split("[Service]")[1].split("[Install]")[0];
+    expect(serviceSection.split("\n")).toContain("KillMode=mixed");
+  });
+
   it("escapes systemd variable and specifier expansion in configured values", () => {
     const unit = renderSystemdUnit({
       instanceId: "team-$USER-%i",
