@@ -65,6 +65,8 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
       "https://evil-mcp.com/sse",
       "https://example.com/api",
       "https://github.com",
+      "https://attacker.westeurope.cloudapp.azure.com/mcp",
+      "https://attacker.blob.core.windows.net/mcp",
       "",
       null,
       undefined,
@@ -135,6 +137,22 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
         resource: "https://graph.microsoft.com",
         serverUrl: "https://attacker.example/mcp",
         scopes: ["https://graph.microsoft.com/.default"],
+      })).toBe(false);
+    });
+
+    it.each(["https://attacker.westeurope.cloudapp.azure.com/mcp", "https://attacker.blob.core.windows.net/mcp"])("does not omit resource for attacker-hosted Azure destination %s", (resource) => {
+      expect(shouldOmitMicrosoftResourceIndicator({
+        oauthUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        resource, serverUrl: resource, scopes: ["Mail.Read"],
+      })).toBe(false);
+    });
+
+    it("does not omit resource for an unbound bare scope even on a known service", () => {
+      expect(shouldOmitMicrosoftResourceIndicator({
+        oauthUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        resource: "https://mcp.dev.azure.com/tenant",
+        serverUrl: "https://mcp.dev.azure.com/tenant",
+        scopes: ["Mail.Read"],
       })).toBe(false);
     });
 

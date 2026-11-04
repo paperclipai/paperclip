@@ -348,20 +348,10 @@ export function isMicrosoftResourceUrl(url: string | null | undefined): boolean 
   if (!url) return false;
   try {
     const host = new URL(url).hostname.toLowerCase();
-    return (
-      host === "azure.com" ||
-      host.endsWith(".azure.com") ||
-      host === "microsoft.com" ||
-      host.endsWith(".microsoft.com") ||
-      host === "visualstudio.com" ||
-      host.endsWith(".visualstudio.com") ||
-      host === "office.com" ||
-      host.endsWith(".office.com") ||
-      host === "windows.net" ||
-      host.endsWith(".windows.net") ||
-      host === "microsoftonline.com" ||
-      host.endsWith(".microsoftonline.com")
-    );
+    return new Set([
+      "mcp.dev.azure.com", "dev.azure.com", "graph.microsoft.com",
+      "management.azure.com", "app.vssps.visualstudio.com", "api.office.com",
+    ]).has(host);
   } catch {
     return false;
   }
@@ -417,42 +407,20 @@ export function shouldOmitMicrosoftResourceIndicator(params: {
 }): boolean {
   if (!params.oauthUrl || !params.resource) return false;
   if (!isMicrosoftV2OAuthUrl(params.oauthUrl)) return false;
-  if (!isMicrosoftResourceUrl(params.resource)) {
-    return trustedCustomEntraResource({ ...params, resource: params.resource });
-  }
-  // Discovery metadata is untrusted: a server cannot name a Microsoft resource
-  // and then receive its token at an unrelated endpoint.
-  if (!params.serverUrl || canonicalResourceIndicator(params.serverUrl) !== canonicalResourceIndicator(params.resource)) {
-    return false;
-  }
-
-  if (params.scopes && params.scopes.length > 0) {
-    let resourceHost: string;
-    try {
-      resourceHost = new URL(params.resource).hostname.toLowerCase();
-    } catch {
-      return false;
-    }
-
-    for (const scope of params.scopes) {
-      if (scope.startsWith("http://") || scope.startsWith("https://")) {
-        try {
-          const scopeHost = new URL(scope).hostname.toLowerCase();
-          if (
-            scopeHost !== resourceHost &&
-            !resourceHost.endsWith(`.${scopeHost}`) &&
-            !scopeHost.endsWith(`.${resourceHost}`)
-          ) {
-            return false;
-          }
-        } catch {
-          // ignore unparseable scope string
-        }
-      }
-    }
-  }
-
-  return true;
+  if (trustedCustomEntraResource({ ...params, resource: params.resource })) return true;
+  if (!isMicrosoftResourceUrl(params.resource)) return false;
+  if (!params.serverUrl || canonicalResourceIndicator(params.serverUrl) !== canonicalResourceIndicator(params.resource)) return false;
+  if (!params.scopes?.length) return false;
+  try {
+    const resource = new URL(params.resource);
+    if (resource.protocol !== "https:") return false;
+    const identityScopes = new Set(["openid", "profile", "email", "offline_access"]);
+    const targetScopes = params.scopes.filter((scope) => !identityScopes.has(scope));
+    return targetScopes.length > 0 && targetScopes.every((scope) => {
+      try {
+        const parsed = new URL(scope);
+        return parsed.protocol === "https:" && parsed.origin === resource.origin;
+      } catch { return false; }
+    });
+  } catch { return false; }
 }
-
-
