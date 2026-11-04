@@ -114,7 +114,11 @@ export function projectProductResults(campaign, selection, sourceSha) {
           || !['passed', 'failed'].includes(result.status) || (!missingArtifact && !Array.isArray(result.matcherResults)))) fail('result_binding');
       const checks = result?.matcherResults ?? [];
       if (checks.length > 300 || checks.some(check => typeof check.passed !== 'boolean')) fail('checks_invalid');
-      if ((result?.model != null && result.model !== selected.model)
+      // First-task's producer reports an observed alias in result.model. Its
+      // independently captured agent configuration is the configuration receipt.
+      const firstTask = selected.suite === 'first-task';
+      const configuredModel = (firstTask ? result?.firstTask?.configuredModel : result?.model) ?? null;
+      if ((configuredModel != null && configuredModel !== selected.model)
           || (result?.failureClass != null && !failureClasses.includes(result.failureClass))
           || (result && !['passed', 'failed', 'not_started'].includes(result.cleanup))
           || checks.some(check => !productReportingMatcherKinds.includes(check.matcher?.kind))) fail('metadata_invalid');
@@ -127,7 +131,9 @@ export function projectProductResults(campaign, selection, sourceSha) {
         workflowSha: selection.workflowSha, sourceSha, status, originalStatus: result?.status ?? null,
         attempt: result?.attempt ?? null, cleanup: result?.cleanup ?? 'not_started',
         profile: selected.profile, environment: 'local',
-        model: result?.model ?? null,
+        declaredModel: selected.model, model: configuredModel,
+        modelSource: configuredModel == null ? 'not_recorded' : firstTask ? 'first_task_configuration' : 'execution_profile',
+        reportedModelSha256: firstTask && typeof result?.model === 'string' ? sha(result.model) : null,
         suiteDefinitionHash: /^[a-f0-9]{64}$/.test(result?.suiteDefinitionHash ?? '') ? result.suiteDefinitionHash : null,
         failureClass: result?.failureClass ?? null,
         durationMs: Number.isFinite(result?.durationMs) && result.durationMs >= 0 ? result.durationMs : null,
@@ -155,7 +161,8 @@ export function projectProductResults(campaign, selection, sourceSha) {
         labels: [{ name: 'AS_ID', value: String(selected.id) }, { name: 'parentSuite', value: 'Product E2E' },
           { name: 'suite', value: selected.suite }, { name: 'framework', value: 'Paperclip Evals' }],
         parameters: [{ name: 'profile', value: selected.profile }, { name: 'environment', value: 'local / GitHub Actions' },
-          { name: 'model', value: provenance.model ?? 'Not recorded' }, { name: 'sourceSha', value: sourceSha }],
+          { name: 'declaredModel', value: selected.model }, { name: 'configuredModel', value: provenance.model ?? 'Not recorded' },
+          { name: 'sourceSha', value: sourceSha }],
         links: [{ name: 'Full-stack execution and retained diagnostics', type: 'custom',
           url: `https://github.com/paperclipai/paperclip/actions/runs/${selection.runId}` },
         { name: 'Evaluated source', type: 'custom', url: `https://github.com/paperclipai/paperclip/commit/${sourceSha}` }],
