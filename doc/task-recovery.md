@@ -64,13 +64,17 @@ workspace strategy for that run. It does not borrow another run's strategy or
 skip any hold's independent containment and effect checks. Attaching a Retry to
 active automatic recovery preserves its generation, attempt count and deadline.
 
-A deliberate board Retry can continue a failed native preparation after its
-saved remote workspace is verified. The source must retain its unresolved native
-adapter claim and the server's failed-preparation settlement records, with no
+A new user message, a saved undelivered message, or a deliberate board Retry can
+continue a failed native preparation after its saved remote workspace is verified.
+The source must retain its unresolved native adapter claim and the server's
+failed-preparation settlement records, with no
 provider execution, session, input or result evidence, and no active controller
-or native coordinator. Every source
-lease must have exact stop and cleanup proof. The saved snapshot must match the
-source, workspace epoch, generation and clean writer state. Resolving the
+or native coordinator. An inherited `sessionIdBefore` is prior context, not proof
+that this attempt started a provider. An admitted continuation starts a fresh
+session. The saved message is consumed once when execution starts, and the new
+run clears the prior failure notice.
+Every source lease must have exact stop and cleanup proof. The saved snapshot
+must match the source, workspace epoch, generation and clean writer state. Resolving the
 preservation action does not discard the canonical Retry source. The same
 request resumes through normal admission and current repository access checks.
 Unknown execution, operator Stop, changed ownership and missing receipts keep
