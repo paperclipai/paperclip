@@ -300,9 +300,9 @@ describe("teamsCatalogService", () => {
     const wire = await executeRunnerApi({ operationId: "POST /api/companies/{companyId}/teams/catalog/{catalogId}/install",
       pathParams: { catalogId: "core-exec-team" }, body: {} },
     { companyId: "company-1", issueId: "issue-1", issueIdentifier: "ACME-1", runId: "run-1", workMode: "standard" },
-    { apiUrl: "http://fixture.invalid", token: "private-test-token", fetch: async () => Response.json(result),
+    { apiUrl: "http://fixture.invalid", token: "private-test-token", fetch: async () => Response.json(result, { status: 201 }),
       readFile: async () => { throw new Error("not used"); }, saveResponse: async () => { throw new Error("unexpected artifact"); } });
-    expect(wire).toMatchObject({ ok: true, data: { resourceLinks: result.resourceLinks, warnings: result.warnings } });
+    expect(wire).toMatchObject({ ok: true, status: 201, data: { resourceLinks: result.resourceLinks, warnings: result.warnings } });
     expect(result.warnings).toContain("required skill unavailable");
     expect(result.portabilityImport.agents[1].id).toBeNull();
   });
