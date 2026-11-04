@@ -1265,6 +1265,12 @@ checks coordinator ownership in its terminal update, so a result recorded after
 the process check is also protected. Terminal task status remains authoritative;
 exhausted finalization retries do not keep an otherwise orphaned run alive.
 
+Only one open task of a routine can hold an execution lock. A failed run that
+waits for a scheduled resume keeps its task's lock, so the routine can queue a
+newer task meanwhile. When that task's run is claimed while the slot is held,
+the claim is rejected with a conflict, rolls back, and the run stays queued
+until the slot is released.
+
 A native failure that schedules a same-run resume marks the run `failed` but
 keeps the task's execution and checkout locks for that resume. The sweep leaves
 those locks in place and clears them only when the task is done or cancelled.
