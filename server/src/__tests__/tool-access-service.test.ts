@@ -18462,7 +18462,8 @@ describeEmbeddedPostgres("tool access service", () => {
           undefined, { deploymentMode: "authenticated" });
         const freshInput = {
           galleryKey: "github",
-            connectionMethodKey: "mcp-key", connectionMethodKey: "mcp-key", name: "GitHub",
+          connectionMethodKey: "mcp-key",
+          name: "GitHub",
           grantKind: "user",
           credentialValues: { "credentials.authorization": "fresh-fixture-key" },
         };
@@ -18472,10 +18473,16 @@ describeEmbeddedPostgres("tool access service", () => {
             { reconnectConnectionId: first.connectionId },
             { applicationId: first.application.id },
           ]) {
-            const denied = await request(app)
+            await request(app)
               .post(`/api/companies/${company.id}/tools/apps/connect`)
               .send({ ...freshInput, ...target }).expect(403);
-            expect(denied.body.error).toContain("Only the existing personal identity");
+            await expect(service.connectGalleryApp(company.id, {
+              ...freshInput, grantKind: "user", ...target,
+            }, { actorType: "user", actorId: currentUserId, actorSource: "session" }))
+              .rejects.toMatchObject({
+                status: 403,
+                message: "Only the existing personal identity can reconnect this connection",
+              });
           }
           expect(await retained()).toEqual(before);
         }
