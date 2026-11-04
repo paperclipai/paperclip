@@ -10011,6 +10011,138 @@ describe("native warm session supervision", () => {
       expect(state.execute).toHaveBeenCalledTimes(2);
     });
 
+    it.each(["completed", "different-allocation", "foreign-company", "different-workspace", "live-owner", "unaccounted-owner", "changed-controller", "forged-allocation", "foreign-writer", "foreign-active-lease", "reassigned-child", "parent-already-started", "writer-lock-race", "stop-after-claim", "controller-change-during-close", "stop-during-close", "writer-change-during-close", "retirement-fails", "foreign-logical-session", "stopped-parent"] as const)("retires the completed child listener before a different parent task uses the same sandbox: %s", async scenario => {
+      const { createServer } = await import("node:net");
+      const { createNativeWarmIngressFixture } = await import("../../__tests__/helpers/native-warm-ingress-fixture.js");
+      const { eq } = await import("drizzle-orm");
+      const tables = await import("@paperclipai/db");
+      const f = await createNativeWarmIngressFixture(execution, join(isolatedHome, "shared-workspace"));
+      await mkdir(join(isolatedHome, "shared-workspace"));
+      const listener = createServer();
+      await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(0, "127.0.0.1", resolve); });
+      const port = (listener.address() as import("node:net").AddressInfo).port;
+      let failClose = scenario === "retirement-fails";
+      let unlockWriter: (() => void) | undefined;
+      let writerTransaction: Promise<void> | undefined;
+      let incomingRunId: string | undefined;
+      const close = vi.fn(async () => {
+        if (failClose) throw new Error("owned close is unconfirmed");
+        if (scenario === "controller-change-during-close" && incomingRunId) await f.db.update(nativeRunFinalizations)
+          .set({ leaseOwner: "replacement-owner", controllerBootId: "replacement-controller", controllerGeneration: 999 })
+          .where(eq(nativeRunFinalizations.runId, incomingRunId));
+        if (scenario === "stop-during-close" && incomingRunId) await f.db.update(heartbeatRuns)
+          .set({ status: "cancelled" }).where(eq(heartbeatRuns.id, incomingRunId));
+        if (scenario === "writer-change-during-close" && incomingRunId) {
+          const [workspace] = await f.db.select().from(tables.executionWorkspaces).where(eq(tables.executionWorkspaces.id, f.workspaceId));
+          await f.db.update(tables.executionWorkspaces).set({ metadata: { ...workspace.metadata,
+            remoteWorkspace: { ...(workspace.metadata!.remoteWorkspace as Record<string, unknown>), writerRunId: randomUUID() } } })
+            .where(eq(tables.executionWorkspaces.id, f.workspaceId));
+        }
+        if (listener.listening) await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
+      });
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await options.onSession?.({ close }); return result;
+      }).mockImplementationOnce(async options => {
+        expect(options.existingSession).toBeUndefined();
+        const parentListener = createServer();
+        try {
+          await new Promise<void>((resolve, reject) => { parentListener.once("error", reject); parentListener.listen(scenario === "different-allocation" ? 0 : port, "127.0.0.1", resolve); });
+        } finally {
+          if (parentListener.listening) await new Promise<void>(resolve => parentListener.close(() => resolve()));
+        }
+        return result;
+      });
+      try {
+        const child = await f.admit();
+        await executePaperclipNativeSession({ db: f.db, execution: child.execution, runnerInstanceId: "child-runner", useRunnerd: true,
+          backend: {} as never, runnerExecutionTarget: child.target });
+        const resultId = await f.settle(child, result);
+        const options: Parameters<typeof f.admit>[0] = {};
+        if (scenario === "different-allocation") options.providerLeaseId = `different-${f.providerLeaseId}`;
+        if (scenario === "different-workspace" || scenario === "foreign-company") {
+          options.workspaceId = randomUUID();
+          if (scenario === "foreign-company") {
+            options.companyId = randomUUID(); options.agentId = randomUUID();
+            await f.db.insert(tables.companies).values({ id: options.companyId, name: "Foreign tenant", issuePrefix: `F${options.companyId.slice(0, 7)}` });
+            await f.db.insert(tables.agents).values({ id: options.agentId, companyId: options.companyId, name: "Foreign worker", adapterType: "paperclip_runner" });
+          }
+          await f.db.insert(tables.executionWorkspaces).values({ id: options.workspaceId, companyId: options.companyId ?? f.companyId,
+            name: "Other workspace", mode: "shared_workspace", strategyType: "project_primary", providerType: "cloud_sandbox", cwd: child.execution.workspace.cwd });
+        }
+        const parent = await f.admit(options);
+        incomingRunId = parent.runId;
+        if (scenario === "live-owner") await f.db.update(heartbeatRuns).set({ status: "running", nativePhase: "observed", finishedAt: null }).where(eq(heartbeatRuns.id, child.runId));
+        if (scenario === "unaccounted-owner") await f.db.update(heartbeatRuns).set({ costAccountingPending: true }).where(eq(heartbeatRuns.id, child.runId));
+        if (scenario === "changed-controller") await f.db.update(nativeRunFinalizations).set({ controllerBootId: "foreign-controller" }).where(eq(nativeRunFinalizations.runId, child.runId));
+        if (scenario === "forged-allocation") await f.db.update(environmentLeases).set({ providerLeaseId: "canonical-other-allocation" }).where(eq(environmentLeases.id, parent.leaseId));
+        if (scenario === "foreign-writer") {
+          const [workspace] = await f.db.select().from(tables.executionWorkspaces).where(eq(tables.executionWorkspaces.id, f.workspaceId));
+          await f.db.update(tables.executionWorkspaces).set({ metadata: { ...workspace.metadata,
+            remoteWorkspace: { ...(workspace.metadata!.remoteWorkspace as Record<string, unknown>), writerRunId: randomUUID() } } }).where(eq(tables.executionWorkspaces.id, f.workspaceId));
+        }
+        if (scenario === "reassigned-child") await f.db.update(tables.issues).set({ assigneeAgentId: null }).where(eq(tables.issues.id, child.issueId));
+        if (scenario === "parent-already-started") await f.db.update(heartbeatRuns).set({ processPid: 2147483000 }).where(eq(heartbeatRuns.id, parent.runId));
+        if (scenario === "foreign-active-lease") {
+          const issueId = randomUUID(), runId = randomUUID();
+          await f.db.insert(tables.issues).values({ id: issueId, companyId: f.companyId, title: "Live sibling", assigneeAgentId: f.agentId, status: "in_progress" });
+          await f.db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, nativeIssueId: issueId, runtimeMode: "native", status: "running" });
+          await f.db.insert(environmentLeases).values({ companyId: f.companyId, environmentId: f.environmentId, executionWorkspaceId: f.workspaceId,
+            issueId, heartbeatRunId: runId, provider: "daytona", providerLeaseId: f.providerLeaseId, status: "active" });
+        }
+        if (scenario === "foreign-logical-session") parent.execution.session.normalizedSessionId = child.execution.session.normalizedSessionId;
+        if (scenario === "stopped-parent") await f.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, parent.runId));
+        let claimed!: () => void;
+        const claimObserved = new Promise<void>(resolve => { claimed = resolve; });
+        if (scenario === "writer-lock-race") {
+          let locked!: () => void;
+          const lockObserved = new Promise<void>(resolve => { locked = resolve; });
+          const release = new Promise<void>(resolve => { unlockWriter = resolve; });
+          writerTransaction = f.db.transaction(async tx => {
+            const [workspace] = await tx.select().from(tables.executionWorkspaces).where(eq(tables.executionWorkspaces.id, f.workspaceId)).for("update");
+            locked(); await release;
+            await tx.update(tables.executionWorkspaces).set({ metadata: { ...workspace.metadata,
+              remoteWorkspace: { ...(workspace.metadata!.remoteWorkspace as Record<string, unknown>), writerRunId: randomUUID() } } }).where(eq(tables.executionWorkspaces.id, f.workspaceId));
+          });
+          await lockObserved;
+        }
+        const start = executePaperclipNativeSession({ db: f.db, execution: parent.execution, runnerInstanceId: "parent-runner", useRunnerd: true,
+          backend: {} as never, runnerExecutionTarget: parent.target, onExecutionLeaseAcquired: async () => {
+            claimed();
+            if (scenario === "stop-after-claim") await f.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, parent.runId));
+          } });
+        const outcome = start.then(value => ({ value }), error => ({ error }));
+        if (scenario === "writer-lock-race") {
+          await claimObserved;
+          expect(close).not.toHaveBeenCalled();
+          unlockWriter!(); await writerTransaction;
+        }
+        if (scenario === "completed" || scenario === "different-allocation") {
+          await start;
+          expect(close).toHaveBeenCalledTimes(scenario === "completed" ? 1 : 0);
+          expect(state.execute).toHaveBeenCalledTimes(2);
+          const admittedParent = state.execute.mock.calls[1][0];
+          expect(admittedParent.input.binding.issueId).toBe(parent.issueId);
+          expect(admittedParent.input.session.normalizedSessionId).toBe(parent.execution.session.normalizedSessionId);
+          expect(admittedParent.input.session.normalizedSessionId).not.toBe(child.execution.session.normalizedSessionId);
+          expect(admittedParent.existingSession).toBeUndefined();
+        } else {
+          await expect(start).rejects.toThrow();
+          expect(close).toHaveBeenCalledTimes(["retirement-fails", "controller-change-during-close", "stop-during-close", "writer-change-during-close"].includes(scenario) ? 1 : 0);
+          expect(listener.listening).toBe(!["controller-change-during-close", "stop-during-close", "writer-change-during-close"].includes(scenario));
+          expect(state.execute).toHaveBeenCalledOnce();
+        }
+        await outcome;
+        const [retained] = await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.id, resultId));
+        expect(retained.resultJson).toEqual(result);
+      } finally {
+        failClose = false;
+        unlockWriter?.(); await writerTransaction;
+        await closeWarmNativeSessionsForEnvironment({ environmentId: f.environmentId, reason: "shared ingress fixture cleanup" });
+        if (listener.listening) await new Promise<void>(resolve => listener.close(() => resolve()));
+        await f.cleanup();
+      }
+    }, 60_000);
+
     it("claims native execution authority before retiring a superseded warm identity", async () => {
       const { base, next, run } = fixture("identity-native-claim-order");
       const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
@@ -14022,7 +14154,7 @@ describe("runnerd provider runtime wiring", () => {
       || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
   });
 
-  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].filter(mode => policy === "per_turn" || !mode.startsWith("resumed")).map(mode => [provider, policy, mode] as const))))(
+  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-late-notice", "local-receipt-late-work", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].filter(mode => policy === "per_turn" || !mode.startsWith("resumed")).map(mode => [provider, policy, mode] as const))))(
     "recovers a blocked %s %s plugin checkpoint on a replacement lease: %s", async (provider, policy, mode) => {
       const { permissionPolicy: _permissionPolicy, ...claudeProfile } = QUALIFIED_ACPX_PROFILES.claude;
       const first = { ...scopedNativeExecution(`plugin-${provider}-${policy}-${mode}`),
@@ -14038,7 +14170,12 @@ describe("runnerd provider runtime wiring", () => {
       const scoped = await initializeScopedRunnerRoot(first, identity.runnerInstanceId);
       await mkdir(join(scoped, "control-plane"), { recursive: true });
       const journal = JSON.stringify({ ...durableControlPlaneState(identity), commands: [{ status: mode.endsWith("pending-command") ? "pending" : "completed" }],
-        committedEvents: mode.endsWith("missing-terminal") ? [] : [{ eventType: "run.terminal", envelope: { ...identity, payload: { reportedWorkDisposition: "blocked" } } }] });
+        committedEvents: mode.endsWith("missing-terminal") ? [] : [{ eventType: "run.terminal", envelope: { ...identity, payload: { reportedWorkDisposition: "blocked" } } },
+          ...(mode === "local-receipt-late-notice" ? [{ eventType: "provider.notice.recorded", envelope: { ...identity, payload: { schema: "paperclip.prp.event.v1", eventType: "provider.notice.recorded",
+            runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, sourceInstanceId: identity.runnerInstanceId, sourceKind: "runner",
+            payload: { schema: "paperclip.provider.notice.v1", noticeId: "codex-warning", severity: "warning", category: "warning", scope: "turn", recoverable: true, userActionable: true,
+              summary: "ignored a notification for a settled Codex turn" } } } }] : []),
+          ...(mode === "local-receipt-late-work" ? [{ eventType: "turn.started", envelope: { ...identity } }] : [])] });
       await writeFile(join(scoped, "control-plane/control-plane-state.json"), journal);
       if (mode.startsWith("empty-runner") || mode === "nonempty-runner") {
         await mkdir(join(scoped, "runner"));
@@ -14111,7 +14248,7 @@ describe("runnerd provider runtime wiring", () => {
           expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
         }
         const backend = throughExecutor ? executePaperclipNativeSession({ ...launch, useRunnerd: true }) : createRunnerdBackend(launch);
-        if (["canonical", "resumed", "resumed-timeout", "local-receipt", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
+        if (["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-late-notice", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
           await expect(backend).resolves.toBeDefined();
           expect(state.createBackend).toHaveBeenCalledOnce();
           expect(owner).toHaveBeenCalledWith(expect.objectContaining({ priorIdentity: identity,
@@ -14121,9 +14258,18 @@ describe("runnerd provider runtime wiring", () => {
           expect(JSON.parse(await readFile(join(scoped, "plugin-runner-state.json"), "utf8"))).toMatchObject({ ...identity, lifecycle: "suspended" });
           expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
         } else {
-          await expect(backend).rejects.toThrow();
+          await expect(backend).rejects.toThrow({
+            "local-receipt-late-work": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "local-receipt-missing-terminal": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "local-receipt-pending-command": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "pending-command": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "missing-terminal": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "ambiguous": "plugin_checkpoint_recovery_unproven: quarantine_ambiguous",
+            "not-suspended": "plugin_checkpoint_recovery_unproven: checkpoint_not_settled",
+            "pending-outbox": "plugin_checkpoint_recovery_unproven: checkpoint_not_settled",
+          }[mode as string] ?? "");
           expect(state.createBackend).not.toHaveBeenCalled();
-          if (["local-receipt-missing-terminal", "local-receipt-pending-command", "active", "foreign-scope", "pending-command", "missing-terminal", "ambiguous", "contradictory", "nonempty-runner", "no-stop-proof"].includes(mode)) {
+          if (["local-receipt-late-work", "local-receipt-missing-terminal", "local-receipt-pending-command", "active", "foreign-scope", "pending-command", "missing-terminal", "ambiguous", "contradictory", "nonempty-runner", "no-stop-proof"].includes(mode)) {
             expect(task).not.toHaveBeenCalled();
           }
           if (mode === "ambiguous") expect(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
@@ -15241,6 +15387,8 @@ describe("runnerd provider runtime wiring", () => {
   it.each([
     "quarantined",
     "large control plane",
+    "late provider notice",
+    "post-terminal work",
     "empty retry shell",
     "unsuspended current",
     "live runner",
@@ -15457,6 +15605,35 @@ describe("runnerd provider runtime wiring", () => {
                     }))
                   : []),
                 { eventType: "run.terminal", envelope: identity },
+                ...(scenario === "late provider notice"
+                  ? [{
+                      eventType: "provider.notice.recorded",
+                      envelope: {
+                        ...identity,
+                        payload: {
+                          schema: "paperclip.prp.event.v1",
+                          eventType: "provider.notice.recorded",
+                          runId: identity.runId,
+                          normalizedSessionId: identity.normalizedSessionId,
+                          sourceInstanceId: identity.runnerInstanceId,
+                          sourceKind: "runner",
+                          payload: {
+                            schema: "paperclip.provider.notice.v1",
+                            noticeId: "codex-warning",
+                            severity: "warning",
+                            category: "warning",
+                            scope: "turn",
+                            recoverable: true,
+                            userActionable: true,
+                            summary: "ignored a notification for a settled Codex turn",
+                          },
+                        },
+                      },
+                    }]
+                  : []),
+                ...(scenario === "post-terminal work"
+                  ? [{ eventType: "turn.started", envelope: identity }]
+                  : []),
               ],
             }),
           );
@@ -15497,6 +15674,7 @@ describe("runnerd provider runtime wiring", () => {
           "quarantined",
           "released process identity",
           "large control plane",
+          "late provider notice",
           "empty retry shell",
           "unsuspended current",
           "active goal",

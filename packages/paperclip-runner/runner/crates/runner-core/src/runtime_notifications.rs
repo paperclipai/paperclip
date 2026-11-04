@@ -666,6 +666,8 @@ mod tests {
         assert_eq!(fs::read(nested.join("protected")).unwrap(), b"unchanged");
         fs::remove_dir_all(pipe.parent().unwrap()).unwrap();
     }
+    include!("runtime_notifications/tests/codex_sandbox.rs");
+
     #[test]
     #[ignore = "requires CODEX_NOTIFICATION_SANDBOX_COMMAND and PAPERCLIP_RUNTIME_NOTIFICATION_HELPER"]
     fn publisher_crosses_real_codex_tool_boundary_without_runner_state_access() {
@@ -709,7 +711,8 @@ mod tests {
 if cat "$1" >/dev/null 2>&1; then exit 71; fi
 if /bin/sh -c ': >> "$PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT"' 2>/dev/null; then exit 72; fi
 if touch "$2/probe" 2>/dev/null; then exit 75; fi
-if touch "$3/probe" 2>/dev/null; then exit 76; fi
+touch "$3/probe" || exit 76
+rm "$3/probe" || exit 76
 if /bin/sh -c ': >> "$1"' ignored "$4" 2>/dev/null; then exit 77; fi
 context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context) || exit 73
 "$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" record-activity "$context" example.runtime desktop.used || exit 74

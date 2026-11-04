@@ -1,5 +1,7 @@
 # Paid runner full-stack E2E
 
+The deployment-targeted [saved agent instructions journey](product-journeys/AGENT-SETTINGS.md) verifies browser save/reload, one instruction-dependent native task, independently attributed output, and restoration of the owned agent’s original instructions. Discovery and local grader controls remain separate from QA staging qualification.
+
 The explicit-only `cursor-cloud` suite uses a local controller and hosted Cursor
 Cloud work. Its four required cells check a downloaded registered artifact,
 question/answer continuation on the same Cloud agent, UI Stop of an

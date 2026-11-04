@@ -127,6 +127,7 @@ describe("runner E2E catalog", () => {
 
   it("exports deployment journeys separately from the model matrix and default selection", () => {
     expect(productJourneys.map(journey => journey.id)).toEqual([
+      "saved-skill-use",
       "task-edit-lifecycle",
       "company-access-isolation",
       "repository-continuation",
@@ -135,7 +136,9 @@ describe("runner E2E catalog", () => {
       "file-input-answer",
       "task-create",
       "project-task-context",
+      "task-dependency-resume",
       "ask-question",
+      "chat-continuity",
       "question-answer-resume",
       "task-properties",
       "task-document-persistence",
@@ -147,6 +150,7 @@ describe("runner E2E catalog", () => {
       "stop-redirect",
       "followup-while-running",
       "hire-delegate-reuse",
+      "agent-settings-persistence",
       "cloud-onboarding"
     ]);
     expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
