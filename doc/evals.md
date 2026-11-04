@@ -117,8 +117,10 @@ successor. Registration and calibration are separate from a live staging pass.
 deployment targets and starting-state recipes. The shared task-properties
 journey and task-document create/edit/reopen journey use no model; Cloud
 onboarding supplies reusable verified state. The document journey checks exact
-saved content and both revision records through independent API reads. Cloud
-fleet operations and trusted CI remain private. Local eval gateway qualification
+saved content and both revision records through independent API reads. The explicit `chat-continuity` selection verifies browser reload/reopen, prompt-hidden recall,
+ordinary `/new` reset, fresh native context and retained history against an attached target.
+It requires a fresh owned agent with no prior work runs and uses three provider turns plus one synthetic reset row; it does not restart a shared stack.
+Cloud fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
 
 The deployment-targeted [saved skill journey](../tests/runner-e2e/product-journeys/saved-skill-use.md) checks one company skill assigned by key, its exact admitted immutable version, a bound native source read/load, and a run-authored saved result from skill-only inputs. It uses the reusable Product journey target and remains unqualified until a real target run passes.
