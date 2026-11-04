@@ -827,6 +827,60 @@ describe.skipIf(!runControlPostgresSupport.supported)("heartbeat run-control dat
     }), wake.id);
   });
 
+  async function parkedInterrupt(status: "todo" | "in_progress" | "done" | "cancelled", reassigned = false) {
+    const { company, agent } = await fixture();
+    const [other] = await db.insert(agents).values({ companyId: company.id, name: "Other agent", adapterType: "codex_local" }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Interrupt after completion",
+      status, assigneeAgentId: reassigned ? other.id : agent.id }).returning();
+    const [comment] = await db.insert(issueComments).values({ companyId: company.id, issueId: issue.id,
+      authorType: "user", authorUserId: "operator", body: "Please continue" }).returning();
+    const [wake] = await db.insert(agentWakeupRequests).values({ companyId: company.id, agentId: agent.id,
+      source: "on_demand", triggerDetail: "manual", reason: "issue_commented", status: "deferred_issue_execution",
+      requestedByActorType: "user", requestedByActorId: "operator",
+      payload: withQueuedCommentIdsInWakePayload({ issueId: issue.id, commentId: comment.id, mutation: "comment",
+        queuedCommentInterrupt: { actorId: "operator", requestedAt: new Date().toISOString() },
+        _paperclipWakeContext: { issueId: issue.id, wakeReason: "issue_commented", wakeCommentId: comment.id, wakeCommentIds: [comment.id] },
+      }, [comment.id]) }).returning();
+    return { company, agent, issue, comment, wake };
+  }
+
+  it.each(["done", "cancelled"] as const)("settles a parked comment interrupt once its task is %s instead of re-admitting it every tick", async (status: "done" | "cancelled") => {
+    const f = await parkedInterrupt(status);
+    const deps = callbacks(db), control = createHeartbeatRunControl(db, deps);
+    // The interrupt sweep revisits the queue on every tick (#18408).
+    for (let tick = 0; tick < 3; tick++) await control.resumeQueuedCommentInterrupt(f.company.id, f.wake.id);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0]).toMatchObject({
+      status: "cancelled", finishedAt: expect.any(Date),
+      error: "Queued comment interrupt no longer applies to a terminal task",
+    });
+    // Only the parked interrupt intent is settled; no receipt rows, and the comment stays.
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id))).toHaveLength(1);
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, f.comment.id)))[0]).toMatchObject({ deletedAt: null });
+  });
+
+  it("keeps a parked interrupt for a reassigned task without admitting it", async () => {
+    const f = await parkedInterrupt("in_progress", true);
+    const deps = callbacks(db), control = createHeartbeatRunControl(db, deps);
+    await control.resumeQueuedCommentInterrupt(f.company.id, f.wake.id);
+    expect(deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0])
+      .toMatchObject({ status: "deferred_issue_execution", finishedAt: null });
+  });
+
+  it.each(["todo", "in_progress"] as const)("still delivers a parked interrupt while its task is %s", async (status: "todo" | "in_progress") => {
+    const f = await parkedInterrupt(status);
+    const deps = callbacks(db), control = createHeartbeatRunControl(db, deps);
+    await control.resumeQueuedCommentInterrupt(f.company.id, f.wake.id);
+    expect(deps.enqueueWakeup).toHaveBeenCalledExactlyOnceWith(f.agent.id, expect.objectContaining({
+      requestedByActorType: "user", requestedByActorId: "operator", queuedCommentInterruptId: f.wake.id,
+      issueStateGuard: { assigneeAgentId: f.agent.id, statuses: ["todo", "in_progress", "in_review", "blocked"] },
+      idempotencyKey: `queued-comment-interrupt:${f.wake.id}`,
+    }), f.wake.id);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id)))[0].status)
+      .toBe("deferred_issue_execution");
+  });
+
   it.each(["ephemeral", "reuse_by_environment"] as const)("keeps %s cancellation eligible for retention when teardown loses the task lock", async leasePolicy => {
     const { company, agent } = await fixture();
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Retain cancelled work",
