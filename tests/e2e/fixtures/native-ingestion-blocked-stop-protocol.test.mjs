@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { PROTOCOL, WORKLOAD as W, WORKLOAD_SHA256, METRICS, isAppendLockQuery, assertHeldSample,
-  assertIntentAudit, metrics, registration, noiseEnvelope, comparePairs, assertFunctional, observerBrackets, assertNoiseEnvelope, PRECISION_RULE } from './native-ingestion-blocked-stop-protocol.mjs';
+  assertIntentAudit, metrics, registration, noiseEnvelope, comparePairs, assertFunctional, observerBrackets, assertNoiseEnvelope, PRECISION_RULE, cleanupCancellationEligible, cleanupOwnedRunBeforeClockClose } from './native-ingestion-blocked-stop-protocol.mjs';
 const evidence = (shift = 0) => ({ protocol: PROTOCOL, workloadSha256: WORKLOAD_SHA256, complete: true, cleanup: { complete: true },
   timing: { actionAtMs: 1000, requestAtMs: 1005, releaseRequestedAtMs: 2005, releaseCommitAckAtMs: 2007,
     absenceObservedAtMs: 2030 + shift, ackObservedAtMs: 2040 + shift } });
-const sample = () => ({ httpPending: true, intent: null, auditIds: [], processesAlive: true, clockOpen: true, blockers: [{ blocking_pids: [88] }] });
+const processes = () => ({ runner: { pid: 10, group: 10, birth: 'runner-birth' }, provider: { pid: 11, group: 11, birth: 'provider-birth' }, group: 10, providerGroup: 11 });
+const sample = () => ({ processes: { ...processes(), runnerGroupAlive: true, providerGroupAlive: true }, httpPending: true, intent: null, auditIds: [], processesAlive: true, clockOpen: true, blockers: [{ blocking_pids: [88] }] });
 const intentRow = () => ({ company_id: 'c', run_id: 'r', issue_id: 'i', intent: {
   schema: 'paperclip.native-cancellation.v1', companyId: 'c', runId: 'r', issueId: 'i',
   intentId: 'own', intentAuditId: 'a', dispatchState: 'acknowledged', acknowledgementAuditId: 'b',
@@ -25,10 +26,10 @@ test('B0 and candidate append SQL match while cancellation full-row and unrelate
   assert(!isAppendLockQuery('select "company_id", "agent_id" from "heartbeat_runs" where "heartbeat_runs"."id" = $1'));
 });
 test('held sample requires every barrier and physical liveness proof', () => {
-  assertHeldSample(sample(), 88);
+  assertHeldSample(sample(), 88, processes());
   for (const patch of [{ httpPending: false }, { intent: {} }, { auditIds: ['a'] }, { processesAlive: false }, { clockOpen: false }, { blockers: [] }])
-    assert.throws(() => assertHeldSample({ ...sample(), ...patch }, 88));
-  assert.throws(() => assertHeldSample(sample(), 89));
+    assert.throws(() => assertHeldSample({ ...sample(), ...patch }, 88, processes()));
+  assert.throws(() => assertHeldSample(sample(), 89, processes()));
 });
 test('ACK correlates both committed audits to the same owned intent', () => {
   assertIntentAudit(intentRow());
@@ -56,7 +57,7 @@ test('registered companion is 50 separate alternating arms with fresh B0 and B1 
 });
 
 const functional = () => {
-  const e = evidence(), identity = { company_id: 'c', run_id: 'r', runtime_mode: 'native' };
+  const e = evidence(), identity = { company_id: 'c', run_id: 'r', runtime_mode: 'native', process_pid: 10, process_group_id: 10 };
   return { ...e, variant: 'b0', startedAtMs: 100, finishedAtMs: 3000, companyId: 'c', runId: 'r', issueId: 'i', epochMs: 900,
     prelude: { individualDeltas: 1000, uniqueIdentities: 1000, verifiedBeforeEpochAtMs: 850 },
     visibleBeforeLock: [0,1,2], lock: { id: 'r', company_id: 'c', holder_pid: 88 },
@@ -67,8 +68,7 @@ const functional = () => {
     observerSamples: [{ kind: 'ack-query', startedAtMs: 2035, completedAtMs: 2036, durationMs: 1, value: false },
       { kind: 'ack-query', startedAtMs: 2039, completedAtMs: 2040, durationMs: 1, value: true },
       { kind: 'process-check', startedAtMs: 2025, completedAtMs: 2026, durationMs: 1, value: false },
-      { kind: 'process-check', startedAtMs: 2029, completedAtMs: 2030, durationMs: 1, value: true }], processesBefore: { runner: { pid: 10, group: 10, birth: 'birth' },
-      provider: { pid: 11, group: 10, birth: 'birth' }, group: 10 }, processesAfter: { runnerAbsent: true, groupAbsent: true, providerAbsent: true },
+      { kind: 'process-check', startedAtMs: 2029, completedAtMs: 2030, durationMs: 1, value: true }], processesBefore: processes(), processesAfter: { runnerAbsent: true, groupAbsent: true, providerAbsent: true, providerGroupAbsent: true, group: 10, providerGroup: 11 },
     authorityBefore: { rows: [{ ...identity, process_identity_seq: '1' }] },
     authorityAfter: { rows: [{ ...identity, status: 'cancelled', cancellation_dispatch_state: 'acknowledged', process_stopped_seq: '20',
       process_stopped_source_event_id: null, process_stopped: { processPid: 10, processGroupId: 10 } }] },
@@ -202,5 +202,53 @@ test('calibration and comparison reject reused runs, overlapping arms and nonalt
     data => { data[1].reverse(); }]) {
     const invalid = pairs(); corrupt(invalid);
     assert.throws(() => noiseEnvelope(invalid)); assert.throws(() => comparePairs(invalid, noise));
+  }
+});
+
+test('distinct provider group is valid, same-group topology is also valid, and both exact owned groups must be proved', () => {
+  const distinct = functional(); assert.notEqual(distinct.processesBefore.group, distinct.processesBefore.providerGroup); assertFunctional(distinct);
+  const shared = functional(); shared.processesBefore.provider.group = 10; shared.processesBefore.providerGroup = 10;
+  shared.processesAfter.providerGroup = 10;
+  for (const held of shared.heldSamples) { held.processes.provider.group = 10; held.processes.providerGroup = 10; }
+  assertFunctional(shared);
+  for (const mutate of [e => { delete e.processesBefore.providerGroup; }, e => { e.processesBefore.providerGroup = 99; },
+    e => { e.processesBefore.provider.group = 0; }, e => { delete e.processesAfter.providerGroupAbsent; },
+    e => { e.processesAfter.providerGroupAbsent = false; }, e => { e.processesAfter.providerGroup = 99; },
+    e => { e.authorityBefore.rows[0].process_group_id = 99; }, e => { e.processesBefore.runner.group = 99; },
+    e => { e.heldSamples[1].processes.provider.birth = 'different-birth'; }, e => { e.heldSamples[1].processes.runner.pid = 99; },
+    e => { e.heldSamples[1].processes.providerGroupAlive = false; }, e => { e.heldSamples[1].processes.runnerGroupAlive = false; },
+    e => { delete e.heldSamples[1].processes; }]) {
+    const e = functional(); mutate(e); assert.throws(() => assertFunctional(e));
+  }
+});
+test('cleanup eligibility follows supported active/scheduled and native retryable phases only', () => {
+  for (const status of ['queued','running','scheduled_retry']) assert(cleanupCancellationEligible({ status }));
+  assert(cleanupCancellationEligible({ status:'failed', runtimeMode:'native', nativePhase:'retryable_failure' }));
+  for (const run of [{ status:'failed', runtimeMode:'legacy', nativePhase:'retryable_failure' },
+    { status:'failed', runtimeMode:'native', nativePhase:'terminal_failure' }, { status:'failed', runtimeMode:'native' },
+    { status:'succeeded' }, { status:'cancelled' }, { status:'timed_out' }]) assert.equal(cleanupCancellationEligible(run), false);
+});
+test('owned cleanup records public cancellation before closing its clock, including retryable failure', async () => {
+  for (const before of [{ status:'running', runtimeMode:'native' }, { status:'failed', runtimeMode:'native', nativePhase:'retryable_failure' }]) {
+    const order=[],record={}; let open=true,run={ id:'r',companyId:'c',...before };
+    await cleanupOwnedRunBeforeClockClose({ companyId:'c',runId:'r',record,
+      readRun:async()=>{ assert(open);order.push('read');return run; },
+      cancelRun:async()=>{ assert(open);order.push('cancel');run={...run,status:'cancelled',resultJson:{nativeCancellation:{dispatchState:'acknowledged'}}};return {status:200,run}; },
+      closeClock:async()=>{ order.push('close');open=false; } });
+    assert.deepEqual(order,['read','cancel','read','close']); assert.equal(record.before.status,before.status);
+    assert.equal(record.cancel.httpStatus,200); assert.equal(record.after.status,'cancelled'); assert.equal(record.after.nativeCancellation.dispatchState,'acknowledged');
+    assert.equal('providerAbsent' in record,false,'Cancellation response is not physical Stop evidence');
+  }
+});
+test('cleanup does not cancel terminal/foreign runs and closes clock after a failed cancellation attempt', async () => {
+  for (const mode of ['terminal','foreign','cancel-error']) {
+    const order=[],record={};let cancelled=false;
+    const action=()=>cleanupOwnedRunBeforeClockClose({companyId:'c',runId:'r',record,
+      readRun:async()=>{order.push('read');return {id:'r',companyId:mode==='foreign'?'other':'c',status:mode==='terminal'?'succeeded':'running'};},
+      cancelRun:async()=>{cancelled=true;order.push('cancel');throw Error('controlled cancellation error');},
+      closeClock:async()=>{order.push('close');} });
+    if(mode==='terminal'){await action();assert.equal(record.cancel.attempted,false);assert.equal(cancelled,false);}
+    else {await assert.rejects(action());assert(record.error);assert.equal(cancelled,mode==='cancel-error');}
+    assert.equal(order.at(-1),'close');assert(record.clockClosedAtMs);
   }
 });

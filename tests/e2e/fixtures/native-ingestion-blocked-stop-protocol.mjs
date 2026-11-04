@@ -12,13 +12,50 @@ export function isAppendLockQuery(query) {
   return /^select "company_id", "agent_id"(?:,| from)/i.test(sql)
     && / from "heartbeat_runs" where "heartbeat_runs"\."id" = \$\d+.* for update/i.test(sql);
 }
-export function assertHeldSample(sample, holderPid) {
+export function assertHeldSample(sample, holderPid, expectedProcesses) {
   assert.equal(sample.httpPending, true, 'Stop HTTP must remain pending while its durable barrier is locked');
   assert.equal(sample.intent, null, 'No committed intent before releasing the run lock');
   assert.deepEqual(sample.auditIds, [], 'No committed cancellation audit before releasing the run lock');
   assert.equal(sample.processesAlive, true, 'No physical provider Stop before the durable intent barrier');
+  assert(expectedProcesses?.runner && expectedProcesses.provider, 'Missing original owned process births');
+  assert.deepEqual(sample.processes?.runner, expectedProcesses.runner);
+  assert.deepEqual(sample.processes?.provider, expectedProcesses.provider);
+  assert.equal(sample.processes?.group, expectedProcesses.group);
+  assert.equal(sample.processes?.providerGroup, expectedProcesses.providerGroup);
+  assert.equal(sample.processes?.runnerGroupAlive, true);
+  assert.equal(sample.processes?.providerGroupAlive, true);
   assert.equal(sample.clockOpen, true, 'The unchanged provider fixture closes its clock on turn/interrupt');
   assert(sample.blockers.some(row => row.blocking_pids.includes(holderPid)), 'Missing independent PostgreSQL blocker');
+}
+// Public cancellation supports active/scheduled runs and native retryable failures.
+// A receipt is not physical Stop proof; the independent process/lease oracle remains required.
+export function cleanupCancellationEligible(run) {
+  return ['queued', 'running', 'scheduled_retry'].includes(run.status)
+    || (run.status === 'failed' && run.runtimeMode === 'native' && run.nativePhase === 'retryable_failure');
+}
+export async function cleanupOwnedRunBeforeClockClose({ companyId, runId, readRun, cancelRun, closeClock, record }) {
+  const snapshot = run => {
+    assert.equal(run.id, runId); assert.equal(run.companyId, companyId);
+    return { id: run.id, companyId: run.companyId, status: run.status, runtimeMode: run.runtimeMode,
+      nativePhase: run.nativePhase ?? null, errorCode: run.errorCode ?? null,
+      nativeCancellation: run.resultJson?.nativeCancellation ?? null };
+  };
+  try {
+    if (readRun) {
+      const before = await readRun(); record.before = snapshot(before);
+      record.cancel = { attempted: cleanupCancellationEligible(before) };
+      if (record.cancel.attempted) {
+        const response = await cancelRun();
+        record.cancel.httpStatus = response.status; record.cancel.response = snapshot(response.run);
+      }
+      record.after = snapshot(await readRun());
+    }
+  } catch (error) { record.error = String(error); throw error; }
+  finally {
+    record.clockCloseStartedAtMs = Date.now();
+    try { await closeClock(); record.clockClosedAtMs = Date.now(); }
+    catch (error) { record.clockCloseError = String(error); throw error; }
+  }
 }
 export function assertIntentAudit(row) {
   const intent = row.intent;
@@ -250,7 +287,7 @@ export function assertFunctional(e) {
   assert(e.appendBlockedBeforeStop.rows.some(row => isAppendLockQuery(row.query) && row.blocking_pids.includes(e.lock.holder_pid)));
   assert(e.heldSamples?.length >= 2);
   for (const sample of e.heldSamples) {
-    assertHeldSample(sample, e.lock.holder_pid); assertOptionalShared(sample, e.companyId, e.runId);
+    assertHeldSample(sample, e.lock.holder_pid, e.processesBefore); assertOptionalShared(sample, e.companyId, e.runId);
     assert(sample.queryStartedAtMs >= e.timing.requestAtMs && sample.observedAtMs <= e.timing.releaseRequestedAtMs);
   }
   assert(e.heldSamples.at(-1).emittedCount > e.heldSamples[0].emittedCount, 'Provider must still emit through the stall');
@@ -265,7 +302,9 @@ export function assertFunctional(e) {
   }
   assert.equal(e.ack.company_id, e.companyId); assert.equal(e.ack.run_id, e.runId); assert.equal(e.ack.issue_id, e.issueId);
   assert.equal(e.stopHttpStatus, 200);
-  assert.deepEqual([e.processesAfter?.runnerAbsent, e.processesAfter?.groupAbsent, e.processesAfter?.providerAbsent], [true,true,true]);
+  assert.deepEqual([e.processesAfter?.runnerAbsent, e.processesAfter?.groupAbsent, e.processesAfter?.providerAbsent, e.processesAfter?.providerGroupAbsent], [true,true,true,true]);
+  assert.equal(e.processesAfter.group, e.processesBefore.group);
+  assert.equal(e.processesAfter.providerGroup, e.processesBefore.providerGroup);
   assert(e.timing.httpSettledAtMs >= e.timing.releaseRequestedAtMs);
   const before = e.authorityBefore?.rows?.[0], after = e.authorityAfter?.rows?.[0];
   for (const row of [before, after]) { assert.equal(row?.company_id, e.companyId); assert.equal(row?.run_id, e.runId); assert.equal(row.runtime_mode, 'native'); }
@@ -276,8 +315,12 @@ export function assertFunctional(e) {
   assert.equal(after.process_stopped.processGroupId, e.processesBefore.group);
   for (const process of [e.processesBefore.runner, e.processesBefore.provider]) {
     assert(Number.isSafeInteger(process.pid) && process.pid > 1 && process.birth);
-    assert.equal(process.group, e.processesBefore.group);
+    assert(Number.isSafeInteger(process.group) && process.group > 1);
   }
+  assert.equal(e.processesBefore.runner.group, e.processesBefore.group);
+  assert.equal(e.processesBefore.group, before.process_group_id);
+  assert.equal(e.processesBefore.runner.pid, before.process_pid);
+  assert.equal(e.processesBefore.provider.group, e.processesBefore.providerGroup);
   assert.equal(e.lease?.heartbeatRunId, e.runId); assert.equal(e.lease.companyId, e.companyId);
   assert.equal(e.lease.provider, 'local'); assert.equal(e.lease.providerLeaseId, null);
   assert(e.lease.releasedAt && ['released','expired','failed'].includes(e.lease.status)); assert.notEqual(e.lease.cleanupStatus, 'failed');

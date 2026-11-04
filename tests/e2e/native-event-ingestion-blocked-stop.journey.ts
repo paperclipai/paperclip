@@ -7,7 +7,7 @@ import { json } from "./agent-chat.shared";
 import { runtimeAuthority, processAbsent } from "./fixtures/native-ingestion-blocked-stop-authority";
 import { openClock } from "./fixtures/native-ingestion-blocked-stop-clock";
 import { ownedDatabase, cancellationSnapshot, blockers } from "./fixtures/native-ingestion-blocked-stop-db";
-import { PROTOCOL, WORKLOAD as W, WORKLOAD_SHA256, assertHeldSample, assertIntentAudit, isAppendLockQuery, metrics, assertFunctional }
+import { PROTOCOL, WORKLOAD as W, WORKLOAD_SHA256, assertHeldSample, assertIntentAudit, isAppendLockQuery, metrics, assertFunctional, cleanupOwnedRunBeforeClockClose }
   from "./fixtures/native-ingestion-blocked-stop-protocol.mjs";
 import { observeRunSettlement } from "./fixtures/native-ingestion-h5.mjs";
 
@@ -143,9 +143,12 @@ test("existing-history Stop preserves its durable barrier behind a real blocked 
     expect(row.run_id).toBe(run.id);
     expect(row.process_identity.processPid).toBe(row.process_pid);
     expect(row.process_identity.processGroupId).toBe(row.process_group_id);
-    const processes = { runner: birth(row.process_pid), provider: birth(stream.providerPid), group: row.process_group_id };
-    expect(processes.runner.group).toBe(processes.group); expect(processes.provider.group).toBe(processes.group);
-    const alive = () => !processAbsent(processes.runner.pid) && !processAbsent(-processes.group) && !processAbsent(processes.provider.pid);
+    const provider = birth(stream.providerPid);
+    const processes = { runner: birth(row.process_pid), provider, group: row.process_group_id, providerGroup: provider.group };
+    expect(processes.runner.group).toBe(processes.group);
+    expect(Number.isSafeInteger(processes.providerGroup) && processes.providerGroup > 1).toBe(true);
+    const alive = () => !processAbsent(processes.runner.pid) && !processAbsent(-processes.group)
+      && !processAbsent(processes.provider.pid) && !processAbsent(-processes.providerGroup);
     expect(alive()).toBe(true); report.authorityBefore = authority; report.processesBefore = processes;
     state.epochMs = Date.now() + 1000; report.epochMs = state.epochMs;
     clock.pending.get(key)!.get(nonce)!.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ epochMs: state.epochMs }));
@@ -177,11 +180,12 @@ test("existing-history Stop preserves its durable barrier behind a real blocked 
     do {
       const snapshot = await cancellationSnapshot(observer, company.id, run.id);
       const sample = { ...snapshot, httpPending: !stopSettled, auditIds: snapshot.audits.map((audit: any) => audit.id),
-        processesAlive: alive(), clockOpen: !stream.ended && !stream.aborted,
+        processesAlive: alive(), processes: { runner: birth(processes.runner.pid), provider: birth(processes.provider.pid),
+          group: processes.group, providerGroup: processes.providerGroup,
+          runnerGroupAlive: !processAbsent(-processes.group), providerGroupAlive: !processAbsent(-processes.providerGroup) },
+        clockOpen: !stream.ended && !stream.aborted,
         emittedCount: stream.records.size, blockers: await blockers(observer, holderPid) };
-      expect(birth(processes.runner.pid)).toEqual(processes.runner);
-      expect(birth(processes.provider.pid)).toEqual(processes.provider);
-      report.heldSamples.push(sample); assertHeldSample(sample, holderPid);
+      report.heldSamples.push(sample); assertHeldSample(sample, holderPid, processes);
       if (Date.now() >= report.timing.requestAtMs + W.heldAfterActualRequestMs) break;
       await delay(Math.min(W.pollIntervalMs, report.timing.requestAtMs + W.heldAfterActualRequestMs - Date.now()));
     } while (true);
@@ -204,14 +208,16 @@ test("existing-history Stop preserves its durable barrier behind a real blocked 
       }
       if (!absent) {
         const checkStartedAtMs = Date.now();
-        const value = processAbsent(processes.runner.pid) && processAbsent(-processes.group) && processAbsent(processes.provider.pid);
+        const value = processAbsent(processes.runner.pid) && processAbsent(-processes.group)
+          && processAbsent(processes.provider.pid) && processAbsent(-processes.providerGroup);
         const completedAtMs = Date.now();
         report.observerSamples.push({ kind: "process-check", startedAtMs: checkStartedAtMs,
           completedAtMs, durationMs: completedAtMs - checkStartedAtMs, value });
         if (value) {
           absent = true; report.timing.absenceObservedAtMs = completedAtMs;
           report.timing.absenceSuccessfulCheckStartedAtMs = checkStartedAtMs;
-          report.processesAfter = { runnerAbsent: true, groupAbsent: true, providerAbsent: true, checkedAtMs: completedAtMs };
+          report.processesAfter = { runnerAbsent: true, groupAbsent: true, providerAbsent: true, providerGroupAbsent: true,
+            group: processes.group, providerGroup: processes.providerGroup, checkedAtMs: completedAtMs };
         } else report.timing.lastProcessesPresentAtMs = completedAtMs;
       }
     };
@@ -289,12 +295,17 @@ test("existing-history Stop preserves its durable barrier behind a real blocked 
     if (held) await cleanup("rollback-owned-lock", async () => { await holder.unsafe("ROLLBACK"); held = false; });
     if (holder) await cleanup("close-holder", () => holder.end({ timeout: 5 }));
     if (observer) await cleanup("close-observer", () => observer.end({ timeout: 5 }));
-    for (const pending of clock.pending.values()) for (const response of pending.values()) if (!response.writableEnded) response.writeHead(503).end();
-    clock.gate.closeAllConnections(); await new Promise<void>(resolve => clock.gate.close(() => resolve()));
-    if (companyRunId) await cleanup("settle-owned-run", async () => {
-      const run = await json(await request.get(`/api/heartbeat-runs/${companyRunId}`));
-      if (["running", "queued"].includes(run.status)) await json(await request.post(`/api/heartbeat-runs/${companyRunId}/cancel`));
-    });
+    report.cleanupSettlement = {};
+    await cleanup("settle-owned-run-before-clock-close", () => cleanupOwnedRunBeforeClockClose({
+      companyId: company.id, runId: companyRunId,
+      readRun: companyRunId ? async () => json(await request.get(`/api/heartbeat-runs/${companyRunId}`)) : undefined,
+      cancelRun: async () => { const response = await request.post(`/api/heartbeat-runs/${companyRunId}/cancel`);
+        return { status: response.status(), run: await json(response) }; },
+      closeClock: async () => {
+        for (const pending of clock.pending.values()) for (const response of pending.values()) if (!response.writableEnded) response.writeHead(503).end();
+        clock.gate.closeAllConnections(); await new Promise<void>(resolve => clock.gate.close(() => resolve()));
+      }, record: report.cleanupSettlement,
+    }));
     await cleanup("restore-experimental-settings", async () => json(await request.patch("/api/instance/settings/experimental", {
       data: { enableNativeRunner: original.enableNativeRunner, enableWorktreeRunExecution: original.enableWorktreeRunExecution } })));
     report.cleanup = { complete: cleanupErrors.length === 0, errors: cleanupErrors };

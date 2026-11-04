@@ -1,9 +1,34 @@
-# Existing-history blocked Stop companion (prospective v1)
+# Existing-history blocked Stop companion (prospective instrumentation v2)
 
-Status: local source and pure oracle calibration only. No application, browser,
+Status: v2 local source and pure oracle calibration only. No v2 application, browser,
 PostgreSQL, VM or quantitative arm has run. No runtime qualification or performance
 claim follows from the pure tests. Execution needs lead release after independent
 source review. This is separate from the immutable H5c 50-arm campaign.
+
+## Preserved v1 qualification failure and v2 correction
+
+The one v1 qualification at `200396d5` failed before the emission epoch because
+the probe assumed the provider shared the Runner process group. Actual Runner
+PID/group was 2284214; provider PID/group was 2284218. Separate groups are allowed.
+No held-append, Stop timing or calibration data was collected. The failed raw
+qualification remains retained and cannot supply a v2 timing arm or noise sample.
+
+Normal API cleanup returned 200 and the port was released, but strict physical
+quiet failed: both exact owned processes remained sleeping after the app closed.
+The old finally block closed the clock before cancelling the run and did not
+attempt cancellation for failed native retryable phases. Those observations do not establish a product
+cause or successful physical termination from the API response.
+
+This v2 source records independent provider PID birth and process group, proves
+both groups alive during the hold and absent after Stop, and keeps the server
+termination receipt correlated to the Runner group. Every held sample retains
+both original process births. Shared-group topology remains valid when observed.
+Cleanup releases its owned lock, attempts supported public cancellation while the
+clock is still available, records before/HTTP response/after status and native
+cancellation metadata, and then closes the clock. No manual process kill belongs
+to a passed functional oracle; exact owned cleanup after a failed qualification
+is separate negative evidence. New source review and runtime qualification are
+required. Protocol name, workload, precision rule and all deadlines are unchanged.
 
 ## Registration and ownership
 
@@ -54,7 +79,7 @@ then require the cancellation intent and its own matching committed audit,
 native acknowledged dispatch and its own matching acknowledgement audit,
 normal cancelled settlement, successful Stop HTTP, server-authored
 `native.local_process_stopped` receipt for the exact prior PID/group, independently
-absent runner/group/provider, and the exact owned local lease released without
+absent runner/group/provider/provider-group, and the exact owned local lease released without
 failed cleanup. Transcript checks require complete compact payloads, unique source
 identities, ordered canonical prefix, original emission clocks, zero accepted
 results, and persistence after reload. The raw transport recovery policy stays
@@ -86,8 +111,15 @@ uncertainty. Screenshots and reload happen after those timing observations.
 Any failure, timeout, censored observation, query/clock fault or cleanup error
 makes the arm ineligible. Partial raw Playwright results and the final attachment
 remain even after failure. Cleanup first releases/rolls back only the owned lock,
-closes both connections, retires its clock, settles only its owned run and restores
-owned experimental settings. The external operator must independently prove the
+closes both connections, settles only its owned run while its clock is available,
+then retires the clock and restores owned experimental settings. Supported public
+phases are queued/running/scheduled_retry and failed native retryable_failure;
+other terminal phases are not presumed cancelable or physically stopped. This
+cleanup subset follows `server/src/services/heartbeat/recovery.ts` active statuses
+and `native-cancellation-request.ts` retryable eligibility, reached through the
+normal board POST in `routes/agents.ts`. The server rechecks durable coordinator
+eligibility and owns cancellation barriers; the probe does not grant authority.
+ The external operator must independently prove the
 server, database, runner, provider and browser are gone before the next arm.
 
 ## Separate quantitative registration (50 short arms)
