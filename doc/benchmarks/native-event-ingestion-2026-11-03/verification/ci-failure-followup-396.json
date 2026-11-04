@@ -1,0 +1,72 @@
+{
+  "schema": "paperclip.native-ingestion.ci-followup.v1",
+  "recordedAtUtc": "2026-11-04T16:36:41.264562+00:00",
+  "previousDeliveryHeads": {
+    "B1": "aa62920217154074571b193388caca0cfe6fd696",
+    "B2": "1f07f7a72d1d89f787478d9aa8bd6e9e0a368120"
+  },
+  "benchmarkApplicationPinsUnchanged": {
+    "B0": "16293fd57cf7187e0f1ce3783a1f736603df9881",
+    "B1": "e1094ca75490039be5e65a242a4c683d0a87c82c",
+    "B2": "3100f2501b9a8d52ec175dee3a6145322b317be1"
+  },
+  "failedWorkflows": [
+    41856213771,
+    41856253335
+  ],
+  "failedCiMergeRevisions": {
+    "B1": "9e9b617fe33a7960cca6345ed4831dd957ed2d0b",
+    "B2": "967ee09c53a9109dcddf224a7f32af0ef32e97b6"
+  },
+  "retentionFixture": {
+    "cause": "The CI base deliberately resumes readiness of the already validated same retained sandbox lease before short preparation. The fixture incorrectly threw at that readiness boundary, so all3 modes failed before their intended preparation exception and retained-workspace assertions.",
+    "correction": "Model successful same-allocation readiness: assert exact environment/lease/company/run/task/workspace/providerLeaseId/remoteCwd; return input.lease. Keep all replacement/destructive/provider prohibitions. When readiness exists, assert at most one call and before preparation; older396 paths can call it zero times.",
+    "reproductionRevision": "9e9b617fe33a7960cca6345ed4831dd957ed2d0b",
+    "before": {
+      "passed": 0,
+      "failed": 3
+    },
+    "after": {
+      "passed": 3,
+      "failed": 0
+    },
+    "modes": [
+      "modern",
+      "legacy",
+      "provider_history"
+    ],
+    "originalPostconditionsUnchanged": true,
+    "older396AllowsZeroReadinessCalls": true,
+    "timeoutChanges": false,
+    "sourceOriginalSha256": "9fc9bd0810b4622f849a2549a8e6b373a09553906a603caf3426428839f6053d",
+    "sourceCorrectedSha256": "43838f5e62e5ea8611d4e7a87a146802fdd11b979327c80848c29d9786f9b12e",
+    "redLogSha256": "55d03a23cd495ed711cdbfedc3fc81c48b3b06046dcbd8f995dc34620804572b",
+    "greenLogSha256": "e97f466245fb6c983b18a45ed3e65a24adf56bdcb22d1d2435ff013c62e7bb51"
+  },
+  "nativeStartupInvestigation": {
+    "status": "CAUSE_NOT_YET_ESTABLISHED_IN_CI",
+    "diagnosisSha256": "c33f069f8b05dd5a874486f91dcac390cce78d0da97d7b7ed68e994e9ef7cc8c",
+    "twoLocalDiagnosticCopiesPassed": true,
+    "localSuccessDoesNotEstablishCiFlakeOrFix": true,
+    "newFields": [
+      "actual selected debug native SHA256 and --build-metadata",
+      "checkout HEAD plus fifteen input objects, explicitly not compiled-binary proof",
+      "ACPX command queue/failure times and sidecar/Node hashes",
+      "Codex probe, registration entry/ready/abort/release times; null means unobserved"
+    ],
+    "failureOnly": true,
+    "originalAssertionsBudgetsProviderCorpusAndRealPathsUnchanged": true,
+    "sourceChecks": {
+      "passed": 24,
+      "kind": "AST parity and mocked failure-path faults; no actual changed test execution"
+    },
+    "sourcePacketSha256": "4cfe89b28c8ec09e70bb4c9e43ab09ad5bf3e8fec91654f360672573028b5afd",
+    "independentReviewSha256": "95f142f114571e9e23e9cf4a537f4984dd3a287e944908357b718ab5c5ae5fa2"
+  },
+  "separateInfrastructureFailures": "B1 e2e jobs and B2 build/typecheck had runner shutdown/cancelled evidence; these do not establish source compiler failures. B1 workspace ZIP timeout remains a separate failed check.",
+  "limits": [
+    "No current-head CI pass claimed; replacement checks are required.",
+    "This change is limited to three test files and this evidence record; production/native inputs and timed measurement drivers are unchanged.",
+    "The earlier failed application A/A remains failed. No application repeatability or performance gain is accepted."
+  ]
+}
