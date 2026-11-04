@@ -406,6 +406,37 @@ const support = await getEmbeddedPostgresTestSupport();
         await db.delete(activityLog).where(eq(activityLog.id, activity.id));
       }
     });
+    it("admits an origin comment proven cancelled through the comment-delete route", async () => {
+      const cancelledId = randomUUID();
+      const buildWithCancelledOrigin = () =>
+        buildExecutionContinuation({
+          db,
+          companyId,
+          issueId,
+          agentId,
+          context: { commentId: cancelledId },
+          summary: null,
+          exposeLowTrustRaw: false,
+        });
+      await expectMissingContinuationContext(buildWithCancelledOrigin);
+      const [activity] = await db
+        .insert(activityLog)
+        .values({
+          companyId,
+          actorType: "user",
+          actorId: "local-board",
+          action: "issue.comment_cancelled",
+          entityType: "issue",
+          entityId: issueId,
+          details: { commentId: cancelledId },
+        })
+        .returning();
+      try {
+        await expect(buildWithCancelledOrigin()).resolves.toMatchObject({ companyId, issueId });
+      } finally {
+        await db.delete(activityLog).where(eq(activityLog.id, activity.id));
+      }
+    });
     it.each(["done", "cancelled"])("rejects continuation after the task becomes %s", async (status) => {
       await db.update(issues).set({ status }).where(eq(issues.id, issueId));
       try {

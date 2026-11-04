@@ -258,7 +258,7 @@ export async function buildExecutionContinuation(input: {
         and(
           eq(activityLog.companyId, companyId),
           eq(activityLog.entityId, issueId),
-          eq(activityLog.action, "issue.queued_comment_discarded"),
+          inArray(activityLog.action, ["issue.queued_comment_discarded", "issue.comment_cancelled"]),
         ),
       );
     const discardedIds = new Set(
