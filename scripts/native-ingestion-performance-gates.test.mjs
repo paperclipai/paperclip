@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
+import { H5_MODE, H5_PROTOCOL, H4D_PROTOCOL, H5_TOPOLOGY, H5_LIMITS, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS,
+  originalTerminal, assessH5Arm, requireH5Candidate } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { gzipSync } from "node:zlib";
 import { evaluateServiceRepeatability, noiseExceedingPairedWins } from "./native-ingestion-performance-gates.mjs";
 
 test("four pairs must individually improve beyond noise", () => {
@@ -77,17 +80,23 @@ const workloads = [
 function browserReport(revision, latency) {
   const companyId = "00000000-0000-4000-8000-000000000001", environmentId = "00000000-0000-4000-8000-000000000002";
   const localEnvironmentId = "00000000-0000-4000-8000-000000000003", controlAgentId = "00000000-0000-4000-8000-000000000004";
-  const remoteAgentId = "00000000-0000-4000-8000-000000000005";
   const id = (kind, caseIndex, index) => `00000000-0000-4000-8000-${(kind * 100000 + caseIndex * 1000 + index).toString(16).padStart(12, "0")}`;
+  const remoteAgentIds = Array.from({ length: 100 }, (_, index) => id(9, 0, index));
   const transportPolicy = { streaming: "sandbox-remote", operatorStop: "local",
     realCloudStop: "Separate required qualification; fake-plugin void receipts grant no remote Stop authority" };
-  return { protocolVersion: "v4-remote-streaming-original-local-stop-clock-stream", transport: "sandbox-remote-with-local-stop", transportPolicy, companyId,
+  return { protocolVersion: H4D_PROTOCOL, transport: "sandbox-remote-with-local-stop", transportPolicy, companyId,
+    bodyStartedAtMs: 1, agentTopology: { ...H5_TOPOLOGY, remoteAgentPoolSize: 100 },
+    harnessProvenance: { sourceRevision: "b".repeat(40), sourceStatus: "", driverLockSha256: "8".repeat(64),
+      sourceHashes: { "native-event-ingestion.journey.ts": "9".repeat(64), "fixtures/native-ingestion-h5.mjs": "a".repeat(64) } },
     resourceBudgets: { providerReadinessMs: 300000, fullInvocationMs: 900000, streamingMs: 120000,
       terminalDrainageMs: 180000, stopAcknowledgementMs: 30000, remoteLeaseCleanupMs: 30000 },
     local: { transport: "local", environmentId: localEnvironmentId, controlAgentId,
       selection: "Normal local environment + separate control agent defaultEnvironmentId; existing test-only Codex leaf command fixture",
       commandSha256: "6".repeat(64), loaderSha256: "7".repeat(64) },
-    remote: { transport: "sandbox-remote", revision, buildRevision: revision, environmentId, agentIds: [remoteAgentId],
+    remote: { transport: "sandbox-remote", revision, buildRevision: revision, environmentId, agentIds: remoteAgentIds,
+      agentSetup: { count: 100, concurrency: 8, complete: true, startedAtMs: 2, settledAtMs: 40,
+        attempts: remoteAgentIds.map((agentId, index) => ({ index, agentId, status: "fulfilled",
+          startedAtMs: 3 + Math.floor(index / 8) * 2, settledAtMs: 4 + Math.floor(index / 8) * 2 })) },
       runnerPublicUrl: "wss://127.0.0.1:32100",
       selection: "Normal plugin install + sandbox environment + agent defaultEnvironmentId; no runtime resolver override",
       plugin: { pluginKey: "paperclip.fake-sandbox-provider", assetHashes: Object.fromEntries(["worker.js", "plugin.js", "manifest.js", "lease-cleanup.js"].map(file => [file, "5".repeat(64)])) },
@@ -104,7 +113,7 @@ function browserReport(revision, latency) {
         observedReadOnly: "on", observedIsolation: "repeatable read", kind: stop ? "host-file-journal" : "database-controller-checkpoint" };
       const rows = Array.from({ length: workload.runs }, (_, index) => ({
         run_id: id(1, caseIndex, index), issue_id: id(2, caseIndex, index), company_id: companyId,
-        agent_id: stop ? controlAgentId : remoteAgentId,
+        agent_id: stop ? controlAgentId : remoteAgentIds[index],
         lease_id: id(3, caseIndex, index), environment_id: actualEnvironmentId, runtime_mode: "native", provider: stop ? "local" : "fake-plugin",
         provider_lease_id: stop ? null : `fake-plugin://${id(1, caseIndex, index)}/fixture`,
         checkpoint_part: stop ? null : "header", checkpoint_header_bytes: stop ? null : 256,
@@ -161,6 +170,224 @@ function browserReport(revision, latency) {
     }) };
 }
 
+function h5Report(revision, loadedLatency) {
+  const report = browserReport(({ ...H5_BASELINE_REVISIONS, B2: "c".repeat(40) })[revision], 1000);
+  Object.assign(report, { protocolVersion: H5_PROTOCOL, observationMode: H5_MODE,
+    workloadSha256: H5_WORKLOAD_SHA256, observationLimits: H5_LIMITS, observationComplete: true,
+    actualPlaywrightTimeoutMs: H5_LIMITS.fullInvocationMs, measurementSha256: "h5-synthetic-fixed-fixture",
+    serverEntrySha256: "e".repeat(64), compiledHotPathHashes: {
+      "server/dist/services/heartbeat-run-events.js": "f".repeat(64),
+      "server/dist/services/native-runtime/paperclip-control-plane-port.js": "1".repeat(64),
+      "server/dist/vendor/paperclip-runner/native-session-runtime.js": "2".repeat(64) } });
+  for (const item of report.cases) {
+    const latency = item.name === "burst512" ? loadedLatency : 1000;
+    item.settledAtMs = item.epochMs + latency; item.drainThroughTerminalMs = latency;
+    item.firstVisibleAfterEmissionMs = latency; item.emissionToVisible = { medianMs: latency, p95Ms: latency };
+    item.intendedToVisible = { p95Ms: latency };
+    if (!item.stop) item.remoteLeasesCheckedAtMs = item.settledAtMs + 1;
+    item.visible = Array.from({ length: item.stop ? 3 : item.events }, (_, index) => ({ index, visibleMs: item.settledAtMs }));
+    const missed = latency > 120000, assessedAtMs = missed ? item.epochMs + 120000 : item.settledAtMs;
+    const streaming = { original: { status: missed ? "failed" : "passed", reason: missed ? "original_streaming_deadline" : null,
+      startedAtMs: item.epochMs, deadlineMs: item.epochMs + 120000, assessedAtMs,
+      target: item.stop ? 3 : item.events, lastObservedCount: missed ? 30 : item.visible.length,
+      lastObservedAtMs: missed ? assessedAtMs - 1 : assessedAtMs,
+      error: missed ? "Timeout 120000ms exceeded while waiting on the predicate" : null },
+      observation: { ceilingMs: 600000, deadlineMs: item.epochMs + 600000, complete: true, censored: false, completedAtMs: item.settledAtMs } };
+    const terminalObservation = { startedAtMs: item.settledAtMs, deadlineMs: item.settledAtMs + 180000,
+      assessedAtMs: item.settledAtMs, lastObservedAtMs: item.settledAtMs, observedRuns: item.runs, terminalRuns: item.runs,
+      lastStatuses: item.runIds.map(runId => ({ runId, status: item.stop ? "cancelled" : "succeeded" })), complete: true, censored: false };
+    item.h5 = { streaming, terminalObservation, terminalOriginal: originalTerminal(streaming, terminalObservation),
+      visibleCountByOriginalPaintDeadline: missed ? 0 : item.visible.length,
+      independentDrain: { verifiedAtMs: item.settledAtMs + 10, elapsedFromEpochMs: latency + 10,
+        deltaCount: item.runs * (item.stop ? 3 : item.events), resultAcceptedCount: item.stop ? 0 : item.runs, clockStreamsClosed: true } };
+    item.terminalStatuses = item.runIds.map(runId => ({ runId, runtimeMode: "native", status: item.stop ? "cancelled" : "succeeded" }));
+    for (const row of item.durable) row.resultAcceptedEvents = item.stop ? 0 : 1;
+  }
+  return report;
+}
+
+test("H5 assessor retains an original SLA failure assessed before its nominal streaming deadline", () => {
+  const report = h5Report("B0", 180000), streaming = report.cases[3].h5.streaming.original;
+  streaming.assessedAtMs = streaming.deadlineMs - 750;
+  streaming.lastObservedAtMs = streaming.assessedAtMs - 1;
+  const outcome = assessH5Arm(report, { status: "passed", retry: 0, errors: [], timeoutMs: H5_LIMITS.fullInvocationMs,
+    startedAt: "2026-11-03T00:00:00.000Z", durationMs: 500000 });
+  assert.equal(outcome.originalSlaPassed, false);
+  assert.deepEqual(outcome.misses, ["burst512:streaming120"]);
+  assert.throws(() => requireH5Candidate("final-b2", outcome, outcome), /every original SLA/);
+});
+
+test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires complete owning evidence", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "native-ingestion-h5-gates-"));
+  const script = new URL("./compare-native-ingestion-browser.ts", import.meta.url);
+  const save = async (name, value) => { const file = path.join(directory, name); await writeFile(file, JSON.stringify(value)); return file; };
+  const run = args => spawnSync(process.execPath, [script.pathname, `--observation-mode=${H5_MODE}`, ...args], { encoding: "utf8" });
+  const hash = value => createHash("sha256").update(value).digest("hex"), inventories = new Map();
+  async function inventory(report, playwrightFile, name) {
+    const variant = ({ [H5_BASELINE_REVISIONS.B0]: "B0", [H5_BASELINE_REVISIONS.B1]: "B1", ["c".repeat(40)]: "B2" })[report.sourceRevision];
+    if (!inventories.has(variant)) {
+      const roots = ["server/dist", "ui/dist", "packages/db/src", "packages/shared/src"];
+      const files = Object.entries({ ...report.compiledHotPathHashes, "server/dist/index.js": report.serverEntrySha256,
+        "packages/db/src/client.ts": "3".repeat(64), "packages/shared/src/index.ts": "4".repeat(64), "ui/dist/index.html": "5".repeat(64) })
+        .map(([path, sha256]) => ({ bytes: 10, path, sha256 })).sort((left, right) => left.path.localeCompare(right.path, "en"));
+      const aggregateSha256 = hash(files.map(row => JSON.stringify({ bytes: row.bytes, path: row.path, sha256: row.sha256 })).join("\n") + "\n");
+      const manifestBytes = gzipSync(Buffer.from(JSON.stringify({ variant, revision: report.sourceRevision,
+        compiledBuildRevision: report.compiledBuildRevision, roots, fileCount: files.length, files, aggregateSha256 })));
+      const manifestFile = path.join(directory, `${variant}-artifact-inventory.json.gz`); await writeFile(manifestFile, manifestBytes);
+      const manifestFileSha256 = hash(manifestBytes);
+      const inventorySummaryFile = await save(`${variant}-summary.json`, { inventories: { [variant]: {
+        manifest: path.basename(manifestFile), manifestSha256: manifestFileSha256, aggregateSha256, fileCount: files.length } } });
+      const qualifiedReceiptFile = await save(`${variant}-qualified.json`, { results: [{ variant, revision: report.sourceRevision,
+        compiledBuildRevision: report.compiledBuildRevision, sourceClean: true }], rustSourceTree: "9".repeat(40),
+        binarySha256: report.remote.runner.sha256, nativeStageHashes: [{ variant, binarySha256: report.remote.runner.sha256 }],
+        artifactInventorySummary: inventorySummaryFile });
+      inventories.set(variant, { manifestFile, manifestFileSha256, aggregateSha256, inventorySummaryFile,
+        inventorySummarySha256: hash(await readFile(inventorySummaryFile)), qualifiedReceiptFile,
+        qualifiedReceiptSha256: hash(await readFile(qualifiedReceiptFile)) });
+    }
+    return save(`${name}-inventory.json`, { schema: "paperclip.native-ingestion.arm-inventory.v1", variant,
+      sourceRevision: report.sourceRevision, compiledBuildRevision: report.compiledBuildRevision,
+      playwrightReportSha256: hash(await readFile(playwrightFile)), ...inventories.get(variant) });
+  }
+  async function manifest(prefix, candidateLatency, { sameRevision = false, baselineRevision = "B0", candidateRevision = "B2", mutate, duration = 500000 } = {}) {
+    const entries = [];
+    for (let index = 0; index < 5; index++) {
+      const entry = {};
+      for (const arm of ["baseline", "candidate"]) {
+        const report = h5Report(arm === "baseline" || sameRevision ? baselineRevision : candidateRevision, arm === "baseline" ? 180000 : candidateLatency);
+        const owner = { timeout: 1200000, expectedStatus: "passed", results: [{ status: "passed", retry: 0,
+          duration, startTime: "2026-11-03T00:00:00.000Z", errors: [], attachments: [] }] };
+        if (index === 0 && arm === "candidate") mutate?.(report, owner);
+        owner.results[0].attachments.push({ name: "native-ingestion-evidence", contentType: "application/json",
+          body: Buffer.from(JSON.stringify(report)).toString("base64") });
+        entry[`${arm}File`] = await save(`${prefix}-${index}-${arm}.json`, report);
+        entry[`${arm}PlaywrightFile`] = await save(`${prefix}-${index}-${arm}-playwright.json`, { suites: [{ tests: [owner] }] });
+        entry[`${arm}InventoryFile`] = await inventory(report, entry[`${arm}PlaywrightFile`], `${prefix}-${index}-${arm}`);
+      }
+      entries.push(entry);
+    }
+    return save(`${prefix}-pairs.json`, entries);
+  }
+  try {
+    const proof = JSON.parse(JSON.stringify(h5Report("B2", 1000)).replaceAll("00000000-", "10000000-"));
+    proof.protocolVersion = H4D_PROTOCOL;
+    proof.measurementSha256 = "h5-synthetic-fixed-fixture";
+    // H4d defaults use the same frozen source/geometry as the observation arms.
+    for (const field of ["observationMode", "observationLimits", "observationComplete", "workloadSha256", "actualPlaywrightTimeoutMs"]) delete proof[field];
+    for (const item of proof.cases) { delete item.h5; delete item.terminalStatuses; for (const row of item.durable) delete row.resultAcceptedEvents; }
+    const originalProof = await save("original-h4d-playwright.json", { suites: [{ tests: [{ timeout: 900000, expectedStatus: "passed", results: [{
+      status: "passed", retry: 0, duration: 5000, startTime: "2026-11-04T00:00:00.000Z", errors: [], attachments: [{
+        name: "native-ingestion-evidence", body: Buffer.from(JSON.stringify(proof)).toString("base64") }] }] }] }] });
+    const originalInventory = await inventory(proof, originalProof, "original-h4c");
+    const finalProofArgs = [`--original-h4d-proof=${originalProof}`, `--original-h4d-inventory=${originalInventory}`];
+    const noise = path.join(directory, "aa.json");
+    const aa = run(["--phase=aa", `--pairs=${await manifest("aa", 181000, { sameRevision: true })}`, `--output=${noise}`]);
+    assert.equal(aa.status, 0, aa.stderr);
+    const aaReport = JSON.parse(await readFile(noise, "utf8"));
+    assert.equal(aaReport.h5Assessments.length, 5);
+    assert.deepEqual(aaReport.h5Assessments[0].baseline.misses, ["burst512:streaming120"]);
+    const cursor = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression",
+      `--pairs=${await manifest("cursor", 180000, { candidateRevision: "B1" })}`, `--noise-report=${noise}`, "--require-acceptance"]);
+    assert.equal(cursor.status, 0, cursor.stderr);
+    const cursor900 = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression",
+      `--pairs=${await manifest("cursor-matched900", 180000, { candidateRevision: "B1", duration: 950000 })}`,
+      `--noise-report=${noise}`, "--require-acceptance"]);
+    assert.equal(cursor900.status, 0, cursor900.stderr);
+    const added900 = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression",
+      `--pairs=${await manifest("cursor-added900", 180000, { candidateRevision: "B1", mutate: (_report, owner) => { owner.results[0].duration = 950000; } })}`,
+      `--noise-report=${noise}`, "--require-acceptance"]);
+    assert.notEqual(added900.status, 0, "Cursor candidate cannot add an unmatched900 miss");
+    const goodPairs = await manifest("good", 1000);
+    const good = run(["--candidate-policy=final-b2", `--pairs=${goodPairs}`, `--noise-report=${noise}`, ...finalProofArgs, "--require-acceptance"]);
+    assert.equal(good.status, 0, good.stderr);
+    const wrongPolicy = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression", `--pairs=${goodPairs}`,
+      `--noise-report=${noise}`, "--require-acceptance"]);
+    assert.notEqual(wrongPolicy.status, 0); assert.match(wrongPolicy.stderr, /Cursor policy requires B0→B1/);
+    const b1Noise = path.join(directory, "aa-b1.json");
+    const b1AA = run(["--phase=aa", `--pairs=${await manifest("aa-b1", 181000, { sameRevision: true, baselineRevision: "B1" })}`, `--output=${b1Noise}`]);
+    assert.equal(b1AA.status, 0, b1AA.stderr);
+    const incremental = run(["--candidate-policy=final-b2", `--pairs=${await manifest("b1-b2", 1000, { baselineRevision: "B1" })}`,
+      `--noise-report=${b1Noise}`, ...finalProofArgs, "--require-acceptance"]);
+    assert.equal(incremental.status, 0, incremental.stderr);
+    const pendingFile = path.join(directory, "pending-h4c.json");
+    const pending = run(["--candidate-policy=final-b2", `--pairs=${goodPairs}`, `--noise-report=${noise}`, `--output=${pendingFile}`, "--require-acceptance"]);
+    assert.notEqual(pending.status, 0);
+    const pendingReport = JSON.parse(await readFile(pendingFile, "utf8"));
+    assert.equal(pendingReport.performancePassed, true); assert.equal(pendingReport.acceptancePassed, false);
+    const performanceOnly = run(["--candidate-policy=final-b2", `--pairs=${goodPairs}`, `--noise-report=${noise}`, "--require-performance"]);
+    assert.equal(performanceOnly.status, 0, performanceOnly.stderr);
+    for (const [name, change, message] of [
+      ["h4c-too-early", (_value, owner) => { owner.results[0].startTime = "2026-11-02T00:00:00.000Z"; }, /follow all candidate/],
+      ["h4c-wrong-sut", value => { value.sourceRevision = H5_BASELINE_REVISIONS.B0; value.compiledBuildRevision = value.sourceRevision; }, /strictly equal/],
+      ["h4c-observation-mode", value => { value.observationMode = H5_MODE; }, /H4d default deadlines/],
+      ["old-h4c-proof", value => { value.protocolVersion = "v4-remote-streaming-original-local-stop-clock-stream";
+        value.harnessProvenance.sourceRevision = "7d7e7a88d562a95a1d407b76474763b666c181f5"; }, /Old H4c geometry/],
+      ["h4d-wrong-harness", value => { value.harnessProvenance.sourceRevision = "d".repeat(40); }, /same frozen harness source/],
+      ["h4d-wrong-measurement", value => { value.measurementSha256 = "old-h5a"; }, /same measured harness bytes/],
+      ["h4d-shared-agent", value => { value.cases[3].controllerAuthority.rows[1].agent_id = value.cases[3].controllerAuthority.rows[0].agent_id; }, /distinct normal agents/],
+      ["h4d-missing-stop-proof", value => { delete value.cases[5].localStopProof; }, /physical Stop/],
+      ["h4d-provider-still-alive", value => { value.cases[5].localStopProof.processes.providerAbsent = false; }, /provider remains alive/],
+      ["h4d-pending-local-lease", value => { value.cases[5].localStopProof.lease.status = "active"; }, /lease cleanup remains unsettled/],
+      ["h4d-wrong-local-lease", value => { value.cases[5].localStopProof.lease.id = value.cases[3].controllerAuthority.rows[0].lease_id; }, /strictly equal/],
+      ["h4d-ack-timing-mismatch", value => { value.cases[5].stopAcknowledgedAtMs++; }, /acknowledgement timing boundary/],
+      ["h4d-missing-remote-leases", value => { delete value.cases[3].remoteLeases; }, /post-timing lease cleanup proof/],
+      ["h4d-pending-remote-lease", value => { value.cases[3].remoteLeases[0].cleanupStatus = "pending"; }, /lease cleanup remains unsettled/],
+      ["h4d-wrong-remote-lease", value => { value.cases[3].remoteLeases[0].id = value.cases[5].controllerAuthority.rows[0].lease_id; }, /strictly equal/],
+      ["h4d-premature-remote-cleanup-proof", value => { value.cases[3].remoteLeasesCheckedAtMs = value.cases[3].settledAtMs - 1; }, /leases after recorded timing/],
+      ["h4d-wrong-authority-company", value => { value.cases[3].controllerAuthority.rows[0].company_id = "00000000-0000-4000-8000-000000099999"; }, /authority company mismatch/],
+      ["h4d-wrong-authority-run", value => { value.cases[3].controllerAuthority.rows[0].run_id = value.cases[5].runIds[0]; }, /authority run set mismatch/],
+    ]) {
+      const report = JSON.parse(await readFile(originalProof, "utf8")), owner = report.suites[0].tests[0],
+        value = JSON.parse(Buffer.from(owner.results[0].attachments[0].body, "base64").toString());
+      change(value, owner); owner.results[0].attachments[0].body = Buffer.from(JSON.stringify(value)).toString("base64");
+      const file = await save(`${name}-playwright.json`, report), sidecar = await inventory(value, file, name), output = path.join(directory, `${name}-result.json`);
+      const attempt = run(["--candidate-policy=final-b2", `--pairs=${goodPairs}`, `--noise-report=${noise}`,
+        `--original-h4d-proof=${file}`, `--original-h4d-inventory=${sidecar}`, `--output=${output}`, "--require-acceptance"]);
+      assert.notEqual(attempt.status, 0, name);
+      const rejected = JSON.parse(await readFile(output, "utf8"));
+      assert.equal(rejected.performancePassed, true); assert.equal(rejected.acceptancePassed, false);
+      assert.match(rejected.originalH4dConfirmation.reason, message);
+    }
+    const badOutput = path.join(directory, "still-misses.json");
+    const bad = run(["--candidate-policy=final-b2", `--pairs=${await manifest("still-misses", 150000)}`,
+      `--noise-report=${noise}`, `--output=${badOutput}`, "--require-acceptance"]);
+    assert.notEqual(bad.status, 0);
+    const rejected = JSON.parse(await readFile(badOutput, "utf8"));
+    assert.equal(rejected.acceptancePassed, false);
+    assert.equal(rejected.h5Assessments[0].candidateSlaPolicyPassed, false);
+    for (const [name, mutate, message] of [
+      ["old-h5a-protocol", report => { report.protocolVersion = "v5-complete-observation-original-sla"; }, /strictly equal/],
+      ["censored", report => { report.cases[3].h5.streaming.observation.censored = true; }, /false/],
+      ["terminal-failed", report => { report.cases[3].terminalStatuses[99].status = "failed"; }, /successful drainage/],
+      ["result-missing", report => { report.cases[3].durable[99].resultAcceptedEvents = 0; }, /persisted result/],
+      ["missing-delta", report => { report.cases[3].durable[99].individualDeltas--; }, /individualDeltas|result.events|512/],
+      ["wrong-workload", report => { report.workloadSha256 = "old"; }, /registration changed/],
+      ["pw-retry", (_report, owner) => { owner.results[0].retry = 1; }, /Retries/],
+      ["pw-error", (_report, owner) => { owner.results[0].errors.push({ message: "unexpected API failure" }); }, /deep-equal/],
+      ["wrong-observation-timeout", (_report, owner) => { owner.timeout = 900000; }, /1200000/],
+    ]) {
+      const result = run(["--candidate-policy=final-b2", `--pairs=${await manifest(name, 1000, { mutate })}`,
+        `--noise-report=${noise}`, "--require-acceptance"]);
+      assert.notEqual(result.status, 0, name); assert.match(result.stderr, message, name);
+    }
+    const outer = run(["--candidate-policy=final-b2", `--pairs=${await manifest("outer900", 1000, { duration: 950000 })}`,
+      `--noise-report=${noise}`, "--require-acceptance"]);
+    assert.notEqual(outer.status, 0, "Observed total duration900 miss cannot qualify final B2");
+    const incomplete = JSON.parse(await readFile(await manifest("missing-owner", 1000), "utf8"));
+    delete incomplete[0].candidatePlaywrightFile;
+    const missing = run(["--candidate-policy=final-b2", `--pairs=${await save("missing-owner-manifest.json", incomplete)}`,
+      `--noise-report=${noise}`, "--require-acceptance"]);
+    assert.notEqual(missing.status, 0); assert.match(missing.stderr, /independent owning Playwright/);
+    const global = JSON.parse(await readFile(await manifest("global-error", 1000), "utf8"));
+    const globalOwner = JSON.parse(await readFile(global[0].candidatePlaywrightFile, "utf8"));
+    globalOwner.errors = [{ message: "global teardown failed" }];
+    await writeFile(global[0].candidatePlaywrightFile, JSON.stringify(globalOwner));
+    const globalFailed = run(["--candidate-policy=final-b2", `--pairs=${await save("global-error-manifest.json", global)}`,
+      `--noise-report=${noise}`, "--require-acceptance"]);
+    assert.notEqual(globalFailed.status, 0); assert.match(globalFailed.stderr, /global error/);
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
 test("browser CLI rejects the three-pairs-above-noise counterexample and ineligible evidence", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "native-ingestion-gates-"));
   const script = new URL("./compare-native-ingestion-browser.ts", import.meta.url);
@@ -201,9 +428,18 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
       ["profile", report => { report.diagnosticOnly = true; }, /Diagnostic profiles/],
       ["profile-ineligible", report => { report.performanceAcceptanceEligible = false; }, /Profile-only evidence/],
       ["missing-retained-prelude", report => { report.cases.find(row => row.prelude).preludeProof.individualDeltas--; }, /stored prelude deltas/],
-      ["legacy-protocol", report => { delete report.protocolVersion; }, /v4 mixed clock protocol/],
-      ["old-local-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; report.transport = "local"; }, /v4 mixed clock protocol/],
-      ["old-remote-protocol", report => { report.protocolVersion = "v3-supported-remote-original-clock-stream"; }, /v4 mixed clock protocol/],
+      ["legacy-protocol", report => { delete report.protocolVersion; }, /independent-agent/],
+      ["old-local-protocol", report => { report.protocolVersion = "v2-compact-markers-original-clock-stream"; report.transport = "local"; }, /independent-agent/],
+      ["old-remote-protocol", report => { report.protocolVersion = "v3-supported-remote-original-clock-stream"; }, /independent-agent/],
+      ["old-h4c-geometry", report => { report.protocolVersion = "v4-remote-streaming-original-local-stop-clock-stream"; }, /independent-agent/],
+      ["shared-participant-agent", report => { report.cases[3].controllerAuthority.rows[1].agent_id = report.cases[3].controllerAuthority.rows[0].agent_id; }, /distinct normal agents/],
+      ["participant-outside-pool", report => { report.cases[3].controllerAuthority.rows[1].agent_id = "00000000-0000-4000-8000-000000099999"; }, /outside the normal agent pool/],
+      ["incomplete-agent-pool", report => { report.remote.agentIds.pop(); }, /Incomplete independent/],
+      ["unfinished-agent-setup", report => { report.remote.agentSetup.complete = false; }, /settle successfully/],
+      ["rejected-agent-setup", report => { report.remote.agentSetup.attempts[0].status = "rejected"; }, /Rejected agent setup/],
+      ["agent-setup-concurrency", report => { report.remote.agentSetup.concurrency = 9; }, /strictly equal/],
+      ["agent-setup-overlap", report => { for (const row of report.remote.agentSetup.attempts.slice(0, 9)) { row.startedAtMs = 3; row.settledAtMs = 39; } }, /exceeded the fixed concurrency/],
+      ["late-agent-setup", report => { report.remote.agentSetup.settledAtMs = 60; }, /before every case activation/],
       ["wrong-transport", report => { report.transport = "local"; }, /original local Stop transport/],
       ["missing-transport-policy", report => { delete report.transportPolicy; }, /explicit transport/],
       ["fake-remote-stop", report => { report.cases[5].transport = "sandbox-remote"; }, /Wrong per-case transport/],
