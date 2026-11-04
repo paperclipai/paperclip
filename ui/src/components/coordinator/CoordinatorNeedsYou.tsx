@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowUpRight, History, Loader2 } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, History, ListFilter, Loader2, Mail } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import type { Agent, AttentionCloseMode, AttentionItem, AttentionPersonalView, DecisionHistoryItem, DecisionHistoryScope } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
@@ -17,11 +17,11 @@ import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
 import { COORDINATOR_RECENT_DECISION_MS, DECISION_HISTORY_SCOPE_OPTIONS, DEFAULT_DECISION_HISTORY_SCOPE, coordinatorCardTitle, recentDecisionReceipts } from "@/lib/coordinator-attention";
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
-import { ATTENTION_VIEW_PARAM, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
+import { ATTENTION_VIEW_LABELS, ATTENTION_VIEW_PARAM, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
 import { attentionObligationEvidence, foldAttentionObligations } from "@/lib/attention-obligations";
 import { buildCompanyUserLabelMap } from "@/lib/company-members";
-import { AttentionAudienceLine, AttentionReceiptList, AttentionUnassignedBanner, AttentionViewSwitch } from "@/components/AttentionViews";
+import { AttentionAudienceLine, AttentionReceiptList } from "@/components/AttentionViews";
 import { AttentionCloseMenu, AttentionForOtherGate, AttentionHiddenChip, AttentionSnoozedGroup, AttentionStaleChip, AttentionStaleGroup } from "@/components/AttentionCloseMenu";
 import { BudgetAlertActions, FailedRunActions } from "@/components/AttentionInlineVerbs";
 import { AttentionInteractionResolver } from "@/components/AttentionInteractionResolver";
@@ -32,7 +32,9 @@ import { DecisionResolver } from "@/components/DecisionResolver";
 import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
 import { SidePanelTab } from "@/components/side-panel";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { NativeSelect } from "@/components/ui/select";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { parseCssTimeMs } from "@/components/task-chat/motion-tokens";
@@ -97,6 +99,10 @@ export function CoordinatorNeedsYou() {
   // Snoozed group starts open (PAP-749 plan §3).
   const [staleOpen, setStaleOpen] = useState(false);
   const [snoozedOpen, setSnoozedOpen] = useState(true);
+  // Focus (PAP-770): controls on request — filters stay behind one entry point,
+  // and receipts collapse to a single line until opened.
+  const [showFilters, setShowFilters] = useState(false);
+  const [receiptsOpen, setReceiptsOpen] = useState(false);
   useEffect(() => { setSettling([]); setSavedIds(new Set()); setStaleOpen(false); setSnoozedOpen(true); }, [selectedCompanyId, userId, view]);
   const archivedView = view === "archived";
   const [renderLimit, setRenderLimit] = useState(40);
@@ -291,17 +297,44 @@ export function CoordinatorNeedsYou() {
       </SheetContent>
     </Sheet> : null}
     <header className="flex items-center justify-between gap-3"><h1 className="text-2xl font-medium">Needs You</h1><Button variant="ghost" onClick={showHistory}><History className="size-4" />Decision history</Button></header>
-    <AttentionViewSwitch value={view} counts={viewCounts} onChange={setView} everyone={everyone} />
-    {view === "mine" ? <AttentionUnassignedBanner count={viewCounts.unassigned} onOpen={() => setView("unassigned")} /> : null}
-    {/* What other people did with your cards (PAP-749 plan §6). Not in the badge. */}
-    {view === "mine" ? <AttentionReceiptList receipts={feed.data?.receipts ?? []} userLabelMap={userLabelMap} onOpen={navigate} onDismiss={receiptActions.dismiss} dismissingId={receiptActions.dismissingId} /> : null}
-    <div role="toolbar" aria-label="Decisions controls" className="flex flex-wrap items-center gap-2">
+    {/* Focus (PAP-770): For you is the page; Unassigned/Company are quiet chips,
+        Archived/Everyone/History fold into View, and filters hide behind one icon. */}
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center gap-1.5">
+        {view === "mine" ? null : <Button variant="ghost" size="sm" onClick={() => setView("mine")}><ArrowLeft className="size-4" />For you</Button>}
+        {([["unassigned", viewCounts.unassigned], ["company", viewCounts.company]] as const).map(([chipView, count]) =>
+          count > 0 || view === chipView ? (
+            <Button key={chipView} data-attention-view={chipView} aria-selected={view === chipView} variant={view === chipView ? "secondary" : "ghost"} size="sm" onClick={() => setView(chipView)}>
+              {ATTENTION_VIEW_LABELS[chipView]}{count > 0 ? <Badge variant="secondary" data-attention-view-count={chipView}>{count}</Badge> : null}
+            </Button>
+          ) : null)}
+      </div>
+      <div className="flex items-center gap-1">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild><Button variant="ghost" size="sm" data-attention-view-menu>View<ChevronDown className="size-4" /></Button></DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => setView("archived")}>Archived{viewCounts.archived ? ` · ${viewCounts.archived}` : ""}</DropdownMenuItem>
+            {everyone ? <DropdownMenuItem onSelect={() => setView("all")}>Everyone · {viewCounts.all}</DropdownMenuItem> : null}
+            <DropdownMenuItem onSelect={showHistory}>Decision history</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        <Button variant={showFilters || filtersActive ? "secondary" : "ghost"} size="icon-sm" aria-label="Filter and search" aria-pressed={showFilters || filtersActive} onClick={() => setShowFilters((value) => !value)}><ListFilter className="size-4" /></Button>
+      </div>
+    </div>
+    {view === "mine" ? null : <p className="text-sm text-muted-foreground">Showing <span className="font-medium text-foreground">{ATTENTION_VIEW_LABELS[view]}</span></p>}
+    {/* Receipts collapse to one line until opened (PAP-770; PAP-749 plan §6). Not in the badge. */}
+    {view === "mine" && (feed.data?.receipts?.length ?? 0) > 0 ? (
+      receiptsOpen
+        ? <AttentionReceiptList receipts={feed.data?.receipts ?? []} userLabelMap={userLabelMap} onOpen={navigate} onDismiss={receiptActions.dismiss} dismissingId={receiptActions.dismissingId} />
+        : <button type="button" onClick={() => setReceiptsOpen(true)} className="flex w-full items-center gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2 text-left text-sm text-muted-foreground transition-colors hover:bg-muted"><Mail className="size-4 shrink-0" /><span className="font-medium text-foreground">{feed.data?.receipts?.length} updates</span>on your requests<ArrowUpRight className="ml-auto size-4" /></button>
+    ) : null}
+    {showFilters || filtersActive || currentItems.length > 10 ? <div role="toolbar" aria-label="Decisions controls" className="flex flex-wrap items-center gap-2">
       <ToolbarSearch query={query} onQueryChange={setQuery} label="Search decisions" placeholder="Search decisions or task IDs…" />
       <NativeSelect aria-label="Filter decisions by agent" value={agentFilter} onChange={(event) => setAgentFilter(event.target.value)} className="w-auto"><option value="">All agents</option>{(agentQuery.data ?? []).map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</NativeSelect>
       <NativeSelect aria-label="Filter decisions by project" value={projectFilter} onChange={(event) => setProjectFilter(event.target.value)} className="w-auto"><option value="">All projects</option>{projects.map(([id, name]) => <option key={id} value={id}>{name}</option>)}</NativeSelect>
       <NativeSelect aria-label="Group decisions" value={groupBy} onChange={(event) => setGroupBy(event.target.value as Group)} className="w-auto"><option value="none">No grouping</option><option value="task">By task</option><option value="agent">By agent</option><option value="project">By project</option></NativeSelect>
       <NativeSelect aria-label="Sort decisions" value={sort} onChange={(event) => setSort(event.target.value as typeof sort)} className="w-auto"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></NativeSelect>
-    </div>
+    </div> : null}
     {feed.isPending ? <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />Loading decisions…</p> : null}
     {feed.isError ? <div role="alert" className="space-y-2"><p className="text-sm">Decisions could not be loaded.</p><Button variant="outline" onClick={() => void feed.refetch()}>Retry</Button></div> : null}
     {!feed.isPending && !feed.isError && currentItems.length === 0 ? <div className="space-y-3 py-8 text-center"><p className="text-sm text-muted-foreground">{staleItems.length ? "No current cards. Stale cards are below." : snoozedItems.length ? "No archived cards. Snoozed cards are below." : filtersActive && !visibleRecentItems.length ? "No decisions match these filters." : pendingItems.length ? "No open decisions match these filters." : EMPTY_VIEW_TEXT[view]}</p><Button variant="ghost" onClick={showHistory}>Open decision history<ArrowUpRight className="size-4" /></Button></div> : null}

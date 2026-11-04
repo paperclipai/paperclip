@@ -96,8 +96,10 @@ describe("Coordinator Needs You — Archived view and history filters (PAP-749 t
     fixture.viewCounts = { mine: 2, unassigned: 0, company: 0, archived: 2 };
     const client = await renderPage("/decisions?view=archived");
     expect(fixture.listCalls).toContainEqual(expect.objectContaining({ view: "archived", all: true }));
-    const tabs = [...container.querySelectorAll('[role="tab"]')].map((tab) => tab.textContent);
-    expect(tabs).toEqual(["For you2", "Unassigned0", "Company0", "Archived2"]);
+    // Focus (PAP-770): Archived opens from the View menu, not a persistent tab;
+    // a quiet label names the current view.
+    expect(container.querySelector("[data-attention-view-menu]")).not.toBeNull();
+    expect(container.textContent).toContain("Showing");
     const archivedCard = container.querySelector<HTMLElement>('[data-attention-card="arch"]')!;
     expect(archivedCard.querySelector('[data-attention-hidden="archived"]')?.textContent).toMatch(/^Archived /);
     const group = container.querySelector<HTMLElement>("[data-attention-snoozed-group]")!;
@@ -291,6 +293,9 @@ describe("Coordinator Needs You", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter initialEntries={[fixture.url]}><CoordinatorNeedsYou /><Location /></MemoryRouter></QueryClientProvider>));
     await flush();
+    // Focus (PAP-770): filters are on request — open them before sorting/grouping.
+    await act(async () => container.querySelector<HTMLElement>('[aria-label="Filter and search"]')!.click());
+    await flush();
     const visibleIds = () => [...container.querySelectorAll('[aria-label="Recent Decisions"] .coordinator-decision-receipt')]
       .map((item) => item.textContent?.match(/PAP-\d+/)?.[0]);
     const changeSelect = async (label: string, value: string) => {
@@ -416,15 +421,16 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     await render(client);
     expect(fixture.listCalls).toContainEqual({ all: true, view: "mine" });
     expect(fixture.listCalls.some((call) => (call as { view?: string }).view !== "mine")).toBe(false);
-    expect(tab("mine").getAttribute("aria-selected")).toBe("true");
-    expect(tab("mine").textContent).toBe("For you2");
-    expect(tab("unassigned").textContent).toBe("Unassigned1");
+    // Focus (PAP-770): For you is the page (no tab); Unassigned/Company are quiet
+    // chips, and the owner banner folds into the Unassigned chip's count.
+    expect(tab("mine")).toBeNull();
+    expect(tab("unassigned")?.textContent).toBe("Unassigned1");
     expect([...container.querySelectorAll('[data-attention-audience="mine"]')].map((line) => line.textContent))
       .toEqual(["Why me?Sent to you", "Why me?You are the reviewer"]);
-    expect(container.querySelector("[data-attention-unassigned-banner]")?.textContent).toContain("1 card needs an owner");
+    expect(container.querySelector("[data-attention-unassigned-banner]")).toBeNull();
     expect(client.getQueryCache().find({ queryKey: ["attention", "company", "reviewer", "mine"], exact: false })).toBeTruthy();
 
-    await click("Open Unassigned");
+    await act(async () => tab("unassigned")!.click()); await flush();
     expect(container.querySelector("[data-location]")?.textContent).toBe("?view=unassigned");
     expect(fixture.listCalls).toContainEqual({ all: true, view: "unassigned" });
     expect(client.getQueryCache().find({ queryKey: ["attention", "company", "reviewer", "unassigned"], exact: false })).toBeTruthy();
@@ -555,10 +561,10 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     fixture.viewCounts = { mine: 1, unassigned: 0, company: 0, archived: 0, all: 2 };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(client);
-    await vi.waitFor(() => expect(tab("all")?.getAttribute("aria-selected")).toBe("true"));
-    expect(tab("all").textContent).toBe("Everyone2");
-    // Everyone has its own count; the badge stays the For you count.
-    expect(tab("mine").textContent).toBe("For you1");
+    // Focus (PAP-770): Everyone opens from the View menu; a quiet label names the
+    // current view and a For you control returns to the page.
+    await vi.waitFor(() => expect(container.textContent).toContain("Showing Everyone"));
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "For you")).toBe(true);
     expect(fixture.listCalls).toContainEqual({ all: true, view: "all" });
     expect(client.getQueryCache().find({ queryKey: ["attention", "company", "reviewer", "all"], exact: false })).toBeTruthy();
     const card = container.querySelector<HTMLElement>('[data-attention-card="d1"]')!;
@@ -588,7 +594,10 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     fixture.viewCounts = { mine: 1, unassigned: 0, company: 0, archived: 0, all: 2 };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     await render(client); await flush();
-    expect(tab("mine").getAttribute("aria-selected")).toBe("true");
+    // Focus (PAP-770): a viewer has no Everyone — ?view=all falls back to For you
+    // (the page), so there is no "Showing" label and no For you return control.
+    expect(container.textContent).not.toContain("Showing");
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "For you")).toBe(false);
     expect(container.querySelector('[data-attention-view="all"]')).toBeNull();
     expect(fixture.listCalls.some((call) => (call as { view?: string }).view === "all")).toBe(false);
     client.clear();
