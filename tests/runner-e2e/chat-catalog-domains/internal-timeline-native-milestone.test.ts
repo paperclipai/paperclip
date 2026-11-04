@@ -369,3 +369,11 @@ it.each([
   o.reply = `Morgan's verification failed and work paused. ${handoff} ${repair}`;
   expect(gradeWorkTimeline(o).passed).toBe(expected);
 });
+
+it.each([
+  "Morgan's verification failed and work paused. Riley took the same task. Riley fixed the label and the check not only passed but exited 0.",
+  "Morgan's verification failed and work paused. Riley took over from Morgan. Riley fixed the label and the check passed.",
+])("accepts the reviewed correlative assertion or known-source takeover: %s", reply => {
+  const o = fixture(); o.reply = reply;
+  expect(gradeWorkTimeline(o).passed).toBe(true);
+});
