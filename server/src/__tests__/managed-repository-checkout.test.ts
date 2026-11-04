@@ -1,14 +1,14 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, readdir, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { materializeManagedProjectWorkspace, ensureManagedRepositoriesIgnored } from "../services/managed-repository-checkout.js";
 
 const execFile = promisify(execFileCallback);
 const directories: string[] = [];
-afterEach(async () => { await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
+afterEach(async () => { vi.unstubAllEnvs(); await Promise.all(directories.splice(0).map(dir => rm(dir, { recursive: true, force: true }))); });
 async function fixture() {
   const root = await mkdtemp(path.join(tmpdir(), "paperclip-repository-publication-"));
   directories.push(root);
@@ -32,6 +32,34 @@ describe("atomic managed repository publication", () => {
     expect(await readFile(path.join(source, ".git", "info", "exclude"), "utf8")).toBe(original);
     await ensureManagedRepositoriesIgnored(source);
     expect(await readFile(path.join(source, ".git", "info", "exclude"), "utf8")).toContain("/.paperclip-repositories/");
+  });
+  it("allows a declared plain task directory with inert Git metadata without changing its files", async () => {
+    const { target } = await fixture();
+    await mkdir(path.join(target, ".git", "info"), { recursive: true });
+    const file = path.join(target, ".git", "info", "exclude");
+    await writeFile(file, "/.paperclip-repositories/\n");
+    await expect(ensureManagedRepositoriesIgnored(target, { plainTaskDirectory: true })).resolves.toBeUndefined();
+    expect(await readFile(file, "utf8")).toBe("/.paperclip-repositories/\n");
+    await expect(ensureManagedRepositoriesIgnored(target)).rejects.toThrow("not a git repository");
+  });
+  it("still excludes managed repositories when a task directory contains a real checkout", async () => {
+    const { source } = await fixture();
+    await ensureManagedRepositoriesIgnored(source, { plainTaskDirectory: true });
+    expect(await readFile(path.join(source, ".git", "info", "exclude"), "utf8")).toContain("/.paperclip-repositories/");
+  });
+  it("retains unexpected Git errors for declared plain task directories", async () => {
+    const { root, target } = await fixture();
+    await mkdir(path.join(target, ".git"), { recursive: true });
+    vi.stubEnv("PATH", path.join(root, "missing-git"));
+    await expect(ensureManagedRepositoriesIgnored(target, { plainTaskDirectory: true })).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("rejects linked Git metadata even for a declared plain task directory", async () => {
+    const { source, target } = await fixture();
+    await mkdir(target);
+    await symlink(path.join(source, ".git"), path.join(target, ".git"), "dir");
+    const original = await readFile(path.join(source, ".git", "info", "exclude"), "utf8");
+    await expect(ensureManagedRepositoriesIgnored(target, { plainTaskDirectory: true })).rejects.toThrow("must not be a symlink");
+    expect(await readFile(path.join(source, ".git", "info", "exclude"), "utf8")).toBe(original);
   });
   it("writes the pinned receipt inside the clone before making it visible", async () => {
     const { source, target } = await fixture();

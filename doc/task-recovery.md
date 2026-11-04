@@ -15,8 +15,66 @@ new generation; a repeated HTTP request cannot.
 
 The existing exact-run retry endpoint retains its source-bound contract.
 Connected conversations use their existing inbound authorization owner. A board
-Retry changes the workspace strategy, not the external principal, source batch,
-conversation access or publication authority.
+Retry preserves external principal, conversation access and publication checks.
+A GitHub Retry selects already-saved, undelivered input before replaying the
+failed run's older request. The selected receipts transfer to the retry owner
+under the dispatch transaction. They link to its one successor, including after
+a restart or a lost dispatch response. Rejected, unadmitted retries release the
+saved input for another deliberate Retry.
+
+A deliberate GitHub Retry can admit saved input after the same App reconnects.
+It verifies the App binding in the accepted delivery or its historical working
+comment receipt, then checks current sender, repository, conversation and task
+access. The retry records the current runtime generation and credential-reference
+fingerprint. Another reconnect invalidates that admission. Historical deliveries,
+stale webhook callbacks and the exact-run retry contract retain their fences.
+Legacy input that predates saved App IDs can also use an earlier processed
+response ledger from the same company, endpoint, conversation and agent. Its
+server-owned App binding must predate that input and retain a processed delivery
+and inbound source link. The endpoint's non-null App claim cannot be replaced;
+this proves historical identity without replaying the earlier response. Missing
+proof or an explicit conflicting App binding still rejects Retry.
+
+Task Retry keeps the complete saved-input batch, including batches larger than
+the exact-run endpoint's limit. Source rows, receipts and invalidations are read
+in batches. Within one transaction, messages with the same principal and automatic
+policy context share a current-access check; every message still proves its App,
+destination, comment link and immutable source. Different automatic policy contexts
+receive separate access checks. Input in another conversation remains queued.
+
+A connected-conversation Retry can save its exact request while the matching
+system recovery generation verifies the old executor. Saving that wait grants
+no execution authority. The chat owner rechecks the same board intent, external
+principal and source batch when it resumes the deferred receipt. Containment,
+current access, task eligibility, pause and budget gates must still pass before
+one successor starts. Restarts reuse the receipt; they do not create another
+Retry generation or another external publication.
+
+Resuming a chat Retry preserves its exact authorized input batch. Independent
+board messages keep their own queue receipts and enter a separate turn. If an
+older queue merged those messages and dispatch refused the batch before any
+provider work, a new deliberate Retry can restore the undelivered receipts.
+Restoration requires the exact bootstrap failure, no execution or allocation,
+current chat authority, unchanged board input and no prior delivery. It records
+an audit event and retains the failed run and original skipped receipts.
+
+Several retained recovery holds can describe the same failed execution. A
+historical hold without a system recovery record uses the current exact Retry's
+workspace strategy for that run. It does not borrow another run's strategy or
+skip any hold's independent containment and effect checks. Attaching a Retry to
+active automatic recovery preserves its generation, attempt count and deadline.
+
+A deliberate board Retry can continue a failed native preparation after its
+saved remote workspace is verified. The source must retain its unresolved native
+adapter claim and the server's failed-preparation settlement records, with no
+provider execution, session, input or result evidence, and no active controller
+or native coordinator. Every source
+lease must have exact stop and cleanup proof. The saved snapshot must match the
+source, workspace epoch, generation and clean writer state. Resolving the
+preservation action does not discard the canonical Retry source. The same
+request resumes through normal admission and current repository access checks.
+Unknown execution, operator Stop, changed ownership and missing receipts keep
+the request held. Preservation alone does not authorize automatic replay.
 
 Agent Chat additionally requires the current conversation owner and enabled
 Agent Chat. Admission and dispatch both recheck these conditions under the
@@ -33,6 +91,12 @@ The source recovery action holds a validated `systemRecovery` record. Its
 revision and generation fence late bookkeeping writes. Physical exports still
 use the existing workspace ownership lock and controller stop receipts.
 
+The export owner can reopen its exact stopped sandbox through the environment
+runtime's recovery path. This path checks the current source action, run,
+environment, allocation, stop-only intent, and physical ownership claim before
+calling the provider. The retained-source fence still blocks ordinary resume
+and destruction. Recovery does not clear it to gain access to the saved files.
+
 Execution containment and file preservation are independent facts:
 
 - Another agent needs authoritative containment of the old executor.
@@ -40,6 +104,19 @@ Execution containment and file preservation are independent facts:
 - A fresh attempt uses a new execution workspace and the separate
   `isolated-workspace-attempts` namespace. It does not modify the original
   directory or satisfy that source's preservation/cleanup obligation.
+
+A missing managed sandbox cannot answer another stop request. Core can request
+a signed absence observation from Cloud under a host-bound server capability.
+Cloud reads the exact allocation in the historical credential's organization.
+Only a fresh signature for the exact stack, company, issue, run, lease,
+allocation and physical recovery owner can settle execution absence. Permission
+failures, a changed organization, unsigned answers and provider timeouts remain
+inconclusive. This protocol requires Cloud support before the Core consumer.
+
+An absence receipt does not recover files or complete the task. The original run
+stays failed and its source remains protected. Existing authorized input may use
+normal fresh workspace admission only after every executor is contained. Known
+publications and uncertain external effects retain their normal receipt fences.
 
 Fresh attempts currently require Core-managed storage. Plugin-owned storage
 does not yet support importing these preserved snapshots. Preparation stops
@@ -113,6 +190,8 @@ Run the focused PostgreSQL/filesystem suites from `server/`:
 `server/scripts/workspace-recovery-provider.test.mjs` is an opt-in controlled
 Daytona probe. It requires `PAPERCLIP_RECOVERY_LIVE=1`, `DAYTONA_API_KEY`,
 `PAPERCLIP_DAYTONA_SDK_PATH` and an immutable `PAPERCLIP_RECOVERY_IMAGE`.
+An immutable provider snapshot UUID in `PAPERCLIP_RECOVERY_SNAPSHOT_ID` can
+replace the image digest. The probe checks its ID and active state first.
 It interrupts export,
 joins the first controller, starts a second controller and verifies files,
 preservation receipts, agent-start count and external-operation count before

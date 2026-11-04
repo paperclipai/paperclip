@@ -192,6 +192,12 @@ function record(value: unknown): Record<string, unknown> {
     : {};
 }
 
+function requiresChatOriginProof(source: string): boolean {
+  return source === "tool_action_review" || source === "issue.monitor" || source === "native_status_decision" ||
+    source.startsWith("issue.comment") || source.startsWith("issue.interaction.") ||
+    source === "external_chat.interaction.resolve" || source === "connection_intent.resolved" || source === "issue.update";
+}
+
 export function isExternalChatPresentationContext(
   contextSnapshot: unknown,
   verifiedToolReviewChatOrigin = false,
@@ -202,18 +208,19 @@ export function isExternalChatPresentationContext(
     typeof context.source === "string" ? context.source.trim() : "";
   // Approvals and Board comments also resume ordinary internal tasks. Only
   // durable source-run or mirrored-comment proof authorizes an external reply.
-  if (
-    source === "tool_action_review" ||
-    source === "issue.monitor" ||
-    source.startsWith("issue.comment") ||
-    source === "issue.update"
-  )
+  if (requiresChatOriginProof(source))
     return verifiedToolReviewChatOrigin;
   return (
     source.startsWith("chat:") ||
     context.externalChatContinuation === true ||
     wake.externalInteractionContinuation === true
   );
+}
+
+export function isChatOriginPublicationCandidate(contextSnapshot: unknown): boolean {
+  const context = record(contextSnapshot);
+  const source = typeof context.source === "string" ? context.source.trim() : "";
+  return requiresChatOriginProof(source) || isExternalChatPresentationContext(contextSnapshot);
 }
 
 /**
@@ -285,16 +292,18 @@ function hasYieldedSemanticResult(resultJson: Record<string, unknown>) {
   );
 }
 
-export function readAcceptedMonitorContinuationSummary(
+export function readAcceptedTaskContinuationSummary(
   resultJson: Record<string, unknown> | null | undefined,
 ): string | null {
   const result = record(resultJson);
-  if (result.finalizationPhase !== "committed" ||
-      !["scheduled_monitor_waiting", "scheduled_monitor_dispatched"].includes(String(result.finalizationReasonCode))) return null;
+  if (result.finalizationPhase !== "committed") return null;
+  const kind = result.finalizationReasonCode === "live_continuation_registered" ? "same_agent"
+    : ["scheduled_monitor_waiting", "scheduled_monitor_dispatched", "scheduled_monitor_preserved"].includes(String(result.finalizationReasonCode)) ? "monitor" : null;
+  if (!kind) return null;
   for (const candidate of semanticResultCandidates(result)) {
     const continuation = record(candidate.continuation);
     if (candidate.schema === "paperclip.run_result.v1" && candidate.reportedWorkDisposition === "yielded" &&
-        continuation.kind === "monitor" && readCommentText(continuation.idempotencyKey)) {
+        continuation.kind === kind && readCommentText(continuation.idempotencyKey)) {
       return readCommentText(candidate.summary);
     }
   }
@@ -411,20 +420,21 @@ export function resolveHeartbeatRunResponse(input: {
   } | null;
 }): ResolvedHeartbeatRunResponse {
   const resultJson = record(input.resultJson);
-  const monitorSummary = readAcceptedMonitorContinuationSummary(resultJson);
-  if (monitorSummary) {
+  const continuationSummary = readAcceptedTaskContinuationSummary(resultJson);
+  if (continuationSummary) {
     if (input.interactionOwnsResponse) return {
       text: null,
       decision: decision("none", { commentAction: "none", reasonCodes: ["interaction_owns_response"] }),
     };
     const existing = input.existingComment;
-    const reuse = existing?.body === monitorSummary;
+    const reuse = existing?.body === continuationSummary;
     return {
-      text: monitorSummary,
+      text: continuationSummary,
       decision: decision("semantic_result_summary", {
         commentAction: reuse ? "reuse" : "create",
         ...(reuse ? { commentId: existing.id } : {}),
-        reasonCodes: ["accepted_scheduled_monitor_summary"],
+        reasonCodes: [resultJson.finalizationReasonCode === "live_continuation_registered"
+          ? "accepted_task_continuation_summary" : "accepted_scheduled_monitor_summary"],
       }),
     };
   }

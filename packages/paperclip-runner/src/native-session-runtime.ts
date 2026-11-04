@@ -9,6 +9,7 @@ import type {
   NativeExecutionInput,
   NativeSessionExecutionResult,
 } from "./contracts/native-execution.js";
+import { readProviderFailure } from "./contracts/provider-failure.generated.js";
 import {
   buildNativeModelEnvelope,
   parseNativeExecutionInput,
@@ -18,8 +19,9 @@ import type {
   NativeSessionBackend,
 } from "./contracts/native-session-backend.js";
 import type { PersistedNativeSession } from "./contracts/native-session-backend.js";
-import type { HarnessThreadGoal } from "./contracts/harness-driver.js";
+import { PROVIDER_STATE_INCOMPATIBLE, type HarnessThreadGoal } from "./contracts/harness-driver.js";
 import {
+  NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
@@ -53,6 +55,7 @@ const REUSABLE_SESSION_CANCELLATION_SETTLEMENT_GRACE_MS = 10_000;
 // (1s). Allow that bounded settlement plus transport scheduling; never treat
 // elapsed time or a cancellation acknowledgement as usage/terminal evidence.
 const GOVERNED_ACCOUNTING_DRAIN_MS = 15_000;
+const MAX_GOVERNED_ACCOUNTING_DRAIN_MS = 30_000;
 const DEFAULT_NATIVE_CHECKPOINT_TIMEOUT_MS = 30_000;
 type NativeSessionCleanupDomain = string;
 
@@ -212,6 +215,7 @@ export interface ExecuteNativeSessionOptions {
   turnTimeoutMs?: number;
   /** Abort admission while waiting for prior cleanup in the same domain. */
   signal?: AbortSignal;
+  startup?: { deadlineAtMs: number; signal: AbortSignal };
   /** Internal test seam; production bounds checkpoint persistence to 30 seconds. */
   checkpointTimeoutMs?: number;
   /** Internal test seam; production uses the fixed 120-second platform policy. */
@@ -392,12 +396,29 @@ async function runAbortableOperationWithin<T>(input: {
   timeoutError?: () => Error;
   operation: (signal: AbortSignal) => Promise<T>;
   onLateResolution?: (value: T) => Promise<void> | void;
+  signal?: AbortSignal;
 }): Promise<T> {
+  input.signal?.throwIfAborted();
+  if (input.timeoutMs <= 0) throw input.timeoutError?.() ?? new Error(input.timeoutMessage);
   const operationAbort = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   let timeoutError: Error | undefined;
-  const operation = input.operation(operationAbort.signal);
+  let removeAbort = () => {};
+  const cancelled = input.signal ? new Promise<never>((_resolve, reject) => {
+    const abort = () => {
+      timedOut = true;
+      timeoutError = input.signal!.reason instanceof Error ? input.signal!.reason : new Error("native session startup cancelled");
+      reject(timeoutError);
+      operationAbort.abort(timeoutError);
+    };
+    input.signal!.addEventListener("abort", abort, { once: true });
+    removeAbort = () => input.signal!.removeEventListener("abort", abort);
+  }) : undefined;
+  const operation = Promise.resolve().then(() => {
+    input.signal?.throwIfAborted();
+    return input.operation(operationAbort.signal);
+  });
   // The timeout path deliberately stops awaiting an uncooperative adapter.
   // Keep its eventual settlement observed after mutation authority is revoked.
   void operation.catch(() => undefined);
@@ -415,6 +436,7 @@ async function runAbortableOperationWithin<T>(input: {
   try {
     const value = await Promise.race([
       operation,
+      ...(cancelled ? [cancelled] : []),
       new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
           const error =
@@ -434,6 +456,7 @@ async function runAbortableOperationWithin<T>(input: {
     return value;
   } finally {
     if (timer !== undefined) clearTimeout(timer);
+    removeAbort();
   }
 }
 
@@ -959,7 +982,11 @@ async function consumeTurn(
       const drainAbort = new AbortController();
       const stopDrain = () => drainAbort.abort(appendAbort.signal.reason);
       appendAbort.signal.addEventListener("abort", stopDrain, { once: true });
-      const drainMs = Math.min(GOVERNED_ACCOUNTING_DRAIN_MS, timeoutMs > 0 ? Math.max(1, Math.floor(timeoutMs / 4)) : GOVERNED_ACCOUNTING_DRAIN_MS);
+      const requestedDrainMs = cancellation.terminalDrainTimeoutMs;
+      const terminalDrainMs = typeof requestedDrainMs === "number" && Number.isSafeInteger(requestedDrainMs)
+        && requestedDrainMs > 0 && requestedDrainMs <= MAX_GOVERNED_ACCOUNTING_DRAIN_MS
+        ? requestedDrainMs : GOVERNED_ACCOUNTING_DRAIN_MS;
+      const drainMs = Math.min(terminalDrainMs, timeoutMs > 0 ? Math.max(1, Math.floor(timeoutMs / 4)) : terminalDrainMs);
       let drainTimer: ReturnType<typeof setTimeout> | undefined;
       const drained = (async () => {
         while (!drainAbort.signal.aborted) {
@@ -1091,6 +1118,7 @@ async function consumeTurn(
           typeof failure.code === "string" ? failure.code : "provider_session_failed",
           failure.recoverable === true || payload.recoverable === true,
           typeof failure.message === "string" ? failure.message : undefined,
+          readProviderFailure(failure.providerFailure),
         );
       }
       const request =
@@ -1198,11 +1226,15 @@ async function consumeTurn(
         );
       }
       if (sessionGoalObserved) {
+        if (isTurnTerminal(event) && providerFailure && !providerFailure.recoverable) {
+          throw providerFailure;
+        }
         if (sessionGoal && payload.requestId === sessionGoal.requestId) {
           goalControlObserved = true;
         }
         if (
           goalControlObserved &&
+          (providerFailure === null || providerFailure.recoverable) &&
           eventGoal !== undefined &&
           goalStatus(eventGoal) !== "active" &&
           payload.workingNow !== true
@@ -2040,12 +2072,23 @@ export async function executeNativeSession(
     // state). Prove the provider attachment before opening durable
     // control-plane state because ControlPlanePort has no rollback operation.
     try {
-      await options.existingSession.attachRun({ identity,
+      const attach = async (signal?: AbortSignal) => {
+        signal?.throwIfAborted();
+        await options.existingSession!.attachRun!({ identity,
         ...(input.provider.kind === "acpx" && input.provider.agent === "copilot"
           ? { currentRunGrant: { runtimeContext: "runtimeContext" in input ? input.runtimeContext : null,
               instructions: nativeSystemInstructions(input) } }
           : {}),
+        });
+        signal?.throwIfAborted();
+      };
+      if (options.startup) await runAbortableOperationWithin({
+        timeoutMs: Math.max(0, options.startup.deadlineAtMs - Date.now()),
+        timeoutMessage: "native_execution_startup_expired",
+        signal: options.startup.signal,
+        operation: attach,
       });
+      else await attach();
     } catch (error) {
       // attachRun has no transactional guarantee: a provider may bind the new
       // run before reporting a later failure. Conservatively quarantine the
@@ -2122,6 +2165,9 @@ export async function executeNativeSession(
           };
     if (!recovery.recovered || !recovery.session) {
       if (!replacementAllowed) {
+        if (recovery.failureClass === PROVIDER_STATE_INCOMPATIBLE) {
+          throw new NativeProviderStateIncompatibleError(recovery.reason ?? "unknown");
+        }
         throw new Error(
           `native_session_recovery_failed: ${recovery.reason ?? "unknown"}`,
         );
@@ -2164,7 +2210,7 @@ export async function executeNativeSession(
     // A fresh provider session is part of admission. Prove that it exists
     // before opening durable run state because ControlPlanePort intentionally
     // exposes no rollback for an admitted run.
-    const bootstrapTimeoutMs = options.timeoutMs ?? 900_000;
+    const bootstrapTimeoutMs = options.startup ? Math.max(0, options.startup.deadlineAtMs - Date.now()) : options.timeoutMs ?? 900_000;
     const bootstrapInput = {
       identity,
       workingDirectory: input.workspace.cwd ?? undefined,
@@ -2172,6 +2218,7 @@ export async function executeNativeSession(
     session = await runAbortableOperationWithin({
       timeoutMs: bootstrapTimeoutMs,
       timeoutMessage: `native session bootstrap timed out after ${bootstrapTimeoutMs}ms`,
+      signal: options.startup?.signal,
       operation: (signal) =>
         options.backend.openSession({
           ...bootstrapInput,
@@ -2601,12 +2648,19 @@ export async function executeNativeSession(
           if (!(dispositionOnlyRecovery && !effectFreeInitialAcpxTurn) && "requestedSkills" in modelEnvelope && options.backend.preparedTaskConstraints) {
             modelEnvelope.constraints = [...options.backend.preparedTaskConstraints];
           }
+          if ("workspace" in modelEnvelope && modelEnvelope.workspace && recoveredSnapshot.workingDirectory) {
+            modelEnvelope.workspace.cwd = recoveredSnapshot.workingDirectory;
+          }
           await session.startTurn({
             message: { role: "user", text: JSON.stringify(modelEnvelope) },
             ...(recovered && modelEnvelope.schema === "paperclip.native-continuation.v1"
               ? { continuation: true as const } : {}),
             requestedCollaborationMode:
-              "executionMode" in input ? input.executionMode : "default",
+              // Paperclip planning remains in the envelope and tool authority.
+              // Cloud's qualified harness exposes only default collaboration.
+              input.provider.kind === "cursor_cloud"
+                ? "default"
+                : "executionMode" in input ? input.executionMode : "default",
           });
           await checkpoint();
         }
@@ -2693,6 +2747,7 @@ export async function executeNativeSession(
               modelRejected
                 ? `native_provider_model_rejected: ${message}`
                 : message,
+              readProviderFailure(failure.providerFailure),
             );
           }
           if (settledCompletion === null && options.resolveMissingResult) {

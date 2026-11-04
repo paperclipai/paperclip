@@ -240,7 +240,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "hasToken": std::env::var("PAPERCLIP_NATIVE_MCP_TOKEN").is_ok(),
                             "hasUnrelatedSecret": std::env::var("UNRELATED_EVAL_SECRET").is_ok(),
                             "credentialBinding": std::env::var("PAPERCLIP_ACPX_CREDENTIAL_BINDING").ok(),
-                            "credentialKeys": (["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "MY_PI_SERVICE_KEY", "LD_API_KEY", "DYLD_API_KEY", "PAPERCLIP_PI_PROVIDERS", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
+                            "credentialKeys": (["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET", "MY_PI_SERVICE_KEY", "LD_API_KEY", "DYLD_API_KEY", "PAPERCLIP_PI_PROVIDERS", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
+                            "ambientAntigravityKeys": (["GEMINI_HOME", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_API_KEY", "GOOGLE_CLOUD_PROJECT", "AGY_ACP_FORCE_FILE_STORAGE", "PYTHONPATH", "PYTHONHOME"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
                         }
                     }),
                 )?;
@@ -255,17 +256,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &success(id + 1, command, &request))?;
             }
             "remote-error" => {
+                let mut error = json!({
+                    "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
+                    "message": "violet-circuit-4821",
+                    "retryable": false,
+                });
+                if let Some(cause) = request["params"].get("providerFailure") {
+                    error["providerFailure"] = cause.clone();
+                }
                 write_json(
                     &mut stdout,
                     &json!({
                         "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
                         "id": id,
                         "ok": false,
-                        "error": {
-                            "code": "Q7Z9",
-                            "message": "violet-circuit-4821",
-                            "retryable": false,
-                        },
+                        "error": error,
                     }),
                 )?;
             }
@@ -309,6 +314,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-wrong-cancel"
             | "turns-wrong-scope"
             | "turns-tool"
+            | "turns-tool-resolution-rejected"
             | "turns-tool-terminal"
             | "turns-reused-tool-id-terminal"
             | "turns-late-tool-after-suspend"
@@ -327,6 +333,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-unauthorized-tool"
             | "turns-permission"
             | "turns-provider-death"
+            | "turns-malformed-activity"
             | "permissions-forged-origin"
             | "turns-retired"
             | "turns-retired-terminal-first"
@@ -343,6 +350,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
+                if command == "tool.resolve" && mode == "turns-tool-resolution-rejected" {
+                    write_json(
+                        &mut stdout,
+                        &json!({
+                            "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                            "id":id,"ok":false,"error":{
+                                "code":"ACPX_TOOL_CALL_STALE", "message":"private-provider-token-canary", "retryable":false
+                            }
+                        }),
+                    )?;
+                    continue;
+                }
                 if command == "turn.cancel" && mode == "turns-retired-terminal-first" {
                     let turn_id = request
                         .pointer("/params/turnId")
@@ -377,6 +396,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 write_json(&mut stdout, &response)?;
+                if command == "turn.start" && mode == "turns-malformed-activity" {
+                    stdout.write_all(b"{invalid sidecar activity\n")?;
+                    stdout.flush()?;
+                }
                 let params = request.get("params").unwrap_or(&Value::Null);
                 let turn_id = params
                     .get("turnId")
@@ -433,6 +456,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     && matches!(
                         mode,
                         "turns-tool"
+                            | "turns-tool-resolution-rejected"
                             | "turns-tool-terminal"
                             | "turns-reused-tool-id-terminal"
                             | "turns-late-tool-after-suspend"
@@ -449,7 +473,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         turn_id,
                         json!({
                             "callId":tool_call_id.clone(),
-                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
+                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-resolution-rejected" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
                             "input":{"id":"issue-1"},
                         }),
                     )?;

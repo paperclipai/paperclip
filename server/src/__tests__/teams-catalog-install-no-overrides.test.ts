@@ -58,7 +58,7 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
     return companyId;
   }
 
-  async function listAdapterTypesByName(companyId: string) {
+  async function listAdapterTypesByName(companyId: string, expectedOpenCodeName?: string) {
     const rows = await db
       .select({
         name: agents.name,
@@ -70,7 +70,9 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
       .from(agents)
       .where(eq(agents.companyId, companyId));
     for (const row of rows.filter(row => row.adapterType === "paperclip_runner")) {
-      expect(row.adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude" });
+      expect(row.adapterConfig).toMatchObject(row.name === expectedOpenCodeName
+        ? { provider: "opencode", model: "anthropic/claude-opus-4" }
+        : { provider: "acpx", acpxAgent: "claude" });
     }
     return new Map(rows.map((row) => [row.name, row]));
   }
@@ -79,13 +81,18 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
     const companyId = await seedEmptyCompany();
     const svc = teamsCatalogService(db);
 
-    await svc.installCatalogTeam(companyId, "core-exec-team", {
+    const installed = await svc.installCatalogTeam(companyId, "core-exec-team", {
       collisionStrategy: "rename",
       include: { projects: false, issues: false },
     });
 
     const byName = await listAdapterTypesByName(companyId);
     expect(byName.size).toBe(3);
+    const company = await db.query.companies.findFirst({ where: eq(companies.id, companyId) });
+    const saved = await db.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.companyId, companyId));
+    expect([...installed.resourceLinks].sort((a, b) => a.id.localeCompare(b.id))).toEqual(saved.map(agent => ({ kind: "agent", id: agent.id, name: agent.name,
+      href: `/${company!.issuePrefix}/agents/${agent.id}` })).sort((a, b) => a.id.localeCompare(b.id)));
+
 
     const adapterTypes = Array.from(byName.values()).map((row) => row.adapterType);
     expect(adapterTypes).toEqual(["paperclip_runner", "paperclip_runner", "paperclip_runner"]);
@@ -138,10 +145,10 @@ describeEmbeddedPostgres("teams catalog install with no caller adapter overrides
       },
     });
 
-    const byName = await listAdapterTypesByName(companyId);
+    const byName = await listAdapterTypesByName(companyId, "CTO");
     expect(byName.size).toBe(3);
     const ctoRow = Array.from(byName.values()).find((row) => row.role === "engineering-manager" || row.name === "CTO");
-    expect(ctoRow?.adapterType).toBe("opencode_local");
+    expect(ctoRow?.adapterType).toBe("paperclip_runner");
     const otherAdapters = Array.from(byName.values())
       .filter((row) => row !== ctoRow)
       .map((row) => row.adapterType);

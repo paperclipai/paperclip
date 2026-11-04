@@ -75,6 +75,18 @@ describe("session-scoped Board send identity", () => {
     clearBoardSendDraft(key);
     expect(readBoardSendDraft(key)).toBeNull();
   });
+  it("keeps account-scoped sends separate from each other and unowned legacy records", () => {
+    const scope = ["company", "task", "endpoint", "conversation"] as const;
+    const a = boardSendDraftKey(...scope, "user-a");
+    const b = boardSendDraftKey(...scope, "user-b");
+    const legacy = boardSendDraftKey(...scope);
+    const draft = { body: "Private A", attachmentIds: [], idempotencyKey: "stable-request-key-a", publication: null };
+    writeBoardSendDraft(a, draft);
+    expect(readBoardSendDraft(a)).toEqual(draft);
+    expect(readBoardSendDraft(b)).toBeNull();
+    expect(readBoardSendDraft(legacy)).toBeNull();
+  });
+
   it("rejects corrupt retained identity instead of silently enabling a new send", () => {
     sessionStorage.setItem("corrupt", '{"body":"draft"}');
     expect(() => readBoardSendDraft("corrupt")).toThrow(

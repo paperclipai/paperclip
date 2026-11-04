@@ -13,13 +13,14 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { createStoredZipArchive } from "./helpers/zip.js";
 import { removeTestHome } from "../../../tests/helpers/remove-test-home.js";
+import { PAPERCLIP_RUNTIME_INFO_FILENAME, readRuntimeInfo } from "../runtime-info.js";
 
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
 
-async function getAvailablePort(): Promise<number> {
+async function reserveRequestedPort(): Promise<{ port: number; release: () => Promise<void> }> {
   return await new Promise((resolve, reject) => {
-    const server = net.createServer();
+    const server = net.createServer((socket) => socket.destroy());
     server.unref();
     server.on("error", reject);
     server.listen(0, "127.0.0.1", () => {
@@ -29,9 +30,11 @@ async function getAvailablePort(): Promise<number> {
         return;
       }
       const { port } = address;
-      server.close((error) => {
-        if (error) reject(error);
-        else resolve(port);
+      resolve({
+        port,
+        release: () => new Promise<void>((resolveClose, rejectClose) => {
+          server.close((error) => error ? rejectClose(error) : resolveClose());
+        }),
       });
     });
   });
@@ -247,7 +250,8 @@ async function runCliJson<T>(
 }
 
 async function waitForServer(
-  apiBase: string,
+  instanceId: string,
+  runtimeInfoPath: string,
   child: ServerProcess,
   output: { stdout: string[]; stderr: string[] },
 ) {
@@ -259,18 +263,22 @@ async function waitForServer(
       );
     }
 
-    try {
-      const res = await fetch(`${apiBase}/api/health`);
-      if (res.ok) return;
-    } catch {
-      // Server is still starting.
+    const runtime = readRuntimeInfo(instanceId, runtimeInfoPath);
+    if (runtime && runtime.pid === child.pid) {
+      const apiBase = `http://127.0.0.1:${runtime.port}`;
+      try {
+        const res = await fetch(`${apiBase}/api/health`, { signal: AbortSignal.timeout(1_000) });
+        if (res.ok) return apiBase;
+      } catch {
+
+      }
     }
 
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
 
   throw new Error(
-    `Timed out waiting for ${apiBase}/api/health.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
+    `Timed out waiting for the child server recorded in ${runtimeInfoPath}.\nstdout:\n${output.stdout.join("")}\nstderr:\n${output.stderr.join("")}`,
   );
 }
 
@@ -283,6 +291,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
   let cliShellHome = "";
   let paperclipInstanceId = "";
   let serverProcess: ServerProcess | null = null;
+  let requestedPortReservation: Awaited<ReturnType<typeof reserveRequestedPort>> | null = null;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
 
   beforeAll(async () => {
@@ -297,9 +306,11 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
 
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-cli-db-");
 
-    const port = await getAvailablePort();
+
+
+    requestedPortReservation = await reserveRequestedPort();
+    const { port } = requestedPortReservation;
     writeTestConfig(configPath, tempRoot, port, tempDb.connectionString);
-    apiBase = `http://127.0.0.1:${port}`;
 
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const output = { stdout: [] as string[], stderr: [] as string[] };
@@ -324,11 +335,18 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
       output.stderr.push(String(chunk));
     });
 
-    await waitForServer(apiBase, child, output);
+    apiBase = await waitForServer(
+      paperclipInstanceId,
+      path.join(paperclipHome, "instances", paperclipInstanceId, PAPERCLIP_RUNTIME_INFO_FILENAME),
+      child,
+      output,
+    );
+    expect(new URL(apiBase).port).not.toBe(String(port));
   }, 60_000);
 
   afterAll(async () => {
     await stopServerProcess(serverProcess);
+    await requestedPortReservation?.release();
     await tempDb?.cleanup();
     if (tempRoot) {
       removeTestHome(tempRoot);

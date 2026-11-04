@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, closeLivenessDb, companies, createDb, heartbeatRuns, livenessDb } from "@paperclipai/db";
+import { agents, closeLivenessDb, companies, createDb, heartbeatRuns, livenessDb, subscribeDatabaseWork } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../__tests__/helpers/external-test-database.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { heartbeatService } from "./heartbeat.js";
 import { hasLiveLegacyController, LEGACY_CONTROLLER_LEASE_MS, LEGACY_CONTROLLER_RENEW_MS, legacyControllerBootId, legacyControllerClaim, LegacyControllerLeaseLostError,
   renewLegacyControllerLease, revokeExpiredLegacyController, revokeExpiredLegacyControllerWithState,
@@ -16,15 +18,16 @@ function fakeRenewalDb(returning: () => Promise<unknown>) {
   return fake as unknown as WatchArgs[0];
 }
 
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_LEGACY_CONTROLLER_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable legacy controller ownership", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("legacy-controller-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("legacy-controller-");
+    db = createDb(external ?? database.connectionString, { maxConnections: 6 });
   }, 30000);
-  afterAll(async () => { await database?.cleanup(); });
+  afterAll(async () => { await closeLivenessDb(db, 1); await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Controller test", issuePrefix: `C${companyId.slice(0, 7)}` });
@@ -67,6 +70,26 @@ const support = await getEmbeddedPostgresTestSupport();
     const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
     expect(saved.executionStage).toBe("dispatching");
     expect(await revokeExpiredLegacyController(db, run)).toBe(false);
+  });
+  it("renews through one private transaction with only the active execution topic", async () => {
+    const run = await seed(), settled: string[] = [], queries: string[] = [];
+    const queues = [DELIVERY_QUEUES.nativeProcessSessions, DELIVERY_QUEUES.nativeQuestionCancellations,
+      DELIVERY_QUEUES.activeExecutionRecovery, DELIVERY_QUEUES.settledNativeProcesses,
+      DELIVERY_QUEUES.strandedAgentStatus, DELIVERY_QUEUES.activeRunSilence];
+    const stops = queues.map(queue => subscribeDatabaseWork(db, queue, event => { if (event === "settled") settled.push(queue); }));
+    const pool = livenessDb(db), prior = pool.$client.options.debug;
+    await pool.execute(sql`select 1`);
+    pool.$client.options.debug = (_connection, query) => { queries.push(query); };
+    const watch = watchLegacyControllerLease(db, run, new AbortController());
+    try {
+      await watch.assertOwned();
+      expect(settled).toEqual([DELIVERY_QUEUES.activeExecutionRecovery]);
+      expect(queries.filter(query => /savepoint/i.test(query))).toEqual([]);
+      expect(queries.filter(query => /pg_current_xact_id/.test(query))).toHaveLength(1);
+      expect(queries.filter(query => /set_config.*statement_timeout/.test(query))).toHaveLength(1);
+      expect(queries.filter(query => /^update /i.test(query))).toHaveLength(1);
+      expect(queries).toHaveLength(5);
+    } finally { watch.stop(); pool.$client.options.debug = prior; stops.forEach(stop => stop()); }
   });
   it("an expired controller cannot renew or dispatch even before a reaper claims it", async () => {
     const run = await seed();
@@ -139,7 +162,7 @@ const support = await getEmbeddedPostgresTestSupport();
   it("renews without queueing behind a slow statement on a saturated shared pool", async () => {
     const run = await seed();
     // postgres.js pipelines onto a busy connection when none is idle.
-    const shared = createDb(database.connectionString, { maxConnections: 1 });
+    const shared = createDb(external ?? database.connectionString, { maxConnections: 1 });
     const slow = shared.execute(sql`select pg_sleep(5)`).then(() => undefined); // drizzle sends on then()
     const controller = new AbortController();
     const watch = watchLegacyControllerLease(shared, run, controller);
@@ -155,7 +178,7 @@ const support = await getEmbeddedPostgresTestSupport();
 
   it("renews on one private pool per client that shutdown can end", async () => {
     const run = await seed();
-    const owner = createDb(database.connectionString);
+    const owner = createDb(external ?? database.connectionString, { maxConnections: 6 });
     const pool = livenessDb(owner);
     expect(pool).not.toBe(owner);
     expect(livenessDb(owner)).toBe(pool);

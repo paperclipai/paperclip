@@ -129,6 +129,10 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
 const mockRunSshCommand = vi.hoisted(() => vi.fn());
 
 function registerModuleMocks() {
+  vi.doMock("../lib/agent-runner-platform.js", () => ({
+    localAgentRunnerTarget: () => ({ driver: "local", platform: "linux", architecture: "x64", libc: "glibc", glibcVersion: "2.39" }),
+    localPaperclipRunnerSupported: () => true,
+  }));
   vi.doMock("@paperclipai/adapter-utils/ssh", async (importOriginal) => ({
     ...(await importOriginal<typeof import("@paperclipai/adapter-utils/ssh")>()),
     runSshCommand: mockRunSshCommand,
@@ -1461,7 +1465,7 @@ describe("agent permission routes", () => {
     );
   });
 
-  it("seeds opencode agent creation with the static default model without live discovery", async () => {
+  it("seeds explicit legacy opencode creation with the static default model without live discovery", async () => {
     mockEnsureOpenCodeModelConfiguredAndAvailable.mockRejectedValue(
       new Error("`opencode models` should not be called during creation"),
     );
@@ -1480,6 +1484,7 @@ describe("agent permission routes", () => {
         name: "OpenCode Builder",
         role: "engineer",
         adapterType: "opencode_local",
+        runner: "legacy",
         adapterConfig: {},
       }));
 
@@ -1526,8 +1531,9 @@ describe("agent permission routes", () => {
     expect(mockAgentService.create).toHaveBeenCalledWith(
       companyId,
       expect.objectContaining({
-        adapterType: "opencode_local",
+        adapterType: "paperclip_runner",
         adapterConfig: expect.objectContaining({
+          provider: "opencode",
           model: "anthropic/claude-sonnet-4-5",
         }),
       }),
@@ -1831,7 +1837,7 @@ describe("agent permission routes", () => {
 
   for (const adapterCase of sshCapableAdapterCases) {
     it(`allows creating a ${adapterCase.adapterType} agent with an SSH default environment`, async () => {
-      const expectedAdapterType = ["codex_local", "claude_local"].includes(adapterCase.adapterType) ? "paperclip_runner" : adapterCase.adapterType;
+      const expectedAdapterType = ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterCase.adapterType) ? "paperclip_runner" : adapterCase.adapterType;
       const environmentId = "33333333-3333-4333-8333-333333333333";
       mockEnvironmentService.getById.mockResolvedValue({
         id: environmentId,
@@ -1873,8 +1879,10 @@ describe("agent permission routes", () => {
         }),
         { runnerResolved: true, aiConnectionInstall: undefined, createdByUserId: "board-user", responsibleUserId: "board-user", claudeLogin: { storedSessionId: null, ownerUserId: "board-user", applyExistingWithoutClaim: false } },
       );
-      if (["codex_local", "claude_local"].includes(adapterCase.adapterType)) {
+      if (["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterCase.adapterType)) {
         if (adapterCase.adapterType === "codex_local") expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "codex" });
+        else if (adapterCase.adapterType === "opencode_local") expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "opencode", model: adapterCase.adapterConfig.model });
+        else if (adapterCase.adapterType === "pi_local") expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "pi", model: adapterCase.adapterConfig.model });
         else expect(mockAgentService.create.mock.calls[0][1].adapterConfig).toMatchObject({ provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5" });
         const { AGENT_RUNNER_SSH_PLATFORM_COMMAND } = await import("../services/agent-runner-selection.js");
         expect(mockRunSshCommand).toHaveBeenCalledWith(expect.objectContaining({ host: "qa.example.invalid" }), AGENT_RUNNER_SSH_PLATFORM_COMMAND, { timeoutMs: 10_000 });
@@ -2158,6 +2166,31 @@ describe("agent permission routes", () => {
   });
 
   describe("agent configuration read gate", () => {
+    it.each(["configuration", "config-revisions", "config-revisions/55555555-5555-4555-8555-555555555555"])("allows self %s reads without peer configuration grants", async (suffix) => {
+      const plaintext = "self-config-value-must-not-leak";
+      const adapterConfig = { env: { GENERIC_NAME: { type: "plain", value: plaintext } } };
+      mockAgentService.getById.mockResolvedValue({ ...baseAgent, adapterConfig });
+      const revision = { id: "55555555-5555-4555-8555-555555555555", beforeConfig: { adapterConfig }, afterConfig: { adapterConfig } };
+      mockAgentService.listConfigRevisions.mockResolvedValue([revision]);
+      mockAgentService.getConfigRevision.mockResolvedValue(revision);
+      mockAccessService.decide.mockImplementation(async (input) => ({
+        allowed: input.action === "agent_config:read" && input.resource.type === "agent" && input.resource.agentId === agentId,
+        reason: "allow_self",
+        explanation: "Self configuration read",
+      }));
+      const app = await createApp({ type: "agent", agentId, companyId, source: "agent_key" });
+
+      const response = await request(app).get(`/api/agents/${agentId}/${suffix}`);
+
+      expect(response.status).toBe(200);
+      expect(JSON.stringify(response.body)).not.toContain(plaintext);
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "agent_config:read",
+        resource: { type: "agent", companyId, agentId },
+        scope: { targetAgentId: agentId },
+      }));
+    });
+
     it("allows a board member without agents:create to read agent configuration", async () => {
       // Board (human) users with company membership but no agents:create
       // grant should still be able to view agent configuration — this is
@@ -2289,11 +2322,12 @@ describe("agent permission routes", () => {
       expect(res.status).toBe(403);
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
         action: "agent_config:read",
-        resource: { type: "company", companyId },
+        resource: { type: "agent", companyId, agentId: peerAgentId },
+        scope: { targetAgentId: peerAgentId },
       }));
     });
 
-    it("allows an agent actor with agents:suggest-changes grant to read peer config", async () => {
+    it.each(["agents:read", "agents:configure", "agents:suggest-changes"])("allows an agent actor with %s grant to read peer config", async (permissionKey) => {
       // Suggest-tier authority implies read access so the agent can prepare a
       // consented diff without receiving direct change authority.
       const peerAgentId = "44444444-4444-4444-8444-444444444444";
@@ -2308,11 +2342,11 @@ describe("agent permission routes", () => {
       mockAccessService.decide.mockResolvedValue({
         allowed: true,
         reason: "allow_explicit_grant",
-        explanation: "Allowed by explicit grant agents:suggest-changes.",
+        explanation: `Allowed by explicit grant ${permissionKey}.`,
         grant: {
           principalType: "agent",
           principalId: agentId,
-          permissionKey: "agents:suggest-changes",
+          permissionKey,
           scope: null,
         },
       });
@@ -2330,7 +2364,8 @@ describe("agent permission routes", () => {
       expect(res.status).toBe(200);
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
         action: "agent_config:read",
-        resource: { type: "company", companyId },
+        resource: { type: "agent", companyId, agentId: peerAgentId },
+        scope: { targetAgentId: peerAgentId },
       }));
     });
   });

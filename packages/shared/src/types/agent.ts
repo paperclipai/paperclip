@@ -25,6 +25,11 @@ export interface AgentPermissions extends Record<string, unknown> {
   authorizationPolicy?: TrustAuthorizationPolicy;
 }
 
+export interface AgentProjectAccess {
+  projectIds: string[];
+  canManage: boolean;
+}
+
 export type AgentRuntimeConfig = Record<string, unknown> & {
   aiConnection?: import("../ai-connection-router.js").AiRuntimeConnectionBinding;
 };
@@ -98,6 +103,8 @@ export interface Agent {
   capabilities: string | null;
   adapterType: AgentAdapterType;
   adapterConfig: Record<string, unknown>;
+  /** Non-fatal options ignored by this configuration write; not persisted. */
+  configurationWarnings?: import("../runner-configuration-warnings.js").AgentConfigurationWarning[];
   runtimeConfig: AgentRuntimeConfig;
   defaultEnvironmentId?: string | null;
   budgetMonthlyCents: number;
@@ -326,6 +333,8 @@ export interface AdapterEnvironmentCheck {
   message: string;
   detail?: string | null;
   hint?: string | null;
+  /** The check could not complete because its execution target was unavailable. */
+  retryable?: boolean;
 }
 
 export interface AdapterEnvironmentTestResult {

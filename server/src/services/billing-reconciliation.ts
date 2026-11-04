@@ -1,13 +1,14 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { createFinanceEventInTransaction } from "./finance.js";
 import { and, desc, eq, sql } from "drizzle-orm";
-import { fastResponseRequests, decisionInvocations, promptInjectionInvocations, budgetReservations, agentRuntimeState, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { fastResponseRequests, decisionInvocations, promptInjectionInvocations, budgetReservations, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
 import { adjustCostSchema, importBillingInvoiceSchema, normalizeCents, subtractCents, type AdjustCost, type ImportBillingInvoice } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
-import { withAccountingReadSnapshot, withAccountingTransaction } from "./accounting-transaction.js";
+import { withAccountingReadSnapshot, withAccountingTransaction, withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { receiptFingerprint } from "./receipt-fingerprint.js";
 import { logActivity } from "./activity-log.js";
-import { updateMonthlySpendProjections } from "./costs.js";
-import { budgetServiceInTransaction, deliverBudgetEnforcement, type BudgetServiceHooks } from "./budgets.js";
+import { applyCostCorrectionInTransaction, lockCostCorrectionOwner } from "./accounting-corrections.js";
+import type { BudgetServiceHooks } from "./budgets.js";
 
 async function invoiceCostCandidates(tx: Db, companyId: string, biller: string, line: {
   costEventId?: string | null; runId?: string | null; providerRequestId?: string | null; model?: string | null;
@@ -45,7 +46,8 @@ export function billingReconciliationService(db: Db, hooks: BudgetServiceHooks =
           if (!run) throw notFound("Invoice run not found");
         }
       }
-      const [invoice] = await tx.insert(billingInvoices).values({ companyId, biller: input.biller, externalId: input.externalId, currency: input.currency, receiptHash, importedBy: actorId }).returning();
+      const [invoice] = await tx.insert(billingInvoices).values({ companyId, biller: input.biller, externalId: input.externalId, currency: input.currency, receiptHash, importedBy: actorId }).onConflictDoNothing().returning();
+      if (!invoice) throw Object.assign(new Error("Concurrent invoice requires a fresh snapshot"), { code: "40001" });
       await tx.insert(billingInvoiceLines).values(input.lines.map(line => ({ ...line, companyId, invoiceId: invoice.id, occurredAt: new Date(line.occurredAt), pricing: line.pricing ?? {} })));
       const matches = [];
       const matchCounts = new Map<string, number>();
@@ -108,13 +110,14 @@ export function billingReconciliationService(db: Db, hooks: BudgetServiceHooks =
     adjustments: (companyId: string, eventId: string) => db.select().from(costAdjustments).where(and(eq(costAdjustments.companyId, companyId), eq(costAdjustments.costEventId, eventId))).orderBy(desc(costAdjustments.createdAt)),
     adjust: async (companyId: string, eventId: string, raw: AdjustCost, actorId: string) => {
       const input = adjustCostSchema.parse(raw);
-      const result = await withAccountingTransaction(db, companyId, async (tx, publications) => {
+      const result = await withOperationAccountingTransaction(db, companyId, async (tx, publications) => {
         const hash = receiptFingerprint({ eventId, ...input });
         const [existing] = await tx.select().from(costAdjustments).where(and(eq(costAdjustments.companyId, companyId), eq(costAdjustments.idempotencyKey, input.idempotencyKey)));
         if (existing) {
           if (existing.receiptHash !== hash) throw conflict("Correction key already has different contents");
           return existing;
         }
+        await lockCostCorrectionOwner(tx, companyId, eventId);
         const [event] = await tx.select({ event: costEvents, exact: sql<string>`${costEvents.costCents}::text` }).from(costEvents)
           .where(and(eq(costEvents.companyId, companyId), eq(costEvents.id, eventId))).for("update");
         if (!event) throw notFound("Cost event not found");
@@ -137,22 +140,10 @@ export function billingReconciliationService(db: Db, hooks: BudgetServiceHooks =
           const [used] = await tx.select().from(costAdjustments).where(and(eq(costAdjustments.companyId, companyId), eq(costAdjustments.invoiceLineId, input.invoiceLineId)));
           if (used) throw conflict("Invoice line has already been applied");
         }
-        const [adjustment] = await tx.insert(costAdjustments).values({ companyId, costEventId: eventId, invoiceLineId: input.invoiceLineId,
-          idempotencyKey: input.idempotencyKey, receiptHash: hash, previousCents: input.expectedCents, correctedCents: input.correctedCents,
-          previousStatus: event.event.costStatus, previousPricing: event.event.pricingProvenance ?? {},
-          reason: input.reason, actorId, pricing: input.pricing }).returning();
-        // Original provider value and fingerprint remain immutable. cost_cents
-        // is the effective valuation, backed by this append-only correction.
-        const [updated] = await tx.update(costEvents).set({ costCents: sql`${input.correctedCents}::numeric`,
-          reportedCostCents: event.event.reportedCostCents ?? normalizeCents(event.exact), costStatus: input.pricing.source === "rate_card" ? "estimated" : "reported", pricingProvenance: input.pricing,
-        }).where(eq(costEvents.id, eventId)).returning();
-        await updateMonthlySpendProjections(tx, companyId, updated.agentId, subtractCents(input.correctedCents, input.expectedCents), updated.occurredAt);
-        if (updated.heartbeatRunId && updated.agentId) {
-          const [run] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, updated.heartbeatRunId), eq(heartbeatRuns.companyId, companyId)));
-          if (run?.costAccountedAt && run.accountingProjectionVersion === "v2") await tx.update(agentRuntimeState)
-            .set({ totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${subtractCents(input.correctedCents, input.expectedCents)}::numeric`, updatedAt: new Date() })
-            .where(and(eq(agentRuntimeState.agentId, updated.agentId), eq(agentRuntimeState.companyId, companyId)));
-        }
+        const adjustment = await applyCostCorrectionInTransaction(tx, publications, {
+          companyId, eventId, ...input, actorId, receiptHash: hash,
+        });
+        const [updated] = await tx.select().from(costEvents).where(and(eq(costEvents.id, eventId), eq(costEvents.companyId, companyId)));
         if (updated.usageKind === "decision") {
           const [invocation] = await tx.select({ id: decisionInvocations.id }).from(decisionInvocations).where(and(
             eq(decisionInvocations.companyId, companyId), eq(decisionInvocations.costEventId, eventId),
@@ -173,14 +164,8 @@ export function billingReconciliationService(db: Db, hooks: BudgetServiceHooks =
           const [invocation] = await tx.select({ id: fastResponseRequests.id }).from(fastResponseRequests).where(and(eq(fastResponseRequests.companyId, companyId), eq(fastResponseRequests.costEventId, eventId)));
           if (invocation) await tx.update(budgetReservations).set({ state: "settled", settledAt: new Date() }).where(and(eq(budgetReservations.companyId, companyId), eq(budgetReservations.fastResponseRequestId, invocation.id), eq(budgetReservations.state, "held")));
         }
-        const budgets = budgetServiceInTransaction(tx, publications);
-        await budgets.evaluateCostEvent(updated);
-        await budgets.getInvocationBlock(companyId, updated.agentId, { projectId: updated.projectId });
-        await logActivity(tx, { companyId, actorType: "user", actorId, action: "accounting.charge_corrected", entityType: "cost_event", entityId: eventId,
-          details: { adjustmentId: adjustment.id, previousCents: input.expectedCents, correctedCents: input.correctedCents, reason: input.reason, pricing: input.pricing } }, publications);
         return adjustment;
       });
-      await deliverBudgetEnforcement(db, hooks, companyId);
       return result;
     },
   };

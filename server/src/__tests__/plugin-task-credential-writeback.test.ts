@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, companies, companyMemberships, createDb, environmentLeases, environments, heartbeatRuns, plugins } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -89,6 +89,26 @@ suite("durable plugin task credential handoff", () => {
     expect(await f.settle()).toBe(true);
     expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
     expect(f.calls.at(-1)).toBe("complete");
+  });
+  it("retains the Runner credential after a database save failure until a fresh receiver commits", async () => {
+    const f = await fixture();
+    await db.execute(sql.raw(`create function reject_runner_credential_save() returns trigger language plpgsql as $$ begin
+      if new.secret_id = '${f.managed.credentialWriteback!.secretId}'::uuid then raise exception 'fixture receiver save unavailable'; end if; return new; end $$;
+      create constraint trigger reject_runner_credential_save after insert on company_secret_versions
+      deferrable initially deferred for each row execute function reject_runner_credential_save();`));
+    try {
+      await expect(f.settle()).rejects.toThrow();
+      expect(f.calls).toContain("credentials");
+      expect(f.calls).not.toContain("complete");
+      expect(await f.credential()).toBe(auth("fixture-original"));
+      expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "pending" });
+    } finally { await db.execute(sql`drop trigger reject_runner_credential_save on company_secret_versions; drop function reject_runner_credential_save()`); }
+    const receiver = createDb(database.connectionString);
+    expect(await settleDispatchedEnvironmentTask(receiver, f.workers, { companyId: f.companyId, id: f.leaseId })).toBe(true);
+    expect(await f.credential()).toBe(auth("fixture-refreshed", 2021));
+    expect(f.calls.filter(call => call === "credentials")).toHaveLength(2);
+    expect(f.calls.at(-1)).toBe("complete");
+    expect((await f.lease()).metadata?.runnerTaskCredentialHandoff).toMatchObject({ state: "complete" });
   });
   it("does not overwrite an explicit account replacement", async () => {
     const f = await fixture();

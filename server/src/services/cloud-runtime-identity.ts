@@ -1,3 +1,4 @@
+import { parseIdleCapabilities, type IdleCapabilities } from "./idle-incoming-wake-capability.js";
 import { createPublicKey, timingSafeEqual, verify, type JsonWebKey } from "node:crypto";
 import { eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -451,6 +452,7 @@ export const CLOUD_CONTROL_ACTIONS = [
   "task-drain:stop",
   "lifecycle:read",
   "lifecycle:unarchive-primary",
+  "connector-events:wake",
 ] as const;
 export type CloudControlAction = (typeof CLOUD_CONTROL_ACTIONS)[number];
 
@@ -490,6 +492,7 @@ export type CloudControlClaims = {
   sub: string;
   action: CloudControlAction;
   requestId: string;
+  idleCapabilities?: IdleCapabilities;
   iat: number;
   exp: number;
 };
@@ -570,6 +573,10 @@ export function verifyCloudControlAssertion(input: {
     || payload.exp - payload.iat > CLOUD_CONTROL_MAX_LIFETIME_SECONDS
   ) {
     throw new Error("Cloud control assertion is expired or has an invalid lifetime");
+  }
+  if (payload.idleCapabilities !== undefined) {
+    if (payload.action !== "task-drain:read") throw new Error("Idle capabilities require task-drain:read");
+    payload.idleCapabilities = parseIdleCapabilities(payload.idleCapabilities);
   }
   // Consumed LAST, only after every other check passed: a rejected
   // assertion must not burn its request id, or an attacker could deny a

@@ -52,7 +52,7 @@ export function redactRegisteredSecretValues<T>(input: T, values: string[], cred
   if (!record) return input;
   return Object.fromEntries(
     Object.entries(record)
-      .filter(([key]) => key !== REGISTRY_KEY)
+      .filter(([key]) => key !== REGISTRY_KEY && key !== "nativeControllerRecovery" && key !== "nativeTaskSessionPublication")
       .map(([key, value]) => [key, key === "credentialAccess"
         ? (credentialConnectionName ? { connectionName: redactText(credentialConnectionName, values) } : {})
         : redactRegisteredSecretValues(value, values, credentialConnectionName)]),
@@ -95,6 +95,9 @@ export function createRunSecretRedactionRegistry(db: Db) {
   }
 
   return {
+    redactionValuesForRun: async (companyId: string, runId: string) => valuesForRuns(await db
+      .select({ contextSnapshot: registrySnapshot }).from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId)))),
     register: async (companyId: string, runId: string, value: string) => {
       const fingerprintSha256 = createHash("sha256").update(value).digest("hex");
       await db.transaction(async (tx) => {

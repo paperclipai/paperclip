@@ -3,12 +3,30 @@ import { describe, expect, it } from "vitest";
 import { paperclipSemanticAction } from "../catalog/semantic-action-catalog.js";
 import { paperclipSemanticActionNamespace } from "../semantic-tools/paperclip-discovery.js";
 import { createCaseAction, readCaseAction, updateCaseAction } from "./case-data.js";
+import { createWorkflowAction, listWorkflowsAction, readWorkflowAction, updateWorkflowAction } from "./workflows.js";
 
 const caseId = "00000000-0000-4000-8000-000000000001";
 const actions = [readCaseAction, updateCaseAction];
 
 describe("production case data contracts", () => {
   const ajv = new Ajv2020({ strict: true, allErrors: true, allowUnionTypes: true });
+
+  it.each([listWorkflowsAction, readWorkflowAction, createWorkflowAction, updateWorkflowAction])(
+    "$id has a strict company-scoped live and catalog contract", (action) => {
+      for (const schema of [action.live.descriptor.inputSchema, paperclipSemanticAction(action.id)!.inputSchema]) {
+        const validate = ajv.compile(schema);
+        expect(validate(action.examples.call.input), JSON.stringify(validate.errors)).toBe(true);
+        expect(validate({ ...action.examples.call.input, companyId: caseId })).toBe(false);
+        if (action.id === "update_workflow") expect(validate({ workflowId: caseId, idempotencyKey: "empty" })).toBe(false);
+        if (action.id === "read_workflow") {
+          expect(validate({ workflowId: caseId, responseText: { offsetBytes: 0 } })).toBe(true);
+          expect(validate({ workflowId: caseId, responseText: { offsetBytes: 8192 } })).toBe(false);
+          expect(validate({ workflowId: caseId, snapshot: "a".repeat(64), responseText: { offsetBytes: 8192 } })).toBe(true);
+          expect(validate({ workflowId: caseId, snapshot: "invalid" })).toBe(false);
+        }
+      }
+    },
+  );
 
   it.each(actions.map(action => [action.id, action] as const))(
     "%s accepts its primary-case default and validates explicit scope on both live projections",
@@ -79,6 +97,8 @@ describe("production case data contracts", () => {
       expect(validate(withoutKickoff)).toBe(false);
       const { workflow_document_text: _workflow, ...withoutWorkflow } = input;
       expect(validate(withoutWorkflow)).toBe(false);
+      expect(validate({ ...withoutWorkflow, workflowId: caseId })).toBe(true);
+      expect(validate({ ...input, workflowId: caseId })).toBe(false);
       expect(validate({ ...input, workflow_document_text: "Implement and verify, then finish." })).toBe(true);
       expect(validate({ ...input, workflow_document_text: "# Workflow\n\n```mermaid\nstateDiagram-v2\n  triage --> implementation: ready\n```\n\nready: Triage saves validated facts and hands off to the implementation agent." })).toBe(true);
       const initialDocuments = [{ key: "brief", title: "Brief", body: "An objective" }];
@@ -96,7 +116,7 @@ describe("production case data contracts", () => {
   });
 
   it("keeps case facts separate from ordinary task-document tools", () => {
-    for (const operationId of ["create_case", "read_case", "update_case"] as const) expect(paperclipSemanticActionNamespace(operationId)).toBe("delegation");
+    for (const operationId of ["create_case", "read_case", "update_case", "list_workflows", "read_workflow", "create_workflow", "update_workflow"] as const) expect(paperclipSemanticActionNamespace(operationId)).toBe("delegation");
     expect(paperclipSemanticAction("read_case")?.effect).toBe("read");
     expect(paperclipSemanticAction("update_case")?.effect).toBe("write");
     expect(paperclipSemanticAction("create_case")?.effect).toBe("write");

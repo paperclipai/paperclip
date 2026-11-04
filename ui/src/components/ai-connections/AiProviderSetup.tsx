@@ -36,7 +36,7 @@ const providers = [
     name: "Anthropic",
     description: "Claude subscription or API key",
   },
-  { id: "google", name: "Google", description: "Gemini API key" },
+  { id: "google", name: "Google", description: "Antigravity sign-in or Gemini API key" },
   { id: "xai", name: "xAI", description: "Grok subscription or API key" },
   {
     id: "openrouter",
@@ -73,6 +73,7 @@ export function AiProviderSetup({
   initialProtocol,
   providerLabel,
   advancedOnly = false,
+  submitLabel,
   reconnect,
   onCancel,
   onComplete,
@@ -84,6 +85,7 @@ export function AiProviderSetup({
   initialProtocol?: AiProviderRouting["protocol"];
   providerLabel?: string;
   advancedOnly?: boolean;
+  submitLabel?: string;
   reconnect?: AiManagedConnectionSummary;
   onCancel: () => void;
   onComplete: (
@@ -455,10 +457,10 @@ export function AiProviderSetup({
               }
             >
               {save.isPending
-                ? "Connecting…"
+                ? submitLabel ? "Saving…" : "Connecting…"
                 : reconnect
                   ? "Reconnect"
-                  : "Connect"}
+                  : submitLabel ?? "Connect"}
             </Button>
           </div>
         </form>

@@ -89,7 +89,16 @@ describe("Muse native visibility intersection", () => {
     else expect(ids).toContain(f.outside.id);
     if(shape==="search_tasks"){
       const outsideOnly=await f.authority.execute({tool:"search_tasks",callId:"outside-only",arguments:{query:"MUSE_READ_SCOPE_OUTSIDE",limit:1}});
-      expect(outsideOnly).toMatchObject({tasks:restricted?[]:[{id:f.outside.id}]});
+      expect(outsideOnly).toMatchObject({tasks:restricted?[]:[{id:f.outside.id}],returnedCount:restricted?0:1,hasMore:false,nextCursor:null});
+      const page=await f.authority.execute({tool:"search_tasks",callId:"authorized-page",arguments:{query:"MUSE_READ_SCOPE",limit:1}}) as {tasks:Array<{id:string}>;hasMore:boolean;nextCursor:string|null};
+      expect(page.tasks).toHaveLength(1);
+      expect(page.hasMore).toBe(!restricted);
+      if(restricted)expect(page.nextCursor).toBeNull();
+      else {
+        const next=await f.authority.execute({tool:"search_tasks",callId:"authorized-next-page",arguments:{query:"MUSE_READ_SCOPE",limit:1,cursor:page.nextCursor}}) as {tasks:Array<{id:string}>;hasMore:boolean;nextCursor:string|null};
+        expect([...page.tasks,...next.tasks].map(task=>task.id).sort()).toEqual([f.allowed.id,f.outside.id].sort());
+        expect(next).toMatchObject({hasMore:false,nextCursor:null});
+      }
     }
   });
   it("retains the child search fallback when the authorized child follows a capped denied prefix",async()=>{

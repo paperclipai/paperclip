@@ -945,8 +945,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     };
   }, [editorValue, placeholder, richEditorError]);
 
-  // Whether the image plugin should be included (boolean is stable across renders
-  // as long as the handler presence doesn't toggle)
   const hasImageUpload = Boolean(imageUploadHandler);
 
   const plugins = useMemo<RealmPlugin[]>(() => {
@@ -1003,11 +1001,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
       markdownShortcutPlugin(),
     ];
-    if (imageHandler) {
-      // The inline image chip keeps only its remove affordance — no settings
-      // dialog, and the X glyph instead of MDXEditor's default trash can.
-      all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
-    }
+    all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
     return all;
   }, [hasImageUpload]);
 
