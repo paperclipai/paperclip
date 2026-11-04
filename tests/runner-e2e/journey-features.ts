@@ -21,6 +21,7 @@ function associate(suites: readonly string[], cases: Record<string, readonly str
 associate(["product-journeys"], {
   "company-access-isolation": ["companies/selection", "access/resources"],
   "repository-continuation": ["projects/task-context", "documents-artifacts/attachments"],
+  "task-dependency-resume": ["tasks/properties", "tasks/completion", "documents-artifacts/documents"],
   "routine-scheduled-run": ["routines/definition", "routines/triggers", "routines/history", "routines/management"],
   "file-input-answer": ["documents-artifacts/attachments", "documents-artifacts/documents"],
   "inbox-triage": ["inbox-search/views", "inbox-search/triage"], "task-create": ["tasks/create"], "ask-question": ["questions-and-approvals/questions"],

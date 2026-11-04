@@ -113,6 +113,8 @@ reply with the late requirement, and persistence after reload. Its attached and
 managed targets share the same story and permit one steered run or one normal
 successor. Registration and calibration are separate from a live staging pass.
 
+The explicit [dependency continuation journey](../tests/runner-e2e/product-journeys/task-dependency-resume.md) checks a finite blocked wait and one automatic native continuation after a browser-completed blocker. Local evidence controls are separate from a deployed QA pass.
+
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
 journey and task-document create/edit/reopen journey use no model; Cloud
