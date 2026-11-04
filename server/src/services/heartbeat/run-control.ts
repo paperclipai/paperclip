@@ -245,6 +245,26 @@ export type CancelRunOptions = {
   };
 
 /** Run control binds cancellation, resource release, and saved-input resumption. */
+/**
+ * Un run de un adaptador local sin proceso vivo no puede dejar a un proveedor
+ * trabajando fuera de este host: la cancelación la inicia el control plane.
+ *
+ * Sin reconocerla, `executionCancellation` queda en `requested` para siempre y
+ * la cola difiere todos los mensajes futuros de ese issue con
+ * `process_identity_missing`: el issue queda envenenado y no lo puede tomar
+ * ningún asiento. Los adaptadores de proceso local son los que terminan en
+ * `_local`; los remotos (`*_cloud`, `*_gateway`) no aplican porque ahí el
+ * proveedor puede seguir vivo sin proceso en este host.
+ */
+export function localRunCancelIsSelfAcknowledging(input: {
+  adapterType: string | null | undefined;
+  hasLiveProcess: boolean;
+}): boolean {
+  if (input.hasLiveProcess) return false;
+  const adapterType = typeof input.adapterType === "string" ? input.adapterType : "";
+  return adapterType.endsWith("_local");
+}
+
 export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunControlDependencies) {
   const {
     getRun,
@@ -1123,10 +1143,11 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                       // A scheduler placeholder has no process to acknowledge.
                       // Preserve its normal release policy instead of treating
                       // it as an operator stop of provider work.
-                      ...(processCancellationSettlement && agent && running && (
-                        (Number.isInteger(running.child.pid) && (running.child.pid ?? 0) > 0) ||
-                        (Number.isInteger(running.processGroupId) && (running.processGroupId ?? 0) > 0)
-                      )
+                      ...(processCancellationSettlement && agent && (
+                        (running && (
+                          (Number.isInteger(running.child.pid) && (running.child.pid ?? 0) > 0) ||
+                          (Number.isInteger(running.processGroupId) && (running.processGroupId ?? 0) > 0)
+                        ))
                         ? mergeRunStopMetadataForAgent(agent, "cancelled", {
                             resultJson: {
                               ...resultJson,
@@ -1134,7 +1155,22 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
                             },
                             errorCode, errorMessage: reason,
                           })
-                        : {}),
+                        : localRunCancelIsSelfAcknowledging({
+                            adapterType: agent.adapterType,
+                            hasLiveProcess: Boolean(running),
+                          })
+                          ? mergeRunStopMetadataForAgent(agent, "cancelled", {
+                              resultJson: {
+                                ...resultJson,
+                                executionCancellation: {
+                                  state: "acknowledged",
+                                  acknowledgedAt: finishedAt.toISOString(),
+                                  proof: "no_live_host_process",
+                                },
+                              },
+                            errorCode, errorMessage: reason,
+                            })
+                          : {})),
                       // The native cancellation helper may have advanced a durable
                       // pending intent to its acknowledged state after `run` was
                       // first read. Never let that stale snapshot overwrite the
