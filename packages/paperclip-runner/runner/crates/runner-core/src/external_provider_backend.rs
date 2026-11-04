@@ -388,6 +388,136 @@ impl State {
     }
 }
 
+fn is_external_tool_result_outcome(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    object.len() == 3
+        && object.get("status").and_then(Value::as_str) == Some("completed")
+        && object.get("isError").is_some_and(Value::is_boolean)
+        && object.contains_key("result")
+}
+
+fn external_tool_result_control_changed(original: &Value, sanitized: &Value) -> bool {
+    !is_external_tool_result_outcome(sanitized)
+        || original.get("status") != sanitized.get("status")
+        || original.get("isError") != sanitized.get("isError")
+}
+
+fn is_external_operation_settled_tool_result(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+    let Some(binding) = object.get("binding").and_then(Value::as_object) else {
+        return false;
+    };
+    object.len() == 3
+        && object
+            .get("requestId")
+            .and_then(Value::as_str)
+            .is_some_and(|id| !id.is_empty())
+        && object
+            .get("outcome")
+            .is_some_and(is_external_tool_result_outcome)
+        && binding.len() == 8
+        && [
+            "companyId",
+            "agentId",
+            "bindingId",
+            "runId",
+            "normalizedSessionId",
+            "turnId",
+        ]
+        .iter()
+        .all(|key| {
+            binding
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        })
+        && ["bindingGeneration", "assignmentRevision"]
+            .iter()
+            .all(|key| {
+                binding
+                    .get(*key)
+                    .and_then(Value::as_u64)
+                    .is_some_and(|generation| generation > 0)
+            })
+}
+
+fn is_external_tool_operation_command(command: &Command) -> bool {
+    let Some(payload) = command.payload.as_object() else {
+        return false;
+    };
+    let Some(input) = payload.get("input").and_then(Value::as_object) else {
+        return false;
+    };
+    command.command_type == "external_provider.operation"
+        && payload.len() == 10
+        && payload.get("action").and_then(Value::as_str) == Some("tool")
+        && [
+            "requestId",
+            "bindingId",
+            "runId",
+            "normalizedSessionId",
+            "turnId",
+        ]
+        .iter()
+        .all(|key| {
+            payload
+                .get(*key)
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        })
+        && ["bindingGeneration", "assignmentRevision"]
+            .iter()
+            .all(|key| {
+                payload
+                    .get(*key)
+                    .and_then(Value::as_u64)
+                    .is_some_and(|generation| generation > 0)
+            })
+        && input.len() == 2
+        && input
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(|name| !name.is_empty())
+        && input.get("arguments").is_some_and(Value::is_object)
+        && payload.get("digest")
+            == Some(&json!(semantic_value_digest(&json!({
+                "action": "tool", "input": input,
+            }))))
+}
+
+pub(crate) fn external_tool_event_semantics_changed(
+    event_type: &str,
+    original: &Value,
+    sanitized: &Value,
+) -> Option<bool> {
+    if event_type != "external_provider.operation_settled"
+        || !is_external_operation_settled_tool_result(original)
+    {
+        return None;
+    }
+    Some(
+        !is_external_operation_settled_tool_result(sanitized)
+            || original.get("binding") != sanitized.get("binding")
+            || original.get("requestId") != sanitized.get("requestId")
+            || external_tool_result_control_changed(&original["outcome"], &sanitized["outcome"]),
+    )
+}
+
+pub(crate) fn external_tool_command_semantics_changed(
+    command: &Command,
+    original: &Value,
+    sanitized: &Value,
+) -> Option<bool> {
+    if !is_external_tool_operation_command(command) || !is_external_tool_result_outcome(original) {
+        return None;
+    }
+    Some(external_tool_result_control_changed(original, sanitized))
+}
+
 pub struct ExternalCommandExecutor {
     state_dir: PathBuf,
     config: DurableRunnerConfig,
@@ -1318,6 +1448,93 @@ mod tests {
             "one"
         );
     }
+
+    #[test]
+    fn redacted_tool_result_transport_and_command_replay_after_restart() {
+        use crate::durable::{sanitize_value, CommandDisposition, DurableStateStore};
+        for codec in [
+            ExternalProviderCodec::Dot,
+            ExternalProviderCodec::Grok,
+            ExternalProviderCodec::Muse,
+        ] {
+            let dir = TestDirectory::new();
+            let mut executor = prepared_codec(dir.path(), codec);
+            accept(&mut executor);
+            let tool = operation(
+                "catalog-read-1",
+                "tool",
+                json!({"name":"save_report","arguments":{"text":"synthetic catalog"}}),
+            );
+            assert_eq!(
+                call(&mut executor, "external_provider.operation", tool.clone())["status"],
+                "pending"
+            );
+            let events = executor.retained_events().unwrap();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.event_type == "semantic_tool.input")
+                    .count(),
+                1
+            );
+            executor.acknowledge_events(events.len()).unwrap();
+            let tool_result = json!({"callId":"catalog-read-1","operationId":"save_report",
+            "isError":false,"result":{"schema":{"type":"object","description":"Public schema",
+                "properties":{"credentials":{"type":"string","description":"Supplied by user"}}}}});
+            call(&mut executor, "semantic_tool.result", tool_result.clone());
+            let events = executor.retained_events().unwrap();
+            let settled = events
+                .iter()
+                .find(|e| e.event_type == "external_provider.operation_settled")
+                .unwrap();
+            let expected = sanitize_value(&settled.payload["outcome"]);
+            assert_eq!(
+                expected["result"]["schema"]["properties"]["credentials"],
+                "[REDACTED]"
+            );
+
+            let cfg = config(dir.path());
+            let store = DurableStateStore::new(dir.path()).unwrap();
+            let (mut durable, _) = store.load_or_create(&cfg).unwrap();
+            durable
+                .enqueue_event(
+                    &cfg,
+                    &settled.event_type,
+                    settled.priority,
+                    settled.payload.clone(),
+                )
+                .unwrap();
+            let replay_command = command("external_provider.operation", tool.clone());
+            assert_eq!(
+                durable.begin_command(&replay_command).unwrap(),
+                CommandDisposition::Execute
+            );
+            let outcome = call(&mut executor, "external_provider.operation", tool.clone());
+            let completed = durable.complete_command(&replay_command, outcome).unwrap();
+            assert_eq!(completed.result, expected);
+            let result_digest = semantic_value_digest(&completed.result);
+            store.save(&durable).unwrap();
+            executor.acknowledge_events(events.len()).unwrap();
+            drop(executor);
+            drop(durable);
+
+            let (mut durable, existed) = store.load_or_create(&cfg).unwrap();
+            assert!(existed);
+            match durable.begin_command(&replay_command).unwrap() {
+                CommandDisposition::Replay(receipt) => {
+                    assert_eq!(receipt.result, expected);
+                    assert_eq!(semantic_value_digest(&receipt.result), result_digest);
+                }
+                _ => panic!("durable command replay must not invoke the tool"),
+            }
+            let mut recovered = ExternalCommandExecutor::with_codec(dir.path(), &cfg, codec);
+            let provider_receipt = call(&mut recovered, "external_provider.operation", tool);
+            assert_eq!(sanitize_value(&provider_receipt), expected);
+            call(&mut recovered, "semantic_tool.result", tool_result);
+            assert!(recovered.poll_events().unwrap().is_empty());
+        }
+    }
+
     #[test]
     fn revoked_authority_never_replays_and_late_effect_receipts_remain_settleable() {
         let dir = TestDirectory::new();
