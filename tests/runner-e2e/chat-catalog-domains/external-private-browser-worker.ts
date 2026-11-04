@@ -5,7 +5,7 @@ import { chromium, test, type Cookie } from "@playwright/test";
 import { validGrokRoutinePrivateInput, matchesConfiguredGrokRoutine, type GrokRoutinePrivateInput } from "./external-grok-private-contract.js";
 import { validSlackIdentityInput, validSlackWizardIdentityInput, matchingSlackIdentityPreview, type SlackIdentityPrivateInput } from "./external-slack-identity-contract.js";
 import { validSlackSetupPrivate, type SlackSetupPrivateInput } from "./external-slack-setup-private-contract.js";
-interface Request { mode: "secure-key" | "canary" | "gateway-token-rotation" | "company-secret-create" | "personal-secret-create" | "grok-routine-configure" | "slack-identity-confirm" | "slack-endpoint-configure" | "slack-wizard-confirm" | "slack-wizard-resume" | "slack-endpoint-reconnect" | "device-approve" | "device-expired"; device?: DevicePrivateInput; slackSetup?:SlackSetupPrivateInput; slackIdentity?:SlackIdentityPrivateInput; grok?:GrokRoutinePrivateInput; companyId?:string; personal?:{definitionId:string;userId:string}; gateway?: { id: string; oldTokenId: string; otherToken: string; endpointPath: string; readName: string }; baseURL: string; setupURL: string; providerURL: string; credential: string; cookies: Cookie[]; executablePath?: string; channel?: string }
+interface Request { mode: "secure-key" | "canary" | "gateway-token-rotation" | "company-secret-create" | "personal-secret-create" | "grok-routine-configure" | "slack-identity-confirm" | "slack-endpoint-configure" | "slack-wizard-confirm" | "slack-wizard-resume" | "slack-endpoint-reconnect" | "device-approve" | "device-expired"; device?: DevicePrivateInput; slackSetup?:SlackSetupPrivateInput; slackIdentity?:SlackIdentityPrivateInput; grok?:GrokRoutinePrivateInput; companyId?:string; personal?:{definitionId:string;userId:string;viaMySecrets?:boolean}; gateway?: { id: string; oldTokenId: string; otherToken: string; endpointPath: string; readName: string }; baseURL: string; setupURL: string; providerURL: string; credential: string; cookies: Cookie[]; executablePath?: string; channel?: string }
 /** Separate Node process: no Playwright Test worker, API-step listener or artifact
  * recorder exists. This module never enables tracing, video or screenshots. */
 async function main() {
@@ -203,12 +203,23 @@ async function main() {
     }
     if(input.mode === "personal-secret-create"){
       const personal=input.personal,setup=new URL(input.setupURL);
-      if(!input.companyId||!/^[a-f0-9-]{36}$/i.test(input.companyId)||!personal||!/^[a-f0-9-]{36}$/i.test(personal.definitionId)||!personal.userId||personal.userId.length>160||!setup.pathname.endsWith('/company/settings/secrets')||setup.searchParams.get('definition')!==personal.definitionId)throw new Error('Invalid finite personal secret operation');
-      await page.goto(input.setupURL,{waitUntil:'domcontentloaded'});
+      if (personal?.viaMySecrets !== undefined && typeof personal.viaMySecrets !== 'boolean') throw new Error('Invalid finite personal secret navigation');
+      if(!input.companyId||!/^[a-f0-9-]{36}$/i.test(input.companyId)||!personal||!/^[a-f0-9-]{36}$/i.test(personal.definitionId)||!personal.userId||personal.userId.length>160||!setup.pathname.endsWith('/company/settings/secrets')||(personal.viaMySecrets ? setup.search!=='' : setup.searchParams.get('definition')!==personal.definitionId))throw new Error('Invalid finite personal secret operation');
+      if (!personal.viaMySecrets) await page.goto(input.setupURL,{waitUntil:'domcontentloaded'});
       const session=await context.request.get('/api/auth/get-session');if(!session.ok()||(await session.json()).user?.id!==personal.userId)throw new Error('Personal secret human identity mismatch');
+      const companyResponse = await context.request.get(`/api/companies/${input.companyId}`);
+      const company = companyResponse.ok() ? await companyResponse.json() as { id: string; issuePrefix: string } : null;
+      if (company?.id !== input.companyId || setup.pathname !== `/${company.issuePrefix}/company/settings/secrets`) throw new Error('Personal secret company navigation mismatch');
       const own=await context.request.get(`/api/companies/${input.companyId}/me/user-secrets`);if(!own.ok())throw new Error('Personal definition not readable');
       const entries=await own.json() as Array<{definition:{id:string;key:string;name:string};secret:unknown}>;const entry=entries.find(row=>row.definition.id===personal.definitionId);if(!entry||entry.definition.key!=='PERSONAL_PUBLISHING_KEY'||entry.secret)throw new Error('Personal definition already configured or mismatched');
-      await page.getByRole('button',{name:'Set my value',exact:true}).click();const dialog=page.getByRole('dialog');await dialog.getByRole('heading',{name:/^Set your value/}).waitFor();
+      if (personal.viaMySecrets) {
+        const settings = new URL(setup); settings.pathname = settings.pathname.replace(/\/secrets$/, '');
+        await page.goto(settings.href,{waitUntil:'domcontentloaded'});
+        await page.getByRole('link',{name:'Secrets',exact:true}).filter({visible:true}).click();
+        await page.getByRole('tab',{name:'My secrets',exact:true}).click();
+        await page.getByRole('listitem').filter({hasText:entry.definition.key}).getByRole('button',{name:'Set value',exact:true}).click();
+      } else await page.getByRole('button',{name:'Set my value',exact:true}).click();
+      const dialog=page.getByRole('dialog');await dialog.getByRole('heading',{name:/^Set your value/}).waitFor();
       if(!await dialog.getByText('Personal publishing credential',{exact:true}).isVisible())throw new Error('Wrong personal credential form');
       await dialog.getByRole('textbox').fill(input.credential);
       const created=page.waitForResponse(response=>new URL(response.url()).pathname===`/api/companies/${input.companyId}/me/user-secrets`&&response.request().method()==='POST'&&response.status()===201);

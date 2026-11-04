@@ -4957,6 +4957,7 @@
     "scenarioId": "secrets.personal-secret",
     "sourceFiles": [
       "chat-catalog-domains/external-personal-secret.ts",
+      "chat-catalog-domains/external-secret-question.ts",
       "chat-catalog-domains/external-secret-endpoint.ts",
       "chat-catalog-domains/external-private-browser.ts",
       "chat-catalog-domains/external-private-browser-worker.ts",
@@ -4979,7 +4980,7 @@
       "../../ui/src/pages/secrets/SetMyUserSecretDialog.tsx",
       "chat-scenarios/secrets.yaml"
     ],
-    "oracleVersion": "paperclip.chat-catalog.personal-secret.v2",
+    "oracleVersion": "paperclip.chat-catalog.personal-secret.v3",
     "expectedRunCount": 3,
     "expectedHumanMessageCount": 2,
     "minimumRunCount": 3,
