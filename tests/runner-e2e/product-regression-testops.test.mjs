@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, writeFile, lstat } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { productRegressionCases, selectProductRegression, validateSelection, projectProductResults, workflowUrl, workflowUrls } from './product-regression-testops.mjs';
@@ -19,7 +20,7 @@ const selection = cases => ({ schema: 'paperclip.product-regression-testops-sele
 const result = (overrides = {}) => ({
   executionId: selected.executionId, suiteId: selected.suite, caseId: selected.name,
   profileId: selected.profile, environmentId: 'local', source: { sha: targetSha }, attempt: 1,
-  status: 'passed', cleanup: 'passed', model: 'gpt-6.1-sol', suiteDefinitionHash: 'c'.repeat(64),
+  status: 'passed', cleanup: 'passed', model: 'gpt-5.6-sol', suiteDefinitionHash: 'c'.repeat(64),
   matcherResults: [{ matcher: { kind: 'json_path', path: 'observed.outputVerified', expected: true }, passed: true }],
   ...overrides,
 });
@@ -114,7 +115,7 @@ test('authoritative normalized accounting preserves earlier failed attempt verdi
   assert.deepEqual(projected.records[1].value.attemptAccounting, { scope: 'retained_attempts', missingAttempts: 0, excludedArtifacts: 0 });
   assert.throws(() => projectProductResults({ ...measured, accounting: { ...measured.accounting, attempts: [{ ...measured.accounting.attempts[0], status: 'unknown' }] } }, selection([selected]), targetSha));
   const openCode = productRegressionCases.find(row => row.id === 54);
-  const model = 'openrouter/deepseek/deepseek-v4.1-flash-1017';
+  const model = 'openrouter/deepseek/deepseek-v4-flash-0731';
   const record = result({ executionId: openCode.executionId, suiteId: openCode.suite, caseId: openCode.name, profileId: openCode.profile, model });
   const openCodeCampaign = { ...campaign([record]), expected: [openCode.executionId] };
   assert.equal(projectProductResults(openCodeCampaign, selection([openCode]), targetSha).records[1].value.model, model);
@@ -123,11 +124,29 @@ test('authoritative normalized accounting preserves earlier failed attempt verdi
 test('the transmission projection excludes raw errors, provider IDs, narratives and unexpected fields', () => {
   const dirty = result({ error: 'secret-error', runIds: ['private-provider-session'], detail: 'private-context',
     usage: { credential: 'private-token' }, matcherResults: [{ passed: true, detail: 'secret-detail',
-      matcher: { kind: 'contains', expected: 'fixture-answer-secret', path: 'unsafe narrative with secrets' } }] });
+      matcher: { kind: 'message_contains', expected: 'fixture-answer-secret', path: 'unsafe narrative with secrets' } }] });
   const text = JSON.stringify(projectProductResults(campaign([dirty]), selection([selected]), targetSha));
   for (const secret of ['secret-error', 'private-provider-session', 'private-context', 'private-token', 'secret-detail', 'fixture-answer-secret', 'unsafe narrative']) {
     assert.equal(text.includes(secret), false, secret);
   }
+});
+
+test('secret-shaped and unknown metadata cannot cross the reporting boundary', () => {
+  const sentinel = 'sk-proj-syntheticcredentialabcdefghijklmnop';
+  for (const mutation of [{ model: sentinel }, { model: 'gpt-6.1-sol' }, { failureClass: sentinel }, { cleanup: sentinel },
+    { matcherResults: [{ passed: true, matcher: { kind: sentinel } }] }]) {
+    assert.throws(() => projectProductResults(campaign([result(mutation)]), selection([selected]), targetSha),
+      error => error.message === 'product_regression_testops_metadata_invalid');
+  }
+  const projected = projectProductResults(campaign([result({ matcherResults: [
+    { passed: false, matcher: { kind: 'json_path', path: sentinel } },
+  ] })]), selection([selected]), targetSha);
+  assert.equal(JSON.stringify(projected).includes(sentinel), false);
+  assert.equal(projected.summary.passed, 0);
+  assert.equal(projected.records[1].value.checks[0].name, 'json_path');
+  assert.equal(projected.records[1].value.checks[0].ordinal, 1);
+  assert.equal(projected.records[1].value.checks[0].passed, false);
+  assert.equal(projected.records[1].value.checks[0].pathSha256, createHash('sha256').update(sentinel).digest('hex'));
 });
 
 test('a TestOps job run must belong to this workflow, source launch and GitHub execution', async () => {
@@ -193,11 +212,28 @@ test('the separated selection, retained-report projection and server verificatio
   await mkdir(path.join(runtime.REPORT_DIR, 'normalized'), { recursive: true });
   await writeFile(path.join(runtime.REPORT_DIR, 'normalized', 'normalized-results.json'), JSON.stringify(campaign()));
   assert.equal(await productTestOps('project', selectionFile, runtime, exec, fetchImpl), 0);
+  const unsafeRuntime = { ...runtime, ALLURE_RESULTS: path.join(root, 'unsafe-results'), EXPORT_SUMMARY: path.join(root, 'unsafe-export.json') };
+  for (const mutation of [{ model: 'sk-proj-syntheticcredentialabcdefghijklmnop' },
+    { cleanup: 'sk-proj-syntheticcredentialabcdefghijklmnop' }]) {
+    await writeFile(path.join(runtime.REPORT_DIR, 'normalized', 'normalized-results.json'), JSON.stringify(campaign([result(mutation)])));
+    await assert.rejects(productTestOps('project', selectionFile, unsafeRuntime, exec, fetchImpl),
+      error => error.message === 'product_regression_testops_metadata_invalid');
+    await assert.rejects(lstat(unsafeRuntime.ALLURE_RESULTS), { code: 'ENOENT' });
+    await assert.rejects(lstat(unsafeRuntime.EXPORT_SUMMARY), { code: 'ENOENT' });
+  }
+  await writeFile(path.join(runtime.REPORT_DIR, 'normalized', 'normalized-results.json'), JSON.stringify(campaign()));
   assert.equal(await productTestOps('verify', selectionFile, runtime, exec, fetchImpl), 0);
   uploadedStatus = 'unknown';
   let readinessWaits = 0;
   assert.equal(await productTestOps('verify', selectionFile, runtime, exec, fetchImpl, async () => { readinessWaits++; uploadedStatus = 'passed'; }), 0);
   assert.equal(readinessWaits, 1);
+  uploadedStatus = 'unknown';
+  let virtualMs = 0;
+  assert.equal(await productTestOps('verify', selectionFile, runtime, exec, fetchImpl, async ms => {
+    virtualMs += ms;
+    if (virtualMs >= 40_000) uploadedStatus = 'passed';
+  }), 0);
+  assert.equal(virtualMs, 40_000);
   const failureOutput = path.join(root, 'failed-selection-output');
   const badPlan = async (command, args) => args[1] === 'plan'
     ? (await writeFile(args.at(-1), JSON.stringify({ version: '1.0', tests: [{ id: '999', selector: selected.fullName }] })), { stdout: '' })
@@ -211,7 +247,10 @@ test('the separated selection, retained-report projection and server verificatio
     { ...runtime, ALLURE_JOB_RUN_ID: '', TESTOPS_CASE: 'unknown' }, async () => { opened = true; }, fetchImpl), /manual_selection_invalid/);
   assert.equal(opened, false);
   uploadedStatus = 'failed';
-  await assert.rejects(productTestOps('verify', selectionFile, runtime, exec, fetchImpl, async () => {}), /uploaded_status_mismatch/);
+  let deadlineMs = 0;
+  await assert.rejects(productTestOps('verify', selectionFile, runtime, exec, fetchImpl,
+    async ms => { deadlineMs += ms; }), /uploaded_status_mismatch/);
+  assert.equal(deadlineMs, 55_000);
   await writeFile(selectionFile, JSON.stringify({ ...receipt, targetSha: workflowSha }));
   await assert.rejects(productTestOps('project', selectionFile, runtime, exec, fetchImpl), /selection_hash/);
 });

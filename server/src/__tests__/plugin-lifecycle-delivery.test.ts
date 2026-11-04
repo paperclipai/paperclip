@@ -54,6 +54,40 @@ describePostgres("durable plugin lifecycle delivery", () => {
     const worker = registerPluginLifecycleDelivery(coordinator as never, db, { call, isRunning: running, onConfigApplied } as unknown as PluginWorkerManager, lifecycle as unknown as PluginLifecycleManager);
     return { call, running, wake, lifecycle, worker, applied: () => { for (const listener of configApplied) listener(); }, run: () => task.run(new AbortController().signal), pending: () => task.hasPending(), nextRunAt: () => task.nextRunAt?.(), settled: () => task.onSettled?.() };
   }
+  it("delivers project events to a storage provider only for projects attached to it", async () => {
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe", "workspaces.manage"], workspaceProvider: { modes: ["isolated_workspace"], strategies: ["git_worktree"] } } as never }).where(eq(plugins.id, pluginId));
+    const [core] = await db.insert(projects).values({ companyId, name: "Core project" }).returning();
+    const [attached] = await db.insert(projects).values({ companyId, name: "Attached project", executionWorkspacePolicy: { enabled: true, storageProviderPluginId: pluginId } }).returning();
+    await event(core.id);
+    await event(attached.id);
+    const d = delivery();
+    try {
+      await d.run();
+      expect(d.call).toHaveBeenCalledTimes(1);
+      expect(d.call.mock.calls[0][2]).toMatchObject({ resourceId: attached.id });
+      expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toEqual([]);
+      await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: pluginId } }).where(eq(projects.id, core.id));
+      await event(core.id, "update");
+      await d.run();
+      expect(d.call).toHaveBeenCalledTimes(2);
+      expect(d.call.mock.calls[1][2]).toMatchObject({ resourceId: core.id, action: "update" });
+    } finally {
+      d.worker.dispose();
+    }
+  });
+
+  it("delivers a deleted project's event to a storage provider", async () => {
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe", "workspaces.manage"], workspaceProvider: { modes: ["isolated_workspace"], strategies: ["git_worktree"] } } as never }).where(eq(plugins.id, pluginId));
+    const removed = await event(randomUUID(), "delete");
+    const d = delivery();
+    try {
+      await d.run();
+      expect(d.call.mock.calls[0][2]).toMatchObject({ resourceId: removed, action: "delete" });
+    } finally {
+      d.worker.dispose();
+    }
+  });
+
   it("supplies project native credentials only to opted-in callbacks and saves returned patches before acknowledgment", async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
     await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe", "projects.instance-secrets"] } as never }).where(eq(plugins.id, pluginId));

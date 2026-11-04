@@ -795,21 +795,21 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
   });
 
   it.each([
-    { inherited: false, mode: "isolated_workspace" as const, fresh: false },
-    { inherited: false, mode: "isolated_workspace" as const, fresh: true },
-    { inherited: true, mode: "isolated_workspace" as const, fresh: false },
-    { inherited: true, mode: "operator_branch" as const, fresh: false },
-  ])("prepares managed storage before acquisition (inherited: $inherited, mode: $mode, fresh: $fresh) without touching a Core checkout", async ({ inherited, mode: defaultMode, fresh }) => {
+    { fromDefault: false, mode: "isolated_workspace" as const, fresh: false },
+    { fromDefault: false, mode: "isolated_workspace" as const, fresh: true },
+    { fromDefault: true, mode: "isolated_workspace" as const, fresh: false },
+    { fromDefault: true, mode: "operator_branch" as const, fresh: false },
+  ])("prepares managed storage before acquisition (fromDefault: $fromDefault, mode: $mode, fresh: $fresh) without touching a Core checkout", async ({ fromDefault, mode: defaultMode, fresh }) => {
     const { input, source, issue } = await fixture(true);
-    const pluginKey = `test.managed-storage-${inherited}-${defaultMode}-${fresh}`;
+    const pluginKey = `test.managed-storage-${fromDefault}-${defaultMode}-${fresh}`;
     const [plugin] = await db.insert(plugins).values({ pluginKey, packageName: "test-storage", version: "1.0.0", apiVersion: 1, status: "ready", categories: ["workspace"],
       manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Test", categories: ["workspace"],
-        workspaceProvider: { freshWorkspaceVersion: 1, modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"], ...(inherited ? { defaultForProjects: { mode: defaultMode, strategy: "git_worktree" as const } } : {}) }, capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"], entrypoints: { worker: "./worker.js" } } }).returning();
-    const explicitPolicy = { enabled: true, storageProviderPluginId: plugin.id, defaultMode: "isolated_workspace" as const,
+        workspaceProvider: { freshWorkspaceVersion: 1, modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"], ...(fromDefault ? { defaultForProjects: { mode: defaultMode, strategy: "git_worktree" as const } } : {}) }, capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"], entrypoints: { worker: "./worker.js" } } }).returning();
+    const savedPolicy = fromDefault ? { enabled: true, storageProviderPluginId: plugin.id } : { enabled: true, storageProviderPluginId: plugin.id, defaultMode: "isolated_workspace" as const,
       workspaceStrategy: { type: "git_worktree" as const, baseRef: "main", branchTemplate: "test-{{issue.identifier}}" } };
-    if (!inherited) await db.update(projects).set({ executionWorkspacePolicy: explicitPolicy }).where(eq(projects.id, issue.projectId!));
+    await db.update(projects).set({ executionWorkspacePolicy: savedPolicy }).where(eq(projects.id, issue.projectId!));
     {
-      const policy = await effectiveProjectWorkspacePolicy(db, input.agent.companyId, inherited ? null : explicitPolicy, true);
+      const policy = await effectiveProjectWorkspacePolicy(db, input.agent.companyId, savedPolicy, true);
       const mode = resolveExecutionWorkspaceMode({ projectPolicy: policy, issueSettings: null, legacyUseProjectWorkspace: null });
       input.policy.projectExecutionWorkspacePolicy = policy;
       input.policy.requestedExecutionWorkspaceMode = mode;
@@ -840,7 +840,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await expect(access(source)).rejects.toThrow();
     const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
     const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
-    expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, mode: defaultMode, strategyType: "git_worktree", branchName: fresh ? null : inherited ? "WSP-1-prepare-this-workspace" : "test-WSP-1" });
+    expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, mode: defaultMode, strategyType: "git_worktree", branchName: fresh ? null : fromDefault ? "WSP-1-prepare-this-workspace" : "test-WSP-1" });
   });
   async function installDefault() {
     const [plugin] = await db.insert(plugins).values({ pluginKey: "test.default-storage", packageName: "test-storage", version: "1.0.0", status: "ready",

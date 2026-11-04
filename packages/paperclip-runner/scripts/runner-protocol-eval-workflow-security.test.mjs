@@ -337,6 +337,36 @@ test('controlled workers keep the required GitHub-hosted origin even when the le
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('requested parallelism respects both configured capacity and the selected runner cap', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const script = workflowShell(workflow, 'Build the two bounded roster-plus-case matrices');
+  const prefix = script.slice(0, script.indexOf('node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs'));
+  assert.ok(prefix.includes('REQUESTED_MAX_PARALLEL'));
+  for (const [configured, limit, requested, expected] of [['100', '57', '2', '2'], ['100', '57', '', '57'],
+    ['100', '100', '', '100'], ['8', '57', '16', null], ['100', '57', '58', null], ['100', '57', '1', null]]) {
+    const result = spawnSync('bash', ['-euc', `${prefix}\nprintf '%s' "$MAX_PARALLEL"`], { encoding: 'utf8', env: {
+      PATH: process.env.PATH, MAX_PARALLEL: configured, MAX_PARALLEL_LIMIT: limit, REQUESTED_MAX_PARALLEL: requested } });
+    assert.equal(result.status === 0, expected !== null, `${configured}/${limit}/${requested}: ${result.stderr}`);
+    if (expected !== null) assert.equal(result.stdout, expected);
+  }
+});
+
+test('the provider uses an owned same-byte Node before credentials without changing shared host permissions', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const paid = workflow.slice(workflow.indexOf('    steps: &direct_eval_steps'), workflow.indexOf('  eval_shard_1:'));
+  const staging = paid.indexOf('Stage an owned provider Node before credentials');
+  assert.ok(staging > paid.indexOf('Verify and extract portable runner'));
+  assert.ok(staging < paid.indexOf('Obtain private archive credentials for transfer steps only'));
+  assert.ok(staging < paid.indexOf('Prepare short-lived AgentCore web identity'));
+  assert.ok(staging < paid.indexOf('Run one immutable direct protocol cell'));
+  const command = workflowShell(paid, 'Stage an owned provider Node before credentials');
+  assert.match(command, /node packages\/paperclip-runner\/scripts\/stage-runner-provider-node\.mjs/u);
+  assert.match(command, /"\$RUNNER_TEMP\/runner-protocol-provider-node"/u);
+  assert.match(command, /portable\/dist\/cli\/acpx-runtime-sidecar\.cjs/u);
+  assert.match(command, /cell-output\/provider-node-receipt\.json/u);
+  assert.doesNotMatch(command, /secrets\.|\bsudo\b|\bchmod\b|hostedtoolcache/u);
+});
+
 test('TestOps admission preserves the selected mode gates, current source and dedicated roster', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
   const script = workflowShell(workflow, 'Validate accounting mode and retry envelope');

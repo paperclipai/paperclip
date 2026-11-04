@@ -469,7 +469,6 @@ import {
   parseIssueAssigneeAdapterOverrides,
   gateProjectExecutionWorkspacePolicy,
   parseIssueExecutionWorkspaceSettings,
-  parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceMode,
   selectEnvironmentExecutionWorkspaceSettings,
 } from "./execution-workspace-policy.js";
@@ -533,7 +532,7 @@ import {
 
 import { resolveAndRetainRunTrustPreset } from "./run-trust-preset.js";
 
-import { effectiveProjectWorkspacePolicy } from "./project-workspace-provider.js";
+import { effectiveProjectWorkspacePolicy, sourcelessProjectWorkspacePolicy } from "./project-workspace-provider.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 import { computeTaskDrain, applyTaskDrain, startTaskDrain, stopTaskDrain, readTaskDrain } from "./task-admission.js";
@@ -2440,7 +2439,7 @@ export function heartbeatService(
       );
       const parsedProjectExecutionWorkspacePolicy = workspacePolicyContext?.hasWorkspace
         ? await effectiveProjectWorkspacePolicy(db, agent.companyId, workspacePolicyContext.executionWorkspacePolicy, workspacePolicyContext.hasGitSource)
-        : parseProjectExecutionWorkspacePolicy(workspacePolicyContext?.executionWorkspacePolicy);
+        : sourcelessProjectWorkspacePolicy(workspacePolicyContext?.executionWorkspacePolicy);
       const projectExecutionWorkspacePolicy =
         applyDefaultIsolatedExecutionWorkspacePolicy({
           projectPolicy: gateProjectExecutionWorkspacePolicy(
