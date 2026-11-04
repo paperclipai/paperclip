@@ -79,10 +79,14 @@ export function requiresExecutionReconciliation(
   return EXECUTION_RECONCILIATION_CAUSES.some((value) => value === cause);
 }
 
+export const EXECUTION_RECONCILIATION_ACTION_OUTCOMES = [
+  "completed", "not_performed", "mixed", "unknown",
+] as const;
+
 export interface ExecutionReconciliation {
   runId: string;
   providerStopped: true;
-  actionOutcome: "completed" | "not_performed" | "mixed";
+  actionOutcome: (typeof EXECUTION_RECONCILIATION_ACTION_OUTCOMES)[number];
   outcomeEvidence: string;
   /** Operator evidence bound to this failed run; required after workspace restore failure. */
   workspaceRepairEvidence?: string;

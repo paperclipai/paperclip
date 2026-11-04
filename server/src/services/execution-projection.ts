@@ -245,7 +245,8 @@ export function projectExecution(
   };
   const set = (phase: ExecutionProjection["phase"], label: string) =>
     Object.assign(projection, { phase, label });
-  if (recoveryAction?.status === "resolved" && recoveryAction.evidence?.automaticRecovery) {
+  if (recoveryAction?.status === "resolved" && recoveryAction.evidence?.automaticRecovery &&
+      !recoveryAction.evidence.executionReconciliation) {
     projection.cause = recoveryAction.cause;
     projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id)?.message
       ?? recoveryAction.nextAction;

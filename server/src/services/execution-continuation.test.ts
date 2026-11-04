@@ -8,6 +8,7 @@ import {
   createDb,
   heartbeatRuns,
   issueComments,
+  issueRecoveryActions,
   issueThreadInteractions,
   issues,
 } from "@paperclipai/db";
@@ -161,6 +162,20 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
         id: laterId,
         revision: latest.updatedAt.toISOString(),
       });
+    });
+
+    it("carries unknown action outcomes as evidence without changing the request", async () => {
+      const id = randomUUID();
+      const decision = { runId, providerStopped: true, actionOutcome: "unknown",
+        outcomeEvidence: "The retained audit cannot establish the external outcome." };
+      await db.insert(issueRecoveryActions).values({ id, companyId, sourceIssueId: issueId,
+        kind: "active_run_watchdog", status: "resolved", cause: "uncertain_external_action",
+        fingerprint: id, nextAction: "Continue without replay", evidence: { executionReconciliation: decision } });
+      try {
+        const envelope = await build();
+        expect(envelope.recoveryOutcomes).toContainEqual({ recoveryActionId: id, decision });
+        expect(envelope.objective).toBe("Focus the Gmail summary on launch decisions.");
+      } finally { await db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)); }
     });
     it("loads authenticated human answers from stored resolver identity", async () => {
       const answerId = randomUUID();

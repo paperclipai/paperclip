@@ -27,7 +27,7 @@ export interface ResolvedClientContext {
   authSource: "explicit" | "env" | "profile_env" | "stored_board" | "none";
 }
 
-export function addCommonClientOptions(command: Command, opts?: { includeCompany?: boolean }): Command {
+export function addCommonClientOptions(command: Command, opts?: { includeCompany?: boolean; includeRunId?: boolean }): Command {
   command
     .option("-c, --config <path>", "Path to Paperclip config file")
     .option("-d, --data-dir <path>", "Paperclip data directory root (isolates state from ~/.paperclip)")
@@ -35,8 +35,11 @@ export function addCommonClientOptions(command: Command, opts?: { includeCompany
     .option("--profile <name>", "CLI context profile name")
     .option("--api-base <url>", "Base URL for the Paperclip API")
     .option("--api-key <token>", "Bearer token for agent-authenticated calls")
-    .option("--run-id <id>", "Heartbeat run id for agent-authenticated mutations (checkout/release/interactions/in-progress update); falls back to $PAPERCLIP_RUN_ID")
     .option("--json", "Output raw JSON");
+
+  if (opts?.includeRunId !== false) {
+    command.option("--run-id <id>", "Heartbeat run id for agent-authenticated mutations (checkout/release/interactions/in-progress update); falls back to $PAPERCLIP_RUN_ID");
+  }
 
   if (opts?.includeCompany) {
     command.option("-C, --company-id <id>", "Company ID (overrides context default)");

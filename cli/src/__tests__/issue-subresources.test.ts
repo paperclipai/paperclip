@@ -120,6 +120,31 @@ describe("issue subresource commands", () => {
     ]);
   });
 
+  it.each(["completed", "not_performed", "mixed", "unknown"])("submits observed %s execution outcomes without replacing the authenticating run", async actionOutcome => {
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    const prior = process.env.PAPERCLIP_RUN_ID;
+    process.env.PAPERCLIP_RUN_ID = COMMENT_ID;
+    try {
+      await run(["issue", "recovery:resolve", ISSUE_ID, "--outcome", "restored",
+        "--source-issue-status", "todo", "--run-id", APPROVAL_ID, "--provider-stopped",
+        "--action-outcome", actionOutcome,
+        "--outcome-evidence", "The provider process has stopped.",
+        "--outcome-evidence", "The retained action audit was inspected."]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0];
+      expect(url).toBe(`http://localhost:3100/api/issues/${ISSUE_ID}/recovery-actions/resolve`);
+      expect(init.method).toBe("POST");
+      expect(init.headers["x-paperclip-run-id"]).toBe(COMMENT_ID);
+      expect(JSON.parse(init.body)).toEqual({ outcome: "restored", sourceIssueStatus: "todo",
+        executionReconciliation: { runId: APPROVAL_ID, providerStopped: true, actionOutcome,
+          outcomeEvidence: "The provider process has stopped.\nThe retained action audit was inspected." } });
+    } finally {
+      if (prior === undefined) delete process.env.PAPERCLIP_RUN_ID;
+      else process.env.PAPERCLIP_RUN_ID = prior;
+    }
+  });
+
   it("wraps document and work product endpoints", async () => {
     const fetchMock = vi
       .fn()

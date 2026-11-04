@@ -147,6 +147,9 @@ interface IssueRecoveryResolveOptions extends BaseClientOptions {
   outcome: string;
   sourceIssueStatus: string;
   resolutionNote?: string;
+  providerStopped?: boolean;
+  actionOutcome?: string;
+  outcomeEvidence?: string[];
 }
 
 interface InteractionAcceptOptions extends BaseClientOptions {
@@ -534,14 +537,23 @@ export function registerIssueCommands(program: Command): void {
       .requiredOption("--source-issue-status <status>", "todo, done, or in_review for restored outcomes; blocked is only valid for blocked outcomes")
       .option("--action-id <id>", "Specific recovery action ID")
       .option("--resolution-note <text>", "Resolution note")
+      .option("--run-id <id>", "Guarded source run ID; authentication uses $PAPERCLIP_RUN_ID")
+      .option("--provider-stopped", "Confirm the source provider has stopped")
+      .option("--action-outcome <outcome>", "completed, not_performed, mixed, or unknown")
+      .option("--outcome-evidence <text>", "Retained outcome evidence (repeatable)",
+        (value: string, previous: string[]) => [...previous, value], [])
       .action(async (issueId: string, opts: IssueRecoveryResolveOptions) => {
         try {
-          const ctx = resolveCommandContext(opts);
+          const ctx = resolveCommandContext({ ...opts, runId: undefined });
           const payload = resolveIssueRecoveryActionSchema.parse({
             actionId: opts.actionId,
             outcome: opts.outcome,
             sourceIssueStatus: opts.sourceIssueStatus,
             resolutionNote: opts.resolutionNote,
+            executionReconciliation: opts.runId || opts.providerStopped || opts.actionOutcome || opts.outcomeEvidence?.length
+              ? { runId: opts.runId, providerStopped: opts.providerStopped,
+                  actionOutcome: opts.actionOutcome, outcomeEvidence: opts.outcomeEvidence?.join("\n") }
+              : undefined,
           });
           const result = await ctx.api.post(apiPath`/api/issues/${issueId}/recovery-actions/resolve`, payload);
           printOutput(result, { json: ctx.json });
@@ -549,6 +561,7 @@ export function registerIssueCommands(program: Command): void {
           handleCommandError(err);
         }
       }),
+    { includeRunId: false },
   );
 
   addCommonClientOptions(

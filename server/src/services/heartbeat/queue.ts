@@ -35,7 +35,7 @@ import {
   CHAT_COMPLETION_WAKE_REASON,
   isCompletedOnboardingHandoffWake,
 } from "../chat-completion-delivery.js";
-import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
+import { EXECUTION_RECONCILIATION_ACTION_OUTCOMES, hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { readQueuedInteractionResponse } from "../queued-interaction-response.js";
 import {
   isConversation,
@@ -3171,9 +3171,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               !sourceRunId ||
               !isUuidLike(sourceRunId) ||
               decision.providerStopped !== true ||
-              !["completed", "not_performed", "mixed"].includes(
-                String(decision.actionOutcome),
-              ) ||
+              !EXECUTION_RECONCILIATION_ACTION_OUTCOMES.some(value => value === decision.actionOutcome) ||
               !readNonEmptyString(decision.outcomeEvidence) ||
               enrichedContextSnapshot.previousRunId !== sourceRunId ||
               enrichedContextSnapshot.retryOfRunId !== sourceRunId ||
