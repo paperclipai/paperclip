@@ -12,7 +12,7 @@ import {
 } from "@paperclipai/db";
 import type { AdapterSandboxExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { EnvironmentLease } from "@paperclipai/shared";
-import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
@@ -30,7 +30,8 @@ function deferred() {
   return { promise, resolve };
 }
 
-describe("remote workspace save parent lock order", () => {
+const support = await getEmbeddedPostgresTestSupport();
+describe.skipIf(!support.supported)("remote workspace save parent lock order", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   let root: string;

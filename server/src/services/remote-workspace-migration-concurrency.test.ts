@@ -6,7 +6,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, closeRegisteredClients, companies, createDb, environmentLeases, executionWorkspaceSnapshots,
   executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations } from "@paperclipai/db";
-import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { createStorageService } from "../storage/service.js";
 import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.js";
 import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
@@ -19,7 +19,8 @@ function deferred() {
   return { promise, resolve };
 }
 
-describe("legacy workspace publication ownership contention", () => {
+const support = await getEmbeddedPostgresTestSupport();
+describe.skipIf(!support.supported)("legacy workspace publication ownership contention", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>, root: string;
   beforeAll(async () => {
