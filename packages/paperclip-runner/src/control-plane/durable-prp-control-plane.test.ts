@@ -31,6 +31,7 @@ import { digestPaperclipSemanticContent } from "../semantic-tools/receipts.js";
 import {
   DurablePrpControlPlane,
   decodeDurablePrpCheckpoint,
+  captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
   inspectStagedRunAttachment,
   inspectRetainedRunInstructions,
@@ -217,6 +218,40 @@ it("restores authentication and commands from opaque checkpoint records", async 
     await restored?.stop();
     await first.stop();
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("imports the authenticated legacy authority without changing its source and restores it in an empty home", async () => {
+  const root = mkdtempSync(resolve(tmpdir(), "runner-legacy-import-"));
+  const options = { stateDirectory: resolve(root, "old/control-plane"), identity, expectedRunnerVersion, expectedRunnerDigest };
+  const core = new DurablePrpControlPlane(options);
+  let restored: DurablePrpControlPlane | undefined;
+  try {
+    await core.start();
+    const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+    core.queueCommand("session.snapshot", {}, "retained-maintenance");
+    client.socket.destroy();
+    await core.stop();
+    const file = resolve(options.stateDirectory, "control-plane-state.json");
+    const source = readFileSync(file, "utf8");
+    const checkpoint = captureLegacyDurablePrpCheckpoint(source, identity);
+    expect(readFileSync(file, "utf8")).toBe(source);
+    expect(checkpoint.runnerDigest).toBe(expectedRunnerDigest);
+    expect(checkpoint.recoveryEvidence.authenticatedConnectionCount).toBe(1);
+    rmSync(resolve(root, "old"), { recursive: true });
+    checkpoint.restoreSessionDirectory(resolve(root, "new"));
+    restored = new DurablePrpControlPlane({ ...options, stateDirectory: resolve(root, "new/control-plane") });
+    expect(restored.getCommand("retained-maintenance")).toMatchObject({ type: "session.snapshot" });
+    expect(() => captureLegacyDurablePrpCheckpoint(source, { ...identity, runId: "another-run" })).toThrow("binding_mismatch");
+    const state = JSON.parse(source);
+    expect(() => captureLegacyDurablePrpCheckpoint(JSON.stringify({ ...state, tickets: {} }), identity)).toThrow("artifact_unproven");
+    expect(captureLegacyDurablePrpCheckpoint(JSON.stringify({ ...state, tickets: {} }), identity,
+      { version: expectedRunnerVersion, digest: expectedRunnerDigest }).runnerDigest).toBe(expectedRunnerDigest);
+    expect(() => captureLegacyDurablePrpCheckpoint(source, identity,
+      { version: expectedRunnerVersion, digest: `sha256:${"0".repeat(64)}` })).toThrow("artifact_unproven");
+    expect(() => captureLegacyDurablePrpCheckpoint(JSON.stringify({ schema: "paperclip.runner.external-control-plane-state.v1", identity }), identity)).toThrow("binding_mismatch");
+  } finally {
+    await restored?.stop(); await core.stop(); rmSync(root, { recursive: true, force: true });
   }
 });
 

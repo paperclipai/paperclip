@@ -1,5 +1,32 @@
 # Database
 
+### Durable native provider backups
+
+`native_harness_backups` journals encrypted provider-session archives in object
+storage. One current row per company and session scope selects the published
+backup. Pending uploads remain recorded after failure; a controller must still
+own the native run when it publishes. Superseded controllers cannot replace the
+selected backup. Archive bytes never enter the database.
+
+The dedicated volume migration imports verified surviving backups without
+removing their source files or changing task-session pointers. Replacement
+readiness rejects retained session pointers whose backups remain local. The
+existing bounded startup retention pass retires closed sessions only after its
+task, run, lease and age checks pass, then acknowledges object deletion before
+removing the ledger row. It adds no idle polling.
+
+The same offline maintenance process imports surviving legacy controller state
+into `native_runner_checkpoints` and binds its existing session snapshot through
+`nativeControllerRecovery` metadata. Runner validates the original protocol
+state and recorded artifact; Core requires a finished run with no live owner.
+Blocked or pending recovery records remain unchanged while their surviving
+state is preserved; migration does not mark their work completed.
+The normal bounded continuation selector handles inherited, unstarted follow-ups.
+Never-started queued turns keep their task pointers and remain queued. Original
+files stay intact, canonical database checkpoints take precedence, and missing
+source files are reported separately rather than fabricated. This migration
+does not recover provider state that was already lost before enrollment.
+
 ### Proactive agent chat messages
 
 Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint

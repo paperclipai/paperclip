@@ -56,7 +56,7 @@ import {
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { hasSandboxSnapshotQualification, qualifiedSandboxSnapshotId, usesManagedCloudSandboxImage, type SandboxTemplateIdentity } from "./sandbox-snapshot-qualification.js";
-import { verifyNativeHarnessBackupStamp } from "./native-runtime/native-harness-backup-stamp.js";
+import { verifyRecoverableNativeHarnessBackup } from "./native-runtime/native-harness-backup-storage.js";
 import {
   collectEnvironmentSecretRefs,
   parseEnvironmentDriverConfig,
@@ -1847,10 +1847,8 @@ function createSandboxEnvironmentDriver(
           if (!providerLease) {
             if (
               input.adapterType === "paperclip_runner" &&
-              !verifyNativeHarnessBackupStamp(
-                reusableLease.metadata?.nativeHarnessBackup,
-                reusableLease.providerLeaseId,
-              )
+              !await verifyRecoverableNativeHarnessBackup({ db, companyId: reusableLease.companyId,
+                stamp: reusableLease.metadata?.nativeHarnessBackup, providerLeaseId: reusableLease.providerLeaseId })
             ) {
               throw new RunnerHarnessBackupUnavailableError(
                 reusableLease.providerLeaseId,
@@ -3986,10 +3984,8 @@ export function environmentRuntimeService(
               "paperclip_runner" &&
             leaseSnapshot.metadata?.sandboxLeaseAcquisition &&
             (!leaseSnapshot.providerLeaseId ||
-              !verifyNativeHarnessBackupStamp(
-                leaseSnapshot.metadata.nativeHarnessBackup,
-                leaseSnapshot.providerLeaseId,
-              ))
+              !await verifyRecoverableNativeHarnessBackup({ db, companyId: leaseSnapshot.companyId,
+                stamp: leaseSnapshot.metadata.nativeHarnessBackup, providerLeaseId: leaseSnapshot.providerLeaseId }))
           ) {
             throw new RunnerHarnessBackupUnavailableError(
               leaseSnapshot.providerLeaseId ?? leaseSnapshot.id,

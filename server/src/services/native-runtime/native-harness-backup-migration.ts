@@ -1,0 +1,76 @@
+import { createHash } from "node:crypto";
+import { lstat, readFile, readdir } from "node:fs/promises";
+import { join } from "node:path";
+import { and, eq, sql } from "drizzle-orm";
+import { environmentLeases, heartbeatRuns, nativeHarnessBackups, type Db } from "@paperclipai/db";
+import type { StorageService } from "../../storage/types.js";
+import { nativeHarnessStateBase, readNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
+import { persistNativeHarnessBackup, verifyDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
+import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
+
+export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean> {
+  const rows = await db.execute(sql`select 1 from agent_task_sessions s
+    join heartbeat_runs r on r.id = s.last_run_id and r.company_id = s.company_id and r.agent_id = s.agent_id
+    join environment_leases e on e.company_id = r.company_id and e.issue_id = r.native_issue_id
+      and e.metadata->'nativeHarnessBackup'->>'normalizedSessionId' = r.native_session_id::text
+    where s.adapter_type = 'paperclip_runner'
+      and e.metadata->'nativeHarnessBackup'->>'schema' = 'paperclip.native-harness-backup-stamp.v2'
+      and not exists (select 1 from native_harness_backups b where b.company_id = r.company_id
+        and b.scope_digest = e.metadata->'nativeHarnessBackup'->>'sessionScopeSha256' and b.status = 'current')
+    limit 1`);
+  return rows.length > 0;
+}
+
+export async function migrateNativeHarnessBackups(db: Db, input: {
+  storage: StorageService; writersStopped: true; signal: AbortSignal;
+}): Promise<number> {
+  if (!input.writersStopped) throw new Error("native_harness_migration_requires_offline_writers");
+  const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(offlineMigrationExecutionWhere()).limit(1);
+  if (active) throw new Error("native_harness_migration_requires_offline_writers");
+  const base = nativeHarnessStateBase();
+  const directories = await readdir(base).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === "ENOENT") return [] as string[]; throw error;
+  });
+  let count = 0;
+  for (const scopeDigest of directories.filter(name => /^[a-f0-9]{64}$/.test(name)).sort()) {
+    input.signal.throwIfAborted();
+    const root = join(base, scopeDigest, "failover-backups", "current");
+    const stat = await lstat(root).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return null; throw error;
+    });
+    if (!stat) continue;
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error("native_harness_migration_unsafe_source");
+    const manifestBytes = await readFile(join(root, "manifest.json"));
+    const manifest = JSON.parse(manifestBytes.toString("utf8"));
+    const state = JSON.parse(await readFile(join(root, "runner", "runner-state.json"), "utf8"));
+    if (state.lifecycle !== "suspended" || typeof state.runId !== "string"
+      || manifest.schema !== "paperclip.native-harness-backup.v1") throw new Error("native_harness_migration_source_unsettled");
+    const [run] = await db.select({ companyId: heartbeatRuns.companyId, issueId: heartbeatRuns.nativeIssueId,
+      sessionId: heartbeatRuns.nativeSessionId, runnerId: heartbeatRuns.runnerInstanceId }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, state.runId));
+    if (!run?.issueId || run.sessionId !== manifest.normalizedSessionId || run.runnerId !== manifest.runnerInstanceId) {
+      throw new Error("native_harness_migration_binding_mismatch");
+    }
+    const [current] = await db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.companyId, run.companyId),
+      eq(nativeHarnessBackups.scopeDigest, scopeDigest), eq(nativeHarnessBackups.status, "current")));
+    if (current) {
+      await verifyDurableNativeHarnessBackup({ db, storage: input.storage, companyId: run.companyId,
+        scopeDigest, manifestSha256: current.manifestSha256, signal: input.signal });
+      count++; continue;
+    }
+    const manifestSha256 = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
+    const leases = await db.select({ stamp: sql<unknown>`${environmentLeases.metadata}->'nativeHarnessBackup'`,
+      providerLeaseId: environmentLeases.providerLeaseId }).from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.issueId, run.issueId),
+      sql`${environmentLeases.metadata}->'nativeHarnessBackup'->>'manifestSha256' = ${manifestSha256}`));
+    const valid = leases.some(lease => {
+      const stamp = readNativeHarnessBackupStamp(lease.stamp, lease.providerLeaseId ?? "");
+      return stamp?.sessionScopeSha256 === scopeDigest && verifyNativeHarnessBackupStamp(stamp, lease.providerLeaseId!);
+    });
+    if (!valid) throw new Error("native_harness_migration_backup_unverified");
+    await persistNativeHarnessBackup({ db, storage: input.storage, root, scopeDigest, signal: input.signal,
+      owner: { kind: "offline_migration", writersStopped: true, companyId: run.companyId, issueId: run.issueId, runId: state.runId } });
+    count++;
+  }
+  return count;
+}

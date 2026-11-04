@@ -142,12 +142,12 @@ export function createNativeHarnessBackupStamp(input: {
   };
 }
 
-export function verifyNativeHarnessBackupStamp(
+export function readNativeHarnessBackupStamp(
   value: unknown,
   expectedProviderLeaseId: string,
-): boolean {
-  if (!expectedProviderLeaseId) return false;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+): NativeHarnessBackupStamp | null {
+  if (!expectedProviderLeaseId) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const stamp = value as Record<string, unknown>;
   if (
     stamp.schema !== "paperclip.native-harness-backup-stamp.v2" ||
@@ -160,9 +160,17 @@ export function verifyNativeHarnessBackupStamp(
     !stamp.sourceProviderLeaseId ||
     stamp.authorizedProviderLeaseId !== expectedProviderLeaseId ||
     typeof stamp.manifestSha256 !== "string" ||
-    !stamp.manifestSha256.startsWith("sha256:")
+    !/^sha256:[a-f0-9]{64}$/.test(stamp.manifestSha256) ||
+    !/^[a-f0-9]{64}$/.test(stamp.sessionScopeSha256) ||
+    typeof stamp.completedAt !== "string" || !Number.isFinite(Date.parse(stamp.completedAt))
   )
-    return false;
+    return null;
+  return stamp as unknown as NativeHarnessBackupStamp;
+}
+
+export function verifyNativeHarnessBackupStamp(value: unknown, expectedProviderLeaseId: string): boolean {
+  const stamp = readNativeHarnessBackupStamp(value, expectedProviderLeaseId);
+  if (!stamp) return false;
   const root = stateRootFromDigest(stamp.sessionScopeSha256);
   if (!root || !isRealDirectory(root)) return false;
   const backupRoot = resolve(root, "failover-backups");

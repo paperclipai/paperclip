@@ -4,6 +4,7 @@ import { providerFailureFromError } from "../../vendor/paperclip-runner/index.js
 import { nativeCancellationHasUnsettledOwner, notifyNativeCancellation, waitForNativeCancellation } from "./native-cancellation-delivery.js";
 import { readClaimedNativeStopRecovery } from "./native-cancellation-request.js";
 import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
+import { durableNativeHarnessStorage, nativeHarnessBackupOwner, persistNativeHarnessBackup, restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { rehydratePinnedSkillAssets } from "./runtime-context.js";
 import { createNativeUsageDelivery } from "./native-usage-delivery.js";
 import { createNativeRecoveryUsageDelivery } from "./native-recovery-usage-delivery.js";
@@ -5964,6 +5965,7 @@ function nativeSessionConfigDigest(
   execution: NativeExecutionInput,
   executionTargetKind: "local" | "remote" = "local",
   legacyProjectlessRunId?: string,
+  recordedToolContractFingerprint?: string,
 ): string {
   const executionLocation = {
     executionKind: "local_process",
@@ -5999,11 +6001,23 @@ function nativeSessionConfigDigest(
         // changes so an older thread is rotated instead of falsely resuming
         // without newly required tools.
         nativeToolContractFingerprint:
-          nativeToolContractFingerprintForTarget(executionTargetKind, execution.provider.kind),
+          recordedToolContractFingerprint ?? nativeToolContractFingerprintForTarget(executionTargetKind, execution.provider.kind),
         runtimeContract: nativeRuntimeContractForProvider(execution.provider),
       }),
     )
     .digest("hex")}`;
+}
+
+export function nativeControllerMigrationDescriptor(execution: NativeExecutionInput, recordedToolContractFingerprint: unknown) {
+  if (typeof recordedToolContractFingerprint !== "string" || !/^sha256:[a-f0-9]{64}$/.test(recordedToolContractFingerprint)) {
+    throw new Error("native_controller_migration_tool_contract_missing");
+  }
+  return {
+    root: scopedRunnerdStateRoot(execution),
+    supervisorPath: resolve(resolvePaperclipInstanceRoot(), "runtime", "paperclip-runner", "sessions",
+      `${createHash("sha256").update(nativeSessionScopeKey(execution)).digest("hex")}.json`),
+    configDigest: nativeSessionConfigDigest(execution, "remote", undefined, recordedToolContractFingerprint),
+  };
 }
 
 function idleWarmNativeSessionOwnerRunId(input: {
@@ -6027,6 +6041,7 @@ async function restorePerTurnRunnerdController(input: {
   if (input.restartRecovery || input.runnerExecutionTarget?.kind !== "remote" ||
       input.execution.session.lifecyclePolicy.mode !== "per_turn") return;
   const root = scopedRunnerdStateRoot(input.execution);
+  await restoreDurableHarnessForExecution(input.db, input.execution, root);
   const identity = readRunnerdDurableIdentity(root);
   const reference = identity ?? readRunnerdDurableIdentity(root, true);
   if (!reference) {
@@ -6091,6 +6106,7 @@ async function restoreWarmRunnerdController(input: {
   if (input.restartRecovery || input.runnerExecutionTarget?.kind !== "remote" ||
       input.execution.session.lifecyclePolicy.mode !== "warm") return;
   const root = scopedRunnerdStateRoot(input.execution);
+  await restoreDurableHarnessForExecution(input.db, input.execution, root);
   const identity = readRunnerdDurableIdentity(root);
   const reference = identity ?? readRunnerdDurableIdentity(root, true);
   if (!idleWarmNativeSessionOwnerRunId(input) && (!reference || !existsSync(nativeSessionCheckpointPath(input.execution)))) {
@@ -6597,6 +6613,14 @@ function digestBackupDirectory(directory: string): {
 
 function harnessBackupRoot(root: string): string {
   return resolve(root, "failover-backups");
+}
+
+async function restoreDurableHarnessForExecution(db: Db, execution: NativeExecutionInput, root: string) {
+  const storage = durableNativeHarnessStorage();
+  if (!storage) return;
+  await restoreDurableNativeHarnessBackup({ db, storage, companyId: execution.binding.companyId,
+    scopeDigest: createHash("sha256").update(nativeSessionScopeKey(execution)).digest("hex"),
+    backupRoot: harnessBackupRoot(root), signal: AbortSignal.timeout(300_000) });
 }
 
 function harnessBackupCandidates(root: string): string[] {
@@ -14069,6 +14093,11 @@ async function createRunnerdBackendWithinSessionClaim(
       !remoteRunnerFilesystemRoot
     )
       return;
+    const durableStorage = durableNativeHarnessStorage();
+    if (durableStorage && !input.controllerPersistence) throw new Error("native_harness_storage_owner_missing");
+    const backupOwner = durableStorage ? await nativeHarnessBackupOwner(input.db, { ...input.execution.binding,
+      runId: sessionToolAuthorityEpochs.get(sessionScopeId)?.runId ?? input.execution.binding.runId,
+      bootId: input.controllerPersistence!.bootId }) : null;
     // Transport release also runs when provider bootstrap failed. In that case
     // runnerd has no durable provider identity (and may not have created the
     // provider persistence directory at all), so attempting a failover backup
@@ -14174,6 +14203,11 @@ async function createRunnerdBackendWithinSessionClaim(
                 });
                 renameSync(temporaryManifest, manifestPath);
 
+                if (durableStorage && backupOwner) {
+                  await persistNativeHarnessBackup({ db: input.db, storage: durableStorage, owner: backupOwner,
+                    scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), root: pendingRoot,
+                    signal: AbortSignal.timeout(300_000) });
+                }
                 await publishNativeHarnessBackup({
                   db: input.db, companyId: input.execution.binding.companyId,
                   scopeDigest: createHash("sha256").update(sessionScopeId).digest("hex"), backupRoot, pendingRoot,
