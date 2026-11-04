@@ -21,21 +21,16 @@ async function executeAccountingTransaction<T>(
   work: (tx: Db, publications: ActivityPublication[]) => Promise<T>,
   held: ReadonlyMap<string, { tx: Db; publications: ActivityPublication[] }>,
   parentPublications?: ActivityPublication[],
-  onTransactionComplete?: () => void,
 ): Promise<T> {
   const localPublications: ActivityPublication[] = [];
   const result = await withBudgetSpan("budget.accounting.transaction", () => db.transaction(async (transaction) => {
-    try {
-      const tx = transaction as unknown as Db;
-      const [company] = await withBudgetSpan("budget.accounting.lock_wait", () => tx.select({ id: companies.id }).from(companies)
-        .where(eq(companies.id, companyId)).for("no key update"));
-      if (!company) throw notFound("Company not found");
-      const nextHeld = new Map(held);
-      nextHeld.set(companyId, { tx, publications: localPublications });
-      return await heldCompanyLocks.run(nextHeld, () => work(tx, localPublications));
-    } finally {
-      onTransactionComplete?.();
-    }
+    const tx = transaction as unknown as Db;
+    const [company] = await withBudgetSpan("budget.accounting.lock_wait", () => tx.select({ id: companies.id }).from(companies)
+      .where(eq(companies.id, companyId)).for("no key update"));
+    if (!company) throw notFound("Company not found");
+    const nextHeld = new Map(held);
+    nextHeld.set(companyId, { tx, publications: localPublications });
+    return await heldCompanyLocks.run(nextHeld, () => work(tx, localPublications));
   }));
   if (parentPublications) {
     parentPublications.push(...localPublications);
@@ -59,14 +54,14 @@ export async function withAccountingTransaction<T>(db: Db, companyId: string, wo
   const previous = companyQueues.get(companyId) ?? Promise.resolve();
   let release!: () => void;
   const turn = new Promise<void>((resolve) => { release = resolve; });
-  const current = previous.catch(() => {}).then(() => turn);
+  const current = previous.then(() => turn);
   companyQueues.set(companyId, current);
   companyQueueDepths.set(companyId, (companyQueueDepths.get(companyId) ?? 0) + 1);
 
-  let turnReleased = false;
-  const releaseTurn = () => {
-    if (turnReleased) return;
-    turnReleased = true;
+  try {
+    await previous;
+    return await executeAccountingTransaction(db, companyId, work, held);
+  } finally {
     release();
     const remaining = (companyQueueDepths.get(companyId) ?? 1) - 1;
     if (remaining <= 0) companyQueueDepths.delete(companyId);
@@ -74,13 +69,6 @@ export async function withAccountingTransaction<T>(db: Db, companyId: string, wo
     if (companyQueues.get(companyId) === current) {
       companyQueues.delete(companyId);
     }
-  };
-
-  try {
-    await previous.catch(() => {});
-    return await executeAccountingTransaction(db, companyId, work, held, undefined, releaseTurn);
-  } finally {
-    releaseTurn();
   }
 }
 

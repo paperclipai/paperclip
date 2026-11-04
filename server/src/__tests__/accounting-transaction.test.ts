@@ -228,4 +228,43 @@ describeEmbeddedPostgres("withAccountingTransaction queue and isolation", () => 
 
     await poolDb.$client.end({ timeout: 1 });
   });
+
+  it("does not release queue turn until the transaction promise has settled", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Settle Co", issuePrefix: "SET" });
+
+    let transactionSettled = false;
+    let nextWriterStartedBeforeSettle = false;
+
+    const originalTransaction = db.transaction.bind(db);
+    let delayCommit = true;
+    (db as any).transaction = async (cb: any, ...args: any[]) => {
+      const res = await originalTransaction(cb, ...args);
+      if (delayCommit) {
+        delayCommit = false;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        transactionSettled = true;
+      }
+      return res;
+    };
+
+    try {
+      const p1 = withAccountingTransaction(db, companyId, async () => {
+        return "w1";
+      });
+
+      const p2 = withAccountingTransaction(db, companyId, async () => {
+        if (!transactionSettled) {
+          nextWriterStartedBeforeSettle = true;
+        }
+        return "w2";
+      });
+
+      await Promise.all([p1, p2]);
+      expect(nextWriterStartedBeforeSettle).toBe(false);
+      expect(transactionSettled).toBe(true);
+    } finally {
+      (db as any).transaction = originalTransaction;
+    }
+  });
 });
