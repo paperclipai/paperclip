@@ -34,6 +34,16 @@ approvals do not authorize the proposal. A newer pending or rejected proposal su
 older acceptance. A saved plan requires approval of its current document revision;
 checkbox decisions retain the user's actual selected scope.
 
+A later accepted execution proposal can be untargeted when the unchanged saved
+plan already has its own human approval. Admission validates both decisions. It
+uses the latest plan proposal, so pending, rejected, invalid, or stale plan
+approval cannot fall back to an older acceptance. A later pending or rejected
+execution proposal still stops creation. Accepted checkbox plan confirmations
+also appear in native task context and authorize normal accepted-plan decomposition.
+Native context includes `acceptedPlan.approvedOptions` for checkbox decisions,
+with the saved selected IDs and option text. It does not substitute the card's
+defaults or unchecked options, including after a later execution confirmation.
+
 Planning documents, questions and proposal cards remain available before approval.
 Ordinary task delegation and previously committed task-creation replay retain
 their existing behavior, including dispatch recovery for already admitted work.
