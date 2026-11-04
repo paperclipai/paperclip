@@ -91,14 +91,13 @@ export const SECRET_LIKE_CONFIG_KEY_PATTERN = /(api[-_]?key|token|secret|passwor
 
 const WORKER_ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
 
-/** Host secrets that give access to every tenant resource. A plugin worker never receives these. */
-const WORKER_ENV_DENIED_NAMES: ReadonlySet<string> = new Set([
-  "BETTER_AUTH_SECRET",
-  "DATABASE_URL",
-  "PAPERCLIP_AGENT_JWT_SECRET",
-  "PAPERCLIP_AUTH_SECRET",
-  "PAPERCLIP_SECRETS_MASTER_KEY",
-]);
+/**
+ * Names a grant can never use, by shape: host credentials, and variables that
+ * control how the worker process loads code. This is a guard against a mistake
+ * in the document, not a list of every sensitive value on the host.
+ */
+const WORKER_ENV_DENIED_NAME_PATTERN =
+  /(^|_)(AWS|CREDENTIAL|CREDENTIALS|DATABASE|DSN|JWT|KEY|KEYS|PASSWORD|POSTGRES|PRIVATE|SECRET|SECRETS|SIGNING|TOKEN)(_|$)|^(DB|DYLD|LD|NODE)_|^(PATH|PAPERCLIP_MANAGED_CONFIG)$/;
 
 function findSecretLikeConfigKey(value: Record<string, unknown>, path: string): string | null {
   for (const [key, child] of Object.entries(value)) {
@@ -285,8 +284,8 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
         if (typeof name !== "string" || !WORKER_ENV_NAME_PATTERN.test(name)) {
           fail(`"plugins.workerEnv.${key}" entries must be uppercase variable names (got ${describeJsonValue(name)})`);
         }
-        if (WORKER_ENV_DENIED_NAMES.has(name)) {
-          fail(`"plugins.workerEnv.${key}" must not grant host secret "${name}"`);
+        if (WORKER_ENV_DENIED_NAME_PATTERN.test(name)) {
+          fail(`"plugins.workerEnv.${key}" must not grant host credential or loader variable "${name}"`);
         }
         if (granted.includes(name)) {
           fail(`"plugins.workerEnv.${key}" has duplicate entry "${name}"`);

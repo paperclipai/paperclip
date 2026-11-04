@@ -33,12 +33,18 @@ describe("plugins.workerEnv", () => {
     expect(parsed?.plugins.workerEnv).toEqual({ daytona: ["PROVIDER_ORIGIN", "PROVIDER_CAPABILITY_2"] });
   });
 
-  it.each(["BETTER_AUTH_SECRET", "DATABASE_URL", "PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_AUTH_SECRET", "PAPERCLIP_SECRETS_MASTER_KEY"])(
-    "refuses to start with a grant of host secret %s",
-    (name) => {
-      expect(() => parseManagedConfigEnv(envWith(validDoc(plugins({ daytona: [name] }))))).toThrow(`must not grant host secret "${name}"`);
-    },
-  );
+  it.each([
+    "ANTHROPIC_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "BETTER_AUTH_SECRET", "DATABASE_MIGRATION_URL", "DATABASE_URL", "DB_PASSWORD",
+    "GH_TOKEN", "GITHUB_TOKEN", "LD_PRELOAD", "NODE_OPTIONS", "PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_AUTH_SECRET", "PAPERCLIP_BACKUP_WORKER_DATABASE_URL",
+    "PAPERCLIP_CLOUD_CONNECTOR_SIGN_PRIVATE_KEY", "PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "PAPERCLIP_DECISION_SIGNING_SECRET", "PAPERCLIP_MANAGED_CONFIG",
+    "PAPERCLIP_SECRETS_MASTER_KEY", "PAPERCLIP_SECRETS_MASTER_KEY_FILE", "PAPERCLIP_TEST_POSTGRES_ADMIN_URL", "PATH", "SENTRY_DSN",
+  ])("refuses to start with a grant of %s", (name) => {
+    expect(() => parseManagedConfigEnv(envWith(validDoc(plugins({ daytona: [name] }))))).toThrow(`must not grant host credential or loader variable "${name}"`);
+  });
+
+  it.each(["PAPERCLIP_CLOUD_API_ORIGIN", "PAPERCLIP_PRIMARY_HOST", "PROVIDER_CAPABILITY", "MONKEY_ORIGIN"])("accepts a grant of %s", (name) => {
+    expect(parseManagedConfigEnv(envWith(validDoc(plugins({ daytona: [name] }))))?.plugins.workerEnv).toEqual({ daytona: [name] });
+  });
 
   it.each([
     ["a plugin that is not auto-installed", { other: ["PROVIDER_ORIGIN"] }, /not in "plugins.autoInstall"/],

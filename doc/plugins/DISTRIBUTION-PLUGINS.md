@@ -59,9 +59,11 @@ sets the values in the server's process environment:
 } }
 ```
 
-Each key must be in `autoInstall`. Startup fails if a grant names
-`BETTER_AUTH_SECRET`, `DATABASE_URL`, `PAPERCLIP_AGENT_JWT_SECRET`,
-`PAPERCLIP_AUTH_SECRET` or `PAPERCLIP_SECRETS_MASTER_KEY`. Only the plugin at the
+Each key must be in `autoInstall`. Startup fails if a name looks like a host
+credential, such as one with `KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `DATABASE` or
+`JWT` as a word, or if it controls how the worker loads code, such as
+`NODE_OPTIONS`. Give a granted variable a name for its own use, not a reused host
+variable. Only the plugin at the
 catalog path for that key receives the variables. Another install with the same
 plugin ID receives nothing. A plugin with a grant needs no saved configuration to
 receive resource lifecycle events or use project instance secrets. It gets events
