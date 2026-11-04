@@ -14,9 +14,10 @@ export type RemoteWarmSessionRecovery = {
   revalidate: (leaseOwner: string) => Promise<void>;
 };
 
-/** A goal read can publish an idle snapshot after the terminal. It carries no
- * new work; every other suffix still requires reconciliation before handoff. */
-export function isSettledRemoteWarmControlState(control: Record<string, unknown>, identity: Record<string, string>): boolean {
+/** A goal read can publish an idle snapshot and a provider can publish a
+ * recoverable notice after the terminal. Neither carries new work; every other
+ * suffix still requires reconciliation before handoff. */
+export function isSettledRemoteWarmControlState(control: Record<string, unknown>, identity: Record<string, unknown>): boolean {
   const record = (value: unknown): Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const commands = control.commands;
@@ -34,13 +35,17 @@ export function isSettledRemoteWarmControlState(control: Record<string, unknown>
     const envelope = record(record(event).envelope);
     const notification = record(envelope.payload);
     const payload = record(notification.payload);
-    return record(event).eventType === "session.goal.snapshot" && matchesSession(event) &&
+    const eventType = record(event).eventType;
+    const inert = eventType === "session.goal.snapshot"
+      ? payload.schema === "paperclip.session_goal.snapshot.v1" && payload.goal === null && payload.workingNow === false
+      : eventType === "provider.notice.recorded" && payload.schema === "paperclip.provider.notice.v1" &&
+        payload.recoverable === true && (payload.severity === "info" || payload.severity === "warning");
+    return inert && matchesSession(event) &&
       Object.entries(identity).every(([key, value]) => envelope[key] === value) &&
       (notification.schema === "paperclip.prp.event.v1" || notification.schema === "paperclip.prp.event.v2") &&
-      notification.eventType === "session.goal.snapshot" &&
+      notification.eventType === eventType &&
       notification.sourceInstanceId === identity.runnerInstanceId && notification.sourceKind === "runner" &&
-      notification.runId === identity.runId && notification.normalizedSessionId === identity.normalizedSessionId &&
-      payload.schema === "paperclip.session_goal.snapshot.v1" && payload.goal === null && payload.workingNow === false;
+      notification.runId === identity.runId && notification.normalizedSessionId === identity.normalizedSessionId;
   });
 }
 
