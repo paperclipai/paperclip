@@ -19,7 +19,7 @@ import { bindIdleDeadlineOwner } from "../services/idle-deadline-owner.js";
 import { readIdleRetrySchedule } from "../services/heartbeat/idle-retry-schedule.js";
 import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
-import type { IdleDeadlineOwners } from "../services/idle-deadline-types.js";
+import { idleDeadlineRowLimit, type IdleDeadlineOwners } from "../services/idle-deadline-types.js";
 import type { VerifiedIdleCapabilities } from "../services/idle-incoming-wake-capability.js";
 
 const fixtureUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RECOVERY_DEADLINES_TEST_DATABASE_URL");
@@ -282,6 +282,16 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
         throw rollback;
       })).rejects.toThrow(rollback.message);
     }
+    const foreign = await fixture({ retainedSourceLock: false });
+    for (const reference of [foreign.source.id, `{${f.source.id}}`, "not-a-uuid"]) {
+      const rollback = new Error("terminal quota foreign or malformed reference rollback");
+      await expect(db.transaction(async tx => {
+        await tx.execute(sql`UPDATE issues SET execution_policy = jsonb_set(execution_policy,
+          '{monitor,externalRef}', to_jsonb(${reference}::text)) WHERE id = ${f.issue.id}::uuid`);
+        expect((await readIdleQuotaSchedule(tx, Date.now(), monitorWorker!.reconciliationSnapshot)).blocked).toBe(true);
+        throw rollback;
+      })).rejects.toThrow(rollback.message);
+    }
   }, 20_000);
 
   it("reconciles a configured watchdog through real review completion and retains quiet reviewed history", async () => {
@@ -319,7 +329,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
 
 
   it("batches seven settled watchdogs within the composed proof budget and rejects live or changed owners", async () => {
-    const fixtures = [];
+    const fixtures: Awaited<ReturnType<typeof fixture>>[] = [];
     for (let index = 0; index < 7; index++) {
       const f = await fixture({ retainedSourceLock: false });
       await issueService(db).update(f.issue.id, { status: "done", actorUserId: "recovery-test-user", companyGuard: f.companyId });
@@ -361,6 +371,91 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     };
     expect((await proof()).backgroundWork).not.toBe("none");
   }, 80_000);
+
+  it("retains ten thousand completed quota histories within bounded proof and rejects overflow or unfinished work", async () => {
+    expect(idleDeadlineRowLimit).toBe(10_000);
+    const reset = new Date(Date.now() + 600_000);
+    const f = await fixture({ retainedSourceLock: false, quotaResetAt: reset });
+    const produced = await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.issue.id });
+    expect(produced.providerQuotaMonitored).toBe(1);
+    await issueService(db).update(f.issue.id, { status: "done", actorUserId: "recovery-test-user", companyGuard: f.companyId });
+    const growHistory = async (count: number) => {
+      await db.execute(sql`
+        WITH bindings AS MATERIALIZED (
+          SELECT gen_random_uuid() AS issue_id, gen_random_uuid() AS source_id FROM generate_series(1, ${count})
+        ), written_issues AS (
+          INSERT INTO issues (id, company_id, title, status, assignee_agent_id,
+            execution_policy, execution_state, monitor_next_check_at, monitor_attempt_count)
+          SELECT b.issue_id, template.company_id, 'Completed quota history', template.status, template.assignee_agent_id,
+            jsonb_set(template.execution_policy, '{monitor,externalRef}', to_jsonb(b.source_id::text)),
+            jsonb_set(template.execution_state, '{monitor,externalRef}', to_jsonb(b.source_id::text)),
+            template.monitor_next_check_at, template.monitor_attempt_count
+          FROM bindings b CROSS JOIN issues template WHERE template.id = ${f.issue.id}::uuid
+          RETURNING id, company_id, execution_policy
+        )
+        INSERT INTO heartbeat_runs (id, company_id, agent_id, issue_id, status, finished_at,
+          runtime_mode, error_code, result_json, context_snapshot, responsible_user_id)
+        SELECT (written.execution_policy#>>'{monitor,externalRef}')::uuid, written.company_id, source.agent_id,
+          written.id, source.status, source.finished_at, source.runtime_mode, source.error_code, source.result_json,
+          jsonb_build_object('issueId', written.id), source.responsible_user_id
+        FROM written_issues written CROSS JOIN heartbeat_runs source WHERE source.id = ${f.source.id}::uuid
+      `);
+    };
+    const [template] = await db.select({ status: issues.status, policy: issues.executionPolicy,
+      state: issues.executionState, at: issues.monitorNextCheckAt }).from(issues).where(eq(issues.id, f.issue.id));
+    expect(template).toMatchObject({ status: "done", at: reset, state: { status: "idle" } });
+    expect(template.policy?.monitor).toMatchObject({ serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: f.source.id });
+    await growHistory(9_999);
+    const [count] = await db.execute<{ count: number }>(sql`SELECT count(*)::integer AS count FROM issues WHERE company_id = ${f.companyId}::uuid`);
+    expect(count.count).toBe(10_000);
+    const [sources] = await db.execute<{ count: number }>(sql`SELECT count(*)::integer AS count FROM heartbeat_runs WHERE company_id = ${f.companyId}::uuid`);
+    expect(sources.count).toBe(10_000);
+    await start(); await settled();
+    monitorWorker = registerDeadlineWork(coordinator!, DELIVERY_QUEUES.issueMonitors, {
+      retryMs: 1000, canRun: () => !draining,
+      run: signal => heartbeat.tickIssueMonitors(new Date(), () => !signal.aborted && !draining),
+      next: () => heartbeat.nextIssueMonitorAt(),
+    });
+    const recordScaleFailure = (error: unknown, phase: string) => {
+      const failure = error as { name?: string; code?: string; params?: unknown[];
+        cause?: { name?: string; code?: string; message?: string } };
+      process.stderr.write(`quota scale owner failure ${JSON.stringify({ phase, name: failure.name, code: failure.code,
+        parameters: failure.params?.length, cause: failure.cause?.name, causeCode: failure.cause?.code,
+        causeMessage: failure.cause?.message?.slice(0, 240) })}\n`);
+    };
+    owners.quota = bindIdleDeadlineOwner(monitorWorker.reconciliationSnapshot, async (tx, at, owner) => {
+      try { return await readIdleQuotaSchedule(tx, at, owner); }
+      catch (error) { recordScaleFailure(error, "composed"); throw error; }
+    }, snapshot => ({ issueWaits: snapshot.issueWaits }));
+    await monitorWorker.ready; await settled();
+    const report = await proof();
+    if (report.backgroundWork !== "none") {
+      try { await readIdleQuotaSchedule(db, Date.now(), monitorWorker.reconciliationSnapshot); }
+      catch (error) { recordScaleFailure(error, "direct-owner-diagnostic"); }
+    }
+    expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
+    expect(report.scheduledWake).toBeUndefined();
+    for (const kind of ["run", "wake"] as const) {
+      const rollback = new Error(`large terminal quota ${kind} rollback`);
+      await expect(db.transaction(async tx => {
+        if (kind === "run") await tx.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+          issueId: f.issue.id, status: "queued", contextSnapshot: { issueId: f.issue.id } });
+        else await tx.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+          source: "automation", status: "queued", payload: { issueId: f.issue.id } });
+        expect((await readIdleQuotaSchedule(tx, Date.now(), monitorWorker!.reconciliationSnapshot)).blocked).toBe(true);
+        throw rollback;
+      })).rejects.toThrow(rollback.message);
+    }
+    const rollback = new Error("large terminal quota malformed reference rollback");
+    await expect(db.transaction(async tx => {
+      await tx.execute(sql`UPDATE issues SET execution_policy = jsonb_set(execution_policy,
+        '{monitor,externalRef}', to_jsonb('not-a-uuid'::text)) WHERE id = ${f.issue.id}::uuid`);
+      expect((await readIdleQuotaSchedule(tx, Date.now(), monitorWorker!.reconciliationSnapshot)).blocked).toBe(true);
+      throw rollback;
+    })).rejects.toThrow(rollback.message);
+    await growHistory(1);
+    expect((await readIdleQuotaSchedule(db, Date.now(), monitorWorker.reconciliationSnapshot)).blocked).toBe(true);
+  }, 40_000);
 
   it("blocks unconsumed budget inputs without a live owner and permits sleep only after normal settlement", async () => {
     const f = await fixture({ retainedSourceLock: false });

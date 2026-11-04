@@ -1,7 +1,7 @@
 import { finishedIdleRun, finishedIdleWake } from "../idle-work-proof.js";
 import { agents, agentWakeupRequests, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME, issueExecutionMonitorPolicySchema, issueExecutionPolicySchema } from "@paperclipai/shared";
-import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import type { DeadlineReconciliationSnapshot } from "../deadline-reconciliation.js";
 import { idleDeadlineRowLimit, isFutureIdleDeadline, type IdleDeadlineSnapshot, type IdleIssueWait } from "../idle-deadline-types.js";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
@@ -79,27 +79,31 @@ export async function readIdleQuotaSchedule(tx: Pick<Db, "select">, now: number,
     deadlines.push(at); issueWaits.push({ kind: "provider_quota", issueId: issue.id, sourceRunId: source.id, targetAgentId: source.agentId, reviewer: issue.status === "in_review" });
   }
   if (terminal.length) {
-    const ids = terminal.map(row => row.issueId), companyIds = [...new Set(terminal.map(row => row.companyId))];
-    const sourceIds = terminal.map(row => row.sourceId);
-    const pendingRuns = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
-      inArray(heartbeatRuns.companyId, companyIds),
-      or(inArray(heartbeatRuns.issueId, ids), inArray(heartbeatRuns.nativeIssueId, ids), inArray(heartbeatRuns.id, sourceIds),
-        inArray(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`, ids), inArray(sql`${heartbeatRuns.contextSnapshot}->>'taskId'`, ids)),
-      sql`(${sql.raw(finishedIdleRun("heartbeat_runs"))}) IS NOT TRUE`,
-    )).limit(1);
-    const pendingWakes = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
-      inArray(agentWakeupRequests.companyId, companyIds),
-      or(inArray(sql`${agentWakeupRequests.payload}->>'issueId'`, ids), inArray(sql`${agentWakeupRequests.payload}->>'taskId'`, ids),
-        inArray(sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId'`, ids),
-        inArray(sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId'`, ids),
-        sql`${agentWakeupRequests.runId} IN (SELECT r.id FROM heartbeat_runs r
-          WHERE r.company_id = ${agentWakeupRequests.companyId} AND (r.issue_id IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})
-            OR r.native_issue_id IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})
-            OR r.id IN (${sql.join(sourceIds.map(id => sql`${id}::uuid`), sql`, `)})
-            OR r.context_snapshot->>'issueId' IN (${sql.join(ids.map(id => sql`${id}`), sql`, `)})
-            OR r.context_snapshot->>'taskId' IN (${sql.join(ids.map(id => sql`${id}`), sql`, `)})))`),
-      sql`(${sql.raw(finishedIdleWake("agent_wakeup_requests"))}) IS NOT TRUE`,
-    )).limit(1);
+    const uuidArray = (values: string[]) => sql`${`{${values.join(",")}}`}::uuid[]`;
+    const bindings = sql`unnest(${uuidArray(terminal.map(row => row.issueId))},
+      ${uuidArray(terminal.map(row => row.companyId))}, ${uuidArray(terminal.map(row => row.sourceId))})
+      AS terminal_scope(issue_id, company_id, source_id)`;
+    const pendingRuns = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(sql`
+      (${sql.raw(finishedIdleRun("heartbeat_runs"))}) IS NOT TRUE AND EXISTS (
+        SELECT 1 FROM ${bindings} WHERE terminal_scope.company_id = ${heartbeatRuns.companyId}
+          AND (terminal_scope.issue_id = ${heartbeatRuns.issueId} OR terminal_scope.issue_id = ${heartbeatRuns.nativeIssueId}
+            OR terminal_scope.source_id = ${heartbeatRuns.id}
+            OR terminal_scope.issue_id::text = ${heartbeatRuns.contextSnapshot}->>'issueId'
+            OR terminal_scope.issue_id::text = ${heartbeatRuns.contextSnapshot}->>'taskId')
+      )`).limit(1);
+    const pendingWakes = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(sql`
+      (${sql.raw(finishedIdleWake("agent_wakeup_requests"))}) IS NOT TRUE AND EXISTS (
+        SELECT 1 FROM ${bindings} WHERE terminal_scope.company_id = ${agentWakeupRequests.companyId}
+          AND (terminal_scope.issue_id::text = ${agentWakeupRequests.payload}->>'issueId'
+            OR terminal_scope.issue_id::text = ${agentWakeupRequests.payload}->>'taskId'
+            OR terminal_scope.issue_id::text = ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId'
+            OR terminal_scope.issue_id::text = ${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId'
+            OR ${agentWakeupRequests.runId} IN (SELECT r.id FROM heartbeat_runs r
+              WHERE r.company_id = ${agentWakeupRequests.companyId}
+                AND (r.issue_id = terminal_scope.issue_id OR r.native_issue_id = terminal_scope.issue_id
+                  OR r.id = terminal_scope.source_id OR r.context_snapshot->>'issueId' = terminal_scope.issue_id::text
+                  OR r.context_snapshot->>'taskId' = terminal_scope.issue_id::text)))
+      )`).limit(1);
     state.push({ pendingRuns, pendingWakes });
     if (pendingRuns.length || pendingWakes.length) return blocked();
   }
@@ -108,6 +112,9 @@ export async function readIdleQuotaSchedule(tx: Pick<Db, "select">, now: number,
   return { blocked: false, state, deadlines, issueWaits };
 }
 function andSource() {
-  return sql`${heartbeatRuns.id}::text = ${issues.executionPolicy}#>>'{monitor,externalRef}'
+  const externalRef = sql`${issues.executionPolicy}#>>'{monitor,externalRef}'`;
+  return sql`${heartbeatRuns.id} = CASE
+    WHEN ${externalRef} ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+      THEN (${externalRef})::uuid ELSE NULL END
     AND ${heartbeatRuns.companyId} = ${issues.companyId}`;
 }
