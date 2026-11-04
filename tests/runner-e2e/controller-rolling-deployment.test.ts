@@ -1,3 +1,4 @@
+import { QUALIFIED_ACPX_PROFILES } from "../../packages/paperclip-runner/src/drivers/acpx/qualified-profiles.js";
 import { describe, expect, it } from "vitest";
 import { rollController, validControllerRollingDeploymentReceipt } from "./controller-rolling-deployment.js";
 import { validControllerReplacementReceipt } from "./controller-replacement.js";
@@ -56,11 +57,12 @@ describe("rolling controller qualification", () => {
     const [outage] = selectRunnerExecutions(parseRunnerSelectors(["--suite", "remote-workspace-storage"]));
     expect(controllerOutageForExecution(outage!, {})).toEqual({ signal: "SIGKILL", holdMs: 300_000 });
   });
-  it("requires both lifecycle modes for every registered native sandbox profile", () => {
+  it("requires both lifecycle modes for every production-qualified native sandbox profile", () => {
     const executions = ["rolling-web-deployment", "rolling-web-deployment-warm"]
       .flatMap(suite => selectRunnerExecutions(parseRunnerSelectors(["--suite", suite])));
     const native = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile]
-      .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona"));
+      .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona")
+        && (!profile.qualificationCandidate || QUALIFIED_ACPX_PROFILES[profile.qualificationCandidate].qualificationStatus !== "pending"));
     const kind = (profile: (typeof native)[number]) => {
       const provider = profile.expectedRuntimeMetadata.provider;
       const harness = "acpxAgent" in profile ? profile.acpxAgent
@@ -68,12 +70,14 @@ describe("rolling controller qualification", () => {
       return `${provider}:${harness}`;
     };
     const registeredKinds = new Set(runnerSuites.flatMap(suite => suite.profiles)
-      .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona"))
+      .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona")
+        && (!profile.qualificationCandidate || QUALIFIED_ACPX_PROFILES[profile.qualificationCandidate].qualificationStatus !== "pending"))
       .map(kind));
     expect(new Set(native.map(kind))).toEqual(registeredKinds);
     for (const profile of native) {
       const cells = executions.filter(execution => execution.profile.id === profile.id);
       expect(cells).toHaveLength(2);
+      expect(cells.every(cell => !cell.profile.qualificationCandidate)).toBe(true);
       expect(new Set(cells.map(cell => cell.environment.configurationKey ?? "per_turn")))
         .toEqual(new Set(["per_turn", "warm-controller-outage-v1"]));
     }

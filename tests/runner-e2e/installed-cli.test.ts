@@ -1,3 +1,4 @@
+import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, lstat, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
@@ -7,7 +8,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { runnerMatrix } from "./catalog.js";
 import { assertInstalledCliSelection, installedCliKeys, probeInstalledCodexStartup, verifyInstalledCli } from "./installed-cli.js";
 import { buildPaperclipServerEnvironment, buildRunnerE2EProcessEnvironment } from "./harness-env.js";
-const cells = runnerMatrix.filter(e => e.profile.id === "runner-acpx-pi");
+const cells = runnerMatrix.filter(e => !isRollingWebDeployment(e) && e.profile.id === "runner-acpx-pi");
 const roots: string[] = [];
 // pnpm's source test wrapper sets NODE_PATH; the disposable public-install fixture must start closed.
 beforeEach(() => { vi.stubEnv("NODE_PATH", undefined); vi.stubEnv("NODE_OPTIONS", undefined); });
@@ -46,7 +47,7 @@ it("admits existing Codex onboarding, useful-file revision and restart journeys 
 });
 it("admits only the 20 agreed Copilot cells through normal installed resolution with no qualification override", async () => {
   const { env, server } = await fixture();
-  const selected = runnerMatrix.filter(e => e.profile.id === "runner-acpx-copilot");
+  const selected = runnerMatrix.filter(e => !isRollingWebDeployment(e) && e.profile.id === "runner-acpx-copilot");
   expect(selected).toHaveLength(20);
   expect(selected.filter(e => e.environment.id === "local")).toHaveLength(10);
   expect(selected.filter(e => e.environment.id === "daytona")).toHaveLength(10);

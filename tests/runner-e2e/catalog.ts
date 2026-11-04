@@ -1241,9 +1241,10 @@ export const kimiRunnerProfile = nativeProfile({
 });
 
 const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile]
-  .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona"))
+  .filter(profile => profile.generation === "native" && profile.supportedEnvironments.includes("daytona")
+    && (!profile.qualificationCandidate || QUALIFIED_ACPX_PROFILES[profile.qualificationCandidate].qualificationStatus !== "pending"))
   .map(original => {
-    const profile = productionStoryProfile(original);
+    const { qualificationCandidate: _candidate, ...profile } = productionStoryProfile(original);
     return { ...profile, buildAgent(input: AgentFixtureBuildInput) {
       const agent = profile.buildAgent(input);
       const adapterConfig = { ...(agent.adapterConfig as Record<string, unknown>) };
