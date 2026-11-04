@@ -126,6 +126,32 @@ describe("hermes-local zero-turn runs (#15801)", () => {
     expect(result.errorCode ?? null).toBeNull();
   });
 
+  it("does not fail a successful answer that quotes a failure phrase", async () => {
+    mockChildResult({
+      exitCode: 0,
+      stdout: "The log says API request failed; update the model setting.\n\nsession_id: abc123\ntokens: 120 input, 45 output",
+      stderr: "",
+    });
+
+    const result = await execute(makeCtx() as any);
+    expect(result.errorMessage ?? null).toBeNull();
+    expect(result.errorCode ?? null).toBeNull();
+    expect(result.summary).toContain("API request failed");
+  });
+
+  it("marks a bare WARNING-only stdout as zero agent turns", async () => {
+    mockChildResult({
+      exitCode: 0,
+      stdout: "WARNING: API request failed: HTTP 404 model 'auto' not found",
+      stderr: "",
+    });
+
+    const result = await execute(makeCtx() as any);
+    expect(result.errorMessage).toContain("API request failed");
+    expect(result.errorCode).toBe("zero_agent_turns");
+    expect(result.summary ?? "").not.toContain("WARNING");
+  });
+
   it("still surfaces stderr errors as before", async () => {
     mockChildResult({
       exitCode: 0,

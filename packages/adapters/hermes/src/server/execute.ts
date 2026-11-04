@@ -242,6 +242,11 @@ interface ParsedOutput {
 // Response cleaning
 // ---------------------------------------------------------------------------
 
+function isProviderFailureLogLine(line: string): boolean {
+  const withoutTimestamp = line.trim().replace(/^\[\d{4}-\d{2}-\d{2}T[^\]]*\]\s*/, "");
+  return /^warning:/i.test(withoutTimestamp) && /(?:failed|error)/i.test(withoutTimestamp);
+}
+
 /** Strip noise lines from a Hermes response (tool output, system messages, etc.) */
 function cleanResponse(raw: string): string {
   return raw
@@ -251,6 +256,7 @@ function cleanResponse(raw: string): string {
       if (!t) return true; // keep blank lines for paragraph separation
       if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) return false;
       if (t.startsWith("session_id:")) return false;
+      if (isProviderFailureLogLine(t)) return false;
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(t)) return false;
       if (/^\[done\]\s*┊/.test(t)) return false;
       if (/^┊\s*[\p{Emoji_Presentation}]/u.test(t) && !/^┊\s*💬/.test(t)) return false;
@@ -335,7 +341,7 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const stdoutFailureLines = stdout
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => /api request failed/i.test(line) || /warning:.*(?:failed|error)/i.test(line));
+    .filter((line) => isProviderFailureLogLine(line));
   errorLines.push(...stdoutFailureLines);
 
   if (errorLines.length > 0) {
