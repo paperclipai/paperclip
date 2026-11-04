@@ -1537,34 +1537,55 @@ it.each(["provider", "thread"])("refuses a cold checkpoint with different %s ide
   })).toThrow("cold_checkpoint_provider_identity_mismatch");
 });
 
-it.each(["before", "after", "corrupt", "missing"] as const)("rotates a receipt-backed ready cold source: %s", async mode => {
+it.each(["before", "after", "corrupt", "missing", "thread", "missing-thread"] as const)("rotates a receipt-backed ready cold source: %s", async mode => {
   const root = await mkdtemp(join(tmpdir(), "runner-cold-rotation-"));
   const identity = { runnerInstanceId: "runner", environmentLeaseId: "lease", runId: "prior",
     normalizedSessionId: "session", turnId: "prior-turn", itemId: "prior-item" };
   const desired = { ...identity, runId: "next", turnId: "next-turn", itemId: "next-item" };
-  const controller = { schema: "paperclip.runner.durable.control-plane-state.v1", identity };
+  const controller = { schema: "paperclip.runner.durable.control-plane-state.v1", identity,
+    committedEvents: mode === "missing-thread" ? [] : [{ eventType: "session.resumed", envelope: { payload: { payload: {
+      threadId: mode === "thread" ? "different-thread" : "thread", sessionId: "provider-session",
+    } } } }] };
   const state = { schema: "paperclip.runner.durable.state.v1", ...identity, lifecycle: "ready", outbox: [] };
   const checkpoint = { schema: "paperclip.runner.cold-checkpoint.v1" as const, sourceId: "immutable-source",
     sha256: `sha256:${"a".repeat(64)}`, runnerStateSha256: coldCheckpointStateDigest(state), identity, providerSessionId: "thread" };
   let attempts = 0;
+  let active: Record<string, unknown> | null = state, archived: Record<string, unknown> | null = null;
+  const read = vi.fn(async () => {
+    if (active === null) throw new Error("runner state moved");
+    return active;
+  });
   const archive = vi.fn(async () => {
     attempts++;
-    if (attempts === 1 && ["before", "after"].includes(mode)) throw new Error(`archive interrupted ${mode}`);
-    return { ...state, ...(mode === "corrupt" ? { turnId: "changed" } : {}) };
+    if (attempts === 1 && mode === "before") throw new Error(`archive interrupted ${mode}`);
+    if (active !== null) {
+      archived = { ...active, ...(mode === "corrupt" ? { turnId: "changed" } : {}) };
+      active = null;
+    }
+    if (attempts === 1 && mode === "after") throw new Error(`archive interrupted ${mode}`);
+    if (archived === null) throw new Error("archive unavailable");
+    return archived;
   });
   try {
     await mkdir(join(root, "control-plane"), { recursive: true });
     await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(controller));
     const rotate = () => runnerdRecoveryInternals.rotateExternalAuthorityEpoch(root, controller, desired,
-      async () => state, archive, mode === "missing" ? undefined : checkpoint);
+      read, archive, mode === "missing" ? undefined : checkpoint);
     if (mode === "missing") {
       await expect(rotate()).rejects.toThrow("requires_settled_state");
+      expect(archive).not.toHaveBeenCalled();
+    } else if (mode === "thread" || mode === "missing-thread") {
+      await expect(rotate()).rejects.toThrow("cold_checkpoint_provider_identity_mismatch");
+      expect(read).not.toHaveBeenCalled();
       expect(archive).not.toHaveBeenCalled();
     } else if (mode === "corrupt") await expect(rotate()).rejects.toThrow("cold_checkpoint_integrity_mismatch");
     else {
       await expect(rotate()).rejects.toThrow("archive interrupted");
       await expect(rotate()).resolves.toEqual(controller);
       expect(archive).toHaveBeenCalledTimes(2);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(active).toBeNull();
+      expect(archived).toEqual(state);
       expect(state.lifecycle).toBe("ready");
     }
   } finally { await rm(root, { recursive: true, force: true }); }
