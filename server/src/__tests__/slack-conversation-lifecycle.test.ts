@@ -206,7 +206,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
     await db.transaction(async tx => {
       await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(createAdmissionTransactionScope(f.companyId, tx as unknown as typeof db), {
-        companyId: f.companyId, agentId: f.agentId, activeExecutionRunId: f.runId,
+        companyId: f.companyId, agentId: f.agentId, activeExecutionRunId: f.runId, activeExecutionRunStatus: "running",
         mergedContextSnapshot: { issueId: f.issueId }, source: "automation", triggerDetail: "system",
         payload: { issueId: f.issueId }, requestedByActorType: "system", requestedByActorId: null,
         idempotencyKey: key,

@@ -35,7 +35,11 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     await db.execute(sql.raw(`create schema ${schema}`));
     await db.execute(sql.raw(`set search_path=${schema}`));
     await db.execute(sql`create table heartbeat_runs (id uuid primary key, company_id uuid not null, agent_id uuid not null,
-      status text not null, runtime_mode text default 'legacy', log_store text, log_ref text, log_bytes bigint, log_sha256 text, last_output_seq int not null default 0, controller_lease_expires_at timestamptz)`);
+      status text not null, runtime_mode text default 'legacy', log_store text, log_ref text, log_bytes bigint, log_sha256 text, last_output_seq int not null default 0, controller_lease_expires_at timestamptz, started_at timestamptz, process_pid int, process_started_at timestamptz,
+      runner_instance_id uuid, native_session_id uuid, native_phase text, runtime_mode_resolved_at timestamptz,
+      process_group_id int, native_issue_id uuid, session_id_after text, controller_boot_id uuid,
+      execution_stage text, result_json jsonb, runner_profile_json jsonb)`);
+    await db.execute(sql`create table environment_leases(company_id uuid, heartbeat_run_id uuid)`);
     await db.execute(
       sql`create table native_run_finalizations(run_id uuid, company_id uuid, lease_expires_at timestamptz)`,
     );
@@ -123,7 +127,11 @@ describe.skipIf(!endpoint || !databaseUrl)("run evidence migration (Postgres and
     await db.execute(sql`insert into heartbeat_runs(id,company_id,agent_id,status) values(${active},${randomUUID()},${randomUUID()},'running')`);
     await expect(migrateRunEvidence(db, options)).rejects.toThrow("active_execution_requires_drain");
     await db.execute(sql`delete from heartbeat_runs where id=${active}`);
+    await db.execute(sql`insert into heartbeat_runs(id,company_id,agent_id,status) values(${active},${companyId},${agentId},'queued')`);
     const result = await migrateRunEvidence(db, options);
+    expect((await db.$client.unsafe("select status,started_at from heartbeat_runs where id=$1", [active]))[0])
+      .toMatchObject({ status: "queued", started_at: null });
+    await db.execute(sql`delete from heartbeat_runs where id=${active}`);
     const store = getRunLogStore();
     for (const name of cases.slice(0, 3)) {
       const run = runs.get(name)!;
