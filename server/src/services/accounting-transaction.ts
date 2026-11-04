@@ -1,24 +1,75 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { eq } from "drizzle-orm";
+import { PgTransaction } from "drizzle-orm/pg-core";
 import { companies, type Db } from "@paperclipai/db";
 import { publishActivity, type ActivityPublication } from "./activity-log.js";
 import { notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 
-/** Serialize ledger and budget mutations in one company. Always acquire this
- * before locking a run or a policy, so concurrent writers use one lock order.
- * NO KEY UPDATE permits FK KEY SHARE locks held by recovery callers. */
-export async function withAccountingTransaction<T>(db: Db, companyId: string, work: (tx: Db, publications: ActivityPublication[]) => Promise<T>): Promise<T> {
-  const publications: ActivityPublication[] = [];
+const heldCompanyLocks = new AsyncLocalStorage<ReadonlyMap<string, { tx: Db; publications: ActivityPublication[] }>>();
+const companyQueues = new Map<string, Promise<void>>();
+const companyQueueDepths = new Map<string, number>();
+
+export function accountingTransactionQueueDepth(companyId: string): number {
+  return companyQueueDepths.get(companyId) ?? 0;
+}
+
+async function executeAccountingTransaction<T>(
+  db: Db,
+  companyId: string,
+  work: (tx: Db, publications: ActivityPublication[]) => Promise<T>,
+  held: ReadonlyMap<string, { tx: Db; publications: ActivityPublication[] }>,
+  parentPublications?: ActivityPublication[],
+): Promise<T> {
+  const localPublications: ActivityPublication[] = [];
   const result = await withBudgetSpan("budget.accounting.transaction", () => db.transaction(async (transaction) => {
     const tx = transaction as unknown as Db;
     const [company] = await withBudgetSpan("budget.accounting.lock_wait", () => tx.select({ id: companies.id }).from(companies)
       .where(eq(companies.id, companyId)).for("no key update"));
     if (!company) throw notFound("Company not found");
-    return work(tx, publications);
+    const nextHeld = new Map(held);
+    nextHeld.set(companyId, { tx, publications: localPublications });
+    return await heldCompanyLocks.run(nextHeld, () => work(tx, localPublications));
   }));
-  publishAccountingActivities(companyId, publications);
+  if (parentPublications) {
+    parentPublications.push(...localPublications);
+  } else {
+    publishAccountingActivities(companyId, localPublications);
+  }
   return result;
+}
+
+export async function withAccountingTransaction<T>(db: Db, companyId: string, work: (tx: Db, publications: ActivityPublication[]) => Promise<T>): Promise<T> {
+  const isTx = db instanceof PgTransaction || Boolean((db as any)?.isTransaction);
+  const held = heldCompanyLocks.getStore() ?? new Map<string, { tx: Db; publications: ActivityPublication[] }>();
+  const activeContext = held.get(companyId);
+
+  if (activeContext || isTx) {
+    const targetDb = activeContext?.tx ?? db;
+    const targetPublications = activeContext?.publications;
+    return executeAccountingTransaction(targetDb, companyId, work, held, targetPublications);
+  }
+
+  const previous = companyQueues.get(companyId) ?? Promise.resolve();
+  let release!: () => void;
+  const turn = new Promise<void>((resolve) => { release = resolve; });
+  const current = previous.then(() => turn);
+  companyQueues.set(companyId, current);
+  companyQueueDepths.set(companyId, (companyQueueDepths.get(companyId) ?? 0) + 1);
+
+  try {
+    await previous;
+    return await executeAccountingTransaction(db, companyId, work, held);
+  } finally {
+    release();
+    const remaining = (companyQueueDepths.get(companyId) ?? 1) - 1;
+    if (remaining <= 0) companyQueueDepths.delete(companyId);
+    else companyQueueDepths.set(companyId, remaining);
+    if (companyQueues.get(companyId) === current) {
+      companyQueues.delete(companyId);
+    }
+  }
 }
 
 /** Consistent operator reports must not wait for or delay accounting writers.

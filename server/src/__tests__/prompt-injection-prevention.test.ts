@@ -16,7 +16,7 @@ import { providerUsageReceipt } from "../services/provider-usage.js";
 import { billingReconciliationService } from "../services/billing-reconciliation.js";
 import { costService } from "../services/costs.js";
 import { deleteAgentDependencies } from "../services/agent-deletion.js";
-import { withAccountingTransaction } from "../services/accounting-transaction.js";
+import { withAccountingTransaction, accountingTransactionQueueDepth } from "../services/accounting-transaction.js";
 import express from "express";
 import request from "supertest";
 import { promptInjectionPreventionRoutes } from "../routes/prompt-injection-prevention.js";
@@ -202,7 +202,7 @@ describe("prompt injection service", () => {
     try {
       await vi.waitFor(async () => {
         const [row] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity where ${pid} = any(pg_blocking_pids(pid))`);
-        expect(row.count).toBeGreaterThan(0);
+        expect(row.count + (accountingTransactionQueueDepth(f.companyId) > 1 ? 1 : 0)).toBeGreaterThan(0);
       }, { timeout: 5000 });
       if (change === "configuration") {
         // A timestamp alone is not a sufficient revision if two writes share a millisecond.
