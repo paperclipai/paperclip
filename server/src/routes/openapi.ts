@@ -3102,6 +3102,9 @@ for (const route of [
     path: route[1],
     tags: ["teams"],
     summary: route[2],
+    description: route[1].endsWith("/install")
+      ? "Imports team resources; HTTP success does not prove every required skill is ready. Read warnings for post-import failures and skillPreparations for required sources; a preparation plan is not proof of installation. Report unresolved requirements as partial completion and preserve existing resources. Use the actual returned portabilityImport agents and projects for company-scoped resource links. Before repeating an uncertain install, inspect installed teams and saved resource identities rather than creating another copy."
+      : undefined,
   });
 }
 
