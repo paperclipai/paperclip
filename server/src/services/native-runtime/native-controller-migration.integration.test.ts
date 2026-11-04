@@ -69,7 +69,7 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
         digest: `sha256:${createHash("sha256").update(canonicalProviderPackJson(payload)).digest("hex")}` }),
       runnerArtifact: () => ({ version: "migration-fixture", digest: `sha256:${"a".repeat(64)}` }) });
     pack.verified();
-    const snapshot = { backendKind: "mock", sessionId: f.native.normalizedSessionId,
+    const snapshot = { backendKind: "mock" as const, sessionId: f.native.normalizedSessionId,
       identity: { companyId, agentId, issueId: f.issueId, runId: f.runId, sessionId: f.native.normalizedSessionId } };
     const profile = { ...f.preparedProfile, nativeExecutionInput: execution, nativeToolContractFingerprint: fingerprint, sessionCheckpoint: snapshot,
       nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v1", state: "prepared", descriptorSha256: "a".repeat(64),
