@@ -9,6 +9,7 @@ import {
 } from "@aws-sdk/client-s3";
 import { putS3Multipart } from "./s3-multipart.js";
 import { withS3FailureDiagnostics } from "./s3-failure.js";
+import { retryS3RequestTimeouts } from "./s3-request-timeout-retry.js";
 import { addAbortSignal, Readable } from "node:stream";
 import type { StorageProvider, GetObjectResult, HeadObjectResult } from "./types.js";
 import { notFound, unprocessable } from "../errors.js";
@@ -79,6 +80,7 @@ export function createS3StorageProvider(config: S3ProviderConfig): StorageProvid
     endpoint: config.endpoint,
     forcePathStyle: Boolean(config.forcePathStyle),
   });
+  retryS3RequestTimeouts(client);
 
   async function listExactVersions(key: string, signal?: AbortSignal) {
     const versions = new Set<string>(), cursors = new Set<string>();
