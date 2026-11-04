@@ -22,6 +22,7 @@ import { DELIVERY_QUEUES, subscribeDeliveryWork } from "./delivery-work-notifica
 import { prepareHeartbeatWorkspace } from "./heartbeat/workspace-preparation.js";
 import { createHeartbeatWorkspaceResolver, resolveExecutionWorkspaceReuseRequestForIssue } from "./heartbeat/workspaces.js";
 import { environmentService } from "./environments.js";
+import * as agentStarts from "./agent-start-lock.js";
 import { taskRepositoryRelativePath } from "./execution-workspace-repositories.js";
 import { classifyEnvironmentCapabilities, environmentRuntimeService } from "./environment-runtime.js";
 import { environmentRunOrchestrator } from "./environment-run-orchestrator.js";
@@ -354,11 +355,14 @@ describe("automatic retained workspace recovery", () => {
     }
   }, 30_000);
 
-  function boardRecoveryApp(actor: { userId: string; source: "local_implicit" | "session"; companyIds?: string[] } = { userId: "local-board", source: "local_implicit" }) {
+  function boardRecoveryApp(actor: { userId: string; source: "local_implicit" | "session"; companyIds?: string[] } = { userId: "local-board", source: "local_implicit" },
+    heartbeat?: ReturnType<typeof heartbeatService>) {
     const app = express();
     app.use(express.json());
     app.use((req, _res, next) => { req.actor = { type: "board", ...actor }; next(); });
-    app.use("/api", issueRoutes(db, {} as Parameters<typeof issueRoutes>[1]));
+    const factory = heartbeat ? vi.spyOn(heartbeatServices, "heartbeatService").mockReturnValue(heartbeat) : undefined;
+    try { app.use("/api", issueRoutes(db, {} as Parameters<typeof issueRoutes>[1])); }
+    finally { factory?.mockRestore(); }
     app.use(errorHandler);
     return app;
   }
@@ -918,7 +922,13 @@ describe("automatic retained workspace recovery", () => {
     const databaseUrl = process.env.DATABASE_URL, masterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
     const experimental = await instanceSettingsService(db).getExperimental();
     let storage: { mockRestore(): void } | undefined;
+    const starts = vi.spyOn(agentStarts, "withAgentStartLock");
+    const retryResumes: Promise<void>[] = [];
+    let resumeSpy: { mockRestore(): void } | undefined;
     let ownedHeartbeat: ReturnType<typeof heartbeatService> | undefined;
+    let releaseStart: (() => void) | undefined;
+    let heldStart: Promise<void> | undefined;
+    let explicitResume: Promise<void> | undefined;
     let recoveryCoordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
     let recoveryWorker: ReturnType<typeof registerWorkspaceRecoveryWork> | undefined;
     try {
@@ -1013,26 +1023,31 @@ describe("automatic retained workspace recovery", () => {
       };
       const heartbeat = heartbeatService(db, { environmentRuntime: runtime, nativeSessionBackendFactory: backendFactory });
       ownedHeartbeat = heartbeat;
+      const resumeTaskRetry = heartbeat.resumeTaskRetry;
+      resumeSpy = vi.spyOn(heartbeat, "resumeTaskRetry").mockImplementation((...args) => {
+        const pending = resumeTaskRetry(...args);
+        retryResumes.push(pending);
+        return pending;
+      });
+      const app = boardRecoveryApp(undefined, heartbeat);
+      const gate = new Promise<void>(resolve => { releaseStart = resolve; });
+      heldStart = agentStarts.withAgentStartLock(source.agentId, () => gate);
+      const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+      await expect.poll(() => starts.mock.calls.filter(([agentId]) => agentId === source.agentId).length, { timeout: 10_000 }).toBe(2);
+      explicitResume = heartbeat.resumeTaskRetry(f.companyId, receipt.requestId);
+      const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`));
+      expect(successors).toHaveLength(1);
       if (unavailableCatalog) {
         const repoUrl = "https://github.com/example/revoked.git";
         await db.insert(executionWorkspaceRepositories).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
           requestedByIssueId: f.issueId, repositoryIdentity: repoUrl, repoUrl, catalogRepositoryId: "revoked-before-dispatch",
           relativePath: taskRepositoryRelativePath(repoUrl), requestKey: randomUUID(), state: "ready", pinnedCommit: f.commit });
       }
-      // The HTTP route also nudges Retry asynchronously. Give it the same real
-      // heartbeat facade so either dispatcher uses this test's provider boundary.
-      const routeHeartbeat = vi.spyOn(heartbeatServices, "heartbeatService").mockReturnValue(heartbeat);
-      let app: ReturnType<typeof boardRecoveryApp>;
-      try { app = boardRecoveryApp(); }
-      finally { routeHeartbeat.mockRestore(); }
-      const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
-        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
-      await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId);
-      const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
-        sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`));
-      expect(successors).toHaveLength(1);
       await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(and(
         eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "running")));
+      releaseStart!(); await Promise.all([heldStart, explicitResume]);
       await heartbeat.resumeQueuedRuns(); await heartbeat.drainActiveRunExecutions();
       const completed = await run(successors[0].id);
       if (mode === "invalid_published_root") {
@@ -1068,7 +1083,7 @@ describe("automatic retained workspace recovery", () => {
         recoveryWorker = registerWorkspaceRecoveryWork(db, recoveryCoordinator, runtime, heartbeat.resumeRemoteStopComments);
         await recoveryWorker.ready;
         const retryIntent = { observedRunId: completed.id, idempotencyKey: randomUUID() };
-        const retry = (await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body;
+        const retry = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body;
         const resumed = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
           sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${retry.requestId}`));
         await expect.poll(async () => await hasVerifiedWorkspaceRepair(db, await run(completed.id)), { timeout: 20_000 }).toBe(true);
@@ -1082,7 +1097,7 @@ describe("automatic retained workspace recovery", () => {
         expect(continuation).toMatchObject({ status: "queued", contextSnapshot: { previousRunId: completed.id,
           taskRetryRequestId: retry.requestId } });
         expect(await readFreshWorkspaceReadiness(db, continuation)).toMatchObject({ mode: "resume_preserved_workspace" });
-        expect((await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body.requestId).toBe(retry.requestId);
+        expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(retryIntent).expect(202)).body.requestId).toBe(retry.requestId);
         expect(await resumed()).toHaveLength(1); expect(startTurn).not.toHaveBeenCalled();
         expect(errors).not.toHaveBeenCalled();
         return;
@@ -1100,9 +1115,11 @@ describe("automatic retained workspace recovery", () => {
       expect((await run(f.runId)).error).toBe(source.error);
     } finally {
       try {
+        releaseStart?.(); await Promise.allSettled([heldStart, explicitResume, ...retryResumes]);
         await recoveryCoordinator?.stop(); await recoveryWorker?.stop();
         await ownedHeartbeat?.drainActiveRunExecutions();
       } finally {
+        resumeSpy?.mockRestore(); starts.mockRestore();
         storage?.mockRestore();
         if (databaseUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = databaseUrl;
         if (masterKey === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY; else process.env.PAPERCLIP_SECRETS_MASTER_KEY = masterKey;
