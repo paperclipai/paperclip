@@ -30,13 +30,9 @@ export function resolveProjectWorkspaceProvider(
 ): ProjectWorkspaceProviderConfiguration {
   const policy = parseProjectExecutionWorkspacePolicy(rawPolicy);
   const explicit = policy?.storageProviderPluginId !== undefined;
-  const defaults = providers.filter(plugin => plugin.manifestJson.workspaceProvider?.defaultForProjects);
-  const selected = explicit ? providers.find(plugin => plugin.id === policy?.storageProviderPluginId)
-    : defaults.length === 1 ? defaults[0] : undefined;
-  const pluginId = explicit ? policy?.storageProviderPluginId ?? null : selected?.id ?? null;
-  let error = !explicit && defaults.length > 1
-    ? `Multiple workspace storage plugins claim the project default: ${defaults.map(plugin => plugin.manifestJson.displayName).sort().join(", ")}. Select a storage provider in project configuration or disable a conflicting default.`
-    : null;
+  const pluginId = policy?.storageProviderPluginId ?? null;
+  const selected = pluginId ? providers.find(plugin => plugin.id === pluginId) : undefined;
+  let error: string | null = null;
   const declaration = selected?.manifestJson.workspaceProvider;
   const supplied = hasGitSource ? declaration?.defaultForProjects : undefined;
   const effectivePolicy = pluginId ? parseProjectExecutionWorkspacePolicy({
@@ -55,7 +51,7 @@ export function resolveProjectWorkspaceProvider(
     error = "The storage plugin does not support the explicit project workspace settings. Change the workspace mode or strategy, or select another storage provider in project configuration.";
   }
   return {
-    source: explicit ? "project" : selected || error ? "default" : "core",
+    source: explicit ? "project" : "core",
     pluginId,
     displayName: selected?.manifestJson.displayName ?? (pluginId ? "Unavailable provider" : "Core / local"),
     providers: providers.map(plugin => ({ id: plugin.id, displayName: plugin.manifestJson.displayName,
@@ -63,6 +59,17 @@ export function resolveProjectWorkspaceProvider(
     effectivePolicy,
     error,
   };
+}
+
+export async function withDefaultProjectStorage(db: ProviderDb, companyId: string, rawPolicy: unknown) {
+  if (parseProjectExecutionWorkspacePolicy(rawPolicy)?.storageProviderPluginId !== undefined) return rawPolicy;
+  const defaults = (await listProjectWorkspaceProviders(db, companyId))
+    .filter(plugin => plugin.manifestJson.workspaceProvider?.defaultForProjects);
+  if (defaults.length > 1) {
+    throw conflict(`Multiple workspace storage plugins claim the project default: ${defaults.map(plugin => plugin.manifestJson.displayName).sort().join(", ")}. Select a storage provider in project configuration or disable a conflicting provider.`);
+  }
+  if (!defaults[0]) return rawPolicy;
+  return { enabled: true, ...(rawPolicy as Record<string, unknown> | null), storageProviderPluginId: defaults[0].id };
 }
 
 export async function effectiveProjectWorkspacePolicy(db: ProviderDb, companyId: string, rawPolicy: unknown, hasGitSource: boolean) {
