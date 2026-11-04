@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowLeft, ArrowUpRight, ChevronDown, History, ListFilter, Loader2, Mail } from "lucide-react";
+import { ArrowLeft, ArrowUpRight, ChevronDown, FileText, History, ListFilter, Loader2, Mail } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
 import type { Agent, AttentionCloseMode, AttentionItem, AttentionPersonalView, DecisionHistoryItem, DecisionHistoryScope } from "@paperclipai/shared";
 import { accessApi } from "@/api/access";
@@ -41,6 +41,7 @@ import { parseCssTimeMs } from "@/components/task-chat/motion-tokens";
 import { readIssueReviewPolicyMetadata } from "@/lib/review-policy";
 import { CoordinatorDecisionReceipt as Receipt } from "./CoordinatorDecisionReceipt";
 import { CoordinatorTaskMotion } from "./CoordinatorTaskCommitment";
+import { CoordinatorReviewPanel, attentionReviewDocumentKey } from "./CoordinatorReviewPanel";
 
 type Group = "none" | "task" | "agent" | "project";
 
@@ -92,6 +93,8 @@ export function CoordinatorNeedsYou() {
   const [groupBy, setGroupBy] = useState<Group>("none");
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
   const [historyOpen, setHistoryOpen] = useState(false);
+  // Focus (PAP-770): the card whose artifact is open in the side panel.
+  const [reviewItemId, setReviewItemId] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now);
   const [settling, setSettling] = useState<AttentionItem[]>([]);
   const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set());
@@ -211,17 +214,28 @@ export function CoordinatorNeedsYou() {
   ]).entries()], [pendingItems, recentItems]);
   const filtersActive = Boolean(query.trim() || agentFilter || projectFilter);
   const closeHistory = useCallback(() => { setHistoryOpen(false); closePanel(); }, [closePanel]);
-  const showHistory = () => { setHistoryOpen(true); if (!isMobile) setPanelVisible(true); };
+  const showHistory = () => { setReviewItemId(null); setHistoryOpen(true); if (!isMobile) setPanelVisible(true); };
+  const closeReview = useCallback(() => { setReviewItemId(null); closePanel(); }, [closePanel]);
+  const showReview = (item: AttentionItem) => { setHistoryOpen(false); setReviewItemId(item.id); setPanelVisible(true); };
+  const reviewItem = reviewItemId ? pendingItems.find(item => item.id === reviewItemId) ?? null : null;
   useEffect(() => { setBreadcrumbs([{ label: "Needs You" }]); }, [setBreadcrumbs]);
   useEffect(() => {
-    setSettling([]); setHistoryOpen(false); setNow(Date.now()); closePanel();
+    setSettling([]); setHistoryOpen(false); setReviewItemId(null); setNow(Date.now()); closePanel();
     return closePanel;
   }, [selectedCompanyId, closePanel]);
   useEffect(() => {
+    const reviewIssueId = reviewItem ? reviewItem.relatedIssue?.id ?? String(reviewItem.subject.metadata?.issueId ?? "") : "";
+    const reviewKey = reviewItem ? attentionReviewDocumentKey(reviewItem) : null;
+    if (selectedCompanyId && !isMobile && reviewItem && reviewIssueId && reviewKey) {
+      setPanelVisible(true);
+      openPanel(<CoordinatorReviewPanel key={reviewItem.id} companyId={selectedCompanyId} item={reviewItem} issueId={reviewIssueId} documentKey={reviewKey}
+        agentMap={agentMap} currentUserId={userId} userLabelMap={userLabelMap} onOpenTask={navigate} onResolved={closeReview} onClose={closeReview} />);
+      return;
+    }
     if (!historyOpen || !selectedCompanyId || isMobile) { closePanel(); return; }
     setPanelVisible(true);
     openPanel(<HistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} userLabelMap={userLabelMap} onClose={closeHistory} />);
-  }, [historyOpen, selectedCompanyId, isMobile, agentQuery.data, userLabelMap, openPanel, closePanel, closeHistory, setPanelVisible]);
+  }, [historyOpen, reviewItem, selectedCompanyId, isMobile, agentQuery.data, agentMap, userId, userLabelMap, navigate, openPanel, closePanel, closeHistory, closeReview, setPanelVisible]);
   useEffect(() => {
     const next = recentItems.reduce((earliest, item) => Math.min(earliest, Date.parse(item.resolvedAt) + COORDINATOR_RECENT_DECISION_MS), Infinity);
     if (!Number.isFinite(next)) return;
@@ -251,11 +265,18 @@ export function CoordinatorNeedsYou() {
     const receipt = settlingIds.has(id) ? recentItems.find(entry => entry.id === id) : undefined;
     const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
     const refetchAll = () => { void feed.refetch(); void recent.refetch(); };
+    // Focus (PAP-770): a card that asks about an artifact opens it beside the card.
+    const canReview = !isMobile && !!issueId && !!attentionReviewDocumentKey(item);
+    const reviewing = reviewItemId === item.id;
+    const footer = canReview ? <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+      <Button type="button" variant="outline" size="sm" aria-pressed={reviewing} data-coordinator-review-trigger onClick={() => reviewing ? closeReview() : showReview(item)}>
+        <FileText className="size-4" />{reviewing ? "Reviewing plan" : "Review plan"}
+      </Button>{taskLink}</div> : taskLink;
     const heading = <><h2 className="text-lg font-medium">{coordinatorCardTitle(item)}</h2><p className="text-sm">{attentionDetailLine(item) ?? item.whyNow}</p></>;
     return <motion.div id={item.sourceKind === "decision" ? `coordinator-decision-${item.subject.id}` : undefined} tabIndex={item.sourceKind === "decision" ? -1 : undefined} layout={reducedMotion ? false : "position"} layoutId={reducedMotion ? undefined : id} transition={{ duration }} key={id}>
     <CoordinatorTaskMotion eventId={`decision:${selectedCompanyId}:${userId}:${id}`} phase={phase} createdAt={item.activityAt} className="coordinator-decision-motion"
       onSettled={() => setSettling(current => current.filter(entry => `${entry.sourceKind}:${entry.subject.id}` !== id))}>
-    {receipt ? <Receipt item={receipt} onOpen={navigate} userLabelMap={userLabelMap} /> : <article className="coordinator-decision-card space-y-4 rounded-xl border border-border bg-card p-6" data-attention-card={item.id}>
+    {receipt ? <Receipt item={receipt} onOpen={navigate} userLabelMap={userLabelMap} /> : <article className={`coordinator-decision-card space-y-4 rounded-xl border bg-card p-6 ${reviewing ? "border-ring" : "border-border"}`} data-attention-card={item.id} data-reviewing={reviewing || undefined}>
       {/* Why this card is here, whether it is stale, and its one Close… menu (PAP-749 Rules 4, 6, 10). */}
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -272,7 +293,7 @@ export function CoordinatorNeedsYou() {
           onRestore={archivedView ? entry => void closeActions.restore(entry) : undefined} />
       </div>
       <AttentionForOtherGate item={item} currentUserId={userId} userLabelMap={userLabelMap}>
-      {interaction ? <AttentionInteractionResolver footerSlot={taskLink} presentation="coordinator-decision" audienceStated={attentionAudienceLineNamesResponders(item, userId)} companyId={selectedCompanyId!} issueId={issueId} interactionId={item.subject.id} agentMap={agentMap} currentUserId={userId} onResolved={resolved => {
+      {interaction ? <AttentionInteractionResolver footerSlot={footer} presentation="coordinator-decision" audienceStated={attentionAudienceLineNamesResponders(item, userId)} companyId={selectedCompanyId!} issueId={issueId} interactionId={item.subject.id} agentMap={agentMap} currentUserId={userId} onResolved={resolved => {
         if (!resolved || resolved.status === "pending") { refetchAll(); return; }
         onResolved(item);
       }} />

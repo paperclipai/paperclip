@@ -5033,6 +5033,10 @@ html:not(.dark) .coordinator-sidebar {
 .coordinator-decision-card :is(p, label) { font-size: var(--text-sm); line-height: var(--text-sm--line-height); }
 .coordinator-decision-card [data-decision-prompt] { font-size: var(--text-lg); line-height: var(--text-lg--line-height); font-weight: var(--font-weight-medium); }
 .coordinator-decision-card [id^="interaction-"]:focus { outline-color: var(--ring); }
+/* Focus review panel (PAP-770): the artifact is the context, so the pinned
+   footer keeps only the card's actions — not its summary, audience or prompt. */
+.coordinator-review-actions [data-presentation] > :not(:last-child),
+.coordinator-review-actions [data-presentation] > :last-child > div > :first-child:has([data-decision-prompt]) { display: none; }
 @media (max-width: 767px) {
   .coordinator-workspace { --coordinator-card-inset: calc(var(--spacing) * 5); }
 }

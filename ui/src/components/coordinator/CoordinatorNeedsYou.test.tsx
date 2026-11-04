@@ -641,4 +641,19 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     expect(container.textContent).toContain("No cards need an owner.");
     client.clear();
   });
+
+  it("opens a plan card's plan in the side panel and closes it again (PAP-770)", async () => {
+    fixture.pending = [{ ...fixture.pending[0], subject: { ...fixture.pending[0].subject, metadata: { issueId: "task-1", targetDocumentKey: "plan" } } }, fixture.pending[1]];
+    const client = await renderPage();
+    expect([...container.querySelectorAll("[data-coordinator-review-trigger]")]).toHaveLength(1);
+    await click("Review plan");
+    expect(fixture.setPanelVisible).toHaveBeenLastCalledWith(true);
+    const panel = fixture.openPanel.mock.calls.at(-1)?.[0] as { props: Record<string, unknown> };
+    expect(panel.props).toMatchObject({ issueId: "task-1", documentKey: "plan" });
+    expect(container.querySelector("[data-reviewing]")).toBeTruthy();
+    await click("Reviewing plan");
+    expect(fixture.closePanel).toHaveBeenCalled();
+    expect(container.querySelector("[data-reviewing]")).toBeNull();
+    client.clear();
+  });
 });

@@ -3,7 +3,7 @@ import { registerApiRoute } from "./api-stub";
 import { registry } from "./registry";
 import { FEED_RECORDS, HISTORY, RECEIPTS, VIEW_COUNTS } from "./fixtures";
 import { toAttentionItem, toHistoryItem, toReceipt, USER_LABELS, VIEWER_ID } from "./directions/today/adapters";
-import { COORDINATOR_INTERACTION_ATTENTION, COORDINATOR_INTERACTIONS } from "./directions/today/coordinator-fixtures";
+import { COORDINATOR_INTERACTION_ATTENTION, COORDINATOR_INTERACTIONS, COORDINATOR_PLAN_DOCUMENT } from "./directions/today/coordinator-fixtures";
 
 const INTERACTION_KINDS = new Set(["plan", "confirmation", "question", "suggested_tasks", "decision"]);
 
@@ -73,6 +73,7 @@ export function registerFeatureRoutes(): void {
   registerApiRoute((pathname) => (pathname.endsWith("/attention/history") ? { items: HISTORY.map(toHistoryItem), nextCursor: null } : undefined));
   registerApiRoute((pathname) => (pathname.endsWith("/attention") ? attentionFeed() : undefined));
   registerApiRoute((pathname) => (pathname.endsWith("/interactions") ? COORDINATOR_INTERACTIONS : undefined));
+  registerApiRoute((pathname) => (pathname.endsWith("/documents/plan") ? COORDINATOR_PLAN_DOCUMENT : undefined));
   registerApiRoute((pathname) => (pathname.endsWith("/user-directory") ? userDirectory() : undefined));
   registerApiRoute((pathname) => (pathname.endsWith("/agents") ? [] : undefined));
   registerApiRoute((pathname) => (pathname.endsWith("/projects") ? [] : undefined));
