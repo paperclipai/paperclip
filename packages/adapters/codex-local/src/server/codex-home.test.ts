@@ -16,6 +16,7 @@ import {
   mergeManagedCodexMcpGateways,
   isManagedCodexHomePath,
   prepareManagedCodexHome,
+  prepareManagedCodexMcpProfile,
   reconcileManagedCodexHome,
   seedManagedCodexHome,
   stageCodexHomeForSync,
@@ -228,6 +229,73 @@ describe("codex managed home", () => {
     }
   });
 
+});
+
+describe("run-scoped native MCP profiles", () => {
+  it("removes old shared bearers for a gateway-free run and retains other CLI arguments", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-empty-profile-"));
+    try {
+      await writeManagedCodexMcpConfig({ codexHome: home, apiBaseUrl: "https://paperclip.test",
+        gateways: [{ name: "obsolete", endpointPath: "/mcp", bearerToken: "revoked-old-run" }] });
+      const prepared = await prepareManagedCodexMcpProfile({ codexHome: home,
+        apiBaseUrl: "https://paperclip.test", gateways: [], runId: "run-a", extraArgs: ["--search"] });
+      expect(prepared.args).toEqual(["--search", "--profile", prepared.profileName]);
+      expect(await fs.readFile(path.join(home, "config.toml"), "utf8")).toBe("");
+      expect(await fs.readFile(prepared.configPath, "utf8")).toBe("");
+      await prepared.cleanup();
+    } finally { await fs.rm(home, { recursive: true, force: true }); }
+  });
+
+  it.each([[], ["--profile", "operator"], ["--profile=operator"], ["-p", "operator"], ["-poperator"]])(
+    "keeps run credentials private while preserving the selected native profile: %j", async (...extraArgs) => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-profile-"));
+      try {
+        await fs.writeFile(path.join(home, "config.toml"), 'model = "base-model"\n[mcp_servers.direct]\nurl = "https://direct.test/mcp"\n');
+        await fs.writeFile(path.join(home, "operator.config.toml"), 'model = "operator-model"\n');
+        const prepared = await prepareManagedCodexMcpProfile({
+          codexHome: home, apiBaseUrl: "https://paperclip.test", runId: "run-a", extraArgs,
+          gateways: [{ name: "direct", endpointPath: "/mcp", bearerToken: "only-run-a" }],
+        });
+        const text = await fs.readFile(prepared.configPath, "utf8");
+        expect(text.includes('model = "operator-model"')).toBe(extraArgs.length > 0);
+        expect(text).toContain('[mcp_servers."paperclip-direct"]');
+        expect(text).toContain('Authorization = "Bearer only-run-a", "X-Paperclip-Run-Id" = "run-a"');
+        expect(prepared.args).toEqual(["--profile", prepared.profileName]);
+        expect((await fs.stat(prepared.configPath)).mode & 0o777).toBe(0o600);
+        expect(await fs.readFile(path.join(home, "config.toml"), "utf8")).not.toContain("only-run-a");
+        expect(await fs.readFile(path.join(home, "operator.config.toml"), "utf8")).toBe('model = "operator-model"\n');
+        const staged = await stageCodexHomeForSync(home, { profileName: prepared.profileName });
+        try {
+          expect(await fs.readFile(path.join(staged, `${prepared.profileName}.config.toml`), "utf8")).toBe(text);
+          expect((await fs.stat(path.join(staged, `${prepared.profileName}.config.toml`))).mode & 0o777).toBe(0o600);
+          await expect(fs.access(path.join(staged, "operator.config.toml"))).rejects.toThrow();
+        } finally { await fs.rm(staged, { recursive: true, force: true }); }
+        await prepared.cleanup();
+        await expect(fs.access(prepared.configPath)).rejects.toThrow();
+      } finally { await fs.rm(home, { recursive: true, force: true }); }
+    },
+  );
+
+  it.each([["--profile"], ["--profile", "../escape"], ["--profile", "one", "-p", "two"]])(
+    "rejects invalid native profile selection before writing: %j", async (...extraArgs) => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-invalid-profile-"));
+      try {
+        await expect(prepareManagedCodexMcpProfile({ codexHome: home,
+          apiBaseUrl: "https://paperclip.test", gateways: [], runId: "run-a", extraArgs })).rejects.toThrow(/profile/);
+        expect(await fs.readdir(home)).toEqual([]);
+      } finally { await fs.rm(home, { recursive: true, force: true }); }
+    },
+  );
+
+  it("removes a partial profile when gateway configuration is invalid", async () => {
+    const home = await fs.mkdtemp(path.join(os.tmpdir(), "codex-invalid-gateway-"));
+    try {
+      await expect(prepareManagedCodexMcpProfile({ codexHome: home, apiBaseUrl: "invalid-url",
+        gateways: [{ name: "fixture", endpointPath: "/mcp", bearerToken: "test-value" }],
+        runId: "run-a", extraArgs: [] })).rejects.toThrow();
+      expect(await fs.readdir(home)).toEqual(["config.toml"]);
+    } finally { await fs.rm(home, { recursive: true, force: true }); }
+  });
 });
 
 describe("isManagedCodexHomePath", () => {

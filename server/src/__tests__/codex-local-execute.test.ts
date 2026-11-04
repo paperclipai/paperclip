@@ -17,7 +17,8 @@ const payload = {
   prompt: fs.readFileSync(0, "utf8"),
   codexHome: process.env.CODEX_HOME || null,
   codexConfigContents: process.env.CODEX_HOME && fs.existsSync(process.env.CODEX_HOME + "/config.toml")
-    ? fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8")
+    ? fs.readFileSync(process.env.CODEX_HOME + "/config.toml", "utf8") +
+      (process.argv.includes("--profile") ? "\\n" + fs.readFileSync(process.env.CODEX_HOME + "/" + process.argv[process.argv.indexOf("--profile") + 1] + ".config.toml", "utf8") : "")
     : null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
@@ -313,7 +314,10 @@ describe("codex execute", () => {
       expect(configText).toContain("[mcp_servers.github]");
       expect(configText).toContain("[mcp_servers.\"paperclip-github\"]");
       expect(configText).toContain('url = "http://paperclip.local:3100/api/tool-gateway/gateways/gateway-1/mcp"');
-      expect(configText).toContain('Authorization = "Bearer pcgw_secret-managed-token"');
+      expect(configText).toContain(
+        'http_headers = { Authorization = "Bearer pcgw_secret-managed-token", "X-Paperclip-Run-Id" = "run-managed-mcp" }',
+      );
+      expect(configText).not.toMatch(/^headers\s*=/m);
       expect(logs).toEqual(
         expect.arrayContaining([
           expect.objectContaining({

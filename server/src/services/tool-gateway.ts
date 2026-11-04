@@ -762,6 +762,10 @@ function safeClientMetadata(
     clientName,
     correlationId,
     userAgent: safeHeaderValue(headers, "user-agent", 200),
+    presentingRunId: (() => {
+      const value = safeHeaderValue(headers, "x-paperclip-run-id", 120);
+      return value && uuidPattern.test(value) ? value : null;
+    })(),
   };
 }
 
@@ -7167,6 +7171,33 @@ export function createToolGatewayService(
       ? `id:${tokenId}`
       : `hash:${hashGatewayToken(token).slice(0, 24)}`;
     const gateway = await findGatewayForProtocolLocator(input);
+    const [subjectToken] = await db.select({
+      subjectType: toolMcpGatewayTokens.subjectType,
+      subjectId: toolMcpGatewayTokens.subjectId,
+      companyId: toolMcpGatewayTokens.companyId,
+    }).from(toolMcpGatewayTokens)
+      .where(eq(toolMcpGatewayTokens.tokenHash, hashGatewayToken(token))).limit(1);
+    const subjectRunId = subjectToken?.subjectType === "heartbeat_run" &&
+      subjectToken.subjectId && uuidPattern.test(subjectToken.subjectId) ? subjectToken.subjectId : null;
+    const [subjectRun] = subjectRunId ? await db.select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, subjectRunId),
+        eq(heartbeatRuns.companyId, subjectToken!.companyId))).limit(1) : [];
+    logger.warn(
+      {
+        event: "named_gateway_auth_failed",
+        gatewayId: input.gatewayId ?? gateway?.id ?? null,
+        gatewayPublicId: input.gatewayPublicId ?? gateway?.gatewayPublicId ?? null,
+        reasonCode: input.reasonCode,
+        clientMetadata: input.clientMetadata,
+        tokenSubjectType: subjectToken?.subjectType ?? null,
+        tokenSubjectId: subjectToken?.subjectId ?? null,
+        subjectRunId,
+        subjectRunStatus: subjectRun?.status ?? null,
+        presentingRunId: input.clientMetadata.presentingRunId,
+        presentingRunIdSource: input.clientMetadata.presentingRunId ? "client_header" : "unavailable",
+      },
+      `MCP named gateway authentication failed: ${input.reasonCode}`,
+    );
     if (!gateway) {
       throw new ToolGatewayHttpError(
         401,
