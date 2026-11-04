@@ -1,54 +1,54 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionBlocker } from "@paperclipai/shared";
-import { agentsApi } from "../api/agents";
-import { activityApi } from "../api/activity";
-import { queryKeys } from "../lib/queryKeys";
+import type { TaskInterruptionPresentation } from "@paperclipai/shared";
+import { AlertCircle } from "lucide-react";
 import { Button } from "./ui/button";
-import { Link } from "../lib/router";
+import { cn } from "../lib/utils";
+import { useSecondTick } from "../hooks/useSecondTick";
+import { TaskProjectAccessNotice } from "./TaskProjectAccessNotice";
+import { ProviderFailureNotice } from "./ProviderFailureNotice";
 
-export function ExecutionBlockerNotice({ companyId, issueId, blocker, onRetried }: {
-  companyId: string;
-  issueId: string;
-  blocker: ExecutionBlocker;
-  onRetried: () => void;
+/** One ordinary interruption surface. Technical records remain in diagnostics. */
+export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, agentName, projectName }: {
+  presentation: TaskInterruptionPresentation | null | undefined;
+  canRetry: boolean;
+  onRetry: () => void;
+  optimistic?: boolean;
+  takingLonger?: boolean;
+  error?: Error | null;
+  className?: string;
+  issueId?: string;
+  agentName?: string;
+  projectName?: string;
 }) {
-  const queryClient = useQueryClient();
-  const { data: runs } = useQuery({
-    queryKey: queryKeys.issues.runs(issueId),
-    queryFn: () => activityApi.runsForIssue(issueId),
-  });
-  const failedRun = runs?.find(run => run.runId === blocker.runId &&
-    ["failed", "timed_out"].includes(run.status));
-  const requiresInspection = blocker.cause === "native_continuation_requires_reconciliation" ||
-    blocker.cause === "native_session_cleanup_quarantined";
-  const retry = useMutation({
-    mutationFn: () => agentsApi.retryFailedRun(failedRun!.agentId, failedRun!.runId, companyId),
-    onSuccess: () => {
-      onRetried();
-      for (const queryKey of [queryKeys.issues.detail(issueId), queryKeys.issues.runs(issueId),
-        queryKeys.issues.liveRuns(issueId), queryKeys.issues.activeRun(issueId)]) {
-        void queryClient.invalidateQueries({ queryKey });
-      }
-    },
-  });
+  useSecondTick(presentation?.state === "retry_scheduled");
+  if (presentation?.projectAccess && !optimistic && !takingLonger) return <TaskProjectAccessNotice
+    access={presentation.projectAccess} issueId={issueId} agentName={agentName} projectName={projectName}
+    canRetry={canRetry && presentation.canRetry} onRetry={onRetry} error={error} className={className} />;
+  if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{error.message}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
+  if (takingLonger) return <div role="status" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}><span>Taking longer than usual…</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
+  if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
+    return <ProviderFailureNotice failure={presentation.providerFailure} className={className}
+      actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button> : undefined}>
+      {presentation.state === "retry_scheduled" && <p>Paperclip will retry automatically.</p>}
+    </ProviderFailureNotice>;
+  }
+  if (optimistic || !presentation || presentation.responsibility !== "system" ||
+      !["failed", "retry_scheduled"].includes(presentation.state)) return null;
+  const seconds = Math.max(0, Math.ceil((Date.parse(presentation.nextRetryAt ?? "") - Date.now()) / 1000));
   return (
-    <div role="status" aria-label="Task recovery" className="mx-(--sz-execution-blocker-inline) my-(--sz-execution-blocker-block) flex flex-wrap items-center justify-between execution-blocker-notice border border-border bg-muted text-foreground">
-      <span>{blocker.cause === "legacy_execution_requires_reconciliation"
-        ? "Automatic recovery of this task stopped."
-        : `${requiresInspection ? "Recovery needed. " : ""}${blocker.nextAction}`}</span>
-      {requiresInspection && blocker.agentId && blocker.runId && (
-        <Button variant="outline" size="sm" asChild>
-          <Link to={`/agents/${blocker.agentId}/runs/${blocker.runId}`}>Inspect run</Link>
-        </Button>
-      )}
-      {!requiresInspection && failedRun && (
-        <Button variant="outline" size="sm" disabled={retry.isPending} onClick={() => retry.mutate()}>
-          {retry.isPending ? "Retrying…" : "Retry"}
-        </Button>
-      )}
-      {retry.isError && (
-        <p role="alert" className="w-full text-destructive">{retry.error.message}</p>
-      )}
+    <div className={cn(presentation.state === "failed" && "pt-4", className)}>
+      <div role="status" aria-label="Task status" className={cn(
+        "flex items-center justify-between gap-3 text-sm",
+        presentation.state === "failed" ? "rounded-lg bg-destructive/10 p-4 text-foreground" : "text-muted-foreground",
+      )}>
+        {presentation.state === "failed" && <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />}
+        <span className="min-w-0 flex-1">{presentation.state === "retry_scheduled"
+          ? `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`
+          : presentation.retryWait ? presentation.retryWait.message
+          : presentation.workspaceFailure
+            ? <>Couldn’t prepare the task folders. {presentation.workspaceFailure.message}</>
+            : "Couldn’t finish this attempt. Your message is saved."}</span>
+        {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry}>Retry</Button>}
+      </div>
     </div>
   );
 }

@@ -10,6 +10,11 @@ export interface ExecutionContinuationEnvelope {
   };
   originCommentIds: string[];
   objective: string;
+  objectiveSource?: {
+    kind: "comment" | "description" | "title";
+    id: string;
+    revision: string | null;
+  };
   messages: Array<{
     id: string;
     authorType: string;
@@ -53,6 +58,9 @@ export interface ExecutionContinuationEnvelope {
     operationId: string;
     result: unknown;
   }>;
+  /** Verified snapshots attached separately to the new workspace. Paths are
+   * relative to the new working directory and include a provenance record. */
+  recoveredFiles?: Array<{ operationId: string; sourceRunId: string; path: string }>;
   unresolvedInteractionIds: string[];
   coverage: {
     kind: "full_task_history" | "task_history_delta";

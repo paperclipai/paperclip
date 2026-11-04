@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
 import test from "node:test";
 
 const runnerPackage = JSON.parse(
@@ -33,17 +36,8 @@ const claudePatch = await readFile(
   ),
   "utf8",
 );
-const qualifiedProfiles = await readFile(
-  new URL("../src/drivers/acpx/qualified-profiles.ts", import.meta.url),
-  "utf8",
-);
-const runnerdAcpxBackend = await readFile(
-  new URL(
-    "../runner/crates/runner-core/src/acpx_provider_backend.rs",
-    import.meta.url,
-  ),
-  "utf8",
-);
+const profiles = JSON.parse(await readFile(new URL("../acpx-profiles.json", import.meta.url), "utf8"));
+const runnerdProfiles = await readFile(new URL("../runner/crates/runner-core/src/generated_acpx_profiles.rs", import.meta.url), "utf8");
 const providerPackBuilder = await readFile(
   new URL("../scripts/build-provider-pack.mjs", import.meta.url),
   "utf8",
@@ -57,11 +51,15 @@ const nativeSessionExecutor = await readFile(
 );
 
 test("the runner pins every qualified ACPX production dependency", () => {
-  assert.equal(runnerPackage.dependencies["@openai/codex"], "0.156.0");
+  assert.equal(runnerPackage.dependencies["@openai/codex"], "0.160.0");
   assert.equal(runnerPackage.dependencies["@anthropic-ai/claude-agent-sdk"], undefined);
   assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/codex-acp@1.6.2>@openai/codex"], runnerPackage.dependencies["@openai/codex"]);
-  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk"], "0.3.280");
-  assert.equal(runnerPackage.optionalDependencies, undefined);
+  assert.equal(rootPackage.pnpm.overrides["@agentclientprotocol/claude-agent-acp@0.73.0>@anthropic-ai/claude-agent-sdk"], "0.3.286");
+  assert.deepEqual(runnerPackage.optionalDependencies, {
+    "@github/copilot-darwin-arm64": "1.0.88",
+    "@github/copilot-darwin-x64": "1.0.88",
+    "@github/copilot-linux-x64": "1.0.88",
+  });
   assert.equal(runnerPackage.dependencies.node, undefined);
   assert.equal(runnerPackage.dependencies.acpx, "0.13.1");
   assert.equal(
@@ -75,29 +73,16 @@ test("the runner pins every qualified ACPX production dependency", () => {
 });
 
 test("the patched Codex ACP executable digest stays aligned across launch boundaries", async () => {
-  const profileMatch =
-    /agent: "codex"[\s\S]*?commandDigest:\s*"(sha256:[a-f0-9]{64})"/.exec(
-      qualifiedProfiles,
-    );
-  assert.ok(profileMatch, "qualified Codex ACPX profile digest");
-  const digest = profileMatch[1];
+  const digest = profiles.profiles.codex.commandDigest;
   const packagePath = createRequire(import.meta.url).resolve("@agentclientprotocol/codex-acp/package.json");
   const installed = JSON.parse(await readFile(packagePath, "utf8"));
   const executable = await readFile(resolve(dirname(packagePath), installed.bin["codex-acp"]));
   assert.equal(digest, `sha256:${createHash("sha256").update(executable).digest("hex")}`,
     "the identity binds installed executable bytes, not the patch file");
 
-  assert.match(runnerdAcpxBackend, new RegExp(`"codex"[\\s\\S]*?${digest}`));
-  assert.match(
-    providerPackBuilder,
-    new RegExp(`acpxProfileDigests:[\\s\\S]*?codex:[\\s\\S]*?${digest}`),
-  );
-  assert.match(
-    nativeSessionExecutor,
-    new RegExp(
-      `REMOTE_PROVIDER_PACK_PROFILE_DIGESTS[\\s\\S]*?codex:[\\s\\S]*?${digest}`,
-    ),
-  );
+  assert.match(runnerdProfiles, new RegExp(`"codex"[\\s\\S]*?${digest}`));
+  assert.match(providerPackBuilder, /codex:\s*profiles\.profiles\.codex\.commandDigest/);
+  assert.match(nativeSessionExecutor, /codex:\s*QUALIFIED_ACPX_PROFILES\.codex\.commandDigest/);
 });
 
 test("the package exposes only the reviewed runner CLI binaries", () => {
@@ -105,6 +90,7 @@ test("the package exposes only the reviewed runner CLI binaries", () => {
     "paperclip-runner-eval-session": "./dist/cli/eval-session.js",
     "paperclip-runner-codex-proxy": "./dist/cli/codex-app-server-unix-proxy.js",
     "paperclip-runner-acpx-sidecar": "./dist/cli/acpx-runtime-sidecar.js",
+    "paperclip-runner-copilot-metadata-probe": "./dist/cli/copilot-metadata-probe.js",
     "paperclip-runner-opencode-proxy":
       "./dist/cli/opencode-app-server-proxy.js",
   });
@@ -142,7 +128,7 @@ test("old and new pnpm configuration both apply the exact runtime patches", () =
     providerPackBuilder,
     /copyFileSync\(process\.execPath, stableNodeCommand\)/,
   );
-  assert.match(codexPatch, /\+    "@openai\/codex": "0\.156\.0"/);
+  assert.match(codexPatch, /\+    "@openai\/codex": "0\.160\.0"/);
 });
 
 test("the ACPX patch preserves launch-only state and verified spawning", () => {
@@ -178,6 +164,28 @@ test("the ACPX patch fails closed on an invalid spawn environment", () => {
   );
 });
 
+test("authentication rejects invalid isolated environments without host fallback", () => {
+  const addedSource = acpxPatch.split("\n")
+    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+    .map((line) => line.slice(1)).join("\n");
+  const start = addedSource.indexOf("function isPlainStringEnvironment(value)");
+  const end = addedSource.indexOf("function buildAgentEnvironment(", start);
+  assert.ok(start >= 0 && end > start);
+  const hostEnvironment = { XAI_API_KEY: "host-credential-must-not-leak" };
+  const resolveEnvironment = new Function(
+    "process", `${addedSource.slice(start, end)}; return resolveAgentEnvironment;`,
+  )({ env: hostEnvironment });
+  for (const invalid of [undefined, null, [], "invalid", { XAI_API_KEY: 1 }]) {
+    assert.throws(() => resolveEnvironment(() => invalid), TypeError);
+  }
+  const isolated = {};
+  assert.equal(resolveEnvironment(() => isolated), isolated);
+  assert.equal(resolveEnvironment(() => isolated).XAI_API_KEY, undefined);
+  assert.equal(resolveEnvironment(undefined), hostEnvironment);
+  assert.match(addedSource, /readEnvCredential\(method\.id, resolveAgentEnvironment\(this\.options\.spawnEnvironment\)\)/);
+  assert.match(addedSource, /resolveAgentEnvironment\(this\.options\.spawnEnvironment\)\)\.XAI_API_KEY/);
+});
+
 test("the Codex patch enforces isolated instructions, tools, and skills", () => {
   for (const token of [
     "PAPERCLIP_ACPX_ISOLATED_CONTEXT",
@@ -211,4 +219,40 @@ test("the Claude patch removes ambient project and local configuration", () => {
       new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
     );
   }
+});
+
+test("Claude preserves user permission modes when its working directory is home", async (t) => {
+  const packagePath = createRequire(import.meta.url).resolve("@agentclientprotocol/claude-agent-acp/package.json");
+  const settingsModule = pathToFileURL(resolve(dirname(packagePath), "dist/settings.js")).href;
+  const root = await mkdtemp(join(tmpdir(), "claude-settings-origin-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  const project = join(root, "project");
+  await mkdir(join(home, ".claude"), { recursive: true });
+  await mkdir(join(project, ".claude"), { recursive: true });
+  const userFile = join(home, ".claude/settings.json");
+  const env = { ...process.env, HOME: home };
+  delete env.CLAUDE_CONFIG_DIR;
+  delete env.PAPERCLIP_ACPX_ISOLATED_CONTEXT;
+  const inspect = (cwd) => JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", `
+    import { SettingsManager } from ${JSON.stringify(settingsModule)};
+    const manager = new SettingsManager(${JSON.stringify(cwd)});
+    try {
+      await manager.initialize();
+      console.log(JSON.stringify(manager.getSettings()));
+    } finally { manager.dispose(); }
+  `], { env, encoding: "utf8", timeout: 10_000 }));
+  for (const defaultMode of ["bypassPermissions", "acceptEdits", "auto", "plan", "default"]) {
+    const content = JSON.stringify({ permissions: { defaultMode, deny: ["Read(./private)"] } });
+    await writeFile(userFile, content);
+    assert.deepEqual(inspect(home).permissions, { defaultMode, deny: ["Read(./private)"] });
+    assert.equal(await readFile(userFile, "utf8"), content, "discovery does not rewrite the profile");
+  }
+  await writeFile(userFile, JSON.stringify({ permissions: { defaultMode: "bypassPermissions" } }));
+  for (const defaultMode of ["bypassPermissions", "acceptEdits", "auto"]) {
+    await writeFile(join(project, ".claude/settings.json"), JSON.stringify({ permissions: { defaultMode } }));
+    assert.equal(inspect(project).permissions?.defaultMode, undefined, "real project escalation stays filtered");
+  }
+  await writeFile(join(home, ".claude/settings.local.json"), JSON.stringify({ permissions: { defaultMode: "plan" } }));
+  assert.equal(inspect(home).permissions.defaultMode, "plan", "local restrictions still win");
 });

@@ -24,6 +24,7 @@ function readErrorMessage(error: unknown): string {
 export const RETRY_NOW_OUTCOME_HEADLINE: Record<IssueRetryNowOutcome, string> = {
   promoted: "Retry promoted",
   already_promoted: "Retry already running",
+  waiting: "Retry waiting",
   no_scheduled_retry: "No scheduled retry",
   gate_suppressed: "Couldn't retry now",
 };

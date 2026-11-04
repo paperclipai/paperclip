@@ -17,6 +17,7 @@ function readNonEmptyString(value: unknown): string | null {
 
 export const MAX_TURN_CONTINUATION_RETRY_REASON = "max_turns_continuation";
 export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
+export const AI_CONNECTION_POOL_WAIT_RETRY_REASON = "ai_connection_pool_wait";
 export const AI_CONNECTION_BUSY_RETRY_REASON = "ai_connection_busy";
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
@@ -41,7 +42,7 @@ export function isNonAssigneeWorkspaceBusyRetry(
   return (
     (retryReason === WORKSPACE_BUSY_RETRY_REASON &&
       contextSnapshot.workspaceBusyDeferredWhileAssignee === false) ||
-    (retryReason === AI_CONNECTION_BUSY_RETRY_REASON &&
+    ((retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) &&
       contextSnapshot.aiConnectionBusyDeferredWhileAssignee === false)
   );
 }
@@ -75,6 +76,25 @@ export function deriveCommentId(
 }
 
 /**
+ * The external chat conversation a wake answers. Several conversations can
+ * share one issue (for example GitHub review finding threads), but a reviewed
+ * chat run can attest only one, so wakes for different conversations must
+ * never share a batch.
+ */
+export const CHAT_CONVERSATION_ID_KEY = "chatConversationId";
+
+export function readWakeChatConversationId(contextSnapshot: unknown): string | null {
+  return readNonEmptyString(parseObject(contextSnapshot)[CHAT_CONVERSATION_ID_KEY]);
+}
+
+/** True when both wakes answer a chat conversation and they are different ones. */
+export function wakeChatConversationsConflict(existing: unknown, incoming: unknown): boolean {
+  const existingId = readWakeChatConversationId(existing);
+  const incomingId = readWakeChatConversationId(incoming);
+  return existingId !== null && incomingId !== null && existingId !== incomingId;
+}
+
+/**
  * `allowedWakeReasons` is the issue-tree-control module's own set of wake
  * reasons that excuse an interaction wake. This file stays free of service
  * imports, so the caller passes the set in rather than this function reading
@@ -94,7 +114,10 @@ export function isResolvedInteractionContinuationWakeContext(contextSnapshot: un
   const interactionId = readNonEmptyString(context.interactionId);
   const interactionStatus = readNonEmptyString(context.interactionStatus);
   if (!interactionId || !interactionStatus) return false;
-  if (!RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus)) return false;
+  const retiredConnection = interactionStatus === "expired"
+    && context.interactionKind === "connection_intent"
+    && context.connectionIntentResolution === "existing_connection";
+  if (!retiredConnection && !RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus)) return false;
 
   const mutation = readNonEmptyString(context.mutation);
   const wakeReason = readNonEmptyString(context.wakeReason);

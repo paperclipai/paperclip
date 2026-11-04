@@ -64,3 +64,19 @@ index 0214a509eb5e7b777a69e4e34637941c275d27b1..403be02df66e25eee29e7d5bef146270
              // Forward MCP elicitation requests onto ACP elicitation. Only attached
              // when the client advertised support, so non-supporting clients keep the
              // SDK's default (auto-decline) behavior. (AskUserQuestion is handled in
+diff --git a/dist/settings.js b/dist/settings.js
+--- a/dist/settings.js
++++ b/dist/settings.js
+@@ -88,6 +88,12 @@
+     async loadAllSettings() {
+         try {
+             const resolved = await resolveSettings({ cwd: this.cwd });
++            const userPath = resolved.sources.find((entry) => entry.source === "user")?.path;
++            for (const entry of resolved.sources) {
++                if (userPath && entry.source === "project" && entry.path === userPath) {
++                    entry.source = "user";
++                }
++            }
+             this.effective = filterEscalatingDefaultMode(resolved);
+         }
+         catch (error) {

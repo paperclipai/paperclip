@@ -1,7 +1,7 @@
 import type { IssueAttachment, IssueDocument } from "./issue.js";
 import type { IssueWorkProduct } from "./work-product.js";
 
-export type CompanySkillSourceType = "local_path" | "github" | "url" | "catalog" | "skills_sh";
+export type CompanySkillSourceType = "managed" | "local_path" | "github" | "url" | "catalog" | "skills_sh";
 
 export type CompanySkillTrustLevel = "markdown_only" | "assets" | "scripts_executables";
 
@@ -29,6 +29,8 @@ export interface CompanySkillFileInventoryEntry {
 
 export interface CompanySkillVersionFileInventoryEntry extends CompanySkillFileInventoryEntry {
   content: string;
+  encoding?: "utf8" | "base64";
+  executable?: boolean;
 }
 
 export interface CompanySkill {
@@ -53,6 +55,7 @@ export interface CompanySkill {
   authorName: string | null;
   homepageUrl: string | null;
   categories: string[];
+  accessSourceId?: string | null;
   sharingScope: CompanySkillSharingScope;
   publicShareToken: string | null;
   forkedFromSkillId: string | null;
@@ -87,6 +90,7 @@ export interface CompanySkillListItem {
   authorName: string | null;
   homepageUrl: string | null;
   categories: string[];
+  accessSourceId?: string | null;
   sharingScope: CompanySkillSharingScope;
   publicShareToken: string | null;
   forkedFromSkillId: string | null;
@@ -134,7 +138,7 @@ export interface CompanySkillDetail extends CompanySkill {
   sourceLabel: string | null;
   sourceBadge: CompanySkillSourceBadge;
   sourcePath: string | null;
-  currentVersion: CompanySkillVersion | null;
+  currentVersion: CompanySkillVersionSummary | null;
   starredByCurrentActor: boolean;
 }
 
@@ -154,6 +158,8 @@ export interface CompanySkillCategoryCount {
 }
 
 export interface CompanySkillVersion {
+  repositorySnapshotId?: string | null;
+  repositorySkillPath?: string | null;
   id: string;
   companyId: string;
   companySkillId: string;
@@ -168,7 +174,14 @@ export interface CompanySkillVersion {
   createdAt: Date;
 }
 
+/** Version listings carry file names/kinds; fetch one version to read its bytes. */
+export type CompanySkillVersionSummary = Omit<CompanySkillVersion, "fileInventory"> & {
+  fileInventory: CompanySkillFileInventoryEntry[];
+};
+
 export interface CompanySkillVersionCreateRequest {
+  sourceVersionId?: string;
+  expectedVersionId?: string | null;
   label?: string | null;
 }
 
@@ -248,6 +261,7 @@ export interface CompanySkillForkPrecheckResult {
 }
 
 export interface CompanySkillRenameRequest {
+  expectedVersionId?: string | null;
   name: string;
   slug?: string | null;
 }
@@ -317,10 +331,12 @@ export interface CompanySkillAuditResult {
 
 export interface CompanySkillInstallUpdateRequest {
   force?: boolean;
+  expectedVersionId?: string | null;
 }
 
 export interface CompanySkillResetRequest {
   force?: boolean;
+  expectedVersionId?: string | null;
 }
 
 export interface CompanySkillImportRequest {
@@ -436,6 +452,9 @@ export interface CompanySkillCreateRequest {
 }
 
 export interface CompanySkillFileDetail {
+  versionId?: string | null;
+  encoding?: "utf8" | "base64";
+  executable?: boolean;
   skillId: string;
   path: string;
   kind: CompanySkillFileInventoryEntry["kind"];
@@ -446,16 +465,22 @@ export interface CompanySkillFileDetail {
 }
 
 export interface CompanySkillFileUpdateRequest {
+  expectedVersionId?: string | null;
+  idempotencyKey?: string;
+  encoding?: "utf8" | "base64";
+  executable?: boolean;
   path: string;
   content: string;
 }
 
 export interface CompanySkillFileDeleteRequest {
+  expectedVersionId?: string | null;
   path: string;
   target: "file" | "folder";
 }
 
 export interface CompanySkillFileDeleteResult {
+  versionId?: string | null;
   skillId: string;
   path: string;
   target: "file" | "folder";
@@ -598,7 +623,7 @@ export interface CompanySkillTestRunHarnessContent {
 }
 
 export interface CompanySkillTestRunDetail extends CompanySkillTestRun {
-  skillVersion: CompanySkillVersion;
+  skillVersion: CompanySkillVersionSummary;
   outputBody: string;
   harnessContent: CompanySkillTestRunHarnessContent;
   harnessIssue: {

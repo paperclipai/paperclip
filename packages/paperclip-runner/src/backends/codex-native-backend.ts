@@ -1,13 +1,20 @@
+import { describeRunnerdMuseDriver } from "../drivers/muse/runnerd-muse-driver.js";
 import { createCodexTaskEnvelope } from "../contracts/codex.js";
+import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
+import { NATIVE_EXECUTION_INPUT_SCHEMA, NATIVE_EXECUTION_INPUT_SCHEMA_V7, NATIVE_EXECUTION_INPUT_SCHEMA_V9, NATIVE_EXECUTION_INPUT_SCHEMA_V10 } from "../contracts/native-execution.js";
 import type { NativeExecutionInput } from "../contracts/native-execution.js";
 import type { PersistedHarnessSession } from "../contracts/harness-driver.js";
 import type {
   NativeSessionBackend,
+  NativeSessionBackendDescriptor,
   PersistedNativeSession,
 } from "../contracts/native-session-backend.js";
 import type { CodexAppServerTransport } from "../drivers/codex/app-server-transport.js";
 import { CodexAppServerDriver } from "../drivers/codex/codex-app-server-driver.js";
+import { CURSOR_CLOUD_TERMINAL_DRAIN_TIMEOUT_MS } from "../contracts/cursor-cloud.js";
+import { cursorCloudDriverDescriptor } from "../drivers/cursor-cloud/cursor-cloud-driver.js";
 import type { CodexWorkingDirectoryAuthority } from "../drivers/codex/codex-boundaries.js";
+import { describeRunnerdExternalBotDriver } from "../drivers/dot/runnerd-dot-driver.js";
 import { HarnessDriverBackend } from "./harness-driver-backend.js";
 import {
   nativeSystemInstructions,
@@ -16,8 +23,11 @@ import {
 } from "./runtime-context.js";
 
 export interface CodexNativeSessionBackendOptions {
+  /** Admitted instructions from a validated same-run checkpoint, supplied by the recovery owner. */
+  retainedSystemInstructions?: string;
   /** Effective provider environment, including the assigned workspace boundary. */
   environment?: NodeJS.ProcessEnv;
+  observability?: import("../drivers/agent-observability.js").ProviderObservabilityLaunch;
   /** Filesystem that authoritatively admits the workspace path. */
   workingDirectoryAuthority?: CodexWorkingDirectoryAuthority;
   runnerInstanceId?: string;
@@ -27,6 +37,7 @@ export interface CodexNativeSessionBackendOptions {
     startedAt: string;
   }) => Promise<void>;
   transportFactory?: (context?: {
+    baseInstructions?: string;
     providerRecoveryPolicy?: PersistedNativeSession["providerRecoveryPolicy"];
     persistedSession?: Pick<
       PersistedHarnessSession,
@@ -50,6 +61,7 @@ export interface CodexNativeSessionBackendOptions {
 
 function transportDriverIdentity(input: NativeExecutionInput): {
   kind:
+    | "cursor_cloud_api"
     | "codex_app_server"
     | "opencode_server"
     | "claude_managed_agents_api"
@@ -59,6 +71,8 @@ function transportDriverIdentity(input: NativeExecutionInput): {
   version: string;
 } {
   switch (input.provider.kind) {
+    case "cursor_cloud":
+      return { kind: "cursor_cloud_api", displayName: "Cursor Cloud (experimental)", version: "cursor-cloud-v1" };
     case "codex":
       return {
         kind: "codex_app_server",
@@ -69,7 +83,7 @@ function transportDriverIdentity(input: NativeExecutionInput): {
       return {
         kind: "opencode_server",
         displayName: "OpenCode server",
-        version: "1.18.32",
+        version: "1.18.34",
       };
     case "claude_managed":
       return {
@@ -84,14 +98,9 @@ function transportDriverIdentity(input: NativeExecutionInput): {
         version: input.provider.agentCoreProfile.qualificationRevision,
       };
     case "acpx":
-      if (input.provider.agent === "pi") {
-        throw new Error(
-          "Native ACPX backend for pi is unavailable until descriptor-confined verified launch is implemented",
-        );
-      }
       return {
         kind: "acpx_runtime",
-        displayName: `${input.provider.agent === "claude" ? "Claude" : "Codex"} via ACPX`,
+        displayName: `${ACPX_CAPABILITY_PROFILES[input.provider.agent].displayName} via ACPX`,
         version: "0.13.1",
       };
     default:
@@ -106,7 +115,8 @@ function createTransportBackedNativeSessionBackend(
   options: CodexNativeSessionBackendOptions,
 ): NativeSessionBackend {
   if (
-    options.workingDirectoryAuthority === "remote_runner" &&
+    (options.workingDirectoryAuthority === "remote_runner" ||
+      options.workingDirectoryAuthority === "runner_prepared_launch") &&
     !options.transportFactory
   ) {
     throw new Error(
@@ -115,6 +125,9 @@ function createTransportBackedNativeSessionBackend(
   }
   const driverIdentity = transportDriverIdentity(input);
   const isCodex = input.provider.kind === "codex";
+  const preparedContext = input.schema === NATIVE_EXECUTION_INPUT_SCHEMA
+    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V7
+    || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V9 || input.schema === NATIVE_EXECUTION_INPUT_SCHEMA_V10;
   const supportsCollaborativePlanning =
     isCodex ||
     input.provider.kind === "opencode" ||
@@ -129,16 +142,38 @@ function createTransportBackedNativeSessionBackend(
     );
   }
 
-  return new HarnessDriverBackend(
+  const constraints = [
+    ...(supportsCollaborativePlanning &&
+    "executionMode" in input &&
+    input.executionMode === "plan"
+      ? [
+          "Use native plan collaboration mode and do not modify workspace files.",
+          "Treat the supplied Paperclip planning context as the canonical pinned base revision.",
+          "Complete one structured provider plan item; Paperclip will synchronize it after completion.",
+          "Keep the final response to a short synchronization summary instead of repeating the full plan.",
+        ]
+      : []),
+    ...nativeTaskConstraints(input),
+  ];
+
+  const baseInstructions = options.retainedSystemInstructions ?? nativeSystemInstructions(input);
+  const transportFactory = options.transportFactory;
+  const backend = new HarnessDriverBackend(
     new CodexAppServerDriver({
       ...(input.provider.model ? { model: input.provider.model } : {}),
+      ...(input.provider.kind === "codex" && "webSearch" in input.provider && input.provider.webSearch === "disabled"
+        ? { disableWebSearch: true } : {}),
+      ...(input.provider.kind === "codex" && "reasoningEffort" in input.provider && input.provider.reasoningEffort
+        ? { reasoningEffort: input.provider.reasoningEffort }
+        : {}),
       // Runnerd owns provider permissions for non-Codex facades. Their
       // Codex-compatible surface must never open a second approval channel.
       approvalPolicy:
         input.provider.kind === "codex"
           ? (input.provider.approvalPolicy ?? "never")
           : "never",
-      baseInstructions: nativeSystemInstructions(input),
+      baseInstructions,
+      instructionWorkingCopyRoot: "runtimeContext" in input ? input.runtimeContext.instructions.workingCopy?.rootPath : undefined,
       includeSkillInstructions: isCodex && "runtimeContext" in input,
       skillInputs: isCodex
         ? nativeTaskSkillInputs(
@@ -154,41 +189,64 @@ function createTransportBackedNativeSessionBackend(
         objective: input.completionContract.contract.objective,
         contractRevision: input.completionContract.contract.revision,
         criteria: input.completionContract.contract.criteria,
-        constraints: [
-          "Work only inside the supplied working directory.",
-          ...(supportsCollaborativePlanning &&
-          "executionMode" in input &&
-          input.executionMode === "plan"
-            ? [
-                "Use native plan collaboration mode and do not modify workspace files.",
-                "Treat the supplied Paperclip planning context as the canonical pinned base revision.",
-                "Complete one structured provider plan item; Paperclip will synchronize it after completion.",
-                "Keep the final response to a short synchronization summary instead of repeating the full plan.",
-              ]
-            : []),
-          ...nativeTaskConstraints(input),
-          "Return one semantic completion result.",
-        ],
+        constraints,
       }),
+      conversationMode: preparedContext ? "prepared" : "task",
       runnerInstanceId:
         options.runnerInstanceId ?? `paperclip-native-${input.binding.runId}`,
       onSpawn: options.onSpawn,
-      transportFactory: options.transportFactory,
+      transportFactory: transportFactory
+        ? (context) => transportFactory({ ...context, baseInstructions })
+        : undefined,
       dynamicTools: options.dynamicTools,
       dynamicToolHandler: options.dynamicToolHandler,
       completionFeedback: options.completionFeedback,
       environment: options.environment,
+      observability: options.observability,
       workingDirectoryAuthority: options.workingDirectoryAuthority,
       driverIdentity,
       capabilities: isCodex
         ? {}
-        : { steering: false, goals: false, threadLineage: false },
+        : { steering: false, goals: false, threadLineage: false,
+            ...(input.provider.kind === "cursor_cloud" ? { runtimeRequestResolution: false } : {}),
+            toolRefreshOnResume: input.provider.kind !== "acpx"
+              || ACPX_CAPABILITY_PROFILES[input.provider.agent].toolRefreshOnResume === true },
       collaborationModes: supportsCollaborativePlanning
         ? ["default", "plan"]
         : ["default"],
       requireProviderSessionIdentity: options.transportFactory !== undefined,
     }),
+    preparedContext ? constraints : undefined,
+    input.provider.kind === "cursor_cloud" ? CURSOR_CLOUD_TERMINAL_DRAIN_TIMEOUT_MS : undefined,
   );
+  if (input.provider.kind === "cursor_cloud") {
+    backend.descriptor = async () => {
+      const descriptor = cursorCloudDriverDescriptor();
+      return { kind: "runner", name: descriptor.kind, version: descriptor.version,
+        capabilities: structuredClone(descriptor.capabilities),
+        runtimeContextCapabilities: structuredClone(descriptor.runtimeContextCapabilities) };
+    };
+  }
+  return backend;
+}
+
+/** Inspect the selected runnerd harness without starting a provider process. */
+export function describeRunnerdNativeSessionBackend(
+  input: NativeExecutionInput,
+): Promise<NativeSessionBackendDescriptor> {
+  if (input.schema === "paperclip.native-execution-input.v6" || input.schema === "paperclip.native-execution-input.v8") {
+    // External bots use the shared Rust bridge and retain their provider identity.
+    const descriptor = input.schema === "paperclip.native-execution-input.v8"
+      ? describeRunnerdMuseDriver() : describeRunnerdExternalBotDriver(input.provider.kind);
+    return Promise.resolve({
+      kind: "runner",
+      name: descriptor.kind,
+      version: descriptor.version,
+      capabilities: descriptor.capabilities,
+      runtimeContextCapabilities: descriptor.runtimeContextCapabilities,
+    });
+  }
+  return createTransportBackedNativeSessionBackend(input, {}).descriptor();
 }
 
 /**

@@ -129,7 +129,6 @@
         "serverUrl": "https://calendarmcp.googleapis.com/mcp/v1",
         "scopesHint": [
           "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-          "https://www.googleapis.com/auth/calendar.events.freebusy",
           "https://www.googleapis.com/auth/calendar.events"
         ]
       },
@@ -165,7 +164,6 @@
         "metadataUrl": "https://accounts.google.com/.well-known/openid-configuration",
         "scopesHint": [
           "https://www.googleapis.com/auth/calendar.calendarlist.readonly",
-          "https://www.googleapis.com/auth/calendar.events.freebusy",
           "https://www.googleapis.com/auth/calendar.events"
         ],
         "oauthAuthorizationParams": {

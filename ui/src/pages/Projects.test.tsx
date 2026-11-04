@@ -219,6 +219,21 @@ describe("Projects", () => {
     expect(content).toContain("in progress");
   });
 
+  it("searches projects and clears back to the grouped list", async () => {
+    await renderProjects();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Search projects"]')!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "charlie");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(container.textContent).toContain("Charlie");
+    expect(container.textContent).not.toContain("Alpha");
+    expect(container.textContent).not.toContain("Bravo");
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Clear search"]')!.click());
+    expect(container.textContent).toContain("Alpha");
+    expect(container.textContent).toContain("Bravo");
+  });
+
   it("sorts grouped projects by the selected field", async () => {
     await renderProjects();
     await openSortMenu();

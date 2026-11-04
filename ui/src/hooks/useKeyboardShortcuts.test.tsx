@@ -18,7 +18,6 @@ function TestHarness({
   onGoToInbox?: () => void;
 }) {
   useKeyboardShortcuts({
-    enabled: true,
     onNewIssue,
     onSearch,
     onGoToInbox,
@@ -104,6 +103,34 @@ describe("useKeyboardShortcuts", () => {
     }));
 
     expect(onSearch).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("ignores bare shortcuts while a modal dialog is open", () => {
+    const root = createRoot(container);
+    const onNewIssue = vi.fn();
+    const onSearch = vi.fn();
+    const dialog = document.createElement("div");
+    dialog.setAttribute("role", "dialog");
+    dialog.setAttribute("aria-modal", "true");
+    document.body.appendChild(dialog);
+
+    act(() => {
+      root.render(<TestHarness onNewIssue={onNewIssue} onSearch={onSearch} />);
+    });
+
+    for (const key of ["c", "/"]) {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+    }
+    expect(onNewIssue).not.toHaveBeenCalled();
+    expect(onSearch).not.toHaveBeenCalled();
+
+    dialog.remove();
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "c", bubbles: true, cancelable: true }));
+    expect(onNewIssue).toHaveBeenCalledTimes(1);
 
     act(() => {
       root.unmount();

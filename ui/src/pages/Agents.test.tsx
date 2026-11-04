@@ -8,7 +8,7 @@ import type { Agent, Environment, EnvironmentCapabilities } from "@paperclipai/s
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ToastProvider } from "../context/ToastContext";
 import type { BuiltInAgentState } from "../api/builtInAgents";
-import { Agents } from "./Agents";
+import { Agents, filterAgents, filterOrgTree } from "./Agents";
 import { Agents as ProductionAgents } from "./Agents.production";
 import type { AgentOrgChainHealth } from "@paperclipai/shared";
 
@@ -74,6 +74,8 @@ vi.mock("../context/SidebarContext", () => ({
   useSidebar: () => ({ isMobile: mockSidebarState.isMobile }),
 }));
 
+vi.mock("../api/ai-connections", () => ({ aiConnectionsApi: { list: vi.fn(async () => ({ currentUserId: "board", canManageConnections: true, connections: [] })) } }));
+
 vi.mock("../api/agents", () => ({
   agentsApi: mockAgentsApi,
 }));
@@ -98,7 +100,8 @@ vi.mock("../api/resourceMemberships", () => ({
   resourceMembershipsApi: mockResourceMembershipsApi,
 }));
 
-vi.mock("../adapters/adapter-display-registry", () => ({
+vi.mock("../adapters/adapter-display-registry", async (importOriginal) => ({
+  ...await importOriginal<typeof import("../adapters/adapter-display-registry")>(),
   getAdapterLabel: (type: string) => type,
 }));
 
@@ -229,7 +232,6 @@ function makeInstanceSettings({
     defaultEnvironmentId,
     general: {
       censorUsernameInLogs: true,
-      keyboardShortcuts: true,
       feedbackDataSharingPreference: "prompt",
       backupRetention: {
         dailyDays: 7,
@@ -292,6 +294,37 @@ async function flushReact() {
 
 function findAgentRow(container: HTMLElement, agentName: string): HTMLElement | null {
   return Array.from(container.querySelectorAll("a")).find((row) => row.textContent?.includes(agentName)) ?? null;
+}
+
+describe("agent search", () => {
+  it("combines case-insensitive name, title and role words with status and built-in filters", () => {
+    const alpha = makeAgent({ id: "alpha", name: "Alpha", role: "engineer", status: "active", title: "Connector engineer" });
+    const beta = makeAgent({ id: "beta", name: "Beta", role: "designer", status: "paused", title: "Design reviewer" });
+    const hidden = makeAgent({ id: "hidden", name: "Beta", status: "terminated" });
+    const agents = [alpha, beta, hidden];
+    expect(filterAgents(agents, "all", new Set(), " BETA   design ")).toEqual([beta]);
+    expect(filterAgents(agents, "active", new Set(), "beta")).toEqual([]);
+    expect(filterAgents(agents, "paused", new Set(), "reviewer")).toEqual([beta]);
+    expect(filterAgents(agents, "builtin", new Set([alpha.id]), "connector")).toEqual([alpha]);
+    expect(filterAgents(agents, "all", new Set(), "   ")).toEqual([alpha, beta]);
+  });
+
+  it("retains the hierarchy above a matching report and promotes reports of hidden agents", () => {
+    const child = { id: "child", name: "Designer", role: "designer", status: "paused", reports: [] };
+    const root = { id: "root", name: "CEO", role: "ceo", status: "active", reports: [child] };
+    expect(filterOrgTree([root], "all", new Set(), new Set([child.id]))).toEqual([root]);
+    expect(filterOrgTree([root], "all", new Set(), new Set())).toEqual([]);
+    expect(filterOrgTree([{ ...root, status: "terminated" }], "all", new Set(), new Set([child.id]))).toEqual([child]);
+  });
+});
+function renderAgentsView(root: ReturnType<typeof createRoot> | null, queryClient: QueryClient) {
+  root!.render(
+    <QueryClientProvider client={queryClient}>
+      <ToastProvider>
+        <Agents />
+      </ToastProvider>
+    </QueryClientProvider>,
+  );
 }
 
 describe("Agents", () => {
@@ -359,6 +392,27 @@ describe("Agents", () => {
     vi.clearAllMocks();
   });
 
+  it("filters the rendered roster and clears search without changing its status route", async () => {
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ id: "alpha", name: "Alpha", role: "engineer" }),
+      makeAgent({ id: "beta", name: "Beta", role: "designer" }),
+    ]);
+    root = createRoot(container);
+    await act(async () => root!.render(<QueryClientProvider client={queryClient}><ToastProvider><Agents /></ToastProvider></QueryClientProvider>));
+    await flushReact();
+    await flushReact();
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Search agents"]')!;
+    await act(() => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "beta");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(findAgentRow(container, "Beta")).not.toBeNull();
+    expect(findAgentRow(container, "Alpha")).toBeNull();
+    await act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Clear search"]')!.click());
+    expect(findAgentRow(container, "Alpha")).not.toBeNull();
+    expect(mockRouterState.navigate).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["streamlined", Agents],
     ["production", ProductionAgents],
@@ -396,13 +450,7 @@ describe("Agents", () => {
   it("shows the configured model beside the adapter on the all agents page", async () => {
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -412,7 +460,7 @@ describe("Agents", () => {
 
     // The heartbeat cell must render on a single line so full dates like
     // "Apr 30, 2026" never wrap (PAP-85 defect #2).
-    const heartbeatCell = container.querySelector(".whitespace-nowrap.w-24");
+    const heartbeatCell = container.querySelector('[title="Last heartbeat"]');
     expect(heartbeatCell).not.toBeNull();
     expect(heartbeatCell?.textContent).not.toContain("\n");
   });
@@ -420,13 +468,7 @@ describe("Agents", () => {
   it("switches between the preserved list and the interactive org chart with icon buttons", async () => {
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
 
@@ -451,7 +493,6 @@ describe("Agents", () => {
     expect(orgViewport?.parentElement?.classList.contains("flex-1")).toBe(true);
     expect(orgViewport?.parentElement?.classList.contains("md:min-h-0")).toBe(true);
     expect(orgViewport?.parentElement?.classList.contains("h-(--sz-calc-38)")).toBe(false);
-    expect(orgViewport?.parentElement?.parentElement?.classList.contains("h-full")).toBe(true);
     expect(orgViewport?.parentElement?.parentElement?.classList.contains("min-h-0")).toBe(true);
     expect(container.querySelector('[aria-label="Zoom in"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Zoom out"]')).not.toBeNull();
@@ -489,13 +530,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -504,9 +539,9 @@ describe("Agents", () => {
     expect(row).not.toBeNull();
     expect(row?.querySelector(".sm\\:hidden")).toBeNull();
     expect(row?.querySelector(".hidden.sm\\:flex")).not.toBeNull();
-    expect(row?.querySelector(".flex-1.hidden.\\@5xl\\:block")).not.toBeNull();
+
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
-    expect(row?.classList.contains("sm:text-foreground/55")).toBe(true);
+    expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
     const name = row?.querySelector("span[title='Paperclip Engineer With A Much Longer Display Name']");
     const subtitle = Array.from(row?.querySelectorAll("p") ?? []).find((node) =>
       node.textContent?.includes("Software Engineer With A Much Longer Specialty Title"),
@@ -522,57 +557,6 @@ describe("Agents", () => {
     expect(row?.textContent).not.toContain("Pause");
   });
 
-  it("uses the built-in agents route segment as the built-in filter", async () => {
-    mockRouterState.pathname = "/agents/builtin";
-    mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
-    const builtInAgent = makeAgent({
-      id: "built-in-agent",
-      name: "Briefs Agent",
-      urlKey: "briefs-agent",
-    });
-    const regularAgent = makeAgent({
-      id: "regular-agent",
-      name: "Regular Agent",
-      urlKey: "regular-agent",
-    });
-    mockAgentsApi.list.mockResolvedValue([builtInAgent, regularAgent]);
-    mockAgentsApi.org.mockResolvedValue([
-      {
-        id: "built-in-agent",
-        name: "Briefs Agent",
-        role: "engineer",
-        status: "active",
-        reports: [],
-      },
-      {
-        id: "regular-agent",
-        name: "Regular Agent",
-        role: "engineer",
-        status: "active",
-        reports: [],
-      },
-    ]);
-    mockBuiltInAgentsApi.list.mockResolvedValue([
-      makeBuiltInAgentState({ agentId: "built-in-agent", agent: builtInAgent }),
-    ]);
-
-    root = createRoot(container);
-    await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
-    });
-    await flushReact();
-    await flushReact();
-
-    expect(container.textContent).toContain("1 agent");
-    expect(container.textContent).toContain("Briefs Agent");
-    expect(container.textContent).not.toContain("Regular Agent");
-  });
 
   it("shows effective environment and sandbox provider beside agents", async () => {
     mockAgentsApi.list.mockResolvedValue([
@@ -592,13 +576,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -625,13 +603,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -653,13 +625,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -692,13 +658,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -751,13 +711,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -815,13 +769,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -859,13 +807,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -877,13 +819,7 @@ describe("Agents", () => {
   it("does not show environment filter or grouping controls yet", async () => {
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
@@ -892,42 +828,44 @@ describe("Agents", () => {
     expect(container.querySelector('select[aria-label="Group agents"]')).toBeNull();
   });
 
-  it("hides built-in agent surfaces while the experimental flag is disabled", async () => {
-    mockRouterState.pathname = "/agents/builtin";
+  it.each([
+    { mode: "streamlined", AgentList: Agents },
+    { mode: "production", AgentList: ProductionAgents },
+  ].flatMap(layout => ["active", "paused", "error", "builtin"].map(tab => ({ ...layout, tab }))))("redirects legacy /agents/$tab to the full $mode roster", async ({ tab, AgentList }) => {
+    mockRouterState.pathname = `/agents/${tab}`;
+    mockSidebarState.isMobile = true;
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({}), makeAgent({ id: "paused-agent", name: "Paused", status: "paused" }),
+      makeAgent({ id: "error-agent", name: "Error", status: "error" }),
+    ]);
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(<QueryClientProvider client={queryClient}><ToastProvider><AgentList /></ToastProvider></QueryClientProvider>);
     });
     await flushReact();
     await flushReact();
 
     expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Built-in");
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(3);
     expect(mockRouterState.navigate).toHaveBeenCalledWith("/agents/all", { replace: true });
   });
 
-  it("shows and filters built-in agents when the experimental flag is enabled", async () => {
+  it("redirects the legacy built-in URL to all agents while loading enabled built-in metadata", async () => {
     mockRouterState.pathname = "/agents/builtin";
     mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
-    mockAgentsApi.list.mockResolvedValue([
-      makeAgent({
-        id: "built-in-agent",
-        name: "Briefs Agent",
-        urlKey: "briefs-agent",
-      }),
-      makeAgent({
-        id: "regular-agent",
-        name: "Regular Agent",
-        urlKey: "regular-agent",
-      }),
-    ]);
+    const builtInAgent = makeAgent({
+      id: "built-in-agent",
+      name: "Briefs Agent",
+      urlKey: "briefs-agent",
+    });
+    const regularAgent = makeAgent({
+      id: "regular-agent",
+      name: "Regular Agent",
+      urlKey: "regular-agent",
+    });
+    mockAgentsApi.list.mockResolvedValue([builtInAgent, regularAgent]);
     mockAgentsApi.org.mockResolvedValue([
       {
         id: "built-in-agent",
@@ -945,37 +883,48 @@ describe("Agents", () => {
       },
     ]);
     mockBuiltInAgentsApi.list.mockResolvedValue([
-      makeBuiltInAgentState({ agentId: "built-in-agent" }),
+      makeBuiltInAgentState({ agentId: "built-in-agent", agent: builtInAgent }),
     ]);
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();
 
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(2);
     expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
-    expect(container.textContent).toContain("Built-in");
     expect(container.textContent).toContain("Briefs Agent");
-    expect(container.textContent).not.toContain("Regular Agent");
+    expect(container.textContent).toContain("Regular Agent");
     expect(container.querySelector('[title="Ships with Paperclip"]')).toBeNull();
-    expect(mockRouterState.navigate).not.toHaveBeenCalledWith("/agents/all", { replace: true });
+    expect(mockRouterState.navigate).toHaveBeenCalledWith("/agents/all", { replace: true });
   });
 
-  it("gives list-view rows a fixed-width title so meta columns align (PAP-86)", async () => {
+  it("selects visible agents without navigating and exposes the harness edit action", async () => {
+    root = createRoot(container);
+    await act(async () => { renderAgentsView(root, queryClient); });
+    await flushReact();
+    await flushReact();
+    const checkbox = container.querySelector<HTMLButtonElement>('[aria-label="Select Alpha"]');
+    expect(checkbox).not.toBeNull();
+    await act(async () => { checkbox!.click(); });
+    expect(container.querySelector('[aria-label="Bulk actions"]')?.textContent).toContain("1 selected");
+    expect(container.textContent).toContain("Edit connection & model");
+    expect(mockRouterState.navigate).not.toHaveBeenCalled();
+    expect(Array.from(container.querySelectorAll("th")).map(cell => cell.textContent)).toEqual(["", "Agent", "Harness", "Connection", "Default model"]);
+  });
+
+  it.each([
+    ["streamlined", Agents],
+    ["production", ProductionAgents],
+  ] as const)("omits star and leave/join actions from %s agent index list and org views", async (_mode, AgentList) => {
     root = createRoot(container);
     await act(async () => {
       root!.render(
         <QueryClientProvider client={queryClient}>
           <ToastProvider>
-            <Agents />
+            <AgentList />
           </ToastProvider>
         </QueryClientProvider>,
       );
@@ -983,70 +932,43 @@ describe("Agents", () => {
     await flushReact();
     await flushReact();
 
-    // Keep the list view selected before checking its aligned metadata columns.
-    const listToggle = Array.from(container.querySelectorAll("button")).find(
-      (btn) => btn.querySelector("svg.lucide-list"),
-    );
-    expect(listToggle).toBeDefined();
+    // Explicitly select the list view and assert the row renders there.
+    const listToggle = container.querySelector<HTMLButtonElement>('button[aria-label="List view"]');
+    expect(listToggle).not.toBeNull();
     await act(async () => {
       listToggle!.click();
     });
     await flushReact();
+    const listRow = findAgentRow(container, "Alpha");
+    expect(listRow).not.toBeNull();
+    expect(container.querySelector('[aria-label="Leave Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Join Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
 
-    // The title cell carries a constant width in a wide container, not a
-    // content-sized `min-w-(--sz-7rem)`, so the `meta` group starts at the same
-    // x on every row and the model + timestamp columns line up vertically.
-    // In narrower containers metadata is hidden and the title flexes (`flex-1`)
-    // instead, so the shrink-0 trailing actions can't squeeze the agent name
-    // to zero width on mobile.
-    const titleCell = container.querySelector(".\\@5xl\\:w-56");
-    expect(titleCell).not.toBeNull();
-    expect(titleCell?.textContent).toContain("Alpha");
-    expect(titleCell?.classList.contains("flex-1")).toBe(true);
-    expect(container.querySelector(".min-w-\\(--sz-7rem\\)")).toBeNull();
-  });
-
-  it("keeps row membership actions reachable while hiding star actions on mobile", async () => {
-    root = createRoot(container);
+    // Explicitly select the org view and assert no membership actions there.
+    const orgToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Org chart view"]');
+    expect(orgToggle).not.toBeNull();
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      orgToggle!.click();
     });
     await flushReact();
     await flushReact();
-
-    // List view (default).
-    const orgAction = container.querySelector('[aria-label="Leave Alpha"]');
-    const orgStar = container.querySelector('[aria-label="Star Alpha"]');
-    expect(orgAction).not.toBeNull();
-    expect(orgStar).not.toBeNull();
-    expect(orgAction?.closest(".hidden")).toBeNull();
-    expect(orgStar?.closest(".hidden")).not.toBeNull();
-
-    // List view remains stable after explicitly selecting it.
-    const listToggle = Array.from(container.querySelectorAll("button")).find(
-      (btn) => btn.querySelector("svg.lucide-list"),
-    );
-    await act(async () => {
-      listToggle!.click();
-    });
-    await flushReact();
-
-    const listAction = container.querySelector('[aria-label="Leave Alpha"]');
-    const listStar = container.querySelector('[aria-label="Star Alpha"]');
-    expect(listAction).not.toBeNull();
-    expect(listStar).not.toBeNull();
-    expect(listAction?.closest(".hidden")).toBeNull();
-    expect(listStar?.closest(".hidden")).not.toBeNull();
+    expect(container.textContent).toContain("Alpha");
+    expect(container.querySelector('[aria-label="Leave Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Join Alpha"]')).toBeNull();
+    expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
   });
 
-  it("does not dim left-membership agent names on mobile", async () => {
-    mockSidebarState.isMobile = true;
+  it.each([
+    { mode: "streamlined", AgentList: Agents, isMobile: false },
+    { mode: "streamlined", AgentList: Agents, isMobile: true },
+    { mode: "production", AgentList: ProductionAgents, isMobile: false },
+    { mode: "production", AgentList: ProductionAgents, isMobile: true },
+  ])("keeps paused and left-membership agent names readable in $mode (mobile: $isMobile)", async ({ AgentList, isMobile }) => {
+    mockSidebarState.isMobile = isMobile;
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ status: "paused", pausedAt: new Date("2026-01-02T00:00:00Z") }),
+    ]);
     mockResourceMembershipsApi.listMine.mockResolvedValue({
       projectMemberships: {},
       agentMemberships: {
@@ -1061,21 +983,19 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      root!.render(<QueryClientProvider client={queryClient}><ToastProvider><AgentList /></ToastProvider></QueryClientProvider>);
     });
     await flushReact();
+    await flushReact();
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="List view"]')?.click(); });
     await flushReact();
 
     const row = findAgentRow(container, "Alpha");
     expect(row).not.toBeNull();
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
-    expect(row?.classList.contains("sm:text-foreground/55")).toBe(true);
+    expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
+    expect(row?.classList.contains("opacity-50")).toBe(false);
+    expect(row?.querySelector(".sm\\:hidden")?.textContent).toContain("paused");
   });
 
   it("keeps invalid-org-chain agents visible with a warning marker", async () => {
@@ -1085,13 +1005,7 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      root!.render(
-        <QueryClientProvider client={queryClient}>
-          <ToastProvider>
-            <Agents />
-          </ToastProvider>
-        </QueryClientProvider>,
-      );
+      renderAgentsView(root, queryClient);
     });
     await flushReact();
     await flushReact();

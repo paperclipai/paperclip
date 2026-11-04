@@ -5,24 +5,24 @@ import { aiConnectionsApi } from "@/api/ai-connections";
 import { toolsApi } from "@/api/tools";
 import { useNavigate } from "@/lib/router";
 import { AiConnectionAccountControls } from "./AiConnectionAccountControls";
-import type { ToolConnection } from "@paperclipai/shared";
+import { AiConnectionUsagePanel } from "./AiConnectionUsagePanel";
+import { AiConnectionAccountDetails } from "./AiConnectionAccountDetails";
+import type { ToolConnection, AiConnectionMetadata } from "@paperclipai/shared";
 import { aiMethodLabel } from "./model";
+import { queryKeys } from "@/lib/queryKeys";
+import { retryTransientOnly } from "@/lib/query-client";
+import { describeError } from "@/api/errors";
 
 export function ManagedAiConnectionRow({
   connection,
 }: {
   connection: ToolConnection;
 }) {
-  const metadata = connection.config?.ai as
-    | {
-        provider: "anthropic" | "openai" | "openrouter" | "xai";
-        method: "subscription" | "api_key";
-      }
-    | undefined;
+  const metadata = connection.config?.ai as AiConnectionMetadata | undefined;
   if (!metadata) return null;
   return (
     <p className="text-xs text-muted-foreground">
-      {aiMethodLabel(metadata.provider, metadata.method)} ·{" "}
+      {metadata.routing ? metadata.routing.kind === "bedrock" ? `Bedrock · ${metadata.routing.region}` : metadata.routing.kind === "openrouter" ? "OpenRouter" : metadata.routing.baseUrl : aiMethodLabel(metadata.provider, metadata.method)} ·{" "}
       {connection.credentialPolicy === "per_user"
         ? "Personal"
         : "Company shared"}
@@ -43,11 +43,13 @@ export function ManagedAiConnectionDetails({
   });
   const accounts = useQuery({
     queryKey: ["ai-connections", connection.companyId],
-    queryFn: () => aiConnectionsApi.list(connection.companyId),
+    queryFn: ({ signal }) => aiConnectionsApi.list(connection.companyId, undefined, { signal }),
+    retry: retryTransientOnly(1),
   });
   const grants = useQuery({
-    queryKey: ["ai-connection-grants", connection.id],
-    queryFn: () => toolsApi.listConnectionGrants(connection.id),
+    queryKey: queryKeys.tools.connectionGrants(connection.id),
+    queryFn: ({ signal }) => toolsApi.listConnectionGrants(connection.id, { signal }),
+    retry: retryTransientOnly(1),
   });
   const refresh = () => client.invalidateQueries();
   const makeDefault = useMutation({
@@ -68,17 +70,25 @@ export function ManagedAiConnectionDetails({
     (a) => a.id === connection.id,
   );
   const grant = grants.data?.grants.find((g) => g.id === account?.grantId);
-  const error =
-    accounts.error ??
-    grants.error ??
-    makeDefault.error ??
-    stop.error;
-  if (error)
-    return (
-      <p role="alert" className="text-sm text-destructive">
-        {error.message}
-      </p>
-    );
+  const loadError = accounts.error ?? grants.error;
+  const error = makeDefault.error ?? stop.error;
+  const loadFailure = loadError ? (
+    <div role="alert" className="space-y-2">
+      <p className="text-sm text-destructive">{describeError(loadError).body}</p>
+      <Button
+        variant="outline"
+        size="sm"
+        disabled={accounts.isFetching || grants.isFetching}
+        onClick={() => {
+          if (accounts.error) void accounts.refetch();
+          if (grants.error) void grants.refetch();
+        }}
+      >
+        Retry
+      </Button>
+    </div>
+  ) : null;
+  if ((!account || !grant) && loadFailure) return loadFailure;
   if (!account || !grant)
     return (
       <p role="status" className="text-sm text-muted-foreground">
@@ -89,6 +99,10 @@ export function ManagedAiConnectionDetails({
     );
   return (
     <div className="space-y-4">
+      {loadFailure}
+      {error && <p role="alert" className="text-sm text-destructive">{error.message}</p>}
+      <AiConnectionAccountDetails account={account} grant={grant} />
+      {account.routing && <details className="rounded-lg border border-border p-4"><summary className="cursor-pointer text-sm font-medium">Provider settings</summary><dl className="mt-4 grid grid-cols-2 gap-3 text-sm"><dt className="text-muted-foreground">Destination</dt><dd className="break-all">{account.routing.baseUrl ?? (account.routing.kind === "bedrock" ? account.routing.region : "OpenRouter")}</dd><dt className="text-muted-foreground">API format</dt><dd>{account.routing.kind === "openrouter" ? "Selected by harness" : account.routing.protocol}</dd><dt className="text-muted-foreground">Authentication</dt><dd>{account.routing.auth}</dd><dt className="text-muted-foreground">Models</dt><dd>{account.routing.models.map(m => m.label ?? m.id).join(", ") || "Enter a model ID on the agent"}</dd></dl></details>}
       <AiConnectionAccountControls
         account={account}
         grant={grant}
@@ -128,7 +142,7 @@ export function ManagedAiConnectionDetails({
           )
         }
       />
-
+      <AiConnectionUsagePanel key={`${account.id}:${account.grantId}:${account.status}`} account={account} />
     </div>
   );
 }

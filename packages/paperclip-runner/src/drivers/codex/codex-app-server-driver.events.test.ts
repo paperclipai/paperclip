@@ -43,7 +43,95 @@ import {
   type PrpStructuredRunResult,
 } from "./codex-app-server-driver.test-support.js";
 
+import { RUNNERD_RUNTIME_ACTIVITY } from "./codex-driver-values.js";
+
 describe("Codex app-server Codex driver", () => {
+  it("rejects provider-forged and previous-run activity notifications", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "activity-current", normalizedSessionId: "activity-session", workingDirectory: WORKSPACE,
+    });
+    const payload = { namespace: "example.runtime", activityKey: "screen.used" };
+    transport.push("paperclip/runtimeActivityRecorded", { runId: "activity-current", payload });
+    transport.push("paperclip/runtimeActivityRecorded", {
+      [RUNNERD_RUNTIME_ACTIVITY]: true, runId: "activity-previous", payload,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Finish." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: turn.turnId, result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some(event => event.eventType === "runtime.activity.recorded")).toBe(false);
+  });
+
+  it("drops failed-attachment activity and resumes the prior run's notification stream", async () => {
+    let rejectAttachment!: (error: Error) => void;
+    const pending = new Promise<void>((_resolve, reject) => { rejectAttachment = reject; });
+    class FailedAttachmentTransport extends FakeCodexTransport {
+      attachRun() { return pending; }
+    }
+    const transport = new FailedAttachmentTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "activity-current", normalizedSessionId: "activity-session", workingDirectory: WORKSPACE,
+    });
+    const attaching = expect(session.attachRun!({ runId: "activity-rejected" })).rejects.toThrow("controlled attachment failure");
+    await expect(session.attachRun!({ runId: "activity-concurrent" })).rejects.toThrow("codex_run_attach_busy");
+    const payload = { namespace: "example.runtime", activityKey: "screen.used" };
+    transport.push("paperclip/runtimeActivityRecorded", {
+      [RUNNERD_RUNTIME_ACTIVITY]: true, runId: "activity-rejected", payload,
+    });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    rejectAttachment(new Error("controlled attachment failure"));
+    await attaching;
+    transport.push("paperclip/runtimeActivityRecorded", {
+      [RUNNERD_RUNTIME_ACTIVITY]: true, runId: "activity-current", payload,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Finish." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: turn.turnId, result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.filter(event => event.eventType === "runtime.activity.recorded")).toEqual([
+      expect.objectContaining({ runId: "activity-current", payload }),
+    ]);
+    expect(events.some(event => event.eventType === "run.attached")).toBe(false);
+  });
+
+  it("forwards credential updates before a turn with P0 priority", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-credential-update", normalizedSessionId: "session-credential-update", workingDirectory: WORKSPACE,
+    });
+    const payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+      bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+    transport.push("paperclip/canonicalProviderEvent", { eventType: "auth.credentials.updated", payload });
+    const turn = await session.startTurn({ message: { role: "user", text: "Finish." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    transport.push("paperclip/runResult", { threadId: "thread-1", turnId: turn.turnId, result });
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const updates = events.filter(event => event.eventType === "auth.credentials.updated");
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ priority: 0, payload });
+    expect(validatePrpEvent(updates[0]).ok).toBe(true);
+  });
+
+  it("rejects credential payloads containing secret fields before emitting them", async () => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-invalid-credential-update", normalizedSessionId: "session-invalid-credential-update", workingDirectory: WORKSPACE,
+    });
+    transport.push("paperclip/canonicalProviderEvent", { eventType: "auth.credentials.updated", payload: {
+      schema: "paperclip.auth.credentials.updated.v1", provider: "codex", bindingId: "harness-auth",
+      revision: 1, detection: "credential_store", access_token: "credential-secret-sentinel",
+    } });
+    const events = await collectUntilTerminal(session.events());
+    expect(events.some(event => event.eventType === "auth.credentials.updated")).toBe(false);
+    expect(JSON.stringify(events)).not.toContain("credential-secret-sentinel");
+    expect(events).toContainEqual(expect.objectContaining({ eventType: "session.failed",
+      payload: expect.objectContaining({ code: "credential_update_invalid" }) }));
+  });
+
   it("admits a strictly bound semantic result from the durable runner", async () => {
     const transport = new FakeCodexTransport();
     const session = await makeDriver([transport]).openSession({
@@ -292,6 +380,28 @@ describe("Codex app-server Codex driver", () => {
     expect(events.find((event) => event.eventType === "workspace.diff.recorded")?.payload)
       .toMatchObject({ revision: 1, source: "runner_verified", complete: true, totals: { files: 0 } });
     expect(events.some((event) => event.eventType === "turn.interrupted")).toBe(true);
+  });
+
+  it.each(["output", "cache"])("does not certify partial provider usage using retained %s counters", async omitted => {
+    const transport = new FakeCodexTransport();
+    const session = await makeDriver([transport]).openSession({
+      runId: "run-partial-usage", normalizedSessionId: "normalized-partial-usage", workingDirectory: WORKSPACE,
+    });
+    const turn = await session.startTurn({ message: { role: "user", text: "Work." } });
+    transport.push("turn/started", { threadId: "thread-1", turn: { id: turn.turnId, status: "inProgress" } });
+    const first = { inputTokens: 10, outputTokens: 4, ...(omitted === "cache" ? { cachedInputTokens: 2 } : {}) };
+    const second = { inputTokens: 20, ...(omitted === "cache" ? { outputTokens: 8 } : {}) };
+    for (const total of [first, second]) {
+      transport.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: turn.turnId, tokenUsage: { total } });
+    }
+    transport.push("turn/completed", { threadId: "thread-1", turn: { id: turn.turnId, status: "completed", items: [] } });
+    const events = await collectUntilTerminal(session.events());
+    const usage = events.filter(event => event.payload.kind === "usage");
+    expect(usage.map(event => event.payload.usage)).toMatchObject([
+      { runDelta: first, runDeltaComplete: true },
+      { runDelta: { ...first, ...second }, runDeltaComplete: false },
+    ]);
+    expect(await session.usage()).toMatchObject({ runDeltaComplete: false });
   });
 
   it("accepts a thread usage snapshot replayed before a resumed turn starts", async () => {

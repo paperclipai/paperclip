@@ -1,8 +1,7 @@
 diff --git a/dist/live-checkpoint-ClPCSdrW.js b/dist/live-checkpoint-ClPCSdrW.js
-index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e160b2d1a3 100644
 --- a/dist/live-checkpoint-ClPCSdrW.js
 +++ b/dist/live-checkpoint-ClPCSdrW.js
-@@ -1532,7 +1532,7 @@ const ZED_TAG_KEYS = /* @__PURE__ */ new Set([
+@@ -1532,7 +1532,7 @@
  	"RedactedThinking",
  	"ToolUse"
  ]);
@@ -11,7 +10,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e1
  const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
  	"agent_capabilities",
  	"messages.Agent.content.ToolUse.input",
-@@ -2557,7 +2557,7 @@ function readCommandLineChar(state) {
+@@ -2557,7 +2557,7 @@
  		escaping: false,
  		hasPart: true
  	};
@@ -20,7 +19,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e1
  		current: state.current,
  		quote: state.quote,
  		escaping: true,
-@@ -2912,8 +2912,8 @@ function promotePrefixedAuthEnvironment(env) {
+@@ -2912,8 +2912,8 @@
  	}
  	return protectedKeys;
  }
@@ -31,7 +30,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e1
  	const protectedAuthEnvKeys = promotePrefixedAuthEnvironment(env);
  	if (authCredentials) for (const [methodId, credential] of Object.entries(authCredentials)) {
  		addAuthCredentialEnvKeys(protectedAuthEnvKeys, methodId, credential);
-@@ -2955,10 +2955,10 @@ function resolveConfiguredAuthCredential(methodId, authCredentials) {
+@@ -2955,10 +2955,10 @@
  	const configCredentials = authCredentials ?? {};
  	return configCredentials[methodId] ?? configCredentials[toEnvToken(methodId)];
  }
@@ -44,7 +43,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e1
  		stdio: [
  			"pipe",
  			"pipe",
-@@ -3724,10 +3724,13 @@ function resolveClientCapabilities(params) {
+@@ -3724,10 +3724,13 @@
  		},
  		terminal: params.terminal
  	};
@@ -60,7 +59,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e1
  	};
  }
  function isDevinRequestDiagnosticsMethod(method) {
-@@ -3957,9 +3960,26 @@ var AcpClient = class {
+@@ -3957,9 +3960,26 @@
  		this.lastAgentExit = void 0;
  		this.lastKnownPid = child.pid ?? void 0;
  		this.attachAgentLifecycleObservers(child);
@@ -87,7 +86,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e1
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -3994,7 +4014,7 @@ var AcpClient = class {
+@@ -3994,7 +4014,7 @@
  			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
  			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
  			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
@@ -96,7 +95,17 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e1
  		};
  	}
  	logAgentLaunch(plan) {
-@@ -6070,6 +6090,27 @@ async function withConnectedSession(options) {
+@@ -4729,6 +4749,9 @@
+ 			return await this.filesystem.readTextFile(params);
+ 		} catch (error) {
+ 			this.recordPermissionError(params.sessionId, error);
++			// Keep ENOENT distinct from permission and other filesystem failures.
++			// The ACP peer must receive a resource error before it creates a file.
++			if (error && typeof error === "object" && error.code === "ENOENT") throw RequestError.resourceNotFound(params.path);
+ 			throw error;
+ 		}
+ 	}
+@@ -6070,6 +6093,27 @@
  //#region src/runtime/engine/prompt-turn.ts
  const SESSION_REPLY_IDLE_MS = 1e3;
  const SESSION_REPLY_DRAIN_TIMEOUT_MS = 5e3;
@@ -124,19 +133,20 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..4c39306189bcb9b53f95ff7ce0be55e1
  async function runPromptTurn(params) {
  	try {
  		const promptPromise = params.client.prompt(params.sessionId, params.prompt);
-@@ -6079,6 +6120,19 @@ async function runPromptTurn(params) {
+@@ -6079,6 +6123,20 @@
  			idleMs: SESSION_REPLY_IDLE_MS,
  			timeoutMs: SESSION_REPLY_DRAIN_TIMEOUT_MS
  		}).catch(() => {});
 +		const terminalFailureCategory = typedTerminalSessionFailureCategory(response);
 +		if (terminalFailureCategory !== null) {
-+			// Inspect provider text only in memory, before emitting the safe category.
++			// Pass complete provider text to the diagnostic callback. Consumers redact
++			// before bounding it; truncating here can split and expose a credential.
 +			const failure = response._meta.jetbrains.air.sessionFailure;
 +			try {
 +				params.onTerminalSessionFailure?.({
 +					category: terminalFailureCategory,
-+					...(typeof failure.title === "string" ? { title: failure.title.slice(0, 4096) } : {}),
-+					...(typeof failure.details === "string" ? { details: failure.details.slice(0, 4096) } : {})
++					...(typeof failure.title === "string" ? { title: failure.title } : {}),
++					...(typeof failure.details === "string" ? { details: failure.details } : {})
 +				});
 +			} catch {}
 +			throw new Error(`ACP agent reported a terminal ${terminalFailureCategory} failure.`);

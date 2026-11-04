@@ -89,18 +89,20 @@ describe("hot-restart path compatibility", () => {
     ).not.toBeNull();
   });
 
-  it("reads Linux process start time from proc metadata", async () => {
+  it("reads Linux process birth from kernel ticks rather than proc directory metadata", async () => {
     await expect(
       readProcessStartedAt(123, {
         platform: "linux",
-        stat: async (target) => {
-          expect(target).toBe("/proc/123");
-          return {
-            ctimeMs: Date.parse("2026-08-01T01:00:00.123Z"),
-          };
+        linuxProcessStart: {
+          clockTicksPerSecond: 100,
+          readFile: (target) => target === "/proc/stat"
+            ? `btime ${Date.parse("2026-08-01T01:00:00.000Z") / 1000}\n`
+            : target === "/proc/123/stat"
+              ? `123 (runner) S ${Array(18).fill("0").join(" ")} 123\n`
+              : (() => { throw new Error("Unexpected proc read"); })(),
         },
       }),
-    ).resolves.toBe("2026-08-01T01:00:00.123Z");
+    ).resolves.toBe("2026-08-01T01:00:01.230Z");
   });
 
   it("reads macOS process start time through ps", async () => {

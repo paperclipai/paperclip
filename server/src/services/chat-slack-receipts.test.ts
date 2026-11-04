@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createSlackAdapter } from "@chat-adapter/slack";
 import { describe, expect, it, vi } from "vitest";
 import { classifyChatPublicationError } from "./chat-publication-errors.js";
 import {
@@ -16,6 +17,27 @@ const mutation: SlackReceiptMutation = {
 const token = "xoxb-synthetic-never-live";
 
 describe("bounded Slack receipt transport", () => {
+  it.each(["add", "remove"] as const)(
+    "accepts the pinned SDK's top-level DM address for %s",
+    async (operation) => {
+      const adapter = createSlackAdapter({ botToken: token, signingSecret: "synthetic" });
+      const threadId = adapter.encodeThreadId({ channel: "D123", threadTs: "" });
+      expect(threadId).toBe("slack:D123:");
+      const fetch = vi.fn(async () => Response.json({ ok: true }));
+      await applySlackReceiptReaction(
+        { ...mutation, operation, threadId, botToken: token },
+        fetch,
+      );
+      expect(fetch).toHaveBeenCalledOnce();
+      const [, init] = fetch.mock.calls[0] as unknown as [string, RequestInit];
+      expect(JSON.parse(String(init.body))).toEqual({
+        channel: "D123",
+        timestamp: mutation.messageId,
+        name: "eyes",
+      });
+    },
+  );
+
   it.each(["add", "remove"] as const)(
     "sends only the exact %s receipt and validates API success",
     async (operation) => {
@@ -109,6 +131,9 @@ describe("bounded Slack receipt transport", () => {
   it.each([
     { threadId: "slack:C123:1740000001.1:extra" },
     { threadId: "slack:evil.example:1740000001.1" },
+    { threadId: "slack:D123::" },
+    { threadId: "slack:D123:undefined" },
+    { threadId: "slack:D123:not-a-timestamp" },
     { messageId: "1740000002.2&token=secret" },
     { reaction: "not-eyes" },
     { operation: "delete" },

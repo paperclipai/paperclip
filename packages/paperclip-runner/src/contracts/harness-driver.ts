@@ -1,8 +1,9 @@
+import type { NativeRunRuntimeGrant } from "./runtime-context.js";
 import type {
   PrpEvent,
   PrpStructuredRunResult,
 } from "../protocol/replay-contract.js";
-import type { NativeSessionCapabilities, NativeUserMessage } from "./types.js";
+import type { NativeSessionCapabilities, NativeTurnControlCapabilities, NativeUserMessage } from "./types.js";
 import {
   PAPERCLIP_RUNTIME_REQUEST_SCHEMA_V2,
   parsePaperclipQuestionResponse,
@@ -57,6 +58,7 @@ export interface OpenHarnessSessionInput {
 }
 
 export interface HarnessSessionRecoveryOptions {
+  normalizeReplayPayload?(payload: PrpEvent["payload"]): PrpEvent["payload"];
   /** Abort provider recovery and release any not-yet-returned provider state. */
   signal: AbortSignal;
 }
@@ -454,6 +456,12 @@ export interface AcpxSessionIdentity {
   effectiveModel: string;
   /** Missing on legacy snapshots; those used the historical approve-reads behavior. */
   permissionMode?: "approve-all" | "approve-paperclip" | "approve-reads" | "deny-all";
+  /** Effective provider mode identifier, bound to the session identity. */
+  mode?: string;
+  piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+  grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 
@@ -488,30 +496,55 @@ export interface PersistedHarnessSession {
     | "allow_replacement_after_resume_failure";
 }
 
+/** Runner proof that saved provider state cannot be restored by this runner
+ * build. Restoring the same state again fails the same way. */
+export const PROVIDER_STATE_INCOMPATIBLE = "provider_state_incompatible";
+
 export interface HarnessSessionRecoveryResult {
   recovered: boolean;
   session?: HarnessSession;
   reason?: string;
+  /** Closed runner class of a deterministic recovery failure. */
+  failureClass?: typeof PROVIDER_STATE_INCOMPATIBLE;
+}
+
+/** Reads the closed class of an authenticated runner command failure. */
+export function runnerRecoveryFailureClass(
+  error: unknown,
+  depth = 0,
+): typeof PROVIDER_STATE_INCOMPATIBLE | undefined {
+  if (!error || typeof error !== "object" || depth > 5) return undefined;
+  const value = error as Record<string, unknown>;
+  const result = value.runnerCommandResult as Record<string, unknown> | undefined;
+  const detail = result?.result as Record<string, unknown> | undefined;
+  if (detail?.classification === PROVIDER_STATE_INCOMPATIBLE) return PROVIDER_STATE_INCOMPATIBLE;
+  return runnerRecoveryFailureClass(value.cause, depth + 1);
 }
 
 export interface HarnessSession {
+  supportsTurnReasoning?(): boolean;
+  turnControlCapabilities?(): NativeTurnControlCapabilities | null;
   ids(): {
     driverSessionId: string;
     providerSessionId?: string | null;
     displayId?: string | null;
   };
   events(): AsyncIterable<PrpEvent>;
-  attachRun?(input: { runId: string }): Promise<void> | void;
+  attachRun?(input: { runId: string; currentRunGrant?: NativeRunRuntimeGrant }): Promise<void> | void;
   startTurn(input: {
     message: NativeUserMessage;
     /** Set by orchestration only after successful provider-session recovery. */
     continuation?: true;
     requestedCollaborationMode?: "default" | "plan";
+    /** OpenCode/OpenRouter only. Applies to this turn, never subsequent turns. */
+    reasoningMode?: "default" | "disabled";
   }): Promise<{
     turnId: string;
     effectiveCollaborationMode?: "default" | "plan";
   }>;
   steer?(input: {
+    /** Queued follow-ups remain distinct from active-turn steering. */
+    mode?: "steer" | "follow_up";
     turnId: string;
     message: NativeUserMessage;
     correlationId?: string;
@@ -523,6 +556,8 @@ export interface HarnessSession {
   }): Promise<void>;
   pendingRuntimeRequests?(): HarnessRuntimeRequest[];
   resolveRuntimeRequest?(input: {
+    /** Durable controller command identity, distinct from the native request identity. */
+    commandId?: string;
     requestId: string;
     turnId: string;
     resolution: HarnessRuntimeRequestResolution;

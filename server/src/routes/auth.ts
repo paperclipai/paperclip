@@ -4,17 +4,14 @@ import type { Db } from "@paperclipai/db";
 import { authUsers } from "@paperclipai/db";
 import {
   authSessionSchema,
-  currentUserPreferencesSchema,
-  updateCurrentUserPreferencesSchema,
   currentUserProfileSchema,
   updateCurrentUserProfileSchema,
 } from "@paperclipai/shared";
-import { hasCompanyAccess } from "./authz.js";
-import { logActivity, publishActivity, type ActivityPublication } from "../services/activity-log.js";
-import { forbidden, unauthorized } from "../errors.js";
-import { logger } from "../middleware/logger.js";
+import { unauthorized } from "../errors.js";
 import { validate } from "../middleware/validate.js";
 import { resolveSentryDsns } from "../sentry-dsn.js";
+import { logger } from "../middleware/logger.js";
+import { loadBoardBootstrap } from "../services/board-bootstrap.js";
 
 async function loadCurrentUserProfile(db: Db, userId: string) {
   const user = await db
@@ -48,8 +45,16 @@ export function authRoutes(db: Db) {
       throw unauthorized("Board authentication required");
     }
 
-    const user = await loadCurrentUserProfile(db, req.actor.userId);
-    res.json(authSessionSchema.parse({
+    const bootstrap = (req.actor.source === "session" || req.actor.source === "cloud_tenant")
+      && Array.isArray(req.actor.companyIds)
+      ? loadBoardBootstrap(db, { userId: req.actor.userId, companyIds: req.actor.companyIds }).catch((err) => {
+        logger.warn({ err }, "failed to load optional board bootstrap");
+        return undefined;
+      })
+      : Promise.resolve(undefined);
+    const [user, boardBootstrap] = await Promise.all([loadCurrentUserProfile(db, req.actor.userId), bootstrap]);
+    res.setHeader("Cache-Control", "private, no-store");
+    const session = authSessionSchema.parse({
       session: {
         id: `paperclip:${req.actor.source ?? "none"}:${req.actor.userId}`,
         userId: req.actor.userId,
@@ -62,7 +67,8 @@ export function authRoutes(db: Db) {
       sentryDsn: resolveSentryDsns().frontend,
       // Match the server SDK's runtime environment, including in reused images.
       sentryEnvironment: process.env.SENTRY_ENVIRONMENT || null,
-    }));
+    });
+    res.json({ ...session, ...(boardBootstrap ? { boardBootstrap } : {}) });
   });
 
   router.get("/profile", async (req, res) => {
@@ -107,56 +113,6 @@ export function authRoutes(db: Db) {
       name: updated.name ?? null,
       image: updated.image ?? null,
     }));
-  });
-
-  router.get("/preferences", async (req, res) => {
-    if (req.actor.type !== "board" || !req.actor.userId) {
-      throw unauthorized("Board authentication required");
-    }
-    if (req.query.expectedUserId !== req.actor.userId) throw unauthorized("Account changed. Refresh and try again.");
-    const [user] = await db.select({ keyboardShortcuts: authUsers.keyboardShortcuts })
-      .from(authUsers).where(eq(authUsers.id, req.actor.userId));
-    if (!user) throw unauthorized("Signed-in user not found");
-    res.json(currentUserPreferencesSchema.parse(user));
-  });
-
-  router.patch("/preferences", validate(updateCurrentUserPreferencesSchema), async (req, res) => {
-    if (req.actor.type !== "board" || !req.actor.userId) {
-      throw unauthorized("Board authentication required");
-    }
-    const { companyId, keyboardShortcuts, expectedUserId } = updateCurrentUserPreferencesSchema.parse(req.body);
-    const userId = req.actor.userId;
-    if (expectedUserId !== userId) throw unauthorized("Account changed. Refresh and try again.");
-    // This is a personal write; company membership supplies audit context only.
-    if (!hasCompanyAccess(req, companyId)) throw forbidden("User does not have access to this company");
-    const publications: ActivityPublication[] = [];
-    const user = await db.transaction(async (tx) => {
-      const [updated] = await tx.update(authUsers)
-        .set({ keyboardShortcuts, updatedAt: new Date() })
-        .where(eq(authUsers.id, userId))
-        .returning({ keyboardShortcuts: authUsers.keyboardShortcuts });
-      if (!updated) throw unauthorized("Signed-in user not found");
-      await logActivity(tx as unknown as Db, {
-        companyId,
-        actorType: "user",
-        actorId: userId,
-        action: "user.preferences_updated",
-        entityType: "user",
-        entityId: userId,
-        details: { keyboardShortcuts },
-      }, publications);
-      return updated;
-    });
-    for (const publication of publications) {
-      try {
-        publishActivity(publication);
-      } catch (err) {
-        // The preference and audit row are committed; notification failure must
-        // not tell the caller that its durable save failed.
-        logger.warn({ err, companyId, userId }, "Could not publish user preference activity");
-      }
-    }
-    res.json(currentUserPreferencesSchema.parse(user));
   });
 
   return router;

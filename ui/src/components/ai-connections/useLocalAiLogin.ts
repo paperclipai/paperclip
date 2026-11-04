@@ -3,12 +3,15 @@ import type { AiConnectionLoginIntent, LocalAiLoginAttempt, LocalAiLoginStatus }
 import { aiConnectionsApi } from "@/api/ai-connections";
 
 /** Every authentication host uses the same local credential check and login lifecycle. */
-export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean, options: { allowHostClaude?: boolean } = {}) {
-  const isolated = intent.provider !== "anthropic" || !options.allowHostClaude;
+export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLoginIntent, enabled: boolean) {
+  const isolated = true;
   const active = Boolean(companyId && enabled);
   const [attempt, setAttempt] = useState<LocalAiLoginAttempt | null>(null);
   const [status, setStatus] = useState<LocalAiLoginStatus["status"] | null>(null);
+  const [authorizationUrl, setAuthorizationUrl] = useState<string | null>(null);
+  const [code, setCode] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [accountLabel, setAccountLabel] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
   const latestIntent = useRef(intent);
   const restartRequested = useRef(false);
@@ -26,7 +29,10 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
   useEffect(() => {
     setAttempt(null);
     setError(null);
+    setAccountLabel(null);
     setStatus(null);
+    setAuthorizationUrl(null);
+    setCode(null);
     if (!active || !companyId) return;
     let cancelled = false;
     let checking = false;
@@ -54,9 +60,12 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
         });
         if (cancelled) return;
         setStatus(next.status);
-        setError(next.status === "expired" ? "This sign-in attempt expired. Start sign-in again." : null);
-        // Stop polling a verified account. Focus still rechecks after a terminal
-        // visit; awaiting terminal login never requires repeated Connect clicks.
+        setAuthorizationUrl(next.authorizationUrl ?? null);
+        setCode(next.code ?? null);
+        setAccountLabel(next.accountLabel ?? null);
+        setError(next.error ?? (next.status === "expired" ? "This sign-in attempt expired. Start sign-in again." : null));
+        // Stop polling a verified account. Focus rechecks after the provider
+        // browser visit; sign-in never requires repeated Connect clicks.
         if (next.status === "sign_in_required") timer = setTimeout(() => void check(), 5000);
       } catch (cause) {
         if (!cancelled) setError(cause instanceof Error ? cause.message : "Could not check local sign-in.");
@@ -72,17 +81,28 @@ export function useLocalAiLogin(companyId: string | null, intent: AiConnectionLo
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onFocus);
       // Navigation is not cancellation. The server resumes this bounded attempt
-      // when the user returns and reaps abandoned attempts after expiry. Deleting
-      // here made copied CODEX_HOME commands point at nonexistent directories.
+      // when the user returns and reaps abandoned attempts after expiry.
     };
   }, [companyId, active, isolated, target, generation]);
   return {
     isolated,
     command: attempt?.command,
+    authorizationUrl,
+    code,
+    accountLabel,
     status,
     preparing: active && !status && !error,
     error,
     retry: () => { restartRequested.current = true; cancelCurrent(); setGeneration((value) => value + 1); },
+    submitCode: async (browserCode: string) => {
+      if (!companyId || !attempt) throw new Error("Start sign-in before submitting a code.");
+      try {
+        await aiConnectionsApi.submitLocalLoginCode(companyId, attempt.sessionId, browserCode);
+      } catch (cause) {
+        setError("Could not submit the authorization code. Start sign-in again.");
+        throw cause;
+      }
+    },
     connect: (input = intent) => {
       if (!companyId) throw new Error("Choose a company before connecting.");
       if (isolated && !attempt) throw new Error("Prepare local sign-in before connecting.");

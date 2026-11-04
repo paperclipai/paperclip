@@ -1,7 +1,18 @@
 import express from "express";
 import request from "supertest";
+import { getTableName } from "drizzle-orm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { HttpError } from "../errors.js";
+import { HttpError, unprocessable } from "../errors.js";
+import { normalizeIssueExecutionPolicy } from "../services/issue-execution-policy.js";
+import { issueRoutes } from "../routes/issues.js";
+import { errorHandler } from "../middleware/index.js";
+
+vi.mock("../services/fast-responses.js", () => ({
+  enqueueFastResponse: vi.fn(async () => undefined),
+}));
+vi.mock("../services/execution-blocker.js", () => ({
+  getExecutionBlocker: vi.fn(async () => null),
+}));
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -24,11 +35,11 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
+  wakeup: vi.fn(async (_agentId: string, _wakeup: { reason?: string }) => undefined),
   reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
+  getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
+  cancelRun: vi.fn(async (): Promise<unknown> => null),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -38,17 +49,27 @@ const mockAgentService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockSyncCommentReferences = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
 const mockTxInsert = vi.hoisted(() =>
   vi.fn(() => ({ values: mockTxInsertValues })),
 );
 const mockTx = vi.hoisted(() => ({
+  select: () => mockDbSelect(),
   insert: mockTxInsert,
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectWhere = vi.hoisted(() =>
-  vi.fn(() => ({
+  vi.fn((): {
+    orderBy?: () => Promise<unknown[]>;
+    for?: () => Promise<Array<{ id: string }>>;
+    then: (
+      onFulfilled: (rows: unknown[]) => unknown,
+      onRejected?: (reason: unknown) => unknown,
+    ) => Promise<unknown>;
+  } => ({
     orderBy: mockDbSelectOrderBy,
+    for: async () => [{ id: "comment-1" }],
     then: (
       onFulfilled: (rows: unknown[]) => unknown,
       onRejected?: (reason: unknown) => unknown,
@@ -56,7 +77,7 @@ const mockDbSelectWhere = vi.hoisted(() =>
   })),
 );
 const mockDbSelectFrom = vi.hoisted(() =>
-  vi.fn(() => ({ where: mockDbSelectWhere })),
+  vi.fn((_table: unknown): { where: (...args: never[]) => unknown } => ({ where: mockDbSelectWhere })),
 );
 const mockDbSelect = vi.hoisted(() =>
   vi.fn(() => ({ from: mockDbSelectFrom })),
@@ -98,7 +119,7 @@ const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
 }));
 const mockIssueTreeControlService = vi.hoisted(() => ({
-  getActivePauseHoldGate: vi.fn(async () => null),
+  getActivePauseHoldGate: vi.fn(async (): Promise<unknown> => null),
 }));
 const mockExternalObjectService = vi.hoisted(() => ({
   syncCommentSafely: vi.fn(async () => undefined),
@@ -192,7 +213,7 @@ vi.mock("../services/index.js", () => ({
     }),
     emptySummary: () => ({ outbound: [], inbound: [] }),
     listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-    syncComment: async () => undefined,
+    syncComment: mockSyncCommentReferences,
     syncDocument: async () => undefined,
     syncIssue: async () => undefined,
   }),
@@ -225,10 +246,6 @@ async function installActor(
   app: express.Express,
   actor?: Record<string, unknown>,
 ) {
-  const [{ issueRoutes }, { errorHandler }] = await Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
   app.use((req, _res, next) => {
     (req as any).actor = actor ?? {
       type: "board",
@@ -253,9 +270,9 @@ async function normalizePolicy(input: {
     >;
   }>;
 }) {
-  const { normalizeIssueExecutionPolicy } =
-    await import("../services/issue-execution-policy.js");
-  return normalizeIssueExecutionPolicy(input);
+  const policy = normalizeIssueExecutionPolicy(input);
+  if (!policy) throw new Error("Expected the fixture to normalize to an execution policy");
+  return policy;
 }
 
 function makeIssue(
@@ -317,7 +334,57 @@ async function waitForWakeup(assertion: () => void) {
   await vi.waitFor(assertion);
 }
 
-describe.sequential("issue comment reopen routes", () => {
+function createAgentReviewPolicy(reviewerAgentId: string) {
+  return normalizePolicy({
+    stages: [
+      {
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        type: "review",
+        participants: [{ type: "agent", agentId: reviewerAgentId }],
+      },
+    ],
+  });
+}
+
+function createReviewIssue(policy: NonNullable<Awaited<ReturnType<typeof normalizePolicy>>>, reviewerAgentId: string) {
+  return {
+    ...makeIssue("todo"),
+    status: "in_review",
+    assigneeAgentId: reviewerAgentId,
+    executionPolicy: policy,
+    executionState: {
+      status: "pending",
+      currentStageId: policy.stages[0].id,
+      currentStageIndex: 0,
+      currentStageType: "review",
+      currentParticipant: { type: "agent", agentId: reviewerAgentId },
+      returnAssignee: {
+        type: "agent",
+        agentId: "22222222-2222-4222-8222-222222222222",
+      },
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+    },
+  };
+}
+
+function createScheduledRetry() {
+  return {
+    runId: "retry-run-1",
+    status: "scheduled_retry",
+    agentId: "22222222-2222-4222-8222-222222222222",
+    agentName: "CodexCoder",
+    retryOfRunId: "source-run-1",
+    scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
+    scheduledRetryAttempt: 1,
+    scheduledRetryReason: "transient_failure",
+    error: null,
+    errorCode: null,
+  };
+}
+
+describe("issue comment reopen routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockReset();
@@ -342,6 +409,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
     mockLogActivity.mockReset();
+    mockSyncCommentReferences.mockReset().mockResolvedValue(undefined);
     mockFeedbackService.listIssueVotesForUser.mockReset();
     mockFeedbackService.saveIssueVote.mockReset();
     mockInstanceSettingsService.get.mockReset();
@@ -367,12 +435,23 @@ describe.sequential("issue comment reopen routes", () => {
     mockDbSelectOrderBy.mockResolvedValue([]);
     mockDbSelectWhere.mockImplementation(() => ({
       orderBy: mockDbSelectOrderBy,
+      for: async () => [{ id: "comment-1" }],
       then: (
         onFulfilled: (rows: unknown[]) => unknown,
         onRejected?: (reason: unknown) => unknown,
       ) => Promise.resolve([]).then(onFulfilled, onRejected),
     }));
-    mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
+    mockDbSelectFrom.mockImplementation((table) => {
+      const name = getTableName(table as Parameters<typeof getTableName>[0]);
+      if (name === "case_handoffs") return { where: vi.fn(() => ({
+        orderBy: vi.fn(() => ({ limit: vi.fn(async () => []) })),
+      })) };
+      if (name === "heartbeat_runs") return { where: vi.fn(() => {
+        const query = mockDbSelectWhere();
+        return { ...query, limit: vi.fn((count: number) => Promise.resolve(query).then(rows => rows.slice(0, count))) };
+      }) };
+      return { where: mockDbSelectWhere };
+    });
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDb.transaction.mockImplementation(
       async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx),
@@ -506,6 +585,41 @@ describe.sequential("issue comment reopen routes", () => {
         };
       },
     );
+  });
+
+  it("finishes missing reference and activity writes for an accepted comment", async () => {
+    const issue = makeIssue("done");
+    mockIssueService.getById.mockResolvedValue(issue);
+    const selectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table) => getTableName(table as Parameters<typeof getTableName>[0]) === "issue_comments"
+      ? { where: vi.fn(() => Object.assign(Promise.resolve([{ id: "comment-1" }]), { for: async () => [{ id: "comment-1" }] })) } as any : selectFrom(table));
+    const response = await request(await installActor(createApp())).post(`/api/issues/${issue.id}/comments`)
+      .send({ body: "hello", clientRequestId: "77777777-7777-4777-8777-777777777777" });
+    expect(response.status).toBe(201);
+    expect(mockSyncCommentReferences).toHaveBeenCalledWith("comment-1", expect.anything());
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "issue.comment_added", details: expect.objectContaining({ commentId: "comment-1" }),
+    }), expect.anything());
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("returns a retained comment before reopening completed work (changed body=%s)", async (changed) => {
+    const issue = makeIssue("done");
+    const requestId = "77777777-7777-4777-8777-777777777777";
+    mockIssueService.getById.mockResolvedValue(issue);
+    const selectFrom = mockDbSelectFrom.getMockImplementation()!;
+    mockDbSelectFrom.mockImplementation((table) => getTableName(table as Parameters<typeof getTableName>[0]) === "issue_comments"
+      ? { where: vi.fn(() => Object.assign(Promise.resolve([{ id: "comment-1" }]), { for: async () => [{ id: "comment-1" }] })) } as any : getTableName(table as Parameters<typeof getTableName>[0]) === "activity_log"
+        ? { where: async () => [{ id: "activity-1" }] } as any : selectFrom(table));
+    if (changed) mockIssueService.addComment.mockRejectedValue(new HttpError(409, "Message request ID was already used for different content"));
+    const response = await request(await installActor(createApp())).post(`/api/issues/${issue.id}/comments`)
+      .send({ body: changed ? "Changed body" : "hello", clientRequestId: requestId });
+    expect(response.status).toBe(changed ? 409 : 201);
+    if (!changed) expect(response.body.id).toBe("comment-1");
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("treats reopen=true as a no-op when the issue is already open", async () => {
@@ -821,7 +935,7 @@ describe.sequential("issue comment reopen routes", () => {
     });
     mockAccessService.decide.mockImplementation(
       async (input: { action?: string }) => {
-        const allowed = input.action === "issue:comment";
+        const allowed = input.action === "issue:read" || input.action === "issue:comment";
         return {
           allowed,
           action: input.action,
@@ -869,7 +983,7 @@ describe.sequential("issue comment reopen routes", () => {
       });
       mockAccessService.decide.mockImplementation(
         async (input: { action?: string }) => {
-          const allowed = input.action === "issue:comment";
+          const allowed = input.action === "issue:read" || input.action === "issue:comment";
           return {
             allowed,
             action: input.action,
@@ -952,7 +1066,7 @@ describe.sequential("issue comment reopen routes", () => {
 
   // Same guard on cancelled status — explicit resume must use `resume: true`,
   // a log-class self-comment with `reopen: true` is not a reopen signal.
-  it("does not reopen via POST comment+reopen when the assignee agent is the actor on a cancelled issue", async () => {
+  it("rejects bare agent reopen requests on cancelled issues before writing a comment", async () => {
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
     mockIssueService.getById.mockResolvedValue(makeIssue("cancelled"));
     mockIssueService.update.mockImplementation(
@@ -981,14 +1095,13 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     )
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
-      // Cancelled issues reject explicit resume entirely, so only reopen=true
-      // is observable here — the guard is what keeps it from flipping back.
       .send({ body: "log line", reopen: true });
 
-    // Cancelled issues are rejected at assertExplicitResumeIntentAllowed for
-    // agent actors with reopen=true (409). The guard runs after that, but
-    // either way no reopen wakeup must fire and no status update to todo.
-    expect([200, 201, 409]).toContain(res.status);
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(
+      "Cancelled issues must be restored through the dedicated restore flow",
+    );
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockIssueService.update).not.toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
       expect.objectContaining({ status: "todo" }),
@@ -1138,18 +1251,7 @@ describe.sequential("issue comment reopen routes", () => {
       executionRunId: "retry-run-1",
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
-      runId: "retry-run-1",
-      status: "scheduled_retry",
-      agentId: "22222222-2222-4222-8222-222222222222",
-      agentName: "CodexCoder",
-      retryOfRunId: "source-run-1",
-      scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
-      scheduledRetryAttempt: 1,
-      scheduledRetryReason: "transient_failure",
-      error: null,
-      errorCode: null,
-    });
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(createScheduledRetry());
     mockIssueService.update.mockImplementation(
       async (_id: string, patch: Record<string, unknown>) => ({
         ...issue,
@@ -1173,7 +1275,7 @@ describe.sequential("issue comment reopen routes", () => {
       "11111111-1111-4111-8111-111111111111",
       { status: "todo" },
     );
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -1204,24 +1306,65 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("does not move scheduled-retry issues to todo when POST comment retry cancellation fails", async () => {
+  it.each([
+    ["post", "queued"],
+    ["post", "running"],
+    ["patch", "queued"],
+    ["patch", "running"],
+  ] as const)("preserves a %s comment's %s retry execution", async (method, status) => {
     const issue = {
       ...makeIssue("in_progress"),
       executionRunId: "retry-run-1",
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
-      runId: "retry-run-1",
-      status: "scheduled_retry",
-      agentId: "22222222-2222-4222-8222-222222222222",
-      agentName: "CodexCoder",
-      retryOfRunId: "source-run-1",
-      scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
-      scheduledRetryAttempt: 1,
-      scheduledRetryReason: "transient_failure",
-      error: null,
-      errorCode: null,
+      ...createScheduledRetry(),
+      status,
     });
+    mockIssueService.update.mockImplementation(async (_id, patch) => ({ ...issue, ...patch }));
+
+    const app = await installActor(createApp());
+    const res = method === "post"
+      ? await request(app).post(`/api/issues/${issue.id}/comments`).send({ body: "Recovery evidence is attached." })
+      : await request(app).patch(`/api/issues/${issue.id}`).send({ comment: "Recovery evidence is attached." });
+
+    expect(res.status).toBe(method === "post" ? 201 : 200);
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(issue.id, expect.objectContaining({ status: "todo" }));
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      issue.assigneeAgentId,
+      expect.objectContaining({ reason: "issue_commented" }),
+    ));
+  });
+
+  it.each(["post", "patch"] as const)("keeps the task active when a retry is promoted during a %s comment", async method => {
+    const issue = { ...makeIssue("in_progress"), executionRunId: "retry-run-1" };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(createScheduledRetry());
+    mockHeartbeatService.cancelRun.mockResolvedValue({ id: "retry-run-1", status: "running" });
+    mockIssueService.update.mockImplementation(async (_id, patch) => ({ ...issue, ...patch }));
+    const app = await installActor(createApp());
+
+    const res = method === "post"
+      ? await request(app).post(`/api/issues/${issue.id}/comments`).send({ body: "Additional context for the active run." })
+      : await request(app).patch(`/api/issues/${issue.id}`).send({ comment: "Additional context for the active run." });
+
+    expect(res.status).toBe(method === "post" ? 201 : 200);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
+    expect(mockIssueService.update).not.toHaveBeenCalledWith(issue.id, expect.objectContaining({ status: "todo" }));
+    expect(mockLogActivity).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: "heartbeat.cancelled" }));
+    await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      issue.assigneeAgentId, expect.objectContaining({ reason: "issue_commented" }),
+    ));
+  });
+
+  it("does not move scheduled-retry issues to todo when POST comment retry cancellation fails", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      executionRunId: "retry-run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(createScheduledRetry());
     mockHeartbeatService.cancelRun.mockRejectedValue(
       new Error("cancel failed"),
     );
@@ -1231,7 +1374,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: "I added the missing detail; please continue." });
 
     expect(res.status).toBe(500);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalledWith(
@@ -1435,7 +1578,7 @@ describe.sequential("issue comment reopen routes", () => {
         metadata,
         sourceTrust: null,
       },
-      mockDb,
+      mockTx,
     );
   });
 
@@ -1886,18 +2029,7 @@ describe.sequential("issue comment reopen routes", () => {
       executionRunId: "retry-run-1",
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
-      runId: "retry-run-1",
-      status: "scheduled_retry",
-      agentId: "22222222-2222-4222-8222-222222222222",
-      agentName: "CodexCoder",
-      retryOfRunId: "source-run-1",
-      scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
-      scheduledRetryAttempt: 1,
-      scheduledRetryReason: "transient_failure",
-      error: null,
-      errorCode: null,
-    });
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(createScheduledRetry());
     mockIssueService.update.mockImplementation(
       async (_id: string, patch: Record<string, unknown>) => ({
         ...issue,
@@ -1925,7 +2057,7 @@ describe.sequential("issue comment reopen routes", () => {
         actorUserId: "local-board",
       }),
     );
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
     await waitForWakeup(() =>
       expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
         "22222222-2222-4222-8222-222222222222",
@@ -1946,18 +2078,7 @@ describe.sequential("issue comment reopen routes", () => {
       executionRunId: "retry-run-1",
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
-      runId: "retry-run-1",
-      status: "scheduled_retry",
-      agentId: "22222222-2222-4222-8222-222222222222",
-      agentName: "CodexCoder",
-      retryOfRunId: "source-run-1",
-      scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
-      scheduledRetryAttempt: 1,
-      scheduledRetryReason: "transient_failure",
-      error: null,
-      errorCode: null,
-    });
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(createScheduledRetry());
     mockHeartbeatService.cancelRun.mockRejectedValue(
       new Error("cancel failed"),
     );
@@ -1967,7 +2088,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ comment: "Retry window is over; please continue." });
 
     expect(res.status).toBe(500);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1", undefined, { expectedStatus: "scheduled_retry" });
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalledWith(
@@ -2405,15 +2526,11 @@ describe.sequential("issue comment reopen routes", () => {
     );
 
     mockHeartbeatService.wakeup.mockClear();
-    mockIssueService.findMentionedAgents.mockClear();
     res = await request(await installActor(createApp(), agentActor(agentB)))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "B replies on B's own issue" });
     expect(res.status).toBe(201);
-    await vi.waitFor(() =>
-      expect(mockIssueService.findMentionedAgents).toHaveBeenCalledOnce(),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise<void>((resolve) => setImmediate(resolve));
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
 
     mockIssueService.getById.mockResolvedValue({
@@ -2635,8 +2752,8 @@ describe.sequential("issue comment reopen routes", () => {
     },
   );
 
-  it.each(["invalid", "wrong agent", "wrong company"])(
-    "rejects comment and PATCH writes with a %s run",
+  it(
+    "rejects comment and PATCH writes when influence validation rejects the run",
     async () => {
       mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
       mockObserveCrossIssueInfluence.mockRejectedValue(
@@ -2940,35 +3057,8 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("auto-approves a reviewer comment with the APPROVED review marker", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-    const policy = await normalizePolicy({
-      stages: [
-        {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-      ],
-    })!;
-    const issue = {
-      ...makeIssue("todo"),
-      status: "in_review",
-      assigneeAgentId: reviewerAgentId,
-      executionPolicy: policy,
-      executionState: {
-        status: "pending",
-        currentStageId: policy.stages[0].id,
-        currentStageIndex: 0,
-        currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: {
-          type: "agent",
-          agentId: "22222222-2222-4222-8222-222222222222",
-        },
-        completedStageIds: [],
-        lastDecisionId: null,
-        lastDecisionOutcome: null,
-      },
-    };
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
+    const issue = createReviewIssue(policy, reviewerAgentId);
     const reviewBody = "## Review: PAP-580 - APPROVED\n\nLooks good.";
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.addComment.mockResolvedValue({
@@ -3032,35 +3122,8 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("auto-approves a reviewer comment with structured review metadata", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-    const policy = await normalizePolicy({
-      stages: [
-        {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-      ],
-    })!;
-    const issue = {
-      ...makeIssue("todo"),
-      status: "in_review",
-      assigneeAgentId: reviewerAgentId,
-      executionPolicy: policy,
-      executionState: {
-        status: "pending",
-        currentStageId: policy.stages[0].id,
-        currentStageIndex: 0,
-        currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: {
-          type: "agent",
-          agentId: "22222222-2222-4222-8222-222222222222",
-        },
-        completedStageIds: [],
-        lastDecisionId: null,
-        lastDecisionOutcome: null,
-      },
-    };
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
+    const issue = createReviewIssue(policy, reviewerAgentId);
     const reviewBody = "kind: review\ndecision: approved\nsummary: ship it";
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.addComment.mockResolvedValue({
@@ -3125,15 +3188,7 @@ describe.sequential("issue comment reopen routes", () => {
   it("auto-approves a reviewer comment and wakes dependents when the final blocker resolves", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
     const dependentAgentId = "44444444-4444-4444-8444-444444444444";
-    const policy = await normalizePolicy({
-      stages: [
-        {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-      ],
-    })!;
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
     const issue = {
       ...makeIssue("todo"),
       status: "in_review",
@@ -3220,15 +3275,7 @@ describe.sequential("issue comment reopen routes", () => {
   it("does not wake the returnAssignee with issue_commented when auto-approval reassigns the issue", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
     const returnAssigneeAgentId = "22222222-2222-4222-8222-222222222222";
-    const policy = await normalizePolicy({
-      stages: [
-        {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-      ],
-    })!;
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
     const issue = {
       ...makeIssue("todo"),
       status: "in_review",
@@ -3298,35 +3345,8 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("does not auto-approve APPROVED comments from a non-review participant", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-    const policy = await normalizePolicy({
-      stages: [
-        {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-      ],
-    })!;
-    const issue = {
-      ...makeIssue("todo"),
-      status: "in_review",
-      assigneeAgentId: reviewerAgentId,
-      executionPolicy: policy,
-      executionState: {
-        status: "pending",
-        currentStageId: policy.stages[0].id,
-        currentStageIndex: 0,
-        currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: {
-          type: "agent",
-          agentId: "22222222-2222-4222-8222-222222222222",
-        },
-        completedStageIds: [],
-        lastDecisionId: null,
-        lastDecisionOutcome: null,
-      },
-    };
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
+    const issue = createReviewIssue(policy, reviewerAgentId);
     const reviewBody = "## Review: PAP-580 - APPROVED\n\nLooks good.";
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.addComment.mockResolvedValue({
@@ -3345,7 +3365,8 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: reviewBody });
 
     expect(res.status).toBe(201);
-    expect(mockDb.transaction).not.toHaveBeenCalled();
+    // The human comment and optional receipt commit together; no approval update occurs.
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
       expect.any(String),
@@ -3421,35 +3442,8 @@ describe.sequential("issue comment reopen routes", () => {
     // Even though both `kind: review` and `decision: approved` appear, a blank line between
     // them means they are not on truly consecutive lines, so the strict regex must reject it.
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-    const policy = await normalizePolicy({
-      stages: [
-        {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-      ],
-    })!;
-    const issue = {
-      ...makeIssue("todo"),
-      status: "in_review",
-      assigneeAgentId: reviewerAgentId,
-      executionPolicy: policy,
-      executionState: {
-        status: "pending",
-        currentStageId: policy.stages[0].id,
-        currentStageIndex: 0,
-        currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: {
-          type: "agent",
-          agentId: "22222222-2222-4222-8222-222222222222",
-        },
-        completedStageIds: [],
-        lastDecisionId: null,
-        lastDecisionOutcome: null,
-      },
-    };
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
+    const issue = createReviewIssue(policy, reviewerAgentId);
     const reviewBody = "kind: review\n\ndecision: approved";
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.addComment.mockResolvedValue({
@@ -3482,35 +3476,8 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("does not auto-approve reviewer comments without an approval marker", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-    const policy = await normalizePolicy({
-      stages: [
-        {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-      ],
-    })!;
-    const issue = {
-      ...makeIssue("todo"),
-      status: "in_review",
-      assigneeAgentId: reviewerAgentId,
-      executionPolicy: policy,
-      executionState: {
-        status: "pending",
-        currentStageId: policy.stages[0].id,
-        currentStageIndex: 0,
-        currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: {
-          type: "agent",
-          agentId: "22222222-2222-4222-8222-222222222222",
-        },
-        completedStageIds: [],
-        lastDecisionId: null,
-        lastDecisionOutcome: null,
-      },
-    };
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
+    const issue = createReviewIssue(policy, reviewerAgentId);
     const reviewBody = "Looks good.";
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.addComment.mockResolvedValue({
@@ -3544,15 +3511,7 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("does not auto-approve approval comments outside the in_review status", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-    const policy = await normalizePolicy({
-      stages: [
-        {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-      ],
-    })!;
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
     const issue = {
       ...makeIssue("todo"),
       status: "in_progress",
@@ -3632,35 +3591,8 @@ describe.sequential("issue comment reopen routes", () => {
   ])("does not auto-approve negated approval phrasings ($name)", ({ body }) => {
     it("rejects the auto-approval transition and keeps the comment as a regular comment", async () => {
       const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-      const policy = await normalizePolicy({
-        stages: [
-          {
-            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            type: "review",
-            participants: [{ type: "agent", agentId: reviewerAgentId }],
-          },
-        ],
-      })!;
-      const issue = {
-        ...makeIssue("todo"),
-        status: "in_review",
-        assigneeAgentId: reviewerAgentId,
-        executionPolicy: policy,
-        executionState: {
-          status: "pending",
-          currentStageId: policy.stages[0].id,
-          currentStageIndex: 0,
-          currentStageType: "review",
-          currentParticipant: { type: "agent", agentId: reviewerAgentId },
-          returnAssignee: {
-            type: "agent",
-            agentId: "22222222-2222-4222-8222-222222222222",
-          },
-          completedStageIds: [],
-          lastDecisionId: null,
-          lastDecisionOutcome: null,
-        },
-      };
+      const policy = await createAgentReviewPolicy(reviewerAgentId)!;
+      const issue = createReviewIssue(policy, reviewerAgentId);
       mockIssueService.getById.mockResolvedValue(issue);
       mockIssueService.addComment.mockResolvedValue({
         id: "comment-review-negated",
@@ -3704,35 +3636,8 @@ describe.sequential("issue comment reopen routes", () => {
   ])("auto-approves positive approval phrasings ($name)", ({ body }) => {
     it("triggers the auto-approval transition", async () => {
       const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-      const policy = await normalizePolicy({
-        stages: [
-          {
-            id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            type: "review",
-            participants: [{ type: "agent", agentId: reviewerAgentId }],
-          },
-        ],
-      })!;
-      const issue = {
-        ...makeIssue("todo"),
-        status: "in_review",
-        assigneeAgentId: reviewerAgentId,
-        executionPolicy: policy,
-        executionState: {
-          status: "pending",
-          currentStageId: policy.stages[0].id,
-          currentStageIndex: 0,
-          currentStageType: "review",
-          currentParticipant: { type: "agent", agentId: reviewerAgentId },
-          returnAssignee: {
-            type: "agent",
-            agentId: "22222222-2222-4222-8222-222222222222",
-          },
-          completedStageIds: [],
-          lastDecisionId: null,
-          lastDecisionOutcome: null,
-        },
-      };
+      const policy = await createAgentReviewPolicy(reviewerAgentId)!;
+      const issue = createReviewIssue(policy, reviewerAgentId);
       mockIssueService.getById.mockResolvedValue(issue);
       mockIssueService.addComment.mockResolvedValue({
         id: "comment-review-positive",
@@ -3793,35 +3698,8 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("rolls back the comment when the auto-approval status transition fails", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-    const policy = await normalizePolicy({
-      stages: [
-        {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-      ],
-    })!;
-    const issue = {
-      ...makeIssue("todo"),
-      status: "in_review",
-      assigneeAgentId: reviewerAgentId,
-      executionPolicy: policy,
-      executionState: {
-        status: "pending",
-        currentStageId: policy.stages[0].id,
-        currentStageIndex: 0,
-        currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: {
-          type: "agent",
-          agentId: "22222222-2222-4222-8222-222222222222",
-        },
-        completedStageIds: [],
-        lastDecisionId: null,
-        lastDecisionOutcome: null,
-      },
-    };
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
+    const issue = createReviewIssue(policy, reviewerAgentId);
     const reviewBody = "## Review: PAP-580 - APPROVED\n\nLooks good.";
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.addComment.mockResolvedValue({
@@ -3834,7 +3712,6 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: reviewerAgentId,
       authorUserId: null,
     });
-    const { unprocessable } = await import("../errors.js");
     mockIssueService.update.mockRejectedValue(
       unprocessable("Issue can only have one assignee"),
     );
@@ -3868,35 +3745,8 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("rolls back the auto-approval comment when the issue is concurrently deleted", async () => {
     const reviewerAgentId = "33333333-3333-4333-8333-333333333333";
-    const policy = await normalizePolicy({
-      stages: [
-        {
-          id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-          type: "review",
-          participants: [{ type: "agent", agentId: reviewerAgentId }],
-        },
-      ],
-    })!;
-    const issue = {
-      ...makeIssue("todo"),
-      status: "in_review",
-      assigneeAgentId: reviewerAgentId,
-      executionPolicy: policy,
-      executionState: {
-        status: "pending",
-        currentStageId: policy.stages[0].id,
-        currentStageIndex: 0,
-        currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: reviewerAgentId },
-        returnAssignee: {
-          type: "agent",
-          agentId: "22222222-2222-4222-8222-222222222222",
-        },
-        completedStageIds: [],
-        lastDecisionId: null,
-        lastDecisionOutcome: null,
-      },
-    };
+    const policy = await createAgentReviewPolicy(reviewerAgentId)!;
+    const issue = createReviewIssue(policy, reviewerAgentId);
     const reviewBody = "## Review: PAP-580 - APPROVED\n\nLooks good.";
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.addComment.mockResolvedValue({

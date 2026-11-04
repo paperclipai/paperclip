@@ -1,9 +1,11 @@
 import fs from "node:fs";
+import { createIsolatedTestHome } from "./helpers/isolated-test-home.js";
 import { createRequire } from "node:module";
 import type { AddressInfo, Server as NetServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { Server as TlsServer } from "node:tls";
+
 
 type SupertestServer = NetServer & {
   address(): ReturnType<NetServer["address"]>;
@@ -20,6 +22,18 @@ type SupertestTestConstructor = {
     __paperclipLoopbackPatched?: boolean;
   };
 };
+
+// Keep the original home available only for read-only host port-lease checks.
+process.env.PAPERCLIP_TEST_HOST_HOME ??= process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip");
+
+// Receipt-spool recovery must never scan a developer's instance during tests.
+const { home: paperclipTestHome, cleanup: cleanupPaperclipTestHome } = createIsolatedTestHome();
+process.env.PAPERCLIP_HOME = paperclipTestHome;
+process.env.PAPERCLIP_CONFIG = path.join(paperclipTestHome, "config.json");
+process.env.PAPERCLIP_INSTANCE_ID = `vt-${process.pid}`;
+// Setup-file afterAll hooks run before suites drain asynchronous heartbeats.
+// Cleanup at worker exit, after all suite teardown, avoids deleting live state.
+process.once("exit", cleanupPaperclipTestHome);
 
 const require = createRequire(import.meta.url);
 const SupertestTest = require("supertest/lib/test.js") as SupertestTestConstructor;

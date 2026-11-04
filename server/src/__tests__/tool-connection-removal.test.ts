@@ -16,6 +16,9 @@ import {
   createDb,
   heartbeatRuns,
   issues,
+  managedAgentProfiles,
+  routines,
+  routineTriggers,
   secretAccessEvents,
   toolAccessAuditEvents,
   toolApplications,
@@ -180,6 +183,8 @@ describeEmbeddedPostgres("tool connection removal", () => {
     await db.delete(secretAccessEvents);
     await db.delete(companySecretBindings);
     await db.delete(companySecretVersions);
+    await db.delete(managedAgentProfiles);
+    await db.delete(routines);
     await db.delete(companySecrets);
     await db.delete(activityLog);
     await db.delete(toolAccessAuditEvents);
@@ -218,7 +223,7 @@ describeEmbeddedPostgres("tool connection removal", () => {
       access: { agentIds: [agentId] },
     }, { actorType: "user", actorId: "board-user" });
     await service.putConnectionInstalls(connected.connectionId, {
-      installs: [{ targetType: "agent", targetId: agentId, enabled: true }],
+      installs: [{ targetType: "agent", targetId: agentId }],
     }, { actorType: "user", actorId: "board-user" });
     return { service, connectionId: connected.connectionId, readEntry, profile: finished.profile };
   }
@@ -245,7 +250,7 @@ describeEmbeddedPostgres("tool connection removal", () => {
     await expect(secretService(db).resolveSecretValue(company.id, secretIds[0]!, "latest", {
       consumerType: "tool_connection",
       consumerId: connectionId,
-      configPath: `credentials.headers.${HEADER.name}`,
+      configPath: `headers.${HEADER.name}`,
       actorType: "system",
     })).resolves.toBe(HEADER.value);
     await expect(policy.decide({
@@ -278,7 +283,7 @@ describeEmbeddedPostgres("tool connection removal", () => {
       await expect(secretService(db).resolveSecretValue(company.id, secretId, "latest", {
         consumerType: "tool_connection",
         consumerId: connectionId,
-        configPath: `credentials.headers.${HEADER.name}`,
+        configPath: `headers.${HEADER.name}`,
         actorType: "system",
       })).rejects.toMatchObject({ status: 404 });
     }
@@ -399,6 +404,26 @@ describeEmbeddedPostgres("tool connection removal", () => {
     expect(issuance!.path).toBe("oauth_access");
   });
 
+  it.each(["managed-profile", "routine-trigger"])("retains a credential referenced directly by a %s", async (consumer) => {
+    installMcpFixture(HEADER);
+    const company = await createCompany(db);
+    const agent = await createAgent(db, company.id);
+    const { service, connectionId } = await connectHeaderApp(company.id, agent.id);
+    const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connectionId));
+    const secretId = connection!.credentialRefs[0]!.secretId;
+    if (consumer === "managed-profile") {
+      await db.insert(managedAgentProfiles).values({ companyId: company.id, profileKey: "shared", displayName: "Shared",
+        anthropicAgentId: "fixture", agentVersion: "1", environmentId: "fixture", apiKeySecretId: secretId });
+    } else {
+      const [routine] = await db.insert(routines).values({ companyId: company.id, title: "Shared" }).returning();
+      await db.insert(routineTriggers).values({ companyId: company.id, routineId: routine!.id, kind: "webhook", secretId });
+    }
+    const removed = await service.archiveConnection(connectionId, company.id);
+    expect(removed.removal.secretsRetainedShared).toBe(1);
+    expect((await db.select().from(companySecrets).where(eq(companySecrets.id, secretId)))[0]!.status).toBe("active");
+    await expect(secretService(db).resolveSecretValue(company.id, secretId, "latest")).resolves.toBe(HEADER.value);
+  });
+
   it("leaves another consumer's credential in place", async () => {
     installMcpFixture(HEADER);
     const company = await createCompany(db);
@@ -441,8 +466,13 @@ describeEmbeddedPostgres("tool connection removal", () => {
     const otherConnection = await service.createConnection(company.id, {
       applicationId: otherApplication!.id,
       name: `Other connection ${randomUUID().slice(0, 8)}`,
+      connectionPurpose: "tool",
       transport: "mcp_remote",
+      authKind: "none",
+      ownership: "customer",
+      connectionKind: "managed",
       config: { url: MCP_URL },
+      transportConfig: { url: MCP_URL },
       credentialSecretRefs: [
         { secretId: alsoUsedSecret.id, versionSelector: "latest", configPath: "credentials.shared", required: false, label: "Shared key" },
       ],
@@ -513,7 +543,7 @@ describeEmbeddedPostgres("tool connection removal", () => {
     await expect(secretService(db).resolveSecretValue(company.id, secretIds[0]!, "latest", {
       consumerType: "tool_connection",
       consumerId: connectionId,
-      configPath: `credentials.headers.${HEADER.name}`,
+      configPath: `headers.${HEADER.name}`,
       actorType: "system",
     })).rejects.toMatchObject({ status: 404 });
     // The ref survives the failure on purpose: it is the only pointer a retry

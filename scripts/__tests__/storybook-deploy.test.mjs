@@ -43,6 +43,29 @@ test("allows each current CODEOWNER on a feature branch; reads policy from maste
     assert.equal(f.calls[0].path, ".github/CODEOWNERS");
   }
 });
+test("owners listed only for release docs may initiate and rerun Storybook", async (t) => {
+  const triggeringActor = process.env.GITHUB_TRIGGERING_ACTOR;
+  t.after(() => { process.env.GITHUB_TRIGGERING_ACTOR = triggeringActor; });
+  const codeowners = `${ownerFile}doc/RELEASING.md @release-owner @release-reviewer\n`;
+  for (const actor of ["cryppadotta", "release-owner", "release-reviewer"]) {
+    for (const rerunner of ["cryppadotta", "release-owner", "release-reviewer"]) {
+      process.env.GITHUB_TRIGGERING_ACTOR = rerunner;
+      const f = fixture({ context: { actor }, codeowners });
+      await authorize(f);
+      assert.equal(f.calls[0].ref, "master");
+    }
+  }
+});
+test("removing an owner from CODEOWNERS revokes initiating and rerunning access", async (t) => {
+  const triggeringActor = process.env.GITHUB_TRIGGERING_ACTOR;
+  t.after(() => { process.env.GITHUB_TRIGGERING_ACTOR = triggeringActor; });
+  for (const actor of ["release-owner", "release-reviewer"]) {
+    process.env.GITHUB_TRIGGERING_ACTOR = "cryppadotta";
+    await assert.rejects(authorize(fixture({ context: { actor } })), /Only default-branch CODEOWNERS/);
+    process.env.GITHUB_TRIGGERING_ACTOR = actor;
+    await assert.rejects(authorize(fixture()), /Only default-branch CODEOWNERS/);
+  }
+});
 test("rejects non-owner initiators", async () => {
   await assert.rejects(authorize(fixture({ context: { actor: "contributor" } })), /Only default-branch CODEOWNERS/);
 });

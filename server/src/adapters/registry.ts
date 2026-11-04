@@ -1,10 +1,15 @@
+import { probePluginRunnerEnvironment } from "../services/native-runtime/plugin-runner-probe.js";
+import { HttpError } from "../errors.js";
 import type { AdapterRuntimeCommandSpec, ServerAdapterModule } from "./types.js";
 import { parseAdapterModelsEnv } from "../services/adapter-models-env.js";
+import { validateAiApiKey } from "../services/ai-api-key-test.js";
+import type { AdapterEnvironmentTestResult } from "@paperclipai/shared";
 import { stampClaudeAgentIdHeader } from "./claude-agent-id-header.js";
 import {
   buildSandboxNpmInstallCommand,
   getAdapterSessionManagement,
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
+  PAPERCLIP_RUNNER_ACPX_PROFILES,
 } from "@paperclipai/adapter-utils";
 import type { AdapterLoginCapability } from "@paperclipai/adapter-utils";
 import { runAdapterExecutionTargetShellCommand } from "@paperclipai/adapter-utils/execution-target";
@@ -132,16 +137,44 @@ import {
 import { agentConfigurationDoc as piAgentConfigurationDoc } from "@paperclipai/adapter-pi-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
-import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { assertExternalAdapterCodeAllowed } from "../services/adapter-code-policy.js";
+import { NativeEnvironmentProbeCleanupError } from "../vendor/paperclip-runner/index.js";
 import { processAdapter } from "./process/index.js";
 import { httpAdapter } from "./http/index.js";
 import {
   DEFAULT_OPENCODE_RUNNER_MODEL,
   PaperclipRunnerProviderProfileError,
-  QUALIFIED_ACPX_RUNNER_MODELS,
+  DEFAULT_ACPX_RUNNER_MODELS,
   QUALIFIED_OPENCODE_RUNNER_VERSION,
   resolvePaperclipRunnerProviderProfile,
 } from "../services/native-runtime/provider-profile.js";
+
+async function verifyNativeAcpxApiKey(
+  config: Record<string, unknown>,
+  result: AdapterEnvironmentTestResult,
+): Promise<AdapterEnvironmentTestResult> {
+  const env = config.env as Record<string, unknown> | undefined;
+  const account = config.acpxAgent === "claude" ? { provider: "anthropic" as const, name: "Anthropic", key: "ANTHROPIC_API_KEY",
+    routing: ["ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY"] }
+    : config.acpxAgent === "grok" ? { provider: "xai" as const, name: "xAI", key: "XAI_API_KEY", routing: ["XAI_BASE_URL", "GROK_BASE_URL"] } : null;
+  if (!account || !env || typeof env[account.key] !== "string" || !env[account.key]
+    || config.managedAiRouting || config.managedAiConnection || account.routing.some(key => env[key])) return result;
+  try {
+    await validateAiApiKey(account.provider, env[account.key] as string);
+    return { ...result, checks: [...result.checks, {
+      code: "ai_connection_api_key_reverified", level: "info",
+      message: `${account.name} verified this API key. Model access is checked when the agent runs.`,
+    }] };
+  } catch (error) {
+    const details = error && typeof error === "object" && "details" in error
+      ? error.details as { code?: string } | undefined : undefined;
+    return { ...result, status: "fail", checks: [...result.checks, {
+      code: details?.code === "ai_connection_api_key_rejected" ? details.code : "ai_connection_verification_failed",
+      level: "error", message: `Could not verify the ${account.name} API key. Check the connection and try again.`,
+    }] };
+  }
+}
 
 function readConfiguredCommand(config: Record<string, unknown>, fallback: string): string {
   const value = typeof config.command === "string" ? config.command.trim() : "";
@@ -268,6 +301,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
   syncSkills: syncClaudeSkills,
   sessionCodec: claudeSessionCodec,
   sessionManagement: getAdapterSessionManagement("claude_local") ?? undefined,
+  supportsToolRefreshOnResume: true,
   models: claudeModels,
   listModels: listClaudeModels,
   refreshModels: refreshClaudeModels,
@@ -343,6 +377,7 @@ const codexLocalAdapter: ServerAdapterModule = {
   syncSkills: syncCodexSkills,
   sessionCodec: codexSessionCodec,
   sessionManagement: getAdapterSessionManagement("codex_local") ?? undefined,
+  supportsToolRefreshOnResume: true,
   models: codexModels,
   listModels: listCodexModels,
   refreshModels: refreshCodexModels,
@@ -377,6 +412,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
             ? "amazon-bedrock"
         : ctx.config.provider === "acpx"
             ? "acpx"
+            : ctx.config.provider === "cursor_cloud" ? "cursor"
             : "codex",
       summary: message,
     };
@@ -384,7 +420,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   async testEnvironment(context) {
     let profile: ReturnType<typeof resolvePaperclipRunnerProviderProfile>;
     try {
-      profile = resolvePaperclipRunnerProviderProfile(context.config);
+      profile = resolvePaperclipRunnerProviderProfile(context.config, { companyId: context.companyId });
     } catch (error) {
       const profileError = error instanceof PaperclipRunnerProviderProfileError
         ? error
@@ -403,10 +439,83 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         }],
       };
     }
+    if (profile.provider !== "cursor_cloud" && context.executionTarget?.kind === "remote" && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask) {
+      return probePluginRunnerEnvironment(context);
+    }
+    if (profile.provider === "cursor_cloud") {
+      const failure = (code: string, message: string) => ({ adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(), checks: [{ code, level: "error" as const, message }] });
+      if (context.executionTarget?.kind === "remote") return failure("cursor_cloud_local_controller_required", "Select a local Paperclip controller. Cursor hosts the execution environment.");
+      const configuredEnv = context.config.env;
+      const binding = configuredEnv && typeof configuredEnv === "object" && !Array.isArray(configuredEnv)
+        ? (configuredEnv as Record<string, unknown>).CURSOR_API_KEY : undefined;
+      const apiKey = typeof binding === "string" ? binding : binding && typeof binding === "object" && "type" in binding && binding.type === "plain" && "value" in binding && typeof binding.value === "string" ? binding.value : "";
+      if (!apiKey.trim()) return failure("cursor_cloud_api_key_missing", "Bind a Cursor Cloud API key to CURSOR_API_KEY before testing.");
+      try {
+        const { remoteMcpRelayUrl } = await import("../services/native-runtime/remote-mcp-relay.js");
+        const { resolveCursorCloudPublicOrigin } = await import("../services/native-runtime/cursor-cloud-runtime.js");
+        const url = remoteMcpRelayUrl(resolveCursorCloudPublicOrigin() ?? "", "00000000-0000-4000-8000-000000000000");
+        const response = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}", redirect: "error", signal: AbortSignal.timeout(5_000) });
+        await response.body?.cancel();
+        if (response.status !== 401) throw new Error("relay_unavailable");
+      } catch {
+        return failure("cursor_cloud_public_relay_unavailable", "Configure PAPERCLIP_PUBLIC_URL as a reachable HTTPS origin for /mcp/native-runs/. The callback must reject unauthenticated requests with HTTP 401. Expose only this callback path through the public proxy.");
+      }
+      try {
+        const { CursorCloudClient } = await import("../vendor/paperclip-runner/index.js");
+        const { items } = await new CursorCloudClient({ apiKey }).listModels();
+        const listed = items.some(item => item.id === profile.model || item.aliases?.includes(profile.model));
+        return { adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(), checks: [
+          { code: "cursor_cloud_account_ready", level: "info" as const, message: "The bound Cursor Cloud API key can read its model catalog. No prompt was sent." },
+          { code: listed ? "cursor_cloud_model_listed" : "cursor_cloud_model_unlisted", level: listed ? "info" as const : "warn" as const,
+            message: listed ? "The selected model appears in this account's catalog." : "The selected model is absent from the recommended catalog. Cursor will decide whether this exact model is available when it runs." },
+          { code: "cursor_cloud_model_identity_unverified", level: "warn" as const, message: "This experimental integration forwards the selected model; Cursor does not acknowledge the effective model. Cloud commands use Cursor-managed permissions." },
+        ] };
+      } catch { return failure("cursor_cloud_account_unavailable", "Cursor Cloud could not validate the bound key. Check its Cloud Agents access and retry."); }
+    }
+    if (profile.provider === "muse") {
+      return { adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+        checks: [{ code: "muse_background_test_required", level: "warn" as const, message: "Muse manages its model and billing. Verify the paired receiver and independent background reply in Paperclip; this read-only check does not wake Muse." }] };
+    }
+    if (profile.provider === "openai_dot") {
+      return { adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
+        checks: [{ code: "dot_event_test_required", level: "warn" as const, message: "Dot manages its model and billing. Validate the dedicated agent binding and event round trip in Paperclip; this read-only check does not wake the Dot." }] };
+    }
     if (profile.provider === "acpx") {
       try {
-        if (profile.acpxAgent !== "claude") throw new Error("Select Codex to use the native Codex runner.");
+        if (profile.acpxAgent === "antigravity") {
+          const { testAntigravityConnection } = await import("../services/antigravity-connection-probe.js");
+          return await testAntigravityConnection(context, profile.model);
+        }
+        if (profile.acpxAgent === "copilot") {
+          const configured = context.config.env;
+          const token = configured && typeof configured === "object" && !Array.isArray(configured)
+            ? (configured as Record<string, unknown>).COPILOT_GITHUB_TOKEN : undefined;
+          if (typeof token !== "string" || !token) {
+            return { adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
+              checks: [{ code: "COPILOT_AUTH_REQUIRED", level: "error" as const, message: "Select a saved Copilot token connection." }] };
+          }
+          const { probeCopilotExecutionTarget } = await import("../services/copilot-connection-probe.js");
+          await probeCopilotExecutionTarget(token, context.executionTarget, profile.model);
+          return { adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
+            checks: [{ code: "copilot_metadata_verified", level: "info" as const,
+              message: "The verified Copilot runtime authenticated this account and accepted the selected model. No model prompt was sent." }] };
+        }
+        if (profile.acpxAgent !== "claude" && profile.acpxAgent !== "grok" && profile.acpxAgent !== "cursor" && profile.acpxAgent !== "pi" && profile.acpxAgent !== "kimi") throw new Error("Select Codex to use the native Codex runner.");
+        if (profile.acpxAgent === "kimi") {
+          const environment = context.config.env as Record<string, unknown> | undefined;
+          if (typeof environment?.KIMI_API_KEY !== "string" || !environment.KIMI_API_KEY.trim()) {
+            return { adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
+              checks: [{ code: "KIMI_AUTH_REQUIRED", level: "error" as const, message: "Bind a company secret to KIMI_API_KEY in the agent environment." }] };
+          }
+        }
         const target = context.executionTarget;
+        if (profile.acpxAgent === "kimi") {
+          const { probeKimiExecutionTarget } = await import("../services/kimi-connection-probe.js");
+          await probeKimiExecutionTarget((context.config.env as Record<string, string>).KIMI_API_KEY, target, profile.model, { companyId: context.companyId });
+          return { adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
+            checks: [{ code: "kimi_metadata_verified", level: "info" as const,
+              message: "The selected environment verified the pinned Kimi Code runtime. Its Code model catalog accepted the credential and lists the exact selected model. No model prompt was sent." }] };
+        }
         if (target?.kind === "remote") {
           const probe = await runAdapterExecutionTargetShellCommand(
             `acpx-platform-${crypto.randomUUID()}`, target, "uname -s && uname -m",
@@ -414,25 +523,45 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           );
           if (probe.timedOut || probe.exitCode !== 0) throw new Error("Could not verify the remote ACPX runner platform.");
           const [os, arch] = probe.stdout.trim().split(/\s+/);
-          if (!((os === "Linux" && arch === "x86_64") || (os === "Darwin" && ["arm64", "x86_64"].includes(arch ?? "")))) {
-            throw new Error("ACPX Claude requires Linux x64 or macOS ARM64/x64.");
+          if (!((os === "Linux" && (arch === "x86_64" || (profile.acpxAgent === "claude" && ["aarch64", "arm64"].includes(arch)))) || (os === "Darwin" && (arch === "arm64" || (!["grok"].includes(profile.acpxAgent) && arch === "x86_64"))))) {
+            throw new Error(`ACPX ${profile.acpxAgent} requires a qualified Linux ${profile.acpxAgent === "claude" ? "x64/ARM64" : "x64"} or macOS architecture.`);
           }
-          return {
+          return verifyNativeAcpxApiKey(context.config, {
             adapterType: "paperclip_runner", status: "warn" as const, testedAt: new Date().toISOString(),
             checks: [{ code: "acpx_remote_runtime_unverified", level: "warn" as const,
               message: "The remote platform is supported. Runtime package integrity and readiness must still be verified by the remote runner before launch." }],
-          };
+          });
         }
-        const { probeAcpxClaudeInstallation } = await import("@paperclipai/paperclip-runner/live");
-        await probeAcpxClaudeInstallation(profile.model);
-        return {
+        const { probeAcpxClaudeInstallation, probeAcpxGrokInstallation, probeAcpxCursorInstallation, probeAcpxPiInstallation } = await import("../vendor/paperclip-runner/live/index.js");
+        await (profile.acpxAgent === "pi" ? probeAcpxPiInstallation : profile.acpxAgent === "grok" ? probeAcpxGrokInstallation : profile.acpxAgent === "cursor" ? probeAcpxCursorInstallation : probeAcpxClaudeInstallation)(profile.model);
+        return verifyNativeAcpxApiKey(context.config, {
           adapterType: "paperclip_runner", status: "pass" as const, testedAt: new Date().toISOString(),
-          checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: "ACPX Claude runtime is installed and verified. Model access is checked when Claude runs." }],
-        };
+          checks: [{ code: "acpx_runtime_ready", level: "info" as const, message: `ACPX ${profile.acpxAgent} runtime is installed and verified. Model access is checked when it runs.` }],
+        });
       } catch (error) {
+        // The selected managed credential home must outlive an uncertain
+        // native retirement. Its caller retains writeback until proof arrives.
+        if (error instanceof NativeEnvironmentProbeCleanupError) throw error;
+        if (profile.acpxAgent === "antigravity") {
+          const { antigravityConnectionProbeFailure } = await import("../services/antigravity-connection-probe.js");
+          return antigravityConnectionProbeFailure(context.companyId, error);
+        }
+        if (profile.acpxAgent === "copilot") {
+          const details = error instanceof HttpError && error.details && typeof error.details === "object" && !Array.isArray(error.details)
+            ? error.details as Record<string, unknown> : {};
+          const codes = ["COPILOT_AUTH_REQUIRED", "COPILOT_ENTITLEMENT_DENIED", "COPILOT_MODEL_UNAVAILABLE", "COPILOT_INSTALLATION_INVALID", "COPILOT_REQUEST_FAILED"];
+          const code = typeof details.code === "string" && codes.includes(details.code) ? details.code : "COPILOT_REQUEST_FAILED";
+          return { adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
+            checks: [{ code, level: "error" as const, message: error instanceof HttpError ? error.message : "Copilot metadata verification failed." }] };
+        }
         return {
           adapterType: "paperclip_runner", status: "fail" as const, testedAt: new Date().toISOString(),
-          checks: [{ code: "acpx_runtime_unavailable", level: "error" as const, message: error instanceof Error ? error.message : "ACPX Claude runtime could not be verified." }],
+          checks: [{
+            code: error instanceof Error && "code" in error && error.code === "ACPX_RUNTIME_PACKAGE_MISSING"
+              ? "acpx_runtime_package_missing" : "acpx_runtime_unavailable",
+            level: "error" as const,
+            message: error instanceof Error ? error.message : "The ACPX runtime could not be verified.",
+          }],
         };
       }
     }
@@ -468,9 +597,11 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         }],
       };
     }
-    const result = profile.provider === "opencode"
-      ? await openCodeTestEnvironment(context)
-      : await codexTestEnvironment(context);
+    if (profile.provider === "codex") {
+      const { testNativeRunnerAuthentication } = await import("../services/native-runtime/setup-readiness.js");
+      return testNativeRunnerAuthentication(context, "codex", profile.model);
+    }
+    const result = await openCodeTestEnvironment(context);
     return { ...result, adapterType: "paperclip_runner" };
   },
   listSkills: listCodexSkills,
@@ -479,19 +610,19 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   models: [
     ...codexModels,
     { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
-    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: DEFAULT_ACPX_RUNNER_MODELS.claude, label: "Claude Opus 5.5" },
     { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
   ],
   listModels: async () => [
     ...await listCodexModels(),
     { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
-    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: DEFAULT_ACPX_RUNNER_MODELS.claude, label: "Claude Opus 5.5" },
     { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
   ],
   refreshModels: async () => [
     ...await refreshCodexModels(),
     { id: DEFAULT_OPENCODE_RUNNER_MODEL, label: "OpenRouter · DeepSeek V4 Flash 0731" },
-    { id: QUALIFIED_ACPX_RUNNER_MODELS.claude, label: "Claude Sonnet 5" },
+    { id: DEFAULT_ACPX_RUNNER_MODELS.claude, label: "Claude Opus 5.5" },
     { id: "global.anthropic.claude-sonnet-4-6", label: "Amazon Bedrock · Claude Sonnet 4.6 (global)" },
   ],
   supportsLocalAgentJwt: false,
@@ -501,6 +632,7 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
   getRuntimeCommandSpec: (config) => config.provider === "claude_managed"
     || config.provider === "aws_agentcore"
     || config.provider === "acpx"
+    || config.provider === "cursor_cloud"
     ? { command: "paperclip-runnerd", detectCommand: null, installCommand: null }
     : config.provider === "opencode"
       ? buildNpmRuntimeCommandSpec(
@@ -508,9 +640,9 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           "opencode",
           `opencode-ai@${QUALIFIED_OPENCODE_RUNNER_VERSION}`,
         )
-      : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.156.0"),
+      : buildNpmRuntimeCommandSpec(config, "codex", "@openai/codex@0.160.0"),
   agentConfigurationDoc:
-    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude through the Rust Paperclip runner and authenticated PRP transport. Pi is not available through the qualified ACPX profile. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
+    "# Paperclip Runner\n\nAdapter: paperclip_runner\n\nRuns Codex, OpenCode, Claude Managed, AWS AgentCore, or ACPX Claude/Grok Build/Cursor/Pi through the Rust Paperclip runner and authenticated PRP transport. Pi accepts an explicit provider/model ID and uses the company credentials bound to the agent environment. GitHub Copilot requires a saved GitHub token and an explicitly selected available model. Managed providers use company-scoped qualified profiles, explicit retention acknowledgement, and spend limits.\n",
   getConfigSchema: () => ({
     fields: [
       {
@@ -523,10 +655,27 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
           { value: "opencode", label: `OpenCode ${QUALIFIED_OPENCODE_RUNNER_VERSION}` },
           { value: "claude_managed", label: "Claude Managed" },
           { value: "aws_agentcore", label: "AWS AgentCore" },
-          { value: "acpx", label: "ACPX Claude" },
+          { value: "acpx", label: "ACP agents" },
+          { value: "cursor_cloud", label: "Cursor Cloud (experimental)" },
         ],
-        hint: "Select a local provider, company-qualified managed provider, or ACPX Claude.",
+        hint: "Select a local provider, company-qualified managed provider, or an ACP agent.",
       },
+      {
+        key: "acpxAgent", label: "ACP agent", type: "select" as const, default: "claude",
+        options: PAPERCLIP_RUNNER_ACPX_PROFILES.filter(profile => profile.qualified).map(profile => ({ value: profile.value, label: profile.label })),
+        meta: { visibleWhen: { key: "provider", value: "acpx" } },
+      },
+      ...[
+        { key: "repoUrl", label: "GitHub repository" },
+        { key: "repoRef", label: "Starting ref" },
+        { key: "prUrl", label: "Pull request URL" },
+        { key: "cloudEnvName", label: "Cursor cloud environment" },
+      ].map(field => ({ ...field, type: "text" as const, meta: { visibleWhen: { key: "provider", value: "cursor_cloud" } } })),
+      ...[
+        { key: "workOnCurrentBranch", label: "Work on current branch" },
+        { key: "autoCreatePR", label: "Auto-create pull request" },
+        { key: "skipReviewerRequest", label: "Skip reviewer request" },
+      ].map(field => ({ ...field, type: "toggle" as const, default: false, meta: { visibleWhen: { key: "provider", value: "cursor_cloud" } } })),
       {
         key: "codexPermissionMode",
         label: "Codex permission mode",
@@ -548,6 +697,19 @@ const paperclipRunnerAdapter: ServerAdapterModule = {
         ),
         hint: PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.opencode.description,
         meta: { visibleWhen: { key: "provider", value: "opencode" } },
+      },
+      {
+        key: "acpxSessionMode",
+        label: "Cursor mode",
+        type: "select" as const,
+        default: "agent",
+        options: [
+          { value: "agent", label: "Agent" },
+          { value: "plan", label: "Plan" },
+          { value: "ask", label: "Ask" },
+        ],
+        hint: "Select Cursor's session mode. Permissions and company approval rules still apply.",
+        meta: { visibleWhen: { key: "acpxAgent", value: "cursor" } },
       },
       {
         key: "acpxPermissionMode",
@@ -674,6 +836,7 @@ const cursorLocalAdapter: ServerAdapterModule = {
   syncSkills: syncCursorSkills,
   sessionCodec: cursorSessionCodec,
   sessionManagement: getAdapterSessionManagement("cursor") ?? undefined,
+  supportsToolRefreshOnResume: true,
   models: cursorModels,
   listModels: listCursorModels,
   supportsLocalAgentJwt: true,
@@ -717,6 +880,7 @@ const geminiLocalAdapter: ServerAdapterModule = {
   syncSkills: syncGeminiSkills,
   sessionCodec: geminiSessionCodec,
   sessionManagement: getAdapterSessionManagement("gemini_local") ?? undefined,
+  supportsToolRefreshOnResume: true,
   models: geminiModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
@@ -737,6 +901,7 @@ const grokLocalAdapter: ServerAdapterModule = {
   syncSkills: syncGrokSkills,
   sessionCodec: grokSessionCodec,
   sessionManagement: getAdapterSessionManagement("grok_local") ?? undefined,
+  supportsToolRefreshOnResume: true,
   models: grokModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
@@ -768,6 +933,7 @@ const kimiLocalAdapter: ServerAdapterModule = {
   syncSkills: syncKimiSkills,
   sessionCodec: kimiSessionCodec,
   sessionManagement: getAdapterSessionManagement("kimi_local") ?? undefined,
+  supportsToolRefreshOnResume: true,
   models: kimiModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
@@ -810,6 +976,7 @@ const openCodeLocalAdapter: ServerAdapterModule = {
   sessionCodec: openCodeSessionCodec,
   models: openCodeModels,
   sessionManagement: getAdapterSessionManagement("opencode_local") ?? undefined,
+  supportsToolRefreshOnResume: true,
   listModels: listOpenCodeModels,
   supportsLocalAgentJwt: true,
   supportsInstructionsBundle: true,
@@ -828,6 +995,7 @@ const piLocalAdapter: ServerAdapterModule = {
   syncSkills: syncPiSkills,
   sessionCodec: piSessionCodec,
   sessionManagement: getAdapterSessionManagement("pi_local") ?? undefined,
+  supportsToolRefreshOnResume: true,
   models: [],
   listModels: listPiModels,
   supportsLocalAgentJwt: true,
@@ -888,11 +1056,6 @@ registerBuiltInAdapters();
 // applies the registry fallback for externals overriding a built-in type.
 // ---------------------------------------------------------------------------
 
-/** Cached sync wrapper — the store is a simple JSON file read, safe to call frequently. */
-function getDisabledAdapterTypesFromStore(): string[] {
-  return getDisabledAdapterTypes();
-}
-
 /**
  * Merge an external adapter module with host-provided session management.
  *
@@ -925,6 +1088,7 @@ export function resolveExternalAdapterRegistration(
  * and avoid racing against the loading window.
  */
 const externalAdaptersReady: Promise<void> = (async () => {
+  if (isCloudManagedInstance()) return;
   try {
     const externalAdapters = await buildExternalAdapters();
     for (const externalAdapter of externalAdapters) {
@@ -960,6 +1124,7 @@ export function waitForExternalAdapters(): Promise<void> {
 }
 
 export function registerServerAdapter(adapter: ServerAdapterModule): void {
+  assertExternalAdapterCodeAllowed();
   if (BUILTIN_ADAPTER_TYPES.has(adapter.type) && !builtinFallbacks.has(adapter.type)) {
     const existing = adaptersByType.get(adapter.type);
     if (existing) {
@@ -970,6 +1135,7 @@ export function registerServerAdapter(adapter: ServerAdapterModule): void {
 }
 
 export function unregisterServerAdapter(type: string): void {
+  assertExternalAdapterCodeAllowed();
   if (type === processAdapter.type || type === httpAdapter.type) return;
   if (builtinFallbacks.has(type)) {
     pausedOverrides.delete(type);
@@ -1028,13 +1194,22 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
   return value;
 }
 
+function declaredModelsForAdapter(type: string): { id: string; label: string }[] | null {
+  const declared = getDeclaredAdapterModels()?.[type];
+  return declared?.length
+    ? declared.map((model) => ({ id: model.id, label: model.label ?? model.id }))
+    : null;
+}
+
 export async function listAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
-  const declaredModels = getDeclaredAdapterModels();
-  if (declaredModels && declaredModels[type]?.length) {
-    return declaredModels[type].map((m) => ({ id: m.id, label: m.label ?? m.id }));
-  }
+  const declaredModels = declaredModelsForAdapter(type);
+  if (declaredModels) return declaredModels;
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
+  // The built-in Codex adapter's OpenAI discovery includes image, audio, and
+  // embedding models that Codex cannot run. Use its curated list; declared
+  // models above and custom adapter discovery remain authoritative.
+  if (adapter === codexLocalAdapter) return adapter.models ?? [];
   if (adapter.listModels) {
     const discovered = await adapter.listModels();
     if (discovered.length > 0) return discovered;
@@ -1043,6 +1218,9 @@ export async function listAdapterModels(type: string): Promise<{ id: string; lab
 }
 
 export async function refreshAdapterModels(type: string): Promise<{ id: string; label: string }[]> {
+  const declaredModels = declaredModelsForAdapter(type);
+  if (declaredModels) return declaredModels;
+  if (findActiveServerAdapter(type) === codexLocalAdapter) return listAdapterModels(type);
   const adapter = findActiveServerAdapter(type);
   if (!adapter) return [];
   if (adapter.refreshModels) {
@@ -1065,8 +1243,7 @@ export function listServerAdapters(): ServerAdapterModule[] {
  * Used for menus and agent creation flows — disabled adapters remain
  * functional for existing agents but hidden from selection.
  */
-export function listEnabledServerAdapters(): ServerAdapterModule[] {
-  const disabled = getDisabledAdapterTypesFromStore();
+export function listEnabledServerAdapters(disabled: string[]): ServerAdapterModule[] {
   const disabledSet = disabled.length > 0 ? new Set(disabled) : null;
   return disabledSet
     ? Array.from(adaptersByType.values()).filter((a) => !disabledSet.has(a.type))
@@ -1106,6 +1283,7 @@ export async function detectAdapterModel(
  * an override or was already in the requested state.
  */
 export function setOverridePaused(type: string, paused: boolean): boolean {
+  assertExternalAdapterCodeAllowed();
   if (!builtinFallbacks.has(type)) return false;
   const wasPaused = pausedOverrides.has(type);
   if (paused && !wasPaused) {
@@ -1124,6 +1302,12 @@ export function setOverridePaused(type: string, paused: boolean): boolean {
 /** Check whether the external override for a builtin type is currently paused. */
 export function isOverridePaused(type: string): boolean {
   return pausedOverrides.has(type);
+}
+
+export function hasActiveAdapterOverride(type: string): boolean {
+  const registered = adaptersByType.get(type);
+  return builtinFallbacks.has(type) && registered !== undefined
+    && registered !== builtinFallbacks.get(type) && !pausedOverrides.has(type);
 }
 
 /** Get the set of types whose overrides are currently paused. */

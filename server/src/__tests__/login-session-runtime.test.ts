@@ -1,3 +1,5 @@
+import { installDatabaseWorkSignals, databaseWorkPending } from "../../../packages/db/src/work-signals.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { describe, expect, it, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { AgentAdapterType } from "@paperclipai/shared";
@@ -154,7 +156,17 @@ describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
       driver: "sandbox",
       config: { provider: "daytona" },
     });
-    mockEnvironmentService.updateLeaseMetadata.mockResolvedValue(undefined);
+    const execute = vi.fn(async () => [{ xid: "42" }]);
+    const db = installDatabaseWorkSignals({
+      execute,
+      async transaction<T>(fn: (tx: object) => Promise<T>) { return fn({ execute }); },
+    });
+    const settled = vi.fn();
+    const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.adapterLoginCleanup, settled);
+    mockEnvironmentService.updateLeaseMetadata.mockImplementation(async () => {
+      expect(databaseWorkPending(db, DELIVERY_QUEUES.adapterLoginCleanup)).toBe(true);
+      expect(settled).not.toHaveBeenCalled();
+    });
     const lease = { id: "lease-1", providerLeaseId: "provider-lease-1", metadata: {} };
     const acquireRunLease = vi.fn(async () => ({
       lease,
@@ -162,7 +174,7 @@ describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
     }));
     const assertProviderSupportsLoginPty = vi.fn(async () => {});
     const runtime = createProductionLoginSessionRuntime({
-      db: {} as never,
+      db: db as never,
       environmentRuntime: { acquireRunLease, getDriver: vi.fn() } as never,
       assertProviderSupportsLoginPty,
     });
@@ -173,5 +185,8 @@ describe("createProductionLoginSessionRuntime lease-acquisition gate", () => {
     // The gate passed, so the runtime acquired the provider lease after it.
     expect(acquireRunLease).toHaveBeenCalledTimes(1);
     expect(acquired.providerLeaseId).toBe("provider-lease-1");
+    expect(settled).toHaveBeenCalledTimes(1);
+    expect(databaseWorkPending(db, DELIVERY_QUEUES.adapterLoginCleanup)).toBe(false);
+    unsubscribe();
   });
 });

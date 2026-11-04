@@ -14,6 +14,24 @@ afterEach(async () => {
 });
 
 describe("ProviderTraceFileSink", () => {
+  it("omits raw identity-run frames even when a key is split into single-byte deltas", async () => {
+    const root = await mkdtemp(join(tmpdir(), "paperclip-provider-trace-identity-"));
+    roots.push(root);
+    const tracePath = join(root, "provider.ndjson");
+    const sink = await createProviderTraceFileSink({ path: tracePath, provider: "opencode", channel: "test" });
+    const key = "-----BEGIN PRIVATE KEY-----\nMC4CAQAwBQYDK2VwBCIEIExamplePrivateMaterial\n-----END PRIVATE KEY-----\n";
+    sink!.addSensitiveValues([key]);
+    for (const delta of key) sink!.frame({
+      direction: "provider_to_client", raw: JSON.stringify({ delta }), transport: "sse",
+    });
+    await sink!.finish();
+    const records = (await readFile(tracePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    const frames = records.filter(record => record.kind === "frame");
+    expect(frames).toHaveLength(key.length);
+    for (const frame of frames) expect(Buffer.from(frame.rawBase64, "base64").toString())
+      .toBe("[REDACTED: agent identity runtime]");
+  });
+
   it("hardens an existing file before it appends provider frames", async () => {
     const root = await mkdtemp(join(tmpdir(), "paperclip-provider-trace-mode-"));
     roots.push(root);

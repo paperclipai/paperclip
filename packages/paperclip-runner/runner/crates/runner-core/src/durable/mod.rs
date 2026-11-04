@@ -16,8 +16,8 @@ pub use runner::{
     TerminalDeliveryReconciliation,
 };
 pub(crate) use state::{
-    create_private_temporary_file, open_private_regular_file, redact_text,
-    sanitize_semantic_tool_input, sanitize_value, verify_private_directory,
+    create_private_temporary_file, open_private_regular_file, redact_sensitive_text_values,
+    redact_text, sanitize_value, validate_semantic_tool_input, verify_private_directory,
 };
 pub use state::{
     Command, CommandDisposition, DurableState, DurableStateStore, EventPriority,
@@ -27,7 +27,7 @@ pub(crate) use transport::current_unix_ms;
 
 pub const PROTOCOL: &str = "paperclip.runner";
 pub const PROTOCOL_MIN_VERSION: u64 = 1;
-pub const PROTOCOL_VERSION: u64 = 2;
+pub const PROTOCOL_VERSION: u64 = 3;
 pub const BOOTSTRAP_TICKET_ENV: &str = "PAPERCLIP_RUNNER_BOOTSTRAP_TICKET";
 const MAX_OUTBOX_BYTES: usize = 512 * 1024 * 1024;
 const MAX_FRAME_BYTES: usize = 16 * 1024 * 1024;
@@ -37,12 +37,37 @@ pub fn redact_diagnostic_text(input: &str) -> String {
     state::redact_text(input)
 }
 
+/// Saved provider state was written under a launch or provider profile that
+/// this runner cannot adopt. The outcome is deterministic for this runner
+/// build: retrying the same restore cannot succeed.
+pub const PROVIDER_STATE_INCOMPATIBLE: &str = "provider_state_incompatible";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct DurableRunnerError(String);
+pub struct DurableRunnerError(String, Option<serde_json::Value>, Option<&'static str>);
 
 impl DurableRunnerError {
     pub fn invalid(message: impl Into<String>) -> Self {
-        Self(message.into())
+        Self(message.into(), None, None)
+    }
+
+    pub fn with_provider_failure(mut self, value: Option<serde_json::Value>) -> Self {
+        self.1 = crate::provider_failure::validated_provider_failure(value);
+        self
+    }
+
+    pub fn provider_failure(&self) -> Option<serde_json::Value> {
+        self.1.clone()
+    }
+
+    /// Adds a closed failure class that the controller reads from the command
+    /// result instead of parsing the message.
+    pub fn with_classification(mut self, classification: &'static str) -> Self {
+        self.2 = Some(classification);
+        self
+    }
+
+    pub fn classification(&self) -> Option<&'static str> {
+        self.2
     }
 }
 
@@ -118,6 +143,7 @@ pub struct AcpxLaunchProfile {
     pub command: PathBuf,
     pub args: Vec<String>,
     pub artifacts: Vec<QualifiedLaunchArtifact>,
+    pub candidate_admission: Option<crate::acpx_candidate_admission::AcpxCandidateAdmission>,
 }
 
 impl AcpxLaunchProfile {
@@ -163,6 +189,17 @@ impl AcpxLaunchProfile {
             );
             update(&mut digest, artifact.sha256.as_bytes());
         }
+        if let Some(admission) = &self.candidate_admission {
+            update(&mut digest, b"paperclip.acpx-candidate-admission.v1");
+            update(
+                &mut digest,
+                &serde_json::to_vec(admission).map_err(|_| {
+                    DurableRunnerError::invalid(
+                        "ACPX candidate admission could not be bound to launch identity",
+                    )
+                })?,
+            );
+        }
         Ok(format!("sha256:{:x}", digest.finalize()))
     }
 }
@@ -172,6 +209,12 @@ pub struct OpenCodeLaunchProfile {
     pub command: QualifiedLaunchArtifact,
     pub proxy_script: QualifiedLaunchArtifact,
     pub executable: QualifiedLaunchArtifact,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CursorCloudLaunchProfile {
+    pub command: QualifiedLaunchArtifact,
+    pub proxy_script: QualifiedLaunchArtifact,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -189,6 +232,7 @@ pub struct DurableRunnerConfig {
     pub runner_digest: String,
     pub acpx_launch_profile: Option<AcpxLaunchProfile>,
     pub opencode_launch_profile: Option<OpenCodeLaunchProfile>,
+    pub cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
     pub max_outbox_bytes: usize,
     pub p0_reserve_bytes: usize,
     pub max_frame_bytes: usize,
@@ -257,6 +301,16 @@ impl DurableRunnerConfig {
             ));
         }
         if let Some(profile) = self.acpx_launch_profile.as_ref() {
+            if let Some(admission) = &profile.candidate_admission {
+                admission
+                    .validate_binding(
+                        &admission.agent,
+                        &admission.model,
+                        &self.run_id,
+                        &self.normalized_session_id,
+                    )
+                    .map_err(|error| DurableRunnerError::invalid(error.to_string()))?;
+            }
             if profile.authority_digest.len() != 71
                 || !profile.authority_digest.starts_with("sha256:")
                 || !profile.authority_digest[7..]
@@ -317,6 +371,25 @@ impl DurableRunnerConfig {
                 ));
             }
         }
+        if let Some(profile) = self.cursor_cloud_launch_profile.as_ref() {
+            if [&profile.command, &profile.proxy_script]
+                .iter()
+                .any(|artifact| {
+                    !artifact.path.is_absolute()
+                        || artifact.path.to_str().is_none()
+                        || artifact.sha256.len() != 71
+                        || !artifact.sha256.starts_with("sha256:")
+                        || !artifact.sha256[7..]
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                })
+                || profile.command.path == profile.proxy_script.path
+            {
+                return Err(DurableRunnerError::invalid(
+                    "Cursor Cloud runner launch profile is malformed",
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -340,6 +413,7 @@ mod tests {
             runner_digest: "sha256:digest".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 1024 * 1024,
             p0_reserve_bytes: 64 * 1024,
             max_frame_bytes: 64 * 1024,
@@ -347,6 +421,41 @@ mod tests {
             reconnect_grace: None,
             max_runtime: Duration::from_secs(60),
         }
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn candidate_launch_digest_binds_authority_and_config_binds_actual_identity() {
+        let mut profile = AcpxLaunchProfile {
+            authority_digest: format!("sha256:{}", "a".repeat(64)),
+            command: PathBuf::from("/qualified/node"),
+            args: vec!["/qualified/sidecar.cjs".to_owned()],
+            artifacts: vec![QualifiedLaunchArtifact {
+                path: PathBuf::from("/qualified/node"),
+                sha256: format!("sha256:{}", "b".repeat(64)),
+            }],
+            candidate_admission: None,
+        };
+        let ordinary = profile.canonical_digest().unwrap();
+        assert_eq!(
+            ordinary,
+            "sha256:652c2eb4b49d3a38b028ea5a9803a91188c14a283f1bb478d823681b95be69c6"
+        );
+        profile.candidate_admission = Some(crate::acpx_candidate_admission::test_admission(
+            "run-1",
+            "session-1",
+        ));
+        let candidate = profile.canonical_digest().unwrap();
+        assert_ne!(ordinary, candidate);
+        let mut config = config();
+        config.acpx_launch_profile = Some(profile.clone());
+        config.validate().unwrap();
+        config.run_id = "wrong-run".to_owned();
+        assert!(config.validate().is_err());
+        profile.candidate_admission.as_mut().unwrap().company_id = "company-2".to_owned();
+        assert_ne!(candidate, profile.canonical_digest().unwrap());
+        profile.candidate_admission = None;
+        assert_eq!(ordinary, profile.canonical_digest().unwrap());
     }
 
     #[test]

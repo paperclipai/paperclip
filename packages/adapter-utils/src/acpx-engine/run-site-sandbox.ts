@@ -51,6 +51,7 @@ import type { WorkspaceRestoreOutcome } from "../workspace-restore-merge.js";
  * none — the run-start sweep is the only eviction path.
  */
 export interface StagedRuntimeStoreEntry {
+  observabilityCompatibilityKey?: string;
   stagedRuntime: PreparedAdapterExecutionTargetRuntime;
   envDelta: Record<string, string>;
   teardown: (() => Promise<WorkspaceRestoreOutcome>) | null;
@@ -111,6 +112,8 @@ export interface SandboxRunSiteOptions {
    * compatible resume may reuse the already-staged runtime.
    */
   readonly isCompatibleResume: boolean;
+  /** Process configuration compatibility; deliberately separate from conversation identity. */
+  readonly observabilityCompatibilityKey?: string;
   /** Ship the workspace (and, via the seam, the managed home) into the sandbox. */
   readonly stage: StageWorkspace;
   /**
@@ -233,7 +236,7 @@ export function createSandboxRunSite(options: SandboxRunSiteOptions): SandboxRun
       const sessionKey = context.sessionKey;
       const lease = await withStagingLease(options.stagingLocks, sessionKey, async (): Promise<StagedWorkspace> => {
         const cached = options.isCompatibleResume ? store.borrow(sessionKey) : undefined;
-        if (cached) {
+        if (cached && cached.observabilityCompatibilityKey === options.observabilityCompatibilityKey) {
           // Reuse the already-staged in-sandbox workspace and managed home.
           // Re-apply the env keys the seam repointed and reuse the per-run
           // copy-back so the copy-back cadence stays exactly per run.

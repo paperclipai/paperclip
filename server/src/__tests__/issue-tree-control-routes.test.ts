@@ -14,6 +14,7 @@ const mockTreeControlService = vi.hoisted(() => ({
   cancelIssueStatusesForHold: vi.fn(),
   restoreIssueStatusesForHold: vi.fn(),
   getHold: vi.fn(),
+  getActivePauseHoldGate: vi.fn(),
   releaseHold: vi.fn(),
   cancelUnclaimedWakeupsForTree: vi.fn(),
 }));
@@ -28,10 +29,12 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(),
   wakeup: vi.fn(),
 }));
+const mockAccessService = vi.hoisted(() => ({ decide: vi.fn() }));
 
 const mockHeartbeatFactory = vi.hoisted(() => vi.fn());
 
 vi.mock("../services/index.js", () => ({
+  accessService: () => mockAccessService,
   heartbeatService: mockHeartbeatFactory,
   issueService: () => mockIssueService,
   issueTreeControlService: () => mockTreeControlService,
@@ -70,6 +73,7 @@ describe("issue tree control routes", () => {
     mockReplayBlocks.mockResolvedValue([]);
     mockExecutionBlocker.mockResolvedValue(null);
     mockTreeControlService.getHold.mockResolvedValue(null);
+    mockTreeControlService.getActivePauseHoldGate.mockResolvedValue(null);
     mockIssueService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
       companyId: "company-2",
@@ -87,6 +91,25 @@ describe("issue tree control routes", () => {
     });
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
     mockHeartbeatService.wakeup.mockResolvedValue(null);
+    mockAccessService.decide.mockResolvedValue({ allowed: true });
+  });
+
+  it("conceals private roots from non-members before exposing tree state", async () => {
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      companyIds: ["company-2"],
+      source: "session",
+      isInstanceAdmin: false,
+    });
+    mockAccessService.decide.mockResolvedValue({ allowed: false, reason: "deny_issue_private" });
+
+    const res = await request(app)
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/tree-control/preview")
+      .send({ mode: "pause" });
+
+    expect(res.status).toBe(404);
+    expect(mockTreeControlService.preview).not.toHaveBeenCalled();
   });
 
   it.each([false, true])(
@@ -192,6 +215,36 @@ describe("issue tree control routes", () => {
     },
   );
 
+  it.each([
+    { skipReason: "terminal_status", stillPaused: false },
+    { skipReason: "already_held", stillPaused: false },
+    { skipReason: "already_held", stillPaused: true },
+  ])("rechecks skipped pause members with $skipReason and remaining pause=$stillPaused", async ({ skipReason, stillPaused }) => {
+    const rootId = "11111111-1111-4111-8111-111111111111";
+    const holdId = "33333333-3333-4333-8333-333333333333";
+    const childId = "44444444-4444-4444-8444-444444444444";
+    const root = { id: rootId, companyId: "company-2", status: "todo", assigneeAgentId: null };
+    const child = { id: childId, companyId: "company-2", status: "todo", assigneeAgentId: "current-agent" };
+    mockIssueService.getById.mockImplementation(async (id: string) => id === rootId ? root : child);
+    const hold = { id: holdId, rootIssueId: rootId, mode: "pause", members: [
+      { issueId: childId, skipped: true, skipReason, issueStatus: "done" },
+    ] };
+    mockTreeControlService.getHold.mockResolvedValue(hold);
+    mockTreeControlService.releaseHold.mockResolvedValue({ ...hold, status: "released" });
+    mockTreeControlService.getActivePauseHoldGate.mockResolvedValue(stillPaused ? { holdId: "remaining-hold" } : null);
+    mockReplayBlocks.mockResolvedValue([{ id: childId, identifier: "TEST-2" }]);
+    const app = await createApp({ type: "board", userId: "user-1", companyIds: ["company-2"], source: "session" });
+    const response = await request(app)
+      .post(`/api/issues/${rootId}/tree-holds/${holdId}/release`)
+      .send({ metadata: { wakeAgents: true } });
+    expect(response.status).toBe(200);
+    expect(mockExecutionBlocker).toHaveBeenCalledWith(expect.anything(), "company-2", childId);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(stillPaused ? 0 : 1);
+    if (!stillPaused) expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith("current-agent", expect.objectContaining({
+      payload: expect.objectContaining({ issueId: childId }),
+    }));
+  });
+
   it("resumes sandbox-backed work through the shared plugin worker manager", async () => {
     const rootId = "11111111-1111-4111-8111-111111111111";
     const holdId = "33333333-3333-4333-8333-333333333333";
@@ -263,14 +316,14 @@ describe("issue tree control routes", () => {
     ).toEqual([rootId, "child"]);
   });
 
-  it("keeps the hold active when resume requests an unsafe execution replay", async () => {
+  it.each([false, true])("keeps the hold active when resume requests an unsafe execution replay (previously skipped=%s)", async (skipped) => {
     const rootId = "11111111-1111-4111-8111-111111111111";
     const holdId = "33333333-3333-4333-8333-333333333333";
     mockTreeControlService.getHold.mockResolvedValue({
       id: holdId,
       rootIssueId: rootId,
       mode: "pause",
-      members: [{ issueId: rootId }],
+      members: [{ issueId: rootId, skipped, skipReason: skipped ? "terminal_status" : null }],
     });
     mockReplayBlocks.mockResolvedValue([{ id: rootId, identifier: "TEST-1" }]);
     mockExecutionBlocker.mockResolvedValue({ nextAction: "Resume without waking agents until the previous execution stops.",
