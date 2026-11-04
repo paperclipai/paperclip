@@ -85,8 +85,9 @@ in every request.
 Use the `API_SERVER_KEY` of that gateway in each agent. The shared listener
 validates every request against the key that it started with.
 
-A dashboard URL on port `9119` has its path rewritten to `/api`. The profile
-prefix works only on the API-server port (`8642` by default).
+A dashboard URL on port `9119` rewrites only the root and `/chat` paths to
+`/api`; a `/p/<profile>` prefix passes through unchanged. When a request
+needs the profile prefix, use the API-server port (`8642` by default).
 
 A request with a prefix that names an unknown profile returns `404`. A request
 without a prefix runs as the default profile.
