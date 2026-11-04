@@ -2612,6 +2612,23 @@ configuration, and controller-owned credential or instruction resources use
 verified suspension and saved-history resume. This recovery can restart a
 provider; it does not suspend every healthy warm turn.
 
+A different task can reuse the same physical sandbox after its prior task
+finishes. Provider ingress has one listener per allocation. Before a new logical
+session starts, Runner retires a locally retained idle session that still owns
+that listener. The new run must hold the current native claim, task assignment,
+environment lease and remote workspace writer. Company, agent, provider,
+allocation, workspace and directory must match. The prior run must be committed
+and accounted, with its original controller generation and a clean released or
+expired lease. Retirement saves the prior session through its own checkpoint and
+file-collection callbacks and waits for close before the new listener binds.
+The new task keeps its own logical session and authority.
+
+Active owners, a changed controller or writer, missing canonical proof and failed
+close block admission. A retained entry stays available for verified retirement;
+no process is selected by its port number. This rule covers current-controller
+warm entries with recorded physical identity. A historical process outside that
+registry still needs the existing exact-owner recovery proof.
+
 A fresh native session admitted for the current task may replace a terminal
 predecessor's goal source epoch when the saved goal is absent or complete.
 It must hold the task's execution lock and assignee. Its accepted terminal
