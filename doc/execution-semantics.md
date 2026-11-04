@@ -1264,6 +1264,11 @@ those locks in place and clears them only when the task is done or cancelled.
 If a scheduled resume finds its execution lock free, restart recovery reclaims
 it, as the local resume claim does, unless another run for the task is queued,
 running, or scheduled. A lock held by another run still blocks the resume.
+Another task can hold the same routine execution slot even when this task's
+lock is free. If that unique claim fails, restart recovery rolls back the whole
+candidate claim and waits through the existing recovery deadline. It preserves
+the current routine owner, checkpoint, and provider attempt, and continues the
+startup batch. Other database failures still fail the recovery pass.
 
 Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.
 
