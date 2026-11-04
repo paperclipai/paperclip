@@ -4592,3 +4592,16 @@ production backend credential injection. It uses an explicit two-connection
 main pool, alongside the production auxiliary pools, and verifies the driver's
 actual setting. It does not
 exercise the remote Runner harness backup transport or a live provider.
+
+The workspace runtime lifecycle test uses the actual local runtime owner and an
+ephemeral HTTP child. Normal run release must remove the original PID, listener,
+and service registry entry before the same owner starts another useful service
+from the retained workspace files. This is physical local resource retirement
+and next-use coverage; it does not establish global tenant quiet.
+
+The plugin idle manager lifecycle test uses a real SDK worker process and a
+controlled host state handler that persists worker requests to a temporary file.
+It checks the actual manifest generation, refusal of work under the owned hold,
+and a second useful write after release. This boundary does not exercise the
+production plugin database loader or plugin jobs. Unsupported manifests, active
+manual resources, and missing completion receipts remain sleep blockers.
