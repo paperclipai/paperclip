@@ -1,0 +1,12 @@
+export function validateSnapshot(snapshot, expectedDatabaseOid, expectedObserverPid) {
+  assert.equal(snapshot.databaseOid, expectedDatabaseOid, 'database identity changed');
+  assert.equal(snapshot.observerBackendPid, expectedObserverPid, 'observer connection changed');
+  assert.equal(snapshot.activityCapExceeded, false);
+  assert.equal(snapshot.lockCapExceeded, false);
+  assert.ok(Array.isArray(snapshot.activity) && snapshot.activity.length <= 2048);
+  assert.ok(Array.isArray(snapshot.locks) && snapshot.locks.length <= 8192);
+  assert.equal(snapshot.activity.some(row => row.pid === expectedObserverPid), false);
+  assert.ok(Number.isFinite(Number(snapshot.serverEpochMs)));
+  assert.ok(snapshot.databaseStats && Object.hasOwn(snapshot.databaseStats, 'stats_reset'));
+  return snapshot;
+}

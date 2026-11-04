@@ -97,6 +97,9 @@ and the original checkouts stay unchanged. It needs the exact driver Git objects
 and existing comparator test dependencies; it performs no install or network
 access and launches no application. Temporary copies are removed in `finally`.
 
+The external cluster-binding checks include the exact historical before-source
+fragments and their original hash manifest. They require no author-local files.
+
 Resource and external pure checks can be reproduced separately:
 
 ```sh
