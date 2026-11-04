@@ -79,9 +79,9 @@ it("keeps the unchanged 256MiB packaging/archive caps with one canonical large a
   await promisify(execFile)("python3", ["-c", "import zipfile,sys;z=zipfile.ZipFile(sys.argv[1],'w',compression=zipfile.ZIP_STORED);f=z.open('synthetic.trace','w');[f.write(b'0'*1048576) for _ in range(140)];f.close();z.close()", zip], { timeout: 30000 });
   const tests = path.join(f.root, "budget-tests"); await mkdir(tests);
   const require = createRequire(import.meta.url), pkg = require.resolve("@playwright/test/package.json"), entry = require.resolve("@playwright/test");
-  await writeFile(path.join(tests, "failed.spec.cjs"), `const {test,expect}=require(${JSON.stringify(entry)});test('owned failed large attachment',async({},info)=>{await info.attach('owned trace',{path:${JSON.stringify(zip)},contentType:'application/zip'});await test.step('actual failed assertion',async()=>{throw new Error('The --token option requires a value');});});`);
+  await writeFile(path.join(tests, "failed.spec.cjs"), `const {test,expect}=require(${JSON.stringify(entry)});test('owned failed large attachment',async({},info)=>{await info.attach('owned trace',{path:${JSON.stringify(zip)},contentType:'application/zip'});await test.step('actual failed assertion',async()=>expect(1).toBe(2));});`);
   const config = path.join(tests, "config.cjs");
-  await writeFile(config, `module.exports=${JSON.stringify({ testDir: tests, testMatch: "failed.spec.cjs", workers: 1, use: { trace: "retain-on-failure" }, outputDir: path.join(f.source, "playwright-output"), reporter: [["json", { outputFile: path.join(f.source, "framework-report.json") }], ["html", { outputFolder: path.join(f.source, "html-report"), open: "never" }], ["blob", { outputDir: path.join(f.source, "blob-report") }]] })};`);
+  await writeFile(config, `module.exports=${JSON.stringify({ testDir: tests, testMatch: "failed.spec.cjs", workers: 1, use: { trace: "retain-on-failure" }, metadata: { diagnostic: "The --token option requires a value" }, outputDir: path.join(f.source, "playwright-output"), reporter: [["json", { outputFile: path.join(f.source, "framework-report.json") }], ["html", { outputFolder: path.join(f.source, "html-report"), open: "never" }], ["blob", { outputDir: path.join(f.source, "blob-report") }]] })};`);
   await promisify(execFile)(process.execPath, [path.join(path.dirname(pkg), "cli.js"), "test", "--config", config], { cwd: tests, timeout: 30000, env: { PATH: process.env.PATH, CI: "1", NODE_OPTIONS: "", NODE_PATH: "" } }).then(() => { throw new Error("Original should fail"); }, error => { expect(error.code).toBe(1); });
   await rm(path.join(f.cell, "playwright-output"), { recursive: true });
   for (const folder of ["playwright-output", "html-report", "blob-report"]) await cp(path.join(f.source, folder), path.join(f.cell, folder), { recursive: true });
@@ -183,4 +183,22 @@ it("rejects sensitive JSON keys in registered metadata and JSON attachments with
   const owner = await privateCellEvidenceOwner({ root: f.root, private: true, runId: "123", attempt: "1", executionIds: ["chat-features.runner-opencode.local.activity.agent-feedback"], cellReportProducer: await inspectCellReportProducer() }, "chat-features.runner-opencode.local.activity.agent-feedback");
   await expect(packageEvidence({ privateDir: f.cell, uploadDir: path.join(f.root, "upload"), secrets: [], expectPassScreenshot: false, privateCell: { owner, layout: "original" } })).rejects.toThrow("requires redaction");
   expect(await readFile(file, "utf8")).toBe('{"password":"unrecognized-private-value"}');
+});
+
+it("rejects unrecognized credentials in a decoded plain-text body", async () => {
+  const f = await fixture(), attachment = f.report.suites[0]!.specs[0]!.tests[0]!.results[0]!.attachments[0]! as any;
+  attachment.contentType = "text/plain"; attachment.body = Buffer.from('{"password":"opaque-value"}').toString("base64");
+  await writeFile(path.join(f.source, "framework-report.json"), JSON.stringify(f.report));
+  await expect(copyPrivateFrameworkReport(f.source, f.cell, [])).rejects.toThrow();
+});
+it("rejects unrecognized command credentials in a registered plain-text file", async () => {
+  const f = await fixture(), file = path.join(f.cell, "snapshots/owned.log"); await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, "--token opaque-value");
+  f.report.suites[0]!.specs[0]!.tests[0]!.results[0]!.attachments[0]!.path = file;
+  await writeFile(path.join(f.source, "framework-report.json"), JSON.stringify(f.report)); await copyPrivateFrameworkReport(f.source, f.cell, []);
+  const { packageEvidence } = await import("./evidence.js");
+  const { inspectCellReportProducer, privateCellEvidenceOwner } = await import("./manual-private-report-assets.js");
+  const id = "chat-features.runner-opencode.local.activity.agent-feedback";
+  const owner = await privateCellEvidenceOwner({ root: f.root, private: true, runId: "123", attempt: "1", executionIds: [id], cellReportProducer: await inspectCellReportProducer() }, id);
+  await expect(packageEvidence({ privateDir: f.cell, uploadDir: path.join(f.root, "upload"), secrets: [], expectPassScreenshot: false, privateCell: { owner, layout: "original" } })).rejects.toThrow("requires redaction");
 });
