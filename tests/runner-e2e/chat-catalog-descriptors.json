@@ -3587,7 +3587,7 @@
       "../../ui/src/pages/Projects.tsx",
       "../../ui/src/components/AnnouncementWell.tsx"
     ],
-    "oracleVersion": "paperclip.chat-catalog.announcement-dismissal.v2",
+    "oracleVersion": "paperclip.chat-catalog.announcement-dismissal.v3",
     "expectedRunCount": 1,
     "turnTimeoutMs": 120000,
     "attemptTimeoutMs": 300000,
