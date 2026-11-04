@@ -937,6 +937,23 @@ identity, unknown failures, active leases, and incomplete cleanup still require
 their normal reconciliation and termination proof. Unknown historical setup errors remain
 outside this policy, and generic recovery cannot renew its exhausted budget.
 
+### Saved chat Retry preparation
+
+Task Retry can meet a busy chat identity lock before its source is authorized.
+The canonical Retry and its linked chat action then retain one unadmitted request.
+The existing chat retry worker prepares that request after the lock is available.
+It checks the current board actor, source, principal, conversation, task owner,
+and canonical intent before normal admission. Stop, changed input, revoked access,
+or newer execution can reject it without adopting input or publishing a notice.
+Restoration of a certified unstarted input batch stays in the same transaction as
+source preparation. Contention cannot commit a partial restoration.
+
+Pending preparation shows the existing retry-scheduled state and the chat outbox's
+actual retry or stale-claim deadline. It does not imply that a provider started.
+The same durable action retains the existing eight-attempt budget across worker
+restart and duplicate clicks. Preparation neither creates a generic board wake
+nor renews the budget when a background sweep inspects it.
+
 ### Runner authentication and ACP startup handshake bounds
 
 The native Runner waits up to the ten-second connection setup budget for the
