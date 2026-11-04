@@ -822,6 +822,15 @@ entry file. Installed dependencies still belong to that trusted checkout. The
 staged copies are removed after verified process cleanup and kept if cleanup is
 incomplete. This path requires the repository's Node 24.11+ runtime.
 
+Each Linux protocol worker snapshots its current Node executable into a fresh
+owner-only directory before credential steps. The copy keeps the same bytes
+and version, with directory mode `0700` and file mode `0500`. The worker verifies
+the copy's hash and actual `process.execPath`, then puts that directory first
+on its job-local `PATH`. `cell-output/provider-node-receipt.json` records the
+original and copied Node modes and hashes plus the actual sidecar mode and
+hash. This handles writable hosted tool caches without changing those caches
+or relaxing Runner's qualified-artifact permission and digest checks.
+
 Campaign reports verify the retained request binding and the digest of every
 request receipt before reducing a cell's allocation. Missing admission, request,
 or receipt evidence preserves known ledger charges and holds the rest of the

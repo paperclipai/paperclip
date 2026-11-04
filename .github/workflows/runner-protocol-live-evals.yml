@@ -852,6 +852,15 @@ jobs:
           artifact-ids: ${{ needs.prepare_controller.outputs.artifact_id }}
           path: /tmp/paperclip-runner-controlled-${{ github.run_id }}/runtime
 
+      - name: Stage an owned provider Node before credentials
+        run: |
+          set -euo pipefail
+          mkdir -p cell-output
+          node packages/paperclip-runner/scripts/stage-runner-provider-node.mjs \
+            "$RUNNER_TEMP/runner-protocol-provider-node" \
+            "$GITHUB_WORKSPACE/runner-protocol-build/extracted/portable/dist/cli/acpx-runtime-sidecar.cjs" \
+            cell-output/provider-node-receipt.json
+
       - name: Verify controller code before archive access
         if: needs.authorize.outputs.accounting_mode == 'controlled'
         id: verify_controller
