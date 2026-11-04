@@ -35,6 +35,8 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
   const fakeProvider = join(runnerWorkspace, "target/release/fake-codex-app-server");
 
   beforeAll(() => {
+    execFileSync(process.execPath, [resolve(runnerWorkspace, "../scripts/build-verified-provider-entrypoints.mjs")],
+      { cwd: resolve(runnerWorkspace, ".."), stdio: "pipe", timeout: 30_000 });
     execFileSync("cargo", ["build", "--release", "--locked", "-p", "paperclip-runner-core",
       "--bin", "paperclip-runnerd", "--bin", "fake-codex-app-server"],
     { cwd: runnerWorkspace, stdio: "ignore", timeout: 600_000 });
