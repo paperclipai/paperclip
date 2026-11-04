@@ -32,25 +32,36 @@ export async function stageSlackCloudEnrollmentIntent(db: Db, endpointId: string
     .where(eq(chatEndpoints.id, endpointId)).limit(1);
   if (!current || current.endpoint.provider !== "slack") return;
   const endpoint = current.endpoint, setup = endpoint.setup as InternalSetupState;
-  const subject = actorUserId ?? setup.slackCloudSubject ?? setup.slackCloudIntent?.subject;
-  const instanceId = setup.slackCloudInstanceId ?? setup.slackCloudIntent?.instanceId ?? config?.instanceId;
   const generation = Number(setup.runtimeGeneration ?? 0);
-  if (!instanceId || !subject || !Number.isSafeInteger(generation) || generation < 1) return;
   const active = ["active", "verifying", "attention"].includes(endpoint.status) && current.connection.status === "active" && current.connection.enabled;
-  if (setup.slackCloudIntent?.runtimeGeneration === generation && setup.slackCloudIntent.active === active) return;
-  if (active ? setup.slackCloudEvents?.runtimeGeneration === generation : setup.slackCloudRetiredGeneration === generation) return;
+  const custodyInstance = setup.slackCloudIntent?.instanceId ?? setup.slackCloudInstanceId;
+  const custodySubject = setup.slackCloudIntent?.subject ?? setup.slackCloudSubject;
+  const oldRetired = !setup.slackCloudIntent && setup.slackCloudInstanceId
+    && Number.isSafeInteger(setup.slackCloudRetiredGeneration) && Number(setup.slackCloudRetiredGeneration) >= 1
+    && Number(setup.slackCloudRetiredGeneration) >= (setup.slackCloudEvents?.runtimeGeneration ?? 1);
+  const changingInstance = !!custodyInstance && !!config && custodyInstance !== config.instanceId;
+  const mayReplace = active && changingInstance && oldRetired && !!actorUserId
+    && generation > Number(setup.slackCloudRetiredGeneration);
+  const blocked = changingInstance && !mayReplace;
+  const instanceId = mayReplace ? config!.instanceId : custodyInstance ?? config?.instanceId;
+  const subject = blocked || !active ? custodySubject ?? actorUserId : actorUserId ?? custodySubject;
+  if (!instanceId || !subject || !Number.isSafeInteger(generation) || generation < 1) return;
+  if (setup.slackCloudIntent?.runtimeGeneration === generation && setup.slackCloudIntent.active === active
+    && setup.slackCloudIntent.instanceId === instanceId && setup.slackCloudIntent.subject === subject) return;
+  if (!blocked && setup.slackCloudInstanceId === instanceId && setup.slackCloudSubject === subject
+    && (active ? setup.slackCloudEvents?.runtimeGeneration === generation : setup.slackCloudRetiredGeneration === generation)) return;
   const [registration] = active ? await db.select({ appId: chatSlackRegistrations.appId }).from(chatSlackRegistrations)
     .where(and(eq(chatSlackRegistrations.endpointId, endpointId), eq(chatSlackRegistrations.companyId, endpoint.companyId))).limit(1) : [];
   const appId = registration?.appId ?? setup.slackCloudEvents?.appId;
   if (active && (!appId || !endpoint.providerAccountId)) return;
   const intent: Intent = { version: 1, id: randomUUID(), subject, instanceId, companyId: endpoint.companyId, endpointId,
     publicId: endpoint.publicId, connectionId: endpoint.connectionId, runtimeGeneration: generation, active,
-    ...(active ? { appId: appId!, teamId: endpoint.providerAccountId! } : {}), attempts: 0, nextAttemptAt: config ? new Date().toISOString() : null,
-    ...(!config ? { failureCode: "connector_configuration_unavailable" } : {}) };
+    ...(active ? { appId: appId!, teamId: endpoint.providerAccountId! } : {}), attempts: 0, nextAttemptAt: config && !blocked ? new Date().toISOString() : null,
+    ...(blocked ? { failureCode: "instance_replacement_requires_retirement" } : !config ? { failureCode: "connector_configuration_unavailable" } : {}) };
   await notifyDeliveryWork(db, DELIVERY_QUEUES.connectionEvents);
   await db.update(chatEndpoints).set({
-    lastError: config ? sql`${chatEndpoints.lastError}` : "Slack Cloud event registration requires attention",
-    setup: sql`jsonb_set(jsonb_set(jsonb_set(${chatEndpoints.setup}, '{slackCloudIntent}', ${JSON.stringify(intent)}::jsonb), '{slackCloudSubject}', ${JSON.stringify(subject)}::jsonb), '{slackCloudInstanceId}', ${JSON.stringify(instanceId)}::jsonb)` })
+    lastError: config && !blocked ? sql`${chatEndpoints.lastError}` : "Slack Cloud event registration requires attention",
+    setup: sql`jsonb_set(${chatEndpoints.setup}, '{slackCloudIntent}', ${JSON.stringify(intent)}::jsonb)` })
     .where(and(eq(chatEndpoints.id, endpointId), eq(chatEndpoints.companyId, endpoint.companyId)));
 }
 
@@ -139,7 +150,7 @@ export function createSlackCloudEnrollment(db: Db, options: {
           ? sql`case when ${chatEndpoints.lastError} = 'Slack Cloud event registration requires attention' then null else ${chatEndpoints.lastError} end` : sql`${chatEndpoints.lastError}`,
         setup: next
         ? sql`jsonb_set(${chatEndpoints.setup}, '{slackCloudIntent}', ${JSON.stringify(next)}::jsonb)`
-        : sql`jsonb_set(${chatEndpoints.setup} - 'slackCloudIntent', ARRAY[${field}], ${JSON.stringify(enrolled)}::jsonb)` })
+        : sql`jsonb_set(jsonb_set(jsonb_set(${chatEndpoints.setup} - 'slackCloudIntent' - 'slackCloudRetiredGeneration', ARRAY[${field}], ${JSON.stringify(enrolled)}::jsonb), '{slackCloudInstanceId}', ${JSON.stringify(intent.instanceId)}::jsonb), '{slackCloudSubject}', ${JSON.stringify(intent.subject)}::jsonb)` })
         .where(and(eq(chatEndpoints.id, endpointId), eq(chatEndpoints.companyId, endpoint.companyId),
           sql`${chatEndpoints.setup}->'slackCloudIntent'->>'id'=${intent.id}`,
           sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer,0)=${intent.runtimeGeneration}`)).returning({ id: chatEndpoints.id });

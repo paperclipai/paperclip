@@ -30,14 +30,14 @@ function fixture() {
   const update = vi.fn((_table: object) => ({ set: (values: { setup: unknown }) => ({ where: () => {
     const write = () => {
       if (rejectWrite) return [];
+      const priorIntent = endpoint.setup.slackCloudIntent;
       for (const value of jsonValues(values.setup)) {
         if (value && typeof value === "object" && "active" in value && "id" in value) {
           endpoint.setup.slackCloudIntent = value as NonNullable<InternalSetupState["slackCloudIntent"]>;
-          endpoint.setup.slackCloudInstanceId = endpoint.setup.slackCloudIntent.instanceId;
-          endpoint.setup.slackCloudSubject = endpoint.setup.slackCloudIntent.subject;
+
         }
-        else if (value && typeof value === "object" && "bindingId" in value) { delete endpoint.setup.slackCloudIntent; endpoint.setup.slackCloudEvents = value as NonNullable<InternalSetupState["slackCloudEvents"]>; }
-        else if (typeof value === "number") { delete endpoint.setup.slackCloudIntent; endpoint.setup.slackCloudRetiredGeneration = value; }
+        else if (value && typeof value === "object" && "bindingId" in value) { delete endpoint.setup.slackCloudIntent; delete endpoint.setup.slackCloudRetiredGeneration; endpoint.setup.slackCloudEvents = value as NonNullable<InternalSetupState["slackCloudEvents"]>; endpoint.setup.slackCloudInstanceId = priorIntent!.instanceId; endpoint.setup.slackCloudSubject = priorIntent!.subject; }
+        else if (typeof value === "number") { delete endpoint.setup.slackCloudIntent; endpoint.setup.slackCloudRetiredGeneration = value; endpoint.setup.slackCloudInstanceId = priorIntent!.instanceId; endpoint.setup.slackCloudSubject = priorIntent!.subject; }
       }
       return [{ id: endpoint.id }];
     };
@@ -146,4 +146,69 @@ it("temporary signing-credential store failure keeps the bounded retry", async (
   expect(f.endpoint.setup.slackCloudIntent?.failureCode).toBe("broker_unavailable");
   expect(Date.parse(f.endpoint.setup.slackCloudIntent!.nextAttemptAt!)).toBeGreaterThan(Date.now());
   expect(f.connector.slackEventEnrollment).not.toHaveBeenCalled();
+});
+
+it("only positive old retirement and an explicit new generation can stage a replacement instance", async () => {
+  const f = fixture(); await f.stage(); await f.run(f.endpoint.id, undefined, f.lease);
+  const oldDescriptor = structuredClone(f.endpoint.setup.slackCloudEvents);
+  vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID", "replacement");
+  f.endpoint.setup.runtimeGeneration = 2;
+  await f.stage();
+  expect(f.endpoint.setup.slackCloudIntent).toMatchObject({ instanceId: "instance", subject: "original-authorized-user",
+    failureCode: "instance_replacement_requires_retirement", nextAttemptAt: null });
+  expect(f.endpoint.setup.slackCloudEvents).toEqual(oldDescriptor);
+  vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID", "instance");
+  f.endpoint.status = "paused"; f.connection.enabled = false; f.endpoint.setup.runtimeGeneration = 3;
+  await f.stage(); await f.run(f.endpoint.id, undefined, f.lease);
+  expect(f.endpoint.setup.slackCloudRetiredGeneration).toBe(3);
+  vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID", "replacement");
+  f.endpoint.status = "active"; f.connection.enabled = true; f.endpoint.setup.runtimeGeneration = 4;
+  await f.stage();
+  expect(f.endpoint.setup.slackCloudIntent).toMatchObject({ instanceId: "replacement", runtimeGeneration: 4 });
+  expect(f.endpoint.setup.slackCloudInstanceId).toBe("instance");
+  expect(f.endpoint.setup.slackCloudSubject).toBe("original-authorized-user");
+  expect(f.endpoint.setup.slackCloudEvents).toEqual(oldDescriptor);
+  f.connector.slackEventEnrollment.mockImplementationOnce(async input => {
+    const { active: _active, signingSecret: _secret, ...identity } = input.enrollment;
+    return { version: 1, instanceId: "replacement", ...identity, bindingId: `slack-event:${"c".repeat(64)}` };
+  });
+  await f.run(f.endpoint.id, undefined, f.lease);
+  expect(f.endpoint.setup.slackCloudInstanceId).toBe("replacement");
+  expect(f.endpoint.setup.slackCloudIntent).toBeUndefined();
+  expect(f.endpoint.setup.slackCloudRetiredGeneration).toBeUndefined();
+  expect(f.endpoint.setup.slackCloudEvents?.runtimeGeneration).toBe(4);
+});
+
+it("a new config without an explicit actor cannot adopt even a retired old instance", async () => {
+  const f = fixture(); await f.stage(); await f.run(f.endpoint.id, undefined, f.lease);
+  f.endpoint.status = "paused"; f.connection.enabled = false; f.endpoint.setup.runtimeGeneration = 2;
+  await f.stage(); await f.run(f.endpoint.id, undefined, f.lease);
+  vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID", "replacement");
+  f.endpoint.status = "active"; f.connection.enabled = true; f.endpoint.setup.runtimeGeneration = 3;
+  await stageSlackCloudEnrollmentIntent(f.db, f.endpoint.id, undefined);
+  expect(f.endpoint.setup.slackCloudIntent).toMatchObject({ instanceId: "instance", subject: "original-authorized-user",
+    nextAttemptAt: null, failureCode: "instance_replacement_requires_retirement" });
+});
+
+it("removal after an unconfirmed replacement targets its pending instance without new credentials", async () => {
+  const f = fixture(); await f.stage(); await f.run(f.endpoint.id, undefined, f.lease);
+  f.endpoint.status = "paused"; f.connection.enabled = false; f.endpoint.setup.runtimeGeneration = 2;
+  await f.stage(); await f.run(f.endpoint.id, undefined, f.lease);
+  vi.stubEnv("PAPERCLIP_CLOUD_CONNECTOR_INSTANCE_ID", "replacement");
+  f.endpoint.status = "active"; f.connection.enabled = true; f.endpoint.setup.runtimeGeneration = 3;
+  await f.stage();
+  expect(f.endpoint.setup.slackCloudInstanceId).toBe("instance");
+  f.endpoint.status = "archived"; f.connection.enabled = false; f.endpoint.setup.runtimeGeneration = 4;
+  await f.stage();
+  expect(f.endpoint.setup.slackCloudIntent).toMatchObject({ active: false, instanceId: "replacement", runtimeGeneration: 4 });
+  f.resolveCredentials.mockClear();
+  f.connector.slackEventEnrollment.mockImplementationOnce(async input => {
+    const { active: _active, ...identity } = input.enrollment;
+    return { version: 1, instanceId: "replacement", ...identity };
+  });
+  await f.run(f.endpoint.id, undefined, f.lease);
+  expect(f.resolveCredentials).not.toHaveBeenCalled();
+  expect(f.endpoint.setup.slackCloudIntent).toBeUndefined();
+  expect(f.endpoint.setup.slackCloudInstanceId).toBe("replacement");
+  expect(f.endpoint.setup.slackCloudRetiredGeneration).toBe(4);
 });
