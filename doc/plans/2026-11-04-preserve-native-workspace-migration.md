@@ -83,3 +83,21 @@ verified original bytes from the primary-output count; duplicates and unrelated
 files remain failures. Regrading the retained evidence passes all 21 checks.
 The original failed disposition remains recorded. Forty-four grader/readiness
 controls pass; further live provider and warm-policy qualification follows.
+
+OpenCode per-turn and Codex warm at harness `94bb917947` passed all 21 product
+checks. Their diagnostic observer held the disposable database open at cleanup;
+the observer now closes on the final case receipt, and an ordinary PostgreSQL
+drop reproduces both the failure and fix without a provider. Owned sandboxes,
+keys and buckets were independently cleaned. Original campaign failures remain
+recorded. Full repository build passed at `94bb917947`; full repository typecheck
+and 38 focused harness tests passed at `b12ecd823e`.
+
+The next Grok migration preserved the workspace and session selection but failed
+at the Runner's strict attachment check. Imported instructions and skills had
+new registered copy paths. Grok still used immutable-instruction attachment,
+while Claude already allowed only the authenticated canonical asset-path suffix
+to move. A no-provider Grok regression reproduces that exact rejection. Grok now
+uses the same narrow asset-path policy. Content, skill digests, workspace/session
+identity, unknown context policy, same-run mutations and unauthenticated run
+rotation remain rejected. All 57 ACPX provider tests pass after the fix. A fresh
+Linux Runner and real Grok continuation must still verify the provider boundary.
