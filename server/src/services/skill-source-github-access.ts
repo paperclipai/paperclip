@@ -15,17 +15,21 @@ function providerStatus(error: unknown): number | undefined {
 }
 
 async function companyGitHubTokenHeaders(db: Db, companyId: string): Promise<Record<string, string>> {
-  const { DEFAULT_GITHUB_TOKEN_SECRET_NAMES, resolveManagedGitHubIdentitySelection } = await import('./git-credentials.js');
-  if ((await resolveManagedGitHubIdentitySelection(db, companyId, {})).configured) return {};
-  const { secretService } = await import('./secrets.js');
-  const secrets = secretService(db);
-  for (const name of DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
-    const secret = await secrets.getByName(companyId, name).catch(() => null);
-    if (!secret) continue;
-    const token = await secrets.resolveSecretValue(companyId, secret.id, 'latest', {
-      accessContext: { consumerType: 'system', consumerId: 'skill-source-github-access', actorType: 'system', issueId: null, heartbeatRunId: null, responsibleUserId: null },
-    }).then(value => value.trim()).catch(() => '');
-    if (token) return { Authorization: `Bearer ${token}` };
+  try {
+    const { DEFAULT_GITHUB_TOKEN_SECRET_NAMES, resolveManagedGitHubIdentitySelection } = await import('./git-credentials.js');
+    if ((await resolveManagedGitHubIdentitySelection(db, companyId, {})).configured) return {};
+    const { secretService } = await import('./secrets.js');
+    const secrets = secretService(db);
+    for (const name of DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
+      const secret = await secrets.getByName(companyId, name).catch(() => null);
+      if (!secret) continue;
+      const token = await secrets.resolveSecretValue(companyId, secret.id, 'latest', {
+        accessContext: { consumerType: 'system', consumerId: 'skill-source-github-access', actorType: 'system', issueId: null, heartbeatRunId: null, responsibleUserId: null },
+      }).then(value => value.trim()).catch(() => '');
+      if (token) return { Authorization: `Bearer ${token}` };
+    }
+  } catch {
+    // A failed lookup leaves the read anonymous.
   }
   return {};
 }

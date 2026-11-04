@@ -240,6 +240,15 @@ describe('GitHub source authorization', () => {
     expect(mocks.secretValue.mock.calls.map(call => call[1])).toEqual(['GH_TOKEN', 'PAPERCLIP_GITHUB_TOKEN', 'GH_TOKEN', 'PAPERCLIP_GITHUB_TOKEN', 'GH_TOKEN', 'PAPERCLIP_GITHUB_TOKEN']);
     expect(mocks.snapshot).toHaveBeenCalledWith(expect.objectContaining({ token: '', cacheScope: expect.stringMatching(/,false\]$/) }), expect.anything());
   });
+  it('reads anonymously when the connection lookup itself fails', async () => {
+    companyToken();
+    mocks.selection.mockRejectedValue(new Error('database unavailable'));
+    mocks.managed.mockResolvedValue({ status: 'absent' });
+    const fetch = vi.fn(async () => Response.json({})); vi.stubGlobal('fetch', fetch);
+    await skillSourceGitHubReader(db, 'company', actor({ type: 'board', userId: 'alice', source: 'session' }), null)('/repos/acme/public');
+    expect(authorizations(fetch)).toEqual([null]);
+    expect(mocks.secretByName).not.toHaveBeenCalled();
+  });
   it('keeps the anonymous fallback when the company has a GitHub connection installed', async () => {
     companyToken();
     mocks.selection.mockResolvedValue({ configured: true });
