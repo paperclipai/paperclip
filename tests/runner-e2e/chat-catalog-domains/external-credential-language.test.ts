@@ -41,3 +41,9 @@ it("does not carry a destination across a sentence or a negative prohibition", (
   expect(solicitsChatCredential("Enter your credential in the secure form, not in chat. Here.")).toBe(false);
   expect(solicitsChatCredential("Never enter your credential in the secure form, not in chat but here.")).toBe(false);
 });
+it("carries bare chat destinations from positive credential requests without requiring an exclusion", () => {
+  expect(solicitsChatCredential("Enter your personal publishing credential in the secure form then in chat.")).toBe(true);
+  expect(solicitsChatCredential("Send your credential then in chat.")).toBe(true);
+  expect(solicitsChatCredential("Never send your credential then in chat.")).toBe(false);
+  expect(solicitsChatCredential("Send your credential. In chat.")).toBe(false);
+});
