@@ -2,7 +2,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { createFinanceEventInTransaction } from "./finance.js";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { fastResponseRequests, decisionInvocations, promptInjectionInvocations, budgetReservations, costEvents, costAdjustments, billingInvoices, billingInvoiceLines, financeEvents, heartbeatRuns, type Db } from "@paperclipai/db";
-import { adjustCostSchema, importBillingInvoiceSchema, normalizeCents, type AdjustCost, type ImportBillingInvoice } from "@paperclipai/shared";
+import { adjustCostSchema, importBillingInvoiceSchema, normalizeCents, subtractCents, type AdjustCost, type ImportBillingInvoice } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { withAccountingReadSnapshot, withAccountingTransaction, withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { receiptFingerprint } from "./receipt-fingerprint.js";

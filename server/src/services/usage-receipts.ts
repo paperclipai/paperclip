@@ -217,7 +217,8 @@ export async function persistUsageReceiptInTransaction(tx: Db, raw: UsageReceipt
 export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typeof heartbeatRuns.$inferSelect, publications: ActivityPublication[]) {
   const previous = run.usageJson ?? {};
   if (previous.accountingLateReceiptPending !== true || typeof previous.accountingLateReceiptId !== "string") return false;
-  if (previous.accountingLateReceiptAttemptedId === previous.accountingLateReceiptId) return false;
+  // Unchanged attempted debt is excluded from background scans. An explicit
+  // operator retry still rechecks it after a reviewed ledger correction.
   const [saved] = await tx.select({ receiptJson: runUsageReceipts.receiptJson }).from(runUsageReceipts).where(and(
     eq(runUsageReceipts.companyId, run.companyId), eq(runUsageReceipts.runId, run.id),
     sql`${runUsageReceipts.id}::text = ${previous.accountingLateReceiptId}`));
@@ -245,7 +246,7 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
   const biller = receipt?.biller ?? receipt?.provider ?? "unknown";
   const qualified = late && receipt?.complete && receipt.usageBasis !== "session_cumulative"
     && late.sourceId === previous.accountingReceiptSourceId && sameTokens && authoritative
-    && rawAmount != null && receipt.costStatus !== "unpriced" && events.length === 1 && !reviewedValuation
+    && rawAmount != null && receipt.costStatus !== "unpriced" && events.length === 1
     && receipt.model === events[0].event.model && receipt.provider === events[0].event.provider
     && biller === events[0].event.biller && billingType === events[0].event.billingType
     && (!receipt.providerRequestId || !events[0].event.providerRequestId || receipt.providerRequestId === events[0].event.providerRequestId)
@@ -267,6 +268,21 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
     }).where(eq(heartbeatRuns.id, run.id));
   }
   if (!qualified) { await updateDebtState(false); return false; }
+  const corrected = receipt.billingType === "subscription_included" || receipt.billingType === "subscription"
+    ? "0.0000000" : unitsToCents(usdToUnits(rawAmount));
+  if (reviewedValuation) {
+    if (compareCents(events[0].exact, corrected) !== 0) { await updateDebtState(false); return false; }
+    // The operator has already reconciled this exact billing evidence. Resolve
+    // the hold without creating another adjustment or replacing their pricing
+    // authority, and never rewind a newer accepted source sequence.
+    await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId,
+      projectId: typeof (previous.ledgerScope as Record<string, unknown> | undefined)?.projectId === "string"
+        ? (previous.ledgerScope as Record<string, string>).projectId : null });
+    await updateDebtState(true, late.sequence > acceptedSequence);
+    if (Object.keys(debts).length === 0) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAgentStatus,
+      JSON.stringify({ companyId: run.companyId, agentId: run.agentId }));
+    return true;
+  }
   if (late.sequence <= acceptedSequence) {
     // A higher complete receipt from this same cumulative source already
     // supersedes this money-only debt. Resolve it without repricing or rewinding
@@ -279,8 +295,6 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
       JSON.stringify({ companyId: run.companyId, agentId: run.agentId }));
     return true;
   }
-  const corrected = receipt.billingType === "subscription_included" || receipt.billingType === "subscription"
-    ? "0.0000000" : unitsToCents(usdToUnits(rawAmount));
   if (compareCents(events[0].exact, corrected) !== 0 || events[0].event.costStatus !== "reported"
     || receiptFingerprint(events[0].event.pricingProvenance) !== receiptFingerprint(receipt.pricingProvenance)) {
     await applyCostCorrectionInTransaction(tx, publications, { companyId: run.companyId, eventId: events[0].event.id,

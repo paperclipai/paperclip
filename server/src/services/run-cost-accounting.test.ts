@@ -10,6 +10,7 @@ import { accountRunCost, createCostAccountingReconciler, readCostAccountingWork 
 import { createRunUsageRecorder, persistUsageReceipt, type UsageReceiptEnvelope } from "./usage-receipts.js";
 import * as usageReceipts from "./usage-receipts.js";
 import { billingReconciliationService } from "./billing-reconciliation.js";
+import { accountingIntegrityService } from "./accounting-integrity.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("run cost accounting work", () => {
@@ -298,7 +299,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(false);
   });
 
-  it("retains reviewed operator valuation when a later provider price disagrees", async () => {
+  it("retains reviewed operator valuation and resolves matching late debt through an explicit retry", async () => {
     const sourceId = randomUUID();
     const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
     await persistUsageReceipt(db, receipt(owner, sourceId, 1, 0.01));
@@ -318,6 +319,20 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId)))[0].usageJson)
       .toMatchObject({ accountingLateReceiptPending: true, accountingLateReceiptDebts: { [late.id]: true } });
     expect((await readCostAccountingWork(db, Date.now(), directory)).pending).toBe(false);
+    await billingReconciliationService(db).adjust(owner.companyId, event.id, {
+      idempotencyKey: `operator-reviewed-late:${owner.runId}`, expectedCents: "4", correctedCents: "2",
+      reason: "Reviewed the retained late provider receipt", pricing: { source: "operator", evidence: "Reviewed late receipt" },
+    }, "board");
+    expect(await accountingIntegrityService(db).retry(owner.companyId, owner.runId, "board")).toEqual({ accounted: true });
+    const [resolved] = await db.select().from(costEvents).where(eq(costEvents.id, event.id));
+    expect(resolved).toMatchObject({ costCents: 2, pricingProvenance: { source: "operator", evidence: "Reviewed late receipt" } });
+    const adjustments = await db.select().from(costAdjustments).where(eq(costAdjustments.costEventId, event.id));
+    expect(adjustments).toHaveLength(2);
+    expect(adjustments.every(adjustment => adjustment.actorId === "board")).toBe(true);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(run.costAccountingPending).toBe(false);
+    expect(run.usageJson).toMatchObject({ accountingLateReceiptPending: false, accountingLateReceiptDebts: {},
+      accountingReconciledReceiptId: late.id, accountingReconciledReceiptSequence: 2 });
   });
 
   it("fences a source handoff against a checkpoint committed during its spool pre-read", async () => {
