@@ -125,6 +125,7 @@ describe("Codex resume accounting through the production driver", () => {
         expect(advanced.codexUsageBaseline).toEqual({
           baseline: { inputTokens: 100, outputTokens: 10 },
           latest: { inputTokens: 150, outputTokens: 19 },
+          accounted: { inputTokens: 150, outputTokens: 19 },
         });
         expect(persisted.codexUsageBaseline.latest).toEqual({
           inputTokens: 140,
@@ -327,6 +328,35 @@ describe("Codex resume accounting through the production driver", () => {
         .every((call) => call.params.includeTurns === false),
     ).toBe(true);
     await session.close();
+  });
+
+  it("keeps usage reported between runs in the next run's delta after a restore", async () => {
+    const first = new FakeCodexTransport();
+    const second = new FakeCodexTransport();
+    const driver = makeDriver([first, second], { conversationMode: "direct" });
+    const session = await driver.openSession({ runId: "first", normalizedSessionId: "between-runs-restore", workingDirectory: WORKSPACE });
+    await session.startTurn({ message: { role: "user", text: "First" } });
+    first.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: "turn-1", tokenUsage: { total: { inputTokens: 100, outputTokens: 10 } } });
+    first.push("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed", items: [] } });
+    await collectUntilTerminal(session.events());
+    // The first run's charge is final at 100; this report arrives after it.
+    first.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: "turn-1", tokenUsage: { total: { inputTokens: 130, outputTokens: 10 } } });
+    await new Promise(resolve => setImmediate(resolve));
+    const persisted = JSON.parse(JSON.stringify(await session.snapshot!()));
+    expect(persisted.codexUsageBaseline).toMatchObject({ latest: { inputTokens: 130 }, accounted: { inputTokens: 100 } });
+    await session.close();
+    second.readResponse = { thread: { id: "thread-1", sessionId: "provider-session-1", cwd: WORKSPACE,
+      turns: [{ id: "turn-1", status: "completed", items: [] }], tokenUsage: { total: { inputTokens: 130, outputTokens: 10 } } } };
+    const recovery = await driver.recoverSession(persisted);
+    expect(recovery.recovered).toBe(true);
+    const recovered = recovery.session!;
+    await recovered.attachRun!({ runId: "second" });
+    second.turnStartResponse = Promise.resolve({ turn: { id: "turn-2", status: "inProgress", items: [] } });
+    await recovered.startTurn({ message: { role: "user", text: "Second" } });
+    second.push("thread/tokenUsage/updated", { threadId: "thread-1", turnId: "turn-2", tokenUsage: { total: { inputTokens: 150, outputTokens: 16 } } });
+    for await (const event of recovered.events()) if (event.payload.kind === "usage") break;
+    expect(await recovered.usage!()).toMatchObject({ runDelta: { inputTokens: 50, outputTokens: 6 } });
+    await recovered.close();
   });
 
   it("keeps the startup external sandbox profile on subsequent turns", async () => {
