@@ -9,7 +9,10 @@
  *     "mode": "cloud",
  *     "catalogVersion": "2026.720.0",
  *     "features": { "<feature-key>": true | false, ... },
- *     "plugins":  { "autoInstall": ["daytona", "kubernetes"] },
+ *     "plugins":  {
+ *       "autoInstall": ["daytona", "kubernetes"],
+ *       "workerEnv": { "daytona": ["PROVIDER_ORIGIN"] }
+ *     },
  *     "environments": [
  *       { "name": "Daytona", "provider": "daytona", "config": { "target": "us" } }
  *     ]
@@ -49,7 +52,11 @@ export interface ManagedInstanceConfig {
   /** App feature-catalog version the document was validated against. */
   catalogVersion: string;
   features: Readonly<Partial<Record<ManagedExperimentalFeatureKey, boolean>>>;
-  plugins: { readonly autoInstall: readonly string[] };
+  plugins: {
+    readonly autoInstall: readonly string[];
+    /** Process variable names granted to a plugin's worker, by catalog key. Names only, never values. */
+    readonly workerEnv?: Readonly<Record<string, readonly string[]>>;
+  };
   /** Sandbox environments the control plane provisions at boot (empty when the section is absent). */
   environments: readonly ManagedEnvironmentSpec[];
 }
@@ -81,6 +88,17 @@ export interface ManagedEnvironmentSpec {
  * platform-provisioned environment responses on managed instances.
  */
 export const SECRET_LIKE_CONFIG_KEY_PATTERN = /(api[-_]?key|token|secret|password|credential)/i;
+
+const WORKER_ENV_NAME_PATTERN = /^[A-Z][A-Z0-9_]*$/;
+
+/** Host secrets that give access to every tenant resource. A plugin worker never receives these. */
+const WORKER_ENV_DENIED_NAMES: ReadonlySet<string> = new Set([
+  "BETTER_AUTH_SECRET",
+  "DATABASE_URL",
+  "PAPERCLIP_AGENT_JWT_SECRET",
+  "PAPERCLIP_AUTH_SECRET",
+  "PAPERCLIP_SECRETS_MASTER_KEY",
+]);
 
 function findSecretLikeConfigKey(value: Record<string, unknown>, path: string): string | null {
   for (const [key, child] of Object.entries(value)) {
@@ -224,8 +242,8 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
     fail(`"plugins" must be an object (got ${describeJsonValue(doc.plugins)})`);
   }
   for (const key of Object.keys(doc.plugins)) {
-    if (key !== "autoInstall") {
-      fail(`"plugins" has unknown key "${key}" (allowed: autoInstall)`);
+    if (key !== "autoInstall" && key !== "workerEnv") {
+      fail(`"plugins" has unknown key "${key}" (allowed: autoInstall, workerEnv)`);
     }
   }
   const rawAutoInstall = doc.plugins.autoInstall;
@@ -245,6 +263,38 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
       fail(`"plugins.autoInstall" has duplicate entry "${entry}"`);
     }
     autoInstall.push(entry);
+  }
+
+  // `plugins.workerEnv` is OPTIONAL: documents delivered before the section
+  // existed declare no grants. When present, it is validated fail-closed.
+  let workerEnv: Record<string, readonly string[]> | undefined;
+  if (doc.plugins.workerEnv !== undefined) {
+    if (!isPlainObject(doc.plugins.workerEnv)) {
+      fail(`"plugins.workerEnv" must be an object mapping plugin key → variable names (got ${describeJsonValue(doc.plugins.workerEnv)})`);
+    }
+    workerEnv = {};
+    for (const [key, names] of Object.entries(doc.plugins.workerEnv)) {
+      if (!autoInstall.includes(key)) {
+        fail(`"plugins.workerEnv" key "${key}" is not in "plugins.autoInstall"; a grant requires its plugin to be provisioned`);
+      }
+      if (!Array.isArray(names) || names.length === 0) {
+        fail(`"plugins.workerEnv.${key}" must be a non-empty array of variable names (got ${describeJsonValue(names)})`);
+      }
+      const granted: string[] = [];
+      for (const name of names) {
+        if (typeof name !== "string" || !WORKER_ENV_NAME_PATTERN.test(name)) {
+          fail(`"plugins.workerEnv.${key}" entries must be uppercase variable names (got ${describeJsonValue(name)})`);
+        }
+        if (WORKER_ENV_DENIED_NAMES.has(name)) {
+          fail(`"plugins.workerEnv.${key}" must not grant host secret "${name}"`);
+        }
+        if (granted.includes(name)) {
+          fail(`"plugins.workerEnv.${key}" has duplicate entry "${name}"`);
+        }
+        granted.push(name);
+      }
+      workerEnv[key] = Object.freeze(granted);
+    }
   }
 
   // `environments` is OPTIONAL, unlike `features` and `plugins`: documents
@@ -332,7 +382,10 @@ export function parseManagedConfigEnv(env: ManagedConfigEnv): ManagedInstanceCon
     mode: "cloud",
     catalogVersion: doc.catalogVersion,
     features: Object.freeze(features),
-    plugins: Object.freeze({ autoInstall: Object.freeze(autoInstall) }),
+    plugins: Object.freeze({
+      autoInstall: Object.freeze(autoInstall),
+      ...(workerEnv ? { workerEnv: Object.freeze(workerEnv) } : {}),
+    }),
     environments: Object.freeze(environmentSpecs),
   }) as ManagedInstanceConfig;
 }

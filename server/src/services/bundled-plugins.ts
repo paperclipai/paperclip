@@ -148,7 +148,7 @@ export interface ResolvedBundledPlugin {
  * resolution at a directory outside it; nonexistent paths fall back to a
  * lexical resolve (`..` segments still collapse).
  */
-function canonicalize(p: string): string {
+export function canonicalize(p: string): string {
   const resolved = path.resolve(p);
   try {
     return fs.realpathSync(resolved);

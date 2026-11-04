@@ -48,6 +48,26 @@ Managed instances select a distribution key through the existing
 compatibility, worker and health mechanisms apply. A worker or install failure
 is recorded as a plugin error without taking down the application.
 
+A managed instance can also give a selected plugin process variables through
+`plugins.workerEnv`. The document holds variable names, not values. The deployment
+sets the values in the server's process environment:
+
+```json
+{ "plugins": {
+  "autoInstall": ["example-extension"],
+  "workerEnv": { "example-extension": ["EXAMPLE_ORIGIN", "EXAMPLE_CAPABILITY"] }
+} }
+```
+
+Each key must be in `autoInstall`. Startup fails if a grant names
+`BETTER_AUTH_SECRET`, `DATABASE_URL`, `PAPERCLIP_AGENT_JWT_SECRET`,
+`PAPERCLIP_AUTH_SECRET` or `PAPERCLIP_SECRETS_MASTER_KEY`. Only the plugin at the
+catalog path for that key receives the variables. Another install with the same
+plugin ID receives nothing. A plugin with a grant needs no saved configuration to
+receive resource lifecycle events or use project instance secrets. It gets events
+for every company that has not disabled it. A grant does not give access for
+background worker calls. Those still need a saved company configuration.
+
 The catalog alone does not auto-enable plugins on self-hosted instances.
 Operators can explicitly install catalog entries through the normal plugin
 CLI. The package's manifest ID and version must match the catalog.

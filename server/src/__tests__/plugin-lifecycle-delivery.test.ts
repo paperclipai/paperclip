@@ -1,7 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
-import { companies, createDb, companySecrets, projects, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { companies, createDb, companySecrets, projects, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { logger } from "../middleware/logger.js";
@@ -54,6 +57,55 @@ describePostgres("durable plugin lifecycle delivery", () => {
     const worker = registerPluginLifecycleDelivery(coordinator as never, db, { call, isRunning: running, onConfigApplied } as unknown as PluginWorkerManager, lifecycle as unknown as PluginLifecycleManager);
     return { call, running, wake, lifecycle, worker, applied: () => { for (const listener of configApplied) listener(); }, run: () => task.run(new AbortController().signal), pending: () => task.hasPending(), nextRunAt: () => task.nextRunAt?.(), settled: () => task.onSettled?.() };
   }
+  async function withManagedGrant(run: (packagePath: string) => Promise<void>) {
+    const root = await mkdtemp(path.join(tmpdir(), "delivery-managed-"));
+    const packagePath = path.join(root, "sandbox-providers/daytona");
+    await mkdir(packagePath, { recursive: true });
+    vi.stubEnv("PAPERCLIP_BUNDLED_PLUGIN_ROOT", root);
+    vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {},
+      plugins: { autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] } } }));
+    try { await run(packagePath); }
+    finally { vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); }
+  }
+  it("delivers to a plugin with a managed grant in every enabled company without a config row", async () => {
+    await withManagedGrant(async packagePath => {
+      const managedId = randomUUID(), ungrantedId = randomUUID(), otherCompanyId = randomUUID(), disabledCompanyId = randomUUID();
+      const manifestJson = { resourceLifecycle: ["project"], capabilities: ["events.subscribe"] } as never;
+      await db.insert(companies).values([
+        { id: otherCompanyId, name: "Other company", issuePrefix: `O${otherCompanyId.slice(0, 6)}` },
+        { id: disabledCompanyId, name: "Disabled company", issuePrefix: `D${disabledCompanyId.slice(0, 6)}` },
+      ]);
+      await db.insert(plugins).values([
+        { id: managedId, pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready", packagePath, manifestJson },
+        { id: ungrantedId, pluginKey: ungrantedId, packageName: "ungranted", version: "1.0.0", status: "ready", manifestJson },
+      ]);
+      await db.insert(pluginCompanySettings).values({ pluginId: managedId, companyId: disabledCompanyId, enabled: false });
+      const resourceId = await event();
+      const otherResourceId = randomUUID(), disabledResourceId = randomUUID();
+      await db.transaction(async tx => {
+        await recordResourceCreationEvent(tx as unknown as Db, otherCompanyId, "project", otherResourceId);
+        await recordResourceCreationEvent(tx as unknown as Db, disabledCompanyId, "project", disabledResourceId);
+      });
+      const d = delivery();
+      await d.run();
+      const delivered = (id: string) => d.call.mock.calls.filter(([plugin]) => plugin === id).map(([, , input]) => input.resourceId);
+      expect(delivered(managedId).sort()).toEqual([resourceId, otherResourceId].sort());
+      expect(delivered(ungrantedId)).toEqual([]);
+      expect(delivered(pluginId)).toEqual([resourceId]);
+      d.worker.dispose();
+    });
+  });
+  it("listens for runtime events for a plugin with a managed grant and no config row", async () => {
+    await withManagedGrant(async packagePath => {
+      await db.delete(plugins);
+      await db.insert(plugins).values({ id: randomUUID(), pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready", packagePath,
+        manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never });
+      const d = delivery();
+      await d.worker.ready;
+      expect(db.$client.listen).toHaveBeenCalledWith("paperclip_plugin_lifecycle", expect.any(Function), expect.any(Function));
+      d.worker.dispose();
+    });
+  });
   it("delivers project events to a storage provider only for projects attached to it", async () => {
     await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe", "workspaces.manage"], workspaceProvider: { modes: ["isolated_workspace"], strategies: ["git_worktree"] } } as never }).where(eq(plugins.id, pluginId));
     const [core] = await db.insert(projects).values({ companyId, name: "Core project" }).returning();

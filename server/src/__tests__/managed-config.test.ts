@@ -21,6 +21,37 @@ function validDoc(overrides: Record<string, unknown> = {}) {
   });
 }
 
+describe("plugins.workerEnv", () => {
+  const plugins = (workerEnv: unknown) => ({ plugins: { autoInstall: ["daytona"], workerEnv } });
+
+  it("is absent from documents that do not declare it", () => {
+    expect(parseManagedConfigEnv(envWith(validDoc()))?.plugins).toEqual({ autoInstall: ["daytona", "kubernetes"] });
+  });
+
+  it("accepts variable names for an auto-installed plugin", () => {
+    const parsed = parseManagedConfigEnv(envWith(validDoc(plugins({ daytona: ["PROVIDER_ORIGIN", "PROVIDER_CAPABILITY_2"] }))));
+    expect(parsed?.plugins.workerEnv).toEqual({ daytona: ["PROVIDER_ORIGIN", "PROVIDER_CAPABILITY_2"] });
+  });
+
+  it.each(["BETTER_AUTH_SECRET", "DATABASE_URL", "PAPERCLIP_AGENT_JWT_SECRET", "PAPERCLIP_AUTH_SECRET", "PAPERCLIP_SECRETS_MASTER_KEY"])(
+    "refuses to start with a grant of host secret %s",
+    (name) => {
+      expect(() => parseManagedConfigEnv(envWith(validDoc(plugins({ daytona: [name] }))))).toThrow(`must not grant host secret "${name}"`);
+    },
+  );
+
+  it.each([
+    ["a plugin that is not auto-installed", { other: ["PROVIDER_ORIGIN"] }, /not in "plugins.autoInstall"/],
+    ["a non-object section", ["PROVIDER_ORIGIN"], /must be an object/],
+    ["an empty grant", { daytona: [] }, /non-empty array/],
+    ["a value instead of a name", { daytona: ["https://example.test"] }, /uppercase variable names/],
+    ["a lowercase name", { daytona: ["database_url"] }, /uppercase variable names/],
+    ["a duplicate name", { daytona: ["PROVIDER_ORIGIN", "PROVIDER_ORIGIN"] }, /duplicate entry/],
+  ])("refuses to start with %s", (_label, workerEnv, message) => {
+    expect(() => parseManagedConfigEnv(envWith(validDoc(plugins(workerEnv))))).toThrow(message);
+  });
+});
+
 describe("managedFeatureKeySet", () => {
   it("contains exactly the boolean flags of the experimental schema", () => {
     const keys = managedFeatureKeySet();

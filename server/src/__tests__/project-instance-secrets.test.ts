@@ -1,4 +1,7 @@
 import { randomBytes, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
@@ -450,6 +453,33 @@ const support = await getEmbeddedPostgresTestSupport();
   },
 );
 describe("project instance secret patches", () => {
+  it("requires a config row unless the plugin has a managed grant", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "instance-secrets-managed-"));
+    const packagePath = path.join(root, "sandbox-providers/daytona");
+    await mkdir(packagePath, { recursive: true });
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-instance-secrets-managed-");
+    const db = createDb(database.connectionString);
+    try {
+      const companyId = randomUUID(), pluginId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Managed credentials", issuePrefix: "MCI" });
+      await db.insert(plugins).values({ id: pluginId, pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready", packagePath,
+        manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe", "projects.instance-secrets"] } as never });
+      const [project] = await db.insert(projects).values({ companyId, name: "Credential owner" }).returning();
+      await db.transaction(tx => recordResourceCreationEvent(tx as unknown as Db, companyId, "project", project.id));
+      const [event] = await pluginLifecycleInbox(db, pluginId).list(companyId, 100);
+      await expect(projectInstanceSecretService(db, pluginId).prepare(event)).rejects.toThrow("require plugin configuration");
+      vi.stubEnv("PAPERCLIP_BUNDLED_PLUGIN_ROOT", root);
+      vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "1", features: {},
+        plugins: { autoInstall: ["daytona"], workerEnv: { daytona: ["PROVIDER_ORIGIN"] } } }));
+      await expect(projectInstanceSecretService(db, pluginId).prepare(event)).resolves.toMatchObject({ instanceSecrets: expect.any(Object) });
+    } finally {
+      vi.unstubAllEnvs();
+      await db.$client.end({ timeout: 0 });
+      await database.cleanup();
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 90_000);
+
   it("accepts bounded bundles and removal and rejects malformed patches without leaking values", () => {
     expect(() =>
       validateProjectInstanceSecretChanges({

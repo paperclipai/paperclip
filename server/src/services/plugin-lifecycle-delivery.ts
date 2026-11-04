@@ -1,12 +1,13 @@
 import { projectInstanceSecretService } from "./project-instance-secrets.js";
 import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
-import { pluginCompanySettings, pluginConfig, plugins, projects, type Db } from "@paperclipai/db";
+import { companies, pluginCompanySettings, pluginConfig, plugins, projects, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { pluginLifecycleInbox } from "./plugin-lifecycle-inbox.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { isWorkspaceProvider } from "./project-workspace-provider.js";
+import { managedPluginWorkerEnvGrant } from "./managed-plugin-worker-env.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 
@@ -26,6 +27,25 @@ export function registerPluginLifecycleDelivery(
   const retryAt = new Map<string, number>();
   const refreshedRuntimeCompanies = new Set<string>();
   const retryMs = 30_000;
+  async function managedPlugins() {
+    const ready = await db.select().from(plugins).where(eq(plugins.status, "ready"));
+    return ready.filter(plugin => managedPluginWorkerEnvGrant(plugin).length > 0);
+  }
+  async function deliveryTargets() {
+    const configured = await db.select({ plugin: plugins, companyId: pluginConfig.companyId })
+      .from(plugins).innerJoin(pluginConfig, eq(pluginConfig.pluginId, plugins.id))
+      .where(eq(plugins.status, "ready"))
+      .orderBy(asc(plugins.installOrder), asc(pluginConfig.companyId));
+    const managed = await managedPlugins();
+    if (!managed.length) return configured;
+    const companyRows = await db.select({ id: companies.id }).from(companies);
+    const seen = new Set(configured.map(target => `${target.plugin.id}:${target.companyId}`));
+    const unconfigured = managed.flatMap(plugin => companyRows
+      .filter(company => !seen.has(`${plugin.id}:${company.id}`))
+      .map(company => ({ plugin, companyId: company.id })));
+    return [...configured, ...unconfigured].sort((a, b) =>
+      (a.plugin.installOrder ?? Infinity) - (b.plugin.installOrder ?? Infinity) || a.companyId.localeCompare(b.companyId));
+  }
   const delivery = coordinator.register(DELIVERY_QUEUES.pluginLifecycle, {
     retryMs,
     hasPending: async () => pending,
@@ -44,11 +64,7 @@ export function registerPluginLifecycleDelivery(
       try {
         await ensureListening();
         for (const [key, at] of retryAt) if (at <= Date.now()) retryAt.delete(key);
-        const configured = await db.select({ plugin: plugins, companyId: pluginConfig.companyId })
-          .from(plugins).innerJoin(pluginConfig, eq(pluginConfig.pluginId, plugins.id))
-          .where(eq(plugins.status, "ready"))
-          .orderBy(asc(plugins.installOrder), asc(pluginConfig.companyId));
-        for (const { plugin, companyId } of configured) {
+        for (const { plugin, companyId } of await deliveryTargets()) {
           const types = plugin.manifestJson.resourceLifecycle;
           if (!types?.length || !plugin.manifestJson.capabilities.includes("events.subscribe")) continue;
           const [disabled] = await db.select({ id: pluginCompanySettings.id }).from(pluginCompanySettings)
@@ -134,10 +150,11 @@ export function registerPluginLifecycleDelivery(
   function ensureListening() {
     const update = listenerUpdate.then(async () => {
       if (disposed || !db.$client?.listen) return;
-      const installed = await db.select({ manifest: plugins.manifestJson }).from(plugins)
+      const configured = await db.select({ manifest: plugins.manifestJson }).from(plugins)
         .innerJoin(pluginConfig, eq(pluginConfig.pluginId, plugins.id))
         .leftJoin(pluginCompanySettings, and(eq(pluginCompanySettings.pluginId, plugins.id), eq(pluginCompanySettings.companyId, pluginConfig.companyId)))
         .where(and(eq(plugins.status, "ready"), or(isNull(pluginCompanySettings.enabled), eq(pluginCompanySettings.enabled, true))));
+      const installed = [...configured, ...(await managedPlugins()).map(plugin => ({ manifest: plugin.manifestJson }))];
       if (disposed) return;
       const wanted = installed.some(plugin => plugin.manifest.resourceLifecycle?.includes("agent_runtime") && plugin.manifest.capabilities?.includes("events.subscribe"));
       if (wanted) listening ??= await db.$client.listen("paperclip_plugin_lifecycle", wake, wake);

@@ -53,6 +53,7 @@ import type { PluginToolDispatcher } from "./plugin-tool-dispatcher.js";
 import type { PluginLifecycleManager } from "./plugin-lifecycle.js";
 import { pluginDatabaseService } from "./plugin-database.js";
 import { resolveBundledCatalogRoot } from "./bundled-plugins.js";
+import { managedPluginWorkerEnvGrant } from "./managed-plugin-worker-env.js";
 
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -160,6 +161,8 @@ export function buildPluginWorkerEnv(input: {
   packagePath?: string | null;
   /** Test seam; defaults to the repo plugin tree and the bundled catalog root. */
   trustedLocalPluginRoots?: readonly string[];
+  /** Variable names the control plane grants to this plugin. */
+  grantedEnvVars?: readonly string[];
   instanceInfo: { deploymentMode?: string | null; deploymentExposure?: string | null };
   processEnv?: NodeJS.ProcessEnv;
 }): Record<string, string> {
@@ -168,6 +171,10 @@ export function buildPluginWorkerEnv(input: {
     PAPERCLIP_DEPLOYMENT_MODE: input.instanceInfo.deploymentMode ?? "",
     PAPERCLIP_DEPLOYMENT_EXPOSURE: input.instanceInfo.deploymentExposure ?? "",
   };
+  for (const key of input.grantedEnvVars ?? []) {
+    const value = processEnv[key];
+    if (value && value.trim().length > 0) env[key] = value;
+  }
   const canRegisterEnvironmentDrivers = Array.isArray(input.manifest.capabilities)
     && input.manifest.capabilities.includes("environment.drivers.register");
   if (!canRegisterEnvironmentDrivers) return env;
@@ -2341,6 +2348,10 @@ export function pluginLoader(
           packageName: activePlugin.packageName,
           packagePath: resolvePackageRoot ? packageRoot : activePlugin.packagePath,
           instanceInfo,
+          grantedEnvVars: managedPluginWorkerEnvGrant({
+            pluginKey: activePlugin.pluginKey,
+            packagePath: resolvePackageRoot ? packageRoot : activePlugin.packagePath,
+          }),
         }),
         // Authorize the worker to act on each configured company from its
         // proactive loops/timers (LOOA-629). Seeded here so it is in place
