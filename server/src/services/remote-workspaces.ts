@@ -1,3 +1,4 @@
+import { workspaceAllocationFiles } from "./remote-workspace-allocation.js";
 import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -373,7 +374,8 @@ export async function prepareRemoteWorkspace(input: {
         const archivePath = path.join(scratch, "workspace.pcws");
         await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
         restoredExport = await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
-          restorationIdentity: preparationIdentity, allowEmptyRoot: migration !== null });
+          restorationIdentity: preparationIdentity, allowEmptyRoot: migration !== null,
+          allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [] });
       } finally { await rm(scratch, { recursive: true, force: true }); }
     } else {
       try {

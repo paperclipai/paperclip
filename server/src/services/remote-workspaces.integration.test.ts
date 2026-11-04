@@ -1,7 +1,7 @@
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { readNativeWorkspaceMigration, migratedNativeExecutionCwd, canRestoreMigratedNativeSession } from "./native-runtime/native-workspace-migration.js";
 import { buildNativeHarnessBackupManifest, verifyNativeHarnessBackup } from "./native-runtime/native-session-executor.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import net from "node:net";
 import { promisify } from "node:util";
@@ -441,7 +441,7 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     try { expect(await fs.readFile(path.join(browse.root, "report.md"), "utf8")).toContain("useful saved result"); } finally { await browse.cleanup(); }
   }, 60_000);
 
-  it.each(["per_turn", "warm", "occupied", "foreign-target", "forged-receipt"])("preserves retained native workspace identity through migration: %s", async scenario => {
+  it.each(["per_turn", "warm", "occupied", "foreign-target", "foreign-allocation", "forged-receipt"])("preserves retained native workspace identity through migration: %s", async scenario => {
     const original = path.join(root, "old-controller", "workspace"); await fs.mkdir(original, { recursive: true });
     await fs.writeFile(path.join(original, "saved.txt"), "retained work");
     const remote = await target("legacy-provider-root");
@@ -494,6 +494,16 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const reserved = await reserveRemoteWorkspace({ db, storage, companyId: ids.company, issueId: ids.issue, runId: ids.run,
       agentId: ids.agent, environmentId: ids.environment, existingWorkspaceId: local.id, projectId: null, projectWorkspaceId: null, source: { kind: "empty" } });
     const preparation = { db, storage, workspace: reserved, runId: ids.run, lease: await lease(), target: remote };
+    const allocationPath = ".paperclip-runtime/reusable-sandbox-lease.json";
+    const allocationBytes = JSON.stringify({ version: 1, token: "owned-allocation", companyId: ids.company,
+      environmentId: ids.environment, agentId: ids.agent, executionWorkspaceId: local.id, provider: "daytona" });
+    await fs.mkdir(path.join(remote.remoteCwd, ".paperclip-runtime"));
+    await fs.writeFile(path.join(remote.remoteCwd, allocationPath), allocationBytes);
+    preparation.lease.metadata = { ...preparation.lease.metadata, workspaceAllocationFiles: {
+      providerLeaseId: preparation.lease.providerLeaseId, remoteCwd: remote.remoteCwd,
+      files: [{ relativePath: allocationPath, sha256: createHash("sha256").update(allocationBytes).digest("hex") }],
+    } };
+
     if (scenario === "forged-receipt") {
       await db.update(executionWorkspaces).set({ metadata: { ...reserved.metadata,
         nativeWorkspaceMigration: { schema: "paperclip.native-workspace-migration.v1", operationId: randomUUID() } } }).where(eq(executionWorkspaces.id, local.id));
@@ -504,12 +514,19 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
       await expect(prepareRemoteWorkspace(preparation)).rejects.toThrow();
       expect(await fs.readFile(path.join(remote.remoteCwd, "unrelated.txt"), "utf8")).toBe("do not overwrite"); return;
     }
+    if (scenario === "foreign-allocation") {
+      const receipt = preparation.lease.metadata.workspaceAllocationFiles as { providerLeaseId: string };
+      receipt.providerLeaseId = "another-allocation";
+      await expect(prepareRemoteWorkspace(preparation)).rejects.toThrow("remote_workspace_allocation_receipt_invalid");
+      expect(await fs.readFile(path.join(remote.remoteCwd, allocationPath), "utf8")).toBe(allocationBytes); return;
+    }
     if (scenario === "foreign-target") {
       remote.remoteCwd = path.join(root, "different-provider-root");
       await expect(prepareRemoteWorkspace(preparation)).rejects.toThrow("native_workspace_migration_target_changed"); return;
     }
     const prepared = await prepareRemoteWorkspace(preparation);
     expect(prepared.remoteRoot).toBe(remote.remoteCwd);
+    expect(await fs.readFile(path.join(prepared.remoteRoot, allocationPath), "utf8")).toBe(allocationBytes);
     expect(await fs.readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8")).toBe("retained work");
     const successor = { ...execution, workspace: { ...execution.workspace,
       cwd: migratedNativeExecutionCwd(receipt, { agentId: ids.agent, issueId: ids.issue, sessionId }) ?? prepared.remoteRoot } };

@@ -34,3 +34,20 @@ back their exact bytes, then publishes the new receipt with a compare-and-swap.
 Package and version IDs stay unchanged. Failed copies retain the original
 receipt, local objects and durable upload journal. The maintenance entry pages
 through this owner before its existing package and version verification.
+
+Fresh provider allocations can contain provider-owned runtime files. The plugin
+lease metadata exposes a bounded `workspaceAllocationFiles` receipt containing
+the exact provider lease, remote root, relative paths and SHA-256 hashes. Daytona
+owns its sentinel encoding; workspace restore only consumes that normalized
+receipt. The restore owner admits only the declared regular files, preserves
+those bytes alongside the restored workspace, and refuses unknown files, changed
+hashes and links. A parked allocation directory makes interrupted publication
+retryable. Providers without the optional receipt retain empty-root behavior.
+
+The all-Runner prerequisite merged as `612d9931a6`. The second live Codex migration
+at `469d28314f` verified all ten local skill objects, the original workspace and
+provider backup, and reached a ready maintenance receipt. Its next turn exposed
+the allocation-marker restore failure; that attempt remains failed. The exact
+owned sandboxes, temporary credentials, database and object bucket were cleaned.
+The original task remains staging enrollment, active handoff, and admission of
+new work with existing warm/per-turn policies; staging has not yet been enrolled.
