@@ -20,7 +20,19 @@ function encryptParts(binding: Binding, records: ReadonlyMap<string, string>) {
 
 export async function insertMigratedNativeRunnerCheckpoint(tx: CheckpointTransaction, binding: Binding, checkpoint: DurablePrpCheckpoint) {
   if (checkpoint.runId !== binding.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
-  await tx.insert(nativeRunnerCheckpoints).values(encryptParts(binding, checkpoint.records));
+  let batch: ReturnType<typeof encryptParts> = [];
+  let batchBytes = 0;
+  for (const part of encryptParts(binding, checkpoint.records)) {
+    const bytes = Buffer.byteLength(JSON.stringify(part));
+    if (batch.length && (batch.length >= 64 || batchBytes + bytes > 512 * 1024)) {
+      await tx.insert(nativeRunnerCheckpoints).values(batch);
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(part);
+    batchBytes += bytes;
+  }
+  if (batch.length) await tx.insert(nativeRunnerCheckpoints).values(batch);
 }
 
 function decryptPart(cipher: ReturnType<typeof createLocalEncryptedCipher>, binding: Binding,

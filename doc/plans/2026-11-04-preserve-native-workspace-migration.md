@@ -130,3 +130,15 @@ remote path. A database-backed fixture uses distinct IDs, rejects foreign
 workspaces and protocol identities, and restores the original checkpoint after
 the predecessor home is deleted. The original failed live attempt and its
 attached volume remain preserved until the corrected owner passes verification.
+
+The next live import exposed a second boundary: one insert of 538 encrypted
+checkpoint records (about 2.2 MB) repeatedly closed the database connection on
+both pooled and direct endpoints, including after warming the database cache.
+The identical import completed with smaller inserts in a forced-rollback
+transaction. The importer now limits each statement to 64 records and about
+512 KiB of serialized rows; an individual larger record is sent alone. All
+statements remain in the original owner transaction. A real PostgreSQL test
+forces a conflict in a later batch, verifies that earlier batches roll back,
+then imports and decrypts the complete original checkpoint. The precise
+server-side reason for the connection closure is not yet established; the
+unbatched failures and batched comparison remain in the verification record.

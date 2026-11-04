@@ -4,11 +4,12 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
 import { agentTaskSessions, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
-import { DurablePrpControlPlane, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { captureLegacyDurablePrpCheckpoint, DurablePrpControlPlane, parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
 import { describeEmbeddedPostgres, nativeRestartFixture } from "../../__tests__/helpers/native-restart.js";
 import { nativeToolContractFingerprintForTarget } from "./native-session-resume.js";
 import { nativeControllerMigrationDescriptor } from "./native-session-executor.js";
 import { hasLocalNativeControllerObligations, migrateNativeControllers } from "./native-controller-migration.js";
+import { insertMigratedNativeRunnerCheckpoint, loadNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { resolveNativeControllerRecovery } from "./native-controller-recovery.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
@@ -18,10 +19,10 @@ import { createStorageService } from "../../storage/service.js";
 import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
-describeEmbeddedPostgres.each(["import", "archive", "success"])("offline native controller migration (%s)", scenario => {
+describeEmbeddedPostgres.each(["import", "archive", "success", "batch"])("offline native controller migration (%s)", scenario => {
   const environment = nativeRestartFixture();
   afterEach(() => vi.unstubAllEnvs());
-  async function fixture() {
+  async function fixture(commandCount = 1) {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "73".repeat(32));
     const f = await environment.seedRun(randomUUID());
     const { companyId, agentId, paperclipHome, runtimeRoot } = environment.current;
@@ -42,7 +43,10 @@ describeEmbeddedPostgres.each(["import", "archive", "success"])("offline native 
       environmentLeaseId: f.native.environmentLeaseId, turnId: f.native.turnId, itemId: f.native.itemId };
     const core = new DurablePrpControlPlane({ stateDirectory: join(paths.root, "control-plane"), identity,
       expectedRunnerVersion: "migration-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
-    core.issueBootstrapTicket(); core.queueCommand("session.snapshot", {}, "retained-command"); await core.stop();
+    core.issueBootstrapTicket();
+    for (let index = 0; index < commandCount; index++) core.queueCommand("session.snapshot",
+      { diagnostic: "x".repeat(commandCount > 1 ? 6000 : 0) }, `retained-command-${index}`);
+    await core.stop();
     const file = join(paths.root, "control-plane/control-plane-state.json");
     const state = JSON.parse(await readFile(file, "utf8"));
     state.tickets = {};
@@ -121,6 +125,41 @@ describeEmbeddedPostgres.each(["import", "archive", "success"])("offline native 
     expect(JSON.parse(await readFile(join(replacement, "control-plane/control-plane-state.json"), "utf8")).identity).toEqual(identity);
     expect(recovered.snapshot).toEqual(snapshot);
   });
+  if (scenario === "batch") it("imports a large checkpoint with bounded writes and rolls back every batch on a late conflict", async () => {
+    const f = await fixture(160);
+    const binding = { companyId: f.companyId, issueId: f.issueId, runId: f.runId };
+    const checkpoint = captureLegacyDurablePrpCheckpoint(f.source, { runId: f.runId,
+      runnerInstanceId: f.native.runnerInstanceId, normalizedSessionId: f.native.normalizedSessionId },
+    { version: "migration-fixture", digest: `sha256:${"a".repeat(64)}` });
+    const last = [...checkpoint.records].at(-1)!;
+    await f.db.transaction(tx => insertMigratedNativeRunnerCheckpoint(tx, binding, {
+      ...checkpoint, records: new Map([last]),
+    }));
+    const before = await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+    const parameters: number[] = [];
+    const payloadBytes: number[] = [];
+    const previousDebug = f.db.$client.options.debug;
+    f.db.$client.options.debug = (_connection, query, values) => {
+      if (query.startsWith('insert into "native_runner_checkpoints"')) {
+        parameters.push(values.length);
+        payloadBytes.push(values.reduce((sum, value) => sum + Buffer.byteLength(JSON.stringify(value)), 0));
+      }
+    };
+    try {
+      await expect(f.db.transaction(tx => insertMigratedNativeRunnerCheckpoint(tx, binding, checkpoint)))
+        .rejects.toThrow();
+      expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toEqual(before);
+      expect(parameters.length).toBeGreaterThan(1);
+      expect(Math.max(...parameters)).toBeLessThanOrEqual(320);
+      expect(Math.max(...payloadBytes)).toBeLessThanOrEqual(512 * 1024);
+      await f.db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+      expect(await migrateNativeControllers(f.db, { writersStopped: true, signal: AbortSignal.timeout(30_000) }))
+        .toMatchObject({ imported: 1 });
+      const restored = await loadNativeRunnerCheckpoint(f.db, binding);
+      expect(restored?.records).toEqual(checkpoint.records);
+      expect(await readFile(f.file, "utf8")).toBe(f.source);
+    } finally { f.db.$client.options.debug = previousDebug; }
+  }, 60_000);
   if (scenario === "archive") it("preserves an already-failed legacy controller without inventing executable recovery authority", async () => {
     const f = await fixture();
     await rm(join(f.paths.root, "provider-pack-authority.json"));
