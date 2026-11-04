@@ -1,5 +1,5 @@
 import { gradeNecessaryQuestion } from "./necessary-question.js";
-import { gradeLegacyWorkspaceMigration, isLegacyWorkspaceMigration, legacyWorkspaceMigrationPrompt, readMigrationPoint, type MigrationPoint } from "./legacy-workspace-migration.js";
+import { gradeLegacyWorkspaceMigration, migrationPrimaryOutputCheckpoints, isLegacyWorkspaceMigration, legacyWorkspaceMigrationPrompt, readMigrationPoint, type MigrationPoint } from "./legacy-workspace-migration.js";
 import { necessaryQuestionContract } from "./continuation-cases.js";
 import { validResumeQuestionForm, validResumeReferenceForm } from "./question-resume-scoring.js";
 import { answerResumeQuestionThroughUi } from "./question-resume-ui.js";
@@ -315,13 +315,13 @@ export async function runContinuationFlow(input: {
   } finally {
     checks = gradeContinuation({
       ...scenario,
-      checkpoints,
+      checkpoints: migration ? migrationPrimaryOutputCheckpoints(checkpoints, migrationBefore, migrationAfter) : checkpoints,
       runtimeMode: execution.profile.expectedRuntimeMode,
     });
     checks.push(...gradeLifecycleBaseline(checkpoints));
     if (migration) {
-      checks.push(...gradeLegacyWorkspaceMigration(migrationBefore, migrationAfter));
-      await input.evidence("legacy-migration.json", { before: migrationBefore, after: migrationAfter, checks: gradeLegacyWorkspaceMigration(migrationBefore, migrationAfter) });
+      checks.push(...gradeLegacyWorkspaceMigration(migrationBefore, migrationAfter, checkpoints));
+      await input.evidence("legacy-migration.json", { before: migrationBefore, after: migrationAfter, checks: gradeLegacyWorkspaceMigration(migrationBefore, migrationAfter, checkpoints) });
     }
     if (scenario.id === "necessary-free-text") checks.push(...gradeNecessaryQuestion(checkpoints, scenario.answer));
     if (lifecycleProbe) checks.push(gradeLifecycleNarrative({

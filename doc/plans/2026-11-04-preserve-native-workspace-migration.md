@@ -72,3 +72,14 @@ migration journey now asks for that exact reference as an attachment after the
 answer, alongside the confirmation. The byte/session/path preservation oracle
 is unchanged; initial delivery remains forbidden and final task completion is
 still required. This is fixture setup, not a relaxation of product completion.
+
+Live Codex at `2d5bb9a6d1` retained the same native and provider session, both
+workspace addresses and exact reference bytes after old-home destruction. It
+finished the task and delivered its confirmation and reference attachment.
+The original campaign failed one generic output-count check because it counted
+the explicitly requested reference as a second primary output. The migration
+owner now grades that attachment separately and excludes only its independently
+verified original bytes from the primary-output count; duplicates and unrelated
+files remain failures. Regrading the retained evidence passes all 21 checks.
+The original failed disposition remains recorded. Forty-four grader/readiness
+controls pass; further live provider and warm-policy qualification follows.

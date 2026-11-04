@@ -1,3 +1,4 @@
+import type { ContinuationCheckpoint } from "./continuation-scoring.js";
 import { createHash } from "node:crypto";
 import type { ExecutionWorkspace, WorkspaceFileContent } from "../../packages/shared/src/index.js";
 import type { RunnerApi } from "./api.js";
@@ -42,10 +43,29 @@ export async function readMigrationPoint(input: { api: Pick<RunnerApi, "get">; c
     logicalCwd: execution.workspace.cwd, remoteCwd: reference.remoteCwd };
 }
 
-export function gradeLegacyWorkspaceMigration(before?: MigrationPoint, after?: MigrationPoint): StoryCheck[] {
+function migrationReferenceAttachments(checkpoints: ContinuationCheckpoint[], before?: MigrationPoint, after?: MigrationPoint) {
+  if (!before || !after || before.proofSha256 !== after.proofSha256) return [];
+  return (checkpoints.find(point => point.phase === "final")?.attachments ?? []).filter(value => {
+    const file = value as Record<string, unknown>;
+    return file.originalFilename === "migration-reference.txt" && file.contentVerified === true
+      && typeof file.body === "string" && file.contentSha256 === before.proofSha256
+      && createHash("sha256").update(file.body).digest("hex") === before.proofSha256;
+  });
+}
+
+export function migrationPrimaryOutputCheckpoints(checkpoints: ContinuationCheckpoint[], before?: MigrationPoint, after?: MigrationPoint) {
+  const references = migrationReferenceAttachments(checkpoints, before, after);
+  if (references.length !== 1) return checkpoints;
+  return checkpoints.map(point => point.phase === "final"
+    ? { ...point, attachments: point.attachments.filter(file => file !== references[0]) } : point);
+}
+
+export function gradeLegacyWorkspaceMigration(before?: MigrationPoint, after?: MigrationPoint, checkpoints: ContinuationCheckpoint[] = []): StoryCheck[] {
   return [{ id: "legacy-workspace-migration-continuation", passed: Boolean(before && after && !before.migrated && after.migrated
     && before.providerType !== "cloud_sandbox" && after.providerType === "cloud_sandbox" && before.workspaceId === after.workspaceId
     && before.runId !== after.runId && before.sessionId === after.sessionId && before.logicalCwd === after.logicalCwd
     && before.remoteCwd === after.remoteCwd && before.proofSha256 === after.proofSha256 && before.providerSessionSha256 === after.providerSessionSha256),
-  detail: "A new turn retains the exact native session, logical and provider paths, workspace, and reference file bytes after offline migration and destruction of the old home." }];
+  detail: "A new turn retains the exact native session, logical and provider paths, workspace, and reference file bytes after offline migration and destruction of the old home." },
+  { id: "legacy-workspace-migration-reference-delivered", passed: migrationReferenceAttachments(checkpoints, before, after).length === 1,
+    detail: "The one requested reference attachment has the exact original workspace bytes, independently downloaded and verified." }];
 }
