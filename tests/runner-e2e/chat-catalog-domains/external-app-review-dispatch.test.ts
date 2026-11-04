@@ -5,7 +5,7 @@ const port = vi.hoisted(() => ({ provider: null as any, advance: () => {}, repli
 vi.mock("../chat-flow.js", () => ({ sendChatMessage: async () => port.advance() }));
 vi.mock("@playwright/test", () => ({ expect: (node: any) => ({ toBeVisible: async () => { if (!node.visible()) throw Error("Review is absent"); }, toContainText: async (text: string) => { if (!node.text.includes(text)) throw Error("Wrong action"); } }) }));
 vi.mock("./external-provider.js", () => ({ startNotesProvider: async () => port.provider, connectNotes: async () => ({ connectionId: "connection", write: ["write"] }) }));
-vi.mock("./identity-support.js", () => ({ openStandingChat: async () => ({ id: "source" }), probeAgentPermission: async () => 403 }));
+vi.mock("./identity-support.js", () => ({ openStandingChat: async () => ({ id: "source" }), probeAgentPermission: async () => 403, cleanupIdentityProbes: vi.fn() }));
 vi.mock("../chat-query-attachments.js", () => ({ uploadFactualQueryAttachment: async () => ({ issueId: "source" }), chatQueryWithAttachments: (query: string) => query, verifyChatQueryAttachments: async () => true }));
 vi.mock("./external-support.js", async original => ({ ...await original<typeof import("./external-support.js")>(), observeExternal: async () => ({ phaseReplies: port.replies }) }));
 vi.mock("./external-app-review-probe.js", () => ({ probeReviewApproval: vi.fn(async () => ({status: 403, code: "interaction_governed_action_denied", boundaryUnchanged: true, keyRevoked: true})) }));
@@ -13,6 +13,7 @@ import { appReviewExternalCases } from "./external-app-review.js";
 afterEach(() => vi.restoreAllMocks());
 function fixture(wrongDispatch = false) {
   let index = 0, opened = false, inspected = false, written: string | undefined;
+  let runtimeConfig = { retained: true, heartbeat: { enabled: false, maxDailyRuns: 3, maxConcurrentRuns: 1, maxDailyCostCents: 500 } };
   const resolved = new Set<number>(), calls: any[] = [];
   const text = "Owned launch destination. ".repeat(7) + "The public launch is November 8, 2030.";
   const summary = JSON.stringify({ text }), hash = createHash("sha256").update(summary).digest("hex");
@@ -33,6 +34,7 @@ function fixture(wrongDispatch = false) {
   const details = { visible: () => opened, filter() { return this; }, locator: (kind: string) => kind === "summary" ? { click: async () => { inspected = true; } } : kind === "pre" ? { visible: () => inspected, textContent: async () => summary } : { textContent: async () => hash } };
   const view = { visible: () => opened, text: "Update launch page", locator: () => details, getByRole: (role: string, options: { name: string }) => role === "img" ? { visible: () => opened } : { click: async () => { if (options.name !== "Approval options") decide(); } } };
   const get = vi.fn(async (path: string) => {
+    if (path === "/api/agents/ceo") return { runtimeConfig };
     if (path === "/api/auth/get-session") return { user: { id: "person" } };
     if (path.endsWith("/tools/trust-rules")) return { trustRules: [] };
     if (path.endsWith("/interactions")) return cards();
@@ -42,14 +44,15 @@ function fixture(wrongDispatch = false) {
     }
     throw Error("Unexpected fixture API");
   });
-  const ctx = { scenario: { query: "Add this launch update to our notes app." }, input: { fixtures: { company: { id: "company" }, agent: { id: "ceo" } }, evidence: vi.fn(async () => {}), api: { get, post: async () => ({ id: "project" }), patch: async () => ({}) },
+  const ctx = { scenario: { query: "Add this launch update to our notes app." }, input: { fixtures: { company: { id: "company" }, agent: { id: "ceo" } }, evidence: vi.fn(async () => {}), api: { get, post: async () => ({ id: "project" }), patch: async (path: string, body: { runtimeConfig: typeof runtimeConfig }) => { if (path === "/api/agents/ceo") runtimeConfig = body.runtimeConfig; return {}; } },
     page: { locator: () => ({ visible: () => true, getByRole: () => ({ click: async () => { opened = true; } }) }), getByTestId: () => view,
       getByRole: () => ({ getAttribute: async () => scope, click: async () => decide() }) } },
     refreshIssue: async () => {}, issue: () => ({ id: "source", conversationState: "waiting" }), allRuns: async () => runs() } as unknown as ChatCatalogContext;
-  return { ctx, text, calls };
+  return { ctx, text, calls, runtimeConfig: () => runtimeConfig };
 }
 it("actual three-phase caller dispatches exactly the immutable text inspected in each approved review", async () => {
   const f = fixture(), definition = appReviewExternalCases[0]!, state = await definition.setup(f.ctx);
+  expect(f.runtimeConfig()).toEqual({ retained: true, heartbeat: { enabled: false, maxDailyRuns: 6, maxConcurrentRuns: 1, maxDailyCostCents: 500 } });
   await definition.act!(f.ctx, state);
   expect((state.phases as any[]).map(p => [p.kind, p.beforeWrites, p.afterWrites, p.proposalVisible])).toEqual([["rejected", 0, 0, true], ["failed", 0, 1, true], ["executed", 1, 2, true]]);
   expect((state.phases as any[]).slice(1).every(p => p.providerWriteText === f.text && p.reviewedText === f.text && p.providerAuthorized)).toBe(true);
