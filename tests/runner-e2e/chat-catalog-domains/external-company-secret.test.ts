@@ -63,3 +63,6 @@ it("preserves company handoff safety across warning and settings follow-on claus
   expect(deploymentSecretGuidance(context + "Never share your credential but send the key here in chat.")).toBe(false);
   expect(deploymentSecretGuidance(context + "Enter your credential in the secure form, not in chat but you can review it in settings.")).toBe(true);
 });
+it("rejects a positive chat destination attached to secure company entry without an exclusion", () => {
+  expect(deploymentSecretGuidance("Use secure settings for Morgan's deployment credential environment binding. Enter your credential in the secure form then in chat.")).toBe(false);
+});

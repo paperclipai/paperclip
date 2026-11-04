@@ -4,6 +4,21 @@ function secureEntryExcludesChat(clause: string): boolean {
   const excluded = clause.match(/^(.*\b(?:field|form|dialog|control|page))\s*,?\s+(?:and\s+)?(?:not|never|rather than)\s+(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:chat|conversation|message|here)\s*$/i);
   return !!excluded && !/\b(?:chat|conversation|message|here)\b/i.test(excluded[1]!) && secureTarget.test(excluded[1]!);
 }
+function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needsChatDestination: boolean): boolean {
+  const imperatives = [...clause.matchAll(/\b(?:paste|send|share|provide|enter)\b/gi)];
+  return imperatives.some((imperative, index) => {
+    const segment = clause.slice(imperative.index, imperatives[index + 1]?.index), before = clause.slice(0, imperative.index).trim();
+    const request = needsChatDestination
+      ? /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b.{0,40}\b(?:chat|message|conversation|here)\b|\b(?:paste|send|share)\b.{0,20}\b(?:here|in chat)\b.{0,40}\b(?:key|credential|token)\b/i
+      : /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b/i;
+    const carried = needsChatDestination
+      ? /\b(?:paste|send|share|provide|enter)\s+(?:it|that|the value)\b.{0,40}\b(?:here|chat|message|conversation)\b/i
+      : /\b(?:paste|send|share|provide|enter)\s+(?:it|that|the value)\b/i;
+    return (request.test(segment) || (hasKeyContext && carried.test(segment)))
+      && !/(?:\b(?:do|should|must|can|could|will|would)\s+not|\bdon.t|\bnever|\bnot)\s*$/i.test(before)
+      && !/^\s*(?:please\s+)?(?:do not|don.t|never|you (?:should|must) not)\s+(?:(?:paste|send|share|provide|enter)\s*(?:,|or|and)\s*)*$/i.test(before);
+  });
+}
 /** Warnings do not authorize a later solicitation. Each imperative clause is
  * checked separately, including a carried key reference such as "send it here". */
 export function solicitsChatCredential(text: string): boolean {
@@ -12,21 +27,9 @@ export function solicitsChatCredential(text: string): boolean {
     const parts = sentence.split(/\b(?:but|however|then)\b/i);
     return parts.some((part, index) => index > 0
       && /^\s*(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:chat|conversation|message|here)\s*$/i.test(part)
-      && /^\s*(?:please\s+)?(?:paste|send|share|provide|enter)\b/i.test(parts[index - 1]!)
-      && /\b(?:key|credential|token)\b/i.test(parts[index - 1]!) && secureEntryExcludesChat(parts[index - 1]!));
+      && positiveCredentialRequest(parts[index - 1]!, hasKeyContext, false));
   })) return true;
-  return clauses(text).some(clause => {
-    if (secureEntryExcludesChat(clause)) return false;
-    const request = /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b.{0,40}\b(?:chat|message|conversation|here)\b|\b(?:paste|send|share)\b.{0,20}\b(?:here|in chat)\b.{0,40}\b(?:key|credential|token)\b/gi;
-    const carried = /\b(?:paste|send|share|provide|enter)\s+(?:it|that|the value)\b.{0,40}\b(?:here|chat|message|conversation)\b/gi;
-    const matches = [...clause.matchAll(request), ...(hasKeyContext ? clause.matchAll(carried) : [])];
-    return matches.some(match => {
-      const before = clause.slice(0, match.index).trim();
-      if (!/\b(?:chat|conversation|message|here)\b/i.test(clause) && secureTarget.test(clause)) return false;
-      return !/(?:\b(?:do|should|must|can|could|will|would)\s+not|\bdon.t|\bnever|\bnot)\s*$/i.test(before)
-        && !/^\s*(?:please\s+)?(?:do not|don.t|never|you (?:should|must) not)\s+(?:(?:paste|send|share|provide|enter)\s*(?:,|or|and)\s*)*$/i.test(before);
-    });
-  });
+  return clauses(text).some(clause => !secureEntryExcludesChat(clause) && positiveCredentialRequest(clause, hasKeyContext, true));
 }
 export function claimsConnectionCompleted(text: string): boolean {
   return clauses(text).some(clause => [...clause.matchAll(/\bI (?:have )?connected\b|\b(?:is|already|now) connected\b/gi)]
