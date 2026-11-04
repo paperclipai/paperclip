@@ -86,7 +86,7 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
     const digest = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
     const opencode = join(runtimeRoot, "fake-opencode-ingress");
     const providerNode = provider === "opencode" && process.platform === "linux"
-      ? join(runtimeRoot, "opencode-node") : process.execPath;
+      ? join(runtimeRoot, "node") : process.execPath;
     const providerCalls = join(sandbox, "provider-calls.log");
     if (provider === "opencode") {
       if (process.platform === "linux") {
