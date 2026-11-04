@@ -699,7 +699,8 @@
       "path": "snapshots/resource-v3/test-fixtures/postgres/package.json",
       "bytes": 1814,
       "sha256": "944d492614959389a5739ef2893bc1830fb773ff042159d9b331d43b2f6792e9",
-      "originalPath": "/private/tmp/native-ingestion-h5e-resource-tools-v3/test-fixtures/postgres/package.json"
+      "originalPath": "/private/tmp/native-ingestion-h5e-resource-tools-v3/test-fixtures/postgres/package.json",
+      "storagePath": "snapshots/resource-v3/test-fixtures/postgres/package.json.fixture"
     },
     {
       "path": "snapshots/resource-v3/test-fixtures/postgres/src/connection.js",
@@ -1049,5 +1050,6 @@
       "sha256": "341a3801c28ae6f585dd8e288ed7193f9566ceeb8a09e48a564ae0a2b89337bc",
       "originalPath": "/private/tmp/native-ingestion-h5e-tools-v3-peer-review.json"
     }
-  ]
+  ],
+  "storagePolicy": "path remains the exact logical source-packet path; optional storagePath holds identical non-package fixture data. Materialize exact logical files in a fresh directory outside the checkout before resource checks or diagnostics."
 }
