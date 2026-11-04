@@ -1819,6 +1819,10 @@ impl CodexProvider {
         self.restart_idle_identity_epoch()
     }
 
+    pub(crate) fn has_active_goal(&self) -> bool {
+        self.goal_allows_autonomous_turns
+    }
+
     pub fn get_goal(&mut self) -> Result<Value, LocalRunnerError> {
         let result = self.request("thread/goal/get", json!({"threadId": self.thread_id}))?;
         self.goal_allows_autonomous_turns =

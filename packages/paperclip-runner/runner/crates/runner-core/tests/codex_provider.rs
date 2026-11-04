@@ -139,6 +139,7 @@ fn ordinary_recovery_restores_a_completed_idle_session() {
         "{}",
         snapshot.result
     );
+    assert!(!executor.host_park_ready().unwrap());
     assert_eq!(call_count(&directory, "process-start"), 2);
     assert_eq!(call_count(&directory, "turn/start"), 1);
     executor.shutdown().unwrap();
@@ -517,6 +518,118 @@ fn call_count(directory: &Path, method: &str) -> usize {
         .lines()
         .filter(|line| *line == method)
         .count()
+}
+
+#[test]
+fn hosted_park_proof_requires_the_surviving_settled_native_codex_process() {
+    let directory = temporary_directory("hosted-park-proof");
+    let config = provider_config(&directory, &["--record-process-start"]);
+    let mut executor =
+        CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+    assert!(!executor.host_park_ready().unwrap());
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider":config}),
+        ))
+        .unwrap();
+    assert!(!executor.host_park_ready().unwrap());
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    assert!(!executor.host_park_ready().unwrap());
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text":"Complete the admitted native turn."}),
+        ))
+        .unwrap();
+    assert!(!executor.host_park_ready().unwrap());
+    wait_for_executor_event(&mut executor, "turn.completed");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !executor.host_park_ready().unwrap() {
+        assert!(std::time::Instant::now() < deadline);
+        poll_and_ack(&mut executor).unwrap();
+    }
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    executor
+        .execute(&command(
+            "goal",
+            4,
+            "session.goal.set",
+            json!({"objective":"Continue autonomous work.","status":"active"}),
+        ))
+        .unwrap();
+    for _ in 0..8 {
+        poll_and_ack(&mut executor).unwrap();
+    }
+    assert!(!executor.host_park_ready().unwrap());
+    executor.shutdown().unwrap();
+    assert!(!executor.host_park_ready().unwrap());
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn hosted_park_rechecks_a_goal_activated_during_tail_drain() {
+    let directory = temporary_directory("hosted-park-late-goal");
+    let gate = directory.join("release-goal");
+    let gate_arg = gate.to_string_lossy().into_owned();
+    let config = provider_config(
+        &directory,
+        &[
+            "--record-process-start",
+            "--durable-turn-ids",
+            "--late-accounting-tail-gate",
+            &gate_arg,
+            "--late-active-goal",
+        ],
+    );
+    let mut executor =
+        CodexCommandExecutor::with_runner_config(&directory, &durable_config(&directory));
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider":config}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text":"Complete one turn."}),
+        ))
+        .unwrap();
+    wait_for_executor_event(&mut executor, "turn.completed");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !executor.host_park_ready().unwrap() {
+        assert!(std::time::Instant::now() < deadline);
+        poll_and_ack(&mut executor).unwrap();
+    }
+    fs::write(&gate, "release").unwrap();
+    while !gate.with_extension("sent").is_file() {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    // Do not poll the executor: the goal must first be observed by the park
+    // probe's tail drain, after its initial saved-state eligibility check.
+    assert!(!executor.host_park_ready().unwrap());
+    assert!(!executor.host_park_ready().unwrap());
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    assert_eq!(call_count(&directory, "turn/start"), 1);
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

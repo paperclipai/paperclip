@@ -2022,6 +2022,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let turn_id = provider_turn_id.clone();
                             let unsafe_tail =
                                 args.iter().any(|arg| arg == "--unsafe-after-late-usage");
+                            let active_goal = args.iter().any(|arg| arg == "--late-active-goal");
                             let duplicate_burst = args
                                 .iter()
                                 .any(|arg| arg == "--late-accounting-duplicate-burst");
@@ -2031,6 +2032,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     thread::sleep(Duration::from_millis(1));
                                 }
                                 if gate.is_file() {
+                                    if active_goal {
+                                        let _ = send(
+                                            json!({"method":"thread/goal/updated","params":{
+                                                "threadId":thread_id,"goal":{"objective":"Continue work","status":"active"}
+                                            }}),
+                                        );
+                                        let _ = fs::write(gate.with_extension("sent"), "sent");
+                                        return;
+                                    }
                                     if duplicate_burst {
                                         for _ in 0..33 {
                                             let _ = send(

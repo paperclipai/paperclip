@@ -120,3 +120,16 @@ and goal with A’s saved idle state. After reading the goal, it checks updates
 that arrive during the final status read and keeps them queued for delivery.
 As with Codex, a prepared session can continue or be cleaned up. This handoff
 requires a completed turn. Suspended sessions use their usual recovery path.
+
+### Host park eligibility
+
+`CommandExecutor::host_park_ready` defaults to false. Native Codex opts in only
+for the existing process that completed the current turn. An eligibility check
+never selects or restores a provider and cannot release source reconciliation.
+Active turns, goals, startup attempts, tool calls, pending credentials, and
+unsettled events block parking. The bounded completed-turn tail drain retains
+late accounting for normal delivery. The check also inspects the live provider
+after that drain, so a late active-goal notification cannot be hidden by the
+older executor journal. This hook does not detach a controller, stop a process,
+or advertise hosted parking support. The host-control consumer must separately
+validate the exact Runner identity and acknowledged sequence cut.
