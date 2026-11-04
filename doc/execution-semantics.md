@@ -2213,10 +2213,11 @@ unknown, and they do not gain automatic replay eligibility.
 Admission validates the persisted comment's author, task, and time against every
 held predecessor. Retry validates the selected failed run's company, task, and
 agent and preserves that run's identity through admission and history loading.
-The admitted Retry receipt also saves its continuation authorization. Dispatch
-checks the exact receipt, successor, source run, and user even when preparation
-failed before a recovery-action row was created. A caller-provided continuation
-object does not establish authority.
+When preparation failed before a source recovery-action row was created, the
+admitted Retry receipt saves its continuation authorization. Existing action
+records remain the authority when present. Dispatch checks the exact receipt,
+successor, source run, and user. A caller-provided continuation object does not
+establish authority.
 Duplicate Retry requests adopt the same successor. Only a validated, unconsumed human queue receipt can authorize saved-message continuation after a native failure; arbitrary historical input, an agent-authored comment, or a generic
 system wake cannot release a hold. The source task keeps its assignee. Process
 ownership, active controllers, cleanup leases, pause, approval, budget, and normal

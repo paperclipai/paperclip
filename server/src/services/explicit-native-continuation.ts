@@ -540,13 +540,16 @@ export async function admitExplicitNativeContinuation(input: {
   if (readiness) await persistActivity(db, { companyId, actorType: "system", actorId: "task-recovery",
     action: "issue.fresh_workspace_selected", entityType: "issue", entityId: issueId,
     details: { ...readiness, runId: input.successorRunId } });
-  if (input.taskRetryRequestId) await db.update(agentWakeupRequests).set({
-    // Preparation can fail before any recovery-action row exists. The admitted
-    // Retry receipt must retain dispatch authority even in that case.
-    payload: sql`jsonb_set(jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}',
-      ${JSON.stringify(readiness?.mode === "fresh_isolated_workspace" ? "fresh_isolated_workspace" : "continue")}::jsonb),
-      '{taskRetry,continuation}', ${JSON.stringify(authorization)}::jsonb)`,
-  }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.taskRetryRequestId)));
+  if (input.taskRetryRequestId) {
+    const payload = sql`jsonb_set(${agentWakeupRequests.payload} #- '{taskRetry,continuation}', '{taskRetry,strategy}',
+      ${JSON.stringify(readiness?.mode === "fresh_isolated_workspace" ? "fresh_isolated_workspace" : "continue")}::jsonb)`;
+    // Preserve the action ledger as the authority when it exists. Preparation
+    // can fail before that ledger exists, so only that path needs a fallback.
+    const hasActionAuthorization = actions.some(action => (action.evidence.runId ?? action.evidence.sourceRunId) === previous.id);
+    await db.update(agentWakeupRequests).set({ payload: hasActionAuthorization ? payload
+      : sql`jsonb_set(${payload}, '{taskRetry,continuation}', ${JSON.stringify(authorization)}::jsonb)`,
+    }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.taskRetryRequestId)));
+  }
   return continuation;
 }
 
