@@ -1983,8 +1983,11 @@ grants are not filesystem permissions. The single-writer fence still applies.
 If reservation finds a current running writer, the bound task uses the existing
 workspace wait and scheduled retry path, including for isolated workspaces and
 operator branches. Reservation does not acquire another allocation or change
-the writer's saved files. A stale writer or a stopped writer with unfinished
-saves still requires reconciliation; contention retries cannot clear that fence.
+the writer's saved files. A stopped writer whose final save is still owed
+(system workspace recovery saves it after the run settles) uses the same wait;
+its liveness is the writer's finish time or the recovery's latest progress. A
+stale holder, or a stopped writer whose recovery is exhausted, still requires
+reconciliation; contention retries never clear that fence themselves.
 The wait retains the run's admitted assignment role so reassignment during
 preparation cannot resume the former assignee through the guest-run path.
 

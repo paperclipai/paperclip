@@ -88,8 +88,8 @@ Reservation checks task/run, binding, trust, and retained source visibility befo
 claiming the single writer; an unbound task cannot claim that workspace.
 A live writer conflict at atomic reservation uses the existing workspace wait,
 including inherited isolated workspaces and operator branches. The retry retains
-the binding and current admission gates; Stop cancels it. Stale or stopped
-writers with unfinished saves remain fenced. The wait retains the admitted
+the binding and current admission gates; Stop cancels it. A stopped writer whose
+final save is still owed also waits; stale holders and exhausted recoveries remain fenced. The wait retains the admitted
 assignment role; reassignment during preparation cancels the old assignee's retry.
 The
 [preparation tests](../../server/src/services/heartbeat/workspace-preparation.test.ts)

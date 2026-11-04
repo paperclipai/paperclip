@@ -204,11 +204,12 @@ export class WorkspaceBusyDeferral extends Error {
     executionWorkspaceId?: string | null;
     deferralAttempt: number;
     wasIssueAssignee: boolean;
+    holderSaving?: boolean;
   }) {
     super(
       `Shared ${input.executionWorkspaceId ? "execution" : "project"} workspace is busy: run ${input.holder.runId} (issue ${
         input.holder.issueIdentifier ?? input.holder.issueId
-      }) is still running`,
+      }) is still ${input.holderSaving ? "saving its work" : "running"}`,
     );
     this.name = "WorkspaceBusyDeferral";
     this.holder = input.holder;

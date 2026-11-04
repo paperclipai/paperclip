@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, authUsers, companies, companyMemberships, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
-  environmentLeases, environments, executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+  environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -111,5 +111,75 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
         expect(await heartbeat.getRun(retries[0].id)).toMatchObject({ status: "cancelled", errorCode: "issue_reassigned" });
       }
     } finally { transactionSpy.mockRestore(); }
+  });
+
+  // A failed writer's final save runs after the run is terminal (system workspace
+  // recovery). An immediate continuation must wait for that save instead of
+  // failing setup and stranding the task.
+  it.each([
+    { name: "a recently failed writer whose save is still pending", finishedAgoMs: 0, recovery: null, expected: "deferred" },
+    { name: "a failed writer whose recovery is actively saving", finishedAgoMs: 2 * 60 * 60_000, recovery: "running", expected: "deferred" },
+    { name: "a failed writer whose recovery is exhausted", finishedAgoMs: 0, recovery: "exhausted", expected: "failed" },
+    { name: "a failed writer silent past the holder cutoff", finishedAgoMs: 2 * 60 * 60_000, recovery: null, expected: "failed" },
+  ] as const)("handles $name", async ({ finishedAgoMs, recovery, expected }) => {
+    const userId = randomUUID();
+    await db.insert(authUsers).values({ id: userId, name: "Workspace owner", email: `${userId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date() });
+    const [company] = await db.insert(companies).values({ name: "Remote save wait", issuePrefix: `S${randomUUID().slice(0, 6)}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: userId }).returning();
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: userId,
+      status: "active", membershipRole: "owner" });
+    const [environment] = await db.insert(environments).values({ name: `Remote save ${randomUUID()}`,
+      driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Native worker", status: "idle",
+      adapterType: "paperclip_runner", defaultEnvironmentId: environment.id,
+      adapterConfig: { provider: "codex", model: "gpt-6.1-sol" }, runtimeConfig: { heartbeat: { maxConcurrentRuns: 2 } } }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Continue after a failed turn",
+      status: "todo", assigneeAgentId: agent.id, responsibleUserId: userId }).returning();
+    const finishedAt = new Date(Date.now() - finishedAgoMs);
+    const startedAt = new Date(finishedAt.getTime() - 60_000);
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      nativeIssueId: issue.id, runtimeMode: "native", status: "failed", errorCode: "adapter_failed",
+      startedAt, finishedAt, lastOutputAt: startedAt, createdAt: startedAt }).returning();
+    const authority = { schema: "paperclip.remote-workspace.v1" as const, epoch: 2, snapshotId: randomUUID(),
+      source: { kind: "empty" as const }, location: null, writerRunId: writer.id, dirty: true };
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: company.id, sourceIssueId: issue.id,
+      name: "Task remote workspace", mode: "isolated_workspace", strategyType: "project_primary", providerType: "cloud_sandbox",
+      cwd: `/workspaces/${randomUUID()}`, metadata: { remoteWorkspace: authority } }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
+    if (recovery) await db.insert(issueRecoveryActions).values({ companyId: company.id, sourceIssueId: issue.id,
+      kind: "active_run_watchdog", status: recovery === "exhausted" ? "escalated" : "active", cause: "run_failed",
+      fingerprint: `save-${writer.id}`, nextAction: "preserve_files", updatedAt: new Date(),
+      evidence: { runId: writer.id, systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1,
+        sourceRunId: writer.id, revision: 2, generationId: randomUUID(), intentId: null, phase: "preserve_files",
+        state: recovery, attemptId: null, attempts: 1, retriesUsed: recovery === "exhausted" ? 5 : 0,
+        firstFailureAt: null, nextAttemptAt: null, deadlineAt: null, providerCooldownAt: null, failure: null,
+        preservationOperationIds: [], freshAttemptRunId: null } } });
+    const run = await heartbeat.wakeup(agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+      requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id } });
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+    const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
+    if (expected === "deferred") {
+      expect(settled).toMatchObject({ status: "cancelled", errorCode: "workspace_busy",
+        error: expect.stringContaining("is still saving its work"),
+        resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+          workspaceBusy: { executionWorkspaceId: workspace.id, holderRunId: writer.id } } });
+      expect(retries).toHaveLength(1);
+      expect(retries[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "workspace_busy" });
+      const [waiting] = await db.select().from(issues).where(eq(issues.id, issue.id));
+      expect(waiting).toMatchObject({ executionRunId: retries[0].id });
+      expect(waiting.status).not.toBe("blocked");
+      await heartbeat.cancelRun(retries[0].id);
+    } else {
+      expect(settled).toMatchObject({ status: "failed", errorCode: "setup_failed",
+        error: "The workspace still has an unfinished writer or save operation." });
+      expect(retries.filter(retry => retry.scheduledRetryReason === "workspace_busy")).toEqual([]);
+    }
+    expect((await db.select().from(environmentLeases)).filter(lease => lease.heartbeatRunId === run!.id)).toEqual([]);
+    expect(readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, workspace.id)))[0].metadata)).toEqual(authority);
   });
 });

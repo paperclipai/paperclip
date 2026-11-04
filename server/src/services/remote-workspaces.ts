@@ -7,8 +7,10 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import {
-  companies, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issues, workspaceOperations, type Db,
+  companies, environmentLeases, executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, issues,
+  workspaceOperations, type Db,
 } from "@paperclipai/db";
+import { readSystemRecovery } from "./system-recovery-state.js";
 import {
   readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema,
   type RemoteWorkspaceAuthority, type RemoteWorkspaceRunReference, type RemoteWorkspaceSource,
@@ -154,10 +156,44 @@ export class RemoteWorkspaceWriterActiveError extends HttpError {
     readonly workspaceId: string,
     readonly writer: {
       runId: string; agentId: string; issueId: string; issueIdentifier: string | null; lastActivityAt: Date;
+      /** The writer settled and only its final save remains. */
+      saving?: boolean;
     },
   ) {
     super(409, "The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
   }
+}
+
+const TERMINAL_WRITER_STATUSES = ["failed", "cancelled", "interrupted", "timed_out", "succeeded"];
+
+/**
+ * A terminal writer can still owe its final save: system workspace recovery
+ * preserves its files after the run settles. Report it as a holder so the next
+ * run waits, with liveness taken from the writer's finish or the recovery's
+ * latest progress. The caller's holder cutoff bounds the wait; an exhausted
+ * recovery never saves, so it is not a holder.
+ */
+async function terminalWriterSaveHolder(tx: Transaction, companyId: string, writerRunId: string, prior: {
+  agentId: string; issueId: string | null; nativeIssueId: string | null; contextIssueId: string | null;
+  finishedAt: Date | null; createdAt: Date;
+}) {
+  const writerIssueId = prior.nativeIssueId ?? prior.issueId ?? prior.contextIssueId;
+  if (!writerIssueId) return null;
+  const [writerIssue] = await tx.select({ id: issues.id, identifier: issues.identifier }).from(issues)
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, canonicalExecutionUuid(sql`${writerIssueId}::text`))));
+  if (!writerIssue) return null;
+  const actions = await tx.select({ evidence: issueRecoveryActions.evidence, updatedAt: issueRecoveryActions.updatedAt })
+    .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId),
+      eq(issueRecoveryActions.sourceIssueId, writerIssue.id), sql`${issueRecoveryActions.evidence}->>'runId' = ${writerRunId}`));
+  let lastActivityAt = prior.finishedAt ?? prior.createdAt;
+  for (const action of actions) {
+    const recovery = readSystemRecovery(action.evidence);
+    if (!recovery || recovery.sourceRunId !== writerRunId) continue;
+    if (recovery.state === "exhausted") return null;
+    if (recovery.state !== "complete" && action.updatedAt > lastActivityAt) lastActivityAt = action.updatedAt;
+  }
+  return { runId: writerRunId, agentId: prior.agentId, issueId: writerIssue.id,
+    issueIdentifier: writerIssue.identifier, lastActivityAt, saving: true };
 }
 
 export async function reserveRemoteWorkspace(input: {
@@ -219,6 +255,7 @@ export async function reserveRemoteWorkspace(input: {
           errorCode: heartbeatRuns.errorCode, executionRecovery: sql<unknown>`${heartbeatRuns.resultJson}->'executionRecovery'`,
           contextIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
           lastOutputAt: heartbeatRuns.lastOutputAt, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
+          finishedAt: heartbeatRuns.finishedAt,
         }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, authority.writerRunId)));
         if (prior?.status === "running") {
@@ -237,10 +274,15 @@ export async function reserveRemoteWorkspace(input: {
           && prior.runtimeMode === "legacy" && prior.nativeSessionId === null && prior.runnerInstanceId === null
           && prior.errorCode === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE
           && bootstrap.kind === "bootstrap" && bootstrap.providerWorkStarted === false;
-        const unusedReservation = !authority.dirty && prior && ["failed", "cancelled", "interrupted", "timed_out", "succeeded"].includes(prior.status)
+        const unusedReservation = !authority.dirty && prior && TERMINAL_WRITER_STATUSES.includes(prior.status)
           && leases.every(lease => hasRemoteTerminationReceipt(lease) || (pristinePreparation
             && lease.releasedAt && lease.cleanupStatus === "success" && ["released", "expired", "failed"].includes(lease.status)));
-        if (!unusedReservation) throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
+        if (!unusedReservation) {
+          const saving = prior && TERMINAL_WRITER_STATUSES.includes(prior.status)
+            ? await terminalWriterSaveHolder(tx, input.companyId, authority.writerRunId, prior) : null;
+          if (saving) throw new RemoteWorkspaceWriterActiveError(existing.id, saving);
+          throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
+        }
       }
       if (authority.writerRunId === input.runId) return existing;
       const next: RemoteWorkspaceAuthority = { ...authority, source, epoch: authority.epoch + 1, writerRunId: input.runId };
