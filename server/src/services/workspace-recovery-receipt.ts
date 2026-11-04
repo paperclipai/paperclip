@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql, type AnyColumn } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionBlocker } from "@paperclipai/shared";
 import { z } from "zod";
@@ -24,6 +24,33 @@ export function readWorkspaceRecovery(evidence: Record<string, unknown> | null) 
   const parsed = workspaceRecoverySchema.safeParse(evidence?.workspaceRecovery);
   return parsed.success ? parsed.data : null;
 }
+
+export function completedWorkspaceRecoveryCondition(runId: string | AnyColumn) {
+  const operationIds = sql`case when jsonb_typeof(${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}') = 'array'
+    then ${issueRecoveryActions.evidence}#>'{systemRecovery,preservationOperationIds}' else '[]'::jsonb end`;
+  return and(
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,schema}' = 'paperclip.system-recovery.v1'`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,policyVersion}' = '1'`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,sourceRunId}' = ${runId}::text`,
+    sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete'`,
+    sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,schema}' = 'paperclip.workspace-recovery.v1'`,
+    sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,runId}' = ${runId}::text`,
+    sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' = 'recovered'`,
+    sql`jsonb_array_length(${operationIds}) > 0`,
+    sql`not exists (select 1 from jsonb_array_elements_text(${operationIds}) saved(id) where not exists (
+      select 1 from ${workspaceOperations} op where op.company_id = ${issueRecoveryActions.companyId}
+        and op.issue_id = ${issueRecoveryActions.sourceIssueId} and op.heartbeat_run_id::text = ${runId}::text
+        and op.id::text = saved.id and op.status = 'succeeded'
+        and op.metadata->>'recoveryActionId' = ${issueRecoveryActions.id}::text
+        and op.phase in ('workspace_recovery', 'workspace_recovery_snapshot')))`,
+    sql`exists (select 1 from ${workspaceOperations} op where op.company_id = ${issueRecoveryActions.companyId}
+      and op.issue_id = ${issueRecoveryActions.sourceIssueId} and op.heartbeat_run_id::text = ${runId}::text
+      and op.phase = 'workspace_finalize' and op.status = 'succeeded'
+      and op.metadata->>'owningService' = 'workspace_recovery'
+      and op.metadata->'preservationOperationIds' = ${operationIds})`,
+  );
+}
+
 export function workspaceRecoveryDisplay(evidence: Record<string, unknown>, runId: string | null): ExecutionBlocker["workspaceRecovery"] {
   const state = readWorkspaceRecovery(evidence);
   if (!state || state.runId !== runId) return undefined;

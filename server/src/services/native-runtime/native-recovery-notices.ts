@@ -1,10 +1,18 @@
 import { and, asc, eq, gt, inArray, isNotNull, not, or, sql } from "drizzle-orm";
-import { heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import type { NativeRecoveryNoticeScope } from "../native-recovery-notice-notifications.js";
 import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
 import { pendingNativeStatusEffectsCondition } from "./native-pending-effect-work.js";
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
+import { completedWorkspaceRecoveryCondition } from "../workspace-recovery-receipt.js";
+
+function recoveredExportNotice(runId: string | typeof nativeRunFinalizations.runId) {
+  return and(
+    inArray(issueRecoveryActions.cause, ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"]),
+    completedWorkspaceRecoveryCondition(runId),
+  );
+}
 
 function matchingNotice(runId: string | typeof nativeRunFinalizations.runId) {
   return and(
@@ -12,7 +20,7 @@ function matchingNotice(runId: string | typeof nativeRunFinalizations.runId) {
     inArray(issueRecoveryActions.status, ["active", "escalated"]),
     sql`${issueRecoveryActions.evidence}->>'runId' = ${runId}::text`,
     or(sql`${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'`,
-      eq(issueRecoveryActions.cause, "native_workspace_finalization_owner_unverified")),
+      eq(issueRecoveryActions.cause, "native_workspace_finalization_owner_unverified"), recoveredExportNotice(runId)),
   );
 }
 
@@ -23,6 +31,9 @@ export function pendingNativeRecoveryNotices(db: Db, scope?: NativeRecoveryNotic
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, nativeRunFinalizations.runId),
       eq(heartbeatRuns.companyId, nativeRunFinalizations.companyId), eq(heartbeatRuns.nativeIssueId, nativeRunFinalizations.issueId)))
     .innerJoin(issues, and(eq(issues.id, nativeRunFinalizations.issueId), eq(issues.companyId, nativeRunFinalizations.companyId)))
+    .innerJoin(nativeRunResults, and(eq(nativeRunResults.id, nativeRunFinalizations.resultId),
+      eq(nativeRunResults.companyId, nativeRunFinalizations.companyId), eq(nativeRunResults.issueId, nativeRunFinalizations.issueId),
+      eq(nativeRunResults.runId, nativeRunFinalizations.runId), eq(nativeRunResults.schemaStatus, "accepted")))
     .where(and(eq(nativeRunFinalizations.phase, "committed"), isNotNull(nativeRunFinalizations.resultId),
       eq(heartbeatRuns.runtimeMode, "native"), nativeRunnerOwnershipNotHeldCondition(),
       not(pendingNativeStatusEffectsCondition(db)), not(pendingNativeRunProjectionCondition(db)),
@@ -60,10 +71,11 @@ export async function resolveCommittedNativeRecoveryNotices(db: Db,
       eq(heartbeatRuns.nativeIssueId, scope.issueId), eq(heartbeatRuns.runtimeMode, "native"),
       nativeRunnerOwnershipNotHeldCondition())).for("update");
     if (!run) return;
-    if (onlyWhenSettled && !(await pendingNativeRecoveryNotices(tx, scope)).length) return;
-    const actions = await tx.select({ id: issueRecoveryActions.id }).from(issueRecoveryActions).where(and(
+    const actions = await tx.select({ id: issueRecoveryActions.id,
+      recovered: sql<boolean>`coalesce(${recoveredExportNotice(scope.runId)}, false)` }).from(issueRecoveryActions).where(and(
       eq(issueRecoveryActions.companyId, scope.companyId), eq(issueRecoveryActions.sourceIssueId, scope.issueId),
       matchingNotice(scope.runId))).for("update");
+    if ((onlyWhenSettled || actions.some(action => action.recovered)) && !(await pendingNativeRecoveryNotices(tx, scope)).length) return;
     for (const action of actions) await issueRecoveryActionService(tx).resolveActiveForIssue({
       companyId: scope.companyId, sourceIssueId: scope.issueId, actionId: action.id,
       status: "resolved", outcome: "restored",

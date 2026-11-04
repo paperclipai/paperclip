@@ -1677,6 +1677,30 @@ future execution until Resume, and missing stop proof still blocks continuation.
 
 A permanently unusable native runner session may be replaced only with evidence that its predecessor is stopped and fenced, completed results and workspace state are preserved, required task history is available, and pending effects have been reconciled. A provider-native shell command or external write without a reliable outcome receipt is unknown. Unknown effects, integrity failures, and unverified process ownership never authorize speculative replay. Once automatic recovery is ruled out, Paperclip selects a conservative default: preserve recorded work, stop the affected task, and retain a durable no-replay hold. Unknown action outcomes remain unknown. No reconciliation form or user diagnosis is required.
 
+Normal retained-file recovery can re-enter finalization of the same immutable
+accepted result. It does not start another provider turn. A published external
+response wait may retain its passive waiting disposition after the source run
+becomes terminal. This requires complete verified preservation, stopped old
+execution, the same result and completion contract, no newer run or current
+execution, unchanged task ownership, and current source, channel, principal and
+review binding authorization. Stop, pause, cancellation, changed review head and
+revoked access retain their normal gates. The status committer rechecks the
+preserved-result proof and current authority under its existing locks.
+
+An exhausted workspace export records the exact Blocked status version it
+creates, bound to its source run, result, contract and identity. Recovery may
+restore the accepted passive wait only while that receipt still owns the task
+status. Missing historical receipts and later status decisions preserve the
+current status. A missing receipt is a status-provenance limit, not evidence of
+connector revocation. A yielded published review remains a wait; recovery never
+converts it to completed work or queues another provider turn.
+
+The old export recovery notice settles separately after its accepted result,
+preservation receipts, finalization, status effects and run projection settle
+and old Runner ownership is absent. This closes only that source action. Newer
+authorized work may own the task and workspace by then; closing the old notice
+does not change that work, its status, execution owner, files or result.
+
 An ACPX sidecar transport failure carries its redacted cause and code in the
 terminal event's structured `error` field. The session facade must retain that
 cause instead of reporting a failed turn with `error: null`. A transport failure

@@ -5,6 +5,7 @@ import { hasNativeWorkspaceFinalizationOwner } from "./native-workspace-finaliza
 import { tryLockNativeWorkspaceFinalization } from "./native-workspace-finalization-ownership.js";
 import { lockCurrentNativeCompletionContract } from "./completion-contracts.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
+import { readPreservedNativeResultFinalization, type PreservedNativeResultFinalization } from "./preserved-native-result-finalization.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyAutomaticCompletionReviews } from "../automatic-completion-review-notifications.js";
@@ -1609,6 +1610,7 @@ export async function commitNativeStatusDecision(input: {
   supersedesCommittedDecisionId?: string;
   supersededExternalReviewRequests?: { agentId: string; resultId: string; interactionIds: string[] };
   requireExternalChatResponseWaitAuthorization?: { agentId: string; completionContinuationKey?: string };
+  requirePreservedResultFinalization?: PreservedNativeResultFinalization;
   requirePlanWaitSource?: NativePlanWaitSource;
   requireMonitorWait?: { agentId: string; nextCheckAt: string };
   requireMonitorDelivery?: NativeMonitorDelivery;
@@ -1843,6 +1845,16 @@ export async function commitNativeStatusDecision(input: {
       } else if (issue.assigneeAgentId !== owner.agentId || issue.assigneeUserId) {
         throw new NativeStatusRaceError();
       }
+    }
+    if (input.requirePreservedResultFinalization) {
+      let current;
+      try {
+        current = await readPreservedNativeResultFinalization(tx as unknown as Db, input.requirePreservedResultFinalization, true);
+      } catch (error) {
+        if (isExternalChatWaitAuthorizationContention(error)) throw new NativeStatusRaceError();
+        throw error;
+      }
+      if (!current || current.fingerprint !== input.requirePreservedResultFinalization.fingerprint) throw new NativeStatusRaceError();
     }
     if (input.requireExternalChatResponseWaitAuthorization) {
       let authorization;
