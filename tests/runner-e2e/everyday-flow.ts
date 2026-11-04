@@ -186,8 +186,12 @@ export async function runEverydayFlow(input: Input) {
   const controllerOutage = controllerOutageForExecution(execution, process.env);
   const requireRemoteRestart = controllerOutage !== undefined || isRollingWebDeployment(execution);
   const remoteWorkspaceStorage = isRemoteWorkspaceStorageExecution(execution);
-  if (remoteWorkspaceStorage) ev.remoteWorkspaceStorage = { browserReadPhases: [],
-    expectedFileSource: execution.suite.definitionMetadata?.lifecycleCoverage === "per-turn-disposable" ? "saved" : "live" };
+  if (remoteWorkspaceStorage) {
+    const perTurn = execution.suite.definitionMetadata?.lifecycleCoverage === "per-turn-disposable";
+    ev.remoteWorkspaceStorage = { browserReadPhases: [],
+      expectedFileSource: perTurn || isRollingWebDeployment(execution) ? "saved" : "live",
+      expectedLocation: perTurn ? "released" : "retained" };
+  }
   const providerChoice = caseId === "provider-decline" || caseId === "provider-second";
   const nativeProviderCase = caseId === "provider-native";
   let aggregatorFixture: Awaited<ReturnType<typeof setupAggregatorFixture>> | undefined;
@@ -564,7 +568,8 @@ export async function runEverydayFlow(input: Input) {
       label: `remote workspace ${phase} saved version`, deadlineAt: input.deadlineAt,
       load: () => readRemoteWorkspaceStorageCheckpoint({ api, companyId: fixtures.company.id,
         agentId: fixtures.agent.id, issueId: parent!.id, environmentId: fixtures.environment.id,
-        expectedFileSource: ev.remoteWorkspaceStorage!.expectedFileSource }),
+        expectedFileSource: ev.remoteWorkspaceStorage!.expectedFileSource,
+        expectedLocation: ev.remoteWorkspaceStorage!.expectedLocation }),
       accept: observed => Boolean(observed.point),
     });
     ev.remoteWorkspaceStorage![phase] = point.point!;

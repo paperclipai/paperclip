@@ -86,6 +86,34 @@ describe("remote workspace Product E2E qualification", () => {
     expect(gradeRemoteWorkspaceStorage(evidence).every(check => check.passed)).toBe(false);
   });
 
+  it("reads a completed warm turn from its saved snapshot while retaining the bound workspace location", async () => {
+    const f = checkpointApi();
+    const savedFile = { ...f.file, resource: { ...f.file.resource,
+      source: { kind: "saved", snapshotId: f.receipt.snapshotId } } };
+    const location = f.workspace.workspace.metadata.remoteWorkspace.location;
+    const originalGet = f.api.get;
+    const api = { get: async <T>(route: string): Promise<T> => {
+      if (route.includes("file-resources/content")) return savedFile as T;
+      if (route.endsWith("/leases")) return [{ id: location.leaseId, companyId: f.context.companyId,
+        issueId: f.context.issueId, providerLeaseId: location.providerLeaseId }] as T;
+      return originalGet<T>(route);
+    } };
+    const input = { ...f.context, api, expectedFileSource: "saved" as const, expectedLocation: "retained" as const };
+    expect((await readRemoteWorkspaceStorageCheckpoint(input)).point).toMatchObject({
+      fileSource: "saved", fileSnapshotId: f.receipt.snapshotId, locationState: "retained" });
+    expect(await readRemoteWorkspaceStorageCheckpoint({ ...input, expectedLocation: "released" })).toEqual({});
+    location.environmentId = id("5");
+    expect(await readRemoteWorkspaceStorageCheckpoint(input)).toEqual({});
+    const evidence = goodEvidence();
+    evidence.expectedFileSource = "saved";
+    evidence.expectedLocation = "retained";
+    for (const point of [evidence.initial!, evidence.final!]) Object.assign(point, {
+      fileSource: "saved", fileSnapshotId: point.snapshotId, locationState: "retained" });
+    expect(gradeRemoteWorkspaceStorage(evidence).every(check => check.passed)).toBe(true);
+    evidence.final!.locationState = "released";
+    expect(gradeRemoteWorkspaceStorage(evidence).every(check => check.passed)).toBe(false);
+  });
+
   it.each(["run-id", "company", "agent", "native-issue", "runtime", "status", "schema", "workspace",
     "epoch", "snapshot", "save-state", "lease", "provider", "remote-root"] as const)(
     "rejects a full-run %s mismatch even when its public summary succeeds", async mismatch => {
