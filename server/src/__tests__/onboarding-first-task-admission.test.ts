@@ -639,7 +639,10 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
     const p = await proposal(f, true);
     await accept(f, p);
     const replacement = await p.svc.create(p.issue, { kind: "request_confirmation", payload: {
-      version: 1, prompt: "Approve this plan again?", target: p.card.payload.target,
+      version: 1, prompt: "Approve this plan again?", target: {
+        type: "issue_document", key: "plan", issueId: f.issueId,
+        documentId: p.plan!.id, revisionId: p.plan!.latestRevisionId!,
+      },
     } }, { agentId: f.agentId });
     await p.svc.rejectInteraction(p.issue, replacement.id, {}, { userId: f.responsibleUserId! });
     await acceptFollowUp(f, p);
