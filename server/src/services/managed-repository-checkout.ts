@@ -14,6 +14,23 @@ import { resolveRepositoryObjectCache, readRepositoryObjectCache, publishReposit
 const execFile = promisify(execFileCallback);
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 
+/** The requested branch, tag, or commit is absent from a complete fresh clone. */
+export class RepositoryRefNotFoundError extends Error {
+  constructor(message: string, readonly requestedRef: string) {
+    super(message);
+    this.name = "RepositoryRefNotFoundError";
+  }
+}
+
+async function refResolvesInClone(cloneCwd: string, ref: string): Promise<boolean> {
+  for (const candidate of [`${ref}^{commit}`, `refs/remotes/origin/${ref}^{commit}`]) {
+    const resolved = await execFile("git", ["-C", cloneCwd, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate], { timeout: 30_000 })
+      .then(() => true, () => false);
+    if (resolved) return true;
+  }
+  return false;
+}
+
 export async function materializeManagedProjectWorkspace(
   cwd: string,
   input: {
@@ -122,7 +139,18 @@ export async function materializeManagedProjectWorkspace(
       }
       await execFile("git", ["-C", cloneTmpDir, "remote", "set-url", "origin", input.repoUrl], { timeout: 10_000 });
     } else if (input.repoRef) {
-      await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", ["-C", cloneTmpDir, "checkout", input.repoRef!], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS }));
+      const repoRef = input.repoRef;
+      try {
+        await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", ["-C", cloneTmpDir, "checkout", repoRef], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS }));
+      } catch (error) {
+        // Only a ref that a complete fresh clone cannot resolve is a missing ref;
+        // every other checkout failure keeps its original cause.
+        if (await refResolvesInClone(cloneTmpDir, repoRef)) throw error;
+        throw new RepositoryRefNotFoundError(
+          `Requested ref "${repoRef}" does not exist in the repository. Request the repository again with an existing branch, tag, or commit.`,
+          repoRef,
+        );
+      }
     }
     await input.beforePublish?.(cloneTmpDir);
   } catch (error) {
@@ -138,6 +166,7 @@ export async function materializeManagedProjectWorkspace(
       `Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}${authNote ? ` ${authNote}` : ""}`,
     );
     if (isWorkspaceGitScanError(error)) throw new WorkspaceGitScanError(error.code, message);
+    if (error instanceof RepositoryRefNotFoundError) throw new RepositoryRefNotFoundError(message, error.requestedRef);
     const connectionFailure = readGitConnectionFailure(error);
     if (connectionFailure) throw new GitConnectionFailureError(message, connectionFailure);
     throw new Error(message);

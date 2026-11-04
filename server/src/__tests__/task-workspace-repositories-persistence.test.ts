@@ -173,6 +173,90 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       await rm(root, { recursive: true, force: true });
     }
   });
+  it("lets a missing requested ref be corrected before any checkout is published", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-missing-ref-repository-"));
+    const previousPath = process.env.PATH;
+    const exec = promisify(execFileCallback);
+    try {
+      const realGit = (await exec("which", ["git"])).stdout.trim();
+      const source = path.join(root, "source"), taskRoot = path.join(root, "task"), bin = path.join(root, "bin");
+      await Promise.all([mkdir(source), mkdir(taskRoot), mkdir(bin)]);
+      const git = async (...args: string[]) => (await exec(realGit, ["-C", source, ...args])).stdout.trim();
+      // The repository's default branch is master; an agent asks for "main".
+      await git("init", "--initial-branch=master");
+      await writeFile(path.join(source, "source.txt"), "master source\n");
+      await git("add", ".");
+      await git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "commit", "-m", "source");
+      const pin = await git("rev-parse", "HEAD");
+      await writeFile(path.join(bin, "git"), `#!${process.execPath}\n` +
+        `const { spawnSync } = require('node:child_process'); const args = process.argv.slice(2);\n` +
+        `const remote = args.includes('clone') ? args.at(-2) : null;\n` +
+        `if (remote && remote !== 'https://github.com/team/source') process.exit(97);\n` +
+        `if (remote) args[args.length - 2] = ${JSON.stringify(source)};\n` +
+        `const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });\n` +
+        `if (result.status) process.exit(result.status);\n` +
+        `if (remote) process.exit(spawnSync(${JSON.stringify(realGit)}, ['-C', args.at(-1), 'remote', 'set-url', 'origin', remote], { stdio: 'inherit' }).status ?? 98);\n` +
+        `process.exit(result.status ?? 99);\n`, { mode: 0o755 });
+      process.env.PATH = `${bin}${path.delimiter}${previousPath ?? ""}`;
+      const service = executionWorkspaceRepositoryService(db);
+      const [workspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Missing ref root", cwd: taskRoot,
+        mode: "shared_workspace", strategyType: "task_directory" }).returning();
+      const [task] = await db.insert(issues).values({ companyId, title: "Missing ref", executionWorkspaceId: workspace.id }).returning();
+      const repository = { kind: "catalog" as const, id: "123" };
+      const intent = await service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "main", requestKey: "missing-ref" } });
+      const checkout = path.join(taskRoot, intent.repository.relativePath);
+      const admission = () => prepareForAdmission({ companyId, issueId: task.id, workspaceId: workspace.id, cwd: taskRoot,
+        agentId, runId: randomUUID(), responsibleUserId: "local-board" });
+      const receipt = async () => (await db.select().from(executionWorkspaceRepositories)
+        .where(eq(executionWorkspaceRepositories.id, intent.operationId)))[0];
+
+      await expect(admission()).rejects.toThrow(/ref "main" does not exist/);
+      expect(await receipt()).toMatchObject({ state: "needs_repair", failureCode: "repository_ref_not_found", pinnedCommit: null });
+      expect(await lstat(checkout).catch(() => null)).toBeNull();
+
+      // Retrying with the same missing ref keeps the receipt; a corrected ref replaces it.
+      await expect(service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "main", requestKey: "missing-ref" } }))
+        .resolves.toMatchObject({ operationId: intent.operationId });
+      const corrected = await service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "master", requestKey: "corrected-ref" } });
+      expect(corrected.operationId).toBe(intent.operationId);
+      expect(await receipt()).toMatchObject({ requestedRef: "master", state: "pending", failureCode: null, pinnedCommit: null });
+      expect((await receipt()).requestKeys.sort()).toEqual(["corrected-ref", "missing-ref"]);
+
+      await expect(admission()).resolves.toEqual([expect.objectContaining({ id: intent.operationId, pinnedCommit: pin })]);
+      expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("master source\n");
+      expect(await receipt()).toMatchObject({ state: "ready", requestedRef: "master", pinnedCommit: pin, failureCode: null });
+      // Published files are never switched to another ref.
+      await expect(service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "main", requestKey: "after-ready" } }))
+        .rejects.toThrow(/conflicts/);
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH; else process.env.PATH = previousPath;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+  it("keeps a missing-ref receipt immutable when files exist at its checkout path", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "paperclip-missing-ref-occupied-"));
+    try {
+      const service = executionWorkspaceRepositoryService(db);
+      const [workspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Occupied checkout root", cwd: root,
+        mode: "shared_workspace", strategyType: "task_directory" }).returning();
+      const [task] = await db.insert(issues).values({ companyId, title: "Occupied checkout", executionWorkspaceId: workspace.id }).returning();
+      const repository = { kind: "catalog" as const, id: "123" };
+      const intent = await service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "main", requestKey: "occupied" } });
+      await db.update(executionWorkspaceRepositories).set({ state: "needs_repair", failureCode: "repository_ref_not_found" })
+        .where(eq(executionWorkspaceRepositories.id, intent.operationId));
+      await mkdir(path.join(root, intent.repository.relativePath), { recursive: true });
+      await expect(service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "master", requestKey: "occupied-fix" } }))
+        .rejects.toThrow(/conflicts/);
+      // A failure that was not a missing ref also keeps the receipt.
+      await rm(path.join(root, intent.repository.relativePath), { recursive: true, force: true });
+      await db.update(executionWorkspaceRepositories).set({ failureCode: "repository_preparation_failed" })
+        .where(eq(executionWorkspaceRepositories.id, intent.operationId));
+      await expect(service.request({ companyId, issueId: task.id, actor, request: { repository, ref: "master", requestKey: "generic-fix" } }))
+        .rejects.toThrow(/conflicts/);
+      expect((await db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.id, intent.operationId)))[0])
+        .toMatchObject({ requestedRef: "main" });
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
   it.skipIf(process.platform === "win32").each(["parent", "ignore_file"])("rejects a symlinked runtime staging %s before cloning", async (unsafeEntry) => {
     const root = await mkdtemp(path.join(tmpdir(), "paperclip-unsafe-repository-staging-"));
     try {
