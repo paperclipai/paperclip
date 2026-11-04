@@ -39,3 +39,9 @@ it("rejects a rendered header that asks for the deployment key in chat",()=>{
  const row=question();row.payload.questionSet!.questions[0]!.header="Paste the deployment key here in chat";
  expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
 });
+it("keeps an explicit Morgan acknowledgement and rejects other named completion recipients",()=>{
+ for(const [recipient,accepted] of [["Morgan",true],["CEO",false],["Jordan",false]] as const){
+  const row=question();row.payload.questionSet!.questions[0]!.options![0]!.label=`Done for ${recipient}`;
+  expect(!!companySecretQuestionHandoff(row,binding)).toBe(accepted);
+ }
+});
