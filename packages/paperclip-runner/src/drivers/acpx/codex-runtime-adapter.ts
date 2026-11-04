@@ -470,7 +470,7 @@ export async function openQualifiedAcpxRuntime(
     onSessionNotification: acceptGoalNotification,
     onAcpMessage: (direction, message) => {
       const active = extensionBoundary.active;
-      if (active && !active.signal.aborted) promptUsage?.observe(direction, message);
+      if (active && (direction === "inbound" || !active.signal.aborted)) promptUsage?.observe(direction, message);
     },
     spawnEnvironment: () => ({
       ...definedEnvironment(options.launchEnvironment),
