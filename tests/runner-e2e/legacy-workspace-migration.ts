@@ -11,7 +11,7 @@ export function isLegacyWorkspaceMigration(execution: MatrixExecution) {
 
 export function legacyWorkspaceMigrationPrompt(prompt: string) {
   const continuation = prompt.replace("Do not create other tasks or deliverables.", "Do not create other tasks.");
-  return `Work in this task's own workspace. Before asking the question, create migration-reference.txt containing a fresh random 32-character lowercase hexadecimal reference and a trailing newline. Do not deliver any files or documents before I answer. After I answer, read this same file, keep its original bytes, and attach the original migration-reference.txt as an additional deliverable alongside the confirmation document. ${continuation}`;
+  return `Work in this task's own workspace. Before asking the question, create migration-reference.txt containing a fresh random 32-character lowercase hexadecimal reference and a trailing newline. Do not deliver any files or documents before I answer. After I answer, read this same file, keep its original bytes, and attach the original migration-reference.txt as an additional deliverable alongside the confirmation document. Include a clickable Markdown link to the saved confirmation document in your final reply; its title or key alone is not a link. ${continuation}`;
 }
 
 export interface MigrationPoint {

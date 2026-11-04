@@ -310,8 +310,8 @@ export async function runContinuationFlow(input: {
       assertWaiting();
       await reply(scenario.approval);
     }
-    await snapshot("final");
     if (migration) migrationAfter = await readMigrationPoint({ api, companyId: fixtures.company.id, agentId: fixtures.agent.id, issueId: issue!.id });
+    await snapshot("final");
   } finally {
     checks = gradeContinuation({
       ...scenario,
