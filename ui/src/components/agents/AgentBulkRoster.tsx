@@ -21,7 +21,7 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent 
   const [filter, setFilter] = useState("all");
   const [editing, setEditing] = useState<Agent[] | null>(null);
   const [notice, setNotice] = useState("");
-  const accounts = useQuery({ queryKey: ["ai-connections", companyId], queryFn: () => aiConnectionsApi.list(companyId), retry: false });
+  const accounts = useQuery({ queryKey: ["ai-connections", companyId], queryFn: () => aiConnectionsApi.list(companyId) });
   const visible = visibleAgents.filter(a => filter === "all" || bulkAgentHarness(a) === filter);
   const selectable = visible.filter(a => !bulkAgentDisabledReason(a));
   const selectedAgents = agents.filter(a => selected.includes(a.id) && !bulkAgentDisabledReason(a));
