@@ -58,3 +58,10 @@ it("retains the governing prohibition across coordinated verbs", () => {
 it("does not carry a prohibition across an explicit instead request", () => {
   expect(solicitsChatCredential("Do not paste your credential into files and instead send it here in chat.")).toBe(true);
 });
+
+it("keeps contrast normalization aligned with secure exemptions", () => {
+  expect(solicitsChatCredential("Enter your credential in the secure form, not in chat and instead send a confirmation in settings.")).toBe(false);
+});
+it("resets a polite request at the same contrast boundary", () => {
+  expect(solicitsChatCredential("Do not paste your credential into files and instead please send it here in chat.")).toBe(true);
+});
