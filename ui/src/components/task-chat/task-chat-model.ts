@@ -112,6 +112,7 @@ export interface TaskChatMessageItem {
   kind: "message";
   author: TaskChatAuthorKind;
   authorName?: string;
+  agentAuthored?: boolean;
   /** Human identity comes from the company directory, matched by stored user ID. */
   authorUserId?: string | null;
   authorAvatarUrl?: string | null;

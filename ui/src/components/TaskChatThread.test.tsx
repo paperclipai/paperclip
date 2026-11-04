@@ -247,6 +247,27 @@ describe.each(["legacy", "native"] as const)("historical %s system status", (run
     expect(props.onResumeAssignee).not.toHaveBeenCalled();
   });
 
+  it("offers delete on a stored agent comment only when the host allows it", () => {
+    const onDeleteComment = vi.fn();
+    const props = {
+      issueStatus: "in_progress" as const,
+      comments: [comment("agent-comment", "Agent output to remove")],
+      linkedRuns: [],
+      onAdd: async () => {},
+      onDeleteComment,
+    };
+    render(<TaskChatThread {...props} />);
+    expect(container.querySelector("button[aria-label='Delete comment']")).toBeNull();
+    render(<TaskChatThread {...props} canDeleteAgentComments />);
+    const trigger = container.querySelector<HTMLButtonElement>("button[aria-label='Delete comment']");
+    expect(trigger).not.toBeNull();
+    flushSync(() => trigger!.click());
+    const confirm = Array.from(document.body.querySelectorAll("button"))
+      .find((button) => button.textContent === "Delete comment");
+    flushSync(() => confirm!.click());
+    expect(onDeleteComment).toHaveBeenCalledWith("agent-comment");
+  });
+
   it("replaces old failure and wait notices when a new attempt succeeds, regardless of fetch order", () => {
     setTranscript("old");
     const notice = { ...comment("notice", "Old recovery details."), authorType: "system" as const,

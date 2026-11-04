@@ -18507,14 +18507,43 @@ export function issueRoutes(
       return;
     }
 
-    if (!actorOwnsComment) {
+    const boardDeletesAgentComment =
+      req.actor.type === "board" && Boolean(comment.authorAgentId);
+    if (!actorOwnsComment && !boardDeletesAgentComment) {
       res
         .status(403)
         .json({ error: "Only the comment author can delete comments" });
       return;
     }
+    if (!actorOwnsComment) {
+      if (
+        issue.conversationAgentId &&
+        req.actor.userId !== issue.conversationUserId
+      ) {
+        throw forbidden("Only the conversation owner can delete comments in this chat");
+      }
+      const decision = await decideIssueAccess(req, issue, "issue:mutate");
+      if (!decision.allowed) {
+        throw forbidden("Issue mutation access required to delete this comment");
+      }
+    }
 
     if (comment.deletedAt) {
+      const scrubbedRows = await svc.scrubCommentActivitySnippets(issue.companyId, issue.id, [commentId]);
+      if (scrubbedRows > 0) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.comment_snippets_scrubbed",
+          entityType: "issue",
+          entityId: issue.id,
+          details: { commentId, scrubbedRows, identifier: issue.identifier },
+        });
+      }
       res.json(comment);
       return;
     }
@@ -18556,6 +18585,12 @@ export function issueRoutes(
               ]),
             ),
           );
+          await svc.scrubCommentActivitySnippets(
+            issue.companyId,
+            issue.id,
+            annotationCleanup.deletedCommentIds,
+            tx,
+          );
           await decisionTrainingSvc.scrubDeletedComments(
             {
               companyId: issue.companyId,
@@ -18590,7 +18625,7 @@ export function issueRoutes(
         commentId: deleted.id,
         identifier: issue.identifier,
         issueTitle: issue.title,
-        source: "author_delete",
+        source: actorOwnsComment ? "author_delete" : "board_delete",
         deletedByType: actor.actorType,
         deletedByAgentId: actor.actorType === "agent" ? actor.agentId : null,
         deletedByUserId: actor.actorType === "user" ? actor.actorId : null,
