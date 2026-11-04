@@ -13,7 +13,7 @@ import { assertNativeRunnerCheckpointOwner, type NativeRunnerCheckpointOwner } f
 import { loadConfig } from "../../config.js";
 import { getStorageService } from "../../storage/index.js";
 import { readNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
-import { captureNativeHarnessArchive, restoreNativeHarnessArchive } from "./native-harness-backup-archive.js";
+import { captureNativeHarnessArchive, restoreNativeHarnessArchive, MAX_NATIVE_HARNESS_OBJECT_BYTES } from "./native-harness-backup-archive.js";
 import { removeNativeHarnessBackup } from "./native-harness-backup-cleanup.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 
@@ -54,7 +54,7 @@ function reference(row: Row): Reference {
     || !/^[a-f0-9]{64}$/.test(ref.scopeDigest) || !/^[a-f0-9]{64}$/.test(ref.sha256)
     || ref.manifestSha256 !== row.manifestSha256 || !/^sha256:[a-f0-9]{64}$/.test(ref.manifestSha256)
     || ref.objectKey !== `${row.companyId}/native-harness-backups/${row.scopeDigest}/${row.id}.pchn`
-    || !Number.isSafeInteger(ref.byteSize) || ref.byteSize <= 0 || ref.byteSize > 300 * 1024 * 1024
+    || !Number.isSafeInteger(ref.byteSize) || ref.byteSize <= 0 || ref.byteSize > MAX_NATIVE_HARNESS_OBJECT_BYTES
     || !ref.material || typeof ref.material !== "object") fail("reference_invalid");
   return ref;
 }
@@ -134,6 +134,7 @@ export async function persistNativeHarnessBackup(input: {
       ...await digest(encrypted, input.signal),
       material: createLocalEncryptedCipher("write").encrypt(JSON.stringify({ schema: SCHEMA, ...binding,
         key: key.toString("base64"), iv: iv.toString("base64"), tag: cipher.getAuthTag().toString("base64"), plaintext })) };
+    if (ref.byteSize > MAX_NATIVE_HARNESS_OBJECT_BYTES) fail("size_limit_exceeded");
     await input.db.transaction(async tx => {
       await fence(tx, input.owner);
       await tx.insert(nativeHarnessBackups).values({ ...binding, issueId: input.owner.issueId, runId: input.owner.runId,
@@ -146,6 +147,9 @@ export async function persistNativeHarnessBackup(input: {
     await input.db.transaction(async tx => {
       await fence(tx, input.owner);
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`${ref.companyId}:${ref.scopeDigest}`}, 0))`);
+      const [pending] = await tx.select({ status: nativeHarnessBackups.status }).from(nativeHarnessBackups)
+        .where(eq(nativeHarnessBackups.id, ref.id)).for("update");
+      if (pending?.status !== "pending") fail("publication_retired");
       const [successor] = await tx.select({ id: nativeHarnessBackups.id }).from(nativeHarnessBackups)
         .innerJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeHarnessBackups.runId)).where(and(scope(ref),
           eq(nativeHarnessBackups.status, "current"), sql`${nativeHarnessBackups.runId} <> ${input.owner.runId}::uuid`,
@@ -194,7 +198,7 @@ export async function restoreDurableNativeHarnessBackup(input: {
     await mkdir(input.backupRoot, { recursive: true, mode: 0o700 });
     const pending = join(input.backupRoot, `.durable-${randomUUID()}`);
     try {
-      await cp(restored, pending, { recursive: true, preserveTimestamps: true, errorOnExist: true, force: false });
+      await cp(restored, pending, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true, errorOnExist: true, force: false });
       await removeNativeHarnessBackup(current);
       await rename(pending, current);
     } finally { await removeNativeHarnessBackup(pending); }

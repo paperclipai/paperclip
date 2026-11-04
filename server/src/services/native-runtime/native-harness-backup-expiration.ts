@@ -20,6 +20,7 @@ import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import type { NativeHarnessBackupExpirationScope } from "../native-harness-backup-expiration-notifications.js";
 import { deleteRetiredNativeHarnessBackup, durableNativeHarnessStorage } from "./native-harness-backup-storage.js";
+import { retireObsoleteNativeHarnessBackup } from "./native-harness-backup-retention.js";
 import type { StorageService } from "../../storage/types.js";
 
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS = 60 * 60 * 1000;
@@ -304,7 +305,7 @@ export function nativeHarnessBackupExpirationService(
     const storage = defaults.storage ?? durableNativeHarnessStorage();
     if (!storage) return;
     const candidates = await db.select({ id: nativeHarnessBackups.id, scopeDigest: nativeHarnessBackups.scopeDigest,
-      runId: nativeHarnessBackups.runId, survivingRunId: heartbeatRuns.id,
+      companyId: nativeHarnessBackups.companyId, runId: nativeHarnessBackups.runId, survivingRunId: heartbeatRuns.id,
       sessionId: heartbeatRuns.nativeSessionId, status: nativeHarnessBackups.status })
       .from(nativeHarnessBackups).leftJoin(heartbeatRuns, eq(heartbeatRuns.id, nativeHarnessBackups.runId))
       .where(and(durableBackupCursor ? gt(nativeHarnessBackups.id, durableBackupCursor) : undefined,
@@ -319,6 +320,12 @@ export function nativeHarnessBackupExpirationService(
       if (candidate.survivingRunId && !candidate.sessionId) continue;
       try {
         const retired = candidate.status === "retired" || await db.transaction(async tx => {
+          if (["pending", "superseded"].includes(candidate.status)) {
+            const obsolete = await retireObsoleteNativeHarnessBackup(tx, { ...candidate,
+              closedBefore: options.closedBefore, dryRun: options.dryRun });
+            if (obsolete) result.candidates++;
+            return obsolete && !options.dryRun;
+          }
           if (!candidate.survivingRunId) {
             result.candidates++;
             if (options.dryRun) return false;

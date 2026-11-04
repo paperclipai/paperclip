@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
 import { environmentLeases, heartbeatRuns, nativeHarnessBackups, type Db } from "@paperclipai/db";
 import type { StorageService } from "../../storage/types.js";
-import { nativeHarnessStateBase, readNativeHarnessBackupStamp, verifyNativeHarnessBackupStamp } from "./native-harness-backup-stamp.js";
+import { nativeHarnessStateBase, readNativeHarnessBackupStamp, verifyNativeHarnessBackupStampAsync } from "./native-harness-backup-stamp.js";
 import { persistNativeHarnessBackup, verifyDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 
@@ -48,25 +48,28 @@ export async function migrateNativeHarnessBackups(db: Db, input: {
     const [run] = await db.select({ companyId: heartbeatRuns.companyId, issueId: heartbeatRuns.nativeIssueId,
       sessionId: heartbeatRuns.nativeSessionId, runnerId: heartbeatRuns.runnerInstanceId }).from(heartbeatRuns)
       .where(eq(heartbeatRuns.id, state.runId));
-    if (!run?.issueId || run.sessionId !== manifest.normalizedSessionId || run.runnerId !== manifest.runnerInstanceId) {
+    if (!run) continue;
+    if (!run.issueId || run.sessionId !== manifest.normalizedSessionId || run.runnerId !== manifest.runnerInstanceId) {
       throw new Error("native_harness_migration_binding_mismatch");
     }
     const [current] = await db.select().from(nativeHarnessBackups).where(and(eq(nativeHarnessBackups.companyId, run.companyId),
       eq(nativeHarnessBackups.scopeDigest, scopeDigest), eq(nativeHarnessBackups.status, "current")));
+    const manifestSha256 = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
     if (current) {
+      if (current.manifestSha256 !== manifestSha256) throw new Error("native_harness_migration_durable_source_conflict");
       await verifyDurableNativeHarnessBackup({ db, storage: input.storage, companyId: run.companyId,
         scopeDigest, manifestSha256: current.manifestSha256, signal: input.signal });
       count++; continue;
     }
-    const manifestSha256 = `sha256:${createHash("sha256").update(manifestBytes).digest("hex")}`;
     const leases = await db.select({ stamp: sql<unknown>`${environmentLeases.metadata}->'nativeHarnessBackup'`,
       providerLeaseId: environmentLeases.providerLeaseId }).from(environmentLeases).where(and(
       eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.issueId, run.issueId),
       sql`${environmentLeases.metadata}->'nativeHarnessBackup'->>'manifestSha256' = ${manifestSha256}`));
-    const valid = leases.some(lease => {
+    let valid = false;
+    for (const lease of leases) {
       const stamp = readNativeHarnessBackupStamp(lease.stamp, lease.providerLeaseId ?? "");
-      return stamp?.sessionScopeSha256 === scopeDigest && verifyNativeHarnessBackupStamp(stamp, lease.providerLeaseId!);
-    });
+      if (stamp?.sessionScopeSha256 === scopeDigest && await verifyNativeHarnessBackupStampAsync(stamp, lease.providerLeaseId!, input.signal)) { valid = true; break; }
+    }
     if (!valid) throw new Error("native_harness_migration_backup_unverified");
     await persistNativeHarnessBackup({ db, storage: input.storage, root, scopeDigest, signal: input.signal,
       owner: { kind: "offline_migration", writersStopped: true, companyId: run.companyId, issueId: run.issueId, runId: state.runId } });

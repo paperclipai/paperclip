@@ -68,7 +68,7 @@ async function localPaths(source: NonNullable<Awaited<ReturnType<typeof findNati
   return { ...descriptor, execution, controlFile: join(control, "control-plane-state.json") };
 }
 
-export async function hasLocalNativeControllerObligations(db: Db, storage = durableNativeHarnessStorage()): Promise<boolean> {
+export async function hasLocalNativeControllerObligations(db: Db, storage?: StorageService | null): Promise<boolean> {
   const roots = await readdir(nativeHarnessStateBase()).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[]; throw error;
   });
@@ -81,11 +81,12 @@ export async function hasLocalNativeControllerObligations(db: Db, storage = dura
     const present = await lstat(paths.controlFile).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined; throw error;
     });
-    if (present && source.status === "failed" && storage) {
+    if (present && source.status === "failed") {
+      const archiveStorage = storage === undefined ? durableNativeHarnessStorage() : storage;
       const controller = await readPrivateSource(paths.controlFile, 256 * 1024 * 1024);
       const supervisor = paths.execution.session.lifecyclePolicy.mode === "warm"
         ? await readPrivateSource(paths.supervisorPath, 4 * 1024 * 1024) : undefined;
-      if (controller !== undefined && await hasArchivedLegacyNativeController(db, { ...binding, storage, controller, supervisor })) continue;
+      if (controller !== undefined && archiveStorage && await hasArchivedLegacyNativeController(db, { ...binding, storage: archiveStorage, controller, supervisor })) continue;
     }
     if (present || await hasNativeRunnerCheckpoint(db, binding)) return true;
   }

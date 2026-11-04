@@ -11,9 +11,20 @@ selected backup. Archive bytes never enter the database.
 The dedicated volume migration imports verified surviving backups without
 removing their source files or changing task-session pointers. Replacement
 readiness rejects retained session pointers whose backups remain local. The
-existing bounded startup retention pass retires closed sessions only after its
-task, run, lease and age checks pass, then acknowledges object deletion before
-removing the ledger row. It adds no idle polling.
+existing bounded startup retention pass retires current backups only after its
+task, run, lease and age checks pass. Old superseded objects have a separate
+retention path that preserves the current backup and exact backups referenced
+by live leases. Abandoned pending uploads also require a settled run without an
+owner. Object deletion is acknowledged before removing the ledger row. This
+adds no idle polling.
+
+Archives stream up to 4 GiB of file data and 100,000 entries, with a separate
+4.75 GiB encoded-object bound. Contained relative symbolic links are preserved
+verbatim; absolute or escaping targets, link chains, writes beneath links, and
+special files are rejected. Offline verification streams file hashes and honors
+cancellation. A changed local manifest cannot be silently skipped just because
+a previous migration published an object. Backups whose source run was deleted
+remain untouched on the original volume and do not block enrollment.
 
 The same offline maintenance process imports surviving legacy controller state
 into `native_runner_checkpoints` and binds its existing session snapshot through
