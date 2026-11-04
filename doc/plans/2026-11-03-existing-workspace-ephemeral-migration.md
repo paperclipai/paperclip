@@ -170,3 +170,24 @@ keeps its supervisor and ownership requirements.
 For a retired reusable sandbox lease, the existing remote-termination resolver
 may prove destruction through its exact successor handoff chain. A stopped
 successor, broken chain or competing tip does not grant archival authority.
+
+### Bounded offline harness transfers
+
+The full bundled cold rehearsal reached only 699 of 1,953 local harness backups
+before the 25-minute maintenance deadline. Keep every source and its existing
+ownership and hash checks. Migrate up to four sources together. Reserve space for
+both each tar archive and its encrypted copy before starting a group, with the
+same total scratch limit as one maximum-size serial transfer. Use the verified
+manifest sizes for a closed directory set; give sources with extra files an
+exclusive maximum-size reservation so those files are preserved. Enforce the
+reservation while streaming the archive. Ordinary runtime backups keep their
+existing maximum archive limit.
+
+On failure, cancel and await every transfer in the group before returning. A
+completed publication remains valid for the next attempt. Tests must exercise
+real PostgreSQL publication and byte restoration, the four-transfer bound,
+failure while another storage call is unresolved, retry, extra-file preservation,
+and rejection at the archive limit before any object or row is published. This
+finite offline operation adds no idle background work. A resumed rehearsal can
+measure the fix but cannot replace fresh full-image migration and empty-home
+recovery proof.
