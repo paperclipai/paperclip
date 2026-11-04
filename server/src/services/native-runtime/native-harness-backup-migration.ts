@@ -6,7 +6,7 @@ import { environmentLeases, heartbeatRuns, nativeHarnessBackups, type Db } from 
 import type { StorageService } from "../../storage/types.js";
 import { nativeHarnessStateBase, readNativeHarnessBackupStamp, verifyNativeHarnessBackupStampAsync } from "./native-harness-backup-stamp.js";
 import { persistNativeHarnessBackup, verifyDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
-import { MAX_NATIVE_HARNESS_BYTES, MAX_NATIVE_HARNESS_OBJECT_BYTES } from "./native-harness-backup-archive.js";
+import { MAX_NATIVE_HARNESS_BYTES, MAX_NATIVE_HARNESS_OBJECT_BYTES, nativeHarnessArchiveSizeLimit } from "./native-harness-backup-archive.js";
 import { offlineMigrationExecutionWhere } from "../offline-migration-execution.js";
 
 export async function hasLocalNativeHarnessObligations(db: Db): Promise<boolean> {
@@ -52,7 +52,7 @@ async function prepareSource(base: string, scopeDigest: string) {
     ? entry.isFile() : names.has(entry.name) && entry.isDirectory() && !entry.isSymbolicLink());
   // Unknown extra files are preserved with an exclusive full-size reservation.
   const archiveLimit = closed && Number.isSafeInteger(bytes) && bytes <= MAX_NATIVE_HARNESS_BYTES
-    ? Math.min(MAX_NATIVE_HARNESS_OBJECT_BYTES, bytes + MAX_NATIVE_HARNESS_OBJECT_BYTES - MAX_NATIVE_HARNESS_BYTES)
+    ? nativeHarnessArchiveSizeLimit(bytes)
     : MAX_NATIVE_HARNESS_OBJECT_BYTES;
   return { root, scopeDigest, runId: state.runId as string, archiveLimit,
     sessionId: manifest.normalizedSessionId, runnerId: manifest.runnerInstanceId,

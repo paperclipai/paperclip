@@ -183,6 +183,12 @@ exclusive maximum-size reservation so those files are preserved. Enforce the
 reservation while streaming the archive. Ordinary runtime backups keep their
 existing maximum archive limit.
 
+Derive tar overhead from the maximum entry count and both maximum path lengths.
+PAX can encode a path and symlink target for every entry. The difference between
+the global object and content limits is not a safe per-source overhead estimate.
+Check the bound against real maximum-path PAX encoding at the full entry budget,
+and check streaming at an exact byte limit and one byte beyond it.
+
 On failure, cancel and await every transfer in the group before returning. A
 completed publication remains valid for the next attempt. Tests must exercise
 real PostgreSQL publication and byte restoration, the four-transfer bound,

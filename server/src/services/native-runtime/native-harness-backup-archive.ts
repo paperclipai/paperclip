@@ -8,12 +8,22 @@ import tar from "tar-stream";
 export const MAX_NATIVE_HARNESS_BYTES = 4 * 1024 * 1024 * 1024;
 export const MAX_NATIVE_HARNESS_OBJECT_BYTES = MAX_NATIVE_HARNESS_BYTES + 768 * 1024 * 1024;
 export const MAX_NATIVE_HARNESS_ENTRIES = 100_000;
+export const MAX_NATIVE_HARNESS_PATH_BYTES = 4096;
+// PAX can store both a full path and a full symlink target for each entry.
+// Two KiB also cover PAX framing, both headers and payload padding. The final
+// two zero blocks terminate the archive. Keep this separate from content size.
+export const MAX_NATIVE_HARNESS_TAR_OVERHEAD_BYTES = MAX_NATIVE_HARNESS_ENTRIES
+  * (2 * MAX_NATIVE_HARNESS_PATH_BYTES + 2048) + 1024;
 const fail = () => new Error("native_harness_archive_invalid");
-const safeName = (name: string) => name.length > 0 && Buffer.byteLength(name) <= 4096 && !name.includes("\\")
+export function nativeHarnessArchiveSizeLimit(contentBytes: number) {
+  if (!Number.isSafeInteger(contentBytes) || contentBytes < 0 || contentBytes > MAX_NATIVE_HARNESS_BYTES) throw fail();
+  return Math.min(MAX_NATIVE_HARNESS_OBJECT_BYTES, contentBytes + MAX_NATIVE_HARNESS_TAR_OVERHEAD_BYTES);
+}
+const safeName = (name: string) => name.length > 0 && Buffer.byteLength(name) <= MAX_NATIVE_HARNESS_PATH_BYTES && !name.includes("\\")
   && !/[\u0000-\u001f\u007f]/u.test(name) && !posix.isAbsolute(name)
   && name.split("/").every(part => part !== ".." && part !== "." && part !== "");
 
-const safeLink = (name: string, target: string) => target.length > 0 && Buffer.byteLength(target) <= 4096
+const safeLink = (name: string, target: string) => target.length > 0 && Buffer.byteLength(target) <= MAX_NATIVE_HARNESS_PATH_BYTES
   && !target.includes("\\") && !/[\u0000-\u001f\u007f]/u.test(target) && !posix.isAbsolute(target)
   && !["..", "."].includes(posix.normalize(posix.join(posix.dirname(name), target)))
   && !posix.normalize(posix.join(posix.dirname(name), target)).startsWith("../");
