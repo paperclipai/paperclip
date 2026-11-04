@@ -1,3 +1,9 @@
+import express from "express";
+import request from "supertest";
+import { issueRoutes } from "../routes/issues.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { assertTaskWorkspaceExecutionAccess } from "../services/task-workspace-access.js";
+import { errorHandler } from "../middleware/error-handler.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -23,7 +29,7 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.update(executionWorkspaces).set({ projectId: project.id }).where(eq(executionWorkspaces.id, f.workspace.id));
     await db.update(issues).set({ executionPolicy: policy }).where(eq(issues.id, f.issueId));
     await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, executionPolicy: policy } }).where(eq(heartbeatRuns.id, f.runId));
-    const input = { title: `Child ${randomUUID()}`, parentId: f.issueId, assigneeAgentId: f.agentId,
+    const input = { title: `Child ${randomUUID()}`, parentId: f.issueId as string, assigneeAgentId: f.agentId as string,
       executionPolicy: policy, createdByAgentId: f.agentId, workspaceSelectionActor: f.actor,
       workspaceSelection: { kind: "existing" as const, workspaceId: f.workspace.id } };
     return { ...f, project, policy, input };
@@ -41,6 +47,37 @@ const support = await getEmbeddedPostgresTestSupport();
       parentId: f.input.parentId, executionWorkspaceId: f.workspace.id,
     });
   });
+  it("allows a parent run to patch an authorized child's existing workspace settings", async () => {
+    const f = await fixture();
+    const child = await issueService(db).create(f.companyId, { ...f.input, status: "backlog", responsibleUserId: f.userId });
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => {
+      req.actor = { ...f.actor, onBehalfOfMemberships: [{ companyId: f.companyId, status: "active", membershipRole: "operator" }] };
+      next();
+    });
+    app.use("/api", issueRoutes(db, {} as unknown as Parameters<typeof issueRoutes>[1]));
+    app.use(errorHandler);
+    const settings = instanceSettingsService(db);
+    const previous = await settings.getExperimental();
+    await settings.updateExperimental({ enableIsolatedWorkspaces: true });
+    try {
+      const response = await request(app).patch(`/api/issues/${child.id}`).set("X-Paperclip-Run-Id", f.runId)
+        .send({ executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree", baseRef: "main" } } });
+      expect({ status: response.status, body: response.body }).toMatchObject({ status: 200, body: {
+        id: child.id, executionWorkspaceId: f.workspace.id,
+        executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree", baseRef: "main" } },
+      } });
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
+    }
+    const [parentRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    expect(parentRun.contextSnapshot?.issueId).toBe(f.issueId);
+    await expect(assertTaskWorkspaceExecutionAccess(db, f.actor, f.companyId, {
+      issueId: child.id, workspaceId: f.workspace.id,
+    })).rejects.toThrow(/run identity/);
+  });
+
   it.each(["child_policy", "unrelated_parent", "missing_parent", "missing_run", "cross_company_run", "sponsor", "live_parent_policy", "absent_saved_policy", "child_agent_policy"] as const)(
     "rejects incompatible child creation (%s)", async scenario => {
       const f = await fixture();
@@ -76,6 +113,6 @@ const support = await getEmbeddedPostgresTestSupport();
     const f = await fixture();
     await expect(executionWorkspaceService(db).validateSelection({ companyId: f.companyId, actor: f.actor,
       selection: f.input.workspaceSelection, parentIssueId: f.issueId, executionPolicy: f.policy,
-      assigneeAgentId: f.agentId })).rejects.toThrow(/Physical workspace source trust/);
+      assigneeAgentId: f.agentId })).rejects.toThrow(/Selected workspace source trust/);
   });
 });

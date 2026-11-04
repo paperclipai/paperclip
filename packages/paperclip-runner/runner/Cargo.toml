@@ -2,6 +2,9 @@
 members = ["crates/runner-core"]
 resolver = "2"
 
+[profile.dev]
+debug = "line-tables-only"
+
 [workspace.package]
 version = "0.0.0"
 edition = "2021"

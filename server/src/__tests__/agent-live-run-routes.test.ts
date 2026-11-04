@@ -14,7 +14,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
   decorateActiveRunStatus: vi.fn(),
   getRunIssueSummary: vi.fn(),
   getActiveRunIssueSummaryForAgent: vi.fn(),
+  getRunReadAccess: vi.fn(),
   getRunLogAccess: vi.fn(),
+  getRunWorkspaceAccess: vi.fn(),
   readLog: vi.fn(),
   wakeup: vi.fn(),
   getRun: vi.fn(),
@@ -155,6 +157,9 @@ function registerModuleMocks() {
   }));
 }
 
+let agentRoutes: typeof import("../routes/agents.js")["agentRoutes"];
+let errorHandler: typeof import("../middleware/index.js")["errorHandler"];
+
 async function createApp(
   db: Record<string, unknown> = {},
   actor: Record<string, unknown> = {
@@ -166,15 +171,6 @@ async function createApp(
   },
   options: { chatRunRetries?: typeof mockChatRunRetries } = {},
 ) {
-  // Vitest tracks factory-mock resolution in one shared call stack. Importing
-  // these graphs concurrently can drop the services/index factory mock and
-  // accidentally run real DB-backed activity logging against this test stub.
-  const { agentRoutes } = await vi.importActual<
-    typeof import("../routes/agents.js")
-  >("../routes/agents.js");
-  const { errorHandler } = await vi.importActual<
-    typeof import("../middleware/index.js")
-  >("../middleware/index.js");
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
@@ -289,7 +285,7 @@ describe("agent live run routes", () => {
       limit, { summary: query.includes("summary=true") });
     expect(mockRunSecretRedactionRegistry.redactForRuns).toHaveBeenCalled();
   });
-  beforeEach(() => {
+  beforeEach(async () => {
     vi.resetModules();
     vi.doUnmock("../services/agents.js");
     vi.doUnmock("../services/heartbeat.js");
@@ -363,6 +359,12 @@ describe("agent live run routes", () => {
       null,
     );
     mockHeartbeatService.buildRunOutputSilence.mockResolvedValue(null);
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      scopeKind: "company",
+      issueId: null,
+    });
     mockHeartbeatService.getRunLogAccess.mockResolvedValue({
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
@@ -370,6 +372,10 @@ describe("agent live run routes", () => {
       issueId: null,
       logStore: "local_file",
       logRef: "logs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.ndjson",
+    });
+    mockHeartbeatService.getRunWorkspaceAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", scopeKind: "company", issueId: null,
+      executionWorkspaceId: null,
     });
     mockHeartbeatService.readLog.mockResolvedValue({
       runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -412,6 +418,17 @@ describe("agent live run routes", () => {
       skipped: 0,
       skipReasons: [],
     });
+
+    // Module loading is fixture setup; each behavioral case keeps its own timeout.
+    // Vitest tracks factory-mock resolution in one shared call stack. Importing
+    // these graphs concurrently can drop the services/index factory mock and
+    // accidentally run real DB-backed activity logging against this test stub.
+    ({ agentRoutes } = await vi.importActual<
+      typeof import("../routes/agents.js")
+    >("../routes/agents.js"));
+    ({ errorHandler } = await vi.importActual<
+      typeof import("../middleware/index.js")
+    >("../middleware/index.js"));
   });
 
   describe("heartbeat run ID validation", () => {
@@ -442,6 +459,7 @@ describe("agent live run routes", () => {
           expect(response.body).toEqual({ error: "Invalid heartbeat run ID" });
         }
         expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+        expect(mockHeartbeatService.getRunReadAccess).not.toHaveBeenCalled();
         expect(mockHeartbeatService.getRunLogAccess).not.toHaveBeenCalled();
         expect(mockHeartbeatService.readLog).not.toHaveBeenCalled();
         expect(mockProviderTraceStore.inspect).not.toHaveBeenCalled();
@@ -458,9 +476,11 @@ describe("agent live run routes", () => {
       expect(mockHeartbeatService.getRunLogAccess).toHaveBeenCalledWith(runId);
     });
 
-    it.each(["get", "log"])("keeps missing and cross-company %s lookups indistinguishable", async (kind) => {
-      const lookup = kind === "log" ? mockHeartbeatService.getRunLogAccess : mockHeartbeatService.getRun;
-      const suffix = kind === "log" ? "/log" : "";
+    it.each(["get", "log", "events"])("keeps missing and cross-company %s lookups indistinguishable", async (kind) => {
+      const lookup = kind === "events"
+        ? mockHeartbeatService.getRunReadAccess
+        : kind === "log" ? mockHeartbeatService.getRunLogAccess : mockHeartbeatService.getRun;
+      const suffix = kind === "get" ? "" : `/${kind}`;
       const app = await createApp({}, {
         type: "board", userId: "test-user", source: "session", companyIds: ["company-1"],
       });
@@ -599,10 +619,10 @@ describe("agent live run routes", () => {
     });
   });
 
-  it("uses narrow run log metadata lookups for log polling", async () => {
+  it.each([false, true])("uses narrow run log metadata lookups (aligned tail: %s)", async (aligned) => {
     const res = await requestApp(await createApp(), (baseUrl) =>
       request(baseUrl).get(
-        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log?offset=12&limitBytes=64",
+        `/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log?offset=12&limitBytes=64${aligned ? "&alignStartToRecord=true" : ""}`,
       ),
     );
 
@@ -620,6 +640,8 @@ describe("agent live run routes", () => {
       {
         offset: 12,
         limitBytes: 64,
+        signal: expect.any(AbortSignal),
+        ...(aligned ? { alignStartToRecord: true } : {}),
       },
     );
     expect(res.body).toEqual({
@@ -657,6 +679,7 @@ describe("agent live run routes", () => {
         "/api/companies/company-1/live-runs",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events",
+        "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events?view=plugin-panels",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/log",
         "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace-operations",
         "/api/workspace-operations/operation-1/log",
@@ -676,6 +699,38 @@ describe("agent live run routes", () => {
       }));
     },
   );
+
+  it("reads persisted plugin activation only after normal run-read authorization", async () => {
+    const limit = vi.fn(async () => [{ payload: { namespace: "example.runtime", activityKey: "desktop.used" }, pluginKey: "example.live-view",
+      manifest: { ui: { slots: [{ id: "screen", type: "detailTab", entityTypes: ["agent"], taskSidePanel: { availabilityPath: "/agents/:entityId/ready", activation: { namespace: "example.runtime", activityKey: "desktop.used" } } }] } } }]);
+    const query = { from: vi.fn().mockReturnThis(), innerJoin: vi.fn().mockReturnThis(), where: vi.fn().mockReturnThis(), limit };
+    const db = { selectDistinct: vi.fn(() => query) };
+    const response = await requestApp(await createApp(db), url => request(url).get(
+      "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events?view=plugin-panels"));
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([{ pluginKey: "example.live-view", slotId: "screen" }]);
+    expect(limit).toHaveBeenCalledWith(128);
+    expect(mockRunSecretRedactionRegistry.redactForRun).toHaveBeenCalledWith("company-1", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", [{ pluginKey: "example.live-view", slotId: "screen" }]);
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue(null);
+    const denied = await requestApp(await createApp(db), url => request(url).get(
+      "/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/events?view=plugin-panels"));
+    expect(denied.status).toBe(404); expect(limit).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists workspace operations using narrow current run access", async () => {
+    mockHeartbeatService.getRunWorkspaceAccess.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", scopeKind: "company", issueId: null,
+      executionWorkspaceId: " workspace-one ",
+    });
+    mockWorkspaceOperationService.listForRun.mockResolvedValue([]);
+    const response = await requestApp(await createApp(), baseUrl => request(baseUrl)
+      .get("/api/heartbeat-runs/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/workspace-operations"));
+    expect(response.status).toBe(200);
+    expect(response.body).toEqual([]);
+    expect(mockHeartbeatService.getRunWorkspaceAccess).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockWorkspaceOperationService.listForRun).toHaveBeenCalledWith("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "workspace-one");
+  });
 
   it("caps company live run polling by default", async () => {
     const rows = Array.from({ length: 75 }, (_, index) => ({

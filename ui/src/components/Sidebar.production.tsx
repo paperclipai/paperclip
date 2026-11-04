@@ -205,7 +205,6 @@ export function Sidebar() {
             </>
           ) : null}
           <PluginSlotOutlet
-            errorBehavior="hidden"
             slotTypes={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
@@ -213,7 +212,6 @@ export function Sidebar() {
             missingBehavior="placeholder"
           />
           <PluginLauncherOutlet
-            errorBehavior="hidden"
             placementZones={["sidebar"]}
             context={pluginContext}
             className="flex flex-col gap-0.5"
@@ -233,11 +231,11 @@ export function Sidebar() {
           <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
           {/* One entry — /audit merged into the rich Activity feed (PAP-16302). */}
           <SidebarNavItem to="/activity" label="Activity" icon={History} />
+          <SidebarNavItem to="/activity/commentary" label="Commentary" icon={History} />
           <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
         </SidebarSection>
 
         <PluginSlotOutlet
-          errorBehavior="hidden"
           slotTypes={["sidebarPanel"]}
           context={pluginContext}
           className="flex flex-col gap-3"

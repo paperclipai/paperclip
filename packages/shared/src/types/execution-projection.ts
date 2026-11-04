@@ -18,10 +18,17 @@ export interface ExecutionBlocker {
   workspaceReconstructionPending?: boolean;
   workspaceRecoveryStatusVersion?: number;
   savedMessageCount?: number;
+  workspaceRecovery?: {
+    status: "queued" | "recovering" | "blocked" | "recovered";
+    stage: "verifying_stop" | "restoring_files" | "saving_receipts";
+    canRetry: boolean;
+    message: string;
+  };
 }
 
 /** Presentation of existing execution records, not a second task status machine. */
 export interface ExecutionProjection {
+  canStop?: boolean;
   phase:
     | "working"
     | "waiting_for_provider"
@@ -89,4 +96,22 @@ export interface ExecutionReconciliation {
     sources: Array<{ attachmentId: string; sha256: string; byteSize: number; filename: string | null }>;
     interveningExecutions?: Array<{ runId: string; recoveryActionId: string; evidenceSha256: string }>;
   };
+}
+/** A task-level view of one interruption. Diagnostics keep the underlying runs
+ * and recovery records; ordinary product surfaces render this projection. */
+export interface TaskInterruptionPresentation {
+  providerFailure?: import("../provider-failure.generated.js").ProviderFailure;
+  workspaceFailure?: { message: string };
+  /** A persisted Retry admission wait, normalized to public text by the server. */
+  retryWait?: { reason: string; message: string };
+  intentId: string | null;
+  responsibility: "system" | "user";
+  state: "working" | "retry_scheduled" | "failed" | "waiting_for_user" | "resolved";
+  nextRetryAt: string | null;
+  canRetry: boolean;
+  userAction: "approval" | "reconnect" | "assign_agent" | "choose_model" | "resume" | "budget" | "project_access" | null;
+  /** Only the task's own project id is exposed. Other source projects stay unnamed. */
+  projectAccess?: { agentId: string; projectId: string | null; ready: boolean };
+  sourceRunIds: string[];
+  observedRunId: string | null;
 }

@@ -1,103 +1,54 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ExecutionBlocker, Issue } from "@paperclipai/shared";
-import { WorkspaceReconstructionRecovery } from "./WorkspaceReconstructionRecovery";
-import { agentsApi } from "../api/agents";
-import { activityApi } from "../api/activity";
-import { issuesApi } from "../api/issues";
-import { queryKeys } from "../lib/queryKeys";
+import type { TaskInterruptionPresentation } from "@paperclipai/shared";
+import { AlertCircle } from "lucide-react";
 import { Button } from "./ui/button";
 import { cn } from "../lib/utils";
-import { Link } from "../lib/router";
-import { deriveRecoveryDisplayState } from "../lib/recovery-display";
-import { readRecoveryRetryLineage } from "../lib/recovery-lineage";
 import { useSecondTick } from "../hooks/useSecondTick";
+import { TaskProjectAccessNotice } from "./TaskProjectAccessNotice";
+import { ProviderFailureNotice } from "./ProviderFailureNotice";
 
-export function ExecutionBlockerNotice({ companyId, issueId, issueStatus, canManage = false, blocker, onRetried, className }: {
+/** One ordinary interruption surface. Technical records remain in diagnostics. */
+export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimistic, takingLonger, error, className, issueId, agentName, projectName }: {
+  presentation: TaskInterruptionPresentation | null | undefined;
+  canRetry: boolean;
+  onRetry: () => void;
+  optimistic?: boolean;
+  takingLonger?: boolean;
+  error?: Error | null;
   className?: string;
-  companyId: string;
-  issueId: string;
-  issueStatus?: Issue["status"];
-  canManage?: boolean;
-  blocker: ExecutionBlocker;
-  onRetried: () => void;
+  issueId?: string;
+  agentName?: string;
+  projectName?: string;
 }) {
-  const queryClient = useQueryClient();
-  const { data: recovery, error: recoveryError } = useQuery({
-    queryKey: queryKeys.issues.recoveryActions(issueId, blocker.recoveryActionId ?? null, blocker.runId ?? null),
-    queryFn: () => issuesApi.recoveryActions(issueId),
-    enabled: Boolean(blocker.recoveryActionId) && !["done", "cancelled"].includes(issueStatus ?? ""),
-    refetchInterval: 5_000,
-  });
-  const hold = recovery?.actions.find(action => action.id === blocker.recoveryActionId &&
-    (action.evidence.runId ?? action.evidence.sourceRunId) === blocker.runId);
-  const replayBlocked = (hold?.evidence.automaticRecovery as { replay?: unknown } | undefined)?.replay === "blocked";
-  const { data: runs, error: runsError } = useQuery({
-    queryKey: queryKeys.issues.runs(issueId),
-    queryFn: () => activityApi.runsForIssue(issueId),
-  });
-  const failedRun = runs?.find(run => run.runId === blocker.runId &&
-    ["failed", "timed_out"].includes(run.status));
-  const modelRejected = failedRun?.errorCode === "native_provider_model_rejected";
-  const requiresInspection = blocker.cause === "native_continuation_requires_reconciliation" ||
-    blocker.cause === "native_session_cleanup_quarantined";
-  const retry = useMutation({
-    mutationFn: () => agentsApi.retryFailedRun(blocker.agentId!, blocker.runId!, companyId),
-    onSuccess: () => {
-      onRetried();
-      for (const queryKey of [queryKeys.issues.detail(issueId), queryKeys.issues.runs(issueId),
-        queryKeys.issues.liveRuns(issueId), queryKeys.issues.activeRun(issueId)]) {
-        void queryClient.invalidateQueries({ queryKey });
-      }
-    },
-  });
-  const now = Date.now();
-  const lineage = hold ? readRecoveryRetryLineage(hold, { now }) : null;
-  const recovering = Boolean(!recoveryError && !runsError && hold && !replayBlocked &&
-    deriveRecoveryDisplayState(hold, { now }) === "in_progress" && lineage?.hasDurablePath);
-  // Identical poll responses do not render again. Recheck a scheduled path's
-  // expiry with the shared clock, and stop ticking once it expires or starts.
-  useSecondTick(Boolean(recovering && lineage?.nextRetryAt && !lineage.liveRunId));
-  if (recovering) return null;
-  const hasDetails = Boolean(blocker.runError || (blocker.workspaceRepairRequired && blocker.nextAction) ||
-    (canManage && hold && (replayBlocked || hold.resolutionNote)));
+  useSecondTick(presentation?.state === "retry_scheduled");
+  if (presentation?.projectAccess && !optimistic && !takingLonger) return <TaskProjectAccessNotice
+    access={presentation.projectAccess} issueId={issueId} agentName={agentName} projectName={projectName}
+    canRetry={canRetry && presentation.canRetry} onRetry={onRetry} error={error} className={className} />;
+  if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{error.message}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
+  if (takingLonger) return <div role="status" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}><span>Taking longer than usual…</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
+  if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
+    return <ProviderFailureNotice failure={presentation.providerFailure} className={className}
+      actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button> : undefined}>
+      {presentation.state === "retry_scheduled" && <p>Paperclip will retry automatically.</p>}
+    </ProviderFailureNotice>;
+  }
+  if (optimistic || !presentation || presentation.responsibility !== "system" ||
+      !["failed", "retry_scheduled"].includes(presentation.state)) return null;
+  const seconds = Math.max(0, Math.ceil((Date.parse(presentation.nextRetryAt ?? "") - Date.now()) / 1000));
   return (
-    <div role="status" aria-label="Task recovery" className={cn("task-context-notice flex flex-wrap items-center justify-between gap-2", className)}>
-      <div className="min-w-0 flex-1 break-words">
-        <p className="font-medium">{blocker.workspaceReconstructionPending ? "Continuation queued." : modelRejected ? "Model unavailable." : "Work paused."}</p>
-        {modelRejected && <p>Choose a supported model or clear the task's model override, then retry.</p>}
-        {blocker.workspaceReconstructionPending ? <p>{blocker.nextAction}</p> : blocker.workspaceRepairRequired ? (
-          <p>The workspace needs operator attention before work can continue.</p>
-        ) : <p>{blocker.nextAction}</p>}
-        {Boolean(blocker.savedMessageCount) && (
-          <p>{blocker.savedMessageCount} saved {blocker.savedMessageCount === 1 ? "message is" : "messages are"} waiting for recovery.</p>
-        )}
+    <div className={cn(presentation.state === "failed" && "pt-4", className)}>
+      <div role="status" aria-label="Task status" className={cn(
+        "flex items-center justify-between gap-3 text-sm",
+        presentation.state === "failed" ? "rounded-lg bg-destructive/10 p-4 text-foreground" : "text-muted-foreground",
+      )}>
+        {presentation.state === "failed" && <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />}
+        <span className="min-w-0 flex-1">{presentation.state === "retry_scheduled"
+          ? `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`
+          : presentation.retryWait ? presentation.retryWait.message
+          : presentation.workspaceFailure
+            ? <>Couldn’t prepare the task folders. {presentation.workspaceFailure.message}</>
+            : "Couldn’t finish this attempt. Your message is saved."}</span>
+        {canRetry && presentation.canRetry && <Button variant="outline" size="sm" className="shrink-0" onClick={onRetry}>Retry</Button>}
       </div>
-      {blocker.agentId && blocker.runId && (
-        <Button variant="outline" size="sm" asChild>
-          <Link to={`/agents/${blocker.agentId}/runs/${blocker.runId}`}>Inspect run</Link>
-        </Button>
-      )}
-      {!blocker.workspaceRepairRequired && (!requiresInspection || blocker.canRetry) && blocker.agentId && blocker.runId &&
-        ((blocker.cause === "legacy_execution_requires_reconciliation" && failedRun) || blocker.canContinue || blocker.canRetry) && (
-        <Button variant="outline" size="sm" disabled={retry.isPending} onClick={() => retry.mutate()}>
-          {retry.isPending ? "Starting…" : blocker.canContinue ? "Continue" : "Retry"}
-        </Button>
-      )}
-      {retry.isError && (
-        <p role="alert" className="w-full text-destructive">{retry.error.message}</p>
-      )}
-      {runsError && <p role="alert" className="w-full text-destructive">{runsError.message}</p>}
-      {hasDetails && <details className="w-full text-muted-foreground">
-        <summary className="cursor-pointer">Recovery details</summary>
-        {blocker.runError && <p className="break-words">{blocker.runError}</p>}
-        {blocker.workspaceRepairRequired && <p>{blocker.nextAction}</p>}
-        {canManage && replayBlocked &&
-          <p>Paperclip stopped automatic retries to avoid repeating work with an unknown outcome. Inspect the run before requesting continuation.</p>}
-        {canManage && hold?.resolutionNote && <p>{hold.resolutionNote}</p>}
-      </details>}
-      {recoveryError && <p role="alert" className="w-full text-destructive">Unable to load recovery details: {recoveryError.message}</p>}
-      {blocker.canReconstructWorkspace && <WorkspaceReconstructionRecovery key={`reconstruct:${blocker.recoveryActionId}:${blocker.runId}`}
-        issueId={issueId} blocker={blocker} canManage={canManage} onRecorded={onRetried} />}
     </div>
   );
 }

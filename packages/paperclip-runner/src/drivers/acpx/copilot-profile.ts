@@ -5,6 +5,16 @@ export const COPILOT_VERSION = "1.0.88" as const;
 export const COPILOT_SYSTEM_INSTRUCTIONS_FILE = "copilot-instructions.md" as const;
 export const COPILOT_SYSTEM_INSTRUCTION_DELIVERY = "COPILOT_HOME/copilot-instructions.md:replace-under-lifetime-lease-before-launch:v1" as const;
 export const COPILOT_CREDENTIAL_ENVIRONMENT_NAME = "COPILOT_GITHUB_TOKEN" as const;
+export const COPILOT_TASK_ORIENTATION_INSTRUCTIONS = "At the start of every task turn, use the paperclip MCP server's dedicated get_task_context tool with {} and wait for its successful result before task work, report_progress, or any other task-dependent mutation. This is an advertised MCP tool, not an HTTP API route: do not use search_api or call_api to discover or substitute for get_task_context. Loaded instructions, seed state, task descriptions, and prior-turn context do not replace this read. Decide the next action from the returned context. Do not issue the context read and a dependent action in parallel. If this tool is unavailable or its read fails, report the failure and do not perform dependent actions." as const;
+
+/** Compose Copilot-only guidance without changing other providers' sandbox identity. */
+export function composeCopilotSystemInstructions(instructions: string): string {
+  const composed = `${instructions}\n\n# Paperclip task orientation\n${COPILOT_TASK_ORIENTATION_INSTRUCTIONS}`;
+  if (composed.includes("\0") || Buffer.byteLength(`${composed}\n`) > 32 * 1024) {
+    throw new Error("Provider runtime instructions exceed their bounded size");
+  }
+  return composed;
+}
 
 // Keep permission callbacks enabled even when Paperclip's policy is approve-all.
 // In particular COPILOT_ALLOW_ALL=true also trusts workspace hooks/plugins/MCP.

@@ -8,10 +8,12 @@ import { and, eq, sql } from "drizzle-orm";
 import { activityLog, agents, companies, createDb, pluginCompanySettings, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { pluginAgentRuntimeState } from "../services/plugin-agent-runtime-state.js";
+import * as instructionModule from "../services/agent-instructions.js";
+import { pluginAgentRuntimeState, pluginAgentRuntimeIdentity } from "../services/plugin-agent-runtime-state.js";
 import { pluginLifecycleInbox } from "../services/plugin-lifecycle-inbox.js";
 import { registerPluginLifecycleDelivery } from "../services/plugin-lifecycle-delivery.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
 import { resolveManagedInstructionsRoot } from "../services/agent-instructions.js";
 import { agentFileStore } from "../services/agent-file-store.js";
 import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
@@ -154,6 +156,13 @@ describeDatabase("agent runtime synchronization hooks", () => {
     expect(await fs.readFile(path.join(state!.instructionsRootPath!, state!.instructionsEntryFile), "utf8")).toBe("restored instructions");
   });
 
+  it("supplies default instructions when the agent has no instruction directory", async () => {
+    await db.update(agents).set({ adapterConfig: { promptTemplate: "Fallback task instructions" } }).where(eq(agents.id, agentId));
+    expect(await pluginAgentRuntimeState(db, pluginId, companyId, agentId)).toMatchObject({
+      instructionsRootPath: null, instructionsEntryFile: "AGENTS.md", instructionsEntryContent: "Fallback task instructions",
+    });
+  });
+
   it("resolves instructions without reading or hashing bundle contents", async () => {
     const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
     const root = resolveManagedInstructionsRoot(agent);
@@ -163,6 +172,31 @@ describeDatabase("agent runtime synchronization hooks", () => {
     const read = vi.spyOn(fs, "readFile");
     expect(await pluginAgentRuntimeState(db, pluginId, companyId, agentId)).toMatchObject({ instructionsRootPath: root, instructionsEntryFile: "AGENTS.md" });
     expect(read.mock.calls.filter(([file]) => String(file).startsWith(`${root}${path.sep}`))).toEqual([]);
+  });
+
+  it("reads fresh runtime identity without building instructions, skills or connection assignments", async () => {
+    const hydrate = vi.spyOn(instructionModule, "agentInstructionsService").mockImplementation(() => { throw new Error("full runtime hydration must not run"); });
+    const first = await pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId);
+    expect(first).toEqual({ revision: String((await events()).at(-1)!.id), instanceSecrets: {},
+      agent: expect.objectContaining({ id: agentId, companyId }) });
+    expect(Object.keys(first!.agent).sort()).toEqual(["companyId", "id", "lifecycleState", "lifecycleVersion", "status"]);
+    await db.update(agents).set({ status: "paused", lifecycleState: "pausing", lifecycleVersion: 2 }).where(eq(agents.id, agentId));
+    const paused = await pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId);
+    expect(paused!.agent).toMatchObject({ status: "paused", lifecycleState: "pausing", lifecycleVersion: 2 });
+    expect(paused!.revision).toBe(first!.revision);
+    await db.update(agents).set({ name: "Updated runtime" }).where(eq(agents.id, agentId));
+    expect((await pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId))!.revision).not.toBe(first!.revision);
+    expect(hydrate).not.toHaveBeenCalled();
+  });
+
+  it("keeps compact runtime reads scoped to the enabled owning plugin", async () => {
+    expect(await pluginAgentRuntimeIdentity(db, pluginId, randomUUID(), agentId)).toBeNull();
+    await expect(pluginAgentRuntimeIdentity(db, randomUUID(), companyId, agentId)).rejects.toMatchObject({ status: 403 });
+    await db.insert(pluginCompanySettings).values({ companyId, pluginId, enabled: false });
+    await expect(pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId)).rejects.toMatchObject({ status: 403 });
+    await db.delete(pluginCompanySettings).where(eq(pluginCompanySettings.pluginId, pluginId));
+    await db.update(agents).set({ lifecycleRequiredPluginIds: [] }).where(eq(agents.id, agentId));
+    await expect(pluginAgentRuntimeIdentity(db, pluginId, companyId, agentId)).rejects.toMatchObject({ status: 403 });
   });
 
   it("uses the company reporting graph for runtime health data", async () => {
@@ -199,6 +233,13 @@ describeDatabase("agent runtime synchronization hooks", () => {
 
   it("wakes delivery after a commit on an independent database client, without polling", async () => {
     const other = createDb(database.connectionString);
+    const initialCount = (await events()).length;
+    const notifications: string[] = [];
+    const listen = db.$client.listen.bind(db.$client);
+    vi.spyOn(db.$client, "listen").mockImplementation((channel, onnotify, onlisten) => listen(channel, payload => {
+      notifications.push(payload);
+      onnotify(payload);
+    }, onlisten));
     const call = vi.fn(async (_plugin, _method, event) => ({ eventId: event.id, status: "acknowledged" }));
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
     const delivery = registerPluginLifecycleDelivery(coordinator, db, { call, isRunning: () => true, onConfigApplied: () => () => {} } as never, new EventEmitter() as never);
@@ -206,15 +247,27 @@ describeDatabase("agent runtime synchronization hooks", () => {
       await delivery.ready;
       await vi.waitFor(() => expect(call).toHaveBeenCalled(), { timeout: 5000 });
       const delivered = () => call.mock.calls.filter(call => call[2].companyId === companyId);
-      const initialCount = (await events()).length;
-      await vi.waitFor(() => expect(delivered()).toHaveLength(initialCount), { timeout: 5000 });
-      const before = delivered().length;
+      await vi.waitFor(async () => expect((await events()).length).toBeGreaterThan(initialCount), { timeout: 5000 });
+      await vi.waitFor(async () => expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toHaveLength(0), { timeout: 5000 });
+      const waitForIdle = () => vi.waitFor(() => {
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      await waitForIdle();
+      await other.execute(sql`SELECT pg_notify('paperclip_plugin_lifecycle', 'startup-drained')`);
+      await vi.waitFor(() => expect(notifications).toContain("startup-drained"), { timeout: 5000 });
+      await waitForIdle();
+      let committedEventId: string | undefined;
       await other.transaction(async tx => {
         await tx.update(agents).set({ name: "Independent writer" }).where(eq(agents.id, agentId));
-        expect(delivered()).toHaveLength(before);
+        const [event] = await tx.select({ id: resourceLifecycleEvents.id }).from(resourceLifecycleEvents)
+          .where(and(eq(resourceLifecycleEvents.companyId, companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime"), eq(resourceLifecycleEvents.resourceId, agentId)))
+          .orderBy(sql`${resourceLifecycleEvents.id} DESC`).limit(1);
+        committedEventId = String(event.id);
+        expect(delivered().map(call => call[2].id)).not.toContain(committedEventId);
       });
-      await vi.waitFor(() => expect(delivered().length).toBeGreaterThan(before), { timeout: 5000 });
-      expect(delivered().at(-1)![2]).toMatchObject({ companyId, resourceId: agentId, resourceType: "agent_runtime" });
+      await vi.waitFor(() => expect(delivered().map(call => call[2].id)).toContain(committedEventId), { timeout: 5000 });
+      expect(delivered().find(call => call[2].id === committedEventId)![2]).toMatchObject({ companyId, resourceId: agentId, resourceType: "agent_runtime" });
     } finally { delivery.dispose(); await coordinator.stop(); await other.$client.end(); }
   });
   it("recovers work committed during real listener connection loss without another write", async () => {

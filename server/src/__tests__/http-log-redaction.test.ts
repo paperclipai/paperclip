@@ -11,8 +11,18 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
 import { createHttpLogger } from "../middleware/logger.js";
 
+it("redacts a routine caller run token on ordinary HTTP routes", async () => {
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+  const app = express();
+  app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+  app.get("/api/health", (_req, res) => res.json({ ok: true }));
+  await request(app).get("/api/health").set("X-Paperclip-Source-Run-Token", "private-routine-caller-token");
+  expect(chunks.join("")).not.toContain("private-routine-caller-token");
+});
+
 describe("HTTP logger redaction", () => {
-  it.each([200, 400, 500])("keeps Slack setup credentials and provider echoes out of %i logs", async status => {
+  it.each([200, 400, 500])("keeps connector and observability credentials out of %i logs", async status => {
     const canaries = ["configuration-canary", "signing-canary", "client-canary", "bot-canary", "oauth-code-canary", "provider-echo-canary"];
     const chunks: string[] = [];
     const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
@@ -20,6 +30,7 @@ describe("HTTP logger redaction", () => {
     app.use(express.json());
     app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
     app.use((req, res, next) => {
+      if (req.path.includes("observability")) res.setHeader("x-provider-echo", canaries[0]);
       if (status === 500) { next(new Error(canaries.join(" "))); return; }
       res.status(status).json({ ok: status === 200 });
     });
@@ -31,6 +42,14 @@ describe("HTTP logger redaction", () => {
       }));
     }
     responses.push(await request(app).get("/api/chat-slack/oauth/callback").query({ code: canaries[4], error_description: canaries[5] }));
+    responses.push(await request(app).put("/api/companies/company/observability").query({ unexpected: canaries[2] }).set("x-diagnostic", canaries[3]).send({
+      credentials: { mode: "replace", apiKey: canaries[0] },
+      unexpected: canaries[1],
+    }));
+    responses.push(await request(app).put("/api/companies/company/observability").send({
+      credentials: { mode: "replace", headers: [{ name: "x-custom", value: canaries[1] }] },
+      unexpected: canaries[0],
+    }));
     for (const response of responses) expect(response.status).toBe(status);
     const output = JSON.stringify({ logs: chunks, responses: responses.map(response => response.body) });
     for (const canary of canaries) expect(output).not.toContain(canary);
@@ -320,7 +339,7 @@ describe("HTTP logger redaction", () => {
         createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)),
       );
       routes.post("/chat-webhooks/:publicId/:provider", (req, _res, next) => {
-        req.params.extra = privateFile;
+        (req.params as Record<string, string>).extra = privateFile;
         req.log.warn({ req }, "Webhook fixture rejected");
         const error = Object.assign(new Error(`SDK echoed ${privateText}`), {
           name: privateFile,
@@ -480,6 +499,26 @@ describe("HTTP logger redaction", () => {
       "[Redacted]",
     );
     expect(log.res.headers["set-cookie"]).toBe("[Redacted]");
+  });
+
+  it.each([200, 401, 403, 500])("redacts Runner tool scope credentials from HTTP %i logs", async status => {
+    const capability = "runner-tool-scope-capability-canary";
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    const path = "/mcp/native-runs/00000000-0000-4000-8000-000000000762";
+    app.post(path, (_req, res) => { res.status(status).json({ status }); });
+
+    await request(app).post(path)
+      .set("X-Paperclip-Runner-Scope-Token", "Bearer " + capability)
+      .send({}).expect(status);
+
+    expect(chunks.join("")).not.toContain(capability);
+    const log = JSON.parse(chunks.join("").trim());
+    expect(log.req.headers["x-paperclip-runner-scope-token"]).toBe("[Redacted]");
+    expect(log.req.url).toBe(path);
+    expect(log.res.statusCode).toBe(status);
   });
 
   it.each([200, 403, 500])("redacts runtime GitHub capabilities from HTTP %i logs", async (status) => {

@@ -1,4 +1,11 @@
 export const queryKeys = {
+  workspacePreferences: {
+    mine: (userId: string | null) => ["workspace-preferences", userId] as const,
+  },
+  agentCommentary: {
+    list: (companyId: string, filters: object) => ["agent-commentary", companyId, "list", filters] as const,
+    detail: (companyId: string, id: string | null) => ["agent-commentary", companyId, "detail", id] as const,
+  },
   skillSources: {
     projects: (companyId: string) => ['project-skill-repositories', companyId] as const,
     preview: (companyId: string, repositoryUrl: string, connectionId: string | null, commitSha: string | null, skillPath: string, filePath: string) => ['skill-sources', companyId, 'preview', repositoryUrl, connectionId, commitSha, skillPath, filePath] as const,
@@ -38,6 +45,8 @@ export const queryKeys = {
   apps: {
     gallery: (companyId: string) => ["apps", companyId, "gallery"] as const,
     attention: (companyId: string) => ["apps", companyId, "attention"] as const,
+    connectionReviewCounts: (companyId: string, connectionId: string) =>
+      ["apps", companyId, "attention", "connection", connectionId, "review-counts"] as const,
   },
   chatEndpoints: {
     list: (companyId: string) => ["chat-endpoints", companyId] as const,
@@ -81,6 +90,8 @@ export const queryKeys = {
     actionRequests: (companyId: string, status: string) =>
       ["tools", companyId, "action-requests", status] as const,
     gateways: (companyId: string) => ["tools", "gateways", companyId] as const,
+    connectionProfileConfiguration: (companyId: string, connectionId: string) =>
+      ["tools", companyId, "profiles", "connection-configuration", connectionId] as const,
     profiles: (companyId: string) => ["tools", companyId, "profiles"] as const,
     profileNewTools: (profileId: string) =>
       ["tools", "profiles", profileId, "new-tools"] as const,
@@ -218,6 +229,7 @@ export const queryKeys = {
       ["team-catalog", "installed", companyId] as const,
   },
   agents: {
+    projectAccess: (id: string) => ["agents", "detail", id, "project-access"] as const,
     identity: (id: string) => ["agents", "identity", id] as const,
     list: (companyId: string) => ["agents", companyId] as const,
     detail: (id: string) => ["agents", "detail", id] as const,
@@ -361,8 +373,13 @@ export const queryKeys = {
         "execution-workspace",
         executionWorkspaceId,
       ] as const,
+    summaries: (companyId: string) => ["issues", companyId, "summaries"] as const,
+    summaryBatch: (companyId: string, userId: string | null | undefined, sortedIds: readonly string[]) =>
+      ["issues", companyId, "summaries", userId ?? "__local_board__", sortedIds] as const,
     detail: (id: string) => ["issues", "detail", id] as const,
     comments: (issueId: string) => ["issues", "comments", issueId] as const,
+    acknowledgedComments: (issueId: string) => ["issues", "comments", issueId, "acknowledged"] as const,
+    earlierComments: (issueId: string) => ["issues", "comments", issueId, "earlier"] as const,
     commentsList: (issueId: string) =>
       ["issues", "comments", issueId, "list"] as const,
     queuedComments: (issueId: string) =>
@@ -504,6 +521,7 @@ export const queryKeys = {
     accessMembers: (id: string) => ["projects", "access-members", id] as const,
   },
   cases: {
+    handoffs: (id: string) => ["cases", "handoffs", id] as const,
     list: (companyId: string) => ["cases", companyId] as const,
     detail: (id: string) => ["cases", "detail", id] as const,
     documents: (id: string) => ["cases", "documents", id] as const,
@@ -644,6 +662,8 @@ export const queryKeys = {
     detail: (id: string) => ["decisions", "detail", id] as const,
     forTargetIssue: (companyId: string, issueId: string) =>
       ["decisions", companyId, "target", issueId] as const,
+    taskRecord: (companyId: string, issueId: string, viewerId: string | null, decisionId: string | null) =>
+      ["decisions", companyId, "task-record", issueId, viewerId, decisionId] as const,
   },
   decisionQueues: {
     list: (companyId: string) => ["decision-queues", companyId] as const,

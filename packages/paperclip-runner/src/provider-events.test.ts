@@ -87,6 +87,7 @@ describe("provider-neutral events", () => {
         const [event] = canonicalProviderEventsFromCodex(method, params);
         expect(event.eventType).toBe("provider.notice.recorded");
         expect(event.payload.summary).toBe(expected);
+        expect(event.payload.userActionable).toBe(false);
         expect(validatePrpEvent(envelope(event)).ok).toBe(true);
       }
     }
@@ -481,6 +482,53 @@ describe("provider-neutral events", () => {
         text: "I ran a command and delegated work",
       }),
     ).toEqual([]);
+  });
+
+  it.each([0, 37, -1])("preserves OpenCode bash metadata exit %i without changing tool completion", (exit) => {
+    const event = canonicalProviderEventsFromOpenCodePart({
+      id: "bash-part", type: "tool", tool: "bash", callID: "bash-call",
+      state: { status: "completed", input: { command: "node verify.mjs" },
+        output: "Work validation finished", metadata: { exit, truncated: false }, time: { start: 1, end: 2 } },
+    })[0]!;
+    expect(event).toMatchObject({ eventType: "tool.execution.completed", itemId: "bash-part",
+      payload: { executionId: "bash-part", name: "bash", status: "completed", exitCode: exit } });
+    expect(validatePrpEvent(envelope(event)).ok).toBe(true);
+  });
+
+  it.each([undefined, null, "37", 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])("does not infer a bash exit from invalid metadata %s", (exit) => {
+    const event = canonicalProviderEventsFromOpenCodePart({ id: "bash-invalid", type: "tool", tool: "bash",
+      state: { status: "completed", output: "exitCode=37", metadata: { exit } } })[0]!;
+    expect(event.payload.exitCode).toBeNull();
+  });
+
+  it.each([
+    { type: "tool", tool: "read", state: { status: "completed" } },
+    { type: "tool", tool: "mcp_bash", state: { status: "completed" } },
+    { type: "tool", tool: "unknown", callID: "functions.bash:0", state: { status: "completed" } },
+    { type: "bash", state: { status: "completed" } },
+    { type: "tool", tool: "bash", state: { status: "running" } },
+    { type: "tool", tool: "bash", state: { status: "error", error: "Tool execution aborted" } },
+  ])("rejects metadata exits outside a completed builtin bash part %#", (part) => {
+    const event = canonicalProviderEventsFromOpenCodePart({ id: "not-bash-complete", ...part,
+      state: { ...part.state, metadata: { exit: 37 } } })[0]!;
+    expect(event.payload.exitCode).toBeNull();
+  });
+
+  it.each([0, 37, "37", 1.5])("rejects conflicting legacy and metadata exits %s", (exit) => {
+    const event = canonicalProviderEventsFromOpenCodePart({ id: "bash-conflict", type: "tool", tool: "bash",
+      state: { status: "completed", exit, metadata: { exit: 1 } } })[0]!;
+    expect(event.payload.exitCode).toBeNull();
+  });
+
+  it.each([
+    { tool: "bash", exit: 37, metadata: undefined },
+    { tool: "bash", exit: 37, metadata: { exit: 37 } },
+    { tool: "bash", exit: 37, metadata: { exit: "37" } },
+    { tool: "read", exit: 37, metadata: { exit: 1 } },
+  ])("preserves an existing legacy numeric exit %#", ({ tool, exit, metadata }) => {
+    const event = canonicalProviderEventsFromOpenCodePart({ id: "legacy-exit", type: "tool", tool,
+      state: { status: "completed", exit, metadata } })[0]!;
+    expect(event.payload.exitCode).toBe(exit);
   });
 
   it("maps OpenCode pending dynamic tools to a valid builtin execution start", () => {

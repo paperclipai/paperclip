@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
-import { ArrowLeft, Check, Layers, Package, Search, X } from "lucide-react";
+import { ArrowLeft, Layers, Package } from "lucide-react";
 import type { To } from "react-router-dom";
 import {
   artifactsApi,
@@ -15,34 +15,13 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { ArtifactCard } from "../components/artifacts/ArtifactCard";
 import { ArtifactGroupCard } from "../components/artifacts/ArtifactGroupCard";
 import { useSearchParams, Link } from "@/lib/router";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
-import { cn } from "@/lib/utils";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
+import { ArtifactsToolbar, ARTIFACT_KIND_FILTERS } from "@/components/artifacts/ArtifactsToolbar";
+import { ArtifactSingleTile, ArtifactStackTile, ArtifactTileGrid, ArtifactsV1Filters, artifactsV1View, subjectFromCompanyArtifact, type ArtifactsV1View } from "@/components/artifacts/v1";
+import { useArtifactsV1Enabled } from "@/hooks/useArtifactsV1Enabled";
+export { ARTIFACT_KIND_FILTERS, ARTIFACT_GROUP_OPTIONS, artifactGroupByLabel } from "@/components/artifacts/ArtifactsToolbar";
 
 const ARTIFACTS_PAGE_SIZE = 30;
 const SEARCH_DEBOUNCE_MS = 250;
-
-export const ARTIFACT_KIND_FILTERS: { value: ArtifactKindFilter; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "image", label: "Images" },
-  { value: "video", label: "Videos" },
-  { value: "document", label: "Documents" },
-  { value: "text", label: "Text" },
-  { value: "file", label: "Files" },
-];
-
-export const ARTIFACT_GROUP_OPTIONS: { value: ArtifactGroupBy; label: string }[] = [
-  { value: "none", label: "None" },
-  { value: "task", label: "Task" },
-  { value: "parent_task", label: "Parent task" },
-];
 
 const KIND_VALUES = new Set(ARTIFACT_KIND_FILTERS.map((filter) => filter.value));
 
@@ -57,18 +36,17 @@ function parseKind(value: string | null): ArtifactKindFilter {
     : "all";
 }
 
-export function artifactGroupByLabel(value: ArtifactGroupBy): string {
-  return ARTIFACT_GROUP_OPTIONS.find((option) => option.value === value)?.label ?? "None";
-}
-
 export function Artifacts() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();
-
+  const { enabled: v1 } = useArtifactsV1Enabled();
   const kind = parseKind(searchParams.get("kind"));
   const query = searchParams.get("q") ?? "";
-  const groupBy = parseGroupBy(searchParams.get("groupBy"));
+  const urlGroupBy = parseGroupBy(searchParams.get("groupBy"));
+  // Artifacts V1 has one row of views: a kind is always a flat view, so a kind in the URL
+  // overrides a grouping there — the view row then says what the page shows.
+  const groupBy: ArtifactGroupBy = v1 && kind !== "all" ? "none" : urlGroupBy;
   const groupIssueId = searchParams.get("groupIssueId") ?? undefined;
 
   const [draftQuery, setDraftQuery] = useState(query);
@@ -124,6 +102,25 @@ export function Artifacts() {
     [updateParams],
   );
 
+  // Artifacts V1: one row of views. Tasks is the task grouping; every other
+  // view is the flat list, filtered by kind. Either way the open stack closes.
+  const selectV1View = useCallback(
+    (view: ArtifactsV1View) => {
+      updateParams((next) => {
+        next.delete("groupIssueId");
+        if (view === "tasks") {
+          next.delete("groupBy");
+          next.delete("kind");
+          return;
+        }
+        next.set("groupBy", "none");
+        if (view === "all") next.delete("kind");
+        else next.set("kind", view);
+      });
+    },
+    [updateParams],
+  );
+
   const selectGroupBy = useCallback(
     (value: ArtifactGroupBy) => {
       updateParams((next) => {
@@ -131,9 +128,11 @@ export function Artifacts() {
         next.delete("groupIssueId");
         if (value === "task") next.delete("groupBy");
         else next.set("groupBy", value);
+        // Artifacts V1: a grouping is the Tasks view, which carries no kind filter.
+        if (v1 && value !== "none") next.delete("kind");
       });
     },
-    [updateParams],
+    [updateParams, v1],
   );
 
   // Build a relative `To` that preserves the active filters/search while
@@ -247,82 +246,15 @@ export function Artifacts() {
 
   return (
     <div className="w-full max-w-6xl space-y-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="relative w-full sm:max-w-sm">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={draftQuery}
-            onChange={(event) => setDraftQuery(event.currentTarget.value)}
-            placeholder="Search artifacts..."
-            aria-label="Search artifacts"
-            className="h-9 pl-9 pr-9 text-sm"
-          />
-          {draftQuery.length > 0 ? (
-            <button
-              type="button"
-              onClick={() => setDraftQuery("")}
-              aria-label="Clear artifact search"
-              className="absolute right-2 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          ) : null}
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                type="button"
-                variant="outline"
-                size="icon"
-                aria-label={`Group artifacts (currently ${artifactGroupByLabel(groupBy)})`}
-                title="Group artifacts"
-                data-testid="artifact-group-control"
-                data-group-by={groupBy}
-                className={cn("h-8 w-8 shrink-0", grouping && "bg-accent")}
-              >
-                <Layers className="h-3.5 w-3.5" aria-hidden="true" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-44">
-              <DropdownMenuLabel>Group by</DropdownMenuLabel>
-              {ARTIFACT_GROUP_OPTIONS.map((option) => (
-                <DropdownMenuItem
-                  key={option.value}
-                  data-testid={`artifact-group-option-${option.value}`}
-                  aria-selected={groupBy === option.value}
-                  onSelect={() => selectGroupBy(option.value)}
-                  className="justify-between"
-                >
-                  {option.label}
-                  {groupBy === option.value ? <Check className="h-3.5 w-3.5" /> : null}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-
-          <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="Filter artifacts by type">
-            {ARTIFACT_KIND_FILTERS.map((filter) => (
-              <button
-                key={filter.value}
-                type="button"
-                role="tab"
-                aria-selected={kind === filter.value}
-                onClick={() => selectKind(filter.value)}
-                className={cn(
-                  "rounded-md px-2.5 py-1 text-xs font-medium transition-colors",
-                  kind === filter.value
-                    ? "bg-accent text-foreground"
-                    : "text-muted-foreground hover:bg-accent/50 hover:text-foreground",
-                )}
-              >
-                {filter.label}
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>
+      <ArtifactsToolbar
+        query={draftQuery}
+        onQueryChange={setDraftQuery}
+        groupBy={groupBy}
+        onGroupByChange={selectGroupBy}
+        kind={kind}
+        onKindChange={selectKind}
+        filters={v1 ? <ArtifactsV1Filters view={artifactsV1View(groupBy, kind)} onViewChange={selectV1View} /> : undefined}
+      />
 
       {viewingSelectedStack ? (
         <div className="flex flex-wrap items-center gap-2 text-sm">
@@ -349,6 +281,37 @@ export function Artifacts() {
         <PageSkeleton variant="list" />
       ) : items.length === 0 ? (
         <EmptyState icon={showGroupCards ? Layers : Package} message={emptyMessage} />
+      ) : v1 ? (
+        <>
+          {/* Artifacts V1 (doc/plans/2026-10-22-artifacts-mvp-v1.md): a task with several artifacts is a stack
+              whose newest artifact is the first page; a task with one, and every flat view, is a single tile. */}
+          <ArtifactTileGrid>
+            {showGroupCards
+              ? groups.map((group) => {
+                  const preview = group.previewArtifacts[0];
+                  if (group.count > 1 || !preview) {
+                    return (
+                      <ArtifactStackTile
+                        key={group.id}
+                        identifier={group.issue.identifier}
+                        title={group.title}
+                        count={group.count}
+                        updatedAt={group.updatedAt}
+                        front={preview ? subjectFromCompanyArtifact(preview) : { kind: "file", title: group.title, updatedAt: group.updatedAt, taskIdentifier: group.issue.identifier }}
+                        to={stackTo(group.issue.id)}
+                      />
+                    );
+                  }
+                  return <ArtifactSingleTile key={group.id} subject={subjectFromCompanyArtifact(preview)} to={preview.href} />;
+                })
+              : artifacts.map((artifact) => (
+                  <ArtifactSingleTile key={`${artifact.source}:${artifact.id}`} subject={subjectFromCompanyArtifact(artifact)} to={artifact.href} />
+                ))}
+          </ArtifactTileGrid>
+          <div ref={loadMoreRef} className="flex min-h-10 items-center justify-center pb-2 text-xs text-muted-foreground">
+            {isFetchingNextPage ? "Loading more artifacts..." : hasNextPage ? null : isFetching ? "Updating artifacts..." : null}
+          </div>
+        </>
       ) : (
         <>
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">

@@ -221,12 +221,16 @@ describe("errorHandler", () => {
     expect(telemetryMocks.trackErrorHandlerCrash).toHaveBeenCalledTimes(2);
   });
 
-  it("sanitizes chat setup errors before logs and crash reporting", () => {
+  it.each([
+    { name: "chat setup", method: "POST", path: "/api/chat-endpoints/endpoint-1/setup", body: { credentials: { botToken: "setup-error-token-canary" } } },
+    { name: "observability API keys", method: "PUT", path: "/api/companies/company/observability", body: { credentials: { mode: "replace", apiKey: "setup-error-token-canary" } } },
+    { name: "arbitrary OTLP headers", method: "PUT", path: "/api/companies/company/observability", body: { credentials: { mode: "replace", headers: [{ name: "x-custom", value: "setup-error-token-canary" }] } } },
+  ])("sanitizes $name errors before logs and crash reporting", ({ method, path, body }) => {
     const req = {
       ...makeReq(),
-      method: "POST",
-      originalUrl: "/api/chat-endpoints/endpoint-1/setup",
-      body: { credentials: { botToken: "setup-error-token-canary" } },
+      method,
+      originalUrl: path,
+      body,
     } as unknown as Request;
     const res = makeRes() as any;
     const next = vi.fn() as unknown as NextFunction;

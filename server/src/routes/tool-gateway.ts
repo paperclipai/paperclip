@@ -1,7 +1,8 @@
+import { filterConnectionManagementRows, connectionManagementGuard, connectionRequestContext, connectionRequestUserId } from "./connection-management-authz.js";
 import { Router, type Request, type Response } from "express";
 import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, toolApplications, toolCallEvents, toolConnections, toolInvocations } from "@paperclipai/db";
+import { agents, toolApplications, toolCallEvents, toolConnections, toolInvocations, toolRuntimeSlots } from "@paperclipai/db";
 import {
   humanizeConnectionDisplayName,
   type PermissionKey,
@@ -55,7 +56,7 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
-async function discoveryRequest<T>(req: Request, res: Response, work: (signal: AbortSignal) => Promise<T>) {
+async function cancellableRequest<T>(req: Request, res: Response, work: (signal: AbortSignal) => Promise<T>) {
   const controller = new AbortController();
   const aborted = () => controller.abort();
   const closed = () => { if (!res.writableEnded) controller.abort(); };
@@ -111,7 +112,7 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (body.method === "tools/list") {
-      const tools = await discoveryRequest(req, res, (signal) => toolGateway.listToolsForNamedGateway({
+      const tools = await cancellableRequest(req, res, (signal) => toolGateway.listToolsForNamedGateway({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
@@ -180,14 +181,15 @@ async function handleMcpGatewayProtocol(
         res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
         return;
       }
-      const result = await toolGateway.executeTool({
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeTool({
+        signal,
         sessionToken: token,
         gatewayId: locator.gatewayId ?? null,
         gatewayPublicId: locator.gatewayPublicId ?? null,
         tool: name,
         parameters: params.arguments ?? {},
         callerHeaders: req.headers,
-      });
+      }));
       const resultRecord = result.result && typeof result.result === "object" && !Array.isArray(result.result)
         ? result.result as Record<string, unknown>
         : null;
@@ -348,13 +350,14 @@ function sendGatewayError(res: import("express").Response, err: unknown) {
 
 export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   const router = Router();
+  const managementGuard = connectionManagementGuard(db, "tool");
   const access = accessService(db);
 
   async function assertBoardPermission(req: import("express").Request, companyId: string, permissionKey: PermissionKey) {
-    assertBoard(req);
+    assertBoardOrAgent(req);
     assertCompanyAccess(req, companyId);
     if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
-    if (req.actor.userId && await access.canUser(companyId, req.actor.userId, permissionKey)) return;
+    if (connectionRequestUserId(req) && await access.canUser(companyId, connectionRequestUserId(req)!, permissionKey)) return;
     throw forbidden(`Missing permission: ${permissionKey}`);
   }
 
@@ -373,18 +376,18 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   }
 
-  router.get("/companies/:companyId/tools/gateways", async (req, res) => {
+  router.get("/companies/:companyId/tools/gateways", managementGuard("connections:gateway", "GET /companies/:companyId/tools/gateways"), async (req, res) => {
     try {
-      await assertBoardPermission(req, req.params.companyId, "tools:admin");
-      res.json({ gateways: await toolGateway.listNamedGateways(req.params.companyId) });
+      await assertBoardPermission(req, (req.params.companyId as string), "tools:admin");
+      res.json({ gateways: await filterConnectionManagementRows(db, req, "connections:gateway", await toolGateway.listNamedGateways((req.params.companyId as string)), row => ({ gatewayId: row.id })) });
     } catch (err) {
       sendGatewayError(res, err);
     }
   });
 
-  router.post("/companies/:companyId/tools/gateways", async (req, res) => {
+  router.post("/companies/:companyId/tools/gateways", managementGuard("connections:gateway", "POST /companies/:companyId/tools/gateways"), async (req, res) => {
     try {
-      await assertBoardPermission(req, req.params.companyId, "tools:admin");
+      await assertBoardPermission(req, (req.params.companyId as string), "tools:admin");
       const parsed = createToolMcpGatewaySchema.safeParse(req.body ?? {});
       if (!parsed.success) {
         res.status(422).json({ error: "Invalid gateway payload", issues: parsed.error.issues });
@@ -392,9 +395,10 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       }
       const actor = getActorInfo(req);
       const gateway = await toolGateway.createNamedGateway({
-        companyId: req.params.companyId,
+        companyId: (req.params.companyId as string),
         body: parsed.data,
         actor: { agentId: actor.agentId, userId: req.actor.type === "board" ? req.actor.userId : null },
+        managementContext: connectionRequestContext(req),
       });
       res.status(201).json(gateway);
     } catch (err) {
@@ -402,9 +406,9 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
-  router.patch("/tool-gateway/gateways/:gatewayId", async (req, res) => {
+  router.patch("/tool-gateway/gateways/:gatewayId", managementGuard("connections:gateway", "PATCH /tool-gateway/gateways/:gatewayId"), async (req, res) => {
     try {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -417,15 +421,15 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return;
       }
       const { companyId: _companyId, ...body } = parsed.data as typeof parsed.data & { companyId?: string };
-      res.json(await toolGateway.updateNamedGateway({ companyId, gatewayId: req.params.gatewayId, body }));
+      res.json(await toolGateway.updateNamedGateway({ companyId, gatewayId: (req.params.gatewayId as string), body, managementContext: connectionRequestContext(req) }));
     } catch (err) {
       sendGatewayError(res, err);
     }
   });
 
-  router.post("/tool-gateway/gateways/:gatewayId/tokens", async (req, res) => {
+  router.post("/tool-gateway/gateways/:gatewayId/tokens", managementGuard("connections:gateway", "POST /tool-gateway/gateways/:gatewayId/tokens"), async (req, res) => {
     try {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -440,25 +444,26 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const actor = getActorInfo(req);
       res.status(201).json(await toolGateway.createNamedGatewayToken({
         companyId,
-        gatewayId: req.params.gatewayId,
+        gatewayId: (req.params.gatewayId as string),
         body: parsed.data,
         actor: { agentId: actor.agentId, userId: req.actor.type === "board" ? req.actor.userId : null },
+        managementContext: connectionRequestContext(req),
       }));
     } catch (err) {
       sendGatewayError(res, err);
     }
   });
 
-  router.post("/tool-gateway/gateway-tokens/:tokenId/revoke", async (req, res) => {
+  router.post("/tool-gateway/gateway-tokens/:tokenId/revoke", managementGuard("connections:gateway", "POST /tool-gateway/gateway-tokens/:tokenId/revoke"), async (req, res) => {
     try {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const companyId = typeof req.body?.companyId === "string" ? req.body.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
       await assertBoardPermission(req, companyId, "tools:admin");
-      res.json(await toolGateway.revokeNamedGatewayToken({ companyId, tokenId: req.params.tokenId }));
+      res.json(await toolGateway.revokeNamedGatewayToken({ companyId, tokenId: (req.params.tokenId as string), managementContext: connectionRequestContext(req) }));
     } catch (err) {
       sendGatewayError(res, err);
     }
@@ -469,7 +474,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   });
 
   router.post("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
-    await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayId: req.params.gatewayId });
+    await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayId: (req.params.gatewayId as string) });
   });
 
   router.post("/tool-gateway/sessions", async (req, res) => {
@@ -561,7 +566,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(401).json({ error: "Tool gateway session token is required" });
         return;
       }
-      const tools = await discoveryRequest(req, res, (signal) => toolGateway.listToolsForSession(token, { signal }));
+      const tools = await cancellableRequest(req, res, (signal) => toolGateway.listToolsForSession(token, { signal }));
       res.json(tools);
     } catch (err) {
       sendGatewayError(res, err);
@@ -586,16 +591,18 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(400).json({ error: '"tool" is required and must be a string' });
         return;
       }
-      const result = await toolGateway.executeTool({
+      const toolName = body.tool;
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeTool({
+        signal,
         sessionToken: token,
-        tool: body.tool,
+        tool: toolName,
         parameters: body.parameters ?? {},
         timeoutMs: body.timeoutMs,
         approvedActionRequestId:
           typeof body.approvedActionRequestId === "string" ? body.approvedActionRequestId : null,
         idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : null,
         callerHeaders: callerHeaders(req),
-      });
+      }));
       res.json(result);
     } catch (err) {
       sendGatewayError(res, err);
@@ -656,22 +663,25 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
-  router.get("/tool-gateway/runtime-slots", async (req, res) => {
+  router.get("/tool-gateway/runtime-slots", managementGuard("connections:runtime", "GET /tool-gateway/runtime-slots"), async (req, res) => {
     try {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
       await assertBoardPermission(req, companyId, "tools:manage_runtime");
-      res.json(await toolGateway.listRuntimeSlots(companyId));
+      const slots = await toolGateway.listRuntimeSlots(companyId);
+      const resources = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.companyId, companyId));
+      const byId = new Map(resources.map(row => [row.id, row]));
+      res.json(await filterConnectionManagementRows(db, req, "connections:runtime", slots.filter(row => byId.has(row.id)), row => ({ connectionId: byId.get(row.id)!.connectionId, issueId: byId.get(row.id)!.issueId })));
     } catch (err) {
       sendGatewayError(res, err);
     }
   });
 
-  router.post("/tool-gateway/runtime-slots/:slotId/stop", async (req, res) => {
+  router.post("/tool-gateway/runtime-slots/:slotId/stop", managementGuard("connections:runtime", "POST /tool-gateway/runtime-slots/:slotId/stop"), async (req, res) => {
     try {
       const companyId =
         typeof req.body?.companyId === "string"
@@ -687,7 +697,8 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const actor = getActorInfo(req);
       res.json(await toolGateway.stopRuntimeSlot({
         companyId,
-        slotId: req.params.slotId,
+        slotId: (req.params.slotId as string),
+        managementContext: connectionRequestContext(req),
         actor: {
           agentId: actor.agentId,
           runId: req.actor.type === "agent" ? req.actor.runId : null,
@@ -698,7 +709,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
-  router.post("/tool-gateway/runtime-slots/:slotId/restart", async (req, res) => {
+  router.post("/tool-gateway/runtime-slots/:slotId/restart", managementGuard("connections:runtime", "POST /tool-gateway/runtime-slots/:slotId/restart"), async (req, res) => {
     try {
       const companyId =
         typeof req.body?.companyId === "string"
@@ -714,7 +725,8 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const actor = getActorInfo(req);
       res.json(await toolGateway.restartRuntimeSlot({
         companyId,
-        slotId: req.params.slotId,
+        slotId: (req.params.slotId as string),
+        managementContext: connectionRequestContext(req),
         actor: {
           agentId: actor.agentId,
           runId: req.actor.type === "agent" ? req.actor.runId : null,
@@ -725,9 +737,9 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
-  router.get("/tool-gateway/audit", async (req, res) => {
+  router.get("/tool-gateway/audit", managementGuard("connections:audit", "GET /tool-gateway/audit"), async (req, res) => {
     try {
-      assertBoard(req);
+      assertBoardOrAgent(req);
       const companyId = typeof req.query.companyId === "string" ? req.query.companyId : null;
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -859,6 +871,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
           row: toolCallEvents,
           invocationId: toolInvocations.id,
           invocationAgentId: toolInvocations.agentId,
+          invocationIssueId: toolInvocations.issueId,
           invocationApplicationId: toolInvocations.applicationId,
           invocationConnectionId: toolInvocations.connectionId,
           invocationToolName: toolInvocations.toolName,
@@ -918,7 +931,12 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
       });
       const hasMore = candidates.length > limit;
-      const visible = candidates.slice(0, limit);
+      const window = candidates.slice(0, limit);
+      const visible = await filterConnectionManagementRows(db, req, "connections:audit", window, candidate => candidate.kind === "call"
+        ? { connectionId: candidate.item.row.connectionId ?? candidate.item.invocationConnectionId,
+            issueId: candidate.item.invocationIssueId ?? candidate.item.row.issueId,
+            gatewayId: candidate.item.row.gatewayId }
+        : { connectionId: candidate.item.connectionId });
       const agentIds = [...new Set(visible.flatMap((item) => [
         item.kind === "call" ? item.item.row.agentId : item.item.agentId,
         item.kind === "call" ? item.item.invocationAgentId : null,
@@ -1065,7 +1083,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         };
       });
 
-      const last = visible.at(-1);
+      const last = window.at(-1);
       res.json({
         events,
         nextCursor: hasMore && last ? encodeAuditCursor({ createdAt: last.createdAt, id: last.id }) : null,

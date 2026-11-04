@@ -6,6 +6,7 @@ import * as sharedSchemas from "@paperclipai/shared";
 export const experimentalApiPaths: readonly [string, string, z.ZodTypeAny | undefined][] = [
   ["post", "/api/companies/{companyId}/cases", caseSchemas.createCaseSchema],
   ["get", "/api/companies/{companyId}/cases", undefined],
+  ["get", "/api/companies/{companyId}/cases/types", undefined],
   ["get", "/api/cases/{id}/documents/{key}", undefined],
   ["get", "/api/cases/{id}/documents/{key}/annotations", undefined],
   ["get", "/api/cases/{id}/documents/{key}/annotations/{threadId}", undefined],
@@ -45,4 +46,6 @@ export const experimentalApiPaths: readonly [string, string, z.ZodTypeAny | unde
 export const experimentalApiQueries: Record<string, z.ZodObject<any>> = {
   "GET /api/companies/{companyId}/cases": caseSchemas.listCasesQuerySchema,
   "GET /api/cases/{id}/events": caseSchemas.listEventsQuerySchema,
+  "GET /api/cases/{id}": caseSchemas.caseDetailQuerySchema,
+  "PATCH /api/cases/{id}": caseSchemas.caseDetailQuerySchema,
 };
