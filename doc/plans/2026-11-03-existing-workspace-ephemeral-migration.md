@@ -137,3 +137,36 @@ test resumes that same queued run after deleting the old disk, verifies saved
 workspace bytes and instructions at provider dispatch, and checks one result and
 one wake consumption even after a second queue sweep. Its sandbox transport and
 provider session are scripted; database, S3, admission and restoration are real.
+
+A failed follow-up can also have no warm supervisor and retain the preceding
+successful run in its controller file. Archive this source only after the Runner
+parser validates that older authority and scoped history confirms the same
+Runner, session, provider thread and an earlier successful finish. Keep current
+snapshots, ownership and typed checkpoints unchanged. The archive cannot become
+executable recovery authority. Foreign, invalid and active sources remain blocked.
+
+For a finished failed source with a stale observed coordinator, evidence archival
+also requires an expired controller lease, no accepted result or retry deadline,
+and no current task ownership. Every remote lease must carry the exact host-owned
+termination receipt, confirmed after execution started. Recheck those receipts
+before publication. Preserve the coordinator as recorded; this proof permits
+evidence storage, not execution or a claim that the coordinator has settled.
+
+Compare retained turn completion to the follow-up execution start, not its queue
+creation time. A queued follow-up can predate the prior turn completion. A remote
+stop can also predate a later logical failure caused by recovery timeout. These
+proofs use the recorded execution start and never rewrite lifecycle timestamps.
+
+### Existing typed checkpoint authority
+
+When a retained source already has a valid typed database checkpoint, derive its
+small recovery metadata from that authority and the current admitted input. Do
+not consult a stale or absent local warm supervisor. Validate the same company,
+agent, task, normalized session and Runner bindings and retain the checkpoint,
+snapshot, owner and session pointer unchanged. Offline warm import without a
+supervisor still requires this existing typed authority; normal runtime import
+keeps its supervisor and ownership requirements.
+
+For a retired reusable sandbox lease, the existing remote-termination resolver
+may prove destruction through its exact successor handoff chain. A stopped
+successor, broken chain or competing tip does not grant archival authority.
