@@ -115,7 +115,7 @@ fn install_crypto_provider() {
 }
 
 fn build_metadata() -> serde_json::Value {
-    json!({
+    let mut metadata = json!({
         "schema": RUNNERD_BUILD_METADATA_SCHEMA,
         "binaryName": "paperclip-runnerd",
         "packageName": "@paperclipai/paperclip-runner",
@@ -131,7 +131,12 @@ fn build_metadata() -> serde_json::Value {
             "maximumVersion": 2
         },
         "prpTransportModes": ["dial_ws_loopback", "dial_wss", "listen_ws"]
-    })
+    });
+    #[cfg(unix)]
+    {
+        metadata["hostedParkingVersion"] = json!(1);
+    }
+    metadata
 }
 
 // The publisher seals image installations. Check only path metadata at startup;
@@ -702,7 +707,8 @@ mod tests {
     #[test]
     fn build_metadata_advertises_the_remote_transport_contract() {
         let metadata = build_metadata();
-        assert!(metadata.get("hostedParkingVersion").is_none());
+        #[cfg(unix)]
+        assert_eq!(metadata["hostedParkingVersion"], 1);
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
         assert_eq!(

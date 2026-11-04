@@ -1268,7 +1268,7 @@ enum HostAction {
 fn process_host_control<E: CommandExecutor>(
     control: &mut HostControl,
     state: &DurableState,
-    _store: &DurableStateStore,
+    store: &DurableStateStore,
     executor: &mut E,
     parked: bool,
     remaining: Option<Duration>,
@@ -1326,9 +1326,23 @@ fn process_host_control<E: CommandExecutor>(
             acked_source_seq,
         ) {
             (None, None, None, None) => parked && control.park_id.as_ref() == Some(park_id),
+            (Some(claim_id), Some(identity), Some(command_seq), Some(acked_seq)) => {
+                !parked
+                    && control
+                        .claiming
+                        .as_ref()
+                        .is_some_and(|(park, claim)| park == park_id && claim == claim_id)
+                    && host_park_cut_matches(state, identity, *command_seq, *acked_seq)
+                    && executor.host_park_ready()?
+            }
             _ => false,
         } =>
         {
+            if claim_id.is_some() {
+                // From this point, success or failure exits the Runner loop. Record
+                // acceptance before shutdown can change the captured provider files.
+                store.record_host_retirement(request.id())?;
+            }
             executor.shutdown()?;
             control.reply(&request, "retired")?;
             Ok(HostAction::Retire)
@@ -2802,6 +2816,7 @@ mod tests {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixStream;
         struct IdleExecutor {
+            proof_file: PathBuf,
             proofs: usize,
             shutdowns: usize,
             ready: bool,
@@ -2815,6 +2830,8 @@ mod tests {
                 Ok(self.ready)
             }
             fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                // Cleanup can mutate provider state before the host sees an ACK.
+                assert_eq!(fs::read_to_string(&self.proof_file).unwrap().len(), 64);
                 self.shutdowns += 1;
                 Ok(())
             }
@@ -2825,11 +2842,13 @@ mod tests {
         ));
         let config = config(directory.clone());
         let store = DurableStateStore::new(&config.state_dir).unwrap();
+        let proof = directory.join("host-retirement-proof.v1");
         let mut state = DurableState::new(&config);
         let (socket, mut host) = UnixStream::pair().unwrap();
         let mut reader = BufReader::new(host.try_clone().unwrap());
         let mut control = HostControl::new(socket).unwrap();
         let mut executor = IdleExecutor {
+            proof_file: proof.clone(),
             proofs: 0,
             shutdowns: 0,
             ready: true,
@@ -2888,31 +2907,101 @@ mod tests {
             "conflict"
         );
         assert_eq!(executor.shutdowns, 0);
+        assert!(!proof.exists());
         let mut premature_park = park.clone();
         premature_park["id"] = json!("park-before-attach");
         assert_eq!(
             exchange(&premature_park, &state, &mut control, &mut executor, false).1["status"],
             "conflict"
         );
-        let retire = json!({"op":"retire","id":"retire-park","parkId":"park-1"});
+        let mut retire = json!({"op":"retire","id":"retire-claim","parkId":"park-1"});
         assert_eq!(
             exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
             "conflict"
         );
-        // Simulate completed run.attach before a later exact parked cut.
-        control.claiming = None;
-        let mut next_park = park.clone();
-        next_park["id"] = json!("park-2");
+        retire["claimId"] = json!("claim-1");
+        retire["identity"] = park["identity"].clone();
+        retire["lastControllerCommandSeq"] = json!(0);
+        retire["ackedSourceSeq"] = json!(0);
+        for field in [
+            "claimId",
+            "identity",
+            "lastControllerCommandSeq",
+            "ackedSourceSeq",
+        ] {
+            let mut partial = retire.clone();
+            partial.as_object_mut().unwrap().remove(field);
+            assert_eq!(
+                exchange(&partial, &state, &mut control, &mut executor, false).1["status"],
+                "conflict"
+            );
+        }
+        for pointer in [
+            "/parkId",
+            "/claimId",
+            "/identity/runnerInstanceId",
+            "/identity/environmentLeaseId",
+            "/identity/runId",
+            "/identity/normalizedSessionId",
+            "/identity/turnId",
+            "/identity/itemId",
+            "/lastControllerCommandSeq",
+            "/ackedSourceSeq",
+        ] {
+            let mut stale = retire.clone();
+            let value = stale.pointer_mut(pointer).unwrap();
+            *value = if value.is_number() {
+                json!(1)
+            } else {
+                json!("stale")
+            };
+            assert_eq!(
+                exchange(&stale, &state, &mut control, &mut executor, false).1["status"],
+                "conflict"
+            );
+        }
+        // PRP commands and source events can race the host's preceding disk proof.
+        state.last_controller_command_seq = 1;
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        state.last_controller_command_seq = 0;
+        state.acked_source_seq = 1;
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        state.acked_source_seq = 0;
+        executor.ready = false;
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        executor.ready = true;
+        let claiming = control.claiming.take();
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        control.claiming = claiming;
+        assert_eq!(executor.shutdowns, 0);
+        assert!(!proof.exists());
         assert!(matches!(
-            exchange(&next_park, &state, &mut control, &mut executor, false).0,
-            HostAction::Park
-        ));
-        let retire = json!({"op":"retire","id":"retire-park","parkId":"park-2"});
-        assert!(matches!(
-            exchange(&retire, &state, &mut control, &mut executor, true).0,
+            exchange(&retire, &state, &mut control, &mut executor, false).0,
             HostAction::Retire
         ));
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "retired"
+        );
         assert_eq!(executor.shutdowns, 1);
+        // The owner can recover the decision from disk even if it missed the
+        // socket reply. The challenge itself is never written to disk.
+        assert_eq!(
+            fs::read_to_string(&proof).unwrap(),
+            "6e50678b4ee214af5f43dc03e18778a48c9c4d7b843af024cf4f307565f97c8c"
+        );
         fs::remove_dir_all(directory).unwrap();
     }
 
