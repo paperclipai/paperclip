@@ -11,6 +11,218 @@ import {
 } from "./NewAgent.test-support";
 
 describe("New agent setup", () => {
+  it.each(["codex_local", "claude_local"].flatMap(adapterType =>
+    ["cli", "acp"].flatMap(engine => ["subscription", "api"].map(method => ({ adapterType, engine, method }))),
+  ))("isolates legacy credential selection for $adapterType/$engine/$method through test, save and hire", async ({ adapterType, engine, method }) => {
+    const id = "00000000-0000-4000-8000-000000000090";
+    const key = adapterType === "codex_local" ? "OPENAI_API_KEY" : "ANTHROPIC_API_KEY";
+    const subscriptionKey = adapterType === "codex_local" ? "CODEX_HOME" : "CLAUDE_CODE_OAUTH_TOKEN";
+    const oldKey = method === "subscription" ? key : subscriptionKey;
+    const oldCredential = { type: "secret_ref", secretId: "old-account", version: "latest" };
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType,
+      adapterConfig: { engine, command: "custom-provider", permissionMode: "deny-all", env: { [oldKey]: oldCredential, OLD_ACCOUNT_TOKEN: "old-account" }, model: "saved-model" },
+      runtimeConfig: {}, defaultEnvironmentId: "local-1", pauseReason: "setup", status: "paused" };
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    if (method === "api") {
+      secrets.list.mockResolvedValue([{ id: "new-key", companyId: "company-1", scope: "company", key, name: "New API account", status: "active" }]);
+    } else if (adapterType === "codex_local") {
+      secrets.list.mockResolvedValue([{ id: "new-home", companyId: "company-1", scope: "company", key: "CODEX_HOME_new", name: "CODEX_HOME_new", status: "active" }]);
+    } else {
+      api.getClaudeOAuthTokenStatus.mockResolvedValue({ hasToken: true });
+    }
+    state.params = new URLSearchParams({ name: "Atlas", adapterType, runner: "legacy", setupAgentId: id });
+    await renderCurrentParams();
+    await settle();
+    if (method === "api") {
+      await click((adapterType === "codex_local" ? "OpenAI" : "Claude") + "API key");
+      await click("Use saved API key");
+    } else {
+      await click("Use saved subscription");
+    }
+    const selectedKey = method === "api" ? key : subscriptionKey;
+    const assertAccount = (config: Record<string, any>) => {
+      expect(config).toMatchObject({ engine, command: "custom-provider", permissionMode: "deny-all" });
+      expect(config.env[selectedKey]).toMatchObject(method === "api" ? { type: "secret_ref", secretId: "new-key" }
+        : adapterType === "codex_local" ? { type: "secret_ref", secretId: "new-home" }
+        : { type: "user_secret_ref", key: "CLAUDE_CODE_OAUTH_TOKEN" });
+      expect(config.env[oldKey] ?? "").toBe("");
+      expect(config.env).not.toHaveProperty("OLD_ACCOUNT_TOKEN");
+    };
+    expect(api.testEnvironment).toHaveBeenCalled();
+    assertAccount(api.testEnvironment.mock.calls[0][2].adapterConfig);
+    assertAccount(api.update.mock.calls.at(-1)![1].adapterConfig);
+    await click("Finish setup");
+    assertAccount(api.hire.mock.calls.at(-1)![1].adapterConfig);
+  });
+
+  it.each(["codex_local", "claude_local"].flatMap(adapterType =>
+    [null, "hidden-local"].flatMap(previous => [true, false].map(validSelection => ({ adapterType, previous, validSelection }))),
+  ))("handles $adapterType unavailable saved target $previous (valid SSH selection=$validSelection)", async ({ adapterType, previous, validSelection }) => {
+    const id = "00000000-0000-4000-8000-000000000099";
+    const policy = { engine: "acp", permissionMode: "deny-all" };
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType,
+      adapterConfig: { ...policy, command: "old-host-command", cwd: "/old-host", extraArgs: ["--old"], env: { HOST_TOKEN: "old-host" } },
+      runtimeConfig: { aiConnection: { provider: adapterType === "codex_local" ? "openai" : "anthropic", method: "subscription", mode: "responsible_user" } },
+      defaultEnvironmentId: previous, pauseReason: "setup", status: "paused" };
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "hidden-local" });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: true });
+    envApi.list.mockResolvedValue([{ id: "linux-ssh", name: "Linux", driver: "ssh", status: "active", config: {} }]);
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    state.params = new URLSearchParams({ name: "Atlas", adapterType, runner: "legacy", setupAgentId: id });
+    await renderCurrentParams();
+    await settle();
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
+    await act(async () => { environment.value = validSelection ? "linux-ssh" : ""; environment.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    if (!validSelection) {
+      expect(api.update).not.toHaveBeenCalled();
+      expect(api.testEnvironment).not.toHaveBeenCalled();
+      expect(api.hire).not.toHaveBeenCalled();
+      expect(container.textContent).toContain("no managed sandbox");
+      return;
+    }
+    const patch = api.update.mock.calls.at(-1)?.[1];
+    expect(patch).toMatchObject({ defaultEnvironmentId: "linux-ssh", adapterConfig: policy });
+    for (const key of ["command", "cwd", "extraArgs", "env"]) expect(patch.adapterConfig).not.toHaveProperty(key);
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls.at(-1)?.[2]).toMatchObject({ environmentId: "linux-ssh", adapterConfig: policy });
+    await click("Finish setup");
+    expect(api.hire.mock.calls.at(-1)?.[1]).toMatchObject({ defaultEnvironmentId: "linux-ssh", adapterConfig: policy });
+  });
+
+  it.each(["codex_local", "claude_local"].flatMap(adapterType =>
+    [
+      { source: "instance local", instanceDefault: "local-1", target: "local-1", localFallback: false, managedOnly: false },
+      { source: "local fallback", instanceDefault: null, target: "local-1", localFallback: true, managedOnly: false },
+      { source: "instance SSH", instanceDefault: "linux-ssh", target: "linux-ssh", localFallback: false, managedOnly: false },
+      { source: "managed redirect", instanceDefault: "local-1", target: "managed-1", localFallback: true, managedOnly: true },
+    ].flatMap(target => [false, true].map(explicit => ({ adapterType, ...target, explicit }))),
+  ))("retains $adapterType settings on the same resolved $source computer (explicit=$explicit)", async ({ adapterType, instanceDefault, target, localFallback, explicit, managedOnly }) => {
+    const id = "00000000-0000-4000-8000-000000000098";
+    const policy = { engine: "acp", permissionMode: "deny-all", command: "custom-provider",
+      cwd: "/project", extraArgs: ["--verbose"], env: { HOST_TOKEN: { type: "plain", value: "host-only" } } };
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType, adapterConfig: policy,
+      runtimeConfig: { aiConnection: { provider: adapterType === "codex_local" ? "openai" : "anthropic", method: "subscription", mode: "responsible_user" } },
+      defaultEnvironmentId: explicit ? target : null, pauseReason: "setup", status: "paused" };
+    settings.get.mockResolvedValue({ defaultEnvironmentId: instanceDefault });
+    settings.getExperimental.mockResolvedValue({ enableManagedSandboxOnly: managedOnly });
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Local", driver: "local", status: "active", config: {}, metadata: { defaultForInstance: localFallback } },
+      { id: "linux-ssh", name: "Linux", driver: "ssh", status: "active", config: {} },
+      { id: "managed-1", name: "Managed", driver: "plugin", status: "active", config: {}, metadata: { managedByPaperclip: true } },
+    ]);
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    state.params = new URLSearchParams({ name: "Atlas", adapterType, runner: "legacy", setupAgentId: id });
+    await renderCurrentParams();
+    await settle();
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
+    await act(async () => { environment.value = explicit ? "" : target; environment.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    const patch = api.update.mock.calls.at(-1)?.[1];
+    expect(patch.defaultEnvironmentId).toBe(explicit && !managedOnly ? null : target);
+    expect(patch.adapterConfig).toMatchObject(policy);
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls.at(-1)?.[2]).toMatchObject({ environmentId: target, adapterConfig: policy });
+    await click("Finish setup");
+    expect(api.hire.mock.calls.at(-1)?.[1].adapterConfig).toMatchObject(policy);
+  });
+
+  it.each(["codex_local", "claude_local"].flatMap(adapterType =>
+    ["permissionMode", "acpPermissionMode"].flatMap(key =>
+      ["deny-all", "approve-reads"].map(mode => ({ adapterType, key, mode }))),
+  ))("keeps $adapterType ACP $key=$mode through an environment switch, test and hire", async ({ adapterType, key, mode }) => {
+    const id = "00000000-0000-4000-8000-000000000097";
+    const policy = { engine: "acp", [key]: mode };
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType,
+      adapterConfig: { ...policy, command: "C:\\Tools\\provider.exe", cwd: "C:\\project",
+        env: { HOST_TOKEN: { type: "plain", value: "host-only" } } },
+      runtimeConfig: { aiConnection: { provider: adapterType === "codex_local" ? "openai" : "anthropic", method: "subscription", mode: "responsible_user" } },
+      defaultEnvironmentId: "local-1", pauseReason: "setup", status: "paused" };
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Windows", driver: "local", status: "active", config: {} },
+      { id: "linux-ssh", name: "Linux", driver: "ssh", status: "active", config: {} },
+    ]);
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    state.params = new URLSearchParams({ name: "Atlas", adapterType, runner: "legacy", setupAgentId: id });
+    await renderCurrentParams();
+    await settle();
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
+    await act(async () => { environment.value = "linux-ssh"; environment.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    const patch = api.update.mock.calls.at(-1)?.[1];
+    expect(patch.defaultEnvironmentId).toBe("linux-ssh");
+    expect(patch.adapterConfig).toMatchObject(policy);
+    for (const field of ["command", "cwd", "env"]) expect(patch.adapterConfig).not.toHaveProperty(field);
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls.at(-1)?.[2].adapterConfig).toMatchObject(policy);
+    await click("Finish setup");
+    expect(api.hire.mock.calls.at(-1)?.[1].adapterConfig).toMatchObject(policy);
+  });
+
+  it.each([null, "local-1"])("does not save the previous host's command or environment when switching targets (saved=%s)", async (defaultEnvironmentId) => {
+    const id = "00000000-0000-4000-8000-000000000096";
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType: "codex_local",
+      adapterConfig: { engine: "cli", command: "C:\\Tools\\codex.exe", cwd: "C:\\project",
+        env: { HOST_TOKEN: { type: "plain", value: "host-only" } }, dangerouslyBypassApprovalsAndSandbox: false },
+      runtimeConfig: { aiConnection: { provider: "openai", method: "subscription", mode: "responsible_user" } },
+      defaultEnvironmentId, pauseReason: "setup", status: "paused" };
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Windows", driver: "local", status: "active", config: {} },
+      { id: "linux-ssh", name: "Linux", driver: "ssh", status: "active", config: {} },
+    ]);
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", runner: "legacy", setupAgentId: id });
+    await renderCurrentParams();
+    await settle();
+    await act(async () => (container.querySelector("summary") as HTMLElement).click());
+    const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
+    await act(async () => { environment.value = "linux-ssh"; environment.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    const patch = api.update.mock.calls.at(-1)?.[1];
+    expect(patch.defaultEnvironmentId).toBe("linux-ssh");
+    expect(patch.adapterConfig).toMatchObject({ engine: "cli", dangerouslyBypassApprovalsAndSandbox: false });
+    for (const key of ["command", "cwd", "env"]) expect(patch.adapterConfig).not.toHaveProperty(key);
+  });
+
+  it.each([
+    ["codex_local", "cli"], ["codex_local", "acp"],
+    ["claude_local", "cli"], ["claude_local", "acp"],
+  ])("retains saved %s %s runtime through test, save and hire", async (adapterType, engine) => {
+    const id = "00000000-0000-4000-8000-000000000095";
+    const model = adapterType === "codex_local" ? "gpt-5.4" : "claude-sonnet-4-6";
+    const policy = {
+      command: "C:\\Tools with spaces\\provider.exe", engine,
+      extraArgs: ["--verbose"], cwd: "C:\\Projects\\Example",
+      timeoutSec: 90, graceSec: 7, search: true, fastMode: true,
+      dangerouslyBypassApprovalsAndSandbox: false, dangerouslySkipPermissions: false,
+      ...(engine === "acp" ? { agentCommand: "/opt/provider-acp", mode: "persistent", nonInteractivePermissions: "deny", warmHandleIdleMs: 1234 } : {}),
+      env: { SystemRoot: { type: "plain", value: "C:\\Windows" }, SERVICE_TOKEN: { type: "secret_ref", secretId: "assigned-secret", version: "latest" } },
+    };
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType, adapterConfig: { ...policy, model },
+      runtimeConfig: { aiConnection: { provider: adapterType === "codex_local" ? "openai" : "anthropic", method: "subscription", mode: "responsible_user" } },
+      defaultEnvironmentId: "local-1", pauseReason: "setup", status: "paused" };
+    api.get.mockResolvedValue(draft);
+    api.update.mockImplementation(async (_id, patch) => ({ ...draft, ...patch }));
+    state.params = new URLSearchParams({ name: "Atlas", adapterType, runner: "legacy", setupAgentId: id });
+    await renderCurrentParams();
+    await settle();
+    await fill("Model", "new-explicit-model");
+    await click("Run test");
+    expect(api.testEnvironment.mock.calls.at(-1)?.[2].adapterConfig).toMatchObject({ ...policy, model: "new-explicit-model" });
+    await click("Save & exit");
+    expect(api.update.mock.calls.at(-1)?.[1].adapterConfig).toMatchObject({ ...policy, model: "new-explicit-model" });
+    await click("Finish setup");
+    expect(api.hire.mock.calls.at(-1)?.[1].adapterConfig).toMatchObject({ ...policy, model: "new-explicit-model" });
+  });
+
   it.each([
     ["claude_local", "Claude", "plugin"], ["codex_local", "OpenAI", "plugin"],
     ["claude_local", "Claude", "sandbox"], ["codex_local", "OpenAI", "sandbox"],
