@@ -10,6 +10,12 @@ export async function queueBudgetEvaluation(tx: Db, input: BudgetEvaluationInput
   await tx.insert(budgetEvaluationWork).values(input);
 }
 
+/** Every retained row is an unconsumed duty. Settlement deletes exact IDs;
+ * this table has no terminal-history state. */
+export function pendingBudgetEvaluationWorkQuery() {
+  return sql`SELECT 1 FROM ${budgetEvaluationWork}`;
+}
+
 export async function hasPendingBudgetEvaluation(db: Db): Promise<boolean> {
   const [row] = await db.select({ id: budgetEvaluationWork.id }).from(budgetEvaluationWork).limit(1);
   return Boolean(row);

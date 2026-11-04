@@ -692,3 +692,8 @@ requires a valid settled legacy source, idle execution state, no monitor claim o
 execution lock, and no linked unfinished run or wake before treating it as
 passive. A live task's due monitor remains work. Source uncertainty and unrelated
 accounting/resource obligations retain their independent checks.
+
+Pending `budget_evaluation_work` rows also block sleep. The budget owner removes
+only the input IDs it has consumed. The queue has no completed-history rows.
+The durable check still applies when a worker is absent or has not reconstructed
+its work; a process-local idle count does not replace this check.

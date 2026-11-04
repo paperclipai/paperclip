@@ -1,3 +1,5 @@
+import { registerBudgetEnforcementWork } from "../services/budget-enforcement-worker.js";
+import { hasPendingBudgetEvaluation, queueBudgetEvaluation } from "../services/budget-evaluation-work.js";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import { readIdleQuotaSchedule } from "../services/heartbeat/idle-quota-schedule.js";
 import { registerDeadlineWork } from "../services/deadline-work.js";
@@ -9,7 +11,7 @@ import { issueService } from "../services/issues.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, applyPendingMigrations, authUsers, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, agentWakeupRequests, applyPendingMigrations, authUsers, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
@@ -35,6 +37,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<ReturnType<typeof heartbeatService>["registerRunDispatchWork"]> | undefined;
   let owners: IdleDeadlineOwners;
+  let budgetWorker: ReturnType<typeof registerBudgetEnforcementWork> | undefined;
   let monitorWorker: ReturnType<typeof registerDeadlineWork> | undefined;
   let recoveryWorker: ReturnType<ReturnType<typeof heartbeatService>["registerIssueStateRecoveryWork"]> | undefined;
   let draining = false;
@@ -70,7 +73,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     holdStartedAt = new Date(Date.now() - 1000); holdExpiresAt = new Date(Date.now() + 300_000);
   });
   afterEach(async () => {
-    await monitorWorker?.stop(); await recoveryWorker?.stop();
+    await monitorWorker?.stop(); await recoveryWorker?.stop(); await budgetWorker?.stop();
     await worker?.stop(); await coordinator?.stop();
     await heartbeat.drainActiveRunExecutions();
     const auditRuns = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, retryOfRunId: heartbeatRuns.retryOfRunId,
@@ -81,18 +84,22 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     const auditWakes = await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId,
       reason: agentWakeupRequests.reason, source: agentWakeupRequests.source, status: agentWakeupRequests.status }).from(agentWakeupRequests);
     process.stderr.write(`recovery teardown causal audit ${JSON.stringify({ runs: auditRuns, wakes: auditWakes })}\n`);
-    worker = undefined; coordinator = undefined; monitorWorker = undefined; recoveryWorker = undefined;
+    worker = undefined; coordinator = undefined; monitorWorker = undefined; recoveryWorker = undefined; budgetWorker = undefined;
     vi.useRealTimers();
     expect(errors).toEqual([]);
   });
   afterAll(async () => { unregisterServerAdapter("recovery_deadline_process"); await db?.$client.end({ timeout: 1 }); });
 
-  async function start() {
+  async function start(options: { budgets?: boolean } = {}) {
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
       canReconcile: () => true, onError: error => errors.push(error) });
     worker = heartbeat.registerRunDispatchWork(coordinator, () => !draining);
     owners.retries = bindIdleDeadlineOwner(worker.retries.reconciliationSnapshot, readIdleRetrySchedule,
       snapshot => ({ coverage: { kind: "scheduled_retries", runIds: snapshot.runIds, wakeIds: snapshot.wakeIds }, issueWaits: snapshot.issueWaits }));
+    if (options.budgets !== false) {
+      budgetWorker = registerBudgetEnforcementWork(db, coordinator, { cancelWorkForScope: heartbeat.cancelBudgetScopeWork });
+      await budgetWorker.ready;
+    }
     await worker.ready;
   }
   async function settled() {
@@ -322,5 +329,24 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     expect(retained?.lastReviewedFingerprint).toBeTruthy();
     expect((await proof()).scheduledWake).toBeUndefined();
   }, 50_000);
+
+
+  it("blocks unconsumed budget inputs without a live owner and permits sleep only after normal settlement", async () => {
+    const f = await fixture({ retainedSourceLock: false });
+    await issueService(db).update(f.issue.id, { status: "done", actorUserId: "recovery-test-user", companyGuard: f.companyId });
+    await start({ budgets: false }); await settled();
+    expect(await hasPendingBudgetEvaluation(db)).toBe(false);
+    expect((await proof()).backgroundWork).toBe("none");
+    await db.transaction(tx => queueBudgetEvaluation(tx as unknown as Db, { companyId: f.companyId, agentId: f.agent.id }));
+    expect(await hasPendingBudgetEvaluation(db)).toBe(true);
+    const pending = await proof();
+    expect(pending.backgroundWork).toBe("present");
+    expect(pending.diagnostics?.checks).toContainEqual({ reason: "budget_evaluation_work", state: "present" });
+    budgetWorker = registerBudgetEnforcementWork(db, coordinator!, { cancelWorkForScope: heartbeat.cancelBudgetScopeWork });
+    await budgetWorker.ready; await settled();
+    expect(await hasPendingBudgetEvaluation(db)).toBe(false);
+    const consumed = await proof();
+    expect(consumed.backgroundWork, JSON.stringify(consumed.diagnostics)).toBe("none");
+  }, 15_000);
 
 });

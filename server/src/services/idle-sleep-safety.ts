@@ -1,3 +1,4 @@
+import { pendingBudgetEvaluationWorkQuery } from "./budget-evaluation-work.js";
 import { createIdleDeadlineInspectionBudget, readIdleDeadlineOwners, deadlineOwnerWorkReplacement, readIdleDeadlineProof, deadlineWorkReplacement, type IdleDeadlineProof } from "./idle-deadline-proof.js";
 import type { IdleDeadlineOwners, DomainScheduledWake, IdleDeadlineReceipt } from "./idle-deadline-types.js";
 import type { IdlePluginCatalogEntry } from "./plugin-idle-catalog.js";
@@ -88,6 +89,7 @@ const WORK_CHECKS = [
     OR receipt ? 'baseline' OR receipt->>'cleanupPending' = 'true'`),
   workCheck("sandbox_creation_operations", `SELECT 1 FROM sandbox_creation_operations WHERE state IN ('pending', 'needs_reconciliation')`),
   workCheck("budget_reservations", `SELECT 1 FROM budget_reservations WHERE state NOT IN ('settled', 'released')`),
+  workCheck("budget_evaluation_work", pendingBudgetEvaluationWorkQuery()),
   workCheck("budget_policies", `SELECT 1 FROM budget_policies WHERE enforcement_version > enforcement_delivered_version`),
   workCheck("agents.lifecycle", `SELECT 1 FROM agents WHERE lifecycle_state IN
     ('preparing', 'verifying', 'pausing', 'resuming', 'terminating', 'cleaning_up')`),
