@@ -1975,6 +1975,28 @@ remains protected. Cleanup never interprets this registration as a stop receipt
 or permission to replay provider work. Repeated cleanup visits register the source
 once; settled sources add no continuing discovery or new maintenance timer.
 
+Unfinished prepared native exports also fence ordinary warm reuse of the same
+physical allocation, including a different historical lease row. Candidate
+selection excludes that allocation from reuse and obsolete-lease cleanup. It may
+reuse another clean allocation or acquire a fresh sandbox; workspace recovery and
+task admission still decide whether execution is allowed. Exact same-run
+reattachment keeps its existing controller checks. A saved board Retry can adopt
+one files-only maintenance generation when its first source-verification attempt
+failed before export because the exact warm source lacked retention policy.
+The old generation remains in the audit record. Adoption requires current user
+authority, unchanged source identity, no competing allocation or workspace writer,
+and the existing physical finalization owner. It grants no provider turn and does
+not repeat a consumed Retry. Other failures and an already adopted source remain
+held. Warm policy returns only after verified file persistence and exact stopped
+allocation evidence. Policy restoration and the recovered receipt commit together;
+failed settlement keeps the existing recovery obligation. Task continuation still
+passes ordinary admission.
+If local merge metadata is missing, a verified snapshot can settle preservation
+while the unfinished allocation stays retained. Its exact snapshot operation
+remains bound to the source and maintenance generation. Only verified native
+copyback can reopen an accepted result's original workspace finalizer. A saved
+Retry can instead use fresh isolation and attach the verified snapshot.
+
 Retry and authenticated new messages also inspect the task's bound remote
 workspace for its exact failed writer. A newer setup failure cannot hide that
 writer's file obligation. A released reusable source can register preservation
