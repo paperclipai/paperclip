@@ -1,5 +1,10 @@
 import assert from "node:assert/strict";
 import test, { describe } from "node:test";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createActionsReader, readSourceVerification, sourceVerificationJob, waitForSourceVerification, SourceVerificationDeferred } from "./cloud-source-verification.mjs";
 
 import { releaseAdmitted, deferredProducer, requestDeferredProducer, sourceAdmissionJob, migratorAdmissionJob, createReleaseRerunner } from "./cloud-release-admission.mjs";
@@ -7,6 +12,57 @@ import { releaseAdmitted, deferredProducer, requestDeferredProducer, sourceAdmis
 import { cancelImageRun, runnerWaits, watchReleaseSource } from "./watch-release-source.mjs";
 
 const sha = "a".repeat(40);
+
+function runAdmissionCli({ active = false, imageOnly = false, repositoryName = "paperclipai/paperclip" } = {}) {
+  const root = mkdtempSync(join(tmpdir(), "release-admission-cli-"));
+  try {
+    const preload = join(root, "github-fixture.mjs");
+    const installFixture = (active) => {
+      const repository = { id: 1170821064, full_name: "paperclipai/paperclip" };
+      const run = { id: 77, workflow_id: 21, path: ".github/workflows/docker.yml", head_sha: "a".repeat(40),
+        repository, head_repository: repository, head_branch: "master", event: "push", run_attempt: 1, status: "in_progress" };
+      globalThis.fetch = async url => {
+        const parsed = new URL(url);
+        if (parsed.origin !== "https://api.github.com") throw new Error("Unexpected admission request origin");
+        const path = parsed.pathname;
+        if (path.endsWith("/docker.yml")) return Response.json({ id: 21, path: ".github/workflows/docker.yml" });
+        if (path.endsWith("/release.yml")) return Response.json({ id: 22, path: ".github/workflows/release.yml" });
+        if (path.endsWith("/workflows/21/runs")) return Response.json({ total_count: active ? 1 : 0, workflow_runs: active ? [run] : [] });
+        if (path.endsWith("/workflows/22/runs")) return Response.json({ total_count: 0, workflow_runs: [] });
+        if (path.endsWith("/runs/77")) return Response.json(run);
+        throw new Error("Unexpected admission request path");
+      };
+    };
+    writeFileSync(preload, "(" + installFixture.toString() + ")(" + JSON.stringify(active) + ");\n");
+    const output = join(root, "output");
+    const result = spawnSync(process.execPath, ["--import", preload, fileURLToPath(new URL("./cloud-release-admission.mjs", import.meta.url)), ...(imageOnly ? ["image-only"] : [])], {
+      encoding: "utf8", timeout: 5_000,
+      env: { ...process.env, GITHUB_REPOSITORY: repositoryName, GITHUB_REF: "refs/heads/master", GITHUB_SHA: "a".repeat(40),
+        GITHUB_EVENT_NAME: "push", GITHUB_RUN_ATTEMPT: "1", GITHUB_TOKEN: "fixture", GITHUB_OUTPUT: output },
+    });
+    return { ...result, output: result.status === 0 ? readFileSync(output, "utf8") : "" };
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+describe("admission CLI startup", () => {
+  for (const imageOnly of [false, true]) {
+    for (const active of [false, true]) {
+      test("executes " + (imageOnly ? "image-only" : "source") + " admission with active consumer=" + active, () => {
+        const result = runAdmissionCli({ active, imageOnly });
+        assert.equal(result.status, 0, result.stderr || result.error?.message);
+        assert.equal(result.output, "admitted=" + active + "\n");
+      });
+    }
+  }
+  test("rejects a noncanonical CLI context before discovering consumers", () => {
+    const result = runAdmissionCli({ repositoryName: "fork/paperclip" });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /Canonical master admission context required/);
+    assert.equal(result.output, "");
+  });
+});
 const workflow = { id: 123, path: ".github/workflows/cloud-readiness.yml" };
 const baseRun = {
   id: 456, workflow_id: workflow.id, path: workflow.path, run_attempt: 2,

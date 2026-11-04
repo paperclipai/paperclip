@@ -1,5 +1,6 @@
 import { appendFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { createActionsReader } from "./github-actions-reader.mjs";
 
 const repository = "paperclipai/paperclip";
 const repositoryId = 1170821064;
@@ -115,7 +116,6 @@ export function createReleaseRerunner(token, fetchImpl = fetch) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   if (process.env.GITHUB_REPOSITORY !== repository || process.env.GITHUB_REF !== "refs/heads/master" || !process.env.GITHUB_TOKEN) throw new Error("Canonical master admission context required.");
-  const { createActionsReader } = await import("./cloud-source-verification.mjs");
   const admitted = await releaseAdmitted(process.env.GITHUB_SHA, { api: createActionsReader({ token: process.env.GITHUB_TOKEN }),
     event: process.env.GITHUB_EVENT_NAME, attempt: Number(process.env.GITHUB_RUN_ATTEMPT), imageOnly: process.argv[2] === "image-only" });
   console.log(admitted ? "Release candidate admitted." : "Full build deferred until a release consumer admits this source.");
