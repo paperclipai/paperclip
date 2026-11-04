@@ -1,3 +1,5 @@
+import { workspaceAllocationFiles } from "./remote-workspace-allocation.js";
+import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, statfs } from "node:fs/promises";
@@ -352,7 +354,10 @@ export async function prepareRemoteWorkspace(input: {
   const sameAllocation = initial.location?.providerLeaseId === input.lease.providerLeaseId
     && initial.location?.environmentId === input.lease.environmentId;
   if (initial.location && !sameAllocation && initial.dirty) throw conflict("The prior workspace has unsaved work; recover it before replacing its allocation.");
-  const remoteRoot = sameAllocation ? initial.location!.remoteCwd : path.posix.join(target.remoteCwd, ".paperclip-workspaces",
+  const migration = input.workspace.metadata?.nativeWorkspaceMigration
+    ? await readNativeWorkspaceMigration(input.db, input.workspace) : null;
+  if (migration && migration.remoteCwd !== target.remoteCwd) throw new Error("native_workspace_migration_target_changed");
+  const remoteRoot = sameAllocation ? initial.location!.remoteCwd : migration?.remoteCwd ?? path.posix.join(target.remoteCwd, ".paperclip-workspaces",
     publishedWorkspaceDirectory(input.workspace, initial) ?? `${input.workspace.id}-${initial.epoch}-${input.lease.id}`);
   const preparationIdentity = createHash("sha256").update(JSON.stringify([input.workspace.companyId, input.workspace.id,
     input.runId, initial.epoch, input.lease.id, input.lease.providerLeaseId, remoteRoot, initial.source])).digest("hex");
@@ -369,7 +374,8 @@ export async function prepareRemoteWorkspace(input: {
         const archivePath = path.join(scratch, "workspace.pcws");
         await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
         restoredExport = await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
-          restorationIdentity: preparationIdentity });
+          restorationIdentity: preparationIdentity, allowEmptyRoot: migration !== null,
+          allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [] });
       } finally { await rm(scratch, { recursive: true, force: true }); }
     } else {
       try {
