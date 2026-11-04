@@ -1,10 +1,11 @@
-# H5b independent-agent observation registration (prospective; no execution release)
+# H5c canonical-settlement observation registration (prospective; no execution release)
 
 H4c remains frozen at `7d7e7a88d562a95a1d407b76474763b666c181f5`
 (`5db4129bbdc1fa38775121aff5d0e68a8a11762519e41cfdf36eacd90ba7256b`).
 Its observed 120-second streaming failures remain failures. Aborted or profiled
-attempts cannot be reused as complete timing arms. H5b uses one normal agent per concurrent remote participant. It repairs the
-experiment topology while preserving observation of original deadline outcomes.
+attempts cannot be reused as complete timing arms. H5c keeps one normal agent per
+concurrent remote participant and waits for the product's canonical settlement,
+including supported same-run recovery, within the same terminal deadline.
 It does not optimize the product or turn earlier failures into passes.
 
 The aligned fresh application baselines are B0 `bac53ec3bfeaf6546e7aaeaee516487b30534654`
@@ -16,12 +17,14 @@ or matching binary is presumed before those artifacts exist. The historical
 a365/d8cd/914 application failures remain evidence of their recorded revisions.
 
 Select H5 explicitly with
-`PAPERCLIP_INGESTION_OBSERVATION_MODE=h5b-observe-original-sla-independent-agents`.
-The new default H4d mode uses the same independent-agent geometry with the original
-120/180/900-second deadlines. Observation mode uses the explicit H5b protocol.
+`PAPERCLIP_INGESTION_OBSERVATION_MODE=h5c-observe-original-sla-independent-agents-settlement`.
+The new default H4e mode uses the same independent-agent geometry with the original
+120/180/900-second deadlines. Observation mode uses the explicit H5c protocol.
 Both modes hash the same nine source files, including the shared topology helper.
 Their source revision and measurement bytes must match for later confirmation.
-Old H4c/H5a protocols, geometry, arms and noise are ineligible for H5b.
+Old H4c/H5a protocols, geometry, arms and noise are ineligible for H5c. H5b179fe6
+and its H4d default proof use the premature terminal-status observer and are also
+ineligible. The new H4e proof must use the exact H5c source and geometry.
 
 Run `node scripts/describe-native-ingestion-h5.mjs` to inspect the registration.
 This is a dry run only: it starts no app, provider, database or browser and
@@ -77,7 +80,86 @@ A separate background presentation40P01 involved a run that succeeded. The
 retained log shows its coordinator→issue→run wait, but lacks PostgreSQL's full
 opposing lock cycle. Its cause and relationship to other contention are unproved.
 It is not evidence that the14 run failures came from a database deadlock. All
-historical failures remain separate; no failed H4c/H5a arm is reused as H5b noise.
+historical failures remain separate; no failed H4c/H5a arm is reused as H5c noise.
+
+## Retained H5b failure and canonical settlement correction
+
+H5b179fe6 on aligned B0bac53 admitted100 distinct normal agents before the common
+epoch. Its original120s poll failed with61/512 foreground markers; all512 became
+visible282.734s after the wait began. The observer stopped54.737s later on83
+succeeded and17 failed statuses. Independent PostgreSQL checks found all51,200
+lossless deltas and one accepted result per run. Qualification failed; history
+and Stop were not reached. This arm is not noise or performance evidence.
+
+All17 errors were provider_transport_failed with the generic message that the
+runner did not durably suspend before checkpoint. Existing run logs instead
+show runnerSuspended=true and providerDrained=false: the exact runner.drain
+receipt was still pending after its five-second drain window. Why the receipt
+was late remains unproved. These were not the earlier shared-agent lock errors.
+All17 finalizers were retryable_failure at attempt1 with a scheduled+30s workspace
+retry; application teardown finished before the earliest retry was due. ACTIVE
+leases and prepared workspace-sync receipts remained unfinished. Later recovery
+was not observed and is not presumed to pass.
+
+The exact B0bac53 run-failure-report.ts44–50 contract states:
+
+> A native run that waits for a same-run retry is stored as `failed` with
+> `nativePhase: "retryable_failure"`. That is not terminal: the retry or the
+> workspace copy-back retry can still finish the run as succeeded.
+
+Normal company-run lists omit
+runtimeMode/nativePhase. Normal GET /api/heartbeat-runs/:id exposes both through
+the existing full run columns. Inside the same single180_000ms terminal poll,
+resolve only failed list candidates through that detail GET and classify its
+current result. Keep failed/native/retryable_failure pending; permanent/unknown
+failures and GET errors reject. The observer sends no retry or provider command.
+
+Record bounded state changes per run with time, status, runtimeMode, nativePhase
+and errorCode. Missing list-only fields are null, not inferred. Cap at16 changes
+per run and fail on overflow rather than discard observations. Retain total
+unique retryable runs, recovered runs, nonretryable failures and per-error-class
+unique-run counts. Every observed retry must recover successfully within
+the unchanged180s window; a deadline miss remains censored failure, never a
+completed latency. All100 successful native runs, exact deltas/results, reload,
+lease cleanup, existing-history and local Stop gates remain required.
+
+After recorded settlement, acknowledgement, lease timing, reload and normal
+event verification, take one company-and-exact-run-set READ ONLY REPEATABLE READ
+snapshot through the existing owned PostgreSQL helper. Retain current error-code
+fields and the closed schema/errorCode/observedAt fields of
+result_json.recoveredExecutionFailure, plus descriptive finalization attempt.
+Require every actual run, exact identities, settled status, valid shapes and a
+closed connection before the next case. No event HTTP or database polling loop
+is added. The existing independent completion upper bound includes this check;
+the measured settlement and lease timestamps stay unchanged.
+
+The durable recovery marker is copied from the run's error fields when successful
+finalization clears them (native-run-projection.ts114–121 in B0bac53). It can
+therefore retain a failure recovered before terminal-window polling. Union its
+codes and current recorded errors with observed transition codes by run identity.
+The normal Stop path's closed cancelled code is retained as cancellation
+evidence (run-control.ts1345); other current Stop error codes remain failures.
+Use these all-recorded unique-ever-failed-run counts/rates for comparison, and
+retain the observed-only counters separately. This marker records the retained
+failure, not an exhaustive sequence of every error class or attempt. Do not claim
+omniscient error history. Finalization attempt is a claim counter that can be
+preserved across workspace repair (native-run-finalizer.ts237–240); it is not a
+failure count and supplies no rate gate.
+
+Successful committed ordinary runs must have both current error fields cleared,
+as required by native-run-projection.ts180–193. A still-current error fails the
+proof; a succeeded status alone cannot turn it into recovered failure evidence.
+
+Fresh A/A retains all histories and freezes, per case, total and per-error-class
+all-recorded unique-ever-failed-run rates plus the maximum absolute paired rate difference. Zero baseline
+counts are valid; no relative division is used. Each candidate may use only
+error classes observed in that baseline A/A. Every paired total/per-class rate
+increase and its median must stay within that frozen absolute noise envelope.
+A single-arm retry storm cannot hide behind the median. Recovery and its final
+backlog remain inside drainage timing; observing recovery does not mean the
+earlier errors disappeared. All recorded failures must have recovered, and every
+run still needs its exact independently persisted accepted result. No product
+retry policy or drain limit is changed.
 
 ## Fixed work and observation boundaries
 
@@ -95,7 +177,7 @@ is added. Fake-plugin streaming remains separate from real-cloud Stop proof.
 | Boundary | Original requirement | H5 observation |
 | --- | --- | --- |
 | Foreground markers | Original Playwright120s wait | Continue to an absolute600s ceiling from that same wait start |
-| All terminal runs |180s after foreground completion (and Stop click) | Same180s after eventual foreground completion; hard failure at the ceiling |
+| Canonically settled runs |180s after foreground completion (and Stop click) | Same single180s after eventual foreground completion; supported retries remain pending, permanent failures reject, deadline misses fail |
 | Stop acknowledgement and leases | Existing30s polls and ordering | Unchanged; full click→acknowledgement metric retained |
 | Invocation | Original900s test budget | Actual1200s observation timeout, separately disclosed |
 
@@ -131,7 +213,7 @@ status, errors and configured timeout. Its observed total duration is an
 independent conservative assessment of the original900s budget; hooks/teardown
 can be treated differently by the original timeout. It is not an exact original
 timer-expiration observation. A final candidate must have total duration<900s
-in every arm and later pass one unchanged H4d default-mode full invocation on the
+in every arm and later pass one unchanged H4e default-mode full invocation on the
 same final SUT revision and full qualified artifact inventory.
 
 ## Complete evidence and eligibility
@@ -167,7 +249,7 @@ not itself attest that the live filesystem stayed unchanged.
 | --- | --- | --- |
 | Fresh B0/B1 A/A arms | Known burst512 streaming120 miss; explicit conservative observed-duration900 miss | Complete finite correct observation; root-reviewed noise suitability |
 | B0→B1 cursor-only candidate | Only an exact registered known miss also present in the paired baseline: burst512 streaming120 or conservative observed-duration900 | No additional deadline failures; latency/control nonregression plus separate incremental SQL evidence; never claim SLA fixed |
-| Final B2 candidate in either comparison | None | Every arm meets original streaming/control checks and conservative900 gate; loaded improvements and later H4d proof |
+| Final B2 candidate in either comparison | None | Every arm meets original streaming/control checks and conservative900 gate; loaded improvements and later H4e proof |
 
 Only burst512's streaming miss is registered as a known workload SLA failure.
 New failures in other workloads require diagnosis. The existing Stop poll
@@ -190,13 +272,13 @@ improve; other fixed latency/control metrics must not regress outside noise.
 Do not infer p99 from sparse observations. There is no new fixed percentage A/A
 cutoff: root must reject unsuitable noisy/nonstationary calibration explicitly.
 
-Use `--observation-mode=h5b-observe-original-sla-independent-agents` for the comparator. Candidate
+Use `--observation-mode=h5c-observe-original-sla-independent-agents-settlement` for the comparator. Candidate
 comparisons also require `--candidate-policy=cursor-nonregression --expect=nonregression`
 or `--candidate-policy=final-b2`. Final comparisons expose `performancePassed`
-separately; `acceptancePassed` remains false until `--original-h4d-proof` and
-`--original-h4d-inventory` establish the later fresh H4d default-deadline functional pass.
-That H4d proof is full, unprofiled, retry0, default mode with original120/180/900s
-bounds, on the same frozen H5b harness source, nine-file measurement bytes and
+separately; `acceptancePassed` remains false until `--original-h4e-proof` and
+`--original-h4e-inventory` establish the later fresh H4e default-deadline functional pass.
+That H4e proof is full, unprofiled, retry0, default mode with original120/180/900s
+bounds, on the same frozen H5c harness source, nine-file measurement bytes and
 independent-agent geometry, and the exact final SUT revision/qualified inventory.
 It uses a new disposable company and starts after all candidate arms. Old7d/H4c
 proofs and H5a observations cannot confirm this geometry. Prior failed H4c attempts remain in the record.
@@ -206,7 +288,7 @@ ordering; no absolute click-to-acknowledgement deadline is added.
 Use the explicit H5 `--require-performance` gate for the two final comparison
 stages while that later proof is pending; this requires every performance and
 candidate original-SLA gate, but grants no final acceptance. After the one later
-H4d default-mode qualification, recompute both reports against their unchanged paired
+H4e default-mode qualification, recompute both reports against their unchanged paired
 manifests with the proof and `--require-acceptance`. This re-evaluates retained
 evidence; it neither reuses an arm in a different comparison nor reruns failures.
 

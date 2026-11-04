@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { H5_MODE, H5_PROTOCOL, H4D_PROTOCOL, H5_TOPOLOGY, H5_LIMITS, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS,
+import { H5_MODE, H5_PROTOCOL, H4E_PROTOCOL, H5_TOPOLOGY, H5_LIMITS, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS,
   originalTerminal, assessH5Arm, requireH5Candidate } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -77,6 +77,15 @@ const workloads = [
   { name: "existing-history", runs: 10, events: 128, intervalMs: 0, prelude: 1000 },
   { name: "operator-stop", runs: 1, events: 512, intervalMs: 100, prelude: 0, stop: true },
 ];
+function syntheticSettlement(item) {
+  const states = item.runIds.map(runId => ({ runId, status: item.stop ? "cancelled" : "succeeded",
+    runtimeMode: null, nativePhase: null, errorCode: null }));
+  return { startedAtMs: item.settledAtMs, deadlineMs: item.settledAtMs + 180000,
+    assessedAtMs: item.settledAtMs, lastObservedAtMs: item.settledAtMs, observedRuns: item.runs, terminalRuns: item.runs,
+    pendingRetryRuns: 0, lastStatuses: states, transitions: states.map(row => ({ observedAtMs: item.settledAtMs, ...row })),
+    uniqueRetryableRuns: 0, recoveredRuns: 0, nonretryableFailures: 0, retryableErrorClasses: {}, complete: true, censored: false };
+}
+
 function browserReport(revision, latency) {
   const companyId = "00000000-0000-4000-8000-000000000001", environmentId = "00000000-0000-4000-8000-000000000002";
   const localEnvironmentId = "00000000-0000-4000-8000-000000000003", controlAgentId = "00000000-0000-4000-8000-000000000004";
@@ -84,7 +93,7 @@ function browserReport(revision, latency) {
   const remoteAgentIds = Array.from({ length: 100 }, (_, index) => id(9, 0, index));
   const transportPolicy = { streaming: "sandbox-remote", operatorStop: "local",
     realCloudStop: "Separate required qualification; fake-plugin void receipts grant no remote Stop authority" };
-  return { protocolVersion: H4D_PROTOCOL, transport: "sandbox-remote-with-local-stop", transportPolicy, companyId,
+  return { protocolVersion: H4E_PROTOCOL, transport: "sandbox-remote-with-local-stop", transportPolicy, companyId,
     bodyStartedAtMs: 1, agentTopology: { ...H5_TOPOLOGY, remoteAgentPoolSize: 100 },
     harnessProvenance: { sourceRevision: "b".repeat(40), sourceStatus: "", driverLockSha256: "8".repeat(64),
       sourceHashes: { "native-event-ingestion.journey.ts": "9".repeat(64), "fixtures/native-ingestion-h5.mjs": "a".repeat(64) } },
@@ -143,7 +152,14 @@ function browserReport(revision, latency) {
         setupActivationConcurrency: 2, setupReadinessStartedAtMs: 100, readinessDeadlineMs: 300100, allReadyObservedAtMs: 700,
         participants: workload.runs, activations, activationWaves,
         epochMs: 1000, preludeProof: workload.prelude ? { individualDeltas: workload.prelude, uniqueSourceIdentities: workload.prelude, verifiedAtMs: 999 } : undefined,
+        terminalObservation: syntheticSettlement({ ...workload, stop, runIds: rows.map(row => row.run_id), settledAtMs: 1000 + latency }),
         settledAtMs: 1000 + latency, stopRequestedAtMs: stop ? 1000 : undefined,
+        recordedFailures: { kind: "recorded-run-failure-codes", transaction: "READ ONLY REPEATABLE READ",
+          observedReadOnly: "on", observedIsolation: "repeatable read", queryStartedAtMs: 1002 + latency,
+          checkedAtMs: 1003 + latency, connectionClosedAtMs: 1004 + latency,
+          rows: rows.map(row => ({ run_id: row.run_id, company_id: companyId, agent_id: row.agent_id, runtime_mode: "native",
+            status: stop ? "cancelled" : "succeeded", native_phase: "committed", current_error_code: stop ? "cancelled" : null, current_has_error: stop,
+            recovered_type: null, recovered_schema: null, recovered_error_code: null, recovered_observed_at: null, finalization_attempt: 1 })) },
         stopAcknowledgedAtMs: stop ? 1000 + latency : undefined, remoteLeasesCheckedAtMs: stop ? undefined : 1001 + latency,
         runIds: rows.map(row => row.run_id), controllerAuthority: { ...snapshot, rows,
           ...(stop ? { localJournal: { schema: "paperclip.runner.durable.control-plane-state.v1", sha256: "8".repeat(64), bytes: 512, checkedAtMs: 999,
@@ -165,6 +181,7 @@ function browserReport(revision, latency) {
         intendedToVisible: { p95Ms: latency }, drainThroughTerminalMs: latency,
         stopThroughTerminalMs: latency, stopThroughAcknowledgementMs: latency,
         durable: rows.map((row, index) => ({ runId: row.run_id, token: String(index), ordered: true,
+          resultAcceptedEvents: stop ? 0 : 1,
           uniqueSourceIdentities: stop ? 3 : workload.events, individualDeltas: stop ? 3 : workload.events, matchedSourceClocks: stop ? 3 : workload.events })),
       };
     }) };
@@ -185,6 +202,8 @@ function h5Report(revision, loadedLatency) {
     item.firstVisibleAfterEmissionMs = latency; item.emissionToVisible = { medianMs: latency, p95Ms: latency };
     item.intendedToVisible = { p95Ms: latency };
     if (!item.stop) item.remoteLeasesCheckedAtMs = item.settledAtMs + 1;
+    Object.assign(item.recordedFailures, { queryStartedAtMs: item.settledAtMs + 2,
+      checkedAtMs: item.settledAtMs + 3, connectionClosedAtMs: item.settledAtMs + 4 });
     item.visible = Array.from({ length: item.stop ? 3 : item.events }, (_, index) => ({ index, visibleMs: item.settledAtMs }));
     const missed = latency > 120000, assessedAtMs = missed ? item.epochMs + 120000 : item.settledAtMs;
     const streaming = { original: { status: missed ? "failed" : "passed", reason: missed ? "original_streaming_deadline" : null,
@@ -193,9 +212,7 @@ function h5Report(revision, loadedLatency) {
       lastObservedAtMs: missed ? assessedAtMs - 1 : assessedAtMs,
       error: missed ? "Timeout 120000ms exceeded while waiting on the predicate" : null },
       observation: { ceilingMs: 600000, deadlineMs: item.epochMs + 600000, complete: true, censored: false, completedAtMs: item.settledAtMs } };
-    const terminalObservation = { startedAtMs: item.settledAtMs, deadlineMs: item.settledAtMs + 180000,
-      assessedAtMs: item.settledAtMs, lastObservedAtMs: item.settledAtMs, observedRuns: item.runs, terminalRuns: item.runs,
-      lastStatuses: item.runIds.map(runId => ({ runId, status: item.stop ? "cancelled" : "succeeded" })), complete: true, censored: false };
+    const terminalObservation = syntheticSettlement(item);
     item.h5 = { streaming, terminalObservation, terminalOriginal: originalTerminal(streaming, terminalObservation),
       visibleCountByOriginalPaintDeadline: missed ? 0 : item.visible.length,
       independentDrain: { verifiedAtMs: item.settledAtMs + 10, elapsedFromEpochMs: latency + 10,
@@ -221,7 +238,7 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
   const directory = await mkdtemp(path.join(os.tmpdir(), "native-ingestion-h5-gates-"));
   const script = new URL("./compare-native-ingestion-browser.ts", import.meta.url);
   const save = async (name, value) => { const file = path.join(directory, name); await writeFile(file, JSON.stringify(value)); return file; };
-  const run = args => spawnSync(process.execPath, [script.pathname, `--observation-mode=${H5_MODE}`, ...args], { encoding: "utf8" });
+  const run = args => spawnSync(process.execPath, [script.pathname, `--observation-mode=${H5_MODE}`, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   const hash = value => createHash("sha256").update(value).digest("hex"), inventories = new Map();
   async function inventory(report, playwrightFile, name) {
     const variant = ({ [H5_BASELINE_REVISIONS.B0]: "B0", [H5_BASELINE_REVISIONS.B1]: "B1", ["c".repeat(40)]: "B2" })[report.sourceRevision];
@@ -249,7 +266,7 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
       sourceRevision: report.sourceRevision, compiledBuildRevision: report.compiledBuildRevision,
       playwrightReportSha256: hash(await readFile(playwrightFile)), ...inventories.get(variant) });
   }
-  async function manifest(prefix, candidateLatency, { sameRevision = false, baselineRevision = "B0", candidateRevision = "B2", mutate, duration = 500000 } = {}) {
+  async function manifest(prefix, candidateLatency, { sameRevision = false, baselineRevision = "B0", candidateRevision = "B2", mutate, mutateArm, duration = 500000 } = {}) {
     const entries = [];
     for (let index = 0; index < 5; index++) {
       const entry = {};
@@ -258,6 +275,7 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
         const owner = { timeout: 1200000, expectedStatus: "passed", results: [{ status: "passed", retry: 0,
           duration, startTime: "2026-11-03T00:00:00.000Z", errors: [], attachments: [] }] };
         if (index === 0 && arm === "candidate") mutate?.(report, owner);
+        mutateArm?.(report, { index, arm });
         owner.results[0].attachments.push({ name: "native-ingestion-evidence", contentType: "application/json",
           body: Buffer.from(JSON.stringify(report)).toString("base64") });
         entry[`${arm}File`] = await save(`${prefix}-${index}-${arm}.json`, report);
@@ -270,16 +288,16 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
   }
   try {
     const proof = JSON.parse(JSON.stringify(h5Report("B2", 1000)).replaceAll("00000000-", "10000000-"));
-    proof.protocolVersion = H4D_PROTOCOL;
+    proof.protocolVersion = H4E_PROTOCOL;
     proof.measurementSha256 = "h5-synthetic-fixed-fixture";
-    // H4d defaults use the same frozen source/geometry as the observation arms.
+    // H4e defaults use the same frozen source/geometry as the observation arms.
     for (const field of ["observationMode", "observationLimits", "observationComplete", "workloadSha256", "actualPlaywrightTimeoutMs"]) delete proof[field];
-    for (const item of proof.cases) { delete item.h5; delete item.terminalStatuses; for (const row of item.durable) delete row.resultAcceptedEvents; }
-    const originalProof = await save("original-h4d-playwright.json", { suites: [{ tests: [{ timeout: 900000, expectedStatus: "passed", results: [{
+    for (const item of proof.cases) { item.terminalObservation = item.h5.terminalObservation; delete item.h5; }
+    const originalProof = await save("original-h4e-playwright.json", { suites: [{ tests: [{ timeout: 900000, expectedStatus: "passed", results: [{
       status: "passed", retry: 0, duration: 5000, startTime: "2026-11-04T00:00:00.000Z", errors: [], attachments: [{
         name: "native-ingestion-evidence", body: Buffer.from(JSON.stringify(proof)).toString("base64") }] }] }] }] });
     const originalInventory = await inventory(proof, originalProof, "original-h4c");
-    const finalProofArgs = [`--original-h4d-proof=${originalProof}`, `--original-h4d-inventory=${originalInventory}`];
+    const finalProofArgs = [`--original-h4e-proof=${originalProof}`, `--original-h4e-inventory=${originalInventory}`];
     const noise = path.join(directory, "aa.json");
     const aa = run(["--phase=aa", `--pairs=${await manifest("aa", 181000, { sameRevision: true })}`, `--output=${noise}`]);
     assert.equal(aa.status, 0, aa.stderr);
@@ -316,37 +334,96 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
     assert.equal(pendingReport.performancePassed, true); assert.equal(pendingReport.acceptancePassed, false);
     const performanceOnly = run(["--candidate-policy=final-b2", `--pairs=${goodPairs}`, `--noise-report=${noise}`, "--require-performance"]);
     assert.equal(performanceOnly.status, 0, performanceOnly.stderr);
+    const setRetries = (report, count, code = "provider_transport_failed", observed = true) => {
+      const item = report.cases[3], value = item.h5.terminalObservation;
+      value.transitions = [...item.runIds.slice(0, observed ? count : 0).map(runId => ({ observedAtMs: value.startedAtMs,
+        runId, status: "failed", runtimeMode: "native", nativePhase: "retryable_failure", errorCode: code })),
+        ...value.lastStatuses.map(row => ({ observedAtMs: value.assessedAtMs, ...row }))];
+      Object.assign(value, { uniqueRetryableRuns: observed ? count : 0, recoveredRuns: observed ? count : 0,
+        retryableErrorClasses: observed && count ? { [code]: count } : {} });
+      for (let index = 0; index < count; index++) Object.assign(item.recordedFailures.rows[index], {
+        recovered_type: "object", recovered_schema: "paperclip.recovered_execution_failure.v1", recovered_error_code: code,
+        recovered_observed_at: new Date(item.settledAtMs - 1).toISOString() });
+    };
+    const retryNoise = path.join(directory, "retry-aa.json");
+    const retryAA = run(["--phase=aa", `--pairs=${await manifest("retry-aa", 181000, { sameRevision: true,
+      mutateArm: (report, { arm }) => setRetries(report, arm === "candidate" ? 2 : 1) })}`, `--output=${retryNoise}`]);
+    assert.equal(retryAA.status, 0, retryAA.stderr);
+    const calibrated = JSON.parse(await readFile(retryNoise, "utf8")).retryObservations[3];
+    assert.equal(calibrated.rates.find(rate => rate.errorClass === null).aaNoiseEnvelopeAbsolute, .01);
+    assert.equal(calibrated.samples[0].baseline.uniqueRetryableRuns, 1);
+    assert.equal(calibrated.samples[0].candidate.recoveredRuns, 2);
+    const staleCurrent = run(["--candidate-policy=final-b2",
+      `--pairs=${await manifest("stale-current-error", 1000, {
+        mutateArm: report => setRetries(report, 1),
+        mutate: report => Object.assign(report.cases[3].recordedFailures.rows[0], {
+          current_has_error: true, current_error_code: "provider_transport_failed" }) })}`,
+      `--noise-report=${retryNoise}`, "--require-performance"]);
+    assert.notEqual(staleCurrent.status, 0, "An unresolved current error is not recovered merely because status says succeeded");
+    assert.match(staleCurrent.stderr, /must clear their current execution error/);
+    for (const [name, mutation, expectedPass] of [
+      ["retry-at-frozen-noise", (report, { arm }) => setRetries(report, arm === "candidate" ? 2 : 1), true],
+      ["one-arm-retry-storm", (report, { arm, index }) => setRetries(report, arm === "candidate" && index === 0 ? 3 : 1), false],
+      ["new-retry-class", (report, { arm }) => setRetries(report, 1, arm === "candidate" ? "new_transport_failure" : "provider_transport_failed"), false],
+    ]) {
+      const output = path.join(directory, `${name}.json`);
+      const attempt = run(["--candidate-policy=final-b2", `--pairs=${await manifest(name, 1000, { mutateArm: mutation })}`,
+        `--noise-report=${retryNoise}`, `--output=${output}`, "--require-performance"]);
+      assert.equal(attempt.status === 0, expectedPass, attempt.stderr);
+      const observed = JSON.parse(await readFile(output, "utf8"));
+      assert.equal(observed.performancePassed, expectedPass);
+      if (name === "one-arm-retry-storm") {
+        const gate = observed.retryGates.find(gate => gate.name === "burst512" && gate.errorClass === null);
+        assert.equal(gate.medianIncrease, 0); assert.equal(gate.pairedIncreases[0], .02); assert.equal(gate.passed, false);
+      }
+      if (name === "new-retry-class") assert.ok(observed.retryGates.some(gate => !gate.knownClass && !gate.passed));
+    }
+    const zeroBaselineRetries = run(["--candidate-policy=final-b2",
+      `--pairs=${await manifest("zero-baseline-new-retry", 1000, { mutate: report => setRetries(report, 1) })}`,
+      `--noise-report=${noise}`, "--require-performance"]);
+    assert.notEqual(zeroBaselineRetries.status, 0, "A zero-retry A/A cannot silently admit a new retry class or rate");
+    const earlyFile = path.join(directory, "early-recovery.json");
+    const early = run(["--candidate-policy=final-b2",
+      `--pairs=${await manifest("early-recovery", 1000, { mutate: report => setRetries(report, 1, "provider_transport_failed", false) })}`,
+      `--noise-report=${noise}`, `--output=${earlyFile}`, "--require-performance"]);
+    assert.notEqual(early.status, 0, "Recovery before the terminal observation window cannot vanish from failure rates");
+    const earlyObservation = JSON.parse(await readFile(earlyFile, "utf8")).retryObservations[3].samples[0].candidate;
+    assert.equal(earlyObservation.uniqueRetryableRuns, 0); assert.equal(earlyObservation.uniqueEverFailedRuns, 1);
+    assert.equal(earlyObservation.allRecordedRecoveredRuns, 1);
     for (const [name, change, message] of [
       ["h4c-too-early", (_value, owner) => { owner.results[0].startTime = "2026-11-02T00:00:00.000Z"; }, /follow all candidate/],
       ["h4c-wrong-sut", value => { value.sourceRevision = H5_BASELINE_REVISIONS.B0; value.compiledBuildRevision = value.sourceRevision; }, /strictly equal/],
-      ["h4c-observation-mode", value => { value.observationMode = H5_MODE; }, /H4d default deadlines/],
+      ["h4c-observation-mode", value => { value.observationMode = H5_MODE; }, /H4e default deadlines/],
       ["old-h4c-proof", value => { value.protocolVersion = "v4-remote-streaming-original-local-stop-clock-stream";
         value.harnessProvenance.sourceRevision = "7d7e7a88d562a95a1d407b76474763b666c181f5"; }, /Old H4c geometry/],
-      ["h4d-wrong-harness", value => { value.harnessProvenance.sourceRevision = "d".repeat(40); }, /same frozen harness source/],
-      ["h4d-wrong-measurement", value => { value.measurementSha256 = "old-h5a"; }, /same measured harness bytes/],
-      ["h4d-shared-agent", value => { value.cases[3].controllerAuthority.rows[1].agent_id = value.cases[3].controllerAuthority.rows[0].agent_id; }, /distinct normal agents/],
-      ["h4d-missing-stop-proof", value => { delete value.cases[5].localStopProof; }, /physical Stop/],
-      ["h4d-provider-still-alive", value => { value.cases[5].localStopProof.processes.providerAbsent = false; }, /provider remains alive/],
-      ["h4d-pending-local-lease", value => { value.cases[5].localStopProof.lease.status = "active"; }, /lease cleanup remains unsettled/],
-      ["h4d-wrong-local-lease", value => { value.cases[5].localStopProof.lease.id = value.cases[3].controllerAuthority.rows[0].lease_id; }, /strictly equal/],
-      ["h4d-ack-timing-mismatch", value => { value.cases[5].stopAcknowledgedAtMs++; }, /acknowledgement timing boundary/],
-      ["h4d-missing-remote-leases", value => { delete value.cases[3].remoteLeases; }, /post-timing lease cleanup proof/],
-      ["h4d-pending-remote-lease", value => { value.cases[3].remoteLeases[0].cleanupStatus = "pending"; }, /lease cleanup remains unsettled/],
-      ["h4d-wrong-remote-lease", value => { value.cases[3].remoteLeases[0].id = value.cases[5].controllerAuthority.rows[0].lease_id; }, /strictly equal/],
-      ["h4d-premature-remote-cleanup-proof", value => { value.cases[3].remoteLeasesCheckedAtMs = value.cases[3].settledAtMs - 1; }, /leases after recorded timing/],
-      ["h4d-wrong-authority-company", value => { value.cases[3].controllerAuthority.rows[0].company_id = "00000000-0000-4000-8000-000000099999"; }, /authority company mismatch/],
-      ["h4d-wrong-authority-run", value => { value.cases[3].controllerAuthority.rows[0].run_id = value.cases[5].runIds[0]; }, /authority run set mismatch/],
+      ["old-h4d-proof", value => { value.protocolVersion = "v4d-independent-agents-original-deadlines"; }, /Old H4c geometry/],
+      ["h4e-wrong-harness", value => { value.harnessProvenance.sourceRevision = "d".repeat(40); }, /same frozen harness source/],
+      ["h4e-wrong-measurement", value => { value.measurementSha256 = "old-h5a"; }, /same measured harness bytes/],
+      ["h4e-shared-agent", value => { value.cases[3].controllerAuthority.rows[1].agent_id = value.cases[3].controllerAuthority.rows[0].agent_id; }, /distinct normal agents/],
+      ["h4e-missing-stop-proof", value => { delete value.cases[5].localStopProof; }, /physical Stop/],
+      ["h4e-provider-still-alive", value => { value.cases[5].localStopProof.processes.providerAbsent = false; }, /provider remains alive/],
+      ["h4e-pending-local-lease", value => { value.cases[5].localStopProof.lease.status = "active"; }, /lease cleanup remains unsettled/],
+      ["h4e-wrong-local-lease", value => { value.cases[5].localStopProof.lease.id = value.cases[3].controllerAuthority.rows[0].lease_id; }, /strictly equal/],
+      ["h4e-ack-timing-mismatch", value => { value.cases[5].stopAcknowledgedAtMs++; }, /acknowledgement timing boundary/],
+      ["h4e-missing-remote-leases", value => { delete value.cases[3].remoteLeases; }, /post-timing lease cleanup proof/],
+      ["h4e-pending-remote-lease", value => { value.cases[3].remoteLeases[0].cleanupStatus = "pending"; }, /lease cleanup remains unsettled/],
+      ["h4e-wrong-remote-lease", value => { value.cases[3].remoteLeases[0].id = value.cases[5].controllerAuthority.rows[0].lease_id; }, /strictly equal/],
+      ["h4e-premature-remote-cleanup-proof", value => { value.cases[3].remoteLeasesCheckedAtMs = value.cases[3].settledAtMs - 1; }, /leases after recorded timing/],
+      ["h4e-wrong-authority-company", value => { value.cases[3].controllerAuthority.rows[0].company_id = "00000000-0000-4000-8000-000000099999"; }, /authority company mismatch/],
+      ["h4e-wrong-authority-run", value => { value.cases[3].controllerAuthority.rows[0].run_id = value.cases[5].runIds[0]; }, /authority run set mismatch/],
+      ["h4e-missing-settlement", value => { delete value.cases[3].terminalObservation; }, /canonical run settlement/],
+      ["h4e-missing-recorded-failures", value => { delete value.cases[3].recordedFailures; }, /post-timing recorded failure proof/],
     ]) {
       const report = JSON.parse(await readFile(originalProof, "utf8")), owner = report.suites[0].tests[0],
         value = JSON.parse(Buffer.from(owner.results[0].attachments[0].body, "base64").toString());
       change(value, owner); owner.results[0].attachments[0].body = Buffer.from(JSON.stringify(value)).toString("base64");
       const file = await save(`${name}-playwright.json`, report), sidecar = await inventory(value, file, name), output = path.join(directory, `${name}-result.json`);
       const attempt = run(["--candidate-policy=final-b2", `--pairs=${goodPairs}`, `--noise-report=${noise}`,
-        `--original-h4d-proof=${file}`, `--original-h4d-inventory=${sidecar}`, `--output=${output}`, "--require-acceptance"]);
+        `--original-h4e-proof=${file}`, `--original-h4e-inventory=${sidecar}`, `--output=${output}`, "--require-acceptance"]);
       assert.notEqual(attempt.status, 0, name);
       const rejected = JSON.parse(await readFile(output, "utf8"));
       assert.equal(rejected.performancePassed, true); assert.equal(rejected.acceptancePassed, false);
-      assert.match(rejected.originalH4dConfirmation.reason, message);
+      assert.match(rejected.originalH4eConfirmation.reason, message);
     }
     const badOutput = path.join(directory, "still-misses.json");
     const bad = run(["--candidate-policy=final-b2", `--pairs=${await manifest("still-misses", 150000)}`,
@@ -357,6 +434,17 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
     assert.equal(rejected.h5Assessments[0].candidateSlaPolicyPassed, false);
     for (const [name, mutate, message] of [
       ["old-h5a-protocol", report => { report.protocolVersion = "v5-complete-observation-original-sla"; }, /strictly equal/],
+      ["old-h5b-protocol", report => { report.protocolVersion = "v5b-independent-agents-complete-observation-original-sla"; }, /strictly equal/],
+      ["retry-ledger-hidden", report => { setRetries(report, 1); report.cases[3].h5.terminalObservation.uniqueRetryableRuns = 0; }, /Retry ledger/],
+      ["missing-state-history", report => { delete report.cases[3].h5.terminalObservation.transitions; }, /state history/],
+      ["missing-recorded-failures", report => { delete report.cases[3].recordedFailures; }, /post-timing recorded failure proof/],
+      ["wrong-recorded-run", report => { report.cases[3].recordedFailures.rows[0].run_id = report.cases[5].runIds[0]; }, /run set mismatch/],
+      ["wrong-recorded-company", report => { report.cases[3].recordedFailures.rows[0].company_id = "wrong"; }, /company mismatch/],
+      ["wrong-recovered-schema", report => { setRetries(report, 1); report.cases[3].recordedFailures.rows[0].recovered_schema = "unknown"; }, /strictly equal/],
+      ["missing-recorded-code", report => { setRetries(report, 1); report.cases[3].recordedFailures.rows[0].recovered_error_code = null; }, /closed recorded error code/],
+      ["premature-recorded-snapshot", report => { report.cases[3].recordedFailures.queryStartedAtMs = report.cases[3].settledAtMs - 1; }, /post-timing failure snapshot/],
+      ["unclosed-recorded-snapshot", report => { delete report.cases[3].recordedFailures.connectionClosedAtMs; }, /post-timing failure snapshot/],
+      ["stop-recorded-provider-failure", report => { report.cases[5].recordedFailures.rows[0].current_error_code = "provider_transport_failed"; }, /recorded failed run must have recovered/],
       ["censored", report => { report.cases[3].h5.streaming.observation.censored = true; }, /false/],
       ["terminal-failed", report => { report.cases[3].terminalStatuses[99].status = "failed"; }, /successful drainage/],
       ["result-missing", report => { report.cases[3].durable[99].resultAcceptedEvents = 0; }, /persisted result/],
@@ -402,7 +490,7 @@ test("browser CLI rejects the three-pairs-above-noise counterexample and ineligi
     }
     return save(`${prefix}-pairs.json`, entries);
   }
-  const run = args => spawnSync(process.execPath, [script.pathname, ...args], { encoding: "utf8" });
+  const run = args => spawnSync(process.execPath, [script.pathname, ...args], { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
   try {
     const noise = path.join(directory, "noise.json");
     const aa = run(["--phase=aa", `--pairs=${await manifest("aa", Array(5).fill(0.10), true)}`, `--output=${noise}`]);

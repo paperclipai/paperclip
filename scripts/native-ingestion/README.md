@@ -1,6 +1,6 @@
 # Native ingestion experiment helpers
 
-For fresh cursor results and the current interleaved source reproduction, see [the new source report](../../doc/benchmarks/2026-11-03-native-event-ingestion-interleaved.md). The frozen runner below preserves the earlier experiment. Current application performance requires the separately qualified H4c driver and fresh comparisons; its gates remain open.
+For fresh cursor results and the current interleaved source reproduction, see [the new source report](../../doc/benchmarks/2026-11-03-native-event-ingestion-interleaved.md). The frozen runner below preserves the earlier experiment. Current application performance requires the independently frozen [H5c driver and helpers](h5c/README.md), successful qualification and fresh comparisons; its gates remain open. The older H4c runner below remains historical.
 
 These helpers reproduce the experiment registered on November 3, 2026. They
 retain its immutable application revisions, harness revision, workload hashes,
