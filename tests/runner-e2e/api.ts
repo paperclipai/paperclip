@@ -46,6 +46,12 @@ export class RunnerApi {
     return response.json() as Promise<T>;
   }
 
+  async bytes(path: string): Promise<Buffer> {
+    const response = await this.request.get(path, this.sessionOptions());
+    if (!response.ok()) throw new RunnerApiHttpError(response.status(), await failureMessage(response, "GET"));
+    return response.body();
+  }
+
   async post<T>(path: string, data?: unknown, options?: { timeout: number }): Promise<T> {
     const response = await this.request.post(path, { data, ...this.sessionOptions(), ...options });
     if (!response.ok()) throw new Error(await failureMessage(response, "POST"));
@@ -58,15 +64,27 @@ export class RunnerApi {
    * never serialized into trace/blob evidence before Paperclip encrypts it.
    */
   async postSensitive<T>(path: string, data: unknown): Promise<T> {
-    const response = await fetch(new URL(path, this.baseURL), {
-      method: "POST",
-      headers: { "content-type": "application/json", ...this.sessionOptions().headers },
-      body: JSON.stringify(data),
-    });
+    return this.sensitive<T>("POST", path, data);
+  }
+
+  async putSensitive<T>(path: string, data: unknown): Promise<T> {
+    return this.sensitive<T>("PUT", path, data);
+  }
+
+  private async sensitive<T>(method: "POST" | "PUT", path: string, data: unknown): Promise<T> {
+    const url = new URL(path, this.baseURL);
+    if (url.origin !== this.baseURL || !url.pathname.startsWith("/api/")) throw new Error("Sensitive request must use the fixture API");
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method, redirect: "error", signal: AbortSignal.timeout(15_000),
+        headers: { "content-type": "application/json", ...this.sessionOptions().headers },
+        body: JSON.stringify(data),
+      });
+    } catch { throw new Error(`Sensitive ${method} request failed; details withheld`); }
     if (!response.ok) {
-      throw new Error(
-        `Sensitive POST ${path} returned ${response.status}; response body withheld`,
-      );
+      await response.body?.cancel();
+      throw new Error(`Sensitive ${method} ${url.pathname} returned ${response.status}; response body withheld`);
     }
     return response.json() as Promise<T>;
   }
@@ -98,9 +116,9 @@ export class RunnerApi {
 
   async delete(
     path: string,
-    options?: { allowNotFound?: boolean },
+    options?: { allowNotFound?: boolean; timeout?: number },
   ): Promise<void> {
-    const response = await this.request.delete(path, this.sessionOptions());
+    const response = await this.request.delete(path, { ...this.sessionOptions(), timeout: options?.timeout });
     if (response.ok() || (options?.allowNotFound && response.status() === 404))
       return;
     throw new Error(await failureMessage(response, "DELETE"));
@@ -121,6 +139,7 @@ export async function pollUntil<T>(input: {
   accept: (value: T) => boolean;
   reject?: (value: T) => string | undefined;
   intervalMs?: number;
+  retryOnError?: (error: unknown) => boolean;
   timeoutFailureClass?: "candidate_failure" | "transient_infrastructure";
   timeoutDetail?: (value: T | undefined) => string | undefined;
 }): Promise<T> {
@@ -136,6 +155,7 @@ export async function pollUntil<T>(input: {
       }
       lastError = undefined;
     } catch (error) {
+      if (input.retryOnError && !input.retryOnError(error)) throw error;
       if (
         error instanceof Error &&
         error.message.startsWith(`Stopped waiting for ${input.label}:`)

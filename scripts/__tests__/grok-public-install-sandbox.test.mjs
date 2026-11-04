@@ -7,13 +7,47 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { isWorkspacePackage, parseWorkspaceEntries } from '../build-standalone-public-packages.mjs';
-import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertInstalledCodexPlatformProvenance, assertInstalledNativeConsumerContinuity, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedCodexProbeSource, installedDaemonProbeSource, macNodeHeadersDirectory, macPublicInstallLifecycleProfile, macInstalledStartupProbeSource, runMacInitialInstallWithDiagnostics } from '../grok-public-install-sandbox.mjs';
+import { GROK_PUBLIC_INSTALL_IMAGE, GROK_PUBLIC_INSTALL_LIFECYCLE, assertInstalledCodexPlatformProvenance, assertInstalledNativeConsumerContinuity, assertNoBundledCodexPayloads, grokConsumerDockerArgs, installedClaudeProbeSource, installedCodexProbeSource, installedDaemonProbeSource, macNodeHeadersDirectory, macPublicInstallLifecycleProfile, macInstalledStartupProbeSource, runMacInitialInstallWithDiagnostics } from '../grok-public-install-sandbox.mjs';
 import { verifyPiPackagedDaemon } from '../pi-public-install-probe.mjs';
 import { publicInstallClosure } from '../public-install-closure.mjs';
 import { runnerBinaryTarget } from '../../packages/paperclip-runner/src/live/runner-binary.ts';
 
 const paths = { assets: '/private/staging/assets', consumer: '/private/staging/consumer', cache: '/private/staging/cache', uid: 1001, gid: 1001 };
 const values = (args, flag) => args.flatMap((value, index) => value === flag ? [args[index + 1]] : []);
+
+test('installed Claude admission propagates failure without emitting a passing receipt', () => {
+  const root = mkdtempSync(join(tmpdir(), 'installed-claude-admission-'));
+  try {
+    const fixture = join(root, 'runner.mjs'), probe = join(root, 'probe.mjs');
+    writeFileSync(probe, installedClaudeProbeSource(fixture));
+    writeFileSync(fixture, "export async function probeAcpxClaudeInstallation(model) { if (model !== 'claude-opus-5-5') throw Error('wrong model'); }\n");
+    const accepted = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 5000 });
+    assert.equal(accepted.status, 0, accepted.stderr);
+    assert.equal(JSON.parse(accepted.stdout).packageIntegrityAndNoFollowLease, 'passed');
+    assert.equal(JSON.parse(accepted.stdout).providerCalls, 0);
+    writeFileSync(fixture, "export async function probeAcpxClaudeInstallation() { throw Error('integrity rejected'); }\n");
+    const rejected = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 5000 });
+    assert.notEqual(rejected.status, 0);
+    assert.equal(rejected.stdout, '');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('ordinary Claude consumer admission rejects authority overrides before invoking the verifier', () => {
+  const root = mkdtempSync(join(tmpdir(), 'installed-claude-authority-'));
+  try {
+    const fixture = join(root, 'runner.mjs'), probe = join(root, 'probe.mjs');
+    writeFileSync(probe, installedClaudeProbeSource(fixture));
+    writeFileSync(fixture, "export async function probeAcpxClaudeInstallation() { throw Error('provider verifier invoked'); }\n");
+    for (const key of ['PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT', 'PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST']) {
+      const rejected = spawnSync(process.execPath, [probe], { encoding: 'utf8', timeout: 5000,
+        env: { PATH: process.env.PATH, [key]: root } });
+      assert.notEqual(rejected.status, 0);
+      assert.equal(rejected.stdout, '');
+      assert.match(rejected.stderr, /AssertionError/);
+      assert.doesNotMatch(rejected.stderr, /provider verifier invoked/);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test('Mac initial install failures retain bounded npm progress without secret or environment values', () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'mac-install-diagnostics-test-')));
@@ -296,7 +330,7 @@ test('the verifier stages only workspace packages, so it skips the standalone bu
   // staged, reusing the UI that `pnpm build` produced, and it is timed. The
   // gated standalone build keeps release.sh's order: after the closure is
   // known and before the UI copy and any staged source.
-  assert.deepEqual(JSON.parse(readFileSync(new URL('server/package.json', repo), 'utf8')).files, ['dist', 'ui-dist', 'skills']);
+  assert.deepEqual(JSON.parse(readFileSync(new URL('server/package.json', repo), 'utf8')).files, ['dist', 'ui-dist', 'skills', 'scripts/install-copilot-assets.mjs']);
   assert.ok(source.includes("PAPERCLIP_RELEASE_REUSE_UI_DIST: '1'"));
   const uiDist = position("run('bash', [join(repo, 'scripts/prepare-server-ui-dist.sh')], repo)");
   assert.ok(position('publicInstallClosure(repo)') < gate && gate < uiDist && uiDist < position('timing.stage_ui_dist_ms =') && uiDist < position('const stageSource = '));

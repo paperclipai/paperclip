@@ -1262,11 +1262,15 @@ describe("sandbox callback bridge", () => {
     });
 
     const requestFile = await waitForJsonFile(directories.requestsDir);
+    const responsePath = path.posix.join(directories.responsesDir, requestFile);
+    // Publish the complete malformed envelope atomically, like the host writer.
+    // A direct write can instead exercise the reader's file-size race guard.
     await writeFile(
-      path.posix.join(directories.responsesDir, requestFile),
+      `${responsePath}.tmp`,
       '{"status":200,"headers":{"content-type":"application/json"},"body"',
       "utf8",
     );
+    await fs.rename(`${responsePath}.tmp`, responsePath);
 
     const response = await responsePromise;
     expect(response.status).toBe(502);
@@ -3292,8 +3296,10 @@ describe("sandbox callback bridge", () => {
   async function startHttp2GatewayForTest(options: {
     bridgeToken: string;
     maxBodyBytes?: number;
+    holdProbeOpen?: () => boolean;
+    deferStderrUntilExit?: boolean;
     forwardRequest: (request: Http2BridgeForwardRequest) => Promise<Http2BridgeForwardResult>;
-  }): Promise<{ baseUrl: string; stop: () => Promise<void> }> {
+  }, attempt = 0): Promise<{ baseUrl: string; stop: () => Promise<void> }> {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-http2-test-"));
     cleanupDirs.push(rootDir);
     const entrypoint = path.join(rootDir, "paperclip-bridge-server.mjs");
@@ -3308,7 +3314,12 @@ describe("sandbox callback bridge", () => {
           reject(new Error("Could not reserve a loopback port for the test."));
           return;
         }
-        probe.close(() => resolve(address.port));
+        if (options.holdProbeOpen?.()) {
+          cleanupFns.push(() => new Promise<void>((resolve) => probe.close(() => resolve())));
+          resolve(address.port);
+        } else {
+          probe.close(() => resolve(address.port));
+        }
       });
     });
 
@@ -3329,6 +3340,16 @@ describe("sandbox callback bridge", () => {
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString("utf8");
     });
+
+    if (options.deferStderrUntilExit) {
+      const resume = child.stderr.resume.bind(child.stderr);
+      child.stderr.pause();
+      child.stderr.resume = () => child.stderr;
+      child.once("exit", () => setImmediate(() => {
+        child.stderr.resume = resume;
+        resume();
+      }));
+    }
 
     const dataListeners: Array<(chunk: Uint8Array) => void> = [];
     const pending: Buffer[] = [];
@@ -3367,7 +3388,7 @@ describe("sandbox callback bridge", () => {
       }
       deliver(chunk);
     });
-    child.once("exit", (code) => {
+    child.once("close", (code) => {
       clearTimeout(readyTimer);
       if (!sawReadyLine) {
         rejectReady(new Error("The http2 gateway exited early with code " + String(code) + ". stderr: " + stderr));
@@ -3392,7 +3413,16 @@ describe("sandbox callback bridge", () => {
       },
     };
 
-    await readyPromise;
+    try {
+      await readyPromise;
+    } catch (error) {
+      child.kill();
+      if (attempt < 2 && child.exitCode === 1
+        && stderr.includes("http2 gateway could not bind port") && stderr.includes("EADDRINUSE")) {
+        return startHttp2GatewayForTest(options, attempt + 1);
+      }
+      throw error;
+    }
 
     const handle = createHttp2BridgeServer({
       bridgeToken: options.bridgeToken,
@@ -3828,15 +3858,38 @@ describe("sandbox callback bridge", () => {
     expect(seenRequests[0]?.body).toBe(requestBodyText);
   });
 
-  it("accepts the bridge token in X-API-Key on the HTTP/2 path and strips the header", async () => {
+  it("does not retry unrelated HTTP/2 fixture startup failures", async () => {
+    let attempts = 0;
+    await expect(startHttp2GatewayForTest({
+      bridgeToken: "",
+      holdProbeOpen: () => { attempts++; return false; },
+      forwardRequest: async () => { throw new Error("Unexpected request to an unstarted gateway"); },
+    })).rejects.toThrow("PAPERCLIP_BRIDGE_TOKEN");
+    expect(attempts).toBe(1);
+  });
+
+  it("limits HTTP/2 fixture retries when every assigned port is occupied", async () => {
+    let attempts = 0;
+    await expect(startHttp2GatewayForTest({
+      bridgeToken: createSandboxCallbackBridgeToken(),
+      holdProbeOpen: () => { attempts++; return true; },
+      forwardRequest: async () => { throw new Error("Unexpected request to an unstarted gateway"); },
+    })).rejects.toThrow("EADDRINUSE");
+    expect(attempts).toBe(3);
+  }, 15000);
+
+  it.each([[false, false], [true, false], [true, true]])("accepts the bridge token in X-API-Key on the HTTP/2 path and strips the header (collision=%s, late stderr=%s)", async (portCollision, lateStderr) => {
     // Both generated gateways share one token reader, so the HTTP/2 transport
     // must accept "X-API-Key" exactly as the file-mode transport does. The
     // header allowlist must still strip the credential before the gateway
     // forwards the request to the host.
     const bridgeToken = createSandboxCallbackBridgeToken();
     const seenHeaders: Array<Record<string, string>> = [];
+    let attempts = 0;
     const gateway = await startHttp2GatewayForTest({
       bridgeToken,
+      holdProbeOpen: () => { attempts++; return portCollision && attempts === 1; },
+      deferStderrUntilExit: lateStderr,
       forwardRequest: async (request) => {
         seenHeaders.push(request.headers);
         return {
@@ -3846,6 +3899,9 @@ describe("sandbox callback bridge", () => {
         };
       },
     });
+
+    expect(attempts).toBeGreaterThanOrEqual(portCollision ? 2 : 1);
+    expect(attempts).toBeLessThanOrEqual(3);
 
     const response = await fetch(`${gateway.baseUrl}/api/agents/me`, {
       headers: {

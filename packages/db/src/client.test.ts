@@ -2132,6 +2132,24 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
           triggerCount: 1,
           finalizationCount: 1,
         }]);
+        await replaySql`UPDATE issues SET assignee_agent_id = ${agentId} WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 2 }]);
+        await replaySql`UPDATE issues SET status = 'backlog', assignee_agent_id = null,
+          assignee_user_id = 'handoff-owner' WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 3 }]);
+        const assignmentVersionHash = await migrationHash("0358_issue_assignment_status_version.sql");
+        await replaySql`DELETE FROM "drizzle"."__drizzle_migrations" WHERE "hash" = ${assignmentVersionHash}`;
+        await applyPendingMigrations(connectionString);
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 3 }]);
+        expect(await replaySql`SELECT count(*)::int AS count FROM pg_trigger
+          WHERE tgname = 'paperclip_issue_assignment_version_trigger' AND NOT tgisinternal`)
+          .toEqual([{ count: 1 }]);
+        await replaySql`UPDATE issues SET assignee_user_id = null WHERE id = ${issueId}`;
+        expect(await replaySql`SELECT status_version::int FROM issues WHERE id = ${issueId}`)
+          .toEqual([{ status_version: 4 }]);
       } finally {
         await replaySql.end();
       }

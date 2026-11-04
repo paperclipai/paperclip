@@ -9,6 +9,7 @@ import { AgentDirectoryReuseInvalidatedError, isAgentDirectoryCopy } from "../ag
 import { collectStoppedInstructionCopyWithRetries, instructionWorkingCopyGuidance, type agentInstructionWorkingCopyService } from "../agent-instruction-working-copies.js";
 import { claimWarmNativeInstructionCopy, nativeSessionWorkspaceScope, reserveWarmNativeInstructionDirectory } from "../native-runtime/index.js";
 import { parseNativeExecutionInput } from "../../vendor/paperclip-runner/index.js";
+import { supportsNativeWarmFiles } from "../native-runtime/native-warm-capability.js";
 import type { HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
 import type { EffectiveRunSessionConfigMetadata } from "./workspaces.js";
@@ -53,6 +54,7 @@ export function createHeartbeatInstructionCopyRelease(
 }
 
 interface InstructionWorkingCopyInput {
+  observabilityCompatibilityKey?: string;
   db: Db;
   instructionCopies: Copies;
   // The executor replaces its run row before preparation. Callbacks must see it.
@@ -77,6 +79,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
   let nativeInstructionReservation: Awaited<ReturnType<typeof reserveWarmNativeInstructionDirectory>> = null;
   let instructionCopy: Awaited<ReturnType<typeof instructionCopies.prepare>> = null;
   let instructionSave: Record<string, unknown> | null = null;
+  const task = executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" ? executionTarget.runnerTask : undefined;
   const instructionPreparationKey = createHash("sha256").update(JSON.stringify({
     adapterType: agent.adapterType, adapterConfig: agent.adapterConfig, runtimeConfig: agent.runtimeConfig, sessionConfigMetadata,
     duplexBridge: adapterExecutionTargetEnablesSandboxDuplexBridge(executionTarget),
@@ -125,7 +128,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
     nativeRuntimeResolution: Selection["nativeRuntimeResolution"];
     hasInstructionFilesystem: boolean;
   }) {
-    if (hasInstructionFilesystem) {
+    if (hasInstructionFilesystem && !task) {
       try {
         // Missing contract fields on a restored session mean the deployed
         // legacy format. New sessions opt into whole-directory persistence.
@@ -136,7 +139,7 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
         const savedFileInput = parseObject(parseObject(readRun().runnerProfileJson).nativeExecutionInput);
         const priorFileInput = Object.keys(savedFileInput).length ? savedFileInput : parseObject(parseObject(priorFileRun?.profile).nativeExecutionInput);
         const priorWorkingCopy = parseObject(parseObject(parseObject(priorFileInput.runtimeContext).instructions).workingCopy);
-        const warmFiles = nativeRuntimeResolution.kind === "native" && (nativeRuntimeResolution.profile.backend === "codex_app_server" ||
+        const warmFiles = nativeRuntimeResolution.kind === "native" && (supportsNativeWarmFiles({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }) ||
           (nativeRuntimeResolution.profile.backend === "acpx_runtime" && parseObject(agent.adapterConfig).acpxAgent === "cursor")) &&
           (executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
             ? executionTarget.runnerLifecyclePolicy?.mode === "warm"
@@ -144,11 +147,13 @@ export function createHeartbeatInstructionWorkingCopy(input: InstructionWorkingC
         if (warmFiles && taskSessionForRun?.lastRunId) {
           nativeInstructionReservation = await reserveWarmNativeInstructionDirectory({ companyId: agent.companyId, agentId: agent.id,
             previousRunId: taskSessionForRun.lastRunId, runId: readRun().id, target: executionTarget,
+            observabilityCompatibilityKey: input.observabilityCompatibilityKey,
             canReuse: () => instructionCopies.canReuseWarm(agent.companyId, agent.id, taskSessionForRun!.lastRunId!),
           });
         }
         if (!warmFiles && nativeRuntimeResolution.kind === "native" && priorWorkingCopy.kind === "agent_files" && taskSession) {
           releaseWarmInstructionPreparation = await claimWarmNativeInstructionCopy({
+            observabilityCompatibilityKey: input.observabilityCompatibilityKey,
             priorExecution: parseNativeExecutionInput(priorFileInput), companyId: agent.companyId, agentId: agent.id,
             executionWorkspaceId: persistedExecutionWorkspace?.id ?? readRun().id, workspace: executionWorkspace,
             environmentId: executionTarget?.environmentId ?? null, runId: readRun().id, preparationKey: instructionPreparationKey, forceRetirement: !taskSessionForRun,

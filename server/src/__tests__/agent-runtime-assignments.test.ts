@@ -43,7 +43,7 @@ describeDatabase("connection assignment synchronization", () => {
   });
   const events = () => db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.companyId, companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime"))).orderBy(resourceLifecycleEvents.id);
 
-  it("creates gateways without invalidating unrelated standing assignments", async () => {
+  it("journals gateway definitions while preserving ordered agent locks", async () => {
     const [profile] = await db.insert(toolProfiles).values({ companyId, profileKey: "gateway-fixture", name: "Gateway fixture" }).returning();
     const [lower, higher] = [agentId, peerId].sort();
     let locked!: () => void; let release!: () => void;
@@ -55,19 +55,27 @@ describeDatabase("connection assignment synchronization", () => {
     });
     await held;
     const before = await events();
+    const pids: number[] = [];
     const saves = [higher, lower].map((target, index) => db.transaction(async tx => {
       await tx.execute(sql`SET LOCAL lock_timeout = '8s'`);
+      const [row] = await tx.execute(sql`SELECT pg_backend_pid() AS pid`);
+      pids.push(Number(row.pid));
       return createToolGatewayService(tx as unknown as Db).createNamedGateway({ companyId, body: { name: `Gateway ${index}`, profileId: profile.id, agentId: target } });
     }));
     const completed = Promise.allSettled(saves);
     try {
-      const results = await completed;
-      for (const result of results) if (result.status === "rejected") throw result.reason;
-      expect(await events()).toEqual(before);
+      await vi.waitFor(async () => {
+        expect(pids).toHaveLength(2);
+        for (const pid of pids) {
+          const [row] = await db.execute(sql`SELECT wait_event_type FROM pg_stat_activity WHERE pid = ${pid}`);
+          expect(row.wait_event_type).toBe("Lock");
+        }
+      }, { timeout: 5000 });
     } finally { release(); await blocker; }
     const results = await completed;
     for (const result of results) if (result.status === "rejected") throw result.reason;
     expect(results.map(result => result.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect((await events()).slice(before.length).map(row => row.resourceId).sort()).toEqual([agentId, agentId, peerId, peerId].sort());
     expect(await db.select().from(toolMcpGateways).where(eq(toolMcpGateways.companyId, companyId))).toHaveLength(2);
     expect(await db.select().from(toolProfileBindings).where(eq(toolProfileBindings.companyId, companyId))).toHaveLength(2);
   }, 15000);
@@ -90,14 +98,14 @@ describeDatabase("connection assignment synchronization", () => {
     const [project] = await db.insert(projects).values({ companyId, name: "Project binding fixture" }).returning();
     for (let round = 0; round < 2; round++) {
       let before = (await events()).length;
-      await service.bindProfile(profile.id, { targetType: "agent", targetId: agentId });
+      await service.bindProfile(profile.id, { targetType: "agent", targetId: agentId, priority: 100 });
       expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agentId]);
       before = (await events()).length;
       await service.unbindProfile(profile.id, { targetType: "agent", targetId: agentId });
       expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agentId]);
     }
     const beforeProject = await events();
-    await service.bindProfile(profile.id, { targetType: "project", targetId: project.id });
+    await service.bindProfile(profile.id, { targetType: "project", targetId: project.id, priority: 100 });
     await service.unbindProfile(profile.id, { targetType: "project", targetId: project.id });
     expect(await events()).toEqual(beforeProject);
     let before = (await events()).length;
@@ -113,7 +121,7 @@ describeDatabase("connection assignment synchronization", () => {
     await db.update(toolConnectionInstalls).set({ targetId: peerId }).where(eq(toolConnectionInstalls.id, install.id));
     expect((await events()).slice(before).map(event => event.resourceId).sort()).toEqual([agentId, peerId].sort());
     before = (await events()).length;
-    await service.bindProfile(profile.id, { targetType: "company", targetId: companyId });
+    await service.bindProfile(profile.id, { targetType: "company", targetId: companyId, priority: 100 });
     expect((await events()).slice(before).map(event => event.resourceId).sort()).toEqual([agentId, peerId].sort());
   });
   it("keeps connector changes and their events atomic and company-scoped", async () => {
@@ -173,7 +181,7 @@ describeDatabase("connection assignment synchronization", () => {
     await db.insert(toolConnectionInstalls).values({ companyId, connectionId, targetType: "company", targetId: companyId });
     const initial = await pluginAgentRuntimeState(db, pluginId, companyId, agentId);
     const before = await events();
-    await db.update(toolConnections).set({ healthCheckedAt: new Date(), lastError: "fixture", config: { fixture: true }, updatedAt: new Date() }).where(eq(toolConnections.id, connectionId));
+    await db.update(toolConnections).set({ healthCheckedAt: new Date(), lastError: "fixture", updatedAt: new Date() }).where(eq(toolConnections.id, connectionId));
     expect(await events()).toEqual(before);
     await db.transaction(async tx => {
       await tx.update(toolConnections).set({ name: "Renamed", enabled: false }).where(eq(toolConnections.id, connectionId));
@@ -187,7 +195,7 @@ describeDatabase("connection assignment synchronization", () => {
     await db.insert(toolProfileBindings).values({ companyId, profileId: profile.id, targetType: "company", targetId: companyId });
     expect((await pluginAgentRuntimeState(db, pluginId, companyId, agentId))!.connectionAssignments.profileIds).toContain(profile.id);
     const active = await events();
-    await db.update(toolProfiles).set({ name: "Cosmetic rename" }).where(eq(toolProfiles.id, profile.id));
+    await db.update(toolProfiles).set({ updatedAt: new Date() }).where(eq(toolProfiles.id, profile.id));
     expect(await events()).toEqual(active);
     await db.update(toolProfiles).set({ status: "archived" }).where(eq(toolProfiles.id, profile.id));
     expect(await events()).toHaveLength(active.length + 2);
@@ -209,9 +217,9 @@ describeDatabase("connection assignment synchronization", () => {
     const single = createDb(database.connectionString, { maxConnections: 1 });
     const service = toolAccessService(single);
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const work = change === "bind" ? service.bindProfile(source.id, { targetType: "agent", targetId: agentId })
+    const work = change === "bind" ? service.bindProfile(source.id, { targetType: "agent", targetId: agentId, priority: 100 })
       : change === "unbind" ? service.unbindProfile(source.id, { targetType: "agent", targetId: agentId })
-        : service.deleteProfile(source.id, change === "reassign" ? { reassignToProfileId: target.id } : { force: true });
+        : service.deleteProfile(source.id, change === "reassign" ? { force: false, reassignToProfileId: target.id } : { force: true });
     const settled = Promise.allSettled([work]);
     try {
       await Promise.race([work, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Profile operation waited for another pooled connection")), 3000); })]);
@@ -253,9 +261,9 @@ describeDatabase("connection assignment synchronization", () => {
       expect(activity.wait_event_type).toBe("Lock");
     }, { timeout: 5000 });
     const mutation = run(writer => change === "bind"
-      ? writer.bindProfile(profile.id, { targetType: "agent", targetId: targetAgent })
+      ? writer.bindProfile(profile.id, { targetType: "agent", targetId: targetAgent, priority: 100 })
       : change === "unbind" ? writer.unbindProfile(profile.id, { targetType: "agent", targetId: targetAgent })
-        : writer.deleteProfile(source!.id, { reassignToProfileId: profile.id }));
+        : writer.deleteProfile(source!.id, { force: false, reassignToProfileId: profile.id }));
     const mutationResult = Promise.allSettled([mutation]);
     let finishResult: Promise<PromiseSettledResult<unknown>[]> | undefined;
     try {
@@ -316,7 +324,7 @@ describeDatabase("connection assignment synchronization", () => {
       const firstResult = Promise.allSettled([first]);
       try {
         await waitForLock(0);
-        second = Promise.allSettled([run(change === "connection settings" ? adopt : client => toolAccessService(client).bindProfile(bindingProfile!.id, { targetType: "agent", targetId: lower }, { actorType: "agent", actorId: higher }))]);
+        second = Promise.allSettled([run(change === "connection settings" ? adopt : client => toolAccessService(client).bindProfile(bindingProfile!.id, { targetType: "agent", targetId: lower, priority: 100 }, { actorType: "agent", actorId: higher }))]);
         await waitForLock(1);
       } finally { release(); await blocker; }
       for (const result of [...await firstResult, ...await second!]) if (result.status === "rejected") throw result.reason;
@@ -365,7 +373,7 @@ describeDatabase("connection assignment synchronization", () => {
       await waitForLock(0);
       replacement = Promise.allSettled([run(service => change === "installs"
         ? service.putConnectionInstalls(connection.id, { installs: [{ targetType: "agent", targetId: lower }] })
-        : change === "reassign" ? service.deleteProfile(source.id, { reassignToProfileId: target.id })
+        : change === "reassign" ? service.deleteProfile(source.id, { force: false, reassignToProfileId: target.id })
           : service.finishGalleryAppConnection(companyId, connection.id, { enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access: { agentIds: [change === "finish" ? lower : higher] } }))]);
       await waitForLock(1);
     } finally { release(); await blocker; }

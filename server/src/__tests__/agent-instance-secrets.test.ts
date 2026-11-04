@@ -1,9 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
-import { agents, companies, companySecrets, companySecretVersions, activityLog, plugins, createDb, type Db } from "@paperclipai/db";
+import { eq, sql } from "drizzle-orm";
+import { agents, companies, companySecrets, companySecretVersions, activityLog, plugins, toolApplications, toolConnections, createDb, type Db } from "@paperclipai/db";
 import type { AgentLifecycleRequest } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { pluginAgentRuntimeIdentity } from "../services/plugin-agent-runtime-state.js";
 import { agentInstanceSecretService } from "../services/agent-instance-secrets.js";
 import { secretService } from "../services/secrets.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
@@ -29,14 +30,14 @@ const support = await getEmbeddedPostgresTestSupport();
     companyId = randomUUID(); pluginId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Secret fixture", issuePrefix: "SCR" });
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "fixture-lifecycle", version: "1.0.0", status: "ready",
-      manifestJson: { agentLifecycle: true, capabilities: ["agents.lifecycle.manage"] } as never });
+      manifestJson: { agentLifecycle: true, resourceLifecycle: ["agent_runtime"], capabilities: ["agents.lifecycle.manage"] } as never });
   }, 90_000);
   afterAll(async () => { await database?.cleanup(); vi.unstubAllEnvs(); });
-  async function fixture(ownerPluginId = pluginId) {
+  async function fixture(ownerPluginId = pluginId, agentId = randomUUID()) {
     const operationId = randomUUID();
     const owner = randomUUID();
     const now = new Date();
-    const [agent] = await db.insert(agents).values({ companyId, name: "Secret owner", lifecycleState: "preparing", lifecycleVersion: 1,
+    const [agent] = await db.insert(agents).values({ id: agentId, companyId, name: "Secret owner", lifecycleState: "preparing", lifecycleVersion: 1,
       lifecycleRequiredPluginIds: [ownerPluginId], lifecycleOperation: { id: operationId, hostComplete: true, completedPluginIds: [], attempts: 0,
         leaseOwner: owner, leaseUntil: new Date(now.getTime() + 120_000).toISOString() } }).returning();
     const request: AgentLifecycleRequest = { companyId, agentId: agent.id, operationId, version: 1, phase: "preparing" };
@@ -56,15 +57,55 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(JSON.stringify(versions)).not.toContain("e".repeat(64));
     expect(JSON.stringify(versions)).not.toContain("runtime.example.test");
     expect(await agentInstanceSecretService(createDb(database.connectionString)).read(f.scope)).toEqual({ runtime });
+    expect((await pluginAgentRuntimeIdentity(db, pluginId, companyId, f.agent.id))!.instanceSecrets).toEqual({ runtime });
     for (const scope of [{ ...f.scope, companyId: randomUUID() }, { ...f.scope, agentId: randomUUID() }, { ...f.scope, pluginId: randomUUID() }]) {
       expect(await f.service.read(scope)).toEqual({});
     }
     const replacement = runtime.replace("e".repeat(64), "f".repeat(64));
     await f.service.apply(f.request, pluginId, { runtime: replacement });
+    expect((await pluginAgentRuntimeIdentity(db, pluginId, companyId, f.agent.id))!.instanceSecrets).toEqual({ runtime: replacement });
     expect(await f.service.read(f.scope)).toEqual({ runtime: replacement });
     expect((await secretService(db).getById(stored.id))!.latestVersion).toBe(2);
     expect(JSON.stringify(await db.select().from(activityLog).where(eq(activityLog.entityId, f.agent.id)))).not.toContain(replacement);
   });
+
+  it("removes a plugin instance secret while a company connection save waits for its owner", async () => {
+    const [lower, higher] = [randomUUID(), randomUUID()].sort();
+    await db.insert(agents).values({ id: lower, companyId, name: "Unrelated lower agent" });
+    const f = await fixture(pluginId, higher);
+    await f.service.apply(f.request, pluginId, { runtime });
+    const [application] = await db.insert(toolApplications).values({ companyId, name: "Instance removal fixture", type: "mcp_http" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId, applicationId: application.id, name: "Instance removal fixture", uid: randomUUID(), transport: "mcp_remote", authKind: "none", status: "active" }).returning();
+    let paused!: () => void; let resume!: () => void; let started!: (pid: number) => void;
+    const held = new Promise<void>(resolve => { paused = resolve; });
+    const mayRemove = new Promise<void>(resolve => { resume = resolve; });
+    const settingsStarted = new Promise<number>(resolve => { started = resolve; });
+    const removeProvider = localEncryptedProvider.deleteOrArchive.bind(localEncryptedProvider);
+    const providerSpy = vi.spyOn(localEncryptedProvider, "deleteOrArchive").mockImplementation(async input => {
+      paused(); await mayRemove;
+      return removeProvider(input);
+    });
+    const removal = f.service.apply(f.request, pluginId, { runtime: null });
+    await held;
+    const settings = db.transaction(async tx => {
+      await tx.execute(sql`SET LOCAL lock_timeout = '8s'`);
+      const [row] = await tx.execute(sql`SELECT pg_backend_pid() AS pid`);
+      started(Number(row.pid));
+      await tx.update(toolConnections).set({ name: "Saved during instance removal" }).where(eq(toolConnections.id, connection.id));
+    });
+    const completed = Promise.allSettled([removal, settings]);
+    try {
+      const pid = await settingsStarted;
+      await vi.waitFor(async () => {
+        const [row] = await db.execute(sql`SELECT wait_event_type FROM pg_stat_activity WHERE pid = ${pid}`);
+        expect(row.wait_event_type).toBe("Lock");
+      }, { timeout: 5000 });
+    } finally { resume(); await completed; providerSpy.mockRestore(); }
+    const results = await completed;
+    for (const result of results) if (result.status === "rejected") throw result.reason;
+    expect(await f.service.read(f.scope)).toEqual({});
+    expect((await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id)))[0].name).toBe("Saved during instance removal");
+  }, 15000);
 
   it("excludes instance secrets from company catalogs, ordinary resolution, bindings and agent access", async () => {
     const f = await fixture(); await f.service.apply(f.request, pluginId, { runtime });

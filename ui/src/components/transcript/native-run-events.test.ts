@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { HeartbeatRunEvent } from "@paperclipai/shared";
 import { nativeRunEventsToTranscript } from "./native-run-events";
+import { paperclipRunnerFinalResponse, settledRunChildren, transcriptToTaskChatItems } from "../task-chat/transcript-adapter";
 
 const RUN_ID = "10000000-0000-4000-8000-000000000001";
 
@@ -525,6 +526,50 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
+  it("keeps retained stopped output as progress without fabricating a final response", () => {
+    const fixture = JSON.parse(readFileSync(
+      new URL("./fixtures/stopped-native-progress.json", import.meta.url),
+      "utf8",
+    )) as { run: { id: string; status: string }; events: HeartbeatRunEvent[] };
+    const entries = nativeRunEventsToTranscript(fixture.events);
+    const parsed = transcriptToTaskChatItems(entries, { runId: fixture.run.id, running: false });
+
+    expect(fixture.run.status).toBe("cancelled");
+    expect(paperclipRunnerFinalResponse(parsed, { allowFallback: true })).toBeUndefined();
+    expect(parsed.filter((item) => item.kind === "message")).toEqual([
+      expect.objectContaining({
+        channel: "progress",
+        interstitial: true,
+        text: "I'll use the native Write tool once for the exact path, leaving the permission request pending.",
+      }),
+    ]);
+    const children = settledRunChildren(parsed);
+    expect(children.filter((item) => item.kind === "activity_phase" && item.interstitial)).toHaveLength(1);
+    expect(children.filter((item) => item.kind === "protocol" && item.surface === "runtime_request")).toEqual([
+      expect.objectContaining({ status: "cancelled" }),
+    ]);
+  });
+
+  it.each([
+    ["final", "progress", "final"],
+    ["progress", "final", "progress"],
+    ["unknown", "final", "unknown"],
+    ["unknown", "invalid", "unknown"],
+    ["unknown", null, "unknown"],
+    [undefined, "progress", "progress"],
+  ] as const)("preserves outer channel %s with nested channel %s", (outer, nested, expected) => {
+    expect(nativeRunEventsToTranscript([
+      itemEvent(1, "item.delta", "message-1", {
+        kind: "agentMessage",
+        ...(outer === undefined ? {} : { channel: outer }),
+        text: "Provider message.",
+        update: { channel: nested },
+      }),
+    ])).toEqual([
+      expect.objectContaining({ kind: "assistant", channel: expected }),
+    ]);
+  });
+
   it("streams deltas until a loss-resistant completed item is available", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "item.delta", { itemId: "message-1", kind: "agentMessage", text: "Still " }),
@@ -700,18 +745,13 @@ describe("nativeRunEventsToTranscript", () => {
     ]);
   });
 
-  it("uses the structured run summary when no agent message was emitted", () => {
+  it("retains a report without manufacturing a provider final message", () => {
     expect(nativeRunEventsToTranscript([
       event(1, "run.result.proposed", runResult("Recovered final reply.")),
     ])).toEqual([
       expect.objectContaining({
         kind: "run_result",
         summary: "Recovered final reply.",
-      }),
-      expect.objectContaining({
-        kind: "assistant",
-        text: "Recovered final reply.",
-        channel: "final",
       }),
     ]);
   });
@@ -781,11 +821,6 @@ describe("nativeRunEventsToTranscript", () => {
       expect.objectContaining({
         kind: "run_result",
         summary: "The implementation is ready.",
-      }),
-      expect.objectContaining({
-        kind: "assistant",
-        text: "The implementation is ready.",
-        channel: "final",
       }),
     ]);
   });

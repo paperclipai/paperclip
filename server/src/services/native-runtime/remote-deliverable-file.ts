@@ -21,11 +21,15 @@ const within = (root, file) => {
   const relative = path.relative(root, file);
   return relative && relative !== '..' && !relative.startsWith('../') && !path.isAbsolute(relative);
 };
-async function noSymlinks(root, relative) {
+async function noSymlinks(root, relative, missingCode) {
   let current = root;
   for (const segment of relative.split('/')) {
     current = path.join(current, segment);
-    if ((await fs.lstat(current)).isSymbolicLink()) fail('symlink_denied');
+    const stat = await fs.lstat(current).catch(error => {
+      if (missingCode && error.code === 'ENOENT') fail(missingCode);
+      throw error;
+    });
+    if (stat.isSymbolicLink()) fail('symlink_denied');
   }
 }
 (async () => {
@@ -35,7 +39,7 @@ async function noSymlinks(root, relative) {
   const relative = path.normalize(input.contentRef);
   const candidate = path.resolve(root, relative);
   if (!within(root, candidate)) fail('path_denied');
-  await noSymlinks(root, relative);
+  await noSymlinks(root, relative, 'workspace_file_missing');
   const canonical = await fs.realpath(candidate);
   if (!within(root, canonical)) fail('path_denied');
   const pathBefore = await fs.lstat(canonical, { bigint: true });
@@ -65,7 +69,7 @@ async function noSymlinks(root, relative) {
     await new Promise((resolve, reject) => process.stdout.write(body.toString('base64'), error => error ? reject(error) : resolve()));
   } finally { await handle.close(); }
 })().catch(error => {
-  const allowed = /^paperclip_runner_file_handoff_(path_denied|symlink_denied|file_changed|hash_mismatch)$/;
+  const allowed = /^paperclip_runner_file_handoff_(path_denied|symlink_denied|file_changed|hash_mismatch|workspace_file_missing)$/;
   process.stderr.write(allowed.test(error.message) ? error.message : 'paperclip_runner_file_handoff_remote_read_failed');
   process.exitCode = 1;
 });
@@ -103,9 +107,12 @@ export async function readVerifiedRemoteWorkspaceFile(input: {
   }).catch(() => { throw new Error(`${PREFIX}remote_read_failed`); });
   if (result.timedOut) throw new Error(`${PREFIX}remote_read_timeout`);
   if (result.exitCode !== 0) {
-    const code = result.stderr.trim();
-    throw new Error(/^paperclip_runner_file_handoff_(path_denied|symlink_denied|file_changed|hash_mismatch)$/u.test(code)
-      ? code : `${PREFIX}remote_read_failed`);
+    const code = [result.stderr.trim(), result.stdout.trim()].find((output) =>
+      /^paperclip_runner_file_handoff_(path_denied|symlink_denied|file_changed|hash_mismatch|workspace_file_missing)$/u.test(output));
+    if (code === `${PREFIX}workspace_file_missing`) {
+      throw new Error(`${code}: Create or copy the file into get_workspace.cwd, then retry with a workspace-relative contentRef. AGENT_HOME is for personal instructions and memory.`);
+    }
+    throw new Error(code ?? `${PREFIX}remote_read_failed`);
   }
   const encoded = result.stdout;
   if (encoded.length !== 4 * Math.ceil(byteSize / 3)) throw new Error(`${PREFIX}size_denied`);

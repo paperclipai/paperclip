@@ -25,6 +25,7 @@ declare global {
           status?: string;
         }>;
         isInstanceAdmin?: boolean;
+        canManageExperimentalSettings?: boolean;
         keyId?: string;
         keyScope?: AgentApiKeyScope;
         runId?: string;

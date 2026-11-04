@@ -1,3 +1,4 @@
+import { notifyDiscordCommandRegistration } from "./chat-channels/discord/command-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import {
@@ -64,6 +65,19 @@ function retrySchedule(outcome: string, seconds?: number) {
 }
 function safeResult(outcome: string, seconds?: number) {
   return { schema: resultSchema, outcome, ...retrySchedule(outcome, seconds) };
+}
+
+function registrationRetryAt(result: typeof chatActions.$inferSelect["result"]): number | null {
+  if (result?.schema !== resultSchema || typeof result.retryAt !== "string") return null;
+  const at = Date.parse(result.retryAt);
+  return Number.isFinite(at) ? at : null;
+}
+
+async function hasRegistrationHistory(database: Database, applicationId: string): Promise<boolean> {
+  const [history] = await database.select({ id: chatActions.id }).from(chatActions).where(and(
+    eq(chatActions.kind, kind), eq(chatActions.providerActionId, actionKey(applicationId)),
+  )).limit(1);
+  return history !== undefined;
 }
 
 async function stored(
@@ -136,6 +150,21 @@ export async function readRegisteredDiscordCommandRegistration(
     : null;
 }
 
+export async function readDiscordCommandRegistrationDeadline(
+  database: Database,
+  scope: DiscordCommandRegistrationScope,
+): Promise<number | null> {
+  const current = await stored(database, scope, false, true);
+  if (current) {
+    if (current.row.result?.retryIndefinite === true) return null;
+    return registrationRetryAt(current.row.result);
+  }
+  const [owner] = await database.select({ applicationId: chatDiscordCommandOwners.applicationId })
+    .from(chatDiscordCommandOwners).where(eq(chatDiscordCommandOwners.applicationId, scope.applicationId));
+  if (owner || await hasRegistrationHistory(database, scope.applicationId)) return null;
+  return 0;
+}
+
 export async function reconcileStoredDiscordCommandRegistration(
   db: Db,
   options: StoredDiscordCommandRegistrationOptions,
@@ -169,17 +198,8 @@ export async function reconcileStoredDiscordCommandRegistration(
         .where(eq(chatDiscordCommandOwners.applicationId, scope.applicationId))
         .for("update");
       if (!priorOwner) {
-        const [history] = await tx
-          .select({ id: chatActions.id })
-          .from(chatActions)
-          .where(
-            and(
-              eq(chatActions.kind, kind),
-              eq(chatActions.providerActionId, actionKey(scope.applicationId)),
-            ),
-          )
-          .limit(1);
-        if (history) deny(); // No adoption of history lacking the global claim.
+        if (await hasRegistrationHistory(tx, scope.applicationId)) deny();
+        await notifyDiscordCommandRegistration(tx, { kind: "endpoint", id: scope.endpointId });
         const actionId = randomUUID();
         const inserted = await tx
           .insert(chatDiscordCommandOwners)
@@ -209,11 +229,8 @@ export async function reconcileStoredDiscordCommandRegistration(
       const current = await stored(tx, scope, true, true);
       if (!current) deny(); // In particular, never recreate an orphaned action.
       const result = current.row.result;
-      const due =
-        result?.schema === resultSchema && typeof result.retryAt === "string"
-          ? Date.parse(result.retryAt)
-          : NaN;
-      if (!Number.isFinite(due)) deny();
+      const due = registrationRetryAt(result);
+      if (due === null) deny();
       return {
         state: current.state,
         deferred:
@@ -253,6 +270,7 @@ export async function reconcileStoredDiscordCommandRegistration(
         await db.transaction(async (tx) => {
           const current = await check(tx);
           if (!same(current.state, expected)) deny();
+          await notifyDiscordCommandRegistration(tx, { kind: "endpoint", id: scope.endpointId });
           const result = safeResult(
             next.phase === "registered" ? "registered" : "unknown",
           );
@@ -272,6 +290,7 @@ export async function reconcileStoredDiscordCommandRegistration(
     });
     await db.transaction(async (tx) => {
       const current = await check(tx);
+      await notifyDiscordCommandRegistration(tx, { kind: "endpoint", id: scope.endpointId });
       await tx
         .update(chatActions)
         .set({

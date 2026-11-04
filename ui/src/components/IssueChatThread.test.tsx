@@ -12,10 +12,13 @@ import { flushSync } from "react-dom";
 import type { ComponentProps, ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent } from "@paperclipai/shared";
 import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
-import { loadDraft, preserveDraftInTab, settleDraftSubmission } from "../lib/composer-draft";
+import { loadDraft, saveDraft, saveDraftSubmission, loadDraftSubmission, preserveDraftInTab, settleDraftSubmission } from "../lib/composer-draft";
+import { queryKeys } from "../lib/queryKeys";
+import { useAccountBoundMutation } from "../hooks/useAccountBoundMutation";
 import {
   IssueAssigneePausedNotice,
   IssueChatThread,
@@ -79,6 +82,12 @@ const {
   restoreComposerViewportSnapshotMock: vi.fn(),
   shouldPreserveComposerViewportMock: vi.fn(),
 }));
+
+// The session lookup never answers on its own; tests set the account directly.
+vi.mock("../api/auth", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../api/auth")>();
+  return { ...actual, authApi: { ...actual.authApi, getSession: () => new Promise(() => {}) } };
+});
 
 vi.mock("@assistant-ui/react", () => ({
   AssistantRuntimeProvider: ({ children }: { children: ReactNode }) => (
@@ -177,7 +186,8 @@ vi.mock("./InlineEntitySelector", () => ({
   ),
 }));
 
-vi.mock("./Identity", () => ({
+vi.mock("./Identity", async importOriginal => ({
+  ...await importOriginal<typeof import("./Identity")>(),
   Identity: ({ name }: { name: string }) => <span>{name}</span>,
 }));
 
@@ -2899,11 +2909,154 @@ describe("IssueChatThread", () => {
       )?.value).toBe(nextDraft);
       expect(localStorage.getItem(key)).toBe(nextDraft);
       expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
-      expect(container.textContent).not.toContain("We couldn’t confirm");
+      expect(container.textContent).not.toContain("Sending when reconnected…");
     } finally {
       act(() => root.unmount());
     }
     expect(localStorage.getItem(key)).toBe(nextDraft);
+  });
+
+  it("keeps the original key after account cancellation of an accepted initial send", async () => {
+    const key = "accepted-thread-account-roundtrip";
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    let accepted!: () => void;
+    const post = vi.fn<(body: string, requestId?: string) => Promise<void>>()
+      .mockImplementationOnce(() => new Promise<void>(resolve => { accepted = resolve; })).mockResolvedValue(undefined);
+    function OwnedThread() {
+      const mutation = useAccountBoundMutation({ mutationFn: ({ body, requestId }: { body: string; requestId?: string }) => post(body, requestId) });
+      return <IssueChatThread comments={[]} currentUserId="user-1" linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+        draftKey={key} enableLiveTranscriptPolling={false}
+        onAdd={(body, _reopen, _reassign, _files, requestId) => mutation.mutateAsync({ body, requestId })} />;
+    }
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter><OwnedThread /></MemoryRouter></QueryClientProvider>));
+      const editor = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!;
+      act(() => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), "Accepted before the account changed");
+        editor().dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      const button = (label: string) => Array.from(container.querySelectorAll("button")).find(item => item.textContent === label)!;
+      await act(async () => button("Send").click());
+      const requestId = post.mock.calls[0][1]!;
+      act(() => {
+        client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+        client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+      });
+      await act(async () => accepted());
+      expect(loadDraftSubmission(key)?.attemptId).toBe(requestId);
+      expect(editor().value).toBe("Accepted before the account changed");
+      await act(async () => button("Resend now").click());
+      expect(post).toHaveBeenCalledTimes(2);
+      expect(post.mock.calls[1][1]).toBe(requestId);
+      expect(loadDraftSubmission(key)).toBeNull();
+    } finally { act(() => root.unmount()); client.clear(); }
+  });
+
+  it.each([false, true])("does not retry a stale account render (returns to original=%s)", async (returns) => {
+    const key = "stale-thread-account";
+    const attemptId = "9af8228f-0be7-45ae-a104-6fbe0af6f1d3";
+    saveDraft(key, "Account A text");
+    saveDraftSubmission(key, { attemptId, reviewed: false, request: { body: "Account A text" }, requestOwner: "user-1" });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+    const onAdd = vi.fn().mockResolvedValue(undefined);
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<QueryClientProvider client={client}><MemoryRouter>
+        <IssueChatThread comments={[]} currentUserId="user-1" linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+          onAdd={onAdd} draftKey={key} enableLiveTranscriptPolling={false} />
+      </MemoryRouter></QueryClientProvider>));
+      const resend = Array.from(container.querySelectorAll("button")).find(button => button.textContent === "Resend now")!;
+      await act(async () => {
+        client.setQueryData(queryKeys.auth.session, { user: { id: "user-2" } });
+        if (returns) client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+        resend.click();
+      });
+      expect(onAdd).not.toHaveBeenCalled();
+      expect(loadDraftSubmission(key)?.attemptId).toBe(attemptId);
+    } finally { act(() => root.unmount()); client.clear(); }
+  });
+
+  it("resends an unconfirmed comment with the same request ID and keeps the next draft", async () => {
+    const key = "resend-unconfirmed-comment";
+    let rejectSend!: (error: Error) => void;
+    const onAdd = vi.fn()
+      .mockReturnValueOnce(new Promise<void>((_, reject) => { rejectSend = reject; }))
+      .mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const editor = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!;
+    const type = (value: string) => act(() => {
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), value);
+      editor().dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const button = (label: string) => Array.from(container.querySelectorAll("button")).find(item => item.textContent === label) as HTMLButtonElement;
+    try {
+      await act(async () => root.render(
+        <MemoryRouter>
+          <IssueChatThread comments={[]} currentUserId="user-1" linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+            onAdd={onAdd} draftKey={key} enableLiveTranscriptPolling={false} />
+        </MemoryRouter>,
+      ));
+      type("Typed during the outage");
+      await act(async () => button("Send").click());
+      type("Next thought");
+      await act(async () => rejectSend(new CommentSubmissionUnknownError()));
+      expect(container.textContent).toContain("Sending when reconnected…");
+      expect(JSON.parse(localStorage.getItem(`${key}:submission:v1`)!).request.body).toBe("Typed during the outage");
+      await act(async () => button("Resend now").click());
+      expect(onAdd).toHaveBeenCalledTimes(2);
+      expect(onAdd.mock.calls[1]![0]).toBe("Typed during the outage");
+      expect(onAdd.mock.calls[1]![4]).toBe(onAdd.mock.calls[0]![4]);
+      expect(container.textContent).not.toContain("Sending when reconnected…");
+      expect(editor().value).toBe("Next thought");
+      expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it("resends a comment sent before the session loaded once the account is known", async () => {
+    const key = "resend-before-session";
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const onAdd = vi.fn()
+      .mockRejectedValueOnce(new CommentSubmissionUnknownError())
+      .mockResolvedValue(undefined);
+    const root = createRoot(container);
+    const editor = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!;
+    const button = (label: string) => Array.from(container.querySelectorAll("button")).find(item => item.textContent === label) as HTMLButtonElement | undefined;
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <MemoryRouter>
+            <IssueChatThread comments={[]} currentUserId="user-1" linkedRuns={[]} timelineEvents={[]} liveRuns={[]}
+              onAdd={onAdd} draftKey={key} enableLiveTranscriptPolling={false} />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      ));
+      act(() => {
+        Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!.call(editor(), "Sent before the session");
+        editor().dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => button("Send")!.click());
+      // Until the account is known the send cannot be replayed.
+      expect(button("Resend now")).toBeUndefined();
+
+      await act(async () => {
+        client.setQueryData(queryKeys.auth.session, { user: { id: "user-1" } });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(JSON.parse(localStorage.getItem(`${key}:submission:v1`)!).requestOwner).toBe("user-1");
+      expect(container.textContent).toContain("Sending when reconnected…");
+      await act(async () => button("Resend now")!.click());
+      expect(onAdd).toHaveBeenCalledTimes(2);
+      expect(onAdd.mock.calls[1]![4]).toBe(onAdd.mock.calls[0]![4]);
+      expect(container.textContent).not.toContain("Sending when reconnected…");
+    } finally {
+      await act(async () => root.unmount());
+      client.clear();
+    }
   });
 
   it.each(["submission write", "all storage"])(
@@ -2943,10 +3096,10 @@ describe("IssueChatThread", () => {
         const attemptId = onAdd.mock.calls[0]![4] as string;
         type("The full next draft");
         await act(async () => rejectSend(new CommentSubmissionUnknownError()));
-        expect(container.textContent).toContain("We couldn’t confirm");
+        expect(container.textContent).toContain("Sending when reconnected…");
         await act(async () => root.render(element(attemptId)));
         expect(editor().value).toBe("The full next draft");
-        expect(container.textContent).not.toContain("We couldn’t confirm");
+        expect(container.textContent).not.toContain("Sending when reconnected…");
         expect(send().disabled).toBe(false);
         await act(async () => send().click());
         expect(onAdd.mock.calls[1]![0]).toBe("The full next draft");
@@ -2999,7 +3152,7 @@ describe("IssueChatThread", () => {
         await act(async () => root.render(element(true)));
         const editor = () => container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Issue chat editor"]')!;
         expect(editor().value).toBe(localText);
-        expect(container.textContent).not.toContain("We couldn’t confirm");
+        expect(container.textContent).not.toContain("Sending when reconnected…");
         if (scenario === "unavailable recovery storage") expect(container.textContent).toContain("copy your text before leaving");
         if (scenario.includes("with new attachments")) expect(container.textContent).toContain("another-tab.txt");
         if (scenario === "foreign pending receipt") {
@@ -3454,7 +3607,7 @@ describe("IssueChatThread", () => {
       expect(localStorage.getItem(`${key}:submission:v1`)).toBeNull();
       expect(localStorage.getItem(`${key}:attachments:v1`)).toContain(attachmentId);
       expect(container.textContent).toContain("next-draft.txt");
-      expect(container.textContent).not.toContain("We couldn’t confirm");
+      expect(container.textContent).not.toContain("Sending when reconnected…");
       await act(async () => root.unmount());
       await act(async () => resolveSend());
       expect(localStorage.getItem(key)).toBe("Newer unsent draft");
@@ -4292,6 +4445,7 @@ describe("IssueAssigneePausedNotice", () => {
       root.render(
         <IssueAssigneePausedNotice
           agent={pausedAgent("import")}
+          issueStatus="in_progress"
           onResume={onResume}
           resuming={false}
         />,
@@ -4321,6 +4475,7 @@ describe("IssueAssigneePausedNotice", () => {
       root.render(
         <IssueAssigneePausedNotice
           agent={pausedAgent("budget")}
+          issueStatus="in_progress"
           onResume={vi.fn()}
           resuming={false}
         />,
@@ -4341,6 +4496,7 @@ describe("IssueAssigneePausedNotice", () => {
     act(() => {
       root.render(
         <IssueAssigneePausedNotice
+          issueStatus="in_progress"
           agent={
             { id: "agent-1", name: "CEO", status: "idle" } as unknown as Agent
           }
@@ -4351,6 +4507,28 @@ describe("IssueAssigneePausedNotice", () => {
     expect(
       container.querySelector('[data-testid="issue-assignee-paused-notice"]'),
     ).toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it.each(["done", "cancelled"])("hides paused-agent warnings on %s tasks and restores them when reopened", (issueStatus) => {
+    const root = createRoot(container);
+    const agent = pausedAgent("manual");
+    const onResume = vi.fn();
+    const renderNotice = (status: string) => {
+      act(() => root.render(
+        <IssueAssigneePausedNotice agent={agent} issueStatus={status} onResume={onResume} />,
+      ));
+    };
+
+    renderNotice("in_progress");
+    expect(container.querySelector('[data-testid="issue-assignee-paused-notice"]')).not.toBeNull();
+    renderNotice(issueStatus);
+    expect(container.textContent).toBe("");
+    renderNotice("todo");
+    expect(container.querySelector('[data-testid="issue-assignee-paused-resume"]')).not.toBeNull();
+    expect(agent.status).toBe("paused");
+    expect(onResume).not.toHaveBeenCalled();
 
     act(() => root.unmount());
   });

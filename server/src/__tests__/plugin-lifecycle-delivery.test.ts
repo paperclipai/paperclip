@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import { eq } from "drizzle-orm";
-import { companies, createDb, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
+import { companies, createDb, companySecrets, projects, pluginConfig, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { logger } from "../middleware/logger.js";
@@ -35,7 +35,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe"] } as never });
     await db.insert(pluginConfig).values({ pluginId, companyId, configJson: {} });
   });
-  async function event(resourceId = randomUUID(), action: "create" | "update" | "delete" = "create") {
+  async function event(resourceId: string = randomUUID(), action: "create" | "update" | "delete" = "create") {
     await db.transaction(async tx => {
       if (action === "create") await recordResourceCreationEvent(tx as unknown as Db, companyId, "project", resourceId);
       else await recordProjectLifecycleEvent(tx as unknown as Db, companyId, resourceId, action);
@@ -54,6 +54,40 @@ describePostgres("durable plugin lifecycle delivery", () => {
     const worker = registerPluginLifecycleDelivery(coordinator as never, db, { call, isRunning: running, onConfigApplied } as unknown as PluginWorkerManager, lifecycle as unknown as PluginLifecycleManager);
     return { call, running, wake, lifecycle, worker, applied: () => { for (const listener of configApplied) listener(); }, run: () => task.run(new AbortController().signal), pending: () => task.hasPending(), nextRunAt: () => task.nextRunAt?.(), settled: () => task.onSettled?.() };
   }
+  it("supplies project native credentials only to opted-in callbacks and saves returned patches before acknowledgment", async () => {
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
+    await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe", "projects.instance-secrets"] } as never }).where(eq(plugins.id, pluginId));
+    const [project] = await db.insert(projects).values({ companyId, name: "Native credentials owner" }).returning();
+    await event(project.id);
+    const d = delivery();
+    d.call.mockImplementationOnce(async (_p, _m, input) => {
+      expect(input.instanceSecrets).toEqual({});
+      return { eventId: input.id, status: "acknowledged", instanceSecrets: { mount_grants: "fixture-private-grants" } };
+    });
+    try {
+      await d.run();
+      expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toEqual([]);
+      expect(await db.select().from(companySecrets).where(eq(companySecrets.ownerProjectId, project.id))).toHaveLength(1);
+      await event(project.id, "update");
+      d.call.mockImplementationOnce(async (_p, _m, input) => {
+        expect(input.instanceSecrets).toEqual({ mount_grants: "fixture-private-grants" });
+        return { eventId: input.id, status: "retry", instanceSecrets: { mount_grants: "must-not-save" } };
+      });
+      await d.run();
+      const [stored] = await db.select().from(companySecrets).where(eq(companySecrets.ownerProjectId, project.id));
+      expect(stored.latestVersion).toBe(1);
+      expect(JSON.stringify(await pluginLifecycleInbox(db, pluginId).list(companyId))).not.toContain("fixture-private-grants");
+    } finally { d.worker.dispose(); vi.unstubAllEnvs(); }
+  });
+  it("rejects credential patches from plugins without project instance secret scope", async () => {
+    await event(); const d = delivery();
+    d.call.mockImplementationOnce(async (_p, _m, input) => {
+      expect(input.instanceSecrets).toBeUndefined();
+      return { eventId: input.id, status: "acknowledged", instanceSecrets: { mount_grants: "private" } };
+    });
+    try { await d.run(); expect(await pluginLifecycleInbox(db, pluginId).list(companyId)).toHaveLength(1); }
+    finally { d.worker.dispose(); }
+  });
   it.each([false, true])("does not wait for queued plugin callbacks during startup (runtime subscriber: %s)", async runtime => {
     if (runtime) await db.update(plugins).set({ manifestJson: { resourceLifecycle: ["project", "agent_runtime"], capabilities: ["events.subscribe"] } as never }).where(eq(plugins.id, pluginId));
     await event();
@@ -153,8 +187,8 @@ describePostgres("durable plugin lifecycle delivery", () => {
       });
       expect(wake).toHaveBeenCalledTimes(1);
       const registry = pluginRegistryService(db);
-      await registry.upsertConfig(pluginId, companyId, { configJson: { enabled: true } });
-      await registry.patchConfig(pluginId, companyId, { configJson: { enabled: false } });
+      await registry.upsertConfig(pluginId, companyId, { companyId, configJson: { enabled: true } });
+      await registry.patchConfig(pluginId, companyId, { companyId, configJson: { enabled: false } });
       await registry.upsertCompanySettings(pluginId, companyId, { enabled: true, settingsJson: {} });
       expect(wake).toHaveBeenCalledTimes(4);
     } finally { unsubscribe(); }
@@ -206,8 +240,8 @@ describePostgres("durable plugin lifecycle delivery", () => {
   it("saves config and settings without borrowing another pool connection", async () => {
     const single = createDb(database.connectionString, { maxConnections: 1 });
     const registry = pluginRegistryService(single);
-    await registry.upsertConfig(pluginId, companyId, { configJson: { first: true } });
-    await registry.patchConfig(pluginId, companyId, { configJson: { second: true } });
+    await registry.upsertConfig(pluginId, companyId, { companyId, configJson: { first: true } });
+    await registry.patchConfig(pluginId, companyId, { companyId, configJson: { second: true } });
     await registry.upsertCompanySettings(pluginId, companyId, { enabled: true, settingsJson: {} });
     expect((await registry.getConfig(pluginId, companyId))?.configJson).toEqual({ first: true, second: true });
   }, 5000);

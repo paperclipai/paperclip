@@ -4,6 +4,7 @@ import type { Db } from "@paperclipai/db";
 import { companies, companyMemberships, instanceUserRoles } from "@paperclipai/db";
 import type { DeploymentMode } from "@paperclipai/shared";
 import { ensureHumanRoleDefaultGrants } from "./services/principal-access-compatibility.js";
+import { notifyChatCompanyAuthorityChange } from "./services/chat-run-milestone-notifications.js";
 
 const LOCAL_BOARD_USER_ID = "local-board";
 const CLAIM_TTL_MS = 1000 * 60 * 60 * 24;
@@ -124,6 +125,7 @@ export async function claimBoardOwnership(
         .then((rows) => rows[0] ?? null);
 
       if (!existing) {
+        await notifyChatCompanyAuthorityChange(tx, { companyId: company.id });
         await tx.insert(companyMemberships).values({
           companyId: company.id,
           principalType: "user",
@@ -135,6 +137,7 @@ export async function claimBoardOwnership(
       }
 
       if (existing.status !== "active") {
+        await notifyChatCompanyAuthorityChange(tx, { companyId: company.id });
         await tx
           .update(companyMemberships)
           .set({ status: "active", membershipRole: "owner", updatedAt: new Date() })

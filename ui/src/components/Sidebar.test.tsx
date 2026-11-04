@@ -607,20 +607,6 @@ describe("Sidebar", () => {
     });
   });
 
-  it("hides the Pipelines nav item when pipelines are disabled", async () => {
-    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
-      enableIsolatedWorkspaces: false,
-      enablePipelines: false,
-    });
-    const root = await renderSidebar();
-
-    expect(container.textContent).not.toContain("Pipelines");
-
-    flushSync(() => {
-      root.unmount();
-    });
-  });
-
   it("always shows Connectors in the Org section", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableApps: false });
     const root = await renderSidebar();
@@ -641,15 +627,15 @@ describe("Sidebar", () => {
     });
   });
 
-  it("shows the Pipelines nav item when pipelines are enabled", async () => {
+  it("ignores the retired Pipelines flag in old settings responses", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
       enablePipelines: true,
     });
     const root = await renderSidebar();
 
-    const link = [...container.querySelectorAll("a")].find((anchor) => anchor.textContent === "Pipelines");
-    expect(link?.getAttribute("href")).toBe("/pipelines");
+    expect(container.textContent).not.toContain("Pipelines");
+    expect(container.querySelector('a[href="/pipelines"]')).toBeNull();
 
     flushSync(() => {
       root.unmount();
