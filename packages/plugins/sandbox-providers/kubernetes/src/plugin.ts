@@ -454,8 +454,6 @@ const plugin = definePlugin({
       secretName,
       phase: "Pending",
       backend: config.backend,
-      // Adapter environment probes sync managed assets before workspace
-      // realization. Give native sync the pod's mounted confinement root now.
       remoteCwd: "/workspace",
       scopedNetworkPolicyName,
       scopedNetworkEgress,
