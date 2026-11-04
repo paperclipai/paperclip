@@ -990,6 +990,8 @@ Controlled mode preserves its reviewed policy, immutable lock/source/request
 bindings, tracing, private retention, first-attempt and zero-retry gates.
 Its paid workers use `ubuntu-latest`, matching the required GitHub-hosted
 operating origin even when the legacy AWS fleet selector is enabled.
+Requested parallelism must fit both the configured campaign ceiling and the
+selected runner limit. Without a request, the lower ceiling applies.
 Legacy mode uses direct-provider credentials. A pass in one mode does not prove
 the other's credential or routing path.
 
