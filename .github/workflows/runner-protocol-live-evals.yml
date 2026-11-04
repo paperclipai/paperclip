@@ -379,8 +379,6 @@ jobs:
           REQUESTED_MAX_PARALLEL: ${{ inputs.max_parallel }}
           ROSTERS: ${{ inputs.rosters || 'all' }}
           GROK_AUTHENTICATION: ${{ inputs.grok_authentication || 'api_key' }}
-          ACCOUNTING_MODE: ${{ needs.authorize.outputs.accounting_mode }}
-          CONTROLLER_POLICY_JSON: ${{ vars.RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON }}
         run: |
           set -euo pipefail
           if ! [[ "$MAX_PARALLEL" =~ ^[1-9][0-9]*$ ]] || [ "$MAX_PARALLEL" -lt 2 ] || [ "$MAX_PARALLEL" -gt "$MAX_PARALLEL_LIMIT" ]; then
@@ -401,13 +399,6 @@ jobs:
             --campaign-id "gha-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --max-parallel "$MAX_PARALLEL" \
             --output runner-protocol-eval-catalog.json
-          if [ "$ACCOUNTING_MODE" = controlled ]; then
-            jq -e 'all(.cells[]; (.provider == "codex" and (.acpxAgent // "") == "" and .driver == "codex_app_server") or (.provider == "acpx" and .acpxAgent == "claude" and .driver == "acpx_runtime"))' runner-protocol-eval-catalog.json >/dev/null || {
-              echo 'Controlled selection supports native Codex and ACPX Claude only; select their rosters explicitly.' >&2; exit 1;
-            }
-            maximum="$(jq -er '.maxCells | select(type == "number" and floor == . and . > 0 and . <= 512)' <<< "$CONTROLLER_POLICY_JSON")"
-            jq -e --argjson maximum "$maximum" '.cells | length <= $maximum' runner-protocol-eval-catalog.json >/dev/null
-          fi
 
       - name: Download the current TestOps selection
         if: needs.authorize.outputs.testops_enabled == 'true'
@@ -419,6 +410,18 @@ jobs:
         id: filter
         if: needs.authorize.outputs.testops_enabled == 'true'
         run: node packages/paperclip-runner/scripts/runner-protocol-testops.mjs filter-catalog runner-protocol-eval-catalog.json runner-protocol-testops-selection/runner-protocol-testops-selection.json
+
+      - name: Enforce controlled limits against the selected catalog
+        if: needs.authorize.outputs.accounting_mode == 'controlled'
+        env:
+          CONTROLLER_POLICY_JSON: ${{ vars.RUNNER_PROTOCOL_EVAL_CONTROLLER_POLICY_JSON }}
+        run: |
+          set -euo pipefail
+          jq -e 'all(.cells[]; (.provider == "codex" and (.acpxAgent // "") == "" and .driver == "codex_app_server") or (.provider == "acpx" and .acpxAgent == "claude" and .driver == "acpx_runtime"))' runner-protocol-eval-catalog.json >/dev/null || {
+            echo 'Controlled selection supports native Codex and ACPX Claude only; select their rosters explicitly.' >&2; exit 1;
+          }
+          maximum="$(jq -er '.maxCells | select(type == "number" and floor == . and . > 0 and . <= 512)' <<< "$CONTROLLER_POLICY_JSON")"
+          jq -e --argjson maximum "$maximum" '.cells | length <= $maximum' runner-protocol-eval-catalog.json >/dev/null
 
       - name: Require the chat-report renderer before paid execution
         run: |

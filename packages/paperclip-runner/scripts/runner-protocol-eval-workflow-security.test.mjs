@@ -382,6 +382,26 @@ test('TestOps receives only a closed projection created inside the report bounda
   assert.match(publisher, /steps\.projection\.outcome != 'success'/u);
 });
 
+test('controlled capacity counts the filtered selection before any provider work', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const filter = workflow.indexOf('      - name: Apply the exact selected protocol cases before fan-out');
+  const limit = workflow.indexOf('      - name: Enforce controlled limits against the selected catalog');
+  const upload = workflow.indexOf('      - name: Upload immutable campaign catalog');
+  assert.ok(filter > 0 && filter < limit && limit < upload);
+  const script = workflowShell(workflow, 'Enforce controlled limits against the selected catalog');
+  const cell = { provider: 'acpx', acpxAgent: 'claude', driver: 'acpx_runtime' };
+  const root = await mkdtemp(resolve(tmpdir(), 'runner-selected-capacity-'));
+  try {
+    for (const [cells, maximum, expected] of [[[cell], 1, 0], [Array(41).fill(cell), 1, 1],
+      [[cell, cell], 1, 1], [[{ ...cell, provider: 'unsupported' }], 1, 1], [[cell], 0, 1]]) {
+      await writeFile(resolve(root, 'runner-protocol-eval-catalog.json'), JSON.stringify({ cells }));
+      const result = spawnSync('bash', ['-euc', script], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH,
+        CONTROLLER_POLICY_JSON: JSON.stringify({ maxCells: maximum }) } });
+      assert.equal(result.status === 0, expected === 0, result.stderr);
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('controlled evidence uses private storage and cloud credentials stay out of provider execution', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
   const paid = workflow.slice(workflow.indexOf('    steps: &direct_eval_steps'), workflow.indexOf('  eval_shard_1:'));
