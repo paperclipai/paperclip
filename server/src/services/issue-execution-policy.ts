@@ -1064,7 +1064,6 @@ type ReassignStageInput = {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;
   actor: ActorLike;
-  /** Mirrors `allowBoardOverride` elsewhere: any board (human) actor may reassign, not just the current participant. */
   isBoardActor: boolean;
   toParticipant: IssueExecutionStagePrincipal;
   comment?: string | null;
@@ -1075,14 +1074,6 @@ type ReassignStageResult = {
   decision: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
 };
 
-/**
- * Hands a still-pending stage from its current participant to a different
- * participant already configured on that same stage (e.g. an agent reviewer
- * passing final sign-off to a human owner also listed on the stage). Unlike
- * approve/request-changes this does not advance `currentStageIndex` and does
- * not consume a review round — the stage stays pending, now on a different
- * participant.
- */
 export function applyIssueExecutionStageReassignment(input: ReassignStageInput): ReassignStageResult {
   const existingState = parseIssueExecutionState(input.issue.executionState);
   const activeStage = input.policy ? findStageById(input.policy, existingState?.currentStageId) : null;

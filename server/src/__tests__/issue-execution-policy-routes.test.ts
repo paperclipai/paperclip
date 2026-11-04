@@ -1534,9 +1534,6 @@ describe("issue execution policy routes", () => {
     it("rejects a reassignment that races a concurrent decision resolved under the update lock", async () => {
       const issue = pendingIssue();
       mockIssueService.getById.mockResolvedValue(issue);
-      // The row locked inside the transaction shows the stage already
-      // completed by a concurrent approve/reject that landed between the
-      // initial read and this request's write.
       mockIssueService.getByIdForUpdate.mockResolvedValue({
         ...issue,
         status: "done",
