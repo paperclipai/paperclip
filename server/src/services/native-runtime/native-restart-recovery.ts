@@ -586,6 +586,7 @@ export async function claimNativeRestartRecoveries(input: {
           run: heartbeatRuns,
           coordinator: nativeRunFinalizations,
           issueExecutionRunId: issues.executionRunId,
+          issueCheckoutRunId: issues.checkoutRunId,
           issueAssigneeAgentId: issues.assigneeAgentId,
           issueStatus: issues.status,
         })

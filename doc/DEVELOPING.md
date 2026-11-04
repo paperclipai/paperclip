@@ -1186,7 +1186,8 @@ process per layer. Each layer reads the earlier layers as declarations:
 | `below` | Files the largest import cycle depends on, and unrelated files |
 | `cycle` | The largest import cycle |
 | `above` | Files that depend on the cycle |
-| `tests` | Test files |
+| `tests` | Test files outside `src/__tests__` |
+| `test-tree-0` to `test-tree-2` | `src/__tests__`, in shards |
 
 The generated configs and declarations go in
 `server/node_modules/.cache/paperclip-typecheck`. You do not maintain a layer list.
@@ -1194,6 +1195,12 @@ The generated configs and declarations go in
 The server typecheck builds only the Runner's TypeScript output. Use
 `pnpm --filter @paperclipai/paperclip-runner build` when a local check needs the
 Runner binary.
+
+`src/__tests__/tsconfig.json` holds the options for the test-tree layers, so an
+editor and the typecheck report the same errors. Server tests reach Daytona plugin
+source, but the root install does not install that plugin's dependencies. So this
+config maps `@daytonaio/sdk` to `server/scripts/typecheck-stubs/daytona-sdk.d.ts`.
+The plugin's own project checks that source against the real package.
 
 If the memory available to the task is limited, use this command:
 

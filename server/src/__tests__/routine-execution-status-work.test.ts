@@ -63,6 +63,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(agents).values({ id: agentId, companyId, name: "Routine worker", status: "active", lifecycleState: "ready", adapterType: "codex_local" });
     const service = routineService(db, { heartbeat: { wakeup: async () => null }, runtimeEnv: {} });
     const routine = await service.create(companyId, { title: "Status projection", assigneeAgentId: agentId,
+      variables: [],
       priority: "medium", status: "active", concurrencyPolicy: "always_enqueue", catchUpPolicy: "skip_missed" }, {});
     return { companyId, agentId, routine, service };
   }
@@ -305,7 +306,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       recovery: { escalateStrandedAssignedIssue: vi.fn() }, companySkills: { completeTestRunForIssue: vi.fn() },
       budgets: { getInvocationBlock: vi.fn(async () => null) }, treeControlSvc: { getActivePauseHoldGate: vi.fn(async () => null) },
       enqueueWakeup: vi.fn(), getCurrentUserRedactionOptions: vi.fn(async () => ({})),
-      getAgentInvokability: vi.fn(async () => ({ invokable: true })), emitTerminalAgentTaskRun: vi.fn(), budgetHooks: {},
+      getAgentInvokability: vi.fn<HeartbeatLifecycleDependencies["getAgentInvokability"]>(async () => ({ invokable: true })), emitTerminalAgentTaskRun: vi.fn(), budgetHooks: {},
     } satisfies HeartbeatLifecycleDependencies;
     await createHeartbeatLifecycle(db, deps).setRunStatusIfRunning(execution.id, status, { finishedAt: new Date() });
     expect((await f.service.getDetail(f.routine.id))?.activeIssue).toBeNull();

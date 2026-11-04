@@ -254,14 +254,14 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.update(issues).set({ checkoutRunId: run!.id }).where(eq(issues.id, generation.generatingIssue!.id));
     await settled();
     const before = (await cards.getById(created.id))!;
-    const revisions = await cards.listSummaryRevisions(created.id);
+    const revisions = await cards.listSummaryRevisions(created);
     await expect(db.transaction(async tx => {
       await statusCardService(tx as unknown as typeof db).writeSummary(created.id, { markdown: "Rolled back summary", changeSummary: "Rollback", generationIssueId: generation.generatingIssue!.id }, { agentId, runId: run!.id });
       throw new Error("summary rollback");
     })).rejects.toThrow("summary rollback");
     await quiet();
     expect((await cards.getById(created.id))!).toMatchObject({ generatingIssueId: before.generatingIssueId, nextEvalAt: before.nextEvalAt, nextEvalReason: before.nextEvalReason });
-    expect(await cards.listSummaryRevisions(created.id)).toEqual(revisions);
+    expect(await cards.listSummaryRevisions(created)).toEqual(revisions);
     expect(wakeup).not.toHaveBeenCalled(); expect(errors).toEqual([]);
   });
 

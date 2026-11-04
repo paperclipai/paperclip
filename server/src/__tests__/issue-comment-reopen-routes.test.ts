@@ -35,11 +35,11 @@ const mockAccessService = vi.hoisted(() => ({
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
+  wakeup: vi.fn(async (_agentId: string, _wakeup: { reason?: string }) => undefined),
   reportRunActivity: vi.fn(async () => undefined),
-  getRun: vi.fn(async () => null),
+  getRun: vi.fn(async (): Promise<unknown> => null),
   getActiveRunForAgent: vi.fn(async () => null),
-  cancelRun: vi.fn(async () => null),
+  cancelRun: vi.fn(async (): Promise<unknown> => null),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -60,7 +60,14 @@ const mockTx = vi.hoisted(() => ({
 }));
 const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
 const mockDbSelectWhere = vi.hoisted(() =>
-  vi.fn(() => ({
+  vi.fn((): {
+    orderBy?: () => Promise<unknown[]>;
+    for?: () => Promise<Array<{ id: string }>>;
+    then: (
+      onFulfilled: (rows: unknown[]) => unknown,
+      onRejected?: (reason: unknown) => unknown,
+    ) => Promise<unknown>;
+  } => ({
     orderBy: mockDbSelectOrderBy,
     for: async () => [{ id: "comment-1" }],
     then: (
@@ -70,7 +77,7 @@ const mockDbSelectWhere = vi.hoisted(() =>
   })),
 );
 const mockDbSelectFrom = vi.hoisted(() =>
-  vi.fn((_table: unknown) => ({ where: mockDbSelectWhere })),
+  vi.fn((_table: unknown): { where: (...args: never[]) => unknown } => ({ where: mockDbSelectWhere })),
 );
 const mockDbSelect = vi.hoisted(() =>
   vi.fn(() => ({ from: mockDbSelectFrom })),
@@ -112,7 +119,7 @@ const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
 }));
 const mockIssueTreeControlService = vi.hoisted(() => ({
-  getActivePauseHoldGate: vi.fn(async () => null),
+  getActivePauseHoldGate: vi.fn(async (): Promise<unknown> => null),
 }));
 const mockExternalObjectService = vi.hoisted(() => ({
   syncCommentSafely: vi.fn(async () => undefined),
@@ -263,7 +270,9 @@ async function normalizePolicy(input: {
     >;
   }>;
 }) {
-  return normalizeIssueExecutionPolicy(input);
+  const policy = normalizeIssueExecutionPolicy(input);
+  if (!policy) throw new Error("Expected the fixture to normalize to an execution policy");
+  return policy;
 }
 
 function makeIssue(

@@ -1,5 +1,5 @@
-import { inArray } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { offlineMigrationExecutionWhere } from "../services/offline-migration-execution.js";
 import { getStorageService } from "../storage/index.js";
 import { migrateAgentFiles, verifyAgentFileObjects } from "../services/agent-file-maintenance.js";
 import { readEphemeralServerDataEligibility } from "../services/ephemeral-server-contract.js";
@@ -19,7 +19,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
   const { signal, phase } = input;
   const counts: Record<string, number> = {};
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-    .where(inArray(heartbeatRuns.status, ["running", "queued"])).limit(1);
+    .where(offlineMigrationExecutionWhere()).limit(1);
   if (active) throw new Error("active_execution_requires_drain");
   if (await hasUnsettledLocalInstructionCopies(db)) throw new Error("local_instruction_copies_require_settlement");
   const before = await readEphemeralServerDataEligibility(db);
@@ -51,6 +51,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
     do {
       signal.throwIfAborted();
       const page = await migrateRunEvidence(db, { apply: true, kinds: [kind], limit: 50, signal,
+        preserveHistoricalFiles: true,
         ...(kind === "log" ? { afterRunId: after } : { afterTraceId: after }) });
       if (page.items.some(item => item.state !== "migrated")) throw new Error(`${kind}_migration_blocked`);
       counts[kind] = (counts[kind] ?? 0) + page.items.length;

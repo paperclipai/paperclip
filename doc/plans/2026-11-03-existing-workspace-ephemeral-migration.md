@@ -102,3 +102,26 @@ Controller leases, in-flight recovery, active writers, and uncertain workspace
 operations remain blockers. Tests must prove migration leaves failure state
 intact, rejects stale copyback even if the old folder exists, and preserves
 recovery source validation and company boundaries.
+
+## Queued turns during offline enrollment
+
+The task drain stops new executions. It does not consume queued turns. After
+Cloud has stopped every application deployment, offline maintenance preserves
+never-started queued run and wake rows unchanged. Workspace, instruction-file,
+and historical-log migration use the same execution predicate at this boundary.
+The replacement uses normal queue admission against the migrated authority.
+
+Running executions still block migration. A queued row also blocks if it has
+started, retains process/session/controller evidence, or has a coordinator or
+environment lease. Task checkout and execution bindings remain separate blockers.
+Live migration retains its original queued-run exclusion. The offline flag alone
+is not evidence that old deployments have stopped; Cloud owns that provider fence.
+
+PostgreSQL/S3 tests cover queued turns and wake payloads surviving migration and
+loss of the predecessor filesystem, plus queued execution evidence that must
+remain blocked. The packaged maintenance entry must also retain an unstarted
+queued turn while it archives historical run output. The assembled heartbeat
+test resumes that same queued run after deleting the old disk, verifies saved
+workspace bytes and instructions at provider dispatch, and checks one result and
+one wake consumption even after a second queue sweep. Its sandbox transport and
+provider session are scripted; database, S3, admission and restoration are real.

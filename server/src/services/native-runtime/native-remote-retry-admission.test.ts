@@ -127,22 +127,21 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
   });
 
   it("rechecks a newly committed manual hold under the issue lock before background cleanup", async () => {
-    const f = await failedRemoteRun("remote");
-    await f.db.update(issues).set({ executionRunId: f.runId, checkoutRunId: f.runId }).where(eq(issues.id, f.issueId));
-    await f.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
-      status: "succeeded", createdAt: new Date(Date.now() + 1_000) });
-    const transaction = f.db.transaction.bind(f.db);
-    const interception = vi.spyOn(f.db, "transaction").mockImplementationOnce((async (callback, options) => {
-      expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
-        restartKind: "hard", runIds: [f.runId] })).toMatchObject([{ kind: "blocked", reason: "native_retry_source_superseded" }]);
-      return transaction(callback, options);
-    }) as typeof f.db.transaction);
-    try {
-      expect(await recoveryService(f.db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks({ companyId: f.companyId, issueId: f.issueId }))
-        .toMatchObject({ cleared: 0 });
-      expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
-        .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
-    } finally { interception.mockRestore(); }
+    const f = await manuallyHeldRemoteRun();
+    const [hold] = await f.db.select({ failureCode: nativeRunFinalizations.failureCode,
+      failureDetail: nativeRunFinalizations.failureDetail }).from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    await f.db.update(nativeRunFinalizations).set({ failureCode: null, failureDetail: null })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    const beforeStaleLockClear = vi.fn(async (issueId: string) => {
+      if (issueId === f.issueId) await f.db.update(nativeRunFinalizations).set(hold)
+        .where(eq(nativeRunFinalizations.runId, f.runId));
+    });
+    expect(await recoveryService(f.db, { enqueueWakeup: vi.fn(), beforeStaleLockClear })
+      .sweepStaleIssueLocks({ companyId: f.companyId, issueId: f.issueId })).toMatchObject({ cleared: 0 });
+    expect(beforeStaleLockClear).toHaveBeenCalledExactlyOnceWith(f.issueId);
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+      .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
   });
 
   it("defers a new wake behind the manual owner without clearing it or dispatching", async () => {

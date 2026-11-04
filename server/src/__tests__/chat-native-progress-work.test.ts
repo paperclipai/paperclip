@@ -330,7 +330,7 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     await db.insert(chatPublications).values(ids.map(id => ({
       companyId: f.companyId, endpointId: f.endpointId, conversationId: f.conversationId,
       issueId: f.issueId, idempotencyKey: `run:${id}:working:${f.endpointId}`,
-      payload: { text: "Maya is working…", progressState: "working" }, state: "published",
+      payload: { text: "Maya is working…", progressState: "working" as const }, state: "published" as const,
       createdAt: new Date(Date.now() - 60_000),
     })));
     await db.insert(heartbeatRunEvents).values(ids.map(id => ({
