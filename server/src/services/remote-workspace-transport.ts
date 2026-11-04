@@ -55,8 +55,11 @@ async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspace
   if (result.timedOut) throw new RemoteWorkspaceOperationTimeoutError(operation, timeoutMs);
   if (result.exitCode !== 0) {
     const gitOperation = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
-    const reported = result.stderr.trim();
-    throw new Error([gitOperation, REMOTE_WORKSPACE_SANDBOX_DISK_FULL].includes(reported) ? reported : "remote_workspace_operation_failed");
+    // One-shot providers can return combined output in stdout. Keep the same
+    // exact safe diagnostics; never forward arbitrary output from either stream.
+    const reported = [result.stderr.trim(), result.stdout.trim()]
+      .find(value => [gitOperation, REMOTE_WORKSPACE_SANDBOX_DISK_FULL].includes(value));
+    throw new Error(reported ?? "remote_workspace_operation_failed");
   }
   return result.stdout;
 }
