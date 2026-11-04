@@ -22,6 +22,7 @@ import {
 import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtInAgents";
 import { companySkillsApi } from "../api/companySkills";
 import { heartbeatsApi } from "../api/heartbeats";
+import { runCancellationLabel } from "../lib/run-cancellation-label";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { activityApi } from "../api/activity";
@@ -3134,7 +3135,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => cancelRun.mutate()}
                   disabled={cancelRun.isPending}
                 >
-                  {grokWork ? cancelRun.isPending ? "Stopping Paperclip work…" : "Stop Paperclip work" : run.status === "failed" ? cancelRun.isPending ? "Stopping…" : "Stop" : cancelRun.isPending ? "Cancelling…" : "Cancel"}
+                  {runCancellationLabel({ grokWork, isFailed: run.status === "failed", isPending: cancelRun.isPending })}
                 </Button>
               )}
               {canResumeLostRun && (
