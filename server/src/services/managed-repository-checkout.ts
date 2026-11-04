@@ -22,13 +22,20 @@ export class RepositoryRefNotFoundError extends Error {
   }
 }
 
-async function refResolvesInClone(cloneCwd: string, ref: string): Promise<boolean> {
+/**
+ * True only when Git reported an unknown ref and the clone positively cannot
+ * resolve it. `rev-parse --verify --quiet` exits 1 for an unknown name; any
+ * other failure (auth, corruption, timeout) is not evidence of a missing ref.
+ */
+async function isMissingRef(cloneCwd: string, ref: string, checkoutError: unknown): Promise<boolean> {
+  const stderr = String((checkoutError as { stderr?: unknown } | null)?.stderr ?? "");
+  if (!/did not match any file\(s\) known to git|invalid reference/.test(stderr)) return false;
   for (const candidate of [`${ref}^{commit}`, `refs/remotes/origin/${ref}^{commit}`]) {
-    const resolved = await execFile("git", ["-C", cloneCwd, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate], { timeout: 30_000 })
-      .then(() => true, () => false);
-    if (resolved) return true;
+    const exitCode = await execFile("git", ["-C", cloneCwd, "rev-parse", "--verify", "--quiet", "--end-of-options", candidate], { timeout: 30_000 })
+      .then(() => 0, (error: { code?: unknown }) => error.code);
+    if (exitCode !== 1) return false;
   }
-  return false;
+  return true;
 }
 
 export async function materializeManagedProjectWorkspace(
@@ -145,7 +152,7 @@ export async function materializeManagedProjectWorkspace(
       } catch (error) {
         // Only a ref that a complete fresh clone cannot resolve is a missing ref;
         // every other checkout failure keeps its original cause.
-        if (await refResolvesInClone(cloneTmpDir, repoRef)) throw error;
+        if (!await isMissingRef(cloneTmpDir, repoRef, error)) throw error;
         throw new RepositoryRefNotFoundError(
           `Requested ref "${repoRef}" does not exist in the repository. Request the repository again with an existing branch, tag, or commit.`,
           repoRef,
