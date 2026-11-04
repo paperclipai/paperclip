@@ -6,7 +6,7 @@ function valid(id: string) {
   const version = { id: "revision", companyId: "company", companySkillId: "skill", authorAgentId: "ceo", fileInventory: [{ path: "SKILL.md", content: markdown }] };
   const skill = { id: "skill", companyId: "company", name: "Accessibility review", editable: true, markdown, currentVersionId: "revision", usedByAgents: [] };
   const denied = id === "skills.explicit-restriction";
-  return { scenarioId: id, origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: denied ? { skill: structuredClone(skill), versions: [structuredClone(version)], policyRevision: 3 } : { authoredSkillInspection: {companyId:"company",skillId:"skill",versionId:"revision",libraryVisible:true,studioVisible:true,editable:true,checklistVisible:true,reloaded:true,readbackMatched:true} },
+  return { scenarioId: id, origin: "https://fixture.test", companyId: "company", leadId: "ceo", state: denied ? { skill: structuredClone(skill), versions: [structuredClone(version)], policyRevision: 3 } : { authoredSkillInspection: {companyId:"company",skillId:"skill",versionId:"revision",libraryVisible:true,editorVisible:true,editorSurface:"studio",editable:true,checklistVisible:true,reloaded:true,readbackMatched:true} },
     tasks: [], projects: [], goals: [], comments: [], documents: [], revisions: [], humanQueries: [], runs: [{ id: "run", agentId: "ceo", status: "succeeded" }],
     activity: denied ? [] : [{ id: "create", entityId: "skill", action: "company.skill_created", agentId: "ceo" }],
     reply: denied ? "Company policy denies my skill edits. Ask an administrator to request a change." : "Created the reusable review skill; it is available in Studio. This does not enable it for all agents.",
@@ -63,8 +63,8 @@ it("preserves a numbered viewport check and its actual multiline inspection deta
   expect(preservesWebsiteChecklist(markdown.replace("Confirm whether", "Ignore whether"))).toBe(false);
 });
 
-it("authoring v2 accepts ordinary Skills/Studio inspection without a prescribed reply link",()=>{
+it("authoring v3 accepts ordinary Skills/Studio inspection without a prescribed reply link",()=>{
  const o=valid("skills.author-skill");o.links=[];
- Object.assign(o.state,{authoredSkillInspection:{companyId:"company",skillId:"skill",versionId:"revision",libraryVisible:true,studioVisible:true,editable:true,checklistVisible:true,reloaded:true,readbackMatched:true}});
+ Object.assign(o.state,{authoredSkillInspection:{companyId:"company",skillId:"skill",versionId:"revision",libraryVisible:true,editorVisible:true,editorSurface:"studio",editable:true,checklistVisible:true,reloaded:true,readbackMatched:true}});
  expect(gradeIntegratorSkills(o).passed).toBe(true);
 });

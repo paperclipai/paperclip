@@ -5081,9 +5081,11 @@
       "chat-catalog-domains/integrator-skill-versions.ts",
       "chat-catalog-domains/identity-support.ts",
       "../../ui/src/components/MarkdownEditor.tsx",
-      "../../ui/src/pages/SkillStudio.tsx"
+      "../../ui/src/pages/SkillStudio.tsx",
+      "../../ui/src/pages/CompanySkills.tsx",
+      "../../ui/src/lib/company-skill-routes.ts"
     ],
-    "oracleVersion": "paperclip.chat-catalog.skill-authoring.v2",
+    "oracleVersion": "paperclip.chat-catalog.skill-authoring.v3",
     "expectedRunCount": 1,
     "expectedHumanMessageCount": 1,
     "turnTimeoutMs": 120000,
