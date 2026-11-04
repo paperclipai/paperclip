@@ -366,22 +366,27 @@ interface AppHandle {
   logLines: string[];
 }
 
+function loadAppModules() {
+  return Promise.all([
+    vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
+    vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
+    vi.importActual<typeof import("pino")>("pino"),
+    vi.importActual<typeof import("pino-http")>("pino-http"),
+    vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
+      "../middleware/redact-sensitive.js",
+    ),
+  ]);
+}
+
+let appModules: Awaited<ReturnType<typeof loadAppModules>>;
+
 async function createApp(opts: {
   deploymentMode?: "local_trusted" | "authenticated";
   confidentialProxyAllowlist?: string[];
   confidentialEdgeTlsTerminated?: boolean;
   transport?: TransportHandle;
 } = {}): Promise<AppHandle> {
-  const [{ agentRoutes }, { errorHandler }, pinoModule, pinoHttpModule, redactModule] =
-    await Promise.all([
-      vi.importActual<typeof import("../routes/agents.js")>("../routes/agents.js"),
-      vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
-      vi.importActual<typeof import("pino")>("pino"),
-      vi.importActual<typeof import("pino-http")>("pino-http"),
-      vi.importActual<typeof import("../middleware/redact-sensitive.js")>(
-        "../middleware/redact-sensitive.js",
-      ),
-    ]);
+  const [{ agentRoutes }, { errorHandler }, pinoModule, pinoHttpModule, redactModule] = appModules;
   const { pino } = pinoModule;
   const { pinoHttp } = pinoHttpModule;
   const { redactSensitive } = redactModule;
@@ -465,10 +470,13 @@ async function settle(): Promise<void> {
   }
 }
 
-beforeAll(() => {
+beforeAll(async () => {
   vi.resetModules();
   registerModuleMocks();
-});
+  // Cold route transforms belong to suite setup, not the first login's 15s budget.
+  // Each test still gets a fresh app and resets its fixture state below.
+  appModules = await loadAppModules();
+}, 60_000);
 
 beforeEach(() => {
   vi.clearAllMocks();
