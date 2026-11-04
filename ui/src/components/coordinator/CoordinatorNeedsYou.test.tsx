@@ -13,7 +13,7 @@ const dismissals = vi.hoisted(() => ({ restore: vi.fn(async (..._args: unknown[]
 vi.mock("@/api/inboxDismissals", () => ({ inboxDismissalsApi: { restore: dismissals.restore, dismiss: vi.fn() } }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "company" }) }));
 vi.mock("@/context/BreadcrumbContext", () => ({ useBreadcrumbs: () => ({ setBreadcrumbs: fixture.breadcrumbs }) }));
-vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture.openPanel, closePanel: fixture.closePanel, setPanelVisible: fixture.setPanelVisible }) }));
+vi.mock("@/context/PanelContext", () => ({ usePanel: () => ({ openPanel: fixture.openPanel, closePanel: fixture.closePanel, setPanelVisible: fixture.setPanelVisible, panelVisible: true }) }));
 vi.mock("@/context/SidebarContext", () => ({ useSidebar: () => ({ isMobile: fixture.mobile }) }));
 vi.mock("@/hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => ({ userId: "reviewer" }) }));
 vi.mock("@/lib/router", async importOriginal => ({ ...await importOriginal<typeof import("@/lib/router")>(), useNavigate: () => fixture.navigate }));
@@ -137,7 +137,7 @@ describe("Coordinator Needs You — Archived view and history filters (PAP-749 t
     const historySpy = vi.spyOn(await import("@/api/attention").then((module) => module.attentionApi), "history");
     const client = await renderPage();
     await click("Decision history");
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    const dialog = container.querySelector<HTMLElement>("[data-coordinator-decision-history]")!;
     const outcome = dialog.querySelector<HTMLSelectElement>('[aria-label="Filter decision outcomes"]')!;
     const labels = [...outcome.options].map((option) => option.textContent);
     expect(labels).toEqual(expect.arrayContaining(["Withdrawn", "Expired", "Closed with task", "Handled for me"]));
@@ -181,7 +181,7 @@ describe("Coordinator Needs You — Archived view and history filters (PAP-749 t
     expect(recent().textContent).toContain("NEE-2 · Scott: task you created");
 
     await click("Decision history");
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    const dialog = container.querySelector<HTMLElement>("[data-coordinator-decision-history]")!;
     const scope = dialog.querySelector<HTMLSelectElement>('select[aria-label="Whose decision history"]')!;
     expect(scope.value).toBe("mine");
     expect([...scope.options].map((option) => option.textContent)).toEqual(["Handled by me or for me", "Everyone"]);
@@ -202,7 +202,7 @@ describe("Coordinator Needs You — Archived view and history filters (PAP-749 t
     // Nothing of yours in the last day: Recent Decisions stays out of the way.
     expect(container.querySelector('[aria-label="Recent Decisions"]')).toBeNull();
     await click("Decision history");
-    const dialog = document.querySelector<HTMLElement>('[role="dialog"]')!;
+    const dialog = container.querySelector<HTMLElement>("[data-coordinator-decision-history]")!;
     expect(dialog.textContent).toContain("No decisions handled by you or for you yet.");
     await act(async () => [...dialog.querySelectorAll("button")].find((button) => button.textContent === "Show everyone's decisions")!.click());
     await flush();
@@ -234,7 +234,7 @@ describe("Coordinator Needs You", () => {
     expect(scroll).not.toHaveBeenCalled();
     client.clear();
   });
-  it("opens searchable history from both phone buttons without the hidden desktop panel", async () => {
+  it("opens searchable history in the main pane from both buttons, never in the side panel (PAP-770)", async () => {
     fixture.mobile = true;
     fixture.pending = [];
     fixture.history = [{ id: "old-decision", sourceKind: "issue_thread_interaction", sourceId: "old", issueId: "task-1", issueIdentifier: "PAP-1", issueTitle: "Earlier launch", title: "Review", label: "Approved", outcome: "accepted", resolvedAt: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString(), resolvedByUserId: "reviewer", resolvedByAgentId: null, agentId: null, agentName: null, projectId: null, projectName: null, href: "/PAP/issues/PAP-1#interaction-old", target: null }];
@@ -245,14 +245,14 @@ describe("Coordinator Needs You", () => {
       const trigger = [...container.querySelectorAll("button")].find(button => button.textContent?.trim() === label);
       expect(trigger).toBeTruthy();
       await act(async () => trigger!.click()); await flush();
-      const dialog = document.querySelector('[role="dialog"]');
-      expect(dialog).not.toBeNull();
-      expect(dialog!.querySelector('[aria-label="Search decision history"]')).not.toBeNull();
-      expect(dialog!.textContent).toContain("Earlier launch");
+      const history = container.querySelector("[data-coordinator-decision-history]");
+      expect(history).not.toBeNull();
+      expect(history!.querySelector('[aria-label="Search decision history"]')).not.toBeNull();
+      expect(history!.textContent).toContain("Earlier launch");
       expect(fixture.openPanel).not.toHaveBeenCalled();
-      const close = [...dialog!.querySelectorAll("button")].find(button => button.textContent === "Close");
-      await act(async () => close!.click()); await flush();
-      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      const back = [...history!.querySelectorAll("button")].find(button => button.textContent === "Needs You");
+      await act(async () => back!.click()); await flush();
+      expect(container.querySelector("[data-coordinator-decision-history]")).toBeNull();
     }
     client.clear();
   });
@@ -388,15 +388,10 @@ describe("Coordinator Needs You", () => {
     expect(container.textContent).toContain("Answers recorded");
     await click("PAP-3");
     expect(fixture.navigate).toHaveBeenCalledWith("/PAP/issues/PAP-3#interaction-3");
+    // Decision history opens in the main pane, not the side panel (PAP-770).
     await click("Decision history");
-    expect(fixture.openPanel).toHaveBeenCalled();
-    expect(fixture.setPanelVisible).toHaveBeenCalledWith(true);
-    // The shared desktop hide control changes visibility without closing
-    // this tab. Clicking history again must reveal the already-open tab.
-    fixture.setPanelVisible(false);
-    fixture.setPanelVisible.mockClear();
-    await click("Decision history");
-    expect(fixture.setPanelVisible).toHaveBeenCalledWith(true);
+    expect(container.querySelector("[data-coordinator-decision-history]")).not.toBeNull();
+    expect(fixture.openPanel).not.toHaveBeenCalled();
   });
 });
 
@@ -414,7 +409,7 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
   }
   const tab = (view: string) => container.querySelector<HTMLElement>(`[data-attention-view="${view}"]`)!;
 
-  it("defaults to For you with the why-me context line, the banner and per-person keys, then claims from Unassigned", async () => {
+  it("defaults to For you with Why me?, the banner and per-person keys, then claims from Unassigned", async () => {
     fixture.byView = { mine: [mine("m1", "addressee"), mine("m2", "reviewer")], unassigned: [pool], company: [company] };
     fixture.viewCounts = { mine: 2, unassigned: 1, company: 1 };
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -426,7 +421,7 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     expect(tab("mine")).toBeNull();
     expect(tab("unassigned")?.textContent).toBe("Unassigned1");
     expect([...container.querySelectorAll('[data-attention-audience="mine"]')].map((line) => line.textContent))
-      .toEqual(["Sent to you", "You are the reviewer"]);
+      .toEqual(["Why me?Sent to you", "Why me?You are the reviewer"]);
     expect(container.querySelector("[data-attention-unassigned-banner]")).toBeNull();
     expect(client.getQueryCache().find({ queryKey: ["attention", "company", "reviewer", "mine"], exact: false })).toBeTruthy();
 
@@ -642,17 +637,21 @@ describe("Coordinator Needs You views (PAP-749 task 1b)", () => {
     client.clear();
   });
 
-  it("opens a plan card's plan in the side panel and closes it again (PAP-770)", async () => {
+  it("opens a plan card's plan as a side-panel tab and closes the tab again (PAP-770)", async () => {
     fixture.pending = [{ ...fixture.pending[0], subject: { ...fixture.pending[0].subject, metadata: { issueId: "task-1", targetDocumentKey: "plan" } } }, fixture.pending[1]];
     const client = await renderPage();
     expect([...container.querySelectorAll("[data-coordinator-review-trigger]")]).toHaveLength(1);
     await click("Review plan");
     expect(fixture.setPanelVisible).toHaveBeenLastCalledWith(true);
-    const panel = fixture.openPanel.mock.calls.at(-1)?.[0] as { props: Record<string, unknown> };
-    expect(panel.props).toMatchObject({ issueId: "task-1", documentKey: "plan" });
+    const panel = fixture.openPanel.mock.calls.at(-1)?.[0] as { props: { tabs: Array<{ id: string; label: string }>; activeTabId: string; reviewable: AttentionItem[] } };
+    expect(panel.props.tabs).toEqual([expect.objectContaining({ id: `review:${fixture.pending[0].id}` })]);
+    expect(panel.props.activeTabId).toBe(`review:${fixture.pending[0].id}`);
+    // The + launcher offers every card with a document to review.
+    expect(panel.props.reviewable.map(item => item.id)).toEqual([fixture.pending[0].id]);
     expect(container.querySelector("[data-reviewing]")).toBeTruthy();
     await click("Reviewing plan");
-    expect(fixture.closePanel).toHaveBeenCalled();
+    const after = fixture.openPanel.mock.calls.at(-1)?.[0] as { props: { tabs: unknown[] } };
+    expect(after.props.tabs).toEqual([]);
     expect(container.querySelector("[data-reviewing]")).toBeNull();
     client.clear();
   });

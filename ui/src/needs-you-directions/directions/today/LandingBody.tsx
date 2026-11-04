@@ -15,7 +15,7 @@ export function LandingBody(_props: SurfaceData["landing"]) {
         <CoordinatorNeedsYou />
       </div>
       <div className="sticky flex shrink-0" style={PANEL_DOCK}>
-        <PropertiesPanel />
+        <PropertiesPanel taskDetailLayout />
       </div>
     </div>
   );

@@ -136,6 +136,8 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
   const isAgentChatRoute = agentChatEnabled && companyPathSegments[0]?.toLowerCase() === "chats";
   // Chat keeps its header beside the agent sidebar, including before an agent is selected.
   const useStreamlinedTaskDetailShell = streamlinedUiEnabled && (isTaskDetailRoute || isAgentChatRoute);
+  // Needs You opens documents as side-panel tabs with the task-detail panel chrome (PAP-770).
+  const isCoordinatorNeedsYouRoute = coordinatorWorkspaceEnabled && companyPathSegments[0]?.toLowerCase() === "decisions";
   const isToolsRoute = companyPathSegments[0]?.toLowerCase() === "tools";
   const isAppsRoute = companyPathSegments[0]?.toLowerCase() === "apps";
   const appDetailConnectionId =
@@ -756,7 +758,7 @@ export function Layout({ sidebarSections }: { sidebarSections?: ReactNode }) {
               )}
               </main>
             </div>
-            <PropertiesPanel taskDetailLayout={!isMobile && useStreamlinedTaskDetailShell} />
+            <PropertiesPanel taskDetailLayout={!isMobile && (useStreamlinedTaskDetailShell || isCoordinatorNeedsYouRoute)} />
           </div>
         </div>
       </div>

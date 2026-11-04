@@ -1,4 +1,3 @@
-import { createPortal } from "react-dom";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowUpRight, Loader2 } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
@@ -6,8 +5,6 @@ import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
 import { AttentionInteractionResolver } from "@/components/AttentionInteractionResolver";
 import { MarkdownBody } from "@/components/MarkdownBody";
-import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
-import { SidePanelTab } from "@/components/side-panel";
 
 /** The document a card asks you to review, when it has one (a plan approval today). */
 export function attentionReviewDocumentKey(item: AttentionItem): string | null {
@@ -26,7 +23,6 @@ export interface CoordinatorReviewPanelProps {
   userLabelMap?: ReadonlyMap<string, string>;
   onOpenTask: (href: string) => void;
   onResolved: () => void;
-  onClose: () => void;
 }
 
 /**
@@ -35,15 +31,12 @@ export interface CoordinatorReviewPanelProps {
  * own actions to the bottom. Both read the same interaction query, so
  * answering here or on the card resolves both (one record, many views).
  */
-export function CoordinatorReviewPanel({ companyId, item, issueId, documentKey, agentMap, currentUserId, userLabelMap, onOpenTask, onResolved, onClose }: CoordinatorReviewPanelProps) {
+export function CoordinatorReviewPanel({ companyId, item, issueId, documentKey, agentMap, currentUserId, userLabelMap, onOpenTask, onResolved }: CoordinatorReviewPanelProps) {
   const doc = useQuery({ queryKey: queryKeys.issues.document(issueId, documentKey), queryFn: () => issuesApi.getDocument(issueId, documentKey) });
   const task = item.relatedIssue;
   const taskHref = task?.href ? `${task.href}#document-${documentKey}` : null;
   const label = documentKey === "plan" ? "Plan" : doc.data?.title ?? documentKey;
-  const slot = typeof document !== "undefined" ? document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID) : null;
-  const tab = <SidePanelTab id="decision-review" label={label} active onSelect={() => {}} onClose={onClose} />;
   return <div className="flex min-h-full flex-col gap-4" data-coordinator-review-panel={item.id}>
-    {slot ? createPortal(tab, slot) : tab}
     <header className="space-y-1">
       <h2 className="text-lg font-medium">{doc.data?.title ?? label}</h2>
       {taskHref ? <button type="button" onClick={() => onOpenTask(taskHref)} className="flex max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground">

@@ -3,6 +3,7 @@ import { attentionReceiptText, type AttentionItem, type DecisionHistoryItem } fr
 import {
   COORDINATOR_RECENT_DECISION_MS,
   DECISION_HISTORY_OUTCOME_OPTIONS,
+  coordinatorCardDetail,
   coordinatorCardTitle,
   decisionHistoryContext,
   decisionHistoryHeadline,
@@ -78,6 +79,21 @@ describe("Decision history presentation (PAP-749 task 2e)", () => {
     expect(coordinatorCardTitle({ ...base, sourceKind: "approval", subject: { ...base.subject, kind: "approval", title: "Approve the plan" } } as AttentionItem))
       .toBe("Approve the plan");
     expect(coordinatorCardTitle({ ...base, inlineResolvable: false } as AttentionItem)).toBe("Lingering on a done task");
+  });
+
+  it("gives a card titled with its bare task or agent name an ask, and explains a stuck task (PAP-770)", () => {
+    const blocker = {
+      id: "b", sourceKind: "blocker_attention", inlineResolvable: false, whyNow: "Blocks 0 tasks and needs human attention.",
+      subject: { id: "t", kind: "issue", title: "Today's weather forecast", metadata: {} }, relatedIssue: null,
+      detail: { kind: "blocker", blockingIssue: null, blockedTaskCount: 0, images: [] },
+    } as unknown as AttentionItem;
+    expect(coordinatorCardTitle(blocker)).toBe("Get “Today's weather forecast” moving again");
+    expect(coordinatorCardDetail(blocker, null)).toBe("No one is working on it. Unblock it, reassign it, or nudge its owner.");
+    const holding = { ...blocker, detail: { kind: "blocker", blockingIssue: null, blockedTaskCount: 2, images: [] } } as unknown as AttentionItem;
+    expect(coordinatorCardDetail(holding, null)).toBe("It's holding up 2 tasks, and no one is working on it. Unblock it, reassign it, or nudge its owner.");
+    const agentError = { ...blocker, sourceKind: "agent_error_alert", subject: { id: "a", kind: "agent", title: "Chief of Staff" },
+      detail: { kind: "agent_error", agentName: "Chief of Staff", failureReasonExcerpt: null, images: [] } } as unknown as AttentionItem;
+    expect(coordinatorCardTitle(agentError)).toBe("Chief of Staff hit an error and needs help");
   });
 
   it("shows the task, or names an approval that has no task", () => {

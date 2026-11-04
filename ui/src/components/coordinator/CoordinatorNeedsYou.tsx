@@ -1,5 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, ArrowUpRight, ChevronDown, FileText, History, ListFilter, Loader2, Mail } from "lucide-react";
 import { LayoutGroup, motion, useReducedMotion } from "motion/react";
@@ -15,7 +14,7 @@ import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceE
 import { useAttentionBadge, useAttentionCloseActions, useAttentionEveryoneView, useAttentionViewFeed, useClaimAttentionItem, useDismissAttentionReceipt } from "@/hooks/useAttentionViews";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { queryKeys } from "@/lib/queryKeys";
-import { COORDINATOR_RECENT_DECISION_MS, DECISION_HISTORY_SCOPE_OPTIONS, DEFAULT_DECISION_HISTORY_SCOPE, coordinatorCardTitle, recentDecisionReceipts } from "@/lib/coordinator-attention";
+import { COORDINATOR_RECENT_DECISION_MS, DECISION_HISTORY_SCOPE_OPTIONS, DEFAULT_DECISION_HISTORY_SCOPE, coordinatorCardDetail, coordinatorCardTitle, recentDecisionReceipts } from "@/lib/coordinator-attention";
 import { attentionDetailLine, isInlineResolvable } from "@/lib/attention";
 import { ATTENTION_VIEW_LABELS, ATTENTION_VIEW_PARAM, attentionAudienceLineNamesResponders, parseAttentionView } from "@/lib/attention-views";
 import { splitArchivedAttentionItems, splitStaleAttentionItems } from "@/lib/attention-close";
@@ -29,20 +28,19 @@ import { AttentionObligationEvidence } from "@/components/AttentionObligationEvi
 import { StalledReviewActions } from "@/components/StalledReviewActions";
 import { DecisionHistoryPanel } from "@/components/DecisionHistoryPanel";
 import { DecisionResolver } from "@/components/DecisionResolver";
-import { PROPERTIES_PANE_HEADER_SLOT_ID } from "@/components/PropertiesPanel";
-import { SidePanelTab } from "@/components/side-panel";
+import { useSidePanelTabs } from "@/components/side-panel";
 import { ToolbarSearch } from "@/components/ToolbarSearch";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
 import { NativeSelect } from "@/components/ui/select";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { parseCssTimeMs } from "@/components/task-chat/motion-tokens";
 import { readIssueReviewPolicyMetadata } from "@/lib/review-policy";
 import { timeAgo } from "@/lib/timeAgo";
 import { CoordinatorDecisionReceipt as Receipt } from "./CoordinatorDecisionReceipt";
 import { CoordinatorTaskMotion } from "./CoordinatorTaskCommitment";
 import { CoordinatorReviewPanel, attentionReviewDocumentKey } from "./CoordinatorReviewPanel";
+import { CoordinatorNeedsYouSidePanel, needsYouReviewTab, needsYouReviewTabId, type NeedsYouReviewPayload } from "./CoordinatorNeedsYouSidePanel";
 
 type Group = "none" | "task" | "agent" | "project";
 
@@ -59,21 +57,11 @@ const EMPTY_VIEW_TEXT: Record<AttentionPersonalView, string> = {
   all: "No open cards for anyone.",
 };
 
-/** The shared Decision history panel, with its tab in the side panel header on desktop. */
-function HistoryPanel({ companyId, agents, userLabelMap, onClose, mobile = false }: { companyId: string; agents: Agent[]; userLabelMap?: ReadonlyMap<string, string>; onClose: () => void; mobile?: boolean }) {
-  const slot = typeof document !== "undefined" ? document.getElementById(PROPERTIES_PANE_HEADER_SLOT_ID) : null;
-  const tab = <SidePanelTab id="decision-history" label="Decision history" active onSelect={() => {}} onClose={onClose} />;
-  return <div data-coordinator-decision-history>
-    <DecisionHistoryPanel companyId={companyId} agents={agents} userLabelMap={userLabelMap}
-      header={!mobile ? <>{slot ? createPortal(tab, slot) : tab}<h2 className="text-lg font-medium">Decision history</h2></> : null} />
-  </div>;
-}
-
 export function CoordinatorNeedsYou() {
   const { selectedCompanyId } = useCompany();
   const { userId } = useCoordinatorWorkspaceEnabled();
   const { setBreadcrumbs } = useBreadcrumbs();
-  const { openPanel, closePanel, setPanelVisible } = usePanel();
+  const { openPanel, closePanel, panelVisible, setPanelVisible } = usePanel();
   const { isMobile } = useSidebar();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -94,8 +82,10 @@ export function CoordinatorNeedsYou() {
   const [groupBy, setGroupBy] = useState<Group>("none");
   const [sort, setSort] = useState<"newest" | "oldest">("newest");
   const [historyOpen, setHistoryOpen] = useState(false);
-  // Focus (PAP-770): the card whose artifact is open in the side panel.
-  const [reviewItemId, setReviewItemId] = useState<string | null>(null);
+  // Focus (PAP-770): documents a card asks about open as side-panel tabs, the
+  // same chrome as task detail. Decision history is a main-pane view instead.
+  const reviewTabs = useSidePanelTabs<NeedsYouReviewPayload>({ initialState: { tabs: [], activeTabId: null } });
+  const [reviewPanelOpen, setReviewPanelOpen] = useState(false);
   const [now, setNow] = useState(Date.now);
   const [settling, setSettling] = useState<AttentionItem[]>([]);
   const [savedIds, setSavedIds] = useState<Set<string>>(() => new Set());
@@ -214,29 +204,36 @@ export function CoordinatorNeedsYou() {
     ...recentItems.flatMap((item) => item.projectId ? [[item.projectId, item.projectName ?? "Unnamed project"] as const] : []),
   ]).entries()], [pendingItems, recentItems]);
   const filtersActive = Boolean(query.trim() || agentFilter || projectFilter);
-  const closeHistory = useCallback(() => { setHistoryOpen(false); closePanel(); }, [closePanel]);
-  const showHistory = () => { setReviewItemId(null); setHistoryOpen(true); if (!isMobile) setPanelVisible(true); };
-  const closeReview = useCallback(() => { setReviewItemId(null); closePanel(); }, [closePanel]);
-  const showReview = (item: AttentionItem) => { setHistoryOpen(false); setReviewItemId(item.id); setPanelVisible(true); };
-  const reviewItem = reviewItemId ? pendingItems.find(item => item.id === reviewItemId) ?? null : null;
+  const closeHistory = useCallback(() => setHistoryOpen(false), []);
+  const showHistory = () => setHistoryOpen(true);
+  const reviewIssueIdOf = (item: AttentionItem) => item.relatedIssue?.id ?? String(item.subject.metadata?.issueId ?? "");
+  // Cards whose document can open beside them: the + launcher lists these.
+  const reviewable = useMemo(() => pendingItems.filter(item => !!attentionReviewDocumentKey(item) && !!(item.relatedIssue?.id ?? item.subject.metadata?.issueId)), [pendingItems]);
+  const { openTab: openReviewTab, closeTab: closeReviewTab, selectTab: selectReviewTab, reorderTabs: reorderReviewTabs, resetTabs: resetReviewTabs } = reviewTabs;
+  const showReview = useCallback((item: AttentionItem) => {
+    openReviewTab(needsYouReviewTab(item));
+    setReviewPanelOpen(true);
+    setPanelVisible(true);
+  }, [openReviewTab, setPanelVisible]);
+  // The frame's close control hides the panel; its tabs come back with the next Review.
+  useEffect(() => { if (!panelVisible) setReviewPanelOpen(false); }, [panelVisible]);
+  // A resolved or closed card's tab closes with it.
+  useEffect(() => {
+    const open = new Set(pendingItems.map(item => needsYouReviewTabId(item)));
+    for (const tab of reviewTabs.tabs) if (!open.has(tab.id)) closeReviewTab(tab.id);
+  }, [pendingItems, reviewTabs.tabs, closeReviewTab]);
   useEffect(() => { setBreadcrumbs([{ label: "Needs You" }]); }, [setBreadcrumbs]);
   useEffect(() => {
-    setSettling([]); setHistoryOpen(false); setReviewItemId(null); setNow(Date.now()); closePanel();
+    setSettling([]); setHistoryOpen(false); setReviewPanelOpen(false); resetReviewTabs({ tabs: [], activeTabId: null }); setNow(Date.now()); closePanel();
     return closePanel;
-  }, [selectedCompanyId, closePanel]);
+  }, [selectedCompanyId, closePanel, resetReviewTabs]);
   useEffect(() => {
-    const reviewIssueId = reviewItem ? reviewItem.relatedIssue?.id ?? String(reviewItem.subject.metadata?.issueId ?? "") : "";
-    const reviewKey = reviewItem ? attentionReviewDocumentKey(reviewItem) : null;
-    if (selectedCompanyId && !isMobile && reviewItem && reviewIssueId && reviewKey) {
-      setPanelVisible(true);
-      openPanel(<CoordinatorReviewPanel key={reviewItem.id} companyId={selectedCompanyId} item={reviewItem} issueId={reviewIssueId} documentKey={reviewKey}
-        agentMap={agentMap} currentUserId={userId} userLabelMap={userLabelMap} onOpenTask={navigate} onResolved={closeReview} onClose={closeReview} />);
-      return;
-    }
-    if (!historyOpen || !selectedCompanyId || isMobile) { closePanel(); return; }
-    setPanelVisible(true);
-    openPanel(<HistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} userLabelMap={userLabelMap} onClose={closeHistory} />);
-  }, [historyOpen, reviewItem, selectedCompanyId, isMobile, agentQuery.data, agentMap, userId, userLabelMap, navigate, openPanel, closePanel, closeHistory, closeReview, setPanelVisible]);
+    if (!selectedCompanyId || isMobile || !reviewPanelOpen) { closePanel(); return; }
+    openPanel(<CoordinatorNeedsYouSidePanel tabs={reviewTabs.tabs} activeTabId={reviewTabs.activeTabId} reviewable={reviewable}
+      onSelectTab={selectReviewTab} onCloseTab={closeReviewTab} onReorderTabs={reorderReviewTabs} onOpenItem={showReview}
+      renderReview={item => <CoordinatorReviewPanel key={item.id} companyId={selectedCompanyId} item={item} issueId={reviewIssueIdOf(item)} documentKey={attentionReviewDocumentKey(item)!}
+        agentMap={agentMap} currentUserId={userId} userLabelMap={userLabelMap} onOpenTask={navigate} onResolved={() => closeReviewTab(needsYouReviewTabId(item))} />} />);
+  }, [reviewPanelOpen, reviewTabs.tabs, reviewTabs.activeTabId, reviewable, selectedCompanyId, isMobile, agentMap, userId, userLabelMap, navigate, openPanel, closePanel, selectReviewTab, closeReviewTab, reorderReviewTabs, showReview]);
   useEffect(() => {
     const next = recentItems.reduce((earliest, item) => Math.min(earliest, Date.parse(item.resolvedAt) + COORDINATOR_RECENT_DECISION_MS), Infinity);
     if (!Number.isFinite(next)) return;
@@ -261,46 +258,55 @@ export function CoordinatorNeedsYou() {
     const failedRun = item.sourceKind === "failed_run" && isInlineResolvable(item);
     const budget = item.sourceKind === "budget_alert" && isInlineResolvable(item);
     const taskRef = item.relatedIssue ?? (item.subject.kind === "issue" ? item.subject : null);
-    const taskLink = taskRef?.href ? <button type="button" data-attention-task-link onClick={() => { if (taskRef.href) navigate(taskRef.href); }} className="flex min-w-0 max-w-sm items-center gap-1 text-left hover:text-foreground"><span className="shrink-0 font-medium">{taskRef.identifier ?? "Open task"}</span><span className="truncate">{taskRef.title}</span><ArrowUpRight className="size-3 shrink-0" /></button> : null;
+    const taskLink = taskRef?.href ? <button type="button" data-attention-task-link onClick={() => { if (taskRef.href) navigate(taskRef.href); }} className="flex min-w-0 max-w-full items-center gap-2 text-left text-sm text-muted-foreground hover:text-foreground"><span className="shrink-0">{taskRef.identifier ?? "Open task"}</span><span className="truncate">{taskRef.title}</span><ArrowUpRight className="size-4 shrink-0" /></button> : null;
+    // Beside Review plan and three actions, the task link is just its ID.
+    const taskShortLink = taskRef?.href ? <button type="button" data-attention-task-link title={taskRef.title ?? undefined} onClick={() => { if (taskRef.href) navigate(taskRef.href); }} className="flex shrink-0 items-center gap-2 text-sm text-muted-foreground hover:text-foreground">{taskRef.identifier ?? "Open task"}<ArrowUpRight className="size-4 shrink-0" /></button> : null;
     const id = `${item.sourceKind}:${item.subject.id}`;
     const receipt = settlingIds.has(id) ? recentItems.find(entry => entry.id === id) : undefined;
     const phase = !receipt ? "pending" : ["cancelled", "expired"].includes(receipt.outcome) ? "closed" : "resolved";
     const refetchAll = () => { void feed.refetch(); void recent.refetch(); };
     // Focus (PAP-770): a card that asks about an artifact opens it beside the card.
     const canReview = !isMobile && !!issueId && !!attentionReviewDocumentKey(item);
-    const reviewing = reviewItemId === item.id;
-    // Focus card (PAP-770): one structure for every family — a quiet context
-    // line, the ask, just enough context, Review, and the primary action on
-    // the right of the last row. The task link lives in the context line.
-    const footer = canReview ? <Button type="button" variant="outline" size="sm" aria-pressed={reviewing} data-coordinator-review-trigger onClick={() => reviewing ? closeReview() : showReview(item)}>
+    const reviewing = canReview && reviewPanelOpen && panelVisible && reviewTabs.activeTabId === needsYouReviewTabId(item);
+    // Focus card (PAP-770): why it is here and when, beside its ⋯ menu; the ask
+    // and a plain explanation; then the task link on the left of the footer
+    // and the actions on the right.
+    const footer = canReview ? <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
+      <Button type="button" variant="outline" size="sm" aria-pressed={reviewing} data-coordinator-review-trigger onClick={() => reviewing ? closeReviewTab(needsYouReviewTabId(item)) : showReview(item)}>
         <FileText className="size-4" />{reviewing ? "Reviewing plan" : "Review plan"}
-      </Button> : null;
+      </Button>{taskShortLink}</div> : taskLink;
+    // A document mentioned on the card (its Plan chip) opens as a side-panel tab, not a page change.
+    const openMentionedDocument = (event: ReactMouseEvent) => {
+      if (!canReview || event.defaultPrevented || event.metaKey || event.ctrlKey || event.shiftKey || event.button !== 0) return;
+      const link = (event.target as HTMLElement).closest<HTMLAnchorElement>("a[href*='#document-']");
+      if (!link) return;
+      event.preventDefault();
+      showReview(item);
+    };
     const title = coordinatorCardTitle(item);
-    const detail = attentionDetailLine(item) ?? item.whyNow;
+    const detail = coordinatorCardDetail(item, attentionDetailLine(item));
     const heading = <><h2 className="text-lg font-medium">{title}</h2>{detail && detail !== title ? <p className="text-sm text-muted-foreground">{detail}</p> : null}</>;
     return <motion.div id={item.sourceKind === "decision" ? `coordinator-decision-${item.subject.id}` : undefined} tabIndex={item.sourceKind === "decision" ? -1 : undefined} layout={reducedMotion ? false : "position"} layoutId={reducedMotion ? undefined : id} transition={{ duration }} key={id}>
     <CoordinatorTaskMotion eventId={`decision:${selectedCompanyId}:${userId}:${id}`} phase={phase} createdAt={item.activityAt} className="coordinator-decision-motion"
       onSettled={() => setSettling(current => current.filter(entry => `${entry.sourceKind}:${entry.subject.id}` !== id))}>
-    {receipt ? <Receipt item={receipt} onOpen={navigate} userLabelMap={userLabelMap} /> : <article className={`coordinator-decision-card space-y-4 rounded-xl border bg-card p-6 ${reviewing ? "border-ring" : "border-border"}`} data-attention-card={item.id} data-reviewing={reviewing || undefined}>
-      {/* Why this card is here, whether it is stale, and its one Close… menu (PAP-749 Rules 4, 6, 10). */}
+    {receipt ? <Receipt item={receipt} onOpen={navigate} userLabelMap={userLabelMap} /> : <article onClickCapture={openMentionedDocument} className={`coordinator-decision-card space-y-4 rounded-xl border bg-card p-6 ${reviewing ? "border-ring" : "border-border"}`} data-attention-card={item.id} data-reviewing={reviewing || undefined}>
+      {/* Why this card is here and when, beside its one Close… menu (PAP-749 Rules 4, 6, 10). */}
       <div className="flex items-start justify-between gap-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs leading-5 text-muted-foreground" data-attention-context>
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <AttentionHiddenChip item={item} />
           <AttentionStaleChip item={item} />
-          {taskLink}
-          {item.originAgentName ? <><span aria-hidden="true">·</span><span>{item.originAgentName}</span></> : null}
-          {taskLink || item.originAgentName ? <span aria-hidden="true">·</span> : null}
-          <time dateTime={item.activityAt}>{timeAgo(item.activityAt)}</time>
-          {userId ? <span aria-hidden="true">·</span> : null}
-          <AttentionAudienceLine quiet item={item} currentUserId={userId} userLabelMap={userLabelMap} onClaim={entry => claim.mutate(entry)} claiming={claim.isPending && claim.variables?.id === item.id} />
         </div>
-        <AttentionCloseMenu item={item} currentUserId={userId} userLabelMap={userLabelMap}
+        <div className="flex min-w-0 items-start justify-end gap-2" data-attention-context>
+          <AttentionAudienceLine className="justify-end text-right" item={item} currentUserId={userId} userLabelMap={userLabelMap} onClaim={entry => claim.mutate(entry)} claiming={claim.isPending && claim.variables?.id === item.id} />
+          <time dateTime={item.activityAt} title={new Date(item.activityAt).toLocaleString()} className="shrink-0 text-xs leading-5 text-muted-foreground"><span aria-hidden="true" className="mr-2">·</span>{timeAgo(item.activityAt)}</time>
+          <AttentionCloseMenu item={item} currentUserId={userId} userLabelMap={userLabelMap}
           busy={closeActions.closingItemId === item.id || closeActions.transferringItemId === item.id}
           onWithdraw={(entry, reason) => closeActions.close({ item: entry, mode: "withdraw", reason })}
           onArchive={entry => closeActions.close({ item: entry, mode: "archive" })}
           onSnooze={(entry, until) => closeActions.close({ item: entry, mode: "snooze", until })}
           onTransfer={(entry, target) => closeActions.transfer({ item: entry, userId: target })}
           onRestore={archivedView ? entry => void closeActions.restore(entry) : undefined} />
+        </div>
       </div>
       <AttentionForOtherGate item={item} currentUserId={userId} userLabelMap={userLabelMap}>
       {interaction ? <AttentionInteractionResolver footerSlot={footer} presentation="coordinator-decision" audienceStated={attentionAudienceLineNamesResponders(item, userId)} companyId={selectedCompanyId!} issueId={issueId} interactionId={item.subject.id} agentMap={agentMap} currentUserId={userId} onResolved={resolved => {
@@ -308,10 +314,10 @@ export function CoordinatorNeedsYou() {
         onResolved(item);
       }} />
         : decision ? <DecisionResolver companyId={selectedCompanyId!} decisionId={item.subject.id} originIssue={item.relatedIssue} agentMap={agentMap} onResolved={() => onResolved(item)} />
-        : stalledReview ? <><h2 className="text-lg font-medium">Choose how this task continues</h2><p className="text-sm">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p><StalledReviewActions issueId={item.subject.id} companyId={selectedCompanyId!} reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)} approveLabel="Mark task done" onResolved={refetchAll} /></>
-        : failedRun ? <>{heading}<FailedRunActions item={item} companyId={selectedCompanyId!} onResolved={refetchAll} /></>
-        : budget ? <>{heading}<BudgetAlertActions item={item} companyId={selectedCompanyId!} onResolved={refetchAll} /></>
-        : <>{heading}<div className="flex justify-end"><Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>{openLabel(item)}<ArrowUpRight className="size-4" /></Button></div></>}
+        : stalledReview ? <><h2 className="text-lg font-medium">Choose how this task continues</h2><p className="text-sm">This task is still in review with no active reviewer or continuation. Return it to work, request changes, or mark the task done.</p><StalledReviewActions footerSlot={taskLink} issueId={item.subject.id} companyId={selectedCompanyId!} reviewPolicy={readIssueReviewPolicyMetadata(item.subject.metadata)} approveLabel="Mark task done" onResolved={refetchAll} /></>
+        : failedRun ? <>{heading}<FailedRunActions item={item} companyId={selectedCompanyId!} leading={taskLink} onResolved={refetchAll} /></>
+        : budget ? <>{heading}<BudgetAlertActions item={item} companyId={selectedCompanyId!} leading={taskLink} onResolved={refetchAll} /></>
+        : <>{heading}<div className="flex flex-wrap items-center justify-between gap-2">{taskLink ?? <span />}<Button disabled={!item.subject.href} onClick={() => { if (item.subject.href) navigate(item.subject.href); }}>{openLabel(item)}<ArrowUpRight className="size-4" /></Button></div></>}
       </AttentionForOtherGate>
       <AttentionObligationEvidence item={item} evidence={attentionObligationEvidence(obligations, item)} />
     </article>}
@@ -319,13 +325,13 @@ export function CoordinatorNeedsYou() {
     </motion.div>;
   };
   if (!selectedCompanyId) return <p className="text-sm text-muted-foreground">Choose a company to see its decisions.</p>;
+  // Decision history is a view of the main pane (PAP-770), not a side panel
+  // that repeats Recent Decisions beside them.
+  if (historyOpen) return <section className="coordinator-needs-you mx-auto w-full max-w-4xl space-y-6" aria-label="Decision history" data-coordinator-decision-history>
+    <Button variant="ghost" size="sm" onClick={closeHistory}><ArrowLeft className="size-4" />Needs You</Button>
+    <DecisionHistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} userLabelMap={userLabelMap} header={<h1 className="text-2xl font-medium">Decision history</h1>} />
+  </section>;
   return <LayoutGroup id="coordinator-decisions"><section className="coordinator-needs-you mx-auto w-full max-w-4xl space-y-6" aria-label="Needs You">
-    {isMobile ? <Sheet open={historyOpen} onOpenChange={open => { if (!open) closeHistory(); }}>
-      <SheetContent side="bottom" aria-describedby={undefined} className="mobile-task-side-panel inset-0 h-dvh max-h-dvh w-full max-w-none gap-0 border-0 p-0 pt-(--sz-safe-top) pb-(--sz-safe-bottom)">
-        <SheetHeader><SheetTitle>Decision history</SheetTitle></SheetHeader>
-        <div className="min-h-0 flex-1 overflow-y-auto p-4"><HistoryPanel companyId={selectedCompanyId} agents={agentQuery.data ?? []} userLabelMap={userLabelMap} onClose={closeHistory} mobile /></div>
-      </SheetContent>
-    </Sheet> : null}
     <header className="flex items-center justify-between gap-3"><h1 className="text-2xl font-medium">Needs You</h1><Button variant="ghost" onClick={showHistory}><History className="size-4" />Decision history</Button></header>
     {/* Focus (PAP-770): For you is the page; Unassigned/Company are quiet chips,
         Archived/Everyone/History fold into View, and filters hide behind one icon. */}

@@ -23,7 +23,33 @@ export function coordinatorCardTitle(item: AttentionItem) {
     && (item.sourceKind === "issue_thread_interaction"
       || (item.sourceKind === "review" && item.subject.kind === "issue" && item.subject.metadata?.reviewAttentionState === "stalled"));
   if (inline && task?.title) return task.title;
-  return item.subject.title ?? item.whyNow;
+  return coordinatorCardAsk(item, task?.title ?? null) ?? item.subject.title ?? item.whyNow;
+}
+
+/**
+ * Focus (PAP-770): a card's heading says what to do. Some sources are titled
+ * with the bare task or agent name ("Today's weather forecast", "Chief of
+ * Staff"), which repeats the task link and asks nothing; those get an ask.
+ */
+function coordinatorCardAsk(item: AttentionItem, taskTitle: string | null): string | null {
+  const title = item.subject.title?.trim() || null;
+  if (item.sourceKind === "blocker_attention" && title) return `Get “${title}” moving again`;
+  if (item.sourceKind === "agent_error_alert") {
+    const agent = item.detail?.kind === "agent_error" ? item.detail.agentName ?? title : title;
+    return agent ? `${agent} hit an error and needs help` : null;
+  }
+  if (item.sourceKind === "review" && title && title === taskTitle) return `Review “${title}”`;
+  return null;
+}
+
+/** The context under a card's heading: what happened and what you can do about it. */
+export function coordinatorCardDetail(item: AttentionItem, detailLine: string | null): string | null {
+  if (item.sourceKind === "blocker_attention" && item.detail?.kind === "blocker" && !item.detail.blockingIssue) {
+    const count = item.detail.blockedTaskCount ?? 0;
+    const holding = count > 0 ? `It's holding up ${count} ${count === 1 ? "task" : "tasks"}, and no` : "No";
+    return `${holding} one is working on it. Unblock it, reassign it, or nudge its owner.`;
+  }
+  return detailLine ?? item.whyNow;
 }
 
 /** Presentation-only assumption from the prototype, never a retention policy. */

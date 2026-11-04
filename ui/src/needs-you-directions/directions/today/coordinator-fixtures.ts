@@ -83,5 +83,18 @@ const approvalAttention: AttentionItem = {
   detail: { kind: "plan_approval", issueTitle: "Develop acmehats brand strategy and designer brief", planTitle: "Q4 brand-strategy plan", summaryExcerpt: "Three positioning pillars, a six-week timeline, and $18k for an external photographer.", images: [] },
 };
 
+const stuckTaskAttention: AttentionItem = {
+  ...base,
+  id: "blocker_attention:task-gift-guide",
+  sourceKind: "blocker_attention",
+  inlineResolvable: false,
+  subject: { id: "task-gift-guide", kind: "issue", companyId: base.subject.companyId, title: "Refresh the holiday gift guide", identifier: "NEE-44", status: "blocked", href: "/NEE/issues/NEE-44" },
+  relatedIssue: null,
+  audience: { kind: "user", userId: VIEWER_ID, reason: "instigator" },
+  whyNow: "Blocks 0 tasks and needs human attention.",
+  originAgentName: null,
+  detail: { kind: "blocker", blockingIssue: null, blockedTaskCount: 0, images: [] },
+};
+
 export const COORDINATOR_INTERACTIONS: IssueThreadInteraction[] = [coordinatorTaskQuestion, approval];
-export const COORDINATOR_INTERACTION_ATTENTION: AttentionItem[] = [approvalAttention, questionAttention];
+export const COORDINATOR_INTERACTION_ATTENTION: AttentionItem[] = [approvalAttention, stuckTaskAttention, questionAttention];
