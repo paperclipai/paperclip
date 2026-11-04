@@ -530,6 +530,14 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
       })) : null,
     baseRef: typeof parseObject(mergedConfig.workspaceStrategy).baseRef === "string"
       ? String(parseObject(mergedConfig.workspaceStrategy).baseRef) : null,
+    worktreeParentDir: typeof parseObject(mergedConfig.workspaceStrategy).worktreeParentDir === "string"
+      ? String(parseObject(mergedConfig.workspaceStrategy).worktreeParentDir) : null,
+    provisionCommand: typeof parseObject(mergedConfig.workspaceStrategy).provisionCommand === "string"
+      ? String(parseObject(mergedConfig.workspaceStrategy).provisionCommand) : null,
+    runtimeProvisionCommand: typeof parseObject(mergedConfig.workspaceStrategy).runtimeProvisionCommand === "string"
+      ? String(parseObject(mergedConfig.workspaceStrategy).runtimeProvisionCommand) : null,
+    teardownCommand: typeof parseObject(mergedConfig.workspaceStrategy).teardownCommand === "string"
+      ? String(parseObject(mergedConfig.workspaceStrategy).teardownCommand) : null,
   });
   const freshTaskReservationId = providerFresh && pluginTaskWorkspace && !pluginPrepared && issueId
     ? await reserveFreshPluginTaskWorkspace({ db, companyId: agent.companyId, issueId, runId: run.id, agentId: agent.id,
