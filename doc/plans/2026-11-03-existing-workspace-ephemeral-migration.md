@@ -48,6 +48,18 @@ yet make the whole tenant eligible for enrollment.
 
 ## Legacy recovery storage transition
 
+### Failed controllers with an older warm supervisor
+
+An old failed follow-up can retain a database snapshot while its warm supervisor
+still contains the preceding successful turn. Migration preserves the failed
+run's database state and archives its available controller and supervisor files.
+The archive requires the exact older snapshot to match a completed successful
+run in the same company, agent, task, native session, and Runner instance. Its
+provider thread must also match the failed source. Existing durable controller
+checkpoints, active owners, changed snapshots, and foreign bindings still block
+this archive path. The archive remains readable after removing the old home.
+Execution recovery continues to require independently valid authority.
+
 The migration owner must distinguish file location from recovery completion.
 An offline import can preserve a terminal failed run's local workspace without
 claiming that its remote files were recovered. The snapshot and migration
