@@ -56,7 +56,7 @@ import {
   formatIssueIdentifierLink,
 } from "./heartbeat/scheduling.js";
 import { canApplyTaskWorkspaceSelectionAtAdmission, taskWorkspaceRuntimeSelectionEnabled } from "./execution-workspace-policy.js";
-import { agentExecutionsHaveStopped } from "./agent-execution-stop.js";
+import { agentExecutionsHaveStopped, LEGACY_ADAPTER_NOT_ENTERED_RECEIPT } from "./agent-execution-stop.js";
 import {
   cancelHeartbeatNativeRun,
   terminateHeartbeatRunProcess,
@@ -3940,9 +3940,19 @@ export function heartbeatService(
             logger.warn({ err: error, runId: run.id }, "failed to acknowledge Stop after native process settlement");
           });
         }
+        // A Stop that lands before adapter entry leaves no process identity to
+        // prove against. This executor is the only witness that nothing was
+        // spawned, so it records that receipt with its own settlement.
+        const adapterNeverEntered = !legacyAdapterEntered && !nativeDispatchStarted && !nativeOwnershipHeld;
         await db.update(heartbeatRuns).set({
           executionStage: sql`case when ${heartbeatRuns.status} = 'cancelled' then 'settled' else ${heartbeatRuns.executionStage} end`,
           controllerLeaseExpiresAt: null,
+          ...(adapterNeverEntered ? {
+            resultJson: sql`case when ${heartbeatRuns.status} = 'cancelled' and ${heartbeatRuns.processPid} is null
+              and ${heartbeatRuns.processGroupId} is null then coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) ||
+              ${JSON.stringify({ [LEGACY_ADAPTER_NOT_ENTERED_RECEIPT]: new Date().toISOString() })}::jsonb
+              else ${heartbeatRuns.resultJson} end`,
+          } : {}),
         }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.runtimeMode, "legacy"),
           eq(heartbeatRuns.controllerBootId, legacyControllerBootId),
           inArray(heartbeatRuns.status, ["succeeded", "failed", "cancelled", "timed_out", "interrupted"])));
