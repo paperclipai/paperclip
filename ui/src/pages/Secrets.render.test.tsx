@@ -814,7 +814,7 @@ describe("Secrets page layout", () => {
     });
   });
 
-  it.each([false, true])("opens the each-user secure-entry surface (definition link: %s)", async (fromLink) => {
+  it.each([false, true])("opens the admin-visible each-user secure-entry surface (definition link: %s)", async (fromLink) => {
     const definition = makeUserSecretDefinition();
     mockSecretsApi.listUserSecretDefinitions.mockResolvedValue([definition]);
     mockSecretsApi.listMyUserSecrets.mockResolvedValue([{ definition, secret: null }]);

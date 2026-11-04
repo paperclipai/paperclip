@@ -28,6 +28,8 @@ it("discovers the existing secure human entry surface through native API search"
         const definitions = operations.find(operation => operation.path.endsWith("user-secret-definitions"));
         expect(definitions?.description).toContain("Set my value");
         expect(definitions?.description).toContain("current person");
+        expect(definitions?.description).toContain("Company admins can also open definition details");
+        expect(definitions?.description).toContain("other members use My secrets and Set my value");
         expect(definitions?.authorization.actor).toBe("board");
       }
     }
