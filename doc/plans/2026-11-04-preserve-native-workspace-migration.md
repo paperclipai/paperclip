@@ -142,3 +142,29 @@ forces a conflict in a later batch, verifies that earlier batches roll back,
 then imports and decrypts the complete original checkpoint. The precise
 server-side reason for the connection closure is not yet established; the
 unbatched failures and batched comparison remain in the verification record.
+
+## Checkpoint envelope expansion found during the live import
+
+The encryption boundary spread the caller's entire input into every record.
+For offline imports that input includes the complete legacy controller source.
+One 538-record checkpoint stored 1,108,851,510 bytes of encrypted material,
+although the intended records total about 2.2 MB after encryption. This explains
+the oversized writes and subsequent memory exhaustion; the earlier SQL-shape
+probe passed a narrow binding and therefore did not reproduce the actual owner
+payload. The previous write failures and killed attempts remain in the evidence.
+
+The checkpoint writer now selects company, issue, run, part and contents explicitly.
+The real database migration test decrypts each imported envelope and requires
+exactly those fields, with the original record content. It failed before the fix.
+Existing envelopes remain readable. For the staging imports from this attempt,
+a guarded offline repair backs up the encrypted rows on the retained volume,
+checks every record against its original legacy source, and rewrites only the
+envelope. Run, session, owner and task metadata remain unchanged.
+
+The complete 807-source audit also found five failed runs with existing durable
+checkpoints and no provider-session snapshot. Their original controller state
+is already preserved. Enrollment now verifies the durable run, Runner and
+session binding and counts these failed states separately. It does not create
+a session snapshot or recovery authority, clear a blocker, or change their
+checkpoint rows, task pointers or failed status. A successful run with a missing
+snapshot still blocks enrollment.
