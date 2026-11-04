@@ -116,6 +116,11 @@ The observer rechecks the original live owner immediately before switching
 traffic and fails if that turn already settled. A completed turn cannot count
 as active takeover. Per-turn file inspection requires the exact committed saved
 snapshot; the warm lane still requires the live workspace.
+Cold restores retain the published workspace directory name, including after
+the old allocation is destroyed, because provider recovery binds the working
+directory into session identity. Unpublished preparations retain distinct
+epoch/lease directories, and a restore refuses to overwrite an occupied path
+owned by another preparation.
 
 The ordinary Everyday matrix retains its 125-second active outage default. The
 two explicit continuity suites require 300 seconds and reject a shorter override.

@@ -321,8 +321,22 @@ function isSavedWorkspaceRepository(workspace: Workspace, authority: RemoteWorks
     && (saved.readOnly ?? false) === (repository.readOnly ?? false));
 }
 
+function publishedWorkspaceDirectory(workspace: Workspace & Pick<typeof executionWorkspaces.$inferSelect, "providerRef">,
+  authority: RemoteWorkspaceAuthority) {
+  const publishedRoot = authority.snapshotId && (authority.location?.remoteCwd ?? workspace.providerRef);
+  if (!publishedRoot) return null;
+  const directory = path.posix.basename(publishedRoot);
+  const suffix = directory.slice(workspace.id.length);
+  if (!path.posix.isAbsolute(publishedRoot) || path.posix.basename(path.posix.dirname(publishedRoot)) !== ".paperclip-workspaces"
+    || !directory.startsWith(workspace.id) || (suffix !== "" && !/^-[1-9][0-9]*-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(suffix))) {
+    throw new Error("remote_workspace_published_path_invalid");
+  }
+  return directory;
+}
+
 export async function prepareRemoteWorkspace(input: {
-  db: Db; workspace: Workspace; runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
+  db: Db; workspace: Workspace & Pick<typeof executionWorkspaces.$inferSelect, "providerRef">;
+  runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
   source?: RemoteWorkspaceSource; assertOwned?: () => Promise<void>;
   provisionCommand?: string | null; runtimeProvisionCommand?: string | null; storage?: StorageService;
 }) {
@@ -339,7 +353,7 @@ export async function prepareRemoteWorkspace(input: {
     && initial.location?.environmentId === input.lease.environmentId;
   if (initial.location && !sameAllocation && initial.dirty) throw conflict("The prior workspace has unsaved work; recover it before replacing its allocation.");
   const remoteRoot = sameAllocation ? initial.location!.remoteCwd : path.posix.join(target.remoteCwd, ".paperclip-workspaces",
-    `${input.workspace.id}-${initial.epoch}-${input.lease.id}`);
+    publishedWorkspaceDirectory(input.workspace, initial) ?? `${input.workspace.id}-${initial.epoch}-${input.lease.id}`);
   const preparationIdentity = createHash("sha256").update(JSON.stringify([input.workspace.companyId, input.workspace.id,
     input.runId, initial.epoch, input.lease.id, input.lease.providerLeaseId, remoteRoot, initial.source])).digest("hex");
   let restoredExport: Awaited<ReturnType<typeof restoreRemoteWorkspaceDirectory>> | null = null;
