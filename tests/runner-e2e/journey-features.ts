@@ -26,6 +26,7 @@ associate(["product-journeys"], {
   "inbox-triage": ["inbox-search/views", "inbox-search/triage"], "task-create": ["tasks/create"], "ask-question": ["questions-and-approvals/questions"],
   "question-answer-resume": ["questions-and-approvals/questions", "questions-and-approvals/continuation"],
   "followup-while-running": ["steering/queue"],
+  "chat-continuity": ["agent-chat/history", "runs-adapters/session"],
   "hire-delegate-reuse": ["agents/hire", "documents-artifacts/documents"],
   "agent-settings-persistence": ["agents/instructions", "tasks/completion"],
   "project-task-context": ["projects/lifecycle", "projects/task-context", "tasks/create"],

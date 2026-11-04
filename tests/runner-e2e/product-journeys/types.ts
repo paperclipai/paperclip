@@ -9,6 +9,7 @@ export type JourneyId =
   | "project-task-context"
   | "task-document-persistence"
   | "ask-question"
+  | "chat-continuity"
   | "cloud-onboarding"
   | "question-answer-resume"
   | "task-search-filter"

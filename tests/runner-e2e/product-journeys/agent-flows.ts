@@ -24,6 +24,7 @@ type AgentJourney = Exclude<keyof typeof agentJourneyRuns,
   "ask-question"
   | "question-answer-resume"
   | "followup-while-running"
+  | "chat-continuity"
   | "file-input-answer"
   | "routine-scheduled-run"
   | "agent-settings-persistence"

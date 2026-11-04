@@ -136,6 +136,7 @@ describe("runner E2E catalog", () => {
       "task-create",
       "project-task-context",
       "ask-question",
+      "chat-continuity",
       "question-answer-resume",
       "task-properties",
       "task-document-persistence",
