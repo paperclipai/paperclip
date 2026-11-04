@@ -37,6 +37,21 @@ function fixture() {
     verification: [{ taskId: "task", runId: "first", filename: "launch.html", command: "node accessible-heading-and-email-label-check", sha256: "a".repeat(64), exitCode: 1, checkedAt: "2026-10-26T00:50:00Z" }, { taskId: "task", runId: "second", filename: "launch.html", command: "node accessible-heading-and-email-label-check", sha256: "b".repeat(64), exitCode: 0, checkedAt: "2026-10-26T02:50:00Z" }],
   };
 }
+it("accepts an account without unrequested date or timezone labels but rejects prior-week ISO dates", () => {
+  const o = fixture();
+  o.reply = o.reply.replace("Today (UTC): ", "") + " [Source](/RUN/issues/task?at=2026-10-25)";
+  expect(gradeWorkTimeline(o).passed).toBe(true);
+  o.reply = "On 2026-10-25: " + o.reply;
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+it("accepts the current week's heading when its recorded milestones occur later", () => {
+  const o = fixture();
+  o.state.today = "2026-11-04";
+  for (const event of o.timelineEvents) event.createdAt = event.createdAt.replace("2026-10-26", "2026-11-04");
+  for (const receipt of o.verification) receipt.checkedAt = receipt.checkedAt.replace("2026-10-26", "2026-11-04");
+  o.reply = "Week of 2026-11-02: " + o.reply.replace("Today (UTC): ", "");
+  expect(gradeWorkTimeline(o).passed).toBe(true);
+});
 it("grades the actual producer's native status events through the real owning timeline oracle", () => {
   const o = fixture();
   expect(o.timelineEvents[0]).toMatchObject({ actorType: "system", actorId: "native-status-committer", runId: "first", details: { source: "native_status_decision", toStatus: "blocked" } });
@@ -190,7 +205,7 @@ it("admits the selected live timeline metadata without invoking fixture callback
   const spies = callbacks.map(key => vi.spyOn(implementation, key));
   try {
     expect(await validateChatCatalogConsistency([descriptor])).toEqual({ descriptorCount: 1, fixtureCallbacksInvoked: 0 });
-    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v2");
+    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v3");
     expect(descriptor.sourceFiles).toEqual(implementation.sourceFiles);
     expect(descriptor).toMatchObject({ expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000 });
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
