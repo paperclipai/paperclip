@@ -236,7 +236,7 @@ it("admits the selected live timeline metadata without invoking fixture callback
   const spies = callbacks.map(key => vi.spyOn(implementation, key));
   try {
     expect(await validateChatCatalogConsistency([descriptor])).toEqual({ descriptorCount: 1, fixtureCallbacksInvoked: 0 });
-    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v6");
+    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v7");
     expect(descriptor.sourceFiles).toEqual(implementation.sourceFiles);
     expect(descriptor).toMatchObject({ expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000 });
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
@@ -381,5 +381,19 @@ it.each([
 it.each(["another agent", "a bot"])("retains explicit nonhuman handoff attribution for %s", actor => {
   const o = fixture();
   o.reply = o.reply.replace("Then a human reassigned the task to Riley.", `The task was reassigned to Riley by ${actor}.`);
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+
+const unnamedAttempt = "The verification command failed with exit code 1 and the task paused. You reassigned the task to Riley. Riley repaired the label and the check passed.";
+it("accepts a recorded failed attempt without requiring every worker's name", () => {
+  const o = fixture(); o.reply = unnamedAttempt;
+  expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+it.each([
+  unnamedAttempt.replace("You reassigned the task to Riley. ", ""),
+  unnamedAttempt.replace("the check passed", "the check failed"),
+  unnamedAttempt.replace("The verification command failed", "Riley ran verification and it failed"),
+])("keeps missing handoff, failed repair and explicit wrong initial actor rejected: %s", reply => {
+  const o = fixture(); o.reply = reply;
   expect(gradeWorkTimeline(o).passed).toBe(false);
 });
