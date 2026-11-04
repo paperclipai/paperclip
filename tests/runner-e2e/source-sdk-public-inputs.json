@@ -393,7 +393,7 @@
     "packages/shared/src/types/smoke-lab.ts": "534b1a1ef3f8fda6ae9a15e009c4f247a6f0b9e3",
     "packages/shared/src/types/summary-slot.ts": "9698bb7d628be3f2310d050037e30157d474ed48",
     "packages/shared/src/types/task-workspace.ts": "a23afa13d2cb58dc2eb72692ed28c16ed6fb84fb",
-    "packages/shared/src/types/teams-catalog.ts": "a088b07eb0b54344f57b074a2bb4cc16659c8f46",
+    "packages/shared/src/types/teams-catalog.ts": "632fe75f8e5a4cfc455843c2a1a2daff28a022be",
     "packages/shared/src/types/tool-access.ts": "0fbd422fdadfa53000a8538f7b1df4d1564a6604",
     "packages/shared/src/types/user-profile.ts": "d961a4074852e170c4e61599bb4e293d5708ec16",
     "packages/shared/src/types/voice-sessions.ts": "95e3b62cdd51f62290e68536728ddd7297bc0459",
