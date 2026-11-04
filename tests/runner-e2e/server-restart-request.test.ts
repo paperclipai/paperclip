@@ -19,6 +19,17 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
+it.each(["rolling-web-deployment", "rolling-web-deployment-warm"])("accepts the assembled %s restart request", async suite => {
+  const execution = runnerMatrix.find(row => row.suite.id === suite && row.profile.id === "runner-codex")!;
+  const recoveryBinding = { companyId: "11111111-1111-4111-8111-111111111111",
+    issueId: "22222222-2222-4222-8222-222222222222", runId: "33333333-3333-4333-8333-333333333333" };
+  await writeFile(requestPath, JSON.stringify({ requestId: "rolling-request", rollingDeployment: true,
+    discardControllerCache: true, controllerOutage: controllerOutageForExecution(execution, {}), recoveryBinding }));
+  const request = await readRestartRequest(requestPath, [execution.id]);
+  expect(request).toMatchObject({ rollingDeployment: true, discardControllerCache: true, recoveryBinding });
+  expect(request).not.toHaveProperty("controllerOutage");
+});
+
 const cells = ["everyday-workflows", "daytona-restart-continuity"].flatMap(suite =>
   ["codex", "acpx"].map(provider => {
     const execution = runnerMatrix.find(row => row.suite.id === suite && row.task.id === "recover-controller"
