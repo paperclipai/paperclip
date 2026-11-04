@@ -39,6 +39,7 @@ import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
 import { nativeRestartInterruptedTurnId, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
+import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 import { requestNativeStartupCleanup, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-startup-cleanup.js";
 
 export type NativeControllerIdentity = {
@@ -524,6 +525,7 @@ export async function claimNativeRestartRecoveries(input: {
     .where(
       and(
         eq(heartbeatRuns.runtimeMode, "native"),
+        legacyWorkspaceRecoveryNotMigrated(),
         eq(agents.adapterType, "paperclip_runner"),
         or(inArray(heartbeatRuns.status, ["running", "failed"]), and(
           eq(heartbeatRuns.status, "interrupted"), eq(nativeRunFinalizations.phase, "observed"),
@@ -603,6 +605,8 @@ export async function claimNativeRestartRecoveries(input: {
       if (!row) {
         return busy();
       }
+      if (row.run.runnerProfileJson?.legacyWorkspaceRecoveryMigration != null)
+        return { kind: "blocked", runId: row.run.id, reason: "legacy_workspace_recovery_migrated" } as const;
       const stopCleanup = row.coordinator.phase === "observed"
         && row.coordinator.companyId === row.run.companyId && row.coordinator.issueId === row.run.nativeIssueId
         && await readPendingNativeRunStop(tx as unknown as Db, row.run);

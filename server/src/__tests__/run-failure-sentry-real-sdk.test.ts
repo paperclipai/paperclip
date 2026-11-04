@@ -50,6 +50,67 @@ afterEach(async () => {
 });
 
 describe.skipIf(!sentryPackage)("run failure context with the real Sentry SDK", () => {
+  it("reports a task again after the SDK drops its first capture under processing backpressure", async () => {
+    const Sentry = sentryPackage!;
+    const events: Array<Record<string, unknown>> = [];
+    let responseStatus = 200;
+    vi.stubEnv("SENTRY_DSN_BACKEND", "https://public@example.invalid/1");
+    enableRunFailureReporting();
+    vi.doMock("../peer-version-check.js", () => ({ checkExactPeerVersions: () => ({ ok: true }) }));
+    vi.doMock("@sentry/node", () => ({ ...Sentry,
+      init: (options: Record<string, unknown>) => Sentry.init({ ...options, transportOptions: { bufferSize: 1 },
+        transport: () => ({ send: async (envelope: [unknown, Array<[{ type: string }, Record<string, unknown>]>]) => {
+          for (const [header, payload] of envelope[1]) if (header.type === "event") events.push(payload);
+          return { statusCode: responseStatus };
+        }, flush: async () => true }),
+      }),
+    }));
+    const { setSentryRunLinkResolver } = await import("../sentry-links.js");
+    let release!: () => void;
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    setSentryRunLinkResolver(async () => { entered(); await held; return null; });
+    const { captureTaskInterruptionFailure, sentryReady } = await import("../sentry.js");
+    await sentryReady;
+    const event = { companyId: "55555555-5555-4555-8555-555555555555", agentId: "66666666-6666-4666-8666-666666666666",
+      taskId: "11111111-1111-4111-8111-111111111111", runId: "22222222-2222-4222-8222-222222222222",
+      agentAdapter: "paperclip_runner", runStatus: "interrupted" as const, intentId: null };
+    const dropped = { ...event, taskId: "33333333-3333-4333-8333-333333333333", runId: "44444444-4444-4444-8444-444444444444" };
+    try {
+      captureTaskInterruptionFailure(event);
+      await started;
+      captureTaskInterruptionFailure(dropped);
+      release();
+      await Sentry.flush(2000);
+      expect(events).toHaveLength(1);
+      expect(events[0].tags).toMatchObject({ run_id: event.runId });
+      setSentryRunLinkResolver(null);
+      const later = Date.now() + 120_000;
+      const clock = vi.spyOn(Date, "now").mockReturnValue(later);
+      captureTaskInterruptionFailure(event);
+      captureTaskInterruptionFailure(dropped);
+      await Sentry.flush(2000);
+      expect(events.map(item => (item.tags as Record<string, string>).run_id)).toEqual([event.runId, dropped.runId]);
+      const rejected = { ...event, taskId: "77777777-7777-4777-8777-777777777777", runId: "88888888-8888-4888-8888-888888888888" };
+      responseStatus = 503;
+      captureTaskInterruptionFailure(rejected);
+      await Sentry.flush(2000);
+      captureTaskInterruptionFailure(rejected);
+      await Sentry.flush(2000);
+      expect(events).toHaveLength(3);
+      clock.mockReturnValue(later + 120_000);
+      responseStatus = 200;
+      captureTaskInterruptionFailure(rejected);
+      await Sentry.flush(2000);
+      expect(events).toHaveLength(4);
+      clock.mockReturnValue(later + 240_000);
+      captureTaskInterruptionFailure(rejected);
+      await Sentry.flush(2000);
+      expect(events).toHaveLength(4);
+    } finally { release(); setSentryRunLinkResolver(null); vi.restoreAllMocks(); }
+  });
+
   it("exports event-local routine ancestry for terminal and saved-message failures without caller credentials", async () => {
     const Sentry = sentryPackage!;
     const events: Array<Record<string, unknown>> = [];

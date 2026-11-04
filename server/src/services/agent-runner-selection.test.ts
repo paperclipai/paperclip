@@ -46,18 +46,96 @@ describe("server-owned Codex runner selection", () => {
     const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo", repoStartingRef: "feature", runtimeEnvType: "cloud", env: { CURSOR_API_KEY: { type: "secret_ref", secretId: "saved-key", version: "latest" } }, instructionsFilePath: "/assigned/AGENTS.md", autoCreatePR: false };
     expect(agentRunnerAvailability("cursor_cloud", target)).toEqual({ supportedRunners: ["paperclip", "legacy"], defaultRunner: "legacy" });
     expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, target })).toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
+    for (const runner of [undefined, "auto"] as const) {
+      for (const driver of ["unavailable", "sandbox", "ssh"]) {
+        expect(() => resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner, target: { driver } }))
+          .toThrow(expect.objectContaining({ status: 422, details: { code: "agent_runner_unavailable" } }));
+      }
+    }
+    expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "legacy", target: { driver: "sandbox" } }))
+      .toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
     const converted = resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target });
     expect(converted).toEqual({ adapterType: "paperclip_runner", adapterConfig: { model: config.model, repoUrl: config.repoUrl, repoRef: "feature", cloudEnvType: "cloud", env: config.env, instructionsFilePath: config.instructionsFilePath, autoCreatePR: false, provider: "cursor_cloud", lifecycleMode: "per_turn" } });
     expect(resolveNewAgentRunner({ ...converted, runner: "legacy", target })).toEqual({ adapterType: "cursor_cloud", adapterConfig: config });
   });
-  it("rejects unsupported Cursor Cloud conversions and remote controllers without changing the original", () => {
+  it("rejects unsupported Cursor Cloud settings and keeps API placement independent of the selected Computer", () => {
     const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo" };
     for (const patch of [{ promptTemplate: "custom instructions" }, { runtimeEnvType: "pool" }, { model: "" }]) {
       expect(() => resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: { ...config, ...patch }, runner: "paperclip", target })).toThrow();
     }
     expect(config).toEqual({ model: "caller-model", repoUrl: "https://github.com/acme/repo" });
-    expect(agentRunnerAvailability("cursor_cloud", { ...target, driver: "ssh" })).toEqual({ supportedRunners: ["legacy"], defaultRunner: "legacy" });
-    expect(() => resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target: { ...target, driver: "ssh" } })).toThrow("unavailable");
+    expect(agentRunnerAvailability("cursor_cloud", { ...target, driver: "ssh" })).toEqual({ supportedRunners: ["paperclip"], defaultRunner: "paperclip" });
+    expect(resolveNewAgentRunner({ adapterType: "cursor_cloud", adapterConfig: config, runner: "paperclip", target: { ...target, driver: "ssh" } })).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "cursor_cloud" } });
+  });
+  it("saves native Cursor Cloud without probing or binding a managed Computer", async () => {
+    state.settings = { defaultEnvironmentId: "managed", experimental: { enableManagedSandboxOnly: true } };
+    const saved = await resolveNewAgentRunnerForCompany({} as never, "company", {
+      adapterType: "cursor_cloud", runner: "paperclip", defaultEnvironmentId: "managed",
+      adapterConfig: { model: "caller-model", repoUrl: "https://github.com/acme/repo" },
+    });
+    expect(saved).toMatchObject({ adapterType: "paperclip_runner", defaultEnvironmentId: null, adapterConfig: { provider: "cursor_cloud" } });
+    expect(state.getEnvironment).not.toHaveBeenCalled();
+    expect(state.ssh).not.toHaveBeenCalled();
+    expect(state.sandboxQualification).not.toHaveBeenCalled();
+  });
+  it("refreshes managed adapter policy before API-only Cursor admission without a Computer", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "synthetic-cloud-test-token");
+    state.settings = { experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
+    state.managedEnvironment.mockResolvedValue(null);
+    const input = { adapterType: "cursor_cloud", runner: "auto" as const, setupOnly: true, adapterConfig: {}, disabledTypes: [] };
+    expect(await resolveNewAgentRunnerForCompany({} as never, "company", input))
+      .toMatchObject({ adapterType: "paperclip_runner", defaultEnvironmentId: null, adapterConfig: { provider: "cursor_cloud" } });
+    for (const disabled of ["cursor_cloud", "paperclip_runner"]) {
+      state.disabled = [disabled];
+      await expect(resolveNewAgentRunnerForCompany({} as never, "company", input))
+        .rejects.toMatchObject({ status: 422, details: { code: "agent_runner_unavailable" } });
+    }
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", {
+      adapterType: "paperclip_runner", adapterConfig: { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/acme/repo", lifecycleMode: "per_turn" },
+    })).rejects.toMatchObject({ status: 422, details: { code: "agent_runner_unavailable" } });
+    expect(state.managedEnvironment).not.toHaveBeenCalled();
+    expect(state.getEnvironment).not.toHaveBeenCalled();
+    expect(state.resolveEnvironment).not.toHaveBeenCalled();
+    expect(state.ssh).not.toHaveBeenCalled();
+    expect(state.sandboxQualification).not.toHaveBeenCalled();
+  });
+  it.each([undefined, "auto"] as const)("defaults a new managed Cursor setup draft to the native API controller without a Computer (%s)", async runner => {
+    state.settings = { experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
+    state.managedEnvironment.mockResolvedValue(null);
+    const saved = await resolveNewAgentRunnerForCompany({} as never, "company", {
+      adapterType: "cursor_cloud", runner, setupOnly: true, adapterConfig: {},
+    });
+    expect(saved).toMatchObject({ adapterType: "paperclip_runner", defaultEnvironmentId: null,
+      adapterConfig: { provider: "cursor_cloud", lifecycleMode: "per_turn" } });
+    expect(state.managedEnvironment).not.toHaveBeenCalled();
+    expect(state.getEnvironment).not.toHaveBeenCalled();
+  });
+  it.each([
+    { setupOnly: false, enabled: true },
+    { setupOnly: true, enabled: false },
+  ])("does not use the new-draft Cursor API default outside its admission scope (%j)", async ({ setupOnly, enabled }) => {
+    state.settings = { experimental: { enableManagedSandboxOnly: true, enableNativeRunner: enabled } };
+    state.managedEnvironment.mockResolvedValue(null);
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", {
+      adapterType: "cursor_cloud", runner: "auto", setupOnly, adapterConfig: {},
+    })).rejects.toMatchObject({ status: 422, details: { code: "managed_sandbox_unavailable" } });
+  });
+  it("preserves an explicit Legacy choice on a held Cursor setup draft", async () => {
+    state.settings = { experimental: { enableManagedSandboxOnly: true, enableNativeRunner: true } };
+    expect(await resolveNewAgentRunnerForCompany({} as never, "company", {
+      adapterType: "cursor_cloud", runner: "legacy", setupOnly: true, adapterConfig: {},
+    })).toEqual({ adapterType: "cursor_cloud", adapterConfig: {} });
+    expect(state.managedEnvironment).not.toHaveBeenCalled();
+  });
+  it("refuses native Cursor save and availability under Kubernetes-only policy without provisioning", async () => {
+    state.settings = { general: { executionMode: "kubernetes" } };
+    await expect(resolveNewAgentRunnerForCompany({} as never, "company", { adapterType: "cursor_cloud", runner: "paperclip",
+      adapterConfig: { model: "caller-model", repoUrl: "https://github.com/acme/repo" } }))
+      .rejects.toMatchObject({ status: 422, details: { code: "provider_api_kubernetes_execution_unsupported" } });
+    const selected = await resolveAgentRunnerTargetForCompany({} as never, "company");
+    expect(agentRunnerAvailability("cursor_cloud", selected).supportedRunners).toEqual([]);
+    expect(state.getEnvironment).not.toHaveBeenCalled();
+    expect(state.ensureKubernetesEnvironment).not.toHaveBeenCalled();
   });
   it("keeps legacy Cursor Cloud environment bindings and rejects their unsupported native conversion", () => {
     const config = { model: "caller-model", repoUrl: "https://github.com/acme/repo",
@@ -389,7 +467,7 @@ describe("server-owned Codex runner selection", () => {
   it("advertises Legacy for a forced Kubernetes target before lazy environment creation", async () => {
     state.settings = { general: { executionMode: "kubernetes" } };
     const selected = await resolveAgentRunnerTargetForCompany({} as never, "company");
-    expect(selected).toEqual({ driver: "sandbox" });
+    expect(selected).toEqual({ driver: "sandbox", executionMode: "kubernetes" });
     expect(agentRunnerAvailability("codex_local", selected, state.disabled)).toEqual({ supportedRunners: ["legacy"], defaultRunner: "legacy" });
     expect(state.kubernetesEnvironment).toHaveBeenCalledWith("company");
     expect(state.ensureKubernetesEnvironment).not.toHaveBeenCalled();

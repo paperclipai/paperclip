@@ -20,7 +20,14 @@ import { agentJourneyRuns } from "./catalog.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
 type Row = Record<string, any>;
-type AgentJourney = Exclude<keyof typeof agentJourneyRuns, "ask-question" | "question-answer-resume" | "followup-while-running" | "file-input-answer" | "routine-scheduled-run" | "repository-continuation" | "saved-skill-use">;
+type AgentJourney = Exclude<keyof typeof agentJourneyRuns,
+  "ask-question"
+  | "question-answer-resume"
+  | "followup-while-running"
+  | "file-input-answer"
+  | "routine-scheduled-run"
+  | "repository-continuation"
+  | "saved-skill-use">;
 interface TaskState { currentIssue: Row & { id: string; status: string }; taskRuns: Array<Row & { status: string }>; comments: Row[]; interactions: Array<Row & { id: string; status: string }>; attachments: StoryDelivery[] }
 interface Options { deadlineAt: number; directory: string; capture(id: string, label: string, file: string): Promise<void> }
 const active = (run: Row) => ["queued", "running"].includes(run.status);

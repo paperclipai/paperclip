@@ -14,6 +14,7 @@ import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeup
   caseHandoffs, principalPermissionGrants, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { deleteAgentAdmissionHistory } from "../modules/execution-admission/index.js";
 
 export async function deleteAgentDependencies(tx: Db, companyId: string, id: string) {
   const [retainedHandoff] = await tx.select({ id: caseHandoffs.id }).from(caseHandoffs).where(and(
@@ -63,6 +64,11 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   await notifyInstructionCollection(tx, { companyId: companyId });
   await notifyCancelledWorkspacePreservation(tx, { companyId: companyId });
   await notifyUnsafeWorkspaceExportRecovery(tx, { companyId });
+  if ((await deleteAgentAdmissionHistory(tx, { companyId, agentId: id })).kind === "unsettled") {
+    throw conflict("Wait for this agent's admitted task executions to settle before deleting it", {
+      code: "agent_execution_admission_pending",
+    });
+  }
   await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.agentId, id));
   await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, id));
   await tx.delete(agentApiKeys).where(eq(agentApiKeys.agentId, id));

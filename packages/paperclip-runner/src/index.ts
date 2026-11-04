@@ -1,5 +1,6 @@
 export * from "./configured-environment.js";
 export * from "./catalog/index.js";
+export { taskDocumentKeySchema } from "./protocol-actions/task-document-key-schema.js";
 export { CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
 export { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "./drivers/acpx/kimi-closure-pins.js";
 export * from "./contracts/control-plane-port.js";

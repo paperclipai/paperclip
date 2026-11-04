@@ -35,7 +35,7 @@ describePostgres("durable plugin lifecycle delivery", () => {
       manifestJson: { resourceLifecycle: ["project"], capabilities: ["events.subscribe"] } as never });
     await db.insert(pluginConfig).values({ pluginId, companyId, configJson: {} });
   });
-  async function event(resourceId = randomUUID(), action: "create" | "update" | "delete" = "create") {
+  async function event(resourceId: string = randomUUID(), action: "create" | "update" | "delete" = "create") {
     await db.transaction(async tx => {
       if (action === "create") await recordResourceCreationEvent(tx as unknown as Db, companyId, "project", resourceId);
       else await recordProjectLifecycleEvent(tx as unknown as Db, companyId, resourceId, action);
@@ -187,8 +187,8 @@ describePostgres("durable plugin lifecycle delivery", () => {
       });
       expect(wake).toHaveBeenCalledTimes(1);
       const registry = pluginRegistryService(db);
-      await registry.upsertConfig(pluginId, companyId, { configJson: { enabled: true } });
-      await registry.patchConfig(pluginId, companyId, { configJson: { enabled: false } });
+      await registry.upsertConfig(pluginId, companyId, { companyId, configJson: { enabled: true } });
+      await registry.patchConfig(pluginId, companyId, { companyId, configJson: { enabled: false } });
       await registry.upsertCompanySettings(pluginId, companyId, { enabled: true, settingsJson: {} });
       expect(wake).toHaveBeenCalledTimes(4);
     } finally { unsubscribe(); }
@@ -240,8 +240,8 @@ describePostgres("durable plugin lifecycle delivery", () => {
   it("saves config and settings without borrowing another pool connection", async () => {
     const single = createDb(database.connectionString, { maxConnections: 1 });
     const registry = pluginRegistryService(single);
-    await registry.upsertConfig(pluginId, companyId, { configJson: { first: true } });
-    await registry.patchConfig(pluginId, companyId, { configJson: { second: true } });
+    await registry.upsertConfig(pluginId, companyId, { companyId, configJson: { first: true } });
+    await registry.patchConfig(pluginId, companyId, { companyId, configJson: { second: true } });
     await registry.upsertCompanySettings(pluginId, companyId, { enabled: true, settingsJson: {} });
     expect((await registry.getConfig(pluginId, companyId))?.configJson).toEqual({ first: true, second: true });
   }, 5000);

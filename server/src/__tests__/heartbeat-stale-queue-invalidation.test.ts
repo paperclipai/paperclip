@@ -37,12 +37,12 @@ import {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
 } from "../services/heartbeat.ts";
-import { runningProcesses } from "../adapters/index.ts";
+import { runningProcesses, type AdapterExecutionContext, type AdapterExecutionResult } from "../adapters/index.ts";
 import { recoveryService } from "../services/recovery/service.ts";
 import { withQueuedCommentIdsInWakePayload } from "../services/issue-queued-comment-queue.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (_context: AdapterExecutionContext): Promise<AdapterExecutionResult> => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -535,7 +535,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
 
     const run = await heartbeat.wakeup(agentId, {
       source: "timer",
-      triggerDetail: "schedule",
+      triggerDetail: "system",
     });
 
     expect(run).toBeNull();
@@ -1068,7 +1068,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
 
     const run = await heartbeat.wakeup(agentId, {
       source: "timer",
-      triggerDetail: "schedule",
+      triggerDetail: "system",
     });
 
     expect(run).not.toBeNull();
@@ -1086,7 +1086,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
 
     const run = await heartbeat.wakeup(agentId, {
       source: "timer",
-      triggerDetail: "schedule",
+      triggerDetail: "system",
     });
 
     expect(run).not.toBeNull();
@@ -1104,7 +1104,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
 
     const run = await heartbeat.wakeup(agentId, {
       source: "timer",
-      triggerDetail: "schedule",
+      triggerDetail: "system",
     });
 
     expect(run).not.toBeNull();
@@ -1811,7 +1811,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     let signalAdapterStarted!: () => void;
     const adapterStarted = new Promise<void>(resolve => { signalAdapterStarted = resolve; });
     const execute = mockAdapterExecute.getMockImplementation()!;
-    mockAdapterExecute.mockImplementation(async (...args: unknown[]) => {
+    mockAdapterExecute.mockImplementation(async (...args: Parameters<typeof execute>) => {
       if ((args[0] as { runId: string }).runId === resumedRunId) {
         signalAdapterStarted();
         // A claimed continuation can finish after the old terminal poll.
@@ -1819,7 +1819,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
           await new Promise(resolve => setTimeout(resolve, 3100));
         }
       }
-      return execute();
+      return execute(...args);
     });
     afterContinuationDispatchCheck = async ({ runId: checkedRunId, issueId: checkedIssueId }) => {
       if (checkedIssueId !== issueId || checkedRunId !== resumedRunId) return;
@@ -1846,7 +1846,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         kind: "request_confirmation",
         status: "rejected",
         continuationPolicy: "wake_assignee",
-        payload: {},
+        payload: { version: 1, prompt: "Approve the plan?" },
         result: { version: 1, outcome: "rejected", reason: "Needs more work" },
         createdByAgentId: agentId,
         resolvedAt: new Date(),

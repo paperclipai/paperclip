@@ -308,7 +308,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       .rejects.toThrow(/^remote_workspace_operation_failed$/);
     execute.mockResolvedValueOnce({ ...failure, timedOut: true, stderr: gitOperation });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
-      .rejects.toThrow(/^remote_workspace_operation_failed$/);
+      .rejects.toThrow(/^remote_workspace_operation_timed_out: archive_helper \(configured timeout 300000ms\)$/);
   });
 
   it.each([
@@ -345,6 +345,35 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace\nSYNTHETIC_PRIVATE_PATH" });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
       .rejects.toThrow(/^remote_workspace_operation_failed$/);
+  });
+
+  it("identifies a timed-out preparation without exposing transport output or retrying it", async () => {
+    const { remote, execute } = target();
+    const resolveGitAuth = vi.fn(async () => null);
+    execute.mockResolvedValueOnce({ exitCode: 0, stdout: '{"cloneRequired":true}', stderr: "",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    execute.mockResolvedValueOnce({ exitCode: null, stdout: "SYNTHETIC_PRIVATE_STDOUT", stderr: "SYNTHETIC_PRIVATE_STDERR",
+      timedOut: true, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+
+    await expect(prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: path.join(workspace, "clone"),
+      source: { kind: "git", repoUrl: "https://example.invalid/source.git", ref: null },
+      preparationIdentity: "a".repeat(64), resolveGitAuth }))
+      .rejects.toThrow(/^remote_workspace_operation_timed_out: prepare \(configured timeout 300000ms\)$/);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(resolveGitAuth).toHaveBeenCalledTimes(1);
+    expect(await fs.readdir(workspace)).toEqual([]);
+  });
+
+  it("reports the cleanup deadline without treating a timeout as a completed operation", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "preserve the workspace\n");
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 0, stdout: "SYNTHETIC_PRIVATE_STDOUT", stderr: "SYNTHETIC_PRIVATE_STDERR",
+      timedOut: true, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+
+    await expect(cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_operation_timed_out: cleanup \(configured timeout 10000ms\)$/);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("preserve the workspace\n");
   });
 
   it("never follows a preexisting snapshot receipt temporary symlink", async () => {

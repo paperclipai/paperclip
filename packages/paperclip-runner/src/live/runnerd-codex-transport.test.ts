@@ -9909,6 +9909,24 @@ it.each(["RPC failed: Private provider explanation.", "failed to start ACPX prov
   expect(failure).toHaveProperty("runnerCommandResult.result.message", message);
   expect((failure as Error).message).not.toContain(providerFailure.message);
   expect(JSON.stringify(failure)).not.toContain(providerFailure.message);
+  // Runner composes the ACPX rejection from closed codes, so its classification stays reportable.
+  if (message.startsWith("failed to start ACPX provider")) expect((failure as Error).message).toContain(message);
+  else expect((failure as Error).message).toContain('"message":"Provider request failed"');
+});
+
+it("reports a generic failure when an ACPX rejection does not match Runner's closed text", async () => {
+  const providerFailure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+    category: "unknown", message: "Private provider explanation.", retryability: "unknown" };
+  const message = "failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=session_ensure_failed) Private provider explanation.";
+  let failure: unknown;
+  try {
+    await waitForRunnerCommand({ type: "session.open", deadline: Date.now() + 1000, abortOnClose: true,
+      isClosed: () => false, throwIfFailed: () => {},
+      command: () => ({ status: "failed", result: { result: { code: "command_execution_failed", message, providerFailure } } }),
+      runnerHasExited: async () => false, failureCode: () => "startup_failed" });
+  } catch (error) { failure = error; }
+  expect((failure as Error).message).toContain('"message":"Provider request failed"');
+  expect((failure as Error).message).not.toContain("Private provider explanation.");
 });
 
 

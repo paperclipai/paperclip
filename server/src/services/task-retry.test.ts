@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { requestTaskRetry } from "./task-retry.js";
@@ -11,6 +11,7 @@ import { createSystemRecovery, failSystemRecovery, readSystemRecovery, SystemRec
 import { instanceSettingsService } from "./instance-settings.js";
 import { heartbeatService } from "./heartbeat.js";
 import { taskChatRetryCanAwaitRecovery, taskChatRetryExecutionStopped } from "./chat-channels/task-retry-authority.js";
+import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
 
 describe("durable task Retry admission", () => {
   let postgres: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -57,6 +58,90 @@ describe("durable task Retry admission", () => {
     expect(await requestTaskRetry(input)).toMatchObject({ accepted: false, stale: true });
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
   });
+  it.each(["stopped", "running", "owned", "changed_workspace", "changed_source", "missing_stop", "destroyed", "foreign_task"].flatMap(state =>
+    ["retry", "message"].map(entry => ({ state, entry }))).concat([{ state: "stopped", entry: "preview" }]))(
+    "preserves the actual remote writer behind a newer setup failure only with exact stopped authority: $entry $state", async ({ state, entry }) => {
+      const input = await seed();
+      const [latest] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.observedRunId));
+      const writerId = randomUUID(), workspaceId = randomUUID(), pluginId = randomUUID();
+      const sourceIssueId = state === "foreign_task" ? randomUUID() : input.issueId;
+      if (sourceIssueId !== input.issueId) await db.insert(issues).values({ id: sourceIssueId,
+        companyId: input.companyId, title: "Another task", status: "blocked", assigneeAgentId: latest.agentId });
+      await db.update(heartbeatRuns).set({ errorCode: "setup_failed", resultJson: {
+        executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+      } }).where(eq(heartbeatRuns.id, latest.id));
+      await db.insert(heartbeatRuns).values({ id: writerId, companyId: input.companyId, agentId: latest.agentId,
+        issueId: sourceIssueId, nativeIssueId: sourceIssueId, runtimeMode: "native",
+        status: state === "running" ? "running" : "failed", finishedAt: state === "running" ? null : new Date(),
+        createdAt: new Date(latest.createdAt.getTime() - 60_000),
+        contextSnapshot: { issueId: sourceIssueId, executionWorkspaceId: workspaceId },
+        resultJson: { workspaceRestoreFailure: "restore_failed", originalDiagnostic: true },
+      });
+      await db.insert(nativeRunFinalizations).values({ companyId: input.companyId, issueId: sourceIssueId,
+        runId: writerId, phase: "terminal_failure", leaseOwner: state === "owned" ? "live-controller" : null });
+      const [environment] = await db.insert(environments).values({ name: `Stopped source ${writerId}`, driver: "sandbox" }).returning();
+      const [lease] = await db.insert(environmentLeases).values({ companyId: input.companyId, issueId: sourceIssueId,
+        heartbeatRunId: writerId, environmentId: environment.id, provider: "daytona", providerLeaseId: randomUUID(),
+        status: "released", cleanupStatus: "success", leasePolicy: "reuse_by_environment", acquiredAt: new Date(Date.now() - 60_000),
+        releasedAt: new Date(),
+      }).returning();
+      const confirmedAt = lease.releasedAt!.toISOString();
+      const identity = { companyId: input.companyId, runId: writerId, leaseId: lease.id,
+        provider: lease.provider, providerLeaseId: lease.providerLeaseId, confirmedAt };
+      const metadata = { driver: "sandbox", pluginId, sandboxProviderPlugin: true, remoteCwd: "/work",
+        ...(state === "missing_stop" ? {} : {
+          remoteExecutionTermination: { ...identity, schema: "paperclip.remote-termination.v1", state: state === "destroyed" ? "destroyed" : "stopped" },
+          sandboxStopAndRetainReceipt: { ...identity, schema: "paperclip.sandbox-stop-and-retain-receipt.v1",
+            pluginId, method: "environmentStopLease", requestId: randomUUID() },
+        }),
+      };
+      await db.update(environmentLeases).set({ metadata }).where(eq(environmentLeases.id, lease.id));
+      const reference = { schema: "paperclip.remote-workspace-run.v1", workspaceId, epoch: 3,
+        snapshotId: randomUUID(), leaseId: lease.id, providerLeaseId: lease.providerLeaseId, remoteCwd: "/work", state: "prepared" };
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { remoteWorkspace: {
+        ...reference, ...(state === "changed_source" ? { providerLeaseId: randomUUID() } : {}),
+      } } }).where(eq(heartbeatRuns.id, writerId));
+      const authority = { schema: "paperclip.remote-workspace.v1", epoch: state === "changed_workspace" ? 4 : 3,
+        snapshotId: reference.snapshotId, source: { kind: "empty" }, writerRunId: writerId, dirty: true,
+        location: { environmentId: environment.id, leaseId: lease.id, providerLeaseId: lease.providerLeaseId, remoteCwd: "/work" } };
+      await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: input.companyId, sourceIssueId,
+        name: "Unfinished remote writer", mode: "isolated_workspace", strategyType: "project_primary", cwd: "/work",
+        providerType: "cloud_sandbox", metadata: { remoteWorkspace: authority } });
+      await db.update(environmentLeases).set({ executionWorkspaceId: workspaceId }).where(eq(environmentLeases.id, lease.id));
+      await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, input.issueId));
+
+      if (entry === "retry") {
+        const receipt = await requestTaskRetry(input);
+        expect((await requestTaskRetry(input)).requestId).toBe(receipt.requestId);
+      } else {
+        const [comment] = await db.insert(issueComments).values({ companyId: input.companyId, issueId: input.issueId,
+          authorType: "user", authorUserId: input.actorId, body: "Continue from saved work.",
+          createdAt: new Date() }).returning();
+        for (let attempt = 0; attempt < 2; attempt++) await db.transaction(tx => admitExplicitNativeContinuation({
+          db: tx as unknown as typeof db, companyId: input.companyId, issueId: input.issueId, agentId: latest.agentId,
+          actorType: "user", actorId: input.actorId, commentId: comment.id, successorRunId: randomUUID(),
+          reason: "issue_commented", dryRun: entry === "preview",
+        }));
+      }
+      const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, writerId));
+      const repairs = (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, input.issueId)))
+        .filter(action => action.evidence.workspaceRestoreRecovery);
+      if (state === "stopped" && entry !== "preview") {
+        expect(source.resultJson).toMatchObject({ originalDiagnostic: true,
+          workspaceRestoreRecovery: { leaseIds: [lease.id] } });
+        expect(repairs).toHaveLength(1);
+        expect(repairs[0].evidence.runId).toBe(writerId);
+      } else {
+        expect(source.resultJson).not.toHaveProperty("workspaceRestoreRecovery");
+        expect(repairs).toHaveLength(0);
+      }
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, lease.id)))[0])
+        .toMatchObject({ status: "released", leasePolicy: "reuse_by_environment", metadata });
+      expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId)))[0].metadata?.remoteWorkspace)
+        .toEqual(authority);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, input.companyId))).toHaveLength(2);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(entry === "retry" ? 1 : 0);
+    });
   it.each(["prepared", "mismatched", "owned"] as const)("reconstructs missing native preservation on deliberate Retry only for an exact unowned source: %s", async state => {
     const input = await seed();
     const [issue] = await db.select().from(issues).where(eq(issues.id, input.issueId));

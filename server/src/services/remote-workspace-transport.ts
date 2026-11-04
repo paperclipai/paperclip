@@ -27,12 +27,35 @@ export const REMOTE_WORKSPACE_SANDBOX_DISK_FULL =
 // Node reports ENOSPC or EDQUOT. Git and tar child processes report the text.
 const DISK_FULL_CHECK = String.raw`const diskFull=e=>['ENOSPC','EDQUOT'].includes(e?.code)||/No space left on device|Disk quota exceeded/i.test(String(e?.stderr??'')+String(e?.message??''));`;
 
-async function command(target: RemoteWorkspaceTarget, args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
+type RemoteWorkspaceOperation = "prepare" | "repository" | "archive_helper" | "capture" | "restore" | "cleanup";
+
+export class RemoteWorkspaceOperationTimeoutError extends Error {
+  constructor(readonly operation: RemoteWorkspaceOperation, readonly timeoutMs: number) {
+    super(`remote_workspace_operation_timed_out: ${operation} (configured timeout ${timeoutMs}ms)`);
+    this.name = "RemoteWorkspaceOperationTimeoutError";
+  }
+}
+
+export const REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE = "remote_workspace_prepare_timeout";
+
+export class RemoteWorkspacePreparationTimeoutError extends RemoteWorkspaceOperationTimeoutError {
+  readonly code = REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE;
+
+  constructor(error: RemoteWorkspaceOperationTimeoutError) {
+    super("prepare", error.timeoutMs);
+    this.name = "RemoteWorkspacePreparationTimeoutError";
+    this.cause = error;
+  }
+}
+
+async function command(target: RemoteWorkspaceTarget, operation: RemoteWorkspaceOperation,
+  args: string[], env?: Record<string, string>, timeoutMs = 300_000) {
   const result = await target.runner!.execute({ command: "node", args, cwd: target.remoteCwd,
     env: { NODE_OPTIONS: "", NODE_PATH: "", ...env }, timeoutMs, bypassSession: true });
-  if (result.exitCode !== 0 || result.timedOut) {
+  if (result.timedOut) throw new RemoteWorkspaceOperationTimeoutError(operation, timeoutMs);
+  if (result.exitCode !== 0) {
     const gitOperation = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
-    const reported = result.timedOut ? "" : result.stderr.trim();
+    const reported = result.stderr.trim();
     throw new Error([gitOperation, REMOTE_WORKSPACE_SANDBOX_DISK_FULL].includes(reported) ? reported : "remote_workspace_operation_failed");
   }
   return result.stdout;
@@ -95,14 +118,14 @@ export async function prepareRemoteWorkspaceDirectory(input: {
   preparationIdentity: string;
 }) {
   if (input.source.kind === "git") {
-    const prior = JSON.parse(await command(input.target, ["-e", PREPARE, input.remoteCwd,
+    const prior = JSON.parse(await command(input.target, "prepare", ["-e", PREPARE, input.remoteCwd,
       JSON.stringify({ ...input.source, preparationIdentity: input.preparationIdentity,
         authArgs: [], authEnvKeys: [], probeOnly: true })])) as { cwd?: string; cloneRequired?: boolean };
     if (prior.cwd === input.remoteCwd) return;
     if (prior.cloneRequired !== true) throw new Error("remote_workspace_root_changed");
   }
   const auth = input.source.kind === "git" ? await input.resolveGitAuth(input.source.repoUrl) : null;
-  const output = await command(input.target, ["-e", PREPARE, input.remoteCwd,
+  const output = await command(input.target, "prepare", ["-e", PREPARE, input.remoteCwd,
     JSON.stringify({ ...input.source, preparationIdentity: input.preparationIdentity,
       authArgs: auth?.configArgs ?? [], authEnvKeys: Object.keys(auth?.env ?? {}) })], auth?.env);
   const result = JSON.parse(output) as { cwd: string };
@@ -150,7 +173,7 @@ export async function prepareRemoteRepository(input: {
   const branch=await git(['symbolic-ref','--short','-q','HEAD']).catch(()=>null);process.stdout.write(JSON.stringify({cwd:root,pinnedCommit:input.pinnedCommit||head,branchName:branch}));
   })().catch(()=>{process.stderr.write('remote_workspace_repository_failed');process.exitCode=1});`;
   const payload = { ...input, target: undefined, resolveGitAuth: undefined };
-  const prior = JSON.parse(await command(input.target, ["-e", script, input.remoteCwd,
+  const prior = JSON.parse(await command(input.target, "repository", ["-e", script, input.remoteCwd,
     JSON.stringify({ ...payload, authArgs: [], authEnvKeys: [], probeOnly: true })])) as {
       cwd?: string; pinnedCommit?: string; branchName?: string | null; cloneRequired?: boolean;
     };
@@ -159,7 +182,7 @@ export async function prepareRemoteRepository(input: {
     return { cwd: prior.cwd, pinnedCommit: prior.pinnedCommit!, branchName: prior.branchName ?? null };
   }
   const auth = await input.resolveGitAuth(input.repoUrl);
-  const output = await command(input.target, ["-e", script, input.remoteCwd,
+  const output = await command(input.target, "repository", ["-e", script, input.remoteCwd,
     JSON.stringify({ ...payload, authArgs: auth?.configArgs ?? [], authEnvKeys: Object.keys(auth?.env ?? {}) })], auth?.env);
   const value = JSON.parse(output) as { cwd: string; pinnedCommit: string; branchName: string | null };
   if (value.cwd !== input.remoteCwd || !/^[a-f0-9]{40,64}$/.test(value.pinnedCommit)) throw new Error("remote_workspace_repository_receipt_invalid");
@@ -180,7 +203,7 @@ async function installArchiveHelper(target: RemoteWorkspaceTarget, remoteCwd: st
    try{await fs.writeFile(temp,Buffer.from(body,'base64'),{mode:0o600,flag:'wx'});await fs.rename(temp,file);}
    catch(e){if(e?.code!=='EEXIST')await fs.rm(temp,{force:true}).catch(()=>{});throw e;}
   })().catch(error=>{if(diskFull(error))process.stderr.write(${JSON.stringify(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)});process.exitCode=1});`;
-  await command(target, ["-e", install, remoteCwd, directory, helper, Buffer.from(remoteWorkspaceArchiveScript()).toString("base64")]);
+  await command(target, "archive_helper", ["-e", install, remoteCwd, directory, helper, Buffer.from(remoteWorkspaceArchiveScript()).toString("base64")]);
   return { directory, helper, archive: path.posix.join(directory, "workspace.pcws"), receipt: path.posix.join(directory, "receipt.json") };
 }
 
@@ -197,7 +220,7 @@ export async function cleanupRemoteWorkspaceArchive(input: {
     if(!entry.isDirectory()||entry.isSymbolicLink())throw Error('unsafe');}
    await fs.rm(dir,{recursive:true,force:true});
   })().catch(()=>{process.stderr.write('remote_workspace_export_cleanup_failed');process.exitCode=1});`;
-  await command(input.target, ["-e", script, input.remoteCwd, input.operationId], undefined, 10_000);
+  await command(input.target, "cleanup", ["-e", script, input.remoteCwd, input.operationId], undefined, 10_000);
 }
 
 export async function captureRemoteWorkspaceArchive(input: {
@@ -234,7 +257,7 @@ export async function captureRemoteWorkspaceArchive(input: {
    process.stderr.write(typeof error?.stderr==='string'&&error.stderr.trim()===gitOperation?gitOperation
     :diskFull(error)?${JSON.stringify(REMOTE_WORKSPACE_SANDBOX_DISK_FULL)}:'remote_workspace_capture_failed');process.exitCode=1;
   });`;
-  const { layout, ...receipt } = JSON.parse(await command(input.target, ["-e", capture, staged.helper, input.remoteCwd, staged.directory])) as {
+  const { layout, ...receipt } = JSON.parse(await command(input.target, "capture", ["-e", capture, staged.helper, input.remoteCwd, staged.directory])) as {
     manifestDigest: string; sha256: string; byteSize: number; entries: number; layout: "legacy" | "captured";
   };
   if (!["legacy", "captured"].includes(layout) || !/^[a-f0-9]{64}$/.test(receipt.manifestDigest) || !/^[a-f0-9]{64}$/.test(receipt.sha256)
@@ -284,7 +307,7 @@ export async function restoreRemoteWorkspaceDirectory(input: {
    await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify({identity,manifestDigest:digest}),{flag:'wx',mode:0o600});
    if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');await fs.rename(staged,root);
   })().catch(()=>{process.stderr.write('remote_workspace_restore_failed');process.exitCode=1});`;
-  await command(input.target, ["-e", restore, staged.helper, staged.archive, input.remoteCwd, input.manifestDigest, input.restorationIdentity]);
+  await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd, input.manifestDigest, input.restorationIdentity]);
   // Publish the restored location before cleanup can fail, stall, or lose its
   // reply. The owner journals this receipt and then reclaims disposable staging.
   return { operationId, stagingRoot: parent, cleanupPending: true };

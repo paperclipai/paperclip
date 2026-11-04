@@ -126,7 +126,30 @@ describe("runner E2E catalog", () => {
   });
 
   it("exports deployment journeys separately from the model matrix and default selection", () => {
-    expect(productJourneys.map(journey => journey.id)).toEqual(["saved-skill-use", "company-access-isolation", "repository-continuation", "routine-scheduled-run", "inbox-triage", "file-input-answer", "task-create", "project-task-context", "ask-question", "question-answer-resume", "task-properties", "task-document-persistence", "task-search-filter", "plan-revise-accept", "build-revise", "protected-actions", "create-skill-studio", "stop-redirect", "followup-while-running", "hire-delegate-reuse", "cloud-onboarding"]);
+    expect(productJourneys.map(journey => journey.id)).toEqual([
+      "saved-skill-use",
+      "task-edit-lifecycle",
+      "company-access-isolation",
+      "repository-continuation",
+      "routine-scheduled-run",
+      "inbox-triage",
+      "file-input-answer",
+      "task-create",
+      "project-task-context",
+      "ask-question",
+      "question-answer-resume",
+      "task-properties",
+      "task-document-persistence",
+      "task-search-filter",
+      "plan-revise-accept",
+      "build-revise",
+      "protected-actions",
+      "create-skill-studio",
+      "stop-redirect",
+      "followup-while-running",
+      "hire-delegate-reuse",
+      "cloud-onboarding"
+    ]);
     expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
     expect(runnerMatrix.some(execution => execution.suite.id === "product-journeys")).toBe(false);
     expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "product-journeys")).toBe(false);
@@ -758,6 +781,9 @@ describe("runner E2E catalog", () => {
       'summary:"PAPERCLIP_E2E_PLAN_DONE_nonce"',
     );
     expect(task!.buildPrompt("nonce")).toContain("first call get_task_context");
+    expect(task!.buildPrompt("nonce")).toContain("criteria:CURRENT_TURN_CRITERIA");
+    expect(task!.buildPrompt("nonce")).toContain("entry for every current criterion ID");
+    expect(task!.buildPrompt("nonce")).not.toContain('criterionId:"objective"');
     expect(task!.buildPrompt("nonce")).toContain(
       "identifies the exact revised Plan revision used as the confirmation target as accepted",
     );
