@@ -5,6 +5,7 @@ import { conflict, notFound } from "../errors.js";
 import { receiptFingerprint } from "./receipt-fingerprint.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
 import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 
 export interface CostCorrectionInput {
   companyId: string;
@@ -65,6 +66,9 @@ export async function applyCostCorrectionInTransaction(tx: Db, publications: Act
     reason: input.reason, actorId: input.actorId,
     pricing: input.pricing }).onConflictDoNothing().returning();
   if (!adjustment) throw Object.assign(new Error("Concurrent correction requires a fresh snapshot"), { code: "40001" });
+  // Daily-cost timer gates also depend on corrected ledger values when no
+  // formal budget policy exists. Replays above do not rearm this work.
+  await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
   const [updated] = await tx.update(costEvents).set({ costCents: sql`${correctedCents}::numeric`,
     reportedCostCents: event.event.reportedCostCents ?? normalizeCents(event.exact),
     ...(input.receiptUsage ? { ...input.receiptUsage, reportedUsageJson: event.event.reportedUsageJson ?? {
