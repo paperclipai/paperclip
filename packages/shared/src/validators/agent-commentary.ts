@@ -1,16 +1,13 @@
 import { z } from "zod";
+import { maxStringLength } from "./text.js";
 
 /** Same ceiling as an ordinary issue document; brevity is guidance, not a quota. */
 export const AGENT_COMMENTARY_MAX_LENGTH = 524_288;
 export const AGENT_COMMENTARY_KINDS = ["complaint", "suggestion"] as const;
 
 export const agentCommentaryToolInputSchema = z.object({
-  body: z.string()
-    .max(AGENT_COMMENTARY_MAX_LENGTH)
-    // Zod's max counts code points, which would admit twice this ceiling in emoji.
-    // The ceiling is JavaScript string length, matching submit-agent-commentary.mjs.
-    .refine((body) => body.length <= AGENT_COMMENTARY_MAX_LENGTH, "Feedback is too long")
-    .refine((body) => body.trim().length > 0, "Feedback must not be empty"),
+  // The ceiling is JavaScript string length, matching submit-agent-commentary.mjs.
+  body: maxStringLength(z.string(), AGENT_COMMENTARY_MAX_LENGTH).refine((body) => body.trim().length > 0, "Feedback must not be empty"),
   idempotencyKey: z.string().trim().min(1).max(240),
 }).strict();
 
