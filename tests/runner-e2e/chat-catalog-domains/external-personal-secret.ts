@@ -346,7 +346,7 @@ export const personalSecretExternalCases = [
     gradePersonalSecret,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.personal-secret.v2",
+      oracleVersion: "paperclip.chat-catalog.personal-secret.v3",
       setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["current-owner-missing-required-personal-value"] },
       expectedRunCount: 3,
       minimumRunCount: 3,
