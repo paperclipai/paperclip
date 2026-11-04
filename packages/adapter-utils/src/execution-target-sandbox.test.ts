@@ -3606,7 +3606,7 @@ describe("sandbox adapter execution targets", () => {
         await rename(`${filePath}.tmp`, filePath);
       }
       await vi.waitFor(async () => {
-        expect(await readdir(path.join(queueDir, "responses"))).toHaveLength(paths.length);
+        expect((await readdir(path.join(queueDir, "responses"))).filter(file => file.endsWith(".json"))).toHaveLength(paths.length);
       }, { timeout: 5000 });
       for (const [index] of paths.entries()) {
         const response = JSON.parse(await readFile(path.join(queueDir, "responses", `forged-${index}.json`), "utf8"));
