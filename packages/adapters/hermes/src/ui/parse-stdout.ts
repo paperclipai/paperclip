@@ -268,6 +268,10 @@ export function parseHermesStdoutLine(
     return [{ kind: "stdout", ts, text: stripped }];
   }
 
+  if (trimmed.startsWith("│")) {
+    return [{ kind: "stdout", ts, text: trimmed }];
+  }
+
   // ── Thinking blocks ────────────────────────────────────────────────────
   if (isThinkingLine(trimmed)) {
     return [
