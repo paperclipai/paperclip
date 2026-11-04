@@ -211,6 +211,17 @@ describe("teams catalog routes", () => {
     expect(mockCatalogModule.listCatalogTeams).not.toHaveBeenCalled();
   });
 
+  it("still rejects unknown preview and install fields before service mutation", async () => {
+    const app = await createApp({ type: "agent", agentId: "agent-1", companyId, runId: "run-1" });
+    for (const operation of ["preview", "install"]) {
+      const res = await request(app).post(`/api/companies/${companyId}/teams/catalog/product-engineering/${operation}`)
+        .send({ parentAgentId: "undocumented-field" });
+      expect(res.status).toBe(400);
+    }
+    expect(mockTeamsCatalogService.previewCatalogTeamImport).not.toHaveBeenCalled();
+    expect(mockTeamsCatalogService.installCatalogTeam).not.toHaveBeenCalled();
+  });
+
   it("previews catalog teams with company access and actor/source policy context", async () => {
     const app = await createApp({
       type: "board",
