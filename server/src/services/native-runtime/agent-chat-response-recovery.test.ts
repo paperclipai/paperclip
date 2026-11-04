@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, authUsers, companies, completionContracts, createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues,
-  nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
+  nativeRunFinalizations, nativeRunResults, statusDecisions, type Db } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { NativeRunCoordinatorStore } from "./native-run-coordinator-store.js";
@@ -20,7 +20,7 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
   }, 60_000);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); });
 
-  async function fixture(conversation = true) {
+  async function fixture(conversation = true, options: { disposition?: "done" | "yielded"; channel?: "final" | "unknown" } = {}) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
     const sessionId = randomUUID(), runnerId = randomUUID(), userId = `fixture-${randomUUID()}`, wakeId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Conversation owner", email: `${userId}@example.test`,
@@ -45,12 +45,16 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       completionContractRevision: "test", completionContractCriterionIds: [] });
     const reply = "The teammate is hired and ready for your next instruction.";
     const prpEvent = { runId, normalizedSessionId: sessionId, turnId: "hire-turn", sourceEventId: "fixture-final-answer",
-      payload: { kind: "agentMessage", channel: "final", providerPhase: "final", text: reply } };
+      payload: { kind: "agentMessage", channel: options.channel ?? "final", providerPhase: "final", text: reply } };
     await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 170, eventType: "item.completed", payload: { prpEvent } });
-    await port.completeRun({ result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done",
-      summary: "A completed hire, with its final message preserved separately.", completionClaim: { contractRevision: "test",
-        objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [], attentionRequests: [], artifacts: [] },
-      terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState: "completed", reportedWorkDisposition: "done" }, turnId: "hire-turn" });
+    const disposition = options.disposition ?? "done";
+    await port.completeRun({ result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: disposition,
+      summary: "A completed hire, with its final message preserved separately.",
+      ...(disposition === "yielded" ? { continuation: { kind: "response_wake" as const, summary: "Wait for the next human message", idempotencyKey: "conversation-next-message" } } : {}),
+      completionClaim: { contractRevision: "test",
+        objectiveSatisfied: true, criteria: [], remainingWork: [] }, evidence: [], verification: [],
+      attentionRequests: [], artifacts: [] },
+      terminal: { schema: "paperclip.prp.terminal.v1", runTerminalState: "succeeded", turnTerminalState: "completed", reportedWorkDisposition: disposition }, turnId: "hire-turn" });
     await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: false });
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date("2020-01-01T00:02:00Z") }).where(eq(heartbeatRuns.id, runId));
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0].phase).toBe("committed");
@@ -73,6 +77,17 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
     expect(await comments(f.runId)).toHaveLength(1);
   });
+  it("recovers a server-finished yielded conversation from its completed unknown-channel reply", async () => {
+    const f = await fixture(true, { disposition: "yielded", channel: "unknown" });
+    expect((await db.select().from(statusDecisions).where(eq(statusDecisions.runId, f.runId)))[0])
+      .toMatchObject({ reasonCode: "conversation_turn_finished" });
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(true);
+    expect(await comments(f.runId)).toEqual([expect.objectContaining({ body: f.reply, createdByRunId: f.runId })]);
+    expect(await issue(f.issueId)).toMatchObject({ status: "in_review", conversationState: "waiting" });
+    await expect(recoverCommittedNativeChatResponse(db, f.input)).resolves.toBe(false);
+    expect(await comments(f.runId)).toHaveLength(1);
+  });
+
   it("keeps a later user message actionable after recovering the earlier exact reply", async () => {
     const f = await fixture();
     await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorUserId: f.userId, body: "Another instruction",

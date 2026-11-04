@@ -572,6 +572,22 @@ describe("resolveHeartbeatRunResponse", () => {
     });
   });
 
+  it.each([
+    { conversationTurnFinished: true, interactionOwnsResponse: false, channel: "final" as const, visible: true },
+    { conversationTurnFinished: true, interactionOwnsResponse: false, channel: "unknown" as const, visible: true },
+    { conversationTurnFinished: false, interactionOwnsResponse: false, channel: "unknown" as const, visible: false },
+    { conversationTurnFinished: true, interactionOwnsResponse: true, channel: "unknown" as const, visible: false },
+  ])("preserves server-finished conversation authority for a yielded result: %j", ({ visible, ...authority }) => {
+    const { channel, ...flags } = authority;
+    const resolved = resolveHeartbeatRunResponse({ ...flags, nativeConversationFinalResponse: true,
+      resultJson: { summary: "Unqualified legacy summary", nativeResult: { schema: "paperclip.run_result.v1",
+        reportedWorkDisposition: "yielded", summary: "Waiting for the next message." } },
+      finalAgentMessage: { text: "Which project should own this?", sourceEventId: "chat-final-1", channel },
+    });
+    expect(resolved.text).toBe(visible ? "Which project should own this?" : null);
+    expect(resolved.decision.commentAction).toBe(visible ? "create" : "none");
+  });
+
   it("persists a final assistant reply when the server completed a conversation turn", () => {
     expect(resolveHeartbeatRunResponse({
       conversationTurnFinished: true,
