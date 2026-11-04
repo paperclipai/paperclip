@@ -5,7 +5,7 @@ import http2 from "node:http2";
 import net from "node:net";
 import { duplexPair, type Duplex } from "node:stream";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -3563,6 +3563,69 @@ describe("sandbox adapter execution targets", () => {
       session?.destroy();
       await bridge?.stop();
       await api.close();
+    }
+  }, 20000);
+
+  it("rejects forged queue destinations and filters headers with the route opt-out enabled", async () => {
+    vi.stubEnv("PAPERCLIP_SANDBOX_BRIDGE_ALLOW_ALL_ROUTES", "true");
+    const { remoteCwd } = await createSandboxWorkspace("paperclip-bridge-forged-queue-");
+    const api = await startRecordingApiServer();
+    const externalApi = await startRecordingApiServer();
+    const bridge = await startTestDuplexBridge("run-forged-queue", queueSandboxTarget(remoteCwd), api.origin);
+    try {
+      expect(bridge?.env.PAPERCLIP_API_BRIDGE_MODE).toBe("queue_v1");
+      const queueDir = bridge!.env.PAPERCLIP_BRIDGE_QUEUE_DIR;
+      const paths = [
+        `${externalApi.origin}/collect`,
+        `${externalApi.origin.replace("http:", "")}/collect`,
+        `/\\${new URL(externalApi.origin).host}/collect`,
+        "/api/agents/../secrets",
+        "/api/agents/%2e%2e/secrets",
+        "/api/agents%2fsecrets",
+        "/api/agents/agent-1/instructions-bundle/file",
+      ];
+      for (const [index, requestPath] of paths.entries()) {
+        const id = `forged-${index}`;
+        const filePath = path.join(queueDir, "requests", `${id}.json`);
+        await writeFile(`${filePath}.tmp`, JSON.stringify({
+          id,
+          method: "GET",
+          path: requestPath,
+          query: "?path=references%2Fworkflow.md",
+          headers: {
+            accept: "application/json",
+            authorization: "Bearer forged-token",
+            cookie: "forged-session",
+            host: "attacker.example",
+            "x-forwarded-host": "attacker.example",
+            "x-paperclip-run-id": "forged-run",
+          },
+          body: "",
+          createdAt: new Date().toISOString(),
+        }));
+        await rename(`${filePath}.tmp`, filePath);
+      }
+      await vi.waitFor(async () => {
+        expect(await readdir(path.join(queueDir, "responses"))).toHaveLength(paths.length);
+      }, { timeout: 5000 });
+      for (const [index] of paths.entries()) {
+        const response = JSON.parse(await readFile(path.join(queueDir, "responses", `forged-${index}.json`), "utf8"));
+        expect(response.status).toBe(index === paths.length - 1 ? 200 : 400);
+      }
+      expect(externalApi.requests).toHaveLength(0);
+      expect(api.requests).toHaveLength(1);
+      expect(api.requests[0]).toMatchObject({
+        url: "/api/agents/agent-1/instructions-bundle/file?path=references%2Fworkflow.md",
+        auth: "Bearer real-run-jwt",
+        runId: "run-forged-queue",
+        headers: { accept: "application/json", host: new URL(api.origin).host },
+      });
+      expect(api.requests[0].headers.cookie).toBeUndefined();
+      expect(api.requests[0].headers["x-forwarded-host"]).toBeUndefined();
+    } finally {
+      await bridge?.stop();
+      await api.close();
+      await externalApi.close();
     }
   }, 20000);
 

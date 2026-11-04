@@ -869,7 +869,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
   const maxEnvelopeBytes = sandboxBridgeEnvelopeLimit(maxBodyBytes);
   // Load lazily to avoid the HTTP/2 module's constants depending on this module
   // during initialization. Both transports share the host process memory ceiling.
-  const { createBridgeBodyReservation } = await import("./http2-bridge-server.js");
+  const { createBridgeBodyReservation, parseCanonicalBridgeRequestPath } = await import("./http2-bridge-server.js");
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
   const queueDirectories = [
     directories.rootDir,
@@ -1089,6 +1089,10 @@ export async function startSandboxCallbackBridgeWorker(input: {
         if (Buffer.byteLength(raw) > maxEnvelopeBytes) throw new Error("Bridge envelope too large");
         request = JSON.parse(raw) as SandboxCallbackBridgeRequest;
         decodeSandboxBridgeBody(request, maxBodyBytes);
+        const parsedPath = parseCanonicalBridgeRequestPath({ ":path": request.path });
+        if (!parsedPath.ok) throw new Error("Invalid bridge request path");
+        request.path = parsedPath.value.pathname;
+        request.headers = sanitizeSandboxCallbackBridgeHeaders(request.headers);
       } catch {
         const requestId = fileName.replace(/\.json$/i, "") || randomUUID();
         await finalize({
