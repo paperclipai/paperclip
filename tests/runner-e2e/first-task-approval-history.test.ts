@@ -75,8 +75,8 @@ describe("onboarding approval history journey", () => {
 
   it("reads the exact saved document revision through its production API", async () => {
     const document = recording().checkpoints.at(-1)!.documents[1];
-    const get = vi.fn(async <T>() => document.savedRevision as T);
-    const read = await readApprovalHistoryRevision({ get }, document);
+    const get = vi.fn(async (_path: string) => document.savedRevision);
+    const read = await readApprovalHistoryRevision({ get: async <T>(path: string) => await get(path) as T }, document);
     expect(get).toHaveBeenCalledExactlyOnceWith("/api/issues/child/documents/welcome/revisions/welcome-revision");
     expect(read.savedRevision).toMatchObject({ createdByAgentId: "writer", createdByRunId: "child-run" });
   });
