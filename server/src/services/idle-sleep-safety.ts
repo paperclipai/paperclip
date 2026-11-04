@@ -289,7 +289,6 @@ export interface IdleSleepSafetyOptions {
   incomingWake?: VerifiedIdleCapabilities;
   deadlineCapability?: VerifiedIdleCapabilities;
   collectDiagnostics?: true;
-  /** Explicit owner preparation, before taking the read-only safety snapshot. */
   prepareLocalWork?: (input: { canPrepare: () => boolean }) => Promise<IdleLocalWork>;
 }
 
@@ -354,8 +353,6 @@ export async function readIdleSleepSafety(
       } finally { finish(); }
       if (!current) return report("unknown");
       if (prepared !== "none") return report(prepared);
-      // Retirement can persist checkpoints. Inspect durable/local work only
-      // after that operation settles, with a fresh activity generation.
       localBefore = idleWorkSnapshot();
     }
     const localFirst = await inspectLocalWork(diagnostic?.record);

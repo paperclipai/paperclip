@@ -807,9 +807,6 @@ export async function closeIdleWarmNativeSessionsForRestart(): Promise<{
   });
 }
 
-/** Retire only idle owners while the caller still owns idle admission. Unlike
- * shutdown, an abandoned sleep attempt must not make busy turns close on release.
- * The caller must revalidate its hold and local work after this settles. */
 export async function prepareIdleWarmNativeSessionsForSleep(input: {
   canRetire: () => boolean;
 }): Promise<{ closed: number; busy: number; failed: number }> {
@@ -852,8 +849,6 @@ async function closeIdleWarmNativeSessions(input: {
       forgetWarmNativeSession(sessionId, entry);
       closed += 1;
     } catch {
-      // A rejected close is not retirement proof, even without managed files.
-      // Keep the fenced owner so neither sleep nor a replacement can pass it.
       failed += 1;
     } finally {
       entry.busy = false;
@@ -6974,7 +6969,6 @@ async function releaseWarmNativeSession(
       await closeWarmNativeSession(entry, entry.closeOnReleaseReason);
       forgetWarmNativeSession(sessionId, entry);
     } catch (error) {
-      // Retain uncertain provider/checkpoint ownership for the next close.
       if (requireCleanClose) throw error;
     } finally { entry.busy = false; }
     return;
@@ -7001,7 +6995,7 @@ function armWarmNativeSessionIdleTimer(
     current.closeOnReleaseReason = "warm native session idle timeout";
     const closing = closeWarmNativeSession(current, current.closeOnReleaseReason)
       .then(() => { forgetWarmNativeSession(sessionId, current); })
-      .catch(() => { /* Failed retirement stays fenced, including owners without managed files. */ })
+      .catch(() => {})
       .finally(() => {
         current.busy = false;
         if (closingWarmNativeSessions.get(sessionId) === closing) closingWarmNativeSessions.delete(sessionId);

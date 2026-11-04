@@ -4271,7 +4271,6 @@ export function heartbeatService(
     startTaskDrain,
     stopTaskDrain,
     getTaskDrainStatus,
-    // Explicit resource preparation; drain reads and diagnostics stay passive.
     prepareIdleWarmNativeSessionsForSleep,
     readUpgradeReadiness: () => readUpgradeReadiness(db, { activeRunIds: activeRunExecutions, counters: getTaskDrainStatus }),
     computeTaskDrain,
