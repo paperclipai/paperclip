@@ -5,6 +5,8 @@ function secureEntryExcludesChat(clause: string): boolean {
   return !!excluded && !/\b(?:chat|conversation|message|here)\b/i.test(excluded[1]!) && secureTarget.test(excluded[1]!);
 }
 function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needsChatDestination: boolean): boolean {
+  const contrasts = clause.split(/\band\s+instead\s+(?=(?:paste|send|share|provide|enter)\b)/i);
+  if (contrasts.length > 1) return contrasts.some(part => positiveCredentialRequest(part, hasKeyContext, needsChatDestination));
   const request = needsChatDestination
     ? /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b.{0,40}\b(?:chat|message|conversation|here)\b|\b(?:paste|send|share)\b.{0,20}\b(?:here|in chat)\b.{0,40}\b(?:key|credential|token)\b/i
     : /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b/i;

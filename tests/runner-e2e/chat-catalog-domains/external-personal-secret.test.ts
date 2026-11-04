@@ -245,3 +245,7 @@ it("distinguishes a subordinate chat request from a coordinated warning", () => 
   expect(personalSecretGuidance(context + "Please paste the credential you want to share here in chat.")).toBe(false);
   expect(personalSecretGuidance(context + "You must never paste or share your credential here.")).toBe(true);
 });
+
+it("rejects a chat request after an explicit instead boundary", () => {
+  expect(personalSecretGuidance("Open secure personal publishing settings. Do not paste your credential into files and instead send it here in chat.")).toBe(false);
+});
