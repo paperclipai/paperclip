@@ -820,8 +820,13 @@ export function IssueAssigneePausedNotice({
 }) {
   if (!agent || agent.status !== "paused" || issueStatusIsTerminalDisposition(issueStatus)) return null;
 
+  // Setup drafts stay paused until the setup wizard finishes; the server
+  // rejects a plain resume for them, so the banner must not offer one.
+  const needsSetup = agent.pauseReason === "setup";
   const pauseDetail =
-    agent.pauseReason === "budget"
+    needsSetup
+      ? "Its setup isn't finished — finish setting up the agent from its page to start runs."
+      : agent.pauseReason === "budget"
       ? "It was paused by a budget hard stop."
       : agent.pauseReason === "import"
         ? "It arrived paused from an organization import — imported agents stay parked until you resume them."
@@ -830,7 +835,8 @@ export function IssueAssigneePausedNotice({
           : "It was paused manually.";
   // Budget pauses clear on their own when the budget resets; resuming by hand
   // would fight the hard stop, so the action is only offered for the rest.
-  const canResume = Boolean(onResume) && agent.pauseReason !== "budget";
+  const canResume =
+    Boolean(onResume) && agent.pauseReason !== "budget" && !needsSetup;
 
   return (
     <div data-testid="issue-assignee-paused-notice" className="mb-3">

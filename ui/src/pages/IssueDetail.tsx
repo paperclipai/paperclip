@@ -7018,9 +7018,27 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         });
       }
     },
+    onError: (error) => {
+      pushToast({
+        title: "Couldn't resume agent",
+        body: error instanceof Error ? error.message : "Unable to resume the agent",
+        tone: "error",
+      });
+      // The cached agent may be stale (e.g. still in setup); refresh so the
+      // paused notice reflects the agent's real state.
+      if (issueCompanyIdForResume) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.agents.list(issueCompanyIdForResume),
+        });
+      }
+    },
   });
   const handleResumeAssignee = useCallback(async () => {
-    await resumeAssigneeAgent.mutateAsync();
+    try {
+      await resumeAssigneeAgent.mutateAsync();
+    } catch {
+      // Surfaced to the user by the mutation's onError toast.
+    }
   }, [resumeAssigneeAgent.mutateAsync]);
   const activeRecoveryActionId = issue?.activeRecoveryAction?.id;
   const handleResolveRecoveryAction = useCallback(

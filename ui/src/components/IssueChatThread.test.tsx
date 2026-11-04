@@ -4468,6 +4468,29 @@ describe("IssueAssigneePausedNotice", () => {
     act(() => root.unmount());
   });
 
+  it("offers no resume action for agents still in setup", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueAssigneePausedNotice
+          agent={pausedAgent("setup")}
+          issueStatus="in_progress"
+          onResume={vi.fn()}
+          resuming={false}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("setup isn't finished");
+    expect(container.textContent).not.toContain("paused manually");
+    expect(
+      container.querySelector('[data-testid="issue-assignee-paused-resume"]'),
+    ).toBeNull();
+
+    act(() => root.unmount());
+  });
+
   it("offers no resume action for budget pauses", () => {
     const root = createRoot(container);
 
