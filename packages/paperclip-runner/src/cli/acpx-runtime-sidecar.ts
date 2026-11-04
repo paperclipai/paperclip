@@ -1199,6 +1199,7 @@ function safeUsage(cost: unknown, breakdown: unknown): Record<string, unknown> {
         ? null
         : {
             amount: safeNonNegativeNumber(nativeCost.amount),
+            ...(nativeCost.basis === "turn" ? { basis: "turn" } : {}),
             currency: safeText(text(nativeCost.currency)).slice(0, 16) || null,
           },
     breakdown:

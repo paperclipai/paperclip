@@ -659,6 +659,19 @@ billable usage. These receipt corrections also apply to non-eval ACPX sessions.
 The durable redactor preserves these known numeric token-counter fields;
 string/object values under the same names remain redacted as sensitive data.
 
+Grok 1.0.13 reports whole-prompt usage in `session/prompt` response
+`_meta.usage`. The sibling `_meta` counters describe only the last model call.
+Runner binds the nested receipt to the outbound JSON-RPC request and session,
+then emits it before the terminal event. Replayed, conflicting, malformed, or
+incomplete receipts cannot supply complete accounting. ACP input includes cache
+reads and cache creation; Runner separates those buckets and does not add the
+reasoning subset to output again. A complete `costUsdTicks` uses 10 billion ticks
+per USD. Missing or partial cost remains unknown. The sidecar's `cost.basis`
+distinguishes a `turn` total from the default session-cumulative cost, so later
+turns do not inherit or subtract an earlier turn's bill.
+These semantics follow the upstream [prompt usage contract](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/extensions/notification.rs)
+and [prompt response tests](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-grok-shell/src/agent/mvp_agent/prompt_response_meta_tests.rs).
+
 `all` means the maintained enabled campaign, not every matching file in the
 roster directory. A missing campaign file fails closed. Within an enabled
 lane, a missing remote profile or unavailable provider is retained as an

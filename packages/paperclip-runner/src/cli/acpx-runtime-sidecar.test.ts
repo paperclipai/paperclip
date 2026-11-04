@@ -8,7 +8,7 @@ import { appendSemanticToolReceipt, readNativeSemanticReceipt, semanticInputSha2
 import { startRunnerToolBridge, type RunnerToolCall } from "../drivers/runner-tool-bridge.js";
 import { validatePrpStructuredRunResult } from "../protocol/replay-contract.js";
 import { resolveCompletionContinuation } from "../drivers/completion-continuation.js";
-import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice } from "../drivers/acpx/usage-accounting.js";
+import { acpxUsageEstimateNotice, persistedAcpxTurnUsage, persistedCursorUsageNotice, qualifiedAcpxUsageBreakdown } from "../drivers/acpx/usage-accounting.js";
 import { stripTypeScriptTypes } from "node:module";
 import { cursorPlanToolIdentity, cursorToolIdentity } from "../drivers/acpx/cursor-plan-tool-identity.js";
 import { createHash, randomUUID } from "node:crypto";
@@ -21,6 +21,22 @@ import { createKimiMessageProjection } from "../drivers/acpx/kimi-message-bounda
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 describe("live sidecar pending request snapshots", () => {
+  it("preserves explicit turn cost through the sidecar's closed usage projection", () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("function safeUsage(");
+    const end = source.indexOf("function safeOutput(", start);
+    const project = new Function("record", "qualifiedAcpxUsageBreakdown", "initializedAgent", "safeText", "text",
+      `${stripTypeScriptTypes(source.slice(start, end))}; return safeUsage;`)(
+      (value: unknown) => value && typeof value === "object" ? value : {}, qualifiedAcpxUsageBreakdown, "grok",
+      (value: string) => value, (value: unknown) => typeof value === "string" ? value : "",
+    );
+    expect(project({ amount: 0.336842, currency: "USD", basis: "turn", rawSecret: "excluded" }, null)).toEqual({
+      cost: { amount: 0.336842, currency: "USD", basis: "turn" }, breakdown: null,
+    });
+    expect(project({ amount: 0.7, currency: "USD" }, null)).toEqual({ cost: { amount: 0.7, currency: "USD" }, breakdown: null });
+    expect(project(undefined, null)).toEqual({ cost: null, breakdown: null });
+  });
+
   it("attests current callback identities after the live status barrier without exposing forms", async () => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf('  if (request.command === "session.snapshot") {');
