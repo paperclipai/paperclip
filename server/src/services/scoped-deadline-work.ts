@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
 import { takeCompanyWorkBatch } from "./company-work-batch.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import type { DeliveryQueue } from "./delivery-work-notifications.js";
@@ -27,6 +29,8 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   if (options.concurrentChecks && (!Number.isInteger(options.concurrentChecks.limit) || options.concurrentChecks.limit < 1)) {
     throw new RangeError("Concurrent check limit must be a positive integer");
   }
+  const ownerRevision = randomUUID();
+  let revision = 0, running = false, stopped = false, lastRunFailed = false;
   const dirty = new Set<string>(["*"]);
   const versions = new Map<string, number>();
   const scans = new Map<string, { version: number; seen: Set<string> }>();
@@ -59,109 +63,115 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
   const worker = coordinator.register(options.queue, {
     retryMs: 30_000,
     pausePassiveMaintenance: true,
-    onSettled: hints => { for (const hint of hints ?? ["*"]) {
+    onStop: () => { stopped = true; revision++; },
+    onSettled: hints => { revision++; for (const hint of hints ?? ["*"]) {
       dirty.add(hint); versions.set(hint, (versions.get(hint) ?? 0) + 1);
     } },
     run: async signal => {
-      if (!canRun() || Date.now() < earliest) return;
-      for (const [hint, until] of reconstructAfter) {
-        if (until <= Date.now()) reconstructAfter.delete(hint);
-      }
-      const ready = [...dirty].filter(hint => Math.max(reconstructAfter.get(hint) ?? 0, scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
-      if (ready.length === 0 && ![...entries.values()].some(entry => Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())) return;
-      earliest = Date.now() + (options.minimumPassIntervalMs ?? 1000);
-      try { await options.beforePass?.(); } catch (error) {
-        for (const hint of ready) failed(scopeFailures, hint);
-        for (const entry of entries.values()) if (entry.dueAt <= Date.now()) failed(failures, entry.id);
-        throw error;
-      }
-      const errors: unknown[] = [];
-      const requested = ready.includes("*")
-        ? ["*", ...ready.filter(hint => hint !== "*")].slice(0, 25)
-        : ready.slice(0, 25);
-      for (const hint of requested) dirty.delete(hint);
-      for (let index = 0; index < requested.length; index++) {
-        if (signal.aborted || !canRun()) { for (const hint of requested.slice(index)) dirty.add(hint); return; }
-        const hint = requested[index];
-        let scope: Scope | undefined;
-        let decoded = false;
-        try {
-          scope = options.decodeScope(hint); decoded = true;
-          const scan = scans.get(hint) ?? { version: versions.get(hint) ?? 0, seen: new Set<string>() };
-          scans.set(hint, scan);
-          const loaded = await options.load(scope, signal);
-          const result = Array.isArray(loaded) ? { rows: loaded, complete: true } : loaded;
-          for (const entry of result.rows ?? []) {
-            const pending = entries.get(entry.id);
-            entries.set(entry.id, pending && options.mergeEntry ? options.mergeEntry(pending, entry) : entry);
-            for (const [other, progress] of scans) if (options.matches(entry, options.decodeScope(other))) progress.seen.add(entry.id);
-          }
-          if (!result.complete) { dirty.add(hint); continue; }
-          if (result.rows !== null) for (const entry of entries.values()) if (options.matches(entry, scope) && !scan.seen.has(entry.id)) {
-            entries.delete(entry.id); failures.delete(entry.id);
-          }
-          scans.delete(hint);
-          const reconstructionInterval = typeof options.reconstructionIntervalMs === "function"
-            ? options.reconstructionIntervalMs(scope) : (options.reconstructionIntervalMs ?? 0);
-          if (reconstructionInterval > 0) {
-            reconstructAfter.set(hint, Date.now() + reconstructionInterval);
-          }
-          if ((versions.get(hint) ?? 0) !== scan.version) dirty.add(hint); else versions.delete(hint);
-          if (!scope) scopeFailures.clear(); else scopeFailures.delete(hint);
-        } catch (error) {
-          const retryHint = decoded ? hint : "*";
-          if (!decoded) { scans.delete(hint); versions.delete(hint); }
-          dirty.add(retryHint); failed(scopeFailures, retryHint); errors.push(error);
+      revision++; running = true;
+      try {
+        if (!canRun() || Date.now() < earliest) return;
+        for (const [hint, until] of reconstructAfter) {
+          if (until <= Date.now()) reconstructAfter.delete(hint);
         }
-      }
-      const unavailable = dirtyScopes();
-      const due = [...entries.values()].filter(entry => !unavailable.some(scope => options.matches(entry, scope))
-        && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
-        .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
-      const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
-      // An owner may share more than one resource (for example a task and an
-      // endpoint). Merge intersecting keys before dispatch so waiting siblings
-      // do not occupy the bounded check slots ahead of independent work.
-      const parents = batch.entries.map((_, index) => index);
-      const root = (index: number): number => {
-        while (parents[index] !== index) index = parents[index];
-        return index;
-      };
-      const owners = new Map<string, number>();
-      for (const [index, entry] of batch.entries.entries()) {
-        const configured = options.concurrentChecks?.key(entry) ?? "";
-        const keys = typeof configured === "string" ? [configured] : configured;
-        for (const key of keys) {
-          const previous = owners.get(key);
-          if (previous === undefined) owners.set(key, index);
-          else parents[root(index)] = root(previous);
+        const ready = [...dirty].filter(hint => Math.max(reconstructAfter.get(hint) ?? 0, scopeFailures.get(hint)?.retryAt ?? 0) <= Date.now());
+        if (ready.length === 0 && ![...entries.values()].some(entry => Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())) return;
+        earliest = Date.now() + (options.minimumPassIntervalMs ?? 1000);
+        try { await options.beforePass?.(); } catch (error) {
+          for (const hint of ready) failed(scopeFailures, hint);
+          for (const entry of entries.values()) if (entry.dueAt <= Date.now()) failed(failures, entry.id);
+          throw error;
         }
-      }
-      const groups = new Map<number, Entry[]>();
-      for (const [index, entry] of batch.entries.entries()) {
-        const key = root(index);
-        const group = groups.get(key) ?? [];
-        group.push(entry); groups.set(key, group);
-      }
-      const pending = [...groups.values()];
-      let nextGroup = 0;
-      const checkGroups = async () => {
-        while (!signal.aborted && canRun()) {
-          const group = pending[nextGroup++];
-          if (!group) return;
-          for (const entry of group) {
-            if (signal.aborted || !canRun()) return;
-            try {
-              const current = await options.check(entry, signal);
-              if (current) entries.set(entry.id, current); else entries.delete(entry.id);
-              failures.delete(entry.id);
-            } catch (error) { failed(failures, entry.id); errors.push(error); }
+        const errors: unknown[] = [];
+        const requested = ready.includes("*")
+          ? ["*", ...ready.filter(hint => hint !== "*")].slice(0, 25)
+          : ready.slice(0, 25);
+        for (const hint of requested) dirty.delete(hint);
+        for (let index = 0; index < requested.length; index++) {
+          if (signal.aborted || !canRun()) { for (const hint of requested.slice(index)) dirty.add(hint); return; }
+          const hint = requested[index];
+          let scope: Scope | undefined;
+          let decoded = false;
+          try {
+            scope = options.decodeScope(hint); decoded = true;
+            const scan = scans.get(hint) ?? { version: versions.get(hint) ?? 0, seen: new Set<string>() };
+            scans.set(hint, scan);
+            const loaded = await options.load(scope, signal);
+            const result = Array.isArray(loaded) ? { rows: loaded, complete: true } : loaded;
+            for (const entry of result.rows ?? []) {
+              const pending = entries.get(entry.id);
+              entries.set(entry.id, pending && options.mergeEntry ? options.mergeEntry(pending, entry) : entry);
+              for (const [other, progress] of scans) if (options.matches(entry, options.decodeScope(other))) progress.seen.add(entry.id);
+            }
+            if (!result.complete) { dirty.add(hint); continue; }
+            if (result.rows !== null) for (const entry of entries.values()) if (options.matches(entry, scope) && !scan.seen.has(entry.id)) {
+              entries.delete(entry.id); failures.delete(entry.id);
+            }
+            scans.delete(hint);
+            const reconstructionInterval = typeof options.reconstructionIntervalMs === "function"
+              ? options.reconstructionIntervalMs(scope) : (options.reconstructionIntervalMs ?? 0);
+            if (reconstructionInterval > 0) {
+              reconstructAfter.set(hint, Date.now() + reconstructionInterval);
+            }
+            if ((versions.get(hint) ?? 0) !== scan.version) dirty.add(hint); else versions.delete(hint);
+            if (!scope) scopeFailures.clear(); else scopeFailures.delete(hint);
+          } catch (error) {
+            const retryHint = decoded ? hint : "*";
+            if (!decoded) { scans.delete(hint); versions.delete(hint); }
+            dirty.add(retryHint); failed(scopeFailures, retryHint); errors.push(error);
           }
         }
-      };
-      const checks = await Promise.allSettled(Array.from({ length: Math.min(options.concurrentChecks?.limit ?? 1, pending.length) }, checkGroups));
-      for (const result of checks) if (result.status === "rejected") errors.push(result.reason);
-      if (errors.length) throw new AggregateError(errors, `${options.queue} could not settle`);
+        const unavailable = dirtyScopes();
+        const due = [...entries.values()].filter(entry => !unavailable.some(scope => options.matches(entry, scope))
+          && Math.max(entry.dueAt, failures.get(entry.id)?.retryAt ?? 0) <= Date.now())
+          .sort((a, b) => a.dueAt - b.dueAt || a.id.localeCompare(b.id));
+        const batch = takeCompanyWorkBatch(due, options.batchSize ?? 25, lastCompany); lastCompany = batch.lastCompany;
+        // An owner may share more than one resource (for example a task and an
+        // endpoint). Merge intersecting keys before dispatch so waiting siblings
+        // do not occupy the bounded check slots ahead of independent work.
+        const parents = batch.entries.map((_, index) => index);
+        const root = (index: number): number => {
+          while (parents[index] !== index) index = parents[index];
+          return index;
+        };
+        const owners = new Map<string, number>();
+        for (const [index, entry] of batch.entries.entries()) {
+          const configured = options.concurrentChecks?.key(entry) ?? "";
+          const keys = typeof configured === "string" ? [configured] : configured;
+          for (const key of keys) {
+            const previous = owners.get(key);
+            if (previous === undefined) owners.set(key, index);
+            else parents[root(index)] = root(previous);
+          }
+        }
+        const groups = new Map<number, Entry[]>();
+        for (const [index, entry] of batch.entries.entries()) {
+          const key = root(index);
+          const group = groups.get(key) ?? [];
+          group.push(entry); groups.set(key, group);
+        }
+        const pending = [...groups.values()];
+        let nextGroup = 0;
+        const checkGroups = async () => {
+          while (!signal.aborted && canRun()) {
+            const group = pending[nextGroup++];
+            if (!group) return;
+            for (const entry of group) {
+              if (signal.aborted || !canRun()) return;
+              try {
+                const current = await options.check(entry, signal);
+                if (current) entries.set(entry.id, current); else entries.delete(entry.id);
+                failures.delete(entry.id);
+              } catch (error) { failed(failures, entry.id); errors.push(error); }
+            }
+          }
+        };
+        const checks = await Promise.allSettled(Array.from({ length: Math.min(options.concurrentChecks?.limit ?? 1, pending.length) }, checkGroups));
+        for (const result of checks) if (result.status === "rejected") errors.push(result.reason);
+        if (errors.length) throw new AggregateError(errors, `${options.queue} could not settle`);
+        lastRunFailed = false;
+      } catch (error) { lastRunFailed = true; throw error; }
+      finally { running = false; revision++; }
     },
     // Retain scopes/deadlines for resume without retaining a settled write's
     // idle hold during drain. The coordinator still fences unresolved XIDs.
@@ -169,8 +179,17 @@ export function registerScopedDeadlineWork<Entry extends ScheduledEntry, Scope>(
     nextRunAt: next,
     nextRunAtOnError: next,
   });
-  return { ...worker, invalidate(hint = "*") {
-    dirty.add(hint); versions.set(hint, (versions.get(hint) ?? 0) + 1);
-    worker.wake();
-  } };
+  return { ...worker,
+    reconciliationSnapshot: (): DeadlineReconciliationSnapshot => ({
+      revision: `${ownerRevision}:${revision}`,
+      reconciled: !stopped && !running && !lastRunFailed && dirty.size === 0 && scans.size === 0
+        && failures.size === 0 && scopeFailures.size === 0,
+    }),
+    wake() { revision++; worker.wake(); },
+    invalidate(hint = "*") {
+      revision++;
+      dirty.add(hint); versions.set(hint, (versions.get(hint) ?? 0) + 1);
+      worker.wake();
+    },
+  };
 }
