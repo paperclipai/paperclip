@@ -693,6 +693,27 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     expect(deps.canStartNewExternalBotWork).not.toHaveBeenCalled();
   });
 
+  it("keeps a claim queued while another task of its routine holds the execution slot", async () => {
+    const { company, agent, issue, run } = await fixture("queued");
+    const origin = { originKind: "routine_execution", originId: crypto.randomUUID(), originFingerprint: "scheduled" };
+    await db.update(issues).set({ ...origin, executionRunId: null, executionAgentNameKey: null, executionLockedAt: null })
+      .where(eq(issues.id, issue.id));
+    // An earlier task of the same routine keeps its lock while its failed run waits for a scheduled resume.
+    const [holder] = await db.insert(issues).values({ companyId: company.id, title: "Earlier routine task",
+      status: "in_progress", assigneeAgentId: agent.id, ...origin }).returning();
+    const [holderRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      status: "failed", finishedAt: new Date(), contextSnapshot: { issueId: holder.id } }).returning();
+    await db.update(issues).set({ executionRunId: holderRun.id }).where(eq(issues.id, holder.id));
+    const deps = callbacks(db);
+    deps.getAgent.mockResolvedValue(agent);
+    await expect(createHeartbeatQueue(db, deps).claimQueuedRun({ ...run, responsibleUserId: "queue-test-user" }))
+      .rejects.toMatchObject({ status: 409 });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toMatchObject({ status: "queued" });
+    expect((await db.select().from(issues).where(eq(issues.id, issue.id)))[0]).toMatchObject({ executionRunId: null });
+    expect((await db.select().from(issues).where(eq(issues.id, holder.id)))[0]).toMatchObject({ executionRunId: holderRun.id });
+    expect(deps.executeRun).not.toHaveBeenCalled();
+  });
+
   it("cancels at the daily run cap before claiming or dispatching", async () => {
     const { run, agent } = await fixture("queued");
     const cappedAgent = { ...agent, runtimeConfig: { heartbeat: { maxDailyRuns: 0 } } };

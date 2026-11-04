@@ -112,6 +112,7 @@ import {
   notFound,
 } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
+import { isUniqueViolation } from "../../db-errors.js";
 import { publishLiveEvent } from "../live-events.js";
 import { allocateHeartbeatRunEventSeq } from "../heartbeat-run-events.js";
 import {
@@ -1101,7 +1102,15 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         executionAgentNameKey: normalizeAgentNameKey(agent.name),
         executionLockedAt: claimedAt,
         updatedAt: claimedAt,
-      }).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)));
+      }).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).catch((error: unknown) => {
+        // Another open task of the same routine holds its execution slot, for
+        // example a failed run that waits for its scheduled resume. Roll back
+        // this claim and keep the run queued until that slot is released.
+        if (isUniqueViolation(error, "issues_open_routine_execution_uq")) {
+          throw conflict("Another execution for this routine is already in progress");
+        }
+        throw error;
+      });
     }
     const nativeReviewContext = readNativeReviewAssignmentContext(context);
     const queuedCommentIds = queuedCommentIdsFromRunContext(context);
