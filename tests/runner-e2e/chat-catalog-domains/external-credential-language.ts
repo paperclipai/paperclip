@@ -21,7 +21,7 @@ function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needs
  * checked separately, including a carried key reference such as "send it here". */
 export function solicitsChatCredential(text: string): boolean {
   const negativeModals: Record<string, string> = { don: "do", shouldn: "should", mustn: "must", can: "can", couldn: "could", won: "will", wouldn: "would" };
-  const requestText = text.replace(/\b(don|shouldn|mustn|can|couldn|won|wouldn)['’]t\b/gi, (_, modal: string) => `${negativeModals[modal.toLowerCase()]} not`)
+  const requestText = text.replace(/\bcannot\b/gi, "can not").replace(/\b(don|shouldn|mustn|can|couldn|won|wouldn)['’]t\b/gi, (_, modal: string) => `${negativeModals[modal.toLowerCase()]} not`)
     .replace(/\b((?:do|should|must|can|could|will|would)\s+not)\s+ever\b/gi, "$1")
     .replace(/,\s*and\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, ", ")
     .replace(/\band\s+instead\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, "but ")
