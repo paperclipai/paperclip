@@ -643,7 +643,9 @@ pnpm --filter @paperclipai/paperclip-runner verify
 ```
 
 The verification command requires a stable Rust toolchain with `cargo` on
-`PATH`, in addition to Node.js 24.11+ and pnpm 9+.
+`PATH`, in addition to Node.js 24.11+ and pnpm 9+. To build the package without
+compiling or staging the native runner binary (`paperclip-runnerd`), set
+`PAPERCLIP_SKIP_RUNNER_BINARY=1`.
 
 Rust development builds use `debug = "line-tables-only"` to reduce build storage
 while retaining file names and line numbers in backtraces. The default test

@@ -1,13 +1,37 @@
+import * as fs from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+
+const fsMocks = vi.hoisted(() => ({
+  failAccess: false,
+  mockAccessiblePaths: new Set<string>(),
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return {
+    ...actual,
+    accessSync: (path: fs.PathLike, mode?: number) => {
+      if (fsMocks.failAccess) {
+        throw new Error("ENOENT: no such file or directory");
+      }
+      if (fsMocks.mockAccessiblePaths.has(String(path))) {
+        return undefined;
+      }
+      return actual.accessSync(path, mode);
+    },
+  };
+});
+
 import * as runner from "../../vendor/paperclip-runner/index.js";
 
 import type { PaperclipSemanticToolDefinition } from "../../vendor/paperclip-runner/index.js";
 import {
   buildNativeRunnerArguments,
   buildNativeRunnerPreparePayload,
+  executeNativeCodexRunner,
   resolvePaperclipRunnerBinary,
   resolveRemotePaperclipRunnerBinary,
 } from "./native-codex-runner.js";
@@ -225,3 +249,71 @@ describe("buildNativeRunnerPreparePayload", () => {
     });
   });
 });
+
+describe("resolvePaperclipRunnerBinary", () => {
+  it("fails with an explicit error naming the missing binary when no candidate exists", () => {
+    fsMocks.failAccess = true;
+    try {
+      expect(() => resolvePaperclipRunnerBinary(undefined)).toThrowError(
+        "paperclip_runner_binary_missing: build @paperclipai/paperclip-runner or set PAPERCLIP_RUNNER_BINARY",
+      );
+    } finally {
+      fsMocks.failAccess = false;
+    }
+  });
+
+  it("fails when PAPERCLIP_RUNNER_BINARY is not an absolute path", () => {
+    expect(() => resolvePaperclipRunnerBinary("relative/path/to/runnerd")).toThrowError(
+      "PAPERCLIP_RUNNER_BINARY must be an absolute path",
+    );
+  });
+
+  it("returns configured binary path when accessible", () => {
+    const customBinary =
+      process.platform === "win32"
+        ? "C:\\bin\\paperclip-runnerd.exe"
+        : "/opt/bin/paperclip-runnerd";
+    fsMocks.mockAccessiblePaths.add(customBinary);
+    try {
+      expect(resolvePaperclipRunnerBinary(customBinary)).toBe(customBinary);
+    } finally {
+      fsMocks.mockAccessiblePaths.delete(customBinary);
+    }
+  });
+});
+
+describe("executeNativeCodexRunner binary resolution error", () => {
+  it("fails immediately with explicit missing-binary error without hanging or falling back", async () => {
+    fsMocks.failAccess = true;
+    try {
+      await expect(
+        executeNativeCodexRunner({
+          db: {} as any,
+          companyId: "company-1",
+          issueId: "issue-1",
+          runId: "run-1",
+          agentId: "agent-1",
+          runnerInstanceId: "runner-1",
+          environmentLeaseId: "lease-1",
+          normalizedSessionId: "session-1",
+          turnId: "turn-1",
+          itemId: "item-1",
+          cwd: "/workspace",
+          prompt: "test",
+          model: null,
+          resumeProviderSessionId: null,
+          completionContract: { revision: "1", criterionIds: ["objective"] },
+          timeoutMs: 1000,
+          environment: {},
+          onLog: async () => {},
+          onSpawn: async () => {},
+        }),
+      ).rejects.toThrowError(
+        "paperclip_runner_binary_missing: build @paperclipai/paperclip-runner or set PAPERCLIP_RUNNER_BINARY",
+      );
+    } finally {
+      fsMocks.failAccess = false;
+    }
+  });
+});
+

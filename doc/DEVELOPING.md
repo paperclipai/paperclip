@@ -129,6 +129,7 @@ Current implementation status:
 
 - Node.js 24.11+
 - pnpm 9+
+- Rust toolchain (required for building the native Paperclip Runner binary, unless `PAPERCLIP_SKIP_RUNNER_BINARY=1` is set to skip the binary or `PAPERCLIP_RUNNER_BINARY` points to a prebuilt binary)
 
 ## Dependency Lockfile Policy
 
