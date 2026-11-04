@@ -127,6 +127,7 @@ describe("runner E2E catalog", () => {
 
   it("exports deployment journeys separately from the model matrix and default selection", () => {
     expect(productJourneys.map(journey => journey.id)).toEqual([
+      "saved-skill-use",
       "task-edit-lifecycle",
       "company-access-isolation",
       "repository-continuation",

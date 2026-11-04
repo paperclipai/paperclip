@@ -1,5 +1,6 @@
 /** Closed, target-independent success requirements used by dispatch and retained evidence. */
 export const agentJourneyRuns = {
+  "saved-skill-use": 1,
   "repository-continuation": 2,
   "routine-scheduled-run": 1,
   "file-input-answer": 1,
@@ -24,6 +25,7 @@ export function agentJourneyRunCountValid(id: string, count: unknown): boolean {
   return (count as number) >= minimum && (count as number) <= maximum;
 }
 export const journeyRequiredChecks: Record<string, readonly string[]> = {
+  "saved-skill-use": ["saved-skill-assignment-bound", "saved-skill-input-only-in-source", "saved-skill-native-read-attributed", "saved-skill-result-authored-by-run", "saved-skill-result-reopened", "saved-skill-source-preserved", "configured-model-and-environment"],
   "task-edit-lifecycle": ["task-lifecycle-browser-created", "task-lifecycle-visible-edits-persisted", "task-lifecycle-edits-reloaded", "task-lifecycle-completed-and-reopened", "task-lifecycle-unedited-context-preserved", "no-agent-work"],
   "company-access-isolation": ["isolation-owner-resource-controls", "cloud-workspace-switch-and-return", "workspace-data-scoped", "restricted-agent-positive-controls", "cross-workspace-agent-read-write-denied", "isolation-credential-revoked", "no-agent-work"],
   "repository-continuation": ["repository-configured-source-bound", "repository-first-commit-verified", "repository-original-files-saved", "repository-followup-stored-once", "repository-same-workspace-retained", "repository-second-commit-verified", "repository-original-and-result-reopened", "configured-model-and-environment"],

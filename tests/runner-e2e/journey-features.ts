@@ -19,6 +19,7 @@ function associate(suites: readonly string[], cases: Record<string, readonly str
 }
 
 associate(["product-journeys"], {
+  "saved-skill-use": ["skills/policy", "skills/versions", "documents-artifacts/documents"],
   "company-access-isolation": ["companies/selection", "access/resources"],
   "repository-continuation": ["projects/task-context", "documents-artifacts/attachments"],
   "task-dependency-resume": ["tasks/properties", "tasks/completion", "documents-artifacts/documents"],

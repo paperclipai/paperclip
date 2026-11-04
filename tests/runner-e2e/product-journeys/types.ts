@@ -26,7 +26,8 @@ export type JourneyId =
   | "inbox-triage"
   | "routine-scheduled-run"
   | "repository-continuation"
-  | "company-access-isolation";
+  | "company-access-isolation"
+  | "saved-skill-use";
 export type TargetMode = "managed-self-hosted" | "existing-cloud" | "new-cloud";
 export interface DeploymentIdentity {
   kind: "self-hosted" | "cloud";
