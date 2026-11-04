@@ -1,4 +1,5 @@
 import { isRollingWebDeployment } from "./controller-rolling-deployment.js";
+import { isLegacyWorkspaceMigration } from "./legacy-workspace-migration.js";
 import { createHash } from "node:crypto";
 import { remoteWorkspaceAuthoritySchema, remoteWorkspaceRunReferenceSchema } from "../../packages/shared/src/remote-workspace.js";
 import type { ExecutionWorkspace, WorkspaceFileContent } from "../../packages/shared/src/index.js";
@@ -134,8 +135,9 @@ export function remoteWorkspaceStorageServerEnvironment(input: {
   env: NodeJS.ProcessEnv;
   instanceId: string;
 }): NodeJS.ProcessEnv | undefined {
-  if (!input.executions.some(isRemoteWorkspaceStorageExecution)) return undefined;
-  if (!input.executions.length || !input.executions.every(isRemoteWorkspaceStorageExecution)) {
+  const requiresStorage = (execution: MatrixExecution) => isRemoteWorkspaceStorageExecution(execution) || isLegacyWorkspaceMigration(execution);
+  if (!input.executions.some(requiresStorage)) return undefined;
+  if (!input.executions.length || !input.executions.every(requiresStorage)) {
     throw new Error("Remote workspace storage qualification must run alone");
   }
   const bucket = input.env.PAPERCLIP_RUNNER_E2E_WORKSPACE_STORAGE_BUCKET?.trim();

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import {
-  environmentLeases, executionWorkspaceRepositories, executionWorkspaceRuntimeLeases, executionWorkspaceSnapshots, executionWorkspaces,
+  companies, environmentLeases, executionWorkspaceRepositories, executionWorkspaceRuntimeLeases, executionWorkspaceSnapshots, executionWorkspaces,
   heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, projects, workspaceOperations, workspaceRuntimeServices, type Db,
 } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema, type RemoteWorkspaceAuthority, type RemoteWorkspaceSource } from "@paperclipai/shared";
@@ -22,9 +22,17 @@ import { readNativeWorkspaceSyncReference } from "./native-runtime/native-worksp
 import { isLegacyWorkspaceTaskRelated, readLegacyWorkspaceRecoveryAllocations, LEGACY_WORKSPACE_RECOVERY_MIGRATION, type LegacyWorkspaceRecoverySource } from "./legacy-workspace-recovery-migration.js";
 import { offlineWorkspaceMigrationBlockers, prepareNestedWorkspaceImports, validateImportedWorkspaceChildren, workspaceMigrationLayoutBlockers } from "./remote-workspace-migration-tree.js";
 
+import { inspectNativeWorkspaceMigration, nativeWorkspaceMigrationMarker } from "./native-runtime/native-workspace-migration.js";
+
 const SCHEMA = "paperclip.remote-workspace-migration.v1";
 type Workspace = typeof executionWorkspaces.$inferSelect;
 type ReadDb = Pick<Db, "select">;
+async function lockMigrationParents(db: ReadDb, companyId: string, issueId: string | null) {
+  await db.select({ id: companies.id }).from(companies).where(eq(companies.id, companyId)).for("key share");
+  if (issueId) await db.select({ id: issues.id }).from(issues).where(and(
+    eq(issues.companyId, companyId), eq(issues.id, issueId))).for("update");
+}
+
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -227,12 +235,17 @@ export async function migrateRemoteWorkspace(input: {
   if (!input.apply) return { ...await inventoryRemoteWorkspaceMigration(input.db, input), applied: false };
   return withExecutionWorkspaceLifecycleLock(input.db, input.workspaceId, async lock => {
     const reserved = await input.db.transaction(async tx => {
+      const [selected] = await tx.select({ sourceIssueId: executionWorkspaces.sourceIssueId }).from(executionWorkspaces)
+        .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId)));
+      if (!selected) throw new Error("remote_workspace_migration_workspace_missing");
+      await lockMigrationParents(tx, input.companyId, selected.sourceIssueId);
       const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))).for("update");
       if (!workspace) throw new Error("remote_workspace_migration_workspace_missing");
-      if (workspace.sourceIssueId) await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, workspace.companyId), eq(issues.id, workspace.sourceIssueId))).for("update");
+      if (workspace.sourceIssueId !== selected.sourceIssueId) throw new Error("remote_workspace_migration_source_changed");
       const current = await inspect(tx as unknown as Db, input);
       if (current.authority) return { workspace, authority: current.authority, operation: null, source: current.source, sourceFingerprint: "", issueBinding: current.issueBinding, retainedDirectory: null, archivedGitSource: null, legacyRecoverySources: [] as LegacyWorkspaceRecoverySource[] };
       if (current.reasons.length) throw new Error(`remote_workspace_migration_blocked:${current.reasons.join(",")}`);
+      const nativeSessionContinuity = await inspectNativeWorkspaceMigration(tx as unknown as Db, workspace);
       const source = remoteWorkspaceSourceSchema.parse(input.source ?? current.source);
       const sourceFingerprint = fingerprint(workspace);
       const marker = current.marker;
@@ -241,6 +254,7 @@ export async function migrateRemoteWorkspace(input: {
         const [operation] = await tx.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, workspace.companyId),
           eq(workspaceOperations.executionWorkspaceId, workspace.id), eq(workspaceOperations.id, marker.operationId), eq(workspaceOperations.phase, "remote_workspace_migration")));
         if (!operation) throw new Error("remote_workspace_migration_operation_missing");
+        if (canonical(operation.metadata?.nativeSessionContinuity ?? null) !== canonical(nativeSessionContinuity)) throw new Error("native_workspace_migration_source_changed");
         // Older operations only admitted the task's current workspace. Preserve
         // that binding when resuming an import journaled before this field existed.
         const issueBinding = Object.hasOwn(operation.metadata ?? {}, "sourceIssueBinding")
@@ -254,6 +268,7 @@ export async function migrateRemoteWorkspace(input: {
       const [operation] = await tx.insert(workspaceOperations).values({ companyId: workspace.companyId, executionWorkspaceId: workspace.id,
         issueId: workspace.sourceIssueId, cwd: workspace.cwd ?? workspace.providerRef, phase: "remote_workspace_migration", status: "running",
         metadata: { schema: SCHEMA, sourceFingerprint, source, sourceIssueBinding: current.issueBinding,
+          ...(nativeSessionContinuity ? { nativeSessionContinuity } : {}),
           nestedWorkspaceScope: { version: 1, state: "pending" },
           ...(current.legacyRecoverySources.length ? { legacyRecoverySources: current.legacyRecoverySources } : {}),
           ...(current.archivedGitSource ? { archivedGitSource: gitSourceProof(current.archivedGitSource) } : {}),
@@ -314,14 +329,12 @@ export async function migrateRemoteWorkspace(input: {
       input.signal?.throwIfAborted();
       await lock.execute(sql`select 1`);
       const publication = await input.db.transaction(async tx => {
+        await lockMigrationParents(tx, input.companyId, reserved.workspace.sourceIssueId);
         for (const source of reserved.legacyRecoverySources) {
           await tx.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations)
-            .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, source.runId))).for("update");
+            .where(and(eq(nativeRunFinalizations.companyId, input.companyId), eq(nativeRunFinalizations.runId, source.runId))).for("update", { noWait: true });
           await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-            .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, source.runId))).for("update");
-          for (const allocation of source.recoveryAllocations ?? []) await tx.select({ id: environmentLeases.id })
-            .from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
-              eq(environmentLeases.id, allocation.leaseId))).for("update");
+            .where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, source.runId))).for("update", { noWait: true });
         }
         const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))).for("update");
         if (!workspace) throw new Error("remote_workspace_migration_workspace_missing");
@@ -329,7 +342,11 @@ export async function migrateRemoteWorkspace(input: {
         if (existing?.snapshotId === ref.id) return null;
         if (existing || fingerprint(workspace) !== reserved.sourceFingerprint
           || object(workspace.metadata?.remoteWorkspaceMigration).operationId !== operation.id) throw new Error("remote_workspace_migration_publication_changed");
-        if (workspace.sourceIssueId) await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, workspace.sourceIssueId)).for("update");
+        for (const source of reserved.legacyRecoverySources) {
+          for (const allocation of source.recoveryAllocations ?? []) await tx.select({ id: environmentLeases.id })
+            .from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
+              eq(environmentLeases.id, allocation.leaseId))).for("update", { noWait: true });
+        }
         const validation = await inspect(tx as unknown as Db, { ...input, operationId: operation.id });
         if (validation.issueBinding !== reserved.issueBinding) throw new Error("remote_workspace_migration_source_changed");
         if (Boolean(validation.retainedDirectory) !== Boolean(reserved.retainedDirectory)) throw new Error("remote_workspace_migration_source_changed");
@@ -347,9 +364,12 @@ export async function migrateRemoteWorkspace(input: {
             || saved.sourceOperationId !== child.operationId) throw new Error("nested_workspace_snapshot_changed");
         }
         if (canonical(validation.legacyRecoverySources) !== canonical(reserved.legacyRecoverySources)) throw new Error("remote_workspace_migration_source_changed");
+        const continuity = await inspectNativeWorkspaceMigration(tx as unknown as Db, workspace);
+        if (canonical(continuity) !== canonical(operation.metadata?.nativeSessionContinuity ?? null)) throw new Error("native_workspace_migration_source_changed");
         const authority: RemoteWorkspaceAuthority = { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: ref.id,
           source: reserved.source, location: null, writerRunId: null, dirty: false };
         const metadata: Record<string, unknown> = { ...workspace.metadata, remoteWorkspace: authority }; delete metadata.remoteWorkspaceMigration;
+        if (continuity) metadata.nativeWorkspaceMigration = nativeWorkspaceMigrationMarker(operation.id);
         if (reserved.legacyRecoverySources.length) {
           metadata.legacyWorkspaceRecoveryMigration = { schema: LEGACY_WORKSPACE_RECOVERY_MIGRATION, operationId: operation.id };
           for (const source of reserved.legacyRecoverySources) {
@@ -387,6 +407,10 @@ export async function migrateRemoteWorkspace(input: {
         return (await persistActivity(tx as unknown as Db, { companyId: workspace.companyId, actorType: "system", actorId: "workspace-migration",
           action: "workspace.remote_storage_migrated", entityType: "execution_workspace", entityId: workspace.id,
           details: { snapshotId: ref.id, operationId: operation.id, manifestDigest: ref.manifestDigest } })).publication;
+      }).catch(error => {
+        const failure = object(error), cause = object(failure.cause);
+        if ((cause.code ?? failure.code) !== "55P03") throw error;
+        throw new Error("remote_workspace_migration_blocked:execution_rows_busy", { cause: error });
       });
       if (publication) publishActivity(publication);
       return { ...await inventoryRemoteWorkspaceMigration(input.db, input), applied: true, replayed: false };

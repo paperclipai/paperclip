@@ -4116,6 +4116,18 @@ mod tests {
     }
 
     #[cfg(unix)]
+    #[test]
+    fn grok_attachment_rotates_only_authenticated_asset_paths() {
+        authenticated_run_grant_attachment("grok");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_attachment_rotates_only_authenticated_asset_paths() {
+        authenticated_run_grant_attachment("codex");
+    }
+
+    #[cfg(unix)]
     fn authenticated_run_grant_attachment(agent: &str) {
         let directory = temporary_directory(&format!("{agent}-cross-run-attach"));
         let runtime = directory.join("runtime");
@@ -4164,7 +4176,7 @@ mod tests {
             "mcp": {"assignmentSetId": "assignment-1", "digest": "e".repeat(64), "bindingId": "old-run-binding"},
             "futurePolicy": {"companyId": "company-1"},
         });
-        if agent == "claude" {
+        if matches!(agent, "claude" | "grok" | "codex") {
             descriptor_value["instructions"] = json!(format!(
                 "Pinned prompt. Custom entry mentioning /old-bundle.\n\n{}",
                 registered_asset_suffix(&descriptor_value["runtimeContext"]).unwrap()
@@ -4301,7 +4313,7 @@ mod tests {
             json!("/new-bundle");
         descriptor_value["runtimeContext"]["skills"][0]["bundle"]["rootPath"] = json!("/new-skill");
         descriptor_value["runtimeContext"]["mcp"]["bindingId"] = json!("new-run-binding");
-        if agent == "claude" {
+        if matches!(agent, "claude" | "grok" | "codex") {
             descriptor_value["instructions"] = json!(format!(
                 "Pinned prompt. Custom entry mentioning /old-bundle.\n\n{}",
                 registered_asset_suffix(&descriptor_value["runtimeContext"]).unwrap()

@@ -180,7 +180,9 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
         binding: { companyId, issueId: waiting.issueId, runId: waiting.runId }, bootId: successor.bootId, authority });
     } finally { await authority.stop(); }
     await waiting.db.update(nativeRunFinalizations).set({ phase: "retryable_failure", attempt: 1,
-      leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: new Date(0), failureCode: "provider_transport_interrupted" })
+      leaseOwner: null, leaseExpiresAt: null, nextAttemptAt: new Date(0), failureCode: "provider_transport_interrupted",
+      failureDetail: { recoveryMode: "exact_checkpoint_resume", checkpointExists: true,
+        providerSessionEstablished: true, providerEventsExist: false } })
       .where(eq(nativeRunFinalizations.runId, waiting.runId));
     const state = async () => ({
       run: await waiting.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, waiting.runId)),
@@ -223,7 +225,7 @@ describeEmbeddedPostgres("native runner restart recovery with real processes", (
     const after = await state();
     expect(after.run[0].runnerProfileJson).toEqual(before.run[0].runnerProfileJson);
     expect(after.checkpoint).toEqual(before.checkpoint);
-    expect(after.coordinator[0]).toMatchObject({ attempt: 1, controllerGeneration: 1 });
+    expect(after.coordinator[0]).toMatchObject({ attempt: 2, controllerGeneration: 1 });
     expect(after.task[0].executionRunId).toBe(waiting.runId);
     expect(await waiting.db.select().from(heartbeatRunEvents).where(and(eq(heartbeatRunEvents.runId, waiting.runId),
       eq(heartbeatRunEvents.eventType, "native.recovery.execution_reclaimed")))).toHaveLength(1);

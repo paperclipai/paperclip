@@ -2839,6 +2839,7 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
   effectiveAdapterConfig: Record<string, unknown>;
   managedAiHome?: string;
   managedInstructions?: { entryFile: string; contentHash: string | null } | null;
+  retainManagedInstructionPaths?: boolean;
   agentRuntimeConfig: unknown;
   issueOverrides: unknown;
   workspaceConfig: unknown;
@@ -2858,7 +2859,7 @@ export async function buildEffectiveRunSessionConfigMetadata(input: {
     ...(input.managedInstructions.contentHash !== null ? { contentHash: input.managedInstructions.contentHash } : {}),
   } : await resolveInstructionsConfigFingerprintMetadata(input.effectiveAdapterConfig);
   const effectiveAdapterConfig = { ...managedAiSessionFingerprintConfig(input.effectiveAdapterConfig, input.managedAiHome) };
-  if (input.managedInstructions) {
+  if (input.managedInstructions && !input.retainManagedInstructionPaths) {
     delete effectiveAdapterConfig.instructionsRootPath;
     delete effectiveAdapterConfig.instructionsFilePath;
   }

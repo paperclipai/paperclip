@@ -68,6 +68,13 @@ async function localPaths(source: NonNullable<Awaited<ReturnType<typeof findNati
   return { ...descriptor, execution, controlFile: join(control, "control-plane-state.json") };
 }
 
+function preservedFailedCheckpoint(source: NonNullable<Awaited<ReturnType<typeof findNativeSessionResumeRun>>>,
+  sessionId: string, checkpoint: Awaited<ReturnType<typeof loadNativeRunnerCheckpoint>>) {
+  return source.status === "failed" && source.runnerProfileJson.sessionCheckpoint == null
+    && checkpoint?.runId === source.id && checkpoint.recoveryEvidence.runnerInstanceId === source.runnerInstanceId
+    && checkpoint.recoveryEvidence.normalizedSessionId === sessionId;
+}
+
 export async function hasLocalNativeControllerObligations(db: Db, storage?: StorageService | null): Promise<boolean> {
   const roots = await readdir(nativeHarnessStateBase()).catch((error: NodeJS.ErrnoException) => {
     if (error.code === "ENOENT") return [] as string[]; throw error;
@@ -77,6 +84,8 @@ export async function hasLocalNativeControllerObligations(db: Db, storage?: Stor
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
     if (readNativeControllerRecovery(source.runnerProfileJson.nativeControllerRecovery, source.runnerProfileJson.sessionCheckpoint)
       && await hasNativeRunnerCheckpoint(db, binding)) continue;
+    if (source.status === "failed" && source.runnerProfileJson.sessionCheckpoint == null
+      && preservedFailedCheckpoint(source, selected.sessionId, await loadNativeRunnerCheckpoint(db, binding))) continue;
     const paths = await localPaths(source);
     const present = await lstat(paths.controlFile).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return undefined; throw error;
@@ -96,11 +105,12 @@ export async function hasLocalNativeControllerObligations(db: Db, storage?: Stor
 export async function migrateNativeControllers(db: Db, input: { writersStopped: true; signal: AbortSignal; storage?: StorageService }) {
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(offlineMigrationExecutionWhere()).limit(1);
   if (!input.writersStopped || active) throw new Error("native_controller_migration_requires_offline_writers");
-  const counts = { inspected: 0, imported: 0, unchanged: 0, sourceAlreadyAbsent: 0, archivedFailed: 0 };
+  const counts = { inspected: 0, imported: 0, unchanged: 0, sourceAlreadyAbsent: 0, archivedFailed: 0, preservedFailed: 0 };
   for await (const { selected, source } of retainedSources(db, input.signal)) {
     counts.inspected++;
     const binding = { companyId: selected.companyId, issueId: selected.issueId, runId: source.id };
     const checkpoint = await loadNativeRunnerCheckpoint(db, binding);
+    if (preservedFailedCheckpoint(source, selected.sessionId, checkpoint)) { counts.preservedFailed++; continue; }
     const metadata = readNativeControllerRecovery(source.runnerProfileJson.nativeControllerRecovery, source.runnerProfileJson.sessionCheckpoint);
     const snapshot = source.runnerProfileJson.sessionCheckpoint as { identity?: Record<string, unknown> } | null;
     if (checkpoint && metadata?.checkpoint?.runId === source.id
@@ -124,7 +134,7 @@ export async function migrateNativeControllers(db: Db, input: { writersStopped: 
       const workspace = readNativeWorkspaceSyncReference(admission?.workspace);
       const remoteCwd = workspace?.remoteCwd ?? execution.workspace.cwd;
       if (typeof identity?.environmentLeaseId !== "string" || !remoteCwd
-        || (workspace && workspace.leaseId !== identity.environmentLeaseId)) {
+        || (workspace && workspace.workspaceId !== execution.binding.executionWorkspaceId)) {
         throw new Error("native_controller_migration_artifact_binding");
       }
       const unavailable = (): never => { throw new Error("native_controller_migration_artifact_unavailable"); };

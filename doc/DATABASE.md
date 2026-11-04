@@ -150,8 +150,10 @@ rebuilds at most 512 event metadata rows per transaction. It releases the run
 lock between pages and stops when the marker catches up. Partial projections
 never supply acknowledgements. New runs use the fast path immediately; existing
 histories keep their previous append cost until rebuilding completes. The additive
-migration does not scan or rewrite event history. Deleting a run cascades its
-derived source state.
+migration does not scan or rewrite event history. Cursor migration
+`0432_brave_king_cobra.sql` follows upstream migrations 0430 and 0431; it keeps
+the original cursor SQL unchanged and adds no historical backfill. Deleting a
+run cascades its derived source state.
 
 Conversation recovery reads only the saved run fields used to settle a turn.
 Settlement locks and reads current conversation state without loading the task
@@ -805,6 +807,59 @@ identity state, not parent keys. The lock still serializes identity writers and
 blocks concurrent task or run updates. It allows audit inserts to retain their
 foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
 foreign keys and their deletion behavior remain enforced.
+
+## Remote workspace row locks
+
+The runtime workspace service takes company `KEY SHARE`, current task `UPDATE`,
+run `UPDATE`, then workspace `UPDATE` locks. It rechecks the run's task binding
+under the run lock. A shared workspace can retain a different original source
+task; new provisioning and snapshot operations belong to the current run's task.
+Existing operation receipts keep their recorded attribution.
+
+| Owning transaction | Locks after company, current task and run |
+| --- | --- |
+| Workspace reservation | Shared-selection advisory lock when needed, workspace |
+| Preparation publication | Workspace, source lease, existing restore receipt |
+| Snapshot reservation and publication | Workspace, operation and snapshot rows |
+| Provisioning reservation | Workspace, existing operation or new receipt |
+
+`workspace_operations` has ordinary company, task, run and workspace foreign
+keys. An insert takes `KEY SHARE` locks on those parents even when the service
+does not explicitly select them. Locking the parents first prevents their
+foreign-key checks, or a later run-reference write, from reversing the order.
+File preservation already takes task, run, workspace and lease locks in that
+order. Confirmed lease destruction locks matching workspaces before the lease;
+its workspace-location update takes no task or run lock afterward.
+
+Provisioning settlement and save-invocation settlement lock the workspace and
+update existing receipt metadata. They neither add a parent foreign-key
+reference nor lock a task or run afterward. Snapshot upload and retention own
+snapshot rows; the snapshot ledger has no parent foreign keys. These paths do
+not need an otherwise unused parent lock.
+
+Administrative import reservation takes company `KEY SHARE`, original source
+task `UPDATE`, then workspace `UPDATE`, and rechecks that source binding. This
+also applies to an already-imported no-op, which can overlap runtime saves.
+Import publication takes the same company and recorded source-task locks before
+its legacy coordinator and run locks, then the workspace and saved allocation
+leases. Native claim, status and cancellation owners do not share one row-lock
+order. Import therefore requests those legacy coordinator, run and lease locks
+with `NOWAIT`. A real `55P03` aborts the publication transaction and reports
+`remote_workspace_migration_blocked:execution_rows_busy`. The journal, uploaded
+archive and local files remain available for a later administrative retry. Other
+database errors propagate. No automatic retry or lock-strength reduction occurs.
+
+The workspace fingerprint pins the recorded source. An arriving reservation can
+reach a legacy workspace before refusing it, so publication must follow this
+order too. The lifecycle advisory lock alone does not fence runtime operations.
+Publication still rechecks current writers and unresolved work. Offline imports
+also require the deployment-stopped maintenance fence. Ordinary save requires an
+existing prepared remote location and refuses the unpublished legacy authority.
+
+The workspace lock still serializes generations and publication. Foreign keys,
+ownership and epoch checks, and transaction-aware work notifications remain in
+place. Remote preparation, command execution, archive capture and object upload
+run outside these transactions. No workspace or parent row lock spans that I/O.
 
 ## Execution admission accounting
 
@@ -1808,3 +1863,31 @@ the ordinary instance settings API. Seed inserts preserve an existing winner;
 replacements lock the row and reject stale revisions. Database/transaction
 handles permit atomic migration receipts. Connection URLs, API keys and unknown
 fields are excluded. See [field ownership and startup order](cloud-runtime-configuration.md).
+
+## Independent accounting and budget evaluation
+
+`budget_evaluation_work` holds independent pending inputs for committed exposure
+changes, with company and captured agent/project attribution. Producers append
+in their financial transaction after registering transaction-aware notification.
+The worker evaluates a consistent snapshot, fences policy publication through
+`budget_policies.evaluation_version`, and deletes only its selected committed
+input IDs in the publication transaction. A later commit with an older allocated
+ID remains pending. Policy creation/edits also append inputs, so a previously
+consumed no-policy batch cannot hide a newly applicable threshold.
+
+No financial commit increments a company/agent spend counter or company dirty
+version. Monthly API totals aggregate `cost_events`; runtime totals use existing
+`accounting_runtime_baselines` plus acknowledged v2 run ledger. Retained counter
+columns are non-authoritative. Invoice and verified late-receipt corrections
+retain append-only `cost_adjustments` evidence and immutable reported amounts.
+`cost_events.reported_usage_json` retains original placeholder usage before a
+verified late receipt updates effective token/request fields; each adjustment
+retains its previous usage in `previous_usage_json`.
+Unknown late run receipts remain durable per-receipt debt; resolving one receipt
+cannot clear another unresolved receipt.
+
+Upgrade all controllers/workers to this accounting contract and drain incompatible
+pre-upgrade database transactions before enabling independent writers. Do not run
+pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
+Rollback must use a compatible version that reads the ledger and retains the
+durable evaluation feed; a pre-contract binary is not a safe rollback target.
