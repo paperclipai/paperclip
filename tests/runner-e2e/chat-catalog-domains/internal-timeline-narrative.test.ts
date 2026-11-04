@@ -155,3 +155,7 @@ it.each([
 it("rejects an asserted pass whose command exit is nonzero", () => {
   expect(grade(bulletedAccount.replace("exit code 0, matching the file", "exit code 2"))).toBe(false);
 });
+
+it.each(["Friday", "5 PM", "the end of the day"])("does not invent an actor from a by-deadline adjunct: %s", deadline => {
+  expect(grade(account.replace("You reassigned the task to Riley.", `You reassigned the task to Riley by ${deadline}.`))).toBe(true);
+});
