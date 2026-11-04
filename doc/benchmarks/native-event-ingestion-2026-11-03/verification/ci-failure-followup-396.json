@@ -78,5 +78,55 @@
     "This change is limited to three test files and this evidence record; production/native inputs and timed measurement drivers are unchanged.",
     "The earlier failed application A/A remains failed. No application repeatability or performance gain is accepted.",
     "After the upstream fixture repair landed, the duplicate local retention patch was removed; the two failure-only native test diagnostics remain. Merge-tree checks against the observed master verify this avoids the conflict without moving the pinned application sources."
-  ]
+  ],
+  "rotatedCloseInvestigation": {
+    "recordedAtUtc": "2026-11-04T17:58:13.246551+00:00",
+    "failedWorkflow": 41870817276,
+    "failedJob": 126717466908,
+    "failedDeliveryHead": "5c510a487d28a2b3a3a927acdc0cbdea52cd97b7",
+    "ciSyntheticMerge": "63ab185f1b5ce276760c7141cb17fcfcc50c4afe",
+    "ciBase": "e968131efa7e63d321f3bcca8d47a62513c2efb4",
+    "failedCase": "runs an environment-prepared descriptor without Core filesystem preparation (rotated-recovery)",
+    "observedSettlement": {
+      "runnerSuspended": true,
+      "providerDrained": false,
+      "semanticToolsSettled": true,
+      "finalProviderState": null,
+      "suspensionState": null
+    },
+    "rawFailedJobSha256": "58c302d2fe09c138bed0609b75908361daa2432ecb09fe9033fd98b68224c3ce",
+    "diagnostics": "Failure-only exact attempt, safe body-error fields, original close settlement, at most eight drain/suspend statuses and boolean receipts from 64 trailing commands, native provenance. No raw arguments, auth, provider messages or payloads.",
+    "unchanged": {
+      "rotatedCloseGraceMs": 5000,
+      "caseTimeoutMs": 30000,
+      "allAssertionsAwaitsModesAndNativeProviderLaunch": true,
+      "originalErrorObjectAndCause": true,
+      "productionAndBenchmarkInputs": true
+    },
+    "sourcePacketSha256": "1d4dd808a58e48419e100e6bfbaecdc8bd6baea8181a6745748d9071747ebf7f",
+    "rootSourceReviewSha256": "6d5882833205e2a3f1e9cdabcac3bb3f9ae69b63f9b00d256fc4e0ab666264cb",
+    "independentSourceReviewSha256": "66475f9374ea792786829bb79bc961f5abd8280512700fdba7afea4389791410",
+    "pureActualSourceChecksPassed": 6,
+    "localDiagnostic": {
+      "platform": "darwin-arm64",
+      "node": "24.22.2",
+      "normalIndependentDebugBuildExit": 0,
+      "buildLogSha256": "205301e9b63732a7b4b591083f278af14e545f46dc46884453e34218f7961aac",
+      "originalCaseRuns": 1,
+      "caseExit": 0,
+      "caseLogSha256": "dde6ddf48a78422da5609b128129668e6dae6904dcedb37a7d65b37c54085e9a",
+      "nativeSha256": "da65bb6749699bf8a549e5e0df32adec50df3d52246484ad4339a6a62d5c685c",
+      "fakeProviderSha256": "da0e72074f896086ee65532da88b4b39d38363414f9e2d92312c11fe6956476d",
+      "ambientPrimaryFullSuiteActive": true,
+      "sandboxSetupFailureRetained": "Earlier sandbox listen EPERM occurred before native fixture; host-loopback run exercised original case."
+    },
+    "conclusion": "The single Mac diagnostic pass does not explain or regrade the Linux CI drain-receipt failure. Preserve the failed workflow; changed diagnostics require current-head CI. No timeout, skip, retry-until-green or performance acceptance claim.",
+    "targetedRunnerTypescriptCheck": {
+      "exitCode": 0,
+      "logSha256": "6f8332128e3019061da764abe1e6b080a7e5ea6f86a2266e4b23aecd3745da85",
+      "normalCommand": "pnpm --dir packages/paperclip-runner typecheck:typescript",
+      "correctNodeAndPnpmPath": "/private/tmp/native-ingestion-node24/bin",
+      "earlierAmbientPnpmSetupFailureRetained": true
+    }
+  }
 }
