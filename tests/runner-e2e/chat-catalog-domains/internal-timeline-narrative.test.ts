@@ -27,3 +27,17 @@ it("does not carry a section owner through an unrelated paragraph", () => {
 it("does not give a heading credit for another actor's command", () => {
   expect(grade(account.replace("The verification command failed", "The human operator ran verification and it failed"))).toBe(false);
 });
+
+it("accepts a transition before a command subject", () => {
+  expect(grade(account.replace("The verification", "Then the verification"))).toBe(true);
+});
+it("resolves the first subject after the worker heading", () => {
+  expect(grade(account.replace("**Repair (Riley)**\nYou reassigned the task to Riley. He", "You reassigned the task to Riley.\n\n**Repair (Riley)**\nHe"))).toBe(true);
+});
+it.each([
+  account.replace("You reassigned the task to Riley. He", "You reassigned the task to Riley. Avery inspected the page. He"),
+  account.replace("You reassigned the task to Riley. He", "You reassigned the task to Riley. The human operator inspected the page. He"),
+  account.replace("The verification command failed", "The verification command that Avery ran failed"),
+])("does not resolve another actor through a heading: %s", reply => {
+  expect(grade(reply)).toBe(false);
+});
