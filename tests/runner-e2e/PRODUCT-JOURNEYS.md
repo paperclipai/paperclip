@@ -31,8 +31,10 @@ never start a server or depend on a tenant filesystem.
 | `task-create` | Company and signed-in board user | Create a task through the shared production composer, assign it to yourself, reopen and reload it, verify the saved prompt and no agent work |
 | `project-task-context` | Company, signed-in board user, task-write capability; no model runs | Create a project and a self-assigned task with the project selected through the production dialogs. Reopen the project, open its task, reload both, and verify exact saved company, project, prompt, assignment, standard work mode and zero runs |
 | `ask-question` | Company, configured agent capability, positive model allowance and exactly one permitted work run | Reuse the existing cross-model Ask question prompt; require one successful run with matching company/task/agent/model/environment, one saved exact answer, and visible readback after reload |
+| `chat-continuity` | Fresh owned native agent with no prior work runs; Agent Chat enabled; fresh owned user chat; three provider turns and one synthetic reset | Recall prompt-hidden context after reopening, then use `/new` to advance the same saved conversation to a fresh native session, preserve history and verify the final reply after reload. See [CHAT-CONTINUITY.md](product-journeys/CHAT-CONTINUITY.md) |
 | `question-answer-resume` | Native agent; up to three work runs | Reuse the classic two-question story: answer a choice and a free-text question through the browser, verify each native continuation, then read the exact saved answers in an agent-authored task document after reload |
 | `task-properties` | Company, signed-in board user, task-write capability, prepared run-owned backlog task | Open its properties, assign it to the signed-in user, reload, check both UI and saved assignment; verify no agent run |
+| `task-edit-lifecycle` | Company, signed-in board user, task-write capability; target support for run-owned labels and exact predeclared `taskEdit.revisedTitle` cleanup; zero model runs | Create a self-assigned task, edit its inline header title and label, reload, complete and reopen it; independently verify exact saved state, unchanged context and zero runs. Open a closed Properties panel through its shipped toggle |
 | `task-document-persistence` | Company, signed-in board user, task-write capability, prepared run-owned backlog task; no model allowance or runs | Create a general document through Artifacts, edit its title and body, reopen and reload it; independently verify exact canonical content, preserved original and latest revisions, board-user authorship, and no agent work |
 | `task-search-filter` | Company, signed-in board user, task-write capability; zero model runs | Search three owned target/control tasks through the task list, require exact matching identities, filter Backlog to exclude the completed control, reload and return from the exact saved task with search/filter context intact |
 | `plan-revise-accept` | Native agent; three work runs | Reuse the classic Plan story: canonical draft, browser revision request, new revision-bound confirmation, approval and exact saved final response |
@@ -42,6 +44,7 @@ never start a server or depend on a tenant filesystem.
 | `stop-redirect` | Native agent; three work runs; qualified Docker oracle | Download a verified checkpoint, observe an active native command with current-turn usage, Stop it, verify cancellation and settled accounting, then send one new direction and complete without original-run activity |
 | `followup-while-running` | Native agent; a maximum of two work runs | Save a follow-up while an independently observed native shell command is still active, then require one attributed final reply with the late requirement after reload; in-turn steering and one normal successor are accepted |
 | `hire-delegate-reuse` | Native lead with a fresh user chat and scoped hiring permission; Agent Chat enabled; direct hiring policy; seven work runs | Hire one teammate, delegate a saved checklist, reuse the same teammate for a saved review, verify native run and revision authorship, preserve the original, and follow the lead's saved result link after reload |
+| `agent-settings-persistence` | Fresh dedicated native agent with the campaign ID in its name; `agent-settings-write`; no previous runs/proof block; sole paid journey; one work run | Save and reload an instruction edit through the browser, verify a task uses the instruction-only reference, reopen its run-authored document, then restore the original bytes. See [AGENT-SETTINGS.md](product-journeys/AGENT-SETTINGS.md) |
 | `cloud-onboarding` | Signed-in admitted Cloud account; fresh workspace; qualified bounded provider route | Create workspace in the portal, connect API key and native Codex agent in the wizard, complete a task, download and independently check its artifact |
 
 The deployment-targeted Stop journey asks the revision to finish one harmless
@@ -488,3 +491,38 @@ within the original journey deadline. Binary attachment and browser downloads
 remain single attempts; transport failures and digest mismatches fail visibly. Git inspection consumes the exact digest-verified download
 buffer; browser downloads remain an independent result-access check. The
 repository journey shares the observation reader and browser helpers above.
+
+
+## Task editing and lifecycle
+
+`task-edit-lifecycle` creates a self-assigned task through the browser with an
+explicit title. It edits the title inline in the task header and adds one
+run-owned label through the Properties panel. If the panel starts closed, the
+journey opens it through the ordinary Toggle side panel or Show properties
+control. It changes the status to In Progress, reloads, marks
+the task Done, reloads, reopens it to Todo and reloads again. Independent API
+reads bind every observed state to the same company, task and human owner.
+The exact description, assignee, project and priority remain unchanged.
+Priority editing is not part of this journey because the production UI hides
+that control. No agent or model work is allowed.
+
+Labels use `Journey QA label ${campaignId}`, retaining the complete campaign
+identity within the production 48-character limit for ordinary generated
+campaigns. The production schema rejects an overlong name before any browser
+mutation or ownership intent; names are never truncated or hashed.
+The target must journal `label` resources by campaign name before browser label
+creation and by exact ID after its 201 response. Before title editing, the owned
+issue receipt retains its original name and ID and declares
+`taskEdit: { revisedTitle }` for this case. Cleanup may match only that one
+predeclared title or the original title on the same company and issue ID.
+The private target must reconcile a lost label-creation response, remove only
+its proven run-owned label, and verify absence. Targets without these ownership
+and cleanup semantics must not select this journey.
+
+The case uses no private fixture writes. Its limits require zero model calls and
+zero task runs. `private-stories/task-edit-lifecycle/task-lifecycle-observations.json`
+retains the five allowlisted task observations. The adjacent
+`observation-read-failures.json` retains bounded read-transport failures.
+Valid, wrong and missing evidence
+controls calibrate the independent oracle. Registration and local checks do not
+claim a Cloud staging pass or admission to a daily plan.

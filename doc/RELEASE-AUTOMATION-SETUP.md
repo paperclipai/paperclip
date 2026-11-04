@@ -368,7 +368,14 @@ readiness can succeed. A failed lane does not cancel the other lane.
 Both lanes restore Cargo dependencies with the pinned Rust Cache action. The
 compiler comes from the Runner package's `rust-toolchain.toml` before the action
 computes its key. Compiler and Cargo metadata changes select a new cache. The
-`release-runner-v2` shared key avoids separate copies for these lanes.
+`release-runner-v2` shared key avoids separate copies for these lanes. Its suffix
+hashes the virtual workspace's `runner/Cargo.toml` and ancestor Cargo configuration.
+Rust Cache discovers member manifests through Cargo metadata, which omits this
+virtual manifest. Without the suffix, changing `[profile.dev]` can restore an
+exact but obsolete dependency cache on every run. GitHub caches are immutable,
+so the successful rebuild cannot replace that old entry. The profile/configuration
+hash also partitions fallback restores. Every reader and writer uses the same
+inputs, including the separate typecheck and cross-target caches.
 Only the Rust lane saves this cache. After verification it also runs `build:rust`
 to warm the debug dependencies used by the protocol lane; its own tests already
 warm release dependencies. The cache writer is shorter than the protocol lane.
@@ -385,12 +392,35 @@ paths and the PR lanes can restore master's entry. The guard tests under
 Rust cache step in both workflows.
 
 Workspace crates and installed Cargo binaries are excluded from this entry.
-Every run runs all assigned checks, including on a cache hit. Only an
-own-repository master-push run verifying that push's exact SHA can restore the
-cache, and only a successful Rust lane saves it. PR, tag, and manual candidate
+Every run runs all assigned checks, including on a cache hit. In release
+verification, only an own-repository master-push run verifying that push's exact
+SHA can restore the cache, and only a successful Rust lane saves it. The PR
+workflow restores master's cache read only. Tag and manual candidate release
 verification compile without this cache. A miss or eviction costs compilation
 time but does not change the checks. To discard old dependency caches, increment
 the shared-key version and let the next successful master verification warm it.
+
+### Installed JavaScript dependencies
+
+`setup-ci-dependencies` can restore exact `node_modules` trees and separately
+certified shared/SDK build outputs. `scripts/ci-dependency-cache.mjs` hashes
+manifests, resolution, patches, install scripts, and the runtime/checkout layout.
+The root workspace-link hook and the server/Runner Copilot asset hooks are known
+postinstall commands. An exact dependency restore replays these hooks before
+validating workspace links and build outputs. Copilot defers installation in an
+unbuilt source checkout; its normal build installs and verifies the assets.
+Provider assets are not included in the dependency cache. Any unrecognized
+workspace lifecycle hook still disables materialized reuse. Only a frozen install
+from the canonical master push can publish the shared entries.
+
+For CI cache changes, the `profile-ci` label runs the paired setup benchmark
+and exercises restored dependencies with the shared-package tests. The longer
+server test comparison runs when its measured scripts or fixtures change;
+cache-only changes do not require unchanged test commands to run faster.
+It also builds Rust units on one GitHub-hosted runner and restores the dependency
+and workspace caches on a second runner with a fresh checkout. Both restores
+must be exact, and Cargo must report every unit as fresh. These qualification
+caches are scoped to the PR and run; they cannot populate master's caches.
 
 ### Runner release crate cache
 

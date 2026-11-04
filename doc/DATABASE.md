@@ -762,17 +762,27 @@ path enforces a project maximum.
   and a partial unique index allows one unsettled attempt per run. The row keeps
   the context revision, the nullable primary project as provenance (no foreign
   key) and the settlement identity, which is set together with `settled_at`.
+  `admitted_project_ids` is the complete admitted project set, sorted, kept
+  after settlement and immutable (a trigger rejects any change). It has no
+  project foreign key, so settled history never blocks project deletion and
+  keeps the deleted project's ID. `{}` is a known empty set. Null means
+  unknown and is allowed only on settled rows: migration `0428` filled it from
+  the charges of unsettled rows, but settled `0426` rows had already lost
+  their set. A retained provider session resumes with the previous set ∪ the
+  current references; an unknown previous set requires a fresh context, never
+  an empty or primary-only guess.
 - `execution_admission_project_charges` stores one row per distinct admitted
   project, including unlimited projects. An admission without projects has no
   rows. Composite `(company_id, …)` foreign keys keep admissions and projects in
-  one company. Rows exist only while the admission is unsettled: settlement
-  deletes the whole set in one transaction, and `(company_id, project_id)` is
-  indexed for active counts, so lookups scale with active work, not history.
+  one company. Rows are the only active capacity and exist only while the
+  admission is unsettled: settlement deletes the whole set in one transaction,
+  and `(company_id, project_id)` is indexed for active counts, so lookups
+  scale with active work, not history.
 
 Archiving a project changes no charge. Deleting a project with a charge returns
 `409 project_execution_admission_pending`; the foreign key is the backstop.
 Deleting an agent refuses unsettled admissions on its runs and removes settled
-ones. Company deletion removes the company's admissions before its runs and
+ones, with their sets, together with the runs. Company deletion removes the company's admissions before its runs and
 projects.
 
 The proposed global lock order for the admission transaction is: company row

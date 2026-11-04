@@ -8114,6 +8114,14 @@ export interface RunnerCommandFailure extends Error {
   readonly runnerCommandResult: unknown;
 }
 
+// Runner composes this whole ACPX rejection from closed codes; provider text
+// travels only in providerFailure. Keep its classification in the reported error.
+function closedAcpxRejection(message: unknown): string | null {
+  return typeof message === "string"
+    && /^failed to start ACPX provider: ACPX sidecar command [a-z.]+ was rejected \(retryable=(?:true|false), classification=[a-z0-9_]+\)$/.test(message)
+    ? message : null;
+}
+
 /** Shared polling path keeps startup cancellation separate from owned cleanup commands. */
 export async function waitForRunnerCommand(input: {
   type: string;
@@ -8135,7 +8143,8 @@ export async function waitForRunnerCommand(input: {
     if (command !== undefined && command.status !== "pending") {
       const detail = record(record(command.result).result);
       const reportedResult = readProviderFailure(detail.providerFailure)
-        ? { ...record(command.result), result: { code: detail.code, message: "Provider request failed" } } : command.result;
+        ? { ...record(command.result), result: { code: detail.code,
+          message: closedAcpxRejection(detail.message) ?? "Provider request failed" } } : command.result;
       const error = new Error(`PRP command ${input.type} ${command.status}: ${JSON.stringify(reportedResult,
         (key, value) => key === "providerFailure" ? undefined : value)}`) as RunnerCommandFailure;
       Object.defineProperty(error, "runnerCommandResult", { value: structuredClone(command.result), enumerable: false });

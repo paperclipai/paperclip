@@ -3,7 +3,7 @@
   "compilerOptions": {
     "allowJs": true,
     "noEmit": true,
-    "rootDir": "."
+    "rootDir": ".."
   },
   "include": ["src/**/*.ts", "test/**/*.ts"],
   "exclude": [

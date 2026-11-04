@@ -84,6 +84,7 @@ import * as noLaunchProofModule from "./native-maintenance-no-launch.js";
 import {
   NativeSessionCleanupQuarantinedError,
   NativeSessionCloseUnrecoverableError,
+  NativeProviderStateIncompatibleError,
   NativeProviderTerminalFailure,
   NativeSessionProtocolIntegrityError,
 } from "../../vendor/paperclip-runner/index.js";
@@ -10010,6 +10011,138 @@ describe("native warm session supervision", () => {
       expect(state.execute).toHaveBeenCalledTimes(2);
     });
 
+    it.each(["completed", "different-allocation", "foreign-company", "different-workspace", "live-owner", "unaccounted-owner", "changed-controller", "forged-allocation", "foreign-writer", "foreign-active-lease", "reassigned-child", "parent-already-started", "writer-lock-race", "stop-after-claim", "controller-change-during-close", "stop-during-close", "writer-change-during-close", "retirement-fails", "foreign-logical-session", "stopped-parent"] as const)("retires the completed child listener before a different parent task uses the same sandbox: %s", async scenario => {
+      const { createServer } = await import("node:net");
+      const { createNativeWarmIngressFixture } = await import("../../__tests__/helpers/native-warm-ingress-fixture.js");
+      const { eq } = await import("drizzle-orm");
+      const tables = await import("@paperclipai/db");
+      const f = await createNativeWarmIngressFixture(execution, join(isolatedHome, "shared-workspace"));
+      await mkdir(join(isolatedHome, "shared-workspace"));
+      const listener = createServer();
+      await new Promise<void>((resolve, reject) => { listener.once("error", reject); listener.listen(0, "127.0.0.1", resolve); });
+      const port = (listener.address() as import("node:net").AddressInfo).port;
+      let failClose = scenario === "retirement-fails";
+      let unlockWriter: (() => void) | undefined;
+      let writerTransaction: Promise<void> | undefined;
+      let incomingRunId: string | undefined;
+      const close = vi.fn(async () => {
+        if (failClose) throw new Error("owned close is unconfirmed");
+        if (scenario === "controller-change-during-close" && incomingRunId) await f.db.update(nativeRunFinalizations)
+          .set({ leaseOwner: "replacement-owner", controllerBootId: "replacement-controller", controllerGeneration: 999 })
+          .where(eq(nativeRunFinalizations.runId, incomingRunId));
+        if (scenario === "stop-during-close" && incomingRunId) await f.db.update(heartbeatRuns)
+          .set({ status: "cancelled" }).where(eq(heartbeatRuns.id, incomingRunId));
+        if (scenario === "writer-change-during-close" && incomingRunId) {
+          const [workspace] = await f.db.select().from(tables.executionWorkspaces).where(eq(tables.executionWorkspaces.id, f.workspaceId));
+          await f.db.update(tables.executionWorkspaces).set({ metadata: { ...workspace.metadata,
+            remoteWorkspace: { ...(workspace.metadata!.remoteWorkspace as Record<string, unknown>), writerRunId: randomUUID() } } })
+            .where(eq(tables.executionWorkspaces.id, f.workspaceId));
+        }
+        if (listener.listening) await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
+      });
+      state.execute.mockReset().mockImplementationOnce(async options => {
+        await options.onSession?.({ close }); return result;
+      }).mockImplementationOnce(async options => {
+        expect(options.existingSession).toBeUndefined();
+        const parentListener = createServer();
+        try {
+          await new Promise<void>((resolve, reject) => { parentListener.once("error", reject); parentListener.listen(scenario === "different-allocation" ? 0 : port, "127.0.0.1", resolve); });
+        } finally {
+          if (parentListener.listening) await new Promise<void>(resolve => parentListener.close(() => resolve()));
+        }
+        return result;
+      });
+      try {
+        const child = await f.admit();
+        await executePaperclipNativeSession({ db: f.db, execution: child.execution, runnerInstanceId: "child-runner", useRunnerd: true,
+          backend: {} as never, runnerExecutionTarget: child.target });
+        const resultId = await f.settle(child, result);
+        const options: Parameters<typeof f.admit>[0] = {};
+        if (scenario === "different-allocation") options.providerLeaseId = `different-${f.providerLeaseId}`;
+        if (scenario === "different-workspace" || scenario === "foreign-company") {
+          options.workspaceId = randomUUID();
+          if (scenario === "foreign-company") {
+            options.companyId = randomUUID(); options.agentId = randomUUID();
+            await f.db.insert(tables.companies).values({ id: options.companyId, name: "Foreign tenant", issuePrefix: `F${options.companyId.slice(0, 7)}` });
+            await f.db.insert(tables.agents).values({ id: options.agentId, companyId: options.companyId, name: "Foreign worker", adapterType: "paperclip_runner" });
+          }
+          await f.db.insert(tables.executionWorkspaces).values({ id: options.workspaceId, companyId: options.companyId ?? f.companyId,
+            name: "Other workspace", mode: "shared_workspace", strategyType: "project_primary", providerType: "cloud_sandbox", cwd: child.execution.workspace.cwd });
+        }
+        const parent = await f.admit(options);
+        incomingRunId = parent.runId;
+        if (scenario === "live-owner") await f.db.update(heartbeatRuns).set({ status: "running", nativePhase: "observed", finishedAt: null }).where(eq(heartbeatRuns.id, child.runId));
+        if (scenario === "unaccounted-owner") await f.db.update(heartbeatRuns).set({ costAccountingPending: true }).where(eq(heartbeatRuns.id, child.runId));
+        if (scenario === "changed-controller") await f.db.update(nativeRunFinalizations).set({ controllerBootId: "foreign-controller" }).where(eq(nativeRunFinalizations.runId, child.runId));
+        if (scenario === "forged-allocation") await f.db.update(environmentLeases).set({ providerLeaseId: "canonical-other-allocation" }).where(eq(environmentLeases.id, parent.leaseId));
+        if (scenario === "foreign-writer") {
+          const [workspace] = await f.db.select().from(tables.executionWorkspaces).where(eq(tables.executionWorkspaces.id, f.workspaceId));
+          await f.db.update(tables.executionWorkspaces).set({ metadata: { ...workspace.metadata,
+            remoteWorkspace: { ...(workspace.metadata!.remoteWorkspace as Record<string, unknown>), writerRunId: randomUUID() } } }).where(eq(tables.executionWorkspaces.id, f.workspaceId));
+        }
+        if (scenario === "reassigned-child") await f.db.update(tables.issues).set({ assigneeAgentId: null }).where(eq(tables.issues.id, child.issueId));
+        if (scenario === "parent-already-started") await f.db.update(heartbeatRuns).set({ processPid: 2147483000 }).where(eq(heartbeatRuns.id, parent.runId));
+        if (scenario === "foreign-active-lease") {
+          const issueId = randomUUID(), runId = randomUUID();
+          await f.db.insert(tables.issues).values({ id: issueId, companyId: f.companyId, title: "Live sibling", assigneeAgentId: f.agentId, status: "in_progress" });
+          await f.db.insert(heartbeatRuns).values({ id: runId, companyId: f.companyId, agentId: f.agentId, nativeIssueId: issueId, runtimeMode: "native", status: "running" });
+          await f.db.insert(environmentLeases).values({ companyId: f.companyId, environmentId: f.environmentId, executionWorkspaceId: f.workspaceId,
+            issueId, heartbeatRunId: runId, provider: "daytona", providerLeaseId: f.providerLeaseId, status: "active" });
+        }
+        if (scenario === "foreign-logical-session") parent.execution.session.normalizedSessionId = child.execution.session.normalizedSessionId;
+        if (scenario === "stopped-parent") await f.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, parent.runId));
+        let claimed!: () => void;
+        const claimObserved = new Promise<void>(resolve => { claimed = resolve; });
+        if (scenario === "writer-lock-race") {
+          let locked!: () => void;
+          const lockObserved = new Promise<void>(resolve => { locked = resolve; });
+          const release = new Promise<void>(resolve => { unlockWriter = resolve; });
+          writerTransaction = f.db.transaction(async tx => {
+            const [workspace] = await tx.select().from(tables.executionWorkspaces).where(eq(tables.executionWorkspaces.id, f.workspaceId)).for("update");
+            locked(); await release;
+            await tx.update(tables.executionWorkspaces).set({ metadata: { ...workspace.metadata,
+              remoteWorkspace: { ...(workspace.metadata!.remoteWorkspace as Record<string, unknown>), writerRunId: randomUUID() } } }).where(eq(tables.executionWorkspaces.id, f.workspaceId));
+          });
+          await lockObserved;
+        }
+        const start = executePaperclipNativeSession({ db: f.db, execution: parent.execution, runnerInstanceId: "parent-runner", useRunnerd: true,
+          backend: {} as never, runnerExecutionTarget: parent.target, onExecutionLeaseAcquired: async () => {
+            claimed();
+            if (scenario === "stop-after-claim") await f.db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, parent.runId));
+          } });
+        const outcome = start.then(value => ({ value }), error => ({ error }));
+        if (scenario === "writer-lock-race") {
+          await claimObserved;
+          expect(close).not.toHaveBeenCalled();
+          unlockWriter!(); await writerTransaction;
+        }
+        if (scenario === "completed" || scenario === "different-allocation") {
+          await start;
+          expect(close).toHaveBeenCalledTimes(scenario === "completed" ? 1 : 0);
+          expect(state.execute).toHaveBeenCalledTimes(2);
+          const admittedParent = state.execute.mock.calls[1][0];
+          expect(admittedParent.input.binding.issueId).toBe(parent.issueId);
+          expect(admittedParent.input.session.normalizedSessionId).toBe(parent.execution.session.normalizedSessionId);
+          expect(admittedParent.input.session.normalizedSessionId).not.toBe(child.execution.session.normalizedSessionId);
+          expect(admittedParent.existingSession).toBeUndefined();
+        } else {
+          await expect(start).rejects.toThrow();
+          expect(close).toHaveBeenCalledTimes(["retirement-fails", "controller-change-during-close", "stop-during-close", "writer-change-during-close"].includes(scenario) ? 1 : 0);
+          expect(listener.listening).toBe(!["controller-change-during-close", "stop-during-close", "writer-change-during-close"].includes(scenario));
+          expect(state.execute).toHaveBeenCalledOnce();
+        }
+        await outcome;
+        const [retained] = await f.db.select().from(nativeRunResults).where(eq(nativeRunResults.id, resultId));
+        expect(retained.resultJson).toEqual(result);
+      } finally {
+        failClose = false;
+        unlockWriter?.(); await writerTransaction;
+        await closeWarmNativeSessionsForEnvironment({ environmentId: f.environmentId, reason: "shared ingress fixture cleanup" });
+        if (listener.listening) await new Promise<void>(resolve => listener.close(() => resolve()));
+        await f.cleanup();
+      }
+    }, 60_000);
+
     it("claims native execution authority before retiring a superseded warm identity", async () => {
       const { base, next, run } = fixture("identity-native-claim-order");
       const updates: Array<{ table: unknown; values: Record<string, unknown> }> = [];
@@ -11752,6 +11885,21 @@ describe("native session bounded recovery", () => {
     },
   );
 
+  it("stops same-run retries when the runner proves the saved provider session incompatible", () => {
+    const failure = new NativeProviderStateIncompatibleError(
+      "Error: PRP command run.attach failed: ACPX durable launch profile digest does not match runner startup",
+    );
+    const code = nativeSessionFailureSourceCode(failure);
+    expect(code).toBe("native_provider_state_incompatible");
+    const disposition = nativeSessionFailureDisposition(1, new Date(), code);
+    expect(disposition).toEqual({ phase: "terminal_failure", failureCode: code, nextAttemptAt: null });
+    expect(nativeSessionRecoveryProjection({ ...disposition, agentId: "agent" })).toMatchObject({
+      issueStatus: "blocked", recoveryOwner: { kind: "board" },
+    });
+    // Only the typed runner class is deterministic; the same text stays retryable.
+    expect(nativeSessionFailureSourceCode(new Error(failure.message))).toBe("native_session_interrupted");
+  });
+
   it("makes only typed operator-required cleanup quarantine terminal on the first attempt", () => {
     const code = nativeSessionFailureSourceCode(
       new NativeSessionCleanupQuarantinedError(),
@@ -12967,9 +13115,10 @@ describe("runnerd provider runtime wiring", () => {
     },
   );
 
-  it.each((["codex", "claude"] as const).flatMap(provider => (["unchanged", "external-checkpoint", "changed", "runtime-context", "retirement-failed", "stale-owner", "active-owner", "missing-owner", "foreign-environment", "plugin-replaced", "plugin-managed-github"] as const).filter(scenario => provider === "codex" || scenario.startsWith("plugin-")).map(scenario => [provider, scenario] as const)))("rotates an owned warm %s remote runner before checking changed configuration: %s", async (provider, scenario) => {
+  it.each((["codex", "claude"] as const).flatMap(provider => (["unchanged", "external-checkpoint", "suspension-receipt", "suspension-active-owner", "changed", "runtime-context", "retirement-failed", "stale-owner", "active-owner", "missing-owner", "foreign-environment", "plugin-replaced", "plugin-managed-github"] as const).filter(scenario => provider === "codex" || scenario.startsWith("plugin-")).map(scenario => [provider, scenario] as const)))("rotates an owned warm %s remote runner before checking changed configuration: %s", async (provider, scenario) => {
     const plugin = scenario === "plugin-replaced" || scenario === "plugin-managed-github";
-    const reusable = ["unchanged", "external-checkpoint", "plugin-managed-github"].includes(scenario);
+    const suspensionReceipt = scenario.startsWith("suspension-");
+    const reusable = suspensionReceipt || ["unchanged", "external-checkpoint", "plugin-managed-github"].includes(scenario);
     const { permissionPolicy: _permissionPolicy, ...claudeProfile } = QUALIFIED_ACPX_PROFILES.claude;
     const first = { ...scopedNativeExecution(`warm-admission-${provider}-${scenario}`),
       schema: "paperclip.native-execution-input.v5" as const,
@@ -12978,7 +13127,7 @@ describe("runnerd provider runtime wiring", () => {
     if (provider === "claude") first.session.driverKind = "acpx_runtime";
     first.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 60_000 };
     const next = { ...first, binding: { ...first.binding, runId: `${first.binding.runId}-next` },
-      session: { ...first.session, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: ["unchanged", "external-checkpoint", "runtime-context", "stale-owner", "missing-owner", "plugin-replaced", "plugin-managed-github"].includes(scenario) ? 60_000 : 90_000 } } };
+      session: { ...first.session, lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: suspensionReceipt || ["unchanged", "external-checkpoint", "runtime-context", "stale-owner", "missing-owner", "plugin-replaced", "plugin-managed-github"].includes(scenario) ? 60_000 : 90_000 } } };
     if (scenario === "runtime-context") {
       next.runtimeContext = { ...first.runtimeContext,
         mcp: { ...first.runtimeContext.mcp, digest: "1".repeat(64) } };
@@ -13084,11 +13233,17 @@ describe("runnerd provider runtime wiring", () => {
     const ordinarySelect = nextDb.select.bind(nextDb);
     nextDb.select = ((fields?: Record<string, unknown>) => fields?.status === heartbeatRuns.status
       && fields?.runnerProfileJson === heartbeatRuns.runnerProfileJson
-      ? priorNativeRunDb(scenario === "stale-owner" ? older : first, scenario === "active-owner" ? "running" : "succeeded").select(fields as never)
+      ? priorNativeRunDb(scenario === "stale-owner" ? older : first, ["active-owner", "suspension-active-owner"].includes(scenario) ? "running" : "succeeded").select(fields as never)
       : ordinarySelect(fields as never)) as Db["select"];
     try {
       await executePaperclipNativeSession({ db: firstDb, execution: first,
         runnerInstanceId: identity.runnerInstanceId, useRunnerd: true, runnerExecutionTarget: pluginTarget as never,...pluginOptions });
+      if (suspensionReceipt) {
+        // Remote suspension leaves a local identity receipt, while the Runner
+        // owns its full state in the sandbox. A resumed turn must retire it.
+        await writeFile(join(root, "plugin-runner-state.json"), JSON.stringify(durableRunnerState(identity, "suspended")));
+        await rm(join(root, "runner/runner-state.json"));
+      }
       if (scenario === "stale-owner") await writeRunnerAuthority(root, { ...identity, runId: older.binding.runId }, "ready");
       if (scenario === "missing-owner") {
         await closeWarmNativeSessionsForEnvironment({ environmentId, reason: "fixture owner loss" });
@@ -13101,12 +13256,14 @@ describe("runnerd provider runtime wiring", () => {
         runnerInstanceId: `runner-next-${scenario}`, useRunnerd: true,
         runnerExecutionTarget: (scenario === "foreign-environment" ? { ...target, environmentId: `${environmentId}-other` }
           : plugin ? {...pluginTarget,leaseId:"next-core-lease"} : target) as never,...pluginOptions });
-      if (["stale-owner", "active-owner", "missing-owner", "foreign-environment"].includes(scenario)) {
-        await expect(continuation).rejects.toThrow(scenario === "active-owner"
+      if (["stale-owner", "active-owner", "suspension-active-owner", "missing-owner", "foreign-environment"].includes(scenario)) {
+        await expect(continuation).rejects.toThrow(["active-owner", "suspension-active-owner"].includes(scenario)
           ? "prior_owner_active" : "prior_owner_terminal_state_indeterminate");
         expect(state.execute).toHaveBeenCalledOnce();
         expect(firstSession.close).not.toHaveBeenCalled();
         expect(order).toEqual([]);
+        if (suspensionReceipt) expect(JSON.parse(await readFile(join(root, "plugin-runner-state.json"), "utf8")))
+          .toMatchObject({ ...identity, lifecycle: "suspended" });
       } else if (scenario === "retirement-failed") {
         await expect(continuation).rejects.toThrow("retirement unconfirmed");
         expect(state.execute).toHaveBeenCalledOnce();
@@ -13120,8 +13277,9 @@ describe("runnerd provider runtime wiring", () => {
         }
         if (scenario === "plugin-managed-github") expect(rebind).toHaveBeenCalledOnce();
         expect(order).toEqual(reusable ? ["execute-next"] : ["retire", "execute-next"]);
-        if (["unchanged", "external-checkpoint"].includes(scenario)) {
+        if (["unchanged", "external-checkpoint", "suspension-receipt"].includes(scenario)) {
           if (!persistedController) await writeRunnerAuthority(root, { ...identity, runId: next.binding.runId }, "ready");
+          if (suspensionReceipt) await rm(join(root, "runner/runner-state.json"));
           const third = { ...next, binding: { ...next.binding, runId: `${next.binding.runId}-third` } };
           const thirdDb = leaseDb(third);
           const thirdSelect = thirdDb.select.bind(thirdDb);
@@ -13139,6 +13297,11 @@ describe("runnerd provider runtime wiring", () => {
             runnerExecutionTarget: pluginTarget as never,...pluginOptions })).resolves.toMatchObject({ exitCode: 0 });
           expect(firstSession.close).not.toHaveBeenCalled();
           expect(state.execute).toHaveBeenCalledTimes(3);
+          if (suspensionReceipt) {
+            expect(existsSync(join(root, "plugin-runner-state.json"))).toBe(false);
+            expect(JSON.parse(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8")).identity)
+              .toMatchObject({ ...identity, runId: next.binding.runId });
+          }
           if (restore) {
             expect(restore.mock.calls.map(([, binding]) => binding.runId)).toEqual([first.binding.runId, next.binding.runId]);
             expect(existsSync(root)).toBe(true);
@@ -13991,7 +14154,7 @@ describe("runnerd provider runtime wiring", () => {
       || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
   });
 
-  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].filter(mode => policy === "per_turn" || !mode.startsWith("resumed")).map(mode => [provider, policy, mode] as const))))(
+  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-late-notice", "local-receipt-late-work", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].filter(mode => policy === "per_turn" || !mode.startsWith("resumed")).map(mode => [provider, policy, mode] as const))))(
     "recovers a blocked %s %s plugin checkpoint on a replacement lease: %s", async (provider, policy, mode) => {
       const { permissionPolicy: _permissionPolicy, ...claudeProfile } = QUALIFIED_ACPX_PROFILES.claude;
       const first = { ...scopedNativeExecution(`plugin-${provider}-${policy}-${mode}`),
@@ -14007,7 +14170,12 @@ describe("runnerd provider runtime wiring", () => {
       const scoped = await initializeScopedRunnerRoot(first, identity.runnerInstanceId);
       await mkdir(join(scoped, "control-plane"), { recursive: true });
       const journal = JSON.stringify({ ...durableControlPlaneState(identity), commands: [{ status: mode.endsWith("pending-command") ? "pending" : "completed" }],
-        committedEvents: mode.endsWith("missing-terminal") ? [] : [{ eventType: "run.terminal", envelope: { ...identity, payload: { reportedWorkDisposition: "blocked" } } }] });
+        committedEvents: mode.endsWith("missing-terminal") ? [] : [{ eventType: "run.terminal", envelope: { ...identity, payload: { reportedWorkDisposition: "blocked" } } },
+          ...(mode === "local-receipt-late-notice" ? [{ eventType: "provider.notice.recorded", envelope: { ...identity, payload: { schema: "paperclip.prp.event.v1", eventType: "provider.notice.recorded",
+            runId: identity.runId, normalizedSessionId: identity.normalizedSessionId, sourceInstanceId: identity.runnerInstanceId, sourceKind: "runner",
+            payload: { schema: "paperclip.provider.notice.v1", noticeId: "codex-warning", severity: "warning", category: "warning", scope: "turn", recoverable: true, userActionable: true,
+              summary: "ignored a notification for a settled Codex turn" } } } }] : []),
+          ...(mode === "local-receipt-late-work" ? [{ eventType: "turn.started", envelope: { ...identity } }] : [])] });
       await writeFile(join(scoped, "control-plane/control-plane-state.json"), journal);
       if (mode.startsWith("empty-runner") || mode === "nonempty-runner") {
         await mkdir(join(scoped, "runner"));
@@ -14080,7 +14248,7 @@ describe("runnerd provider runtime wiring", () => {
           expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
         }
         const backend = throughExecutor ? executePaperclipNativeSession({ ...launch, useRunnerd: true }) : createRunnerdBackend(launch);
-        if (["canonical", "resumed", "resumed-timeout", "local-receipt", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
+        if (["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-late-notice", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
           await expect(backend).resolves.toBeDefined();
           expect(state.createBackend).toHaveBeenCalledOnce();
           expect(owner).toHaveBeenCalledWith(expect.objectContaining({ priorIdentity: identity,
@@ -14090,9 +14258,18 @@ describe("runnerd provider runtime wiring", () => {
           expect(JSON.parse(await readFile(join(scoped, "plugin-runner-state.json"), "utf8"))).toMatchObject({ ...identity, lifecycle: "suspended" });
           expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
         } else {
-          await expect(backend).rejects.toThrow();
+          await expect(backend).rejects.toThrow({
+            "local-receipt-late-work": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "local-receipt-missing-terminal": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "local-receipt-pending-command": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "pending-command": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "missing-terminal": "plugin_checkpoint_recovery_unproven: journal_not_settled",
+            "ambiguous": "plugin_checkpoint_recovery_unproven: quarantine_ambiguous",
+            "not-suspended": "plugin_checkpoint_recovery_unproven: checkpoint_not_settled",
+            "pending-outbox": "plugin_checkpoint_recovery_unproven: checkpoint_not_settled",
+          }[mode as string] ?? "");
           expect(state.createBackend).not.toHaveBeenCalled();
-          if (["local-receipt-missing-terminal", "local-receipt-pending-command", "active", "foreign-scope", "pending-command", "missing-terminal", "ambiguous", "contradictory", "nonempty-runner", "no-stop-proof"].includes(mode)) {
+          if (["local-receipt-late-work", "local-receipt-missing-terminal", "local-receipt-pending-command", "active", "foreign-scope", "pending-command", "missing-terminal", "ambiguous", "contradictory", "nonempty-runner", "no-stop-proof"].includes(mode)) {
             expect(task).not.toHaveBeenCalled();
           }
           if (mode === "ambiguous") expect(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
@@ -15210,6 +15387,8 @@ describe("runnerd provider runtime wiring", () => {
   it.each([
     "quarantined",
     "large control plane",
+    "late provider notice",
+    "post-terminal work",
     "empty retry shell",
     "unsuspended current",
     "live runner",
@@ -15426,6 +15605,35 @@ describe("runnerd provider runtime wiring", () => {
                     }))
                   : []),
                 { eventType: "run.terminal", envelope: identity },
+                ...(scenario === "late provider notice"
+                  ? [{
+                      eventType: "provider.notice.recorded",
+                      envelope: {
+                        ...identity,
+                        payload: {
+                          schema: "paperclip.prp.event.v1",
+                          eventType: "provider.notice.recorded",
+                          runId: identity.runId,
+                          normalizedSessionId: identity.normalizedSessionId,
+                          sourceInstanceId: identity.runnerInstanceId,
+                          sourceKind: "runner",
+                          payload: {
+                            schema: "paperclip.provider.notice.v1",
+                            noticeId: "codex-warning",
+                            severity: "warning",
+                            category: "warning",
+                            scope: "turn",
+                            recoverable: true,
+                            userActionable: true,
+                            summary: "ignored a notification for a settled Codex turn",
+                          },
+                        },
+                      },
+                    }]
+                  : []),
+                ...(scenario === "post-terminal work"
+                  ? [{ eventType: "turn.started", envelope: identity }]
+                  : []),
               ],
             }),
           );
@@ -15466,6 +15674,7 @@ describe("runnerd provider runtime wiring", () => {
           "quarantined",
           "released process identity",
           "large control plane",
+          "late provider notice",
           "empty retry shell",
           "unsuspended current",
           "active goal",
@@ -17301,6 +17510,22 @@ it("keeps an ACPX missing runtime package failure actionable and stops automatic
   const code = nativeSessionFailureSourceCode(failure);
   expect(code).toBe("native_provider_runtime_missing");
   expect(nativeSessionFailureDisposition(1, new Date(), code)).toEqual({ phase: "terminal_failure", failureCode: code, nextAttemptAt: null });
+});
+it("classifies only a definite session.open outcome as a bounded pre-session failure", () => {
+  const detail = '{"result":{"code":"command_execution_failed","message":"failed to start ACPX provider: ACPX sidecar command session.open was rejected (retryable=false, classification=session_ensure_failed)"},"status":"failed"}';
+  for (const status of ["failed", "rejected"]) {
+    const code = nativeSessionFailureSourceCode(new Error(`PRP command session.open ${status}: ${detail}`));
+    expect(code).toBe("provider_session_open_rejected");
+    expect(nativeSessionFailureDisposition(2, new Date(), code)).toMatchObject({ phase: "retryable_failure" });
+    expect(nativeSessionFailureDisposition(3, new Date(), code)).toMatchObject({
+      phase: "terminal_failure", failureCode: "native_session_retry_exhausted", nextAttemptAt: null,
+    });
+  }
+  // The runner cannot say whether the command ran, so provider state stays unknown.
+  expect(nativeSessionFailureSourceCode(new Error(`PRP command session.open indeterminate: ${detail}`)))
+    .toBe("native_session_interrupted");
+  expect(nativeSessionFailureSourceCode(new Error(`PRP command turn.start failed: ${detail}`)))
+    .toBe("native_session_interrupted");
 });
 describe("HTTP Stop during remote runner staging", () => {
   it("does not dispatch after Stop and bounded bootstrap cleanup", async () => {

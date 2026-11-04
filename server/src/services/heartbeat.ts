@@ -1,3 +1,4 @@
+import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
@@ -1438,6 +1439,7 @@ export function heartbeatService(
   }
 
   const runControl = createHeartbeatRunControl(db, {
+    scheduleBoundedRetry,
     verifyStartupCleanup: async run => {
       await verifyNativeStartupCleanup(db, run, () => envOrchestrator.releaseForRun({
         heartbeatRunId: run.id, companyId: run.companyId, agentId: run.agentId, status: "expired",
@@ -2266,7 +2268,8 @@ export function heartbeatService(
       const defaultIsolatedWorkspacesEnabled =
         isolatedWorkspacesEnabled &&
         experimentalInstanceSettings.enableIsolatedWorkspacesByDefault;
-      const externalProvider = heartbeatExternalProvider({ run, agent });
+      const providerApiPlacement = resolveProviderApiPlacement({ run, agent });
+      const externalProvider = heartbeatExternalProvider({ run, agent }) ?? providerApiPlacement?.provider;
       const [taskWorkspaceIntentRow] = issueId && !externalProvider ? await db.select({ intent: issues.workspaceSelection }).from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId))) : [];
       const freshWorkspace = await readFreshWorkspaceReadiness(db, run);
@@ -2968,7 +2971,7 @@ export function heartbeatService(
       runtimeConfig = { ...runtimeConfig, env: gitExecutionEnv };
       for (const key of MANAGED_GITHUB_TOKEN_KEYS) secretKeys.add(key);
       context.githubAuthenticationMode = useHostGitHub ? "host" : "managed";
-      if (!useHostGitHub) {
+      if (!useHostGitHub && !providerApiPlacement) {
         const githubLaunchers = await timePreparation("github_launchers", () => prepareHeartbeatGitHubLaunchers({
           native: agent.adapterType === "paperclip_runner",
           githubConfigured: githubSelection.configured,
@@ -2990,7 +2993,7 @@ export function heartbeatService(
         runtimeConfig = { ...runtimeConfig, env: githubLaunchers.env };
         secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       }
-      context.paperclipEnvironment = {
+      context.paperclipEnvironment = selectedEnvironment && activeEnvironmentLease ? {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,
         driver: selectedEnvironment.driver,
@@ -3017,7 +3020,7 @@ export function heartbeatService(
                   : undefined,
             }
           : {}),
-      };
+      } : { placement: providerApiPlacement };
       await db
         .update(heartbeatRuns)
         .set({
@@ -3244,8 +3247,8 @@ export function heartbeatService(
           executionWorkspace,
           persistedExecutionWorkspace,
           executionTarget,
-          environmentDriver: selectedEnvironment.driver,
-          leaseMetadata: activeEnvironmentLease.lease.metadata,
+          environmentDriver: selectedEnvironment?.driver ?? "provider_api",
+          leaseMetadata: activeEnvironmentLease?.lease.metadata ?? {},
         }));
         const adapterEnv = Object.fromEntries(
           Object.entries(parseObject(runtimeConfig.env)).filter(
@@ -3911,7 +3914,8 @@ export function heartbeatService(
             });
           }
         }
-        if (latestRun?.status === "interrupted" && latestRun.errorCode === "server_shutdown_interrupted") {
+        if (latestRun?.status === "interrupted" && latestRun.runtimeMode === "legacy" &&
+            !latestRun.runtimeModeResolvedAt && latestRun.executionStage === "preparing") {
           latestRun = await settleInterruptedNativeBootstrap(db, { run: latestRun,
             providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
           }) ?? latestRun;
@@ -3931,6 +3935,9 @@ export function heartbeatService(
             !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled && !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {
           await settleNativeRunProcess(db, run.id).catch(error => {
             logger.warn({ err: error, runId: run.id }, "failed to release settled native process identity");
+          });
+          await acknowledgeRemoteStop(run.id, run.companyId).catch(error => {
+            logger.warn({ err: error, runId: run.id }, "failed to acknowledge Stop after native process settlement");
           });
         }
         await db.update(heartbeatRuns).set({

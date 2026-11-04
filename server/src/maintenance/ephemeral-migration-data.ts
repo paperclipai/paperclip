@@ -1,5 +1,5 @@
-import { inArray } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
+import { offlineMigrationExecutionWhere } from "../services/offline-migration-execution.js";
 import { getStorageService } from "../storage/index.js";
 import { migrateAgentFiles, verifyAgentFileObjects } from "../services/agent-file-maintenance.js";
 import { readEphemeralServerDataEligibility } from "../services/ephemeral-server-contract.js";
@@ -8,6 +8,7 @@ import { skillInstallationMaintenance } from "../services/skill-installation-mai
 import { skillPackageMaintenance } from "../services/skill-package-maintenance.js";
 import { hasUnsettledLocalInstructionCopies } from "../services/agent-instruction-working-copies.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
+import { migrateWorkspaceTrees } from "../services/remote-workspace-migration-batch.js";
 
 /** Runs only in the maintenance process after Cloud has confirmed all legacy
  * deployments stopped. Each owner retains its own migration/publication rules;
@@ -18,14 +19,19 @@ export async function migrateEphemeralServerData(db: Db, input: {
   const { signal, phase } = input;
   const counts: Record<string, number> = {};
   const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-    .where(inArray(heartbeatRuns.status, ["running", "queued"])).limit(1);
+    .where(offlineMigrationExecutionWhere()).limit(1);
   if (active) throw new Error("active_execution_requires_drain");
   if (await hasUnsettledLocalInstructionCopies(db)) throw new Error("local_instruction_copies_require_settlement");
   const before = await readEphemeralServerDataEligibility(db);
   const unsupported = before.blockers.filter(blocker => ![
-    "agent_files_require_migration", "run_logs_require_migration", "provider_traces_require_migration", "skills_require_migration",
+    "agent_files_require_migration", "run_logs_require_migration", "provider_traces_require_migration", "skills_require_migration", "workspaces_require_migration",
   ].includes(blocker));
   if (unsupported.length) throw new Error(unsupported[0]);
+
+  phase("workspaces");
+  const storage = getStorageService();
+  if (storage.provider !== "s3") throw new Error("shared_object_storage_required");
+  counts.workspaces = await migrateWorkspaceTrees(db, { storage, signal, phase });
 
   phase("agent_files");
   let after: string | undefined;
@@ -45,6 +51,7 @@ export async function migrateEphemeralServerData(db: Db, input: {
     do {
       signal.throwIfAborted();
       const page = await migrateRunEvidence(db, { apply: true, kinds: [kind], limit: 50, signal,
+        preserveHistoricalFiles: true,
         ...(kind === "log" ? { afterRunId: after } : { afterTraceId: after }) });
       if (page.items.some(item => item.state !== "migrated")) throw new Error(`${kind}_migration_blocked`);
       counts[kind] = (counts[kind] ?? 0) + page.items.length;
@@ -77,8 +84,6 @@ export async function migrateEphemeralServerData(db: Db, input: {
   }
 
   phase("verify_agent_objects");
-  const storage = getStorageService();
-  if (storage.provider !== "s3") throw new Error("shared_object_storage_required");
   counts.verifiedAgentObjects = await verifyAgentFileObjects(db, storage, signal);
   phase("verify_skill_versions");
   after = undefined;

@@ -998,21 +998,32 @@ describe("Cursor Cloud native driver", () => {
       try {
         const turn = await f.session.startTurn({ message: { role: "user", text: rejection === "unsent_payload" ? "\u0001".repeat(400_000) : "Rejected task" } });
         await entered.promise;
+        const observeHeldCheckpoint = async () => {
+          const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);
+          expect(JSON.parse(await readFile(checkpointPath, "utf8")).phase).not.toBe("idle");
+          return checkpointPath;
+        };
+        let checkpointPath: string;
         if (overlap === "stop_write") {
           stop(); await stopHeld.promise;
           rejectCreate.resolve(); await new Promise<void>(accept => setImmediate(accept));
+          // The Stop checkpoint gate still holds its cancellation clock here.
+          checkpointPath = await observeHeldCheckpoint();
           releaseStop.resolve();
-          await waitFor(() => pausedRejection || stopDone);
+          await Promise.race([rejectionHeld.promise, stopped!]);
           expect(pausedRejection, "the definite rejection must reach durable settlement even while stopping").toBe(true);
         } else {
           rejectCreate.resolve(); await rejectionHeld.promise;
+          // File observations must not consume Stop's 300ms settlement budget.
+          checkpointPath = await observeHeldCheckpoint();
           stop(); await new Promise<void>(accept => setImmediate(accept));
         }
         expect(stopDone, "Stop must wait for the rejected-create checkpoint").toBe(false);
         expect(await f.session.read()).toMatchObject({ phase: "stopping" });
         await expect(f.session.startTurn({ message: { role: "user", text: "Too early" } })).rejects.toThrow("unresolved remote work");
-        const checkpointPath = join(f.root, (await readdir(f.root)).find(name => /^checkpoint-.*\.json$/.test(name))!);
-        expect(JSON.parse(await readFile(checkpointPath, "utf8")).phase).not.toBe("idle");
+        expect(peer.getAgent).toHaveBeenCalledTimes(before.getAgent);
+        expect(peer.getRun).toHaveBeenCalledTimes(before.getRun);
+        expect(peer.cancelRun).toHaveBeenCalledTimes(before.cancel);
         releaseRejection.resolve();
         expect(await stopped).toEqual({ error: null });
         await waitFor(() => f.events.some(event => event.turnId === turn.turnId && event.eventType === "turn.failed" && event.payload.remoteWorkAccepted === false));

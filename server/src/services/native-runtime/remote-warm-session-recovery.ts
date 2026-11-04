@@ -3,7 +3,7 @@ import { agents, companies, environmentLeases, heartbeatRuns, issues, nativeRunF
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import { parseNativeExecutionInput, type NativeExecutionInput, type PersistedNativeSession } from "../../vendor/paperclip-runner/index.js";
 import { currentNativeControllerIdentity, evaluateNativeControllerTakeover } from "./native-restart-recovery.js";
-import { readNativeControllerRecovery } from "./native-controller-recovery.js";
+import { NativeControllerRecoveryWaitingError, readNativeControllerRecovery } from "./native-controller-recovery.js";
 
 export type RemoteWarmSessionRecovery = {
   identity: Record<string, string>;
@@ -14,9 +14,10 @@ export type RemoteWarmSessionRecovery = {
   revalidate: (leaseOwner: string) => Promise<void>;
 };
 
-/** A goal read can publish an idle snapshot after the terminal. It carries no
- * new work; every other suffix still requires reconciliation before handoff. */
-export function isSettledRemoteWarmControlState(control: Record<string, unknown>, identity: Record<string, string>): boolean {
+/** A goal read can publish an idle snapshot and a provider can publish a
+ * recoverable notice after the terminal. Neither carries new work; every other
+ * suffix still requires reconciliation before handoff. */
+export function isSettledRemoteWarmControlState(control: Record<string, unknown>, identity: Record<string, unknown>): boolean {
   const record = (value: unknown): Record<string, unknown> =>
     value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
   const commands = control.commands;
@@ -34,13 +35,17 @@ export function isSettledRemoteWarmControlState(control: Record<string, unknown>
     const envelope = record(record(event).envelope);
     const notification = record(envelope.payload);
     const payload = record(notification.payload);
-    return record(event).eventType === "session.goal.snapshot" && matchesSession(event) &&
+    const eventType = record(event).eventType;
+    const inert = eventType === "session.goal.snapshot"
+      ? payload.schema === "paperclip.session_goal.snapshot.v1" && payload.goal === null && payload.workingNow === false
+      : eventType === "provider.notice.recorded" && payload.schema === "paperclip.provider.notice.v1" &&
+        payload.recoverable === true && (payload.severity === "info" || payload.severity === "warning");
+    return inert && matchesSession(event) &&
       Object.entries(identity).every(([key, value]) => envelope[key] === value) &&
       (notification.schema === "paperclip.prp.event.v1" || notification.schema === "paperclip.prp.event.v2") &&
-      notification.eventType === "session.goal.snapshot" &&
+      notification.eventType === eventType &&
       notification.sourceInstanceId === identity.runnerInstanceId && notification.sourceKind === "runner" &&
-      notification.runId === identity.runId && notification.normalizedSessionId === identity.normalizedSessionId &&
-      payload.schema === "paperclip.session_goal.snapshot.v1" && payload.goal === null && payload.workingNow === false;
+      notification.runId === identity.runId && notification.normalizedSessionId === identity.normalizedSessionId;
   });
 }
 
@@ -71,11 +76,14 @@ export async function inspectRemoteWarmSessionRecovery(input: {
     .from(heartbeatRuns).innerJoin(nativeRunFinalizations, eq(nativeRunFinalizations.runId, heartbeatRuns.id))
     .where(and(eq(heartbeatRuns.id, identity.runId), eq(heartbeatRuns.companyId, binding.companyId),
       eq(heartbeatRuns.agentId, binding.agentId), eq(heartbeatRuns.nativeIssueId, binding.issueId)));
-  if (!prior || prior.run.status !== "succeeded" || prior.owner.phase !== "committed" ||
-      !prior.owner.resultId || prior.owner.leaseOwner || !prior.owner.controllerPid ||
+  if (!prior || prior.run.status !== "succeeded" || !prior.owner.resultId || !prior.owner.controllerPid ||
       !prior.owner.controllerProcessStartedAt || !prior.owner.controllerBootId) return deny();
   const previous = parseNativeExecutionInput(prior.run.runnerProfileJson?.nativeExecutionInput);
   if (previous.binding.runId !== identity.runId || !input.matchesExecution(previous)) return deny();
+  if (prior.owner.leaseOwner && prior.owner.leaseExpiresAt && prior.owner.leaseExpiresAt > new Date()) {
+    throw new NativeControllerRecoveryWaitingError(prior.owner.leaseExpiresAt);
+  }
+  if (prior.owner.phase !== "committed" || prior.owner.leaseOwner) return deny();
   const checkpoint = input.loadCheckpoint(previous);
   if (!checkpoint || checkpoint.identity.runId !== identity.runId ||
       checkpoint.identity.companyId !== binding.companyId || checkpoint.identity.issueId !== binding.issueId ||

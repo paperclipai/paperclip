@@ -2340,6 +2340,7 @@ describe("OpenCodeServerDriver", () => {
     const continuation = { kind, summary: "Wait for the saved task path.", idempotencyKey: "task-wait:saved" };
     const reads: string[] = [];
     const accepted: unknown[] = [];
+    const diagnostics: string[] = [];
     const driver = new OpenCodeServerDriver({
       model: "openrouter/deepseek/deepseek-v4-flash-0731", runtimeDirectory: root, command: fixture,
       environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key" },
@@ -2349,11 +2350,13 @@ describe("OpenCodeServerDriver", () => {
           completionContinuation: eligible ? continuation : null };
       },
       completionFeedback: async result => { accepted.push(result); return "Accepted monitor wait."; },
+      onDiagnostic: message => diagnostics.push(message),
     });
     const session = await driver.openSession({ runId: "monitor-default", normalizedSessionId: "monitor-default", workingDirectory: workspace });
     try {
       await session.startTurn({ message: { role: "user", text: "monitor-default" } });
       const events = await collectTurnEvents(session.events());
+      expect(diagnostics).toContainEqual(expect.stringContaining('"schema":"paperclip.opencode.finish-input-diagnostic/v1","stage":"offered"'));
       expect(reads).toEqual(["get_task_context"]);
       if (eligible) {
         expect(accepted).toMatchObject([{ reportedWorkDisposition: "yielded", continuation }]);

@@ -24,7 +24,10 @@ export const projectTaskExecutionPolicies = pgTable("project_task_execution_poli
 /**
  * One admission attempt of a run. A run can be admitted again after a settled
  * attempt, so the run ID is not the admission identity. Primary project is
- * provenance only; the charges below are the admitted project set.
+ * provenance only. `admittedProjectIds` is the complete admitted set, sorted and
+ * immutable (trigger), kept after settlement without project foreign keys. Null
+ * means unknown: settled before the set was recorded. Charges below are the
+ * active capacity only.
  */
 export const executionAdmissions = pgTable("execution_admissions", {
   id: uuid("id").primaryKey(),
@@ -33,6 +36,7 @@ export const executionAdmissions = pgTable("execution_admissions", {
   attempt: integer("attempt").notNull(),
   primaryProjectId: uuid("primary_project_id"),
   contextRevision: text("context_revision").notNull(),
+  admittedProjectIds: uuid("admitted_project_ids").array(),
   settlementId: uuid("settlement_id"),
   settledAt: timestamp("settled_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -42,6 +46,8 @@ export const executionAdmissions = pgTable("execution_admissions", {
   liveRun: uniqueIndex("execution_admissions_live_run_uq").on(t.runId).where(sql`${t.settledAt} is null`),
   attemptCheck: check("execution_admissions_attempt_check", sql`${t.attempt} > 0`),
   settlementCheck: check("execution_admissions_settlement_check", sql`(${t.settlementId} is null) = (${t.settledAt} is null)`),
+  projectSetCheck: check("execution_admissions_project_set_check", sql`case when ${t.admittedProjectIds} is null
+    then ${t.settledAt} is not null else array_position(${t.admittedProjectIds}, null) is null and cardinality(${t.admittedProjectIds}) <= 100 end`),
 }));
 
 /** One active charge per distinct admitted project. Settlement deletes the whole set; a charged project cannot be deleted. */

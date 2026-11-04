@@ -50,7 +50,11 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     return root;
   }
 
-  function target(ambientEnv: Record<string, string> = {}) {
+  function target(ambientEnv: Record<string, string> = {}, outputMode: "split" | "one-shot" = "split") {
+    // Daytona one-shot execution returns the child streams together in stdout.
+    // Run the real helper first, then apply that provider response contract.
+    const streams = (stdout: string, stderr: string) => outputMode === "one-shot"
+      ? { stdout: stdout + stderr, stderr: "" } : { stdout, stderr };
     const execute = vi.fn<CommandManagedRuntimeRunner["execute"]>(async input => {
       try {
         const result = await exec(input.command, input.args ?? [], {
@@ -58,11 +62,12 @@ describe("remote workspace transport safety with real sandbox commands", () => {
           // Carry only generated fixture values across this execution boundary.
           env: { PATH: process.env.PATH, ...ambientEnv, ...input.env },
         });
-        return { ...result, exitCode: 0, timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() };
+        return { ...streams(result.stdout, result.stderr), exitCode: 0, timedOut: false, signal: null,
+          pid: process.pid, startedAt: new Date().toISOString() };
       } catch (error) {
         const failure = error as { code?: number; stdout?: string; stderr?: string; signal?: string };
-        return { exitCode: typeof failure.code === "number" ? failure.code : 1, stdout: failure.stdout ?? "",
-          stderr: failure.stderr ?? "", timedOut: false, signal: failure.signal ?? null,
+        return { exitCode: typeof failure.code === "number" ? failure.code : 1,
+          ...streams(failure.stdout ?? "", failure.stderr ?? ""), timedOut: false, signal: failure.signal ?? null,
           pid: process.pid, startedAt: new Date().toISOString() };
       }
     });
@@ -287,7 +292,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     expect(await fs.readdir(outside)).toEqual(["workspace.pcws"]);
   });
 
-  it("preserves only the fixed unfinished Git operation diagnostic across capture commands", async () => {
+  it.each(["split", "one-shot"] as const)("preserves only the fixed unfinished Git operation diagnostic with %s output", async outputMode => {
     await git(workspace, "init", "--initial-branch=main");
     await fs.writeFile(path.join(workspace, "work.txt"), "base\n"); await git(workspace, "add", "."); await git(workspace, "commit", "-m", "base");
     await git(workspace, "checkout", "-b", "feature");
@@ -295,10 +300,14 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     await git(workspace, "checkout", "main");
     await fs.writeFile(path.join(workspace, "work.txt"), "main\n"); await git(workspace, "commit", "-am", "main");
     await expect(git(workspace, "merge", "--no-edit", "feature")).rejects.toThrow();
-    const { remote, execute } = target();
+    const mergeHead = await fs.readFile(path.join(workspace, ".git", "MERGE_HEAD"), "utf8");
+    const conflictedWork = await fs.readFile(path.join(workspace, "work.txt"), "utf8");
+    const { remote, execute } = target({}, outputMode);
     const gitOperation = "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace";
     const operationId = randomUUID();
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId })).rejects.toThrow(gitOperation);
+    expect(await fs.readFile(path.join(workspace, ".git", "MERGE_HEAD"), "utf8")).toBe(mergeHead);
+    expect(await fs.readFile(path.join(workspace, "work.txt"), "utf8")).toBe(conflictedWork);
     const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
     for (const name of ["workspace.pcws", "receipt.json"]) await expect(fs.access(path.join(directory, name))).rejects.toMatchObject({ code: "ENOENT" });
     const failure = { exitCode: 1, stdout: "", stderr: `${gitOperation}\nSYNTHETIC_PRIVATE_PATH_OR_CREDENTIAL`,
@@ -308,13 +317,15 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       .rejects.toThrow(/^remote_workspace_operation_failed$/);
     execute.mockResolvedValueOnce({ ...failure, timedOut: true, stderr: gitOperation });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
-      .rejects.toThrow(/^remote_workspace_operation_failed$/);
+      .rejects.toThrow(/^remote_workspace_operation_timed_out: archive_helper \(configured timeout 300000ms\)$/);
   });
 
   it.each([
-    { step: "helper install", failing: String.raw`/archive\.cjs\.[^/]+\.tmp$/` },
-    { step: "archive write", failing: String.raw`/workspace\.pcws$/` },
-  ])("names a full sandbox disk when the $step runs out of space", async ({ failing }) => {
+    { step: "helper install", failing: String.raw`/archive\.cjs\.[^/]+\.tmp$/`, outputMode: "split" as const },
+    { step: "archive write", failing: String.raw`/workspace\.pcws$/`, outputMode: "split" as const },
+    { step: "helper install", failing: String.raw`/archive\.cjs\.[^/]+\.tmp$/`, outputMode: "one-shot" as const },
+    { step: "archive write", failing: String.raw`/workspace\.pcws$/`, outputMode: "one-shot" as const },
+  ])("names a full sandbox disk when the $step runs out of space with $outputMode output", async ({ failing, outputMode }) => {
     await fs.writeFile(path.join(workspace, "result.txt"), "synthetic saved result\n");
     // Every sandbox Node process inherits this preload. A matching write keeps
     // one byte and then fails with ENOSPC, as a real full disk does.
@@ -327,7 +338,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       fs.open=async(file,...rest)=>{const handle=await open(file,...rest);if(failing.test(String(file))){const write=handle.writeFile.bind(handle);
         handle.writeFile=async data=>{await write(Buffer.from(data).subarray(0,1));throw enospc(file);};}return handle;};
       require('node:module').syncBuiltinESMExports();`);
-    const { remote, execute } = target();
+    const { remote, execute } = target({}, outputMode);
     const run = execute.getMockImplementation()!;
     execute.mockImplementation(input => run({ ...input, env: { ...input.env, NODE_OPTIONS: `--require ${preload}` } }));
     const operationId = randomUUID();
@@ -336,6 +347,7 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     const directory = path.join(workspace, ".paperclip-runtime", "workspace-snapshots", operationId);
     const leftovers = await fs.readdir(directory).catch(() => []);
     expect(leftovers.filter(name => name !== "archive.cjs")).toEqual([]);
+    expect(await fs.readFile(path.join(workspace, "result.txt"), "utf8")).toBe("synthetic saved result\n");
   });
 
   it("keeps the full-disk diagnostic exact", async () => {
@@ -345,6 +357,77 @@ describe("remote workspace transport safety with real sandbox commands", () => {
       stderr: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace\nSYNTHETIC_PRIVATE_PATH" });
     await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
       .rejects.toThrow(/^remote_workspace_operation_failed$/);
+  });
+
+  it.each([
+    { label: "private stdout", stdout: "SYNTHETIC_PRIVATE_STDOUT", stderr: "" },
+    { label: "private stderr", stdout: "", stderr: "SYNTHETIC_PRIVATE_STDERR" },
+    { label: "suffixed stdout diagnostic", stdout: "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace\nSYNTHETIC_PRIVATE_PATH", stderr: "" },
+    { label: "prefixed stdout diagnostic", stdout: "SYNTHETIC_PRIVATE_PATH\nremote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace", stderr: "" },
+    { label: "unrelated helper diagnostic", stdout: "remote_workspace_capture_failed", stderr: "" },
+    { label: "diagnostic split between streams", stdout: "remote_workspace_sandbox_", stderr: "disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace" },
+  ])("keeps $label private", async ({ stdout, stderr }) => {
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout, stderr, timedOut: false, signal: null,
+      pid: process.pid, startedAt: new Date().toISOString() });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_operation_failed$/);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the existing safe stderr diagnostic when stdout reports another safe failure", async () => {
+    const { remote, execute } = target();
+    const diskFull = "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
+    execute.mockResolvedValueOnce({ exitCode: 1, stdout: diskFull,
+      stderr: "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    await expect(captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace$/);
+  });
+
+  it("captures and restores verified bytes with one-shot combined output", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "saved synthetic one-shot bytes\n");
+    const { remote, execute } = target({}, "one-shot");
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      expect(createHash("sha256").update(await fs.readFile(captured.archivePath)).digest("hex")).toBe(captured.sha256);
+      const restoredRoot = path.join(scratch, "restored-one-shot");
+      const restored = await restoreRemoteWorkspaceDirectory({ target: remote, remoteCwd: restoredRoot,
+        archivePath: captured.archivePath, manifestDigest: captured.manifestDigest, restorationIdentity: "c".repeat(64) });
+      expect(await fs.readFile(path.join(restoredRoot, "saved.txt"), "utf8")).toBe("saved synthetic one-shot bytes\n");
+      expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("saved synthetic one-shot bytes\n");
+      await cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: restored.stagingRoot, operationId: restored.operationId });
+      expect(execute.mock.calls.every(([input]) => input.bypassSession === true)).toBe(true);
+    } finally { await captured.cleanup(); }
+  });
+
+  it("identifies a timed-out preparation without exposing transport output or retrying it", async () => {
+    const { remote, execute } = target();
+    const resolveGitAuth = vi.fn(async () => null);
+    execute.mockResolvedValueOnce({ exitCode: 0, stdout: '{"cloneRequired":true}', stderr: "",
+      timedOut: false, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+    execute.mockResolvedValueOnce({ exitCode: null, stdout: "SYNTHETIC_PRIVATE_STDOUT", stderr: "SYNTHETIC_PRIVATE_STDERR",
+      timedOut: true, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+
+    await expect(prepareRemoteWorkspaceDirectory({ target: remote, remoteCwd: path.join(workspace, "clone"),
+      source: { kind: "git", repoUrl: "https://example.invalid/source.git", ref: null },
+      preparationIdentity: "a".repeat(64), resolveGitAuth }))
+      .rejects.toThrow(/^remote_workspace_operation_timed_out: prepare \(configured timeout 300000ms\)$/);
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(resolveGitAuth).toHaveBeenCalledTimes(1);
+    expect(await fs.readdir(workspace)).toEqual([]);
+  });
+
+  it("reports the cleanup deadline without treating a timeout as a completed operation", async () => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "preserve the workspace\n");
+    const { remote, execute } = target();
+    execute.mockResolvedValueOnce({ exitCode: 0, stdout: "SYNTHETIC_PRIVATE_STDOUT", stderr: "SYNTHETIC_PRIVATE_STDERR",
+      timedOut: true, signal: null, pid: process.pid, startedAt: new Date().toISOString() });
+
+    await expect(cleanupRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() }))
+      .rejects.toThrow(/^remote_workspace_operation_timed_out: cleanup \(configured timeout 10000ms\)$/);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(await fs.readFile(path.join(workspace, "saved.txt"), "utf8")).toBe("preserve the workspace\n");
   });
 
   it("never follows a preexisting snapshot receipt temporary symlink", async () => {

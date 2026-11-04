@@ -35,7 +35,7 @@ afterEach(async () => {
 });
 function setup() {
   const execute = vi.fn(async () => [{ xid: "42", status: "committed" }]);
-  const owner = installDatabaseWorkSignals({ execute, async transaction(callback: (tx: unknown) => Promise<unknown>) {
+  const owner = installDatabaseWorkSignals({ execute, async transaction(callback: (tx: unknown) => Promise<unknown>): Promise<unknown> {
     return callback({ execute, transaction: owner.transaction });
   } });
   const onError = vi.fn();
