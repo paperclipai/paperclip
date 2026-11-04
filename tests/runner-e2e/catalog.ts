@@ -1278,10 +1278,10 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
   ].map(({ id, environment }): RunnerSuiteFixture => ({
     id, label: `Legacy native session migration (${environment.configurationKey ? "warm" : "per-turn"})`, manualOnly: true,
     description: "Resume an existing native session and workspace after the production offline migration and deletion of the original controller home.",
-    groups: [], profiles: rollingDeploymentProfiles.filter(profile => !profile.qualificationCandidate), environments: [environment],
+    groups: [], profiles: rollingDeploymentProfiles, environments: [environment],
     tasks: [{ ...necessaryQuestionTask, minimumExpectedRunCount: 2, turnTimeoutMs: 6 * 60_000,
       attemptTimeoutMs: { local: 15 * 60_000, daytona: 20 * 60_000 } }],
-    expectedMatrixSize: rollingDeploymentProfiles.filter(profile => !profile.qualificationCandidate).length,
+    expectedMatrixSize: rollingDeploymentProfiles.length,
     definitionMetadata: { version: 1, scheduling: "explicit-only", maximumAttemptsPerCell: 1, providerTurns: 2, budgetMonthlyCents: 1000,
       lifecycleCoverage: environment.configurationKey ? "warm-reusable" : "per-turn-disposable",
       migration: "packaged-offline-entry-verified-export-delete-entire-source-home", authentication: "api-key", stagingQualification: false,
