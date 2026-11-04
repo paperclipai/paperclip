@@ -83,7 +83,7 @@ import {
   type LiveRunForIssue,
 } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { accessApi } from "../api/access";
+import { accessApi, type CurrentBoardAccess } from "../api/access";
 import {
   canBoardManageRuntime,
   canBoardResolveRecoveryAction,
@@ -674,6 +674,16 @@ function mergeOptimisticFeedbackVote(
       updatedAt: now,
     },
   ];
+}
+
+function canBoardDeleteAgentComments(
+  issue: { companyId: string; conversationAgentId?: string | null; conversationUserId?: string | null } | null | undefined,
+  currentUserId: string | null | undefined,
+  boardAccess: CurrentBoardAccess | undefined,
+) {
+  if (!issue) return false;
+  if (issue.conversationAgentId && issue.conversationUserId !== currentUserId) return false;
+  return canBoardResolveRecoveryAction(issue.companyId, boardAccess);
 }
 
 function ActorIdentity({
@@ -1305,6 +1315,7 @@ type IssueDetailChatTabProps = {
   onInterruptQueued: (runId: string | null) => Promise<IssueQueuedCommentQueue | void>;
   onRemoveCommentFromCache: (commentId: string) => Promise<void>;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
+  canDeleteAgentComments?: boolean;
   onPauseWorkRun?: (runId: string, feedback?: "composer") => Promise<void>;
   onStopResponse?: (runId: string) => Promise<void>;
   stopResponsePending?: boolean;
@@ -1440,6 +1451,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onInterruptQueued,
   onRemoveCommentFromCache,
   onDeleteComment,
+  canDeleteAgentComments,
   onPauseWorkRun,
   onStopResponse,
   stopResponsePending,
@@ -2743,6 +2755,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             onSteerQueuedComment={steerQueuedComment}
             onDiscardQueuedComment={discardQueuedComment}
             onDeleteComment={onDeleteComment}
+            canDeleteAgentComments={canDeleteAgentComments}
             onCancelQueued={onCancelQueued}
             interruptingQueuedRunId={interruptingQueuedRunId}
             stoppingRunId={
@@ -3880,6 +3893,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [companyMembers?.users],
   );
   const canManagePrivacy = canManageIssuePrivacy(issue, currentUserId, boardAccess);
+  const canDeleteAgentComments = canBoardDeleteAgentComments(issue, currentUserId, boardAccess);
   // Role-based principals for the share sheet's implicit rows (no revoke).
   const privacyImplicitPrincipals = useMemo<ShareSheetImplicitPrincipal[]>(() => {
     if (!issue) return [];
@@ -5700,7 +5714,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       invalidateIssueDocumentAnnotationState();
       pushToast({
         title: "Comment deleted",
-        body: "The thread now shows a deleted-comment marker.",
+        body: "The comment text was removed from this task.",
         tone: "success",
       });
     },
@@ -8685,6 +8699,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onAttachImage={handleCommentAttachImage}
                   onInterruptQueued={handleInterruptQueuedRun}
                   onRemoveCommentFromCache={removeCommentFromCache}
+                  canDeleteAgentComments={canDeleteAgentComments}
                   onDeleteComment={(commentId) =>
                     deleteComment
                       .mutateAsync({ commentId })

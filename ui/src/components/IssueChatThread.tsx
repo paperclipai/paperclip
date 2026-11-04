@@ -1,3 +1,4 @@
+import { DeleteAgentCommentDialog } from "@/components/DeleteAgentCommentDialog";
 import { useCurrentAccountGuard } from "../hooks/useAccountBoundMutation";
 import { resolveIssueChatHumanAuthor } from "@/lib/issue-chat-human-author";
 import { useCurrentWorkspaceRetry, useWorkspaceBaseRefRecovery, useWorkspaceRetry } from "./WorkspaceBaseRefRecovery";
@@ -299,6 +300,7 @@ interface IssueChatMessageContext {
   onInterruptQueued?: (runId: string | null) => Promise<IssueQueuedCommentQueue | void>;
   onCancelQueued?: (commentId: string) => void;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
+  canDeleteAgentComments?: boolean;
   onImageClick?: (src: string) => void;
   onAcceptInteraction?: (
     interaction:
@@ -491,7 +493,7 @@ function IssueChatLiveRunStatusLine({
   );
 }
 
-function useStableEvent<T extends (...args: never[]) => unknown>(
+export function useStableEvent<T extends (...args: never[]) => unknown>(
   callback: T | undefined,
 ): T | undefined {
   const callbackRef = useRef(callback);
@@ -707,6 +709,7 @@ interface IssueChatThreadProps {
     revision: string,
   ) => Promise<void>;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
+  canDeleteAgentComments?: boolean;
   interruptingQueuedRunId?: string | null;
   stoppingRunId?: string | null;
   onImageClick?: (src: string) => void;
@@ -2374,6 +2377,8 @@ function IssueChatAssistantMessage({
     runFinalizationActions = [],
     userLabelMap,
     issueAssigneeAgentId,
+    onDeleteComment,
+    canDeleteAgentComments,
   } = useContext(IssueChatCtx);
   const custom = message.metadata.custom as Record<string, unknown>;
   const anchorId =
@@ -2439,6 +2444,17 @@ function IssueChatAssistantMessage({
   const [copied, setCopied] = useState(false);
   const toastActions = useOptionalToastActions();
   const copyText = deleted ? "" : getThreadMessageCopyText(message);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const canDeleteComment = Boolean(
+    onDeleteComment &&
+      canDeleteAgentComments &&
+      custom.storedAuthorAgentId &&
+      commentId &&
+      !deleted &&
+      custom.queueState !== "queued" &&
+      custom.clientStatus !== "queued" &&
+      custom.clientStatus !== "pending",
+  );
 
   // Derive fold state synchronously during render (not in useEffect) so the
   // browser never paints the un-folded intermediate state — prevents the
@@ -2600,8 +2616,24 @@ function IssueChatAssistantMessage({
               </Link>
             </DropdownMenuItem>
           ) : null}
+          {canDeleteComment ? (
+            <DropdownMenuItem
+              className="text-destructive focus:text-destructive"
+              onSelect={() => setDeleteDialogOpen(true)}
+            >
+              <Trash2 className="mr-2 h-3.5 w-3.5" />
+              Delete comment
+            </DropdownMenuItem>
+          ) : null}
         </DropdownMenuContent>
       </DropdownMenu>
+      <DeleteAgentCommentDialog
+        open={deleteDialogOpen}
+        onOpenChange={setDeleteDialogOpen}
+        onConfirm={() => {
+          if (commentId) void Promise.resolve(onDeleteComment?.(commentId)).catch(() => {});
+        }}
+      />
     </div>
   );
 
@@ -5939,6 +5971,7 @@ export function IssueChatThread({
   onInterruptQueued,
   onCancelQueued,
   onDeleteComment,
+  canDeleteAgentComments = false,
   interruptingQueuedRunId = null,
   stoppingRunId = null,
   onImageClick,
@@ -6640,6 +6673,7 @@ export function IssueChatThread({
       onInterruptQueued: composerPause ? undefined : stableOnInterruptQueued,
       onCancelQueued: composerPause ? undefined : stableOnCancelQueued,
       onDeleteComment: stableOnDeleteComment,
+      canDeleteAgentComments,
       onImageClick: stableOnImageClick,
       onAcceptInteraction: stableOnAcceptInteraction,
       onRejectInteraction: stableOnRejectInteraction,
@@ -6670,6 +6704,7 @@ export function IssueChatThread({
       stableOnInterruptQueued,
       stableOnCancelQueued,
       stableOnDeleteComment,
+      canDeleteAgentComments,
       stableOnImageClick,
       stableOnAcceptInteraction,
       stableOnRejectInteraction,
