@@ -1,3 +1,4 @@
+import { PRIVATE_FRAMEWORK_REPORT, validatePrivateFrameworkReport } from "./private-framework-report.js";
 import { createHash } from "node:crypto";
 import { appendFile, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -95,6 +96,18 @@ export async function validateSealedInventory(directory: string, inventory: stri
   }
   await visit("");
   if (actual.size !== expected.size) throw new Error("Sealed evidence is incomplete");
+  if (treeKind === "standard") for (const row of receipt.files) {
+    if (row.path === PRIVATE_FRAMEWORK_REPORT || row.path.endsWith(`/${PRIVATE_FRAMEWORK_REPORT}`)) {
+      const cell = path.join(directory, row.path.slice(0, -PRIVATE_FRAMEWORK_REPORT.length));
+      if (id !== undefined) await validatePrivateFrameworkReport(cell);
+      else {
+        const metadata = JSON.parse(await readFile(path.join(directory, row.path), "utf8"));
+        const owner = metadata.canonicalExecutionId;
+        if (!context || typeof owner !== "string" || !context.executionIds.includes(owner)) throw new Error("Unbound canonical framework evidence");
+        await validatePrivateFrameworkReport(cell, path.join(context.root, "originals", manualCellKind(owner)), owner);
+      }
+    }
+  }
   return receipt;
 }
 export async function validateSealedOriginals(root: string, id: string, context?: ManualPrivateHandoff) {

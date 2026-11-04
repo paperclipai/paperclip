@@ -1,3 +1,4 @@
+import { inspectPrivateFrameworkMetadata } from "./private-framework-report.js";
 import { lstat, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { inspectEmbeddedReport, inspectZip } from "./evidence.js";
@@ -5,7 +6,7 @@ import { diagnosticSecrets, type DiagnosticSecretExpansion } from "./private-dia
 import { findSecretLeak, redactText, sanitizeJson } from "./redaction.js";
 import { cellTraceAsset, readPrivateCellTraceAsset, type PrivateCellEvidenceOwner } from "./manual-private-report-assets.js";
 export interface ReporterPrivacyIssue { file: string; disposition: "redacted" | "omitted"; reason: string }
-const sources = ["server.log", "playwright.log", "junit.xml", "html-report", "blob-report", "playwright-output"];
+const sources = ["server.log", "playwright.log", "junit.xml", "html-report", "blob-report", "playwright-output", "framework-report.json"];
 const text = new Set([".log", ".txt", ".md", ".xml", ".html", ".json", ".js", ".css"]);
 /** Only reporter/diagnostic sinks are touched, after independent product oracles
  * finish. Product API snapshots and work-product bytes are never pre-sanitized.
@@ -36,6 +37,7 @@ export async function sanitizePrivateReporterArtifacts(root: string, values: rea
     } else if (text.has(extension)) {
       if (info.size > 128 * 1024 * 1024) { await rm(filename); issues.push({ file: safeName, disposition: "omitted", reason: "reporter text exceeds inspection bound" }); return; }
       const raw = await readFile(filename, "utf8");
+      if (relative === "framework-report.json") inspectPrivateFrameworkMetadata(relative, raw, secrets);
       const opaque = extension === ".html" ? await inspectEmbeddedReport(raw, secrets) : null;
       if (opaque) { await rm(filename); issues.push({ file: safeName, disposition: "omitted", reason: opaque }); return; }
       const leak = findSecretLeak(raw, secrets);

@@ -1,3 +1,4 @@
+import { PRIVATE_FRAMEWORK_REPORT, validatePrivateFrameworkReport, inspectPrivateFrameworkMetadata } from "./private-framework-report.js";
 import { spawn } from "node:child_process";
 import {
   mkdir,
@@ -246,6 +247,7 @@ export async function packageEvidence(input: {
       continue;
     } else if (TEXT_EXTENSIONS.has(extension)) {
       const raw = await readFile(source, "utf8");
+      if (input.privateCell) inspectPrivateFrameworkMetadata(relative.split(path.sep).join("/"), raw, input.secrets);
       if (extension === ".html") {
         const issue = await inspectEmbeddedReport(raw, input.secrets);
         if (issue) { if (budget && budget.bound === "none") budget.bound = scannerBudgetBound(issue); leaks.push({ file: relative, reason: issue }); continue; }
@@ -301,10 +303,12 @@ export async function packageEvidence(input: {
   }
 
   if (budget) { budget.inventoryComplete = true; budget.scanFinished = true; }
+  const compact = input.privateCell?.layout === "original" && files.includes(PRIVATE_FRAMEWORK_REPORT)
+    ? await validatePrivateFrameworkReport(input.privateDir) : undefined;
   const missing = input.expectPassScreenshot
     ? [
-        ...REQUIRED_PASS_FILES.filter((required) => !files.includes(required)),
-        ...(files.some(
+        ...REQUIRED_PASS_FILES.filter((required) => !files.includes(required) && !(compact && required === path.join("html-report", "index.html"))),
+        ...(compact || files.some(
           (file) =>
             file.startsWith(`blob-report${path.sep}`) && file.endsWith(".zip"),
         )

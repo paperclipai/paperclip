@@ -1,3 +1,4 @@
+import { copyPrivateFrameworkReport } from "./private-framework-report.js";
 import type { SourceSdkAuditCapture } from "./source-sdk-evidence.js";
 import { cp, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -23,6 +24,7 @@ export async function copySharedEvidence(privateRoot: string, casePrivateDir: st
       if (error.code !== "ENOENT") throw error;
     });
   }
+  if (sdkAudit) await copyPrivateFrameworkReport(privateRoot, casePrivateDir, secrets);
   if (sdkAudit) await (await import("./source-sdk-evidence.js")).copyPreparedSourceSdkAudit(temporaryRoot, casePrivateDir, secrets, sdkAudit);
   // The supervisor records each phase before it can fail. Copy its receipts
   // independently of the successful-restart acknowledgement before cleanup.

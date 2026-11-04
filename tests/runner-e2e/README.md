@@ -634,6 +634,27 @@ matching API-key or subscription credential.
 Never put credentials in `catalog.ts`, screenshots, fixture metadata, workflow
 inputs, or a tracked env file.
 
+## Private framework evidence
+
+An approved private-cell preflight uses Playwright's official JSON and JUnit
+reporters. Other runs keep the existing HTML and blob reporters. The immutable
+JSON source is retained in `snapshots/playwright-framework-original.txt` and is
+parsed and deeply inspected as registered Playwright JSON, including decoded
+inline text/JSON attachment bodies. The text suffix preserves source bytes; it
+does not exempt the file from JSON privacy checks. Unsupported inline carriers
+fail closed.
+
+`snapshots/playwright-framework.json` preserves the report and maps attachment
+paths to their owned canonical files with byte counts and SHA-256 hashes.
+Original status, errors, and nested user steps remain unchanged. Sealed originals
+retain all owned attachments. The final-results tree references those originals
+instead of storing another copy of registered Playwright output attachments.
+The downloader verifies each reference against the sealed original inventory.
+Unknown, missing, changed, or foreign attachments fail validation. Native
+snapshots and other unregistered evidence are not removed. The existing physical
+byte, entry, archive, ZIP expansion, time, and privacy bounds remain unchanged.
+A complete evidence transfer does not attest that the feature passed.
+
 ## Local commands
 
 When the host cannot start embedded Postgres, set
