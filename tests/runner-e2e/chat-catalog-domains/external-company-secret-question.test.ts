@@ -94,3 +94,9 @@ it.each([["a plaintext file before opening Settings Secrets",false],["the secure
  const row=environmentQuestion();row.payload.questionSet!.questions[0]!.helpText=`Don't enter the key in chat, and please enter the key in ${destination}.`;
  expect(!!companySecretQuestionHandoff(row,binding)).toBe(accepted);
 });
+it("keeps a coordinated negative alternative within the original prohibition",()=>{
+ const row=environmentQuestion();row.payload.questionSet!.questions[0]!.helpText="Do not paste the key in chat, or enter the key in plaintext files.";
+ expect(companySecretQuestionHandoff(row,binding)).toMatchObject({environmentName:"DEPLOYMENT_API_KEY"});
+ const positive=environmentQuestion();positive.payload.questionSet!.questions[0]!.helpText="Enter the key in plaintext files.";
+ expect(companySecretQuestionHandoff(positive,binding)).toBeUndefined();
+});
