@@ -64491,7 +64491,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (mode === "mixed_publications") {
           const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
             authorAgentId: f.fixture.assignedAgentId, createdByRunId: f.runId, body: "Saved failed result" }).returning();
-          await db.insert(chatPublications).values(["failed", "delivery_unknown"].map(state => ({
+          await db.insert(chatPublications).values((["failed", "delivery_unknown"] as const).map(state => ({
             companyId: f.companyId, endpointId: f.endpoint.id, conversationId: f.conversation.id,
             issueId: f.issueId, commentId: comment.id, idempotencyKey: `run:${f.runId}:${state}`,
             payload: { text: comment.body }, state,
