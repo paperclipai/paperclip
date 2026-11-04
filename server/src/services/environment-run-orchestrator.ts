@@ -327,9 +327,8 @@ export function environmentRunOrchestrator(
     };
     let leaseRecord: EnvironmentRuntimeLeaseRecord;
     if (input.reattachRemoteLease) {
-      // Reattachment is inspection of an already running sandbox, never a new
-      // acquisition or a lifecycle resume. Those paths can create a replacement
-      // when the admitted per-turn policy deliberately disables reusable leases.
+      // Reattachment keeps the original lease, including ephemeral leases.
+      // Never reacquire: acquisition can replace a non-reusable sandbox.
       const expected = input.reattachRemoteLease;
       const lease = await environmentsSvc.getLeaseById(expected.leaseId);
       if (!lease ||
@@ -346,6 +345,21 @@ export function environmentRunOrchestrator(
             : environment.driver !== "sandbox" || lease.provider !== environment.config.provider
               || lease.providerLeaseId !== expected.providerLeaseId || lease.metadata?.remoteCwd !== expected.remoteCwd)) {
         throw new Error("native_remote_recovery_lease_mismatch");
+      }
+      if (expected.kind !== "plugin_task") {
+        // The provider may have archived this retained sandbox while its
+        // controller was offline. Ready the exact lease under its lifecycle
+        // budget before short preparation commands (such as project-auth
+        // checks) can run. This API cannot acquire a replacement.
+        const resumed = await environmentRuntime.resumeRunLease({
+          environment, lease, requestedCwd: expected.remoteCwd,
+        });
+        if (!resumed || resumed.providerLeaseId !== expected.providerLeaseId ||
+            resumed.metadata?.expired === true) {
+          throw new Error("native_remote_recovery_lease_mismatch");
+        }
+        // Resume confirms allocation readiness. Its optional metadata may
+        // describe the allocation root; keep the validated lease's workspace.
       }
       leaseRecord = { environment, lease, leaseContext: buildEnvironmentLeaseContext(input) };
     } else {
