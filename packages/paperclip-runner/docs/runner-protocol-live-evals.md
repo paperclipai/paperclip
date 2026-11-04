@@ -998,6 +998,10 @@ job run, launch, standing plan and exact selected case identities. The full
 41-case roster is filtered to that selection before matrix fan-out. A manual
 reporting run validates the complete standing plan and executes only existing
 case 194 (`get-task-context`) to register the GitHub job with real evidence.
+A manual run captures numeric job-run and launch identities from the supported
+`allurectl job-run env` command inside the watch session; watch does not fill
+an empty `ALLURE_JOB_RUN_ID` input. The captured launch must match the
+authoritative job-run response. Service-triggered runs keep their supplied ID.
 A TestOps-triggered job uses its requested selection. Targeted selections retain their smaller coverage and omit the
 `full-run` launch tag. Full selections use `full-run` and `test-plan-3`.
 
