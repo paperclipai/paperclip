@@ -4586,6 +4586,9 @@ fixture allocation behavior remains unchanged.
 
 The native idle-sleep continuation integration uses a controlled local provider
 with the real heartbeat queue, authorized comment wake, native session
-checkpoint, files, secret encryption, and owned idle preflight. It requires
-`DATABASE_POOL_MAX=4` and verifies the driver's actual pool setting. It does not
+checkpoint, files, retained secret encryption and fresh resolution, and owned
+idle preflight. Credential resolution through the secret owner does not prove
+production backend credential injection. It uses an explicit two-connection
+main pool, alongside the production auxiliary pools, and verifies the driver's
+actual setting. It does not
 exercise the remote Runner harness backup transport or a live provider.

@@ -32,8 +32,8 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
     const { companyId, agentId, runtimeRoot, temporary } = fixture.current;
     vi.stubEnv("DATABASE_URL", temporary.connectionString);
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "89".repeat(32));
-    const db = createDb(temporary.connectionString);
-    expect(db.$client.options.max).toBe(4);
+    const db = createDb(temporary.connectionString, { maxConnections: 2 });
+    expect(db.$client.options.max).toBe(2);
     if (dedicatedDatabaseUrl) expect(db.$client.options.database).toBe(new URL(dedicatedDatabaseUrl).pathname.slice(1));
     const settings = instanceSettingsService(db), previousSettings = await settings.getExperimental();
     const userId = randomUUID(), issueId = randomUUID(), productId = randomUUID();
@@ -48,6 +48,7 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
     const secrets = secretService(db), credential = `synthetic-${randomUUID()}`;
     const secret = await secrets.create(companyId, { name: "Idle continuation credential", provider: "local_encrypted", value: credential });
     const binding = { SLEEP_CREDENTIAL: { type: "secret_ref", secretId: secret.id, version: "latest" } };
+    await secrets.syncEnvBindingsForTarget(companyId, { targetType: "agent", targetId: agentId }, binding);
     await db.update(agents).set({ status: "idle", adapterConfig: { provider: "codex", model: "gpt-6.1-sol", cwd,
       lifecycleMode: "warm", idleTimeoutMs: 300_000, env: binding },
       runtimeConfig: { heartbeat: { enabled: false, maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
@@ -75,7 +76,12 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
           async *events() {
             await started;
             const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, identity.runId));
-            yield { schema: "paperclip.prp.event.v1", sourceEventId: `${identity.runId}:terminal`, sourceSeq: 1,
+            yield { schema: "paperclip.prp.event.v1", sourceEventId: `${identity.runId}:usage`, sourceSeq: 1,
+              sourceInstanceId: run.runnerInstanceId!, sourceKind: "runner", runId: identity.runId,
+              normalizedSessionId: identity.sessionId, turnId, eventType: "item.completed", schemaVersion: 1,
+              priority: 0, emittedAt: new Date().toISOString(), payload: { kind: "usage", usage: {
+                runDelta: { inputTokens: 1, outputTokens: 1 }, runDeltaComplete: true } } } satisfies PrpEvent;
+            yield { schema: "paperclip.prp.event.v1", sourceEventId: `${identity.runId}:terminal`, sourceSeq: 2,
               sourceInstanceId: run.runnerInstanceId!, sourceKind: "runner", runId: identity.runId,
               normalizedSessionId: identity.sessionId, turnId, eventType: "turn.completed", schemaVersion: 1,
               priority: 0, emittedAt: new Date().toISOString(), payload: {} } satisfies PrpEvent;
@@ -118,6 +124,7 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
       await settings.updateExperimental({ enableNativeRunner: true });
       await heartbeat.invoke(agentId, "on_demand", { issueId }, "manual", { actorType: "user", actorId: userId });
       await heartbeat.drainActiveRunExecutions();
+      await heartbeat.reconcileCostAccounting();
       expect(turns).toHaveLength(1);
       expect(opened).toHaveLength(1);
       const [first] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, turns[0]));
@@ -147,7 +154,10 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
         expect(closed).toEqual([]);
         expect(inspectionSettled).toBe(false);
         finishClose!();
-        expect((await inspecting).backgroundWork).toBe("none");
+        const prepared = await inspecting;
+        const diagnostic = prepared.backgroundWork === "none" ? undefined : await readIdleSleepSafety(db, heartbeat.getTaskDrainStatus, Date.now, hold.ownerId,
+          async () => readNativeSessionIdleWork(), undefined, undefined, false, false, { collectDiagnostics: true });
+        expect(prepared.backgroundWork, JSON.stringify(diagnostic?.diagnostics)).toBe("none");
       } finally { finishClose!(); await inspecting; heartbeat.stopTaskDrain(); }
       expect(closed).toEqual([turns[0]]);
       expect(readNativeSessionIdleWork()).toBe("none");
@@ -170,6 +180,7 @@ describeEmbeddedPostgres("native idle sleep cold continuation", () => {
       } finally { heartbeat.stopTaskDrain(); }
       await heartbeat.resumeQueuedRuns();
       await heartbeat.drainActiveRunExecutions();
+      await heartbeat.reconcileCostAccounting();
       expect(turns).toHaveLength(2);
       expect(new Set(turns).size).toBe(2);
       expect(opened).toHaveLength(2);

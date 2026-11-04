@@ -119,23 +119,26 @@ export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } 
     setupRunnerPrpWebSocketServer(server, { apiUrl });
 
     const db = createDb(temporary.connectionString);
-    await db.insert(companies).values({
-      id: companyId,
-      name: "Native restart recovery",
-      issuePrefix: "NRR",
-      requireBoardApprovalForNewAgents: false,
-    });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "Native restart runner",
-      role: "engineer",
-      status: "active",
-      adapterType: "paperclip_runner",
-      adapterConfig: { provider: "codex" },
-      runtimeConfig: {},
-      permissions: {},
-    });
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Native restart recovery",
+        issuePrefix: options.dedicatedDatabaseUrl || process.env.PAPERCLIP_RECOVERY_TEST_DATABASE_URL
+          ? `NRR${companyId.replaceAll("-", "").slice(0, 12).toUpperCase()}` : "NRR",
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Native restart runner",
+        role: "engineer",
+        status: "active",
+        adapterType: "paperclip_runner",
+        adapterConfig: { provider: "codex" },
+        runtimeConfig: {},
+        permissions: {},
+      });
+    } finally { await db.$client.end(); }
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
