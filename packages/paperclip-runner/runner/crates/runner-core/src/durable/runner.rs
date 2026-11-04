@@ -308,6 +308,18 @@ pub enum TerminalDeliveryReconciliation {
 pub trait CommandExecutor {
     fn execute(&mut self, command: &Command) -> Result<CommandExecution, DurableRunnerError>;
 
+    fn admit_recovery_state(&mut self, _state: &DurableState) -> Result<(), DurableRunnerError> {
+        Ok(())
+    }
+
+    fn admit_command(
+        &mut self,
+        _state: &DurableState,
+        _command: &Command,
+    ) -> Result<(), DurableRunnerError> {
+        Ok(())
+    }
+
     /// Opt in only when semantic result delivery validates an exact durable
     /// call receipt and cannot dispatch the underlying business operation.
     /// Ordinary commands and providers without this proof remain indeterminate.
@@ -455,6 +467,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
     }
     let store = DurableStateStore::new(&config.state_dir)?;
     let (mut state, recovered) = store.load_or_create(&config)?;
+    executor.admit_recovery_state(&state)?;
     if state.lifecycle == "revoked"
         || (state.lifecycle == "stopped"
             && state.pending_terminal_delivery.is_none()
@@ -1862,6 +1875,7 @@ fn process_command<E: CommandExecutor>(
     executor: &mut E,
     command: &Command,
 ) -> Result<(StoredCommandResult, CommandLifecycle), DurableRunnerError> {
+    executor.admit_command(state, command)?;
     if let Some(pending) = state.pending_provider_cleanup.as_ref() {
         let fresh_stop =
             command.command_type == "turn.stop" && command.controller_seq > pending.controller_seq;

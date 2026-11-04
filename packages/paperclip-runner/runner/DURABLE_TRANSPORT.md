@@ -65,6 +65,23 @@ P0 reserve is an explicit unrecoverable condition.
 
 ## Current boundary
 
+`sourceRecoveryVersion: 1` in build metadata admits `--source-reconcile` for
+durable Codex recovery. The process owner must first fence the stopped source
+execution and retain its exact six-field authority and provider home. Runner
+checks the existing journals before provider startup: active or ambiguous turns,
+active/working goals, pending tools/startup, uncertain business commands and
+unfinished authority transitions remain blocked. Retained event suffixes and
+known terminal cleanup stay under the source authority for reconciliation.
+
+The restricted controller permits snapshots, drain and cleanup; it retains
+semantic inputs without dispatching business tools. Successful live goal and
+idle-thread probes precede provider admission. Unsupported or conflicting live
+state fails closed. Existing authenticated `run.attach` releases execution only
+after source obligations settle and authority rotation is durable. Core then
+confirms target authentication and persists its checkpoint before enabling tool
+dispatch and new turns. This protocol does not establish vendor rollout fsync
+or host-level physical process retirement by itself.
+
 Durable mode is selected only when `paperclip-runnerd` receives
 `--connect-url`. Its executor accepts a Codex app-server descriptor and bound
 completion contract through `run.prepare`, owns the provider process group,

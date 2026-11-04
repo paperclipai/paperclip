@@ -2010,6 +2010,7 @@ export class DurablePrpControlPlane {
   }> = [];
   #port: number | null = null;
   #semanticInputMode: "dispatch" | "retain_only";
+  #semanticInputSourceRunId: string | null;
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
@@ -2065,6 +2066,7 @@ export class DurablePrpControlPlane {
       );
     }
     this.#semanticInputMode = options.semanticInputMode ?? "dispatch";
+    this.#semanticInputSourceRunId = this.#semanticInputMode === "retain_only" ? options.identity.runId : null;
     this.#onSemanticToolInput = options.onSemanticToolInput;
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
@@ -2213,6 +2215,16 @@ export class DurablePrpControlPlane {
         ? this.#store.state.completedWarmTransition.command
         : undefined)
     );
+  }
+
+  enableSemanticInputDispatch(identity: DurableRecoveryIdentity): void {
+    if (canonicalJson(this.#identity) !== canonicalJson(identity) || this.#store.state.warmTransition
+      || this.#identity.runId === this.#semanticInputSourceRunId
+      || this.activeRunnerConnectionCount() !== 1 || !this.semanticToolResultsSettled()) {
+      throw new Error("native_runner_source_attachment_pending");
+    }
+    this.#semanticInputMode = "dispatch";
+    this.#semanticInputSourceRunId = null;
   }
 
   async recoverPendingSemanticInputs(): Promise<void> {
@@ -4334,6 +4346,7 @@ function runnerEnvironment(
 }
 
 export function spawnRunner(options: {
+  recoveryPurpose?: "source_reconcile";
   connectUrl?: string;
   connection?: RunnerProcessConnection;
   stateDirectory: string;
@@ -4416,6 +4429,7 @@ export function spawnRunner(options: {
           connection.listenPath,
         ];
   const args = [
+    ...(options.recoveryPurpose === "source_reconcile" ? ["--source-reconcile"] : []),
     ...connectionArgs,
     "--state-dir",
     options.stateDirectory,
@@ -4521,6 +4535,7 @@ export function spawnRunner(options: {
     return withRestart(
       options.processLauncher({ command, args, cwd: packageRoot, environment,
         nativeRunner: {
+          recoveryPurpose: options.recoveryPurpose,
           identity: options.identity, ticket: options.ticket, connection, stateDirectory: options.stateDirectory,
           runnerVersion: options.runnerVersion, runnerDigest: options.runnerDigest,
           maxOutboxBytes: options.maxOutboxBytes, p0ReserveBytes: options.p0ReserveBytes,

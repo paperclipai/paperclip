@@ -1858,6 +1858,7 @@ pub struct CodexCommandExecutor {
     cursor_cloud_launch_profile: Option<CursorCloudLaunchProfile>,
     startup_command: Option<ProviderStartupCommand>,
     startup_evidence_error: Option<DurableRunnerError>,
+    source_reconciliation: bool,
 }
 
 impl CodexCommandExecutor {
@@ -1873,6 +1874,7 @@ impl CodexCommandExecutor {
             cursor_cloud_launch_profile: None,
             startup_command: None,
             startup_evidence_error: None,
+            source_reconciliation: false,
         }
     }
 
@@ -1882,6 +1884,34 @@ impl CodexCommandExecutor {
         executor.opencode_launch_profile = config.opencode_launch_profile.clone();
         executor.cursor_cloud_launch_profile = config.cursor_cloud_launch_profile.clone();
         executor
+    }
+
+    pub(crate) fn admit_source_reconciliation(&mut self) -> Result<(), DurableRunnerError> {
+        self.load_state_without_provider()?;
+        let state = self.state.as_ref().ok_or_else(|| {
+            DurableRunnerError::invalid("source reconciliation requires retained Codex state")
+        })?;
+        if state.config.provider != "codex"
+            || state.thread_id.is_none()
+            || !(state.lifecycle == "prepared"
+                || (matches!(state.lifecycle.as_str(), "session_open" | "provider_exited")
+                    && state.completed_turn_authoritative))
+            || state.active_provider_turn_id.is_some()
+            || state.ambiguous_turn_start_pending
+            || state.startup_attempt.is_some()
+            || state.receipt_limit_interrupt_pending
+            || state
+                .goal
+                .as_ref()
+                .is_some_and(|goal| goal.status == "active" || goal.working_now)
+            || state.tool_bridge.pending_calls().next().is_some()
+        {
+            return Err(DurableRunnerError::invalid(
+                "source reconciliation requires dormant Codex state",
+            ));
+        }
+        self.source_reconciliation = true;
+        Ok(())
     }
 
     fn bind_opencode_launch_profile(
@@ -2308,6 +2338,40 @@ impl CodexCommandExecutor {
                 return Ok(());
             }
             let recovered_active_turn_id = provider.active_provider_turn_id().map(str::to_owned);
+            if self.source_reconciliation && recovered_active_turn_id.is_some() {
+                return Err(DurableRunnerError::invalid(
+                    "source reconciliation resumed unexpected active work",
+                ));
+            }
+            if self.source_reconciliation {
+                let live_goal = provider.get_goal().map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "source reconciliation goal probe failed: {error}"
+                    ))
+                })?;
+                let goal = normalize_codex_goal(&live_goal, false);
+                if goal.as_ref().is_some_and(|goal| goal.status == "active")
+                    || (live_goal.get("goal") != Some(&Value::Null) && goal.is_none())
+                {
+                    return Err(DurableRunnerError::invalid(
+                        "source reconciliation resumed an active or unknown goal",
+                    ));
+                }
+                let live_thread = provider.read_thread().map_err(|error| {
+                    DurableRunnerError::invalid(format!(
+                        "source reconciliation thread probe failed: {error}"
+                    ))
+                })?;
+                if live_thread
+                    .pointer("/thread/status/type")
+                    .and_then(Value::as_str)
+                    != Some("idle")
+                {
+                    return Err(DurableRunnerError::invalid(
+                        "source reconciliation resumed unexpected active work",
+                    ));
+                }
+            }
             let recovered_turn_ended_with_result = active_provider_result_authoritative
                 && previous_active_turn_id.is_some()
                 && recovered_active_turn_id.is_none();
@@ -5297,6 +5361,7 @@ impl CommandExecutor for CodexCommandExecutor {
     }
 
     fn rotate_authority(&mut self, config: &DurableRunnerConfig) {
+        self.source_reconciliation = false;
         self.event_identity = Some(ProviderEventIdentity::from_config(config));
     }
 

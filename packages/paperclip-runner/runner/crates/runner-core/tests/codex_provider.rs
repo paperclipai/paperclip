@@ -7,8 +7,8 @@ use paperclip_runner_core::codex_provider::{
     CodexProvider, CodexProviderConfig, CodexProviderEvent,
 };
 use paperclip_runner_core::durable::{
-    Command, CommandExecutor, DurableRunnerConfig, DurableRunnerError, PolledEvent,
-    TerminalDeliveryReconciliation,
+    Command, CommandExecutor, DurableRunnerConfig, DurableRunnerError, DurableStateStore,
+    EventPriority, PolledEvent, TerminalDeliveryReconciliation,
 };
 use paperclip_runner_core::native_provider_backend::NativeProviderCommandExecutor;
 use paperclip_runner_core::provider_backend::CodexCommandExecutor;
@@ -74,6 +74,190 @@ fn provider_config(directory: &Path, switches: &[&str]) -> CodexProviderConfig {
         include_skill_instructions: None,
         conversation_mode: None,
     }
+}
+
+fn dormant_source_fixture(directory: &Path) -> (DurableRunnerConfig, Value) {
+    let config = durable_config(directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(directory, &config);
+    executor.execute(&command("prepare-source", 1, "run.prepare", json!({"provider":provider_config(directory, &["--record-process-start", "--durable-turn-ids"])}))).unwrap();
+    executor
+        .execute(&command("open-source", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "source-turn",
+            3,
+            "turn.start",
+            json!({"text":"Complete the source turn."}),
+        ))
+        .unwrap();
+    wait_for_executor_event(&mut executor, "turn.completed");
+    while !poll_and_ack(&mut executor).unwrap().is_empty() {}
+    executor.shutdown().unwrap();
+    let provider =
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap();
+    (config, provider)
+}
+
+#[test]
+fn source_reconciliation_rejects_unsafe_frozen_state_before_provider_start() {
+    let directory = temporary_directory("source-reconciliation-guard");
+    let (config, source) = dormant_source_fixture(&directory);
+    for mutation in [
+        "active",
+        "ambiguous",
+        "active-goal",
+        "working-goal",
+        "pending-tool",
+        "uncertain-command",
+    ] {
+        let mut provider = source.clone();
+        let mut runner = DurableStateStore::new(&directory)
+            .unwrap()
+            .load_or_create(&config)
+            .unwrap()
+            .0;
+        runner.lifecycle = "ready".to_owned();
+        match mutation {
+            "active" => {
+                provider["activeProviderTurnId"] = json!("unsettled-turn");
+                provider["lifecycle"] = json!("turn_active");
+            }
+            "ambiguous" => provider["ambiguousTurnStartPending"] = json!(true),
+            "active-goal" | "working-goal" => {
+                provider["goal"] = json!({"objective":"Continue", "status":if mutation == "active-goal" {"active"} else {"paused"}, "tokenBudget":null,"tokensUsed":0,"elapsedSeconds":0,"iterations":0,"createdAt":null,"updatedAt":null,"workingNow":mutation == "working-goal"})
+            }
+            "pending-tool" => {
+                let mut bridge = ProviderToolBridge::default();
+                bridge.prepare(task_context_tool_set()).unwrap();
+                bridge
+                    .begin_call(
+                        "pending-source-call".to_owned(),
+                        "get_task_context".to_owned(),
+                        json!({}),
+                    )
+                    .unwrap();
+                provider["toolBridge"] = serde_json::to_value(bridge).unwrap();
+            }
+            "uncertain-command" => {
+                runner
+                    .begin_command(&command(
+                        "uncertain",
+                        1,
+                        "turn.start",
+                        json!({"text":"unknown effect"}),
+                    ))
+                    .unwrap();
+            }
+            _ => unreachable!(),
+        }
+        if matches!(mutation, "active" | "ambiguous") {
+            provider["completedTurnAuthoritative"] = json!(false);
+            provider["completedTurnProcessGeneration"] = Value::Null;
+            provider["completedProviderTurnId"] = Value::Null;
+        }
+        fs::write(
+            directory.join("codex-provider-state.json"),
+            serde_json::to_vec(&provider).unwrap(),
+        )
+        .unwrap();
+        let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config)
+            .for_source_reconciliation();
+        let error = recovered
+            .admit_recovery_state(&runner)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("source reconciliation"),
+            "{mutation}: {error}"
+        );
+        assert_eq!(
+            call_count(&directory, "process-start"),
+            1,
+            "{mutation} launched a provider"
+        );
+    }
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn source_reconciliation_retains_events_and_only_rotation_releases_execution() {
+    let directory = temporary_directory("source-reconciliation-release");
+    let (config, source) = dormant_source_fixture(&directory);
+    let mut runner = DurableStateStore::new(&directory)
+        .unwrap()
+        .load_or_create(&config)
+        .unwrap()
+        .0;
+    runner.lifecycle = "recoverable_failure".to_owned();
+    let mut recovered = NativeProviderCommandExecutor::with_runner_config(&directory, &config)
+        .for_source_reconciliation();
+    recovered.admit_recovery_state(&runner).unwrap();
+    for kind in [
+        "turn.start",
+        "turn.steer",
+        "session.goal.set",
+        "request.resolve",
+        "semantic_tool.result",
+        "run.prepare",
+    ] {
+        assert!(
+            recovered
+                .execute(&command("denied", 4, kind, json!({})))
+                .is_err(),
+            "{kind}"
+        );
+    }
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    let attach = command(
+        "attach",
+        5,
+        "run.attach",
+        json!({"paperclipNextAuthority":{}}),
+    );
+    runner
+        .enqueue_event(
+            &config,
+            "runner.diagnostic",
+            EventPriority::P0,
+            json!({"message":"retained source event"}),
+        )
+        .unwrap();
+    assert!(recovered.admit_command(&runner, &attach).is_err());
+    runner.apply_ack(runner.highest_source_seq(), 3).unwrap();
+    recovered.admit_command(&runner, &attach).unwrap();
+    assert!(recovered
+        .execute(&command("still-denied", 6, "turn.start", json!({})))
+        .is_err());
+    assert_eq!(
+        recovered.reconcile_terminal_delivery().unwrap(),
+        TerminalDeliveryReconciliation::ProviderCleanupPending
+    );
+    assert_eq!(call_count(&directory, "process-start"), 1);
+    assert_eq!(
+        serde_json::from_slice::<Value>(
+            &fs::read(directory.join("codex-provider-state.json")).unwrap()
+        )
+        .unwrap(),
+        source
+    );
+    let mut next = config.clone();
+    next.run_id = "next-run".to_owned();
+    next.turn_id = "next-turn".to_owned();
+    next.item_id = "next-item".to_owned();
+    recovered.rotate_authority(&next);
+    recovered
+        .execute(&command(
+            "allowed",
+            1,
+            "turn.start",
+            json!({"text":"Continue after durable authority rotation."}),
+        ))
+        .unwrap();
+    assert_eq!(call_count(&directory, "turn/start"), 2);
+    recovered.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
 }
 
 #[test]

@@ -121,6 +121,7 @@ fn build_metadata() -> serde_json::Value {
         "packageName": "@paperclipai/paperclip-runner",
         "packageVersion": env!("CARGO_PKG_VERSION"),
         "binaryContractVersion": 2,
+        "sourceRecoveryVersion": 1,
         "durableSessionCapabilities": ["unlimited_runtime", "connection_lease_renewal"],
         "externalProviderCapabilities": ["openai_dot_mcp", "grok_bot_mcp", "muse_external_v1"],
         "nativeExecutionVersion": 1,
@@ -476,7 +477,10 @@ fn run_durable(args: &[String]) -> Result<(), LocalRunnerError> {
             std::env::set_var(key, executable);
         }
     }
-    let executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
+    let mut executor = NativeProviderCommandExecutor::with_runner_config(state_dir, &config);
+    if args.iter().any(|arg| arg == "--source-reconcile") {
+        executor = executor.for_source_reconciliation();
+    }
     run_durable_runner(config, ticket, executor)
         .map_err(|error| LocalRunnerError::invalid(error.to_string()))
 }
@@ -529,6 +533,11 @@ fn run(args: &[String]) -> Result<(), LocalRunnerError> {
         || args.iter().any(|argument| argument == "--listen-path")
     {
         return run_durable(args);
+    }
+    if args.iter().any(|arg| arg == "--source-reconcile") {
+        return Err(LocalRunnerError::invalid(
+            "source reconciliation requires durable startup",
+        ));
     }
     if args
         .iter()
@@ -655,6 +664,7 @@ mod tests {
     #[test]
     fn build_metadata_advertises_the_remote_transport_contract() {
         let metadata = build_metadata();
+        assert_eq!(metadata["sourceRecoveryVersion"], 1);
         assert_eq!(metadata["schema"], RUNNERD_BUILD_METADATA_SCHEMA);
         assert_eq!(metadata["binaryContractVersion"], 2);
         assert_eq!(
