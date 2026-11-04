@@ -31,6 +31,7 @@ interface WriterState {
   timer?: NodeJS.Timeout;
   flushing?: Promise<void>;
   closed: boolean;
+  admitting: Set<Promise<unknown>>;
   failure?: unknown;
   signal?: AbortSignal;
   sourcePrefixVerified: boolean;
@@ -167,6 +168,12 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
   async function enqueue(handle: RunLogHandle, event: Parameters<RunLogStore["append"]>[1]) {
     const state = writers.get(handle);
     if (!state || state.closed) throw new Error("Object run log writer is closed");
+    const admission = admit(state, handle, event);
+    state.admitting.add(admission);
+    try { return await admission; }
+    finally { state.admitting.delete(admission); }
+  }
+  async function admit(state: WriterState, handle: RunLogHandle, event: Parameters<RunLogStore["append"]>[1]) {
     state.signal?.throwIfAborted();
     if (state.failure) throw state.failure;
     const bytes = Buffer.from(
@@ -186,7 +193,6 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         state.pendingBytes + bytes.length > MAX_PENDING_BYTES ||
         totalPendingBytes + bytes.length > 64 * MAX_SEGMENT_BYTES
       ) {
-        if (state.closed) throw new Error("Object run log writer is closed");
         if (state.failure) throw state.failure;
         if (!waiting) {
           if (admissions >= 32 || admissionBytes + bytes.length > MAX_PENDING_BYTES)
@@ -210,7 +216,6 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
           capacityWaiters.add(wake);
         });
       }
-      if (state.closed) throw new Error("Object run log writer is closed");
       state.signal?.throwIfAborted();
       if (state.failure) throw state.failure;
       if (event.preservesSourceCoverage !== true || event.sourceCursor !== undefined &&
@@ -267,6 +272,7 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
         pending: [],
         pendingBytes: 0,
         closed: false,
+        admitting: new Set(),
         signal: input.signal,
         sourcePrefixVerified,
         coverageEligible: true,
@@ -322,6 +328,8 @@ export function createObjectRunLogStore(options: ObjectRunLogStoreOptions): RunL
       state.closed = true;
       capacityChanged();
       try {
+        await flush(state);
+        await Promise.allSettled([...state.admitting]);
         await flush(state);
         state.writer = await state.journal.close(state.writer, state.signal);
         if (finalizeOptions?.computeDigest === false)
