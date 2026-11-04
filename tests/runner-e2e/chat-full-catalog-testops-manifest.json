@@ -1,6 +1,6 @@
 {
   "schema": "paperclip.chat-full-catalog-testops-manifest/v1",
-  "targetSha": "94aad1bc6c05e26c4b939367177bd3d8eef8e1e4",
+  "targetSha": "2c8f1cf44e2fc536c9e8d10852e2f5ac44dd0853",
   "metadataSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
   "profile": "runner-opencode",
   "model": "openrouter/deepseek/deepseek-v4.1-flash-1017",
@@ -172,7 +172,7 @@
       "baseTargetSha": "3b66c3c144360ddf32714a0742fd774b8ceafb16",
       "previousTargetSha": "ab2019e976076ec0eb60b026844f3d9211cb0208",
       "definitionSourceSha": "de0941835cc8f0d01c982574ee258e110babdbeb",
-      "candidateDescriptorSha256": "66502da45e1857b43e512dbadb7425a033ea7add3668e3c96725b3eee5498a85",
+      "candidateDescriptorSha256": "a575dc540e21b5d799db9e0e7f1da4034b71a25aeb955c2cb5dd901fcd8bce67",
       "changedDefinitionFiles": [
         {
           "path": "tests/runner-e2e/chat-scenarios/companies.yaml",
@@ -635,6 +635,12 @@
           "field": "oracleVersion",
           "previous": "paperclip.chat-catalog.external.v1",
           "current": "paperclip.chat-catalog.company-secret-controller-baseline.v2"
+        },
+        {
+          "key": "secrets.personal-secret",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.personal-secret.v2"
         },
         {
           "key": "skills.author-skill",
@@ -1264,6 +1270,12 @@
           }
         },
         {
+          "key": "secrets.personal-secret",
+          "field": "oracleVersion",
+          "previous": "paperclip.chat-catalog.external.v1",
+          "current": "paperclip.chat-catalog.personal-secret.v2"
+        },
+        {
           "key": "skills.author-skill",
           "field": "sourceFiles",
           "previous": [
@@ -1556,7 +1568,7 @@
           "compileQualification": {
             "baselineSourceSha": "abbde061c7ec9181021858f7b1af21a48637f97f",
             "compiledSourceSha": "8d19f83b9467bd21d9a1fcd52e10ed372cfa2fbf",
-            "acceptedSourceSha": "94aad1bc6c05e26c4b939367177bd3d8eef8e1e4",
+            "acceptedSourceSha": "2c8f1cf44e2fc536c9e8d10852e2f5ac44dd0853",
             "all506InputGitBlobsMatched": true,
             "owningSharedAndPluginSdkTypeScriptBuildsPassed": true,
             "changedRuntimeJavaScriptFiles": 1,
@@ -1609,7 +1621,7 @@
       },
       "candidateLauncherSnapshot": {
         "path": "fixtures/chat-repair-candidate-launcher.txt",
-        "targetSha": "94aad1bc6c05e26c4b939367177bd3d8eef8e1e4",
+        "targetSha": "2c8f1cf44e2fc536c9e8d10852e2f5ac44dd0853",
         "sourcePath": "tests/runner-e2e/launch.ts",
         "gitBlobOid": "dba1467e211611f37937e9e1fc4c0c5be4329cbc"
       }
@@ -11059,7 +11071,7 @@
         "secrets/user-secrets"
       ],
       "checks": null,
-      "oracleVersion": "paperclip.chat-catalog.external.v1",
+      "oracleVersion": "paperclip.chat-catalog.personal-secret.v2",
       "sourceFiles": [
         "chat-catalog-domains/external-personal-secret.ts",
         "chat-catalog-domains/external-secret-endpoint.ts",

@@ -103,7 +103,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
   assert.equal(repair.previousTargetSha, 'ab2019e976076ec0eb60b026844f3d9211cb0208');
-  assert.equal(manifest.targetSha, '94aad1bc6c05e26c4b939367177bd3d8eef8e1e4');
+  assert.equal(manifest.targetSha, '2c8f1cf44e2fc536c9e8d10852e2f5ac44dd0853');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
@@ -237,6 +237,10 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     "oracleVersion"
   ],
   [
+    "secrets.personal-secret",
+    "oracleVersion"
+  ],
+  [
     "skills.author-skill",
     "sourceFiles"
   ],
@@ -293,7 +297,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
     assert.deepEqual(row(change.key)[change.field], change.current);
     assert.notDeepEqual(change.current, change.previous);
   }
-  assert.equal(repair.descriptorChanges.length, 42);
+  assert.equal(repair.descriptorChanges.length, 43);
   assert.equal(new Set(repair.descriptorChanges.map(change => change.key)).size, 28);
   assert.deepEqual([...new Set(repair.descriptorChanges.map(change => change.field))].sort(), ['expectedRunCount', 'minimumRunCount', 'oracleVersion', 'setupPolicy', 'sourceFiles']);
   for (const change of repair.descriptorChanges) {
