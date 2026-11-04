@@ -16,6 +16,7 @@ import { issueSummariesQuerySchema, type IssueSummary } from "@paperclipai/share
 import { listIssueSummaries } from "../services/issue-summaries.js";
 import { assertNoCaseHandoffMutation } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { assertLegacyRunTaskOwnership } from "../legacy-run-task-ownership.js";
+import { runRetainsIssueIdentity } from "../services/task-repository-acquisition.js";
 import { withConversationReadState } from "../services/agent-chat-read-state.js";
 import { markIssueReadSchema } from "@paperclipai/shared";
 import { enqueueFastResponse } from "../services/fast-responses.js";
@@ -7925,6 +7926,8 @@ export function issueRoutes(
   //                   this request did not set the flag. The caller continues but
   //                   must not install the guard, or it can clear the flag that
   //                   the other request still owns.
+  //   "deferred"   - an authorized cross-task comment/update leaves restoration
+  //                   to the target's executor. No workspace flag was changed.
   //   null          - this function sent an error response, so the caller stops.
   // it runs only after the route already authorized the request on the issue.
   async function reopenClosedIssueExecutionWorkspaceOrRespond(
@@ -7932,11 +7935,22 @@ export function issueRoutes(
     res: Response,
     issue: { id: string; companyId: string; projectId?: string | null },
     workspace: Pick<ExecutionWorkspace, "id">,
+    options: { deferForOtherTask?: boolean } = {},
   ): Promise<{
-    outcome: "reopened" | "already-open";
-    generation: number;
+    outcome: "reopened" | "already-open" | "deferred";
+    generation: number | null;
   } | null> {
     const actor = getActorInfo(req);
+    if (options.deferForOtherTask && req.actor.type === "agent" && req.actor.runId) {
+      const run = await heartbeat.getRun(req.actor.runId);
+      if (run?.status === "running" && run.companyId === issue.companyId && run.agentId === req.actor.agentId
+        && !runRetainsIssueIdentity(run, issue.id)) {
+        // Task authority permits a scanner's comment or follow-up. Its run
+        // cannot restore another task's files. The target's admitted executor
+        // restores the workspace with its own run identity when work resumes.
+        return { outcome: "deferred", generation: null };
+      }
+    }
     const result =
       await executionWorkspacesSvc.reopenClosedIsolatedExecutionWorkspaceForIssue(
         {
@@ -15129,6 +15143,7 @@ export function issueRoutes(
             res,
             existing,
             closedExecutionWorkspace,
+            { deferForOtherTask: true },
           );
         if (reopenOutcome === null) {
           return;
@@ -19136,6 +19151,7 @@ export function issueRoutes(
             res,
             issue,
             closedExecutionWorkspace,
+            { deferForOtherTask: true },
           );
         if (reopenOutcome === null) {
           return;

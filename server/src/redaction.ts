@@ -143,6 +143,7 @@ export const PAPERCLIP_PUBLIC_SCHEMA_IDS = new Set([
   "paperclip.runner.conformance.fixture.v1",
   "paperclip.runner.conformance.output.v1",
   "paperclip.runner.durable.control-plane-state.v1",
+  "paperclip.runner.durable.control-plane-state.v2",
   "paperclip.runner.durable.diagnostics.v1",
   "paperclip.runner.durable.state.v1",
   "paperclip.runner.durable.trace.v1",
