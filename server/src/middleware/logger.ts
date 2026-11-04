@@ -1,8 +1,16 @@
 import pino from "pino";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Logger } from "pino";
+import type { LogFn, Logger, LoggerOptions } from "pino";
 import { pinoHttp } from "pino-http";
-import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
+import {
+  HTTP_LOG_REDACT_PATHS,
+  HEADER_REDACTION_MARKER,
+  redactCredentialFields,
+  redactSensitiveHeaders,
+  sanitizeCredentialText,
+  sanitizeErrorObject,
+  UNREADABLE_ERROR,
+} from "./http-log-redaction.js";
 import {
   isPrivateWebhookHttpRequest,
   isSecretSensitiveHttpRequest,
@@ -22,16 +30,56 @@ const sharedOpts = {
   singleLine: true,
 };
 
+function serializeLoggedError(err: unknown): unknown {
+  try {
+    return sanitizeErrorObject(pino.stdSerializers.err(err as Error));
+  } catch {
+    return UNREADABLE_ERROR;
+  }
+}
+
+export const basePinoOptions = {
+  redact: {
+    paths: [...HTTP_LOG_REDACT_PATHS],
+    censor: HEADER_REDACTION_MARKER,
+  },
+  serializers: {
+    headers: (h: unknown) =>
+      h && typeof h === "object"
+        ? redactSensitiveHeaders(h as Record<string, unknown>)
+        : h,
+    err: serializeLoggedError,
+  },
+  hooks: {
+    streamWrite(serialized: string) {
+      try {
+        const record: unknown = JSON.parse(serialized);
+        const safe = redactCredentialFields(record);
+        return safe === record ? serialized : `${JSON.stringify(safe)}\n`;
+      } catch {
+        return '{"level":50,"msg":"Log record could not be safely redacted"}\n';
+      }
+    },
+    logMethod(this: Logger, inputArgs: Parameters<LogFn>, method: LogFn) {
+      const args: readonly unknown[] = inputArgs;
+      const safeArgs = args.map((arg) =>
+        typeof arg === "string" ? sanitizeCredentialText(arg) : redactCredentialFields(arg),
+      );
+      return method.apply(this, safeArgs as Parameters<LogFn>);
+    },
+  },
+} satisfies LoggerOptions;
+
 const isProduction = process.env.NODE_ENV === "production";
-export const logger = isProduction
+export const logger: Logger = isProduction
   ? pino({
       level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "info",
-      redact: [...HTTP_LOG_REDACT_PATHS],
+      ...basePinoOptions,
     })
   : pino(
       {
         level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "debug",
-        redact: [...HTTP_LOG_REDACT_PATHS],
+        ...basePinoOptions,
       },
       pino.transport({
         target: "pino-pretty",
@@ -93,11 +141,12 @@ export function createHttpLogger(baseLogger: Logger) {
   return pinoHttp({
     logger: baseLogger,
     serializers: {
-      req(req: Record<string, unknown> & { url?: unknown }) {
+      err: sanitizeErrorObject,
+      req(req: Record<string, unknown> & { url?: unknown; headers?: unknown }) {
         if (isPrivateAgentObservabilityHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
           return { id: req.id, method: req.method, url: "/api/companies/:companyId/observability" };
         }
-        if(isPrivateMuseHttpRequest(typeof req.url === "string" ? req.url : undefined))return {id:req.id,method:req.method,url:"/api/muse/:protocol"};
+        if (isPrivateMuseHttpRequest(typeof req.url === "string" ? req.url : undefined)) return { id: req.id, method: req.method, url: "/api/muse/:protocol" };
         if (isPrivateAgentCommentaryHttpRequest(typeof req.url === "string" ? req.url : undefined)) {
           return { id: req.id, method: req.method, url: stripSecretBearingUrlParts(req.url as string) };
         }
@@ -116,20 +165,23 @@ export function createHttpLogger(baseLogger: Logger) {
             url: privateWebhookLogUrl(req.url),
           };
         }
+        const headers =
+          req.headers && typeof req.headers === "object"
+            ? redactSensitiveHeaders(req.headers as Record<string, unknown>)
+            : req.headers;
         return {
           ...req,
           url:
             typeof req.url === "string"
               ? stripSecretBearingUrlParts(req.url)
               : req.url,
-          // The URL policy intentionally drops all query parameters. The default
-          // serializer also exposes the parsed query separately, so omit that
-          // duplicate path instead of letting credentials bypass the URL scrub.
+          headers,
           query: undefined,
         };
       },
       res(
         res: Record<string, unknown> & {
+          headers?: unknown;
           raw?: {
             req?: { method?: string; originalUrl?: unknown; url?: unknown };
           };
@@ -137,9 +189,28 @@ export function createHttpLogger(baseLogger: Logger) {
       ) {
         // A provider error may also be reflected in response headers. Keep the
         // same content-free contract on both sides of a webhook request.
-        return res.raw?.req && (isPrivateWebhook(res.raw.req) || isPrivateMuseHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentCommentaryHttpRequest(requestClassificationUrl(res.raw.req)) || isPrivateAgentObservabilityHttpRequest(requestClassificationUrl(res.raw.req)))
-          ? { statusCode: res.statusCode }
-          : res;
+        if (
+          res.raw?.req &&
+          (isPrivateWebhook(res.raw.req) ||
+            isPrivateMuseHttpRequest(requestClassificationUrl(res.raw.req)) ||
+            isPrivateAgentCommentaryHttpRequest(
+              requestClassificationUrl(res.raw.req),
+            ) ||
+            isPrivateAgentObservabilityHttpRequest(
+              requestClassificationUrl(res.raw.req),
+            ))
+        ) {
+          return { statusCode: res.statusCode };
+        }
+        if (res.headers && typeof res.headers === "object") {
+          return {
+            ...res,
+            headers: redactSensitiveHeaders(
+              res.headers as Record<string, unknown>,
+            ),
+          };
+        }
+        return res;
       },
     },
     customLogLevel(_req, res, err) {
