@@ -7,6 +7,7 @@ import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceE
 import { CoordinatorAgentSwitcher } from "@/components/CoordinatorAgentSwitcher";
 import { TaskDecisionRecord } from "@/components/TaskDecisionRecord";
 import { useAccountBoundMutation } from "@/hooks/useAccountBoundMutation";
+import { bindAccount } from "@/lib/account-scope";
 import { mergeWindowComments, useIssueHistoryWindow } from "../hooks/useIssueHistoryWindow";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
 import { useTaskRunLiveUpdates } from "../context/LiveUpdatesProvider";
@@ -3291,7 +3292,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const [pendingCommentComposerFocusKey, setPendingCommentComposerFocusKey] =
     useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const lastMarkedReadIssueIdRef = useRef<string | null>(null);
+  const readReceiptRef = useRef<{
+    issueId: string;
+    account: ReturnType<typeof bindAccount>;
+    attemptedSessionAt?: number;
+    confirmed: boolean;
+  } | null>(null);
   const lastScrollIssueIdRef = useRef<string | undefined>(undefined);
   const commentComposerRef = useRef<IssueChatComposerHandle | null>(null);
   const cancelledQueuedOptimisticCommentIdsRef = useRef(new Set<string>());
@@ -3729,7 +3735,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     ),
   });
 
-  const { data: session, isFetched: sessionResolved } = useQuery({
+  const { data: session, isFetched: sessionResolved, dataUpdatedAt: sessionUpdatedAt } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
   });
@@ -4505,8 +4511,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   const markIssueRead = useAccountBoundMutation({
-    mutationFn: (id: string) => issuesApi.markRead(id),
-    onSuccess: () => {
+    mutationFn: (receipt: NonNullable<typeof readReceiptRef.current>) => {
+      receipt.attemptedSessionAt = queryClient.getQueryState(queryKeys.auth.session)?.dataUpdatedAt ?? 0;
+      return issuesApi.markRead(receipt.issueId);
+    },
+    onSuccess: (_data, receipt) => {
+      receipt.confirmed = true;
       if (selectedCompanyId) {
         queryClient.invalidateQueries({
           queryKey: queryKeys.issues.listMineByMe(selectedCompanyId),
@@ -5867,14 +5877,24 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     onMutate: async (id) => {
       if (!selectedCompanyId)
         return { previousData: [] as InboxIssueCacheSnapshot };
-      beginLocalInboxArchive(selectedCompanyId, id);
-      await cancelInboxIssueQueries(queryClient, selectedCompanyId);
+      const account = bindAccount(queryClient);
+      const release = beginLocalInboxArchive(selectedCompanyId, id);
+      try {
+        await cancelInboxIssueQueries(queryClient, selectedCompanyId);
+      } catch (error) {
+        release();
+        throw error;
+      }
+      if (!account.isCurrentScope()) {
+        release();
+        return { companyId: selectedCompanyId, previousData: [] as InboxIssueCacheSnapshot, account, release };
+      }
       const previousData = snapshotInboxIssueCaches(
         queryClient,
         selectedCompanyId,
       );
       removeIssueFromInboxCaches(queryClient, selectedCompanyId, id);
-      return { companyId: selectedCompanyId, previousData };
+      return { companyId: selectedCompanyId, previousData, account, release };
     },
     onSuccess: (_data, id, context) => {
       if (selectedCompanyId) {
@@ -5903,7 +5923,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       });
     },
     onError: (err, id, context) => {
-      if (context?.companyId) clearLocalInboxArchive(context.companyId, id);
+      context?.release?.();
       if (context?.previousData) {
         restoreIssueToInboxCaches(queryClient, context.previousData, id);
       }
@@ -5916,18 +5936,25 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         tone: "error",
       });
     },
+    onFinished: (_id, context) => {
+      if (context?.account && !context.account.isCurrentScope()) context.release();
+    },
     onSettled: async (_data, error, id, context) => {
       if (!context?.companyId) return;
       if (!error) boundLocalInboxArchive(context.companyId, id);
-      await invalidateInboxIssueQueries(queryClient, context.companyId);
-      if (!error) {
-        const presence = getIssuePresenceInActiveInboxCaches(
-          queryClient,
-          context.companyId,
-          id,
-        );
-        if (presence !== "unknown")
-          confirmLocalInboxArchive(context.companyId, id);
+      try {
+        await invalidateInboxIssueQueries(queryClient, context.companyId);
+        if (!error && context.account?.isCurrentScope()) {
+          const presence = getIssuePresenceInActiveInboxCaches(
+            queryClient,
+            context.companyId,
+            id,
+          );
+          if (presence !== "unknown")
+            confirmLocalInboxArchive(context.companyId, id);
+        }
+      } finally {
+        if (context.account && !context.account.isCurrentScope()) context.release();
       }
     },
   });
@@ -6092,10 +6119,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   useEffect(() => {
     if (!issueId || !issue?.id) return;
     if (issue.conversationAgentId) return;
-    if (lastMarkedReadIssueIdRef.current === issue.id) return;
-    lastMarkedReadIssueIdRef.current = issue.id;
-    markIssueRead.mutate(issue.id);
-  }, [issue?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+    const receipt = readReceiptRef.current?.issueId === issue.id
+      ? readReceiptRef.current
+      : (readReceiptRef.current = { issueId: issue.id, account: bindAccount(queryClient), confirmed: false });
+    if (receipt.confirmed || markIssueRead.isPending || !receipt.account.isCurrentScope()) return;
+    // Retry after a successful session read, without looping on a failed check.
+    if (receipt.attemptedSessionAt === sessionUpdatedAt) return;
+    receipt.attemptedSessionAt = sessionUpdatedAt;
+    markIssueRead.mutate(receipt);
+  }, [issueId, issue?.id, issue?.conversationAgentId, sessionUpdatedAt, markIssueRead.isPending]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const mediaGalleryItems = useMemo<GalleryMediaItem[]>(() => {
     const items: GalleryMediaItem[] = [];

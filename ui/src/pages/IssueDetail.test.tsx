@@ -42,6 +42,7 @@ import {
 import { queryKeys } from "../lib/queryKeys";
 import { markCachedSession } from "../lib/cached-session";
 import { startPersistedQueryCache } from "../lib/persisted-query-cache";
+import { clearLocalInboxArchive, filterLocalInboxArchivedIssues, getLocalInboxArchiveIssueIds } from "../lib/inboxArchiveCache";
 import { taskPluginPanelActivationKey } from "@/hooks/useTaskPluginPanels";
 import {
   armIssueDetailInboxQuickArchive,
@@ -1586,6 +1587,112 @@ describe("IssueDetail", () => {
         cache.dispose();
       }
     });
+  });
+
+  describe.each([false, true])("pending archive account cleanup (unmounted=%s)", unmounted => {
+    it.each(["success", "failure"] as const)("releases the old account's guard after %s without changing the new account's rows", async outcome => {
+      const issue = createIssue({ title: "Old account task" });
+      const freshIssue = { ...issue, title: "Fresh account task" };
+      const archive = createDeferred<{ id: string; archivedAt: Date }>();
+      mockAuthApi.getSession.mockResolvedValue({ user: { id: "old-owner" } });
+      queryClient.setQueryData(queryKeys.auth.session, { user: { id: "old-owner" } });
+      mockIssuesApi.get.mockResolvedValue(issue);
+      mockIssuesApi.archiveFromInbox.mockReturnValue(archive.promise);
+      const inboxKey = queryKeys.issues.listMineByMe(issue.companyId);
+      queryClient.setQueryData(inboxKey, [issue]);
+      mockLocation.state = createIssueDetailLocationState("Inbox", "/inbox/mine", "inbox");
+      try {
+        await act(async () => renderIssueView());
+        await waitForAssertion(() => expect(container.querySelector('button[aria-label="More task actions"]')).not.toBeNull());
+        await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="More task actions"]')!.click());
+        const button = Array.from(document.body.querySelectorAll<HTMLButtonElement>("button"))
+          .find(entry => entry.textContent?.trim() === "Archive from inbox")!;
+        await act(async () => button.click());
+        await waitForAssertion(() => expect(getLocalInboxArchiveIssueIds(issue.companyId).has(issue.id)).toBe(true));
+        await waitForAssertion(() => expect(mockIssuesApi.archiveFromInbox).toHaveBeenCalledWith(issue.id));
+        mockNavigate.mockClear();
+        mockPushToast.mockClear();
+        await act(async () => {
+          queryClient.setQueryData(queryKeys.auth.session, null);
+          queryClient.setQueryData(queryKeys.auth.session, { user: { id: "new-owner" } });
+          queryClient.setQueryData(inboxKey, [freshIssue]);
+          if (unmounted) root.unmount();
+        });
+        await act(async () => {
+          if (outcome === "success") archive.resolve({ id: issue.id, archivedAt: new Date() });
+          else archive.reject(new Error("Old account archive failed"));
+        });
+        await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+        expect(getLocalInboxArchiveIssueIds(issue.companyId).has(issue.id)).toBe(false);
+        expect(filterLocalInboxArchivedIssues(issue.companyId, [freshIssue])).toEqual([freshIssue]);
+        expect(queryClient.getQueryData(inboxKey)).toEqual([freshIssue]);
+        expect(mockNavigate).not.toHaveBeenCalled();
+        expect(mockPushToast).not.toHaveBeenCalled();
+      } finally {
+        archive.resolve({ id: issue.id, archivedAt: new Date() });
+        clearLocalInboxArchive(issue.companyId, issue.id);
+      }
+    });
+  });
+
+  it.each(["cached-owner", "other-owner", null])("retries an opened task's read receipt after session recovery only for its original account (verified=%s)", async verified => {
+    const issue = createIssue({ title: "Task awaiting a verified read receipt" });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "cached-owner" } });
+    const cache = startPersistedQueryCache(queryClient, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(queryClient);
+    mockAuthApi.getSession.mockRejectedValue(new ApiError("Try again later", 429, {}));
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.markRead.mockClear();
+    try {
+      await act(async () => renderIssueView());
+      await waitForAssertion(() => expect(queryClient.isMutating()).toBeGreaterThan(0));
+      await act(async () => {
+        await vi.waitFor(() => expect(queryClient.isMutating()).toBe(0), { timeout: 3_000, interval: 10 });
+      });
+      expect(mockAuthApi.getSession.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(mockIssuesApi.markRead).not.toHaveBeenCalled();
+      const attempts = mockAuthApi.getSession.mock.calls.length;
+      await act(async () => renderIssueView());
+      await flushReact();
+      expect(queryClient.isMutating()).toBe(0);
+      expect(mockAuthApi.getSession).toHaveBeenCalledTimes(attempts);
+      mockAuthApi.getSession.mockResolvedValue(verified ? { user: { id: verified } } : null);
+      await act(async () => {
+        await queryClient.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => mockAuthApi.getSession(), retry: false, staleTime: 0 });
+      });
+      await flushReact();
+      await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(verified === "cached-owner" ? 1 : 0));
+      await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+      expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(verified === "cached-owner" ? 1 : 0);
+      if (verified === "cached-owner") {
+        await act(async () => {
+          await queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(mockRouteParams.issueId!) });
+          await queryClient.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => mockAuthApi.getSession(), staleTime: 0 });
+        });
+        await flushReact();
+        expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(1);
+      }
+    } finally { cache.dispose(); }
+  });
+
+  it("does not loop a failed read receipt and retries it after a new successful session read", async () => {
+    const issue = createIssue();
+    mockAuthApi.getSession.mockResolvedValue({ user: { id: "reader" } });
+    queryClient.setQueryData(queryKeys.auth.session, { user: { id: "reader" } });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.markRead.mockClear();
+    mockIssuesApi.markRead.mockRejectedValueOnce(new ApiError("Try again later", 429, {}));
+    await act(async () => renderIssueView());
+    await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(1));
+    await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
+    await act(async () => renderIssueView());
+    await flushReact();
+    expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await queryClient.fetchQuery({ queryKey: queryKeys.auth.session, queryFn: () => mockAuthApi.getSession(), staleTime: 0 });
+    });
+    await waitForAssertion(() => expect(mockIssuesApi.markRead).toHaveBeenCalledTimes(2));
+    await waitForAssertion(() => expect(queryClient.isMutating()).toBe(0));
   });
 
   it.each(["new-project", null])("remembers project %s only after its task update succeeds", async (projectId) => {
