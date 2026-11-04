@@ -57,7 +57,9 @@ function fixture(options: Options = {}) {
 it("awaits the delayed genuine canonical-reply review link within original300s, clicks and inspects actual pending revised model", async () => {
   const f = fixture(); await hireRevisionIdentityCases[0]!.act!(f.ctx, f.state);
   expect(f.clicks()).toBe(1); expect(clock.now).toBe(210_000); expect(clock.deadlines.every(x => x === 300_000)).toBe(true);
-  expect(f.state).toMatchObject({ pendingProposalVisible: true, revisedModelVisible: true }); expect(f.url()).toContain("/chats/ceo");
+  expect(f.state).toMatchObject({ pendingProposalVisible: true, revisedModelVisible: true,
+    revisionHistoryComment: { id: "reply", authorAgentId: "ceo", createdByRunId: "native" },
+    revisionHistoryLink: { source: "reply", conversationId: "source", commentId: "reply", href: "/approvals/approval" } }); expect(f.url()).toContain("/chats/ceo");
 });
 it.each([{ href: "https://foreign.test/approvals/approval" }, { href: "/OTHER/approvals/approval" }, { href: "/approvals/other" }, { wrongComment: true }, { foreignSource: true }, { wrongActor: true }, { wrongNativeComment: true }, { readyAt: 300_001 }, { lateDom: true }, { deadline: "missing" }, { deadline: NaN }, { deadline: 29_999 }])("rejects absent/foreign/late review readiness before any click %j", async options => {
   const f = fixture(options as Options); await expect(hireRevisionIdentityCases[0]!.act!(f.ctx, f.state)).rejects.toThrow(); expect(f.clicks()).toBe(0);
