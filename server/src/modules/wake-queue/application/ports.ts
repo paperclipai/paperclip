@@ -425,7 +425,7 @@ export interface WakeAdmissionWriter {
     input: {
       companyId: string;
       activeExecutionRunId: string;
-      activeExecutionRunStatus: string;
+      activeExecutionRunStatus: WakeAdmissionActiveExecutionRun["status"];
       mergedContextSnapshot: Record<string, unknown>;
       durableReceipt?: DurableWakeAdmissionReceipt;
       agentId: string;

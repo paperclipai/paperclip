@@ -1140,13 +1140,13 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   // owns it. These tests drive the admission writer directly against a
   // transaction they open themselves, the same way `heartbeat.ts` will.
   describe("wake admission", () => {
-    it.each(["running", "cancelled", "receipt-collision"])("preserves both queued input sources after %s", async scenario => {
+    it.each(["running", "cancelled", "receipt-collision", "actor-mismatch"])("preserves both queued input sources after %s", async scenario => {
       const companyId = await seedCompany();
       const agentId = await seedAgent({ companyId });
       const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
       const [oldComment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "source-user", body: "Original input" }).returning();
       const [newComment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "source-user", body: "Incoming input" }).returning();
-      const runId = await seedRun({ companyId, agentId, status: scenario === "receipt-collision" ? "queued" : scenario,
+      const runId = await seedRun({ companyId, agentId, status: ["receipt-collision", "actor-mismatch"].includes(scenario) ? "queued" : scenario,
         contextSnapshot: withQueuedCommentIdsInRunContext({ issueId }, [oldComment.id]) });
       const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, runId, source: "assignment", status: "queued",
         requestedByActorType: "user", requestedByActorId: "source-user",
@@ -1159,8 +1159,9 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
           companyId, agentId, activeExecutionRunId: runId, activeExecutionRunStatus: "queued",
           mergedContextSnapshot: withQueuedCommentIdsInRunContext({ issueId }, [oldComment.id, newComment.id]),
           source: "on_demand", triggerDetail: "manual", payload: { issueId, commentId: newComment.id },
-          requestedByActorType: "user", requestedByActorId: "source-user", idempotencyKey: null,
-          ...(scenario === "receipt-collision" ? { durableReceipt: { id: wake.id, requestedAt: new Date() } } : {}),
+          requestedByActorType: "user", requestedByActorId: scenario === "actor-mismatch" ? "another-user" : "source-user", idempotencyKey: null,
+          ...(["receipt-collision", "actor-mismatch"].includes(scenario)
+            ? { durableReceipt: { id: scenario === "receipt-collision" ? wake.id : randomUUID(), requestedAt: new Date() } } : {}),
         },
       ));
       if (scenario === "receipt-collision") await expect(operation).rejects.toMatchObject({ cause: { code: "23505" } });

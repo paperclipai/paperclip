@@ -259,20 +259,28 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
     return { company, agent, issue, wake, run };
   }
 
-  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "actor-changed", "foreign-primary"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
+  it.each((["process", "paperclip_runner"] as const).flatMap(adapterType => (["coalesced", "claimed-primary", "legacy-envelope", "delete-old", "delete-new", "stopped", "running", "system-primary", "foreign-primary", "same-named-agent", "mixed-author"] as const).map(scenario => ({ adapterType, scenario }))))("protects a queued comment batch across $adapterType/$scenario", async ({ adapterType, scenario }) => {
     const f = await fixture("queued");
-    const admissionAgent = { ...f.agent, adapterType, adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} };
+    let admissionAgent: typeof agents.$inferSelect = { ...f.agent, adapterType, adapterConfig: adapterType === "paperclip_runner" ? { provider: "codex" } : {} };
     await db.update(agents).set({ adapterType, adapterConfig: admissionAgent.adapterConfig }).where(eq(agents.id, f.agent.id));
+    if (scenario === "same-named-agent") [admissionAgent] = await db.insert(agents).values({ companyId: f.company.id,
+      name: f.agent.name.toUpperCase(), role: "engineer", status: "idle", adapterType, adapterConfig: admissionAgent.adapterConfig,
+    }).returning();
     const userId = `source-user-${f.company.id}`;
     await db.insert(authUsers).values({ id: userId, name: "Source owner", email: `${f.company.id}@queue.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: userId, status: "active", membershipRole: "operator" });
     await db.update(companies).set({ defaultResponsibleUserId: userId }).where(eq(companies.id, f.company.id));
+    const incomingActorId = scenario === "mixed-author" ? `second-user-${f.company.id}` : userId;
+    if (scenario === "mixed-author") {
+      await db.insert(authUsers).values({ id: incomingActorId, name: "Incoming source owner", email: `${incomingActorId}@queue.test`, createdAt: new Date(), updatedAt: new Date() });
+      await db.insert(companyMemberships).values({ companyId: f.company.id, principalType: "user", principalId: incomingActorId, status: "active", membershipRole: "operator" });
+    }
     const [oldComment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
       authorType: "user", authorUserId: userId, body: "Review source A" }).returning();
     const [newComment] = await db.insert(issueComments).values({ companyId: f.company.id, issueId: f.issue.id,
-      authorType: "user", authorUserId: userId, body: "Review source B" }).returning();
+      authorType: "user", authorUserId: incomingActorId, body: "Review source B" }).returning();
     await db.update(agentWakeupRequests).set({ status: scenario === "claimed-primary" ? "claimed" : "queued", runId: f.run.id, claimedAt: null,
-      requestedByActorType: "user", requestedByActorId: scenario === "actor-changed" ? "changed-source-owner" : userId,
+      requestedByActorType: scenario === "system-primary" ? "system" : "user", requestedByActorId: scenario === "system-primary" ? null : userId,
       payload: scenario === "legacy-envelope" ? { issueId: f.issue.id, commentId: oldComment.id }
         : withQueuedCommentIdsInWakePayload({ issueId: f.issue.id, retainedSource: "original-source" }, [oldComment.id]),
     }).where(eq(agentWakeupRequests.id, f.wake.id));
@@ -308,23 +316,30 @@ describe.skipIf(!support.supported)("heartbeat queue database wiring", () => {
       deps.canStartNewExternalBotWork.mockResolvedValue(false);
     }
     const [originalPrimary] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id));
-    const coalesced = await queue.enqueueWakeup(f.agent.id, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+    const coalesced = await queue.enqueueWakeup(admissionAgent.id, { source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
       payload: { issueId: f.issue.id, commentId: newComment.id }, contextSnapshot: { issueId: f.issue.id, wakeCommentId: newComment.id },
-      requestedByActorType: "user", requestedByActorId: userId });
-    if (["running", "actor-changed", "foreign-primary"].includes(scenario)) {
+      requestedByActorType: "user", requestedByActorId: incomingActorId });
+    if (["running", "foreign-primary", "same-named-agent"].includes(scenario)) {
       expect(coalesced).toBeNull();
       const [preserved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id));
       expect(preserved.contextSnapshot).toMatchObject({ wakeCommentId: oldComment.id, wakeCommentIds: [oldComment.id] });
       const receipts = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id));
       expect(receipts.find(row => row.id !== f.wake.id)).toMatchObject({ status: "deferred_issue_execution", runId: null });
       expect(receipts.find(row => row.id === f.wake.id)).toEqual(originalPrimary);
+      if (scenario === "same-named-agent") {
+        expect(preserved).toEqual(scanned);
+        expect(receipts.find(row => row.id !== f.wake.id)).toMatchObject({ agentId: admissionAgent.id,
+          requestedByActorType: "user", requestedByActorId: incomingActorId, payload: { issueId: f.issue.id, commentId: newComment.id } });
+        expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.company.id))).toEqual([scanned]);
+      }
       if (foreignPrimary) expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, foreignPrimary.id)))[0]).toEqual(foreignPrimary);
       expect(deps.executeRun).not.toHaveBeenCalled();
       return;
     }
     expect(coalesced).toMatchObject({ id: f.run.id, status: "queued", contextSnapshot: { wakeCommentIds: [oldComment.id, newComment.id] } });
     const accepted = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.company.id));
-    expect(accepted.find(row => row.id !== f.wake.id)).toMatchObject({ status: "coalesced", runId: f.run.id, finishedAt: expect.any(Date) });
+    expect(accepted.find(row => row.id !== f.wake.id)).toMatchObject({ status: "coalesced", runId: f.run.id, finishedAt: expect.any(Date),
+      requestedByActorType: "user", requestedByActorId: incomingActorId });
     const [updatedPrimary] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wake.id));
     expect(updatedPrimary).toMatchObject({ id: originalPrimary.id, companyId: originalPrimary.companyId,
       agentId: originalPrimary.agentId, source: originalPrimary.source, requestedByActorType: originalPrimary.requestedByActorType,

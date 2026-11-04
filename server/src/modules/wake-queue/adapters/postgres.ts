@@ -974,9 +974,9 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
       const now = new Date();
       const [candidate] = await tx.select().from(heartbeatRuns).where(and(
         eq(heartbeatRuns.id, input.activeExecutionRunId), eq(heartbeatRuns.companyId, input.companyId),
-        eq(heartbeatRuns.agentId, input.agentId),
       )).limit(1);
       if (!candidate) throw new Error("wake-queue: the coalesce target run was not found for this company");
+      if (candidate.agentId !== input.agentId) return null;
       const [primary] = candidate.wakeupRequestId ? await tx.select().from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.id, candidate.wakeupRequestId), eq(agentWakeupRequests.companyId, input.companyId),
         eq(agentWakeupRequests.agentId, input.agentId),
@@ -991,7 +991,7 @@ export function createWakeAdmissionWriter(): WakeAdmissionWriter {
         && primary?.status === "queued" && queuedCommentIdsFromWakePayload(primary.payload).length > 0;
       if (current.status === "queued" && commentIds.length && current.wakeupRequestId &&
           (!primary || !["queued", "claimed"].includes(primary.status) || primary.runId !== current.id
-            || primary.requestedByActorType !== input.requestedByActorType || primary.requestedByActorId !== input.requestedByActorId
+            || (input.durableReceipt && (primary.requestedByActorType !== input.requestedByActorType || primary.requestedByActorId !== input.requestedByActorId))
             || primary.payload?.issueId !== input.mergedContextSnapshot.issueId)) return null;
       await notifyChatRunMilestones(tx, { companyId: input.companyId, runId: input.activeExecutionRunId });
       if (synchronizeBatch && primary) await tx.update(agentWakeupRequests).set({
