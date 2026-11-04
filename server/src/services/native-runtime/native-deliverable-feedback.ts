@@ -1,6 +1,10 @@
 import { and, eq } from "drizzle-orm";
-import { assets, companies, documents, documentRevisions, heartbeatRuns, issueDocuments, issueAttachments, issues, issueWorkProducts, mcpAttachmentUploads, dotRunnerAssignments, type Db } from "@paperclipai/db";
+import { createHash } from "node:crypto";
+import { assets, companies, completionContracts, documents, documentRevisions, heartbeatRuns, issueDocuments, issueAttachments, issues, issueThreadInteractions, issueWorkProducts, mcpAttachmentUploads, dotRunnerAssignments, type Db } from "@paperclipai/db";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
+import { projectHumanInteractionResponse } from "../execution-continuation.js";
+
+export class NativeDeliverableEvidenceError extends Error {}
 
 function evidenceRefs(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
@@ -178,6 +182,42 @@ export function explicitlyRequestsTaskDocumentOutput(objective: string): boolean
   });
 }
 
+async function declinedTaskDocumentNotRequired(db: Db, binding: {
+  companyId: string; issueId: string; runId: string; objective: string;
+}): Promise<boolean> {
+  if (!/\bif I (?:decline|reject) the action\b/iu.test(binding.objective) ||
+      !/\bno (?:briefing|document|doc)(?: document)? is required after a (?:decline|rejection)\b/iu.test(binding.objective)) return false;
+  const [run] = await db.select({ context: heartbeatRuns.contextSnapshot }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.id, binding.runId), eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.nativeIssueId, binding.issueId),
+  )).limit(1);
+  const continuation = record(run?.context?.executionContinuation);
+  const trigger = record(continuation.trigger);
+  const objectiveSource = record(continuation.objectiveSource);
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu;
+  if (continuation.objective !== binding.objective || typeof trigger.interactionId !== "string" ||
+      !uuid.test(trigger.interactionId) || typeof trigger.sourceRunId !== "string" || !uuid.test(trigger.sourceRunId) ||
+      objectiveSource.kind !== "description" || objectiveSource.id !== binding.issueId ||
+      objectiveSource.revision !== createHash("sha256").update(binding.objective.trim()).digest("hex")) return false;
+  const [saved] = await db.select({ interaction: issueThreadInteractions, sourceContext: heartbeatRuns.contextSnapshot,
+    sourceContract: completionContracts.contractJson }).from(issueThreadInteractions)
+    .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, issueThreadInteractions.sourceRunId),
+      eq(heartbeatRuns.companyId, binding.companyId), eq(heartbeatRuns.nativeIssueId, binding.issueId), eq(heartbeatRuns.runtimeMode, "native")))
+    .innerJoin(completionContracts, and(eq(completionContracts.id, heartbeatRuns.completionContractId),
+      eq(completionContracts.companyId, binding.companyId), eq(completionContracts.issueId, binding.issueId)))
+    .where(and(eq(issueThreadInteractions.id, trigger.interactionId), eq(issueThreadInteractions.companyId, binding.companyId),
+      eq(issueThreadInteractions.issueId, binding.issueId), eq(issueThreadInteractions.sourceRunId, trigger.sourceRunId))).limit(1);
+  if (!saved || saved.interaction.kind !== "request_confirmation" || saved.interaction.dismissedAt ||
+      projectHumanInteractionResponse(saved.interaction)?.status !== "rejected" ||
+      Object.keys(record(record(saved.interaction.payload).toolAction)).length === 0) return false;
+  const source = record(saved.sourceContext?.executionContinuation);
+  const originalSource = record(source.objectiveSource);
+  const originalCriteria = record(saved.sourceContract).criteria;
+  return source.objective === binding.objective &&
+    originalSource.kind === objectiveSource.kind && originalSource.id === objectiveSource.id &&
+    originalSource.revision === objectiveSource.revision &&
+    Array.isArray(originalCriteria) && originalCriteria.some(value => record(value).requirement === binding.objective);
+}
+
 /** Current attached revisions with server-owned publication proof. Joining the
  * revision to its originating run preserves completed work across continuations
  * without accepting stale, foreign-task, or provider-invented document refs.
@@ -212,7 +252,8 @@ export async function validateNativeDeliverableEvidence(
 ): Promise<void> {
   if (result.reportedWorkDisposition !== "done") return;
   const fileRequested = explicitlyRequestsFileOutput(binding.objective);
-  const taskDocumentRequested = explicitlyRequestsTaskDocumentOutput(binding.objective);
+  const taskDocumentRequested = explicitlyRequestsTaskDocumentOutput(binding.objective) &&
+    !await declinedTaskDocumentNotRequired(db, binding);
   const artifactRefs = new Set(evidenceRefs(result.artifacts));
   const refs = new Set([
     ...evidenceRefs(result.evidence),
@@ -240,7 +281,7 @@ export async function validateNativeDeliverableEvidence(
             .limit(1)
         : [];
       if (!attachment) {
-        throw new Error("Completion cites no registered attachment on this task. Use register_deliverable for the requested file and cite deliverable:<attachmentId> from its receipt. No human completion approval was created.");
+        throw new NativeDeliverableEvidenceError("Completion cites no registered attachment on this task. Use register_deliverable for the requested file and cite deliverable:<attachmentId> from its receipt. No human completion approval was created.");
       }
       // A prior output (or user input) can be useful context, but does not prove
       // this run published the newly requested output. The receipt survives a
@@ -248,7 +289,7 @@ export async function validateNativeDeliverableEvidence(
       // workspace bytes internally rather than asking the user to confirm them.
       if ((fileRequested || taskDocumentRequested) && attachment.originatingRunId !== binding.runId) continue;
       if ((fileRequested || taskDocumentRequested) && !await hasCurrentPublicationReceipt(db, binding.companyId, binding.semanticToolReceipts, attachment)) {
-        throw new Error("This attachment has no matching verified publication receipt for this run's requested output. Inspect any preserved file and use register_deliverable to verify its current filename, size, and SHA-256, then cite the new receipt. No human completion approval was created.");
+        throw new NativeDeliverableEvidenceError("This attachment has no matching verified publication receipt for this run's requested output. Inspect any preserved file and use register_deliverable to verify its current filename, size, and SHA-256, then cite the new receipt. No human completion approval was created.");
       }
       registeredAttachment = true;
       continue;
@@ -258,14 +299,14 @@ export async function validateNativeDeliverableEvidence(
     const localFile = /^(?:file:|\.{0,2}\/|[a-z]:[\\/])/iu.test(ref)
       || (!/^[a-z][a-z0-9+.-]*:/iu.test(ref) && /^[^\r\n]+\.[a-z0-9]{1,16}(?::\d+(?::\d+)?)?$/iu.test(ref));
     if (localFile && taskDocumentRequested && !publishedTaskDocument) {
-      throw new Error("The requested task document is only a workspace file. Publish it on this task with write_document, or attach the verified file with register_deliverable and cite deliverable:<attachmentId>. Reuse completed work; do not request a new completion approval.");
+      throw new NativeDeliverableEvidenceError("The requested task document is only a workspace file. Publish it on this task with write_document, or attach the verified file with register_deliverable and cite deliverable:<attachmentId>. Reuse completed work; do not request a new completion approval.");
     }
     if (localFile && (fileRequested || artifactRefs.has(value))) {
-      throw new Error("Completion cites a workspace-only file that the user cannot download. Before finishing, use register_deliverable for requested file outputs and cite deliverable:<attachmentId> from the receipt, with /api/attachments/<attachmentId>/content as the download link. For repository changes, cite an accessible PR or registered work product instead. No human completion approval was created.");
+      throw new NativeDeliverableEvidenceError("Completion cites a workspace-only file that the user cannot download. Before finishing, use register_deliverable for requested file outputs and cite deliverable:<attachmentId> from the receipt, with /api/attachments/<attachmentId>/content as the download link. For repository changes, cite an accessible PR or registered work product instead. No human completion approval was created.");
     }
   }
   if (taskDocumentRequested && !publishedTaskDocument && !registeredAttachment) {
-    throw new Error("The requested document has not been published on this task. Use write_document, or register_deliverable with its verified attachment receipt. A workspace path or final message alone is not the requested task document. Reuse completed work without requesting a new completion approval.");
+    throw new NativeDeliverableEvidenceError("The requested document has not been published on this task. Use write_document, or register_deliverable with its verified attachment receipt. A workspace path or final message alone is not the requested task document. Reuse completed work without requesting a new completion approval.");
   }
   if (fileRequested && !registeredAttachment) {
     const products = refs.size ? await db.select().from(issueWorkProducts).where(and(
@@ -281,6 +322,6 @@ export async function validateNativeDeliverableEvidence(
       return accessible && [product.url, `work_product:${product.id}`, `work-product:${product.id}`, `artifact:${product.id}`]
         .some(ref => typeof ref === "string" && refs.has(ref));
     });
-    if (!accessibleProduct) throw new Error("The requested file has no accessible delivery evidence. Use register_deliverable and cite deliverable:<attachmentId>, or cite an accessible work product registered by this run for this task. Empty evidence, prior-run output, and a verification result cannot substitute for the requested file. Continue publishing or report a concrete blocker; no human completion approval was created.");
+    if (!accessibleProduct) throw new NativeDeliverableEvidenceError("The requested file has no accessible delivery evidence. Use register_deliverable and cite deliverable:<attachmentId>, or cite an accessible work product registered by this run for this task. Empty evidence, prior-run output, and a verification result cannot substitute for the requested file. Continue publishing or report a concrete blocker; no human completion approval was created.");
   }
 }
