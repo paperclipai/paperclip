@@ -20,7 +20,8 @@ import { chatActionDeadline } from "./chat-action-work.js";
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
   "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
-  Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode">>;
+  Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error" | "companyId" | "nativeIssueId" | "runtimeMode"
+    | "createdAt" | "finishedAt">>;
 type ProjectionWait = { id: string; requestedAt: Date; sourceRunId?: string | null; executionWaitReason?: string | null;
   preparationStatus?: string | null; preparationRetryAt?: number | string | null };
 type ProjectionState = {
@@ -37,6 +38,23 @@ type ProjectionState = {
   paused: boolean;
   approval: boolean;
 };
+
+// A task read reports the change that made a task fail, not every later read of
+// retained history. The delivery cache is process-local, so a restart or another
+// replica would otherwise resend each old failure whenever a list shows it.
+const TASK_INTERRUPTION_REPORT_WINDOW_MS = 60 * 60_000;
+
+/** Latest saved fact that can move a task into the failed state, if known. */
+export function taskInterruptionChangedAt(input: Pick<ProjectionState, "run" | "action" | "wait" | "retryWait">): number | null {
+  const { run, wait, action } = input;
+  const retryWait = input.retryWait ?? wait;
+  const times: unknown[] = [run?.finishedAt ?? run?.createdAt, run?.scheduledRetryAt, wait?.requestedAt, retryWait?.requestedAt]
+    .map(value => value?.getTime());
+  times.push(readSystemRecovery(action?.evidence)?.nextAttemptAt,
+    retryWait?.preparationRetryAt == null ? null : Number(retryWait.preparationRetryAt));
+  const known = times.filter((time): time is number => typeof time === "number" && Number.isFinite(time));
+  return known.length ? Math.max(...known) : null;
+}
 
 function boundedJsonString(value: SQL, limit: number) {
   return sql<string | null>`case when jsonb_typeof(${value}) = 'string' then left(${value} #>> '{}', ${limit}) else null end`;
@@ -160,7 +178,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
   const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
     db.select({ issueId: requestedIssueId, id: heartbeatRuns.id, status: heartbeatRuns.status,
-      agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId,
+      createdAt: heartbeatRuns.createdAt, finishedAt: heartbeatRuns.finishedAt, agentId: heartbeatRuns.agentId, companyId: heartbeatRuns.companyId,
       nativeIssueId: heartbeatRuns.nativeIssueId, runtimeMode: heartbeatRuns.runtimeMode,
       agentAdapter: agents.adapterType,
       error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
@@ -257,23 +275,27 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const agentMap = new Map(agentRows.map(agent => [agent.id, agent]));
   const projectMap = new Map(projectRows.map(project => [project.id, project]));
   const pauses = new Set(pauseRows.map(row => row.issueId)), approvalsSet = new Set(approvalRows.map(row => row.issueId));
+  const now = Date.now();
   for (const issue of selected) {
     const required = requirements.get(issue.id);
     const denied = required?.projectIds.filter(projectId => currentAccess.get(`${issue.assigneeAgentId}:${projectId}`) !== true);
-    const presentation = projectTaskInterruption(issue, {
-      run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id), retryWait: retryWaitMap.get(issue.id),
+    const facts = { run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id),
+      retryWait: retryWaitMap.get(issue.id) };
+    const presentation = projectTaskInterruption(issue, { ...facts,
       projectAccessAllowed: denied?.length === 0,
       projectAccessProjectId: denied?.includes(issue.projectId ?? "") ? issue.projectId : null,
       workspaceSelectionAvailable: required?.available ?? false,
       agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
       company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
-    });
+    }, now);
     result.set(issue.id, presentation);
-    const run = runMap.get(issue.id);
+    const run = facts.run;
     const runStatus = HEARTBEAT_RUN_STATUSES.find(status => status === run?.status);
-    if (presentation?.responsibility === "system" && presentation.state === "failed" && run && runStatus) {
+    const changedAt = taskInterruptionChangedAt(facts);
+    if (presentation?.responsibility === "system" && presentation.state === "failed" && run && runStatus
+        && (changedAt === null || changedAt > now - TASK_INTERRUPTION_REPORT_WINDOW_MS)) {
       captureTaskInterruptionFailure({ companyId, taskId: issue.id, agentId: run.agentId,
-        runId: run.id, runStatus, intentId: presentation.intentId,
+        runId: run.id, runStatus, intentId: presentation.intentId, runErrorCode: run.errorCode ?? null,
         agentAdapter: run.agentAdapter ?? "unknown" });
     }
   }

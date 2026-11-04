@@ -176,6 +176,8 @@ export interface RunFailureEvent {
   /** The run status that triggered this report. */
   runStatus: HeartbeatRunStatus;
   failureSource?: "task_interruption";
+  /** A task-state event's observed run error code. It is a tag, not a fingerprint part. */
+  runErrorCode?: string | null;
   /** Bounded, redacted diagnostics selected by the run failure reporter. */
   diagnostics?: RunFailureDiagnostics;
   /** Recorded process exit evidence, when available. Validated before capture. */
@@ -225,6 +227,8 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
       diagnostics?.exceptions.at(-1)?.code;
     const rootErrorCode = typeof rootCodeCandidate === "string" && /^[a-zA-Z][a-zA-Z0-9_]{1,99}$/.test(rootCodeCandidate)
       ? rootCodeCandidate : undefined;
+    const runErrorCode = typeof event.runErrorCode === "string" && /^[a-zA-Z][a-zA-Z0-9_]{1,99}$/.test(event.runErrorCode)
+      ? event.runErrorCode : undefined;
     const phase = diagnostics?.execution.failurePhase;
     const failurePhase = phase === "setup" || phase === "execute" ? phase : undefined;
     const contexts: Record<string, Record<string, unknown>> = {};
@@ -278,6 +282,7 @@ function captureRunFailureEvent(event: RunFailureEvent): string | null {
         event_kind: "run_failure",
         ...(event.failureSource ? { failure_source: event.failureSource } : {}),
         ...(rootErrorCode ? { root_error_code: rootErrorCode } : {}),
+        ...(runErrorCode ? { run_error_code: runErrorCode } : {}),
         ...(failurePhase ? { failure_phase: failurePhase } : {}),
         run_id: event.runId,
         ...(event.taskId ? { task_id: event.taskId } : {}),
@@ -334,7 +339,7 @@ function confirmTaskInterruptionDelivery(eventId: string | undefined, statusCode
 }
 
 export function captureTaskInterruptionFailure(event: Pick<RunFailureEvent,
-  "companyId" | "agentId" | "taskId" | "runId" | "runStatus" | "agentAdapter"> & { intentId: string | null }): void {
+  "companyId" | "agentId" | "taskId" | "runId" | "runStatus" | "agentAdapter" | "runErrorCode"> & { intentId: string | null }): void {
   const key = JSON.stringify([event.companyId, event.taskId, event.runId, event.intentId]);
   if (reportedTaskInterruptions.has(key)) return;
   const now = Date.now();
@@ -352,6 +357,7 @@ export function captureTaskInterruptionFailure(event: Pick<RunFailureEvent,
     errorMessage: "Couldn’t finish this attempt. Your message is saved.",
     errorCode: "task_attempt_failed",
     failureSource: "task_interruption",
+    runErrorCode: event.runErrorCode,
   });
   if (!eventId) return;
   pendingTaskInterruptions.set(key, { eventId, retryAt: now + TASK_INTERRUPTION_DELIVERY_RETRY_MS });
