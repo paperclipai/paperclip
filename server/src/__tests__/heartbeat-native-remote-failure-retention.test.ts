@@ -11,7 +11,7 @@ import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { pinFailedObservedWorkspace } from "../services/native-runtime/native-observed-workspace-preservation.js";
 import { heartbeatService } from "../services/heartbeat.js";
-import { environmentRuntimeService, classifyEnvironmentCapabilities, type EnvironmentDriverResumeInput } from "../services/environment-runtime.js";
+import { environmentRuntimeService, classifyEnvironmentCapabilities } from "../services/environment-runtime.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { buildNativeExecutionInput } from "../services/native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../services/native-runtime/runtime-context.test-fixture.js";
@@ -107,18 +107,9 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
       expect(await pinFailedObservedWorkspace(db, companyId, f.runId)).toBe(false);
       throw preparationFailure;
     });
-    // Readiness may resume the retained allocation, but must never replace it.
-    const readyRetainedLease = vi.fn(async (input: EnvironmentDriverResumeInput) => {
-      expect(input.environment.id).toBe(environmentId);
-      expect(input.lease).toMatchObject({ id: leaseId, companyId, environmentId, providerLeaseId,
-        heartbeatRunId: f.runId, issueId: f.issueId, executionWorkspaceId: workspaceId,
-        metadata: { remoteCwd } });
-      expect(input.requestedCwd).toBe(remoteCwd);
-      return input.lease;
-    });
     const runtime = environmentRuntimeService(db, { drivers: [{ driver: "sandbox",
       acquireRunLease: async () => { throw new Error("Unexpected new allocation"); },
-      resumeRunLease: readyRetainedLease,
+      resumeRunLease: async () => { throw new Error("Reattachment must not resume the allocation"); },
       releaseRunLease: async () => { throw new Error("Unexpected destructive cleanup"); },
       retryPendingSandboxTeardown: async () => { throw new Error("Stop must remain separately verified"); },
       realizeWorkspace: async () => { throw new Error("Unexpected workspace realization"); },
@@ -134,11 +125,6 @@ describeEmbeddedPostgres("heartbeat native remote preparation failure retention"
       await heartbeat.recoverNativeRunsAfterRestart(new Date(), [f.runId]);
       await heartbeat.drainActiveRunExecutions();
       expect(resumed).toHaveBeenCalledOnce();
-      // Older orchestrators inspect the lease without a readiness call.
-      expect(readyRetainedLease.mock.calls.length).toBeLessThanOrEqual(1);
-      if (readyRetainedLease.mock.calls.length > 0) {
-        expect(readyRetainedLease.mock.invocationCallOrder[0]).toBeLessThan(resumed.mock.invocationCallOrder[0]);
-      }
       const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
       expect(run.error).toBe(preparationFailure.message);
       const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
