@@ -187,8 +187,10 @@ pnpm test:e2e:runner -- --id rolling-web-deployment.runner-codex.daytona.recover
 ```
 
 This source lane requires a complete server/UI build and disposable S3 and
-Postgres. Each controller has an independent compiled build and cache; shared
-workspace dependencies mean it is not released-container or Railway evidence.
+Postgres. Each controller has an independent compiled build and cache. The copied
+app retains the checkout's `cli/` and `packages/` dependency links, including the
+development Runner vendor entry. Shared workspace dependencies mean this is
+not released-container or Railway evidence.
 The read-only recovery observer captures the live predecessor's identity just
 before handoff, then requires a new controller generation, authenticated Runner
 attachment, and new canonical events for the original execution. No fixture
@@ -1590,6 +1592,28 @@ gh workflow run runner-full-stack-e2e.yml \
   -f all=false \
   -f id=core-compatibility.runner-codex.local.message-marker
 ```
+
+The same trusted workflow can run the standing **Product regression — core
+workflows** TestOps plan. Bootstrap one actual case with `-f testops_case=66`
+(message-marker), or select the complete plan with `-f testops_case=all`.
+Leave the ordinary `id`, `suite`, `group`, `profile`, `environment` and `case`
+selectors empty in this mode. TestOps dispatch supplies `ALLURE_JOB_RUN_ID` and
+`ALLURE_USERNAME`; the requested test-plan selection overrides the bootstrap
+case. All 20 imported case IDs and full names remain stable. The lane uses the
+existing native Codex/local cells and the existing native OpenCode/local
+task-workspaces cell. It does not qualify the historical 355-result snapshot.
+
+The protected `runner-e2e-testops-reporting` environment supplies `ALLURE_TOKEN`.
+Only default-branch selection and reporting code receives this token. The
+ordinary paid provider jobs, their authorization and their evidence paths stay
+the same. Selection binds the job run, launch, source and workflow revisions.
+Reporting parses the retained normalized campaign, publishes original attempts
+and assertions, and makes an absent result explicitly broken. It verifies the
+uploaded case IDs and verdicts before finishing the original TestOps job run.
+No bootstrap or synthetic control result contributes to the pass count. Tag
+only a complete 20-case attempt `full-run` and `test-plan-2`; omit `full-run`
+from focused reruns. Inspect the linked launch and the retained report for
+acceptance. A local projection test does not establish a live product pass.
 
 Create a protected `runner-e2e-paid` GitHub environment, restrict it to the
 default branch, limit environment administration to trusted maintainers, and
