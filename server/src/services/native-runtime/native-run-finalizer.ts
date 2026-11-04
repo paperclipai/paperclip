@@ -53,7 +53,6 @@ import {
 } from "@paperclipai/db";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
 import type { PrpIgnoredAttentionRequest, PrpTerminalState } from "@paperclipai/paperclip-runner";
-import { validatePrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import {
   arbitrateNativeStatus,
   NATIVE_STATUS_ARBITER_POLICY_VERSION,
@@ -1466,14 +1465,12 @@ export async function finalizeNativeRun(input: {
         reasonCode: "onboarding_first_task_decision_required", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] };
     }
     if (proposedDecision.statusAction === "done") {
-      const validated = validatePrpStructuredRunResult(result);
-      if (!validated.ok) throw new Error("native_finalization_result_invalid");
       const continuation = record(run.contextSnapshot?.executionContinuation);
       const objective = typeof continuation.objective === "string" ? continuation.objective
         : [authoritativeIssue.title, authoritativeIssue.description].filter(Boolean).join("\n");
       try {
         await validateNativeDeliverableEvidence(input.db, { companyId: run.companyId, issueId: authoritativeIssue.id,
-          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, validated.result);
+          runId: run.id, objective, semanticToolReceipts: run.resultJson?.semanticToolReceipts }, result);
       } catch (error) {
         if (!(error instanceof NativeDeliverableEvidenceError)) throw error;
         const incomplete = resolveNativeFinalizerStatus({ ...statusInput,

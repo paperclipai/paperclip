@@ -64,6 +64,8 @@ import { stageNativeRunnerWakeAttachments } from "./native-runner-file-handoff.j
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
 import { ensureNativeCompletionContract, nativeCompletionSource } from "./completion-contracts.js";
+import { commitNativeStatusDecision } from "./status-decision-committer.js";
+import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "./status-arbiter.js";
 import { createStorageService } from "../../storage/service.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { buildOnboardingFirstTaskOpeningQuestion, ONBOARDING_FIRST_TASK_OPENING_QUESTION_ID } from "../onboarding-first-task-assets.js";
@@ -2455,6 +2457,29 @@ describe("PaperclipControlPlanePort conformance", () => {
       await db.execute(sql.raw(`drop trigger if exists ${trigger} on work_assessments`));
       await db.execute(sql.raw(`drop function if exists ${trigger}()`));
     }
+  });
+
+  it.each([false, true])("checks requested publication for an authoritative done decision with an opaque accepted ledger (%s)", async requested => {
+    const objective = requested ? "Create a Markdown briefing document on this task." : "What is two plus two?";
+    const { companyId, agentId, issueId, runId } = await prepareFirstTaskCompletion("ordinary task", objective);
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    const [saved] = await db.insert(nativeRunResults).values({ companyId, issueId, runId,
+      completionContractId: run!.completionContractId!, serverFingerprint: randomUUID(), schemaStatus: "accepted",
+      resultJson: {}, canonicalSha256: randomUUID() }).returning();
+    const [assessment] = await db.insert(workAssessments).values({ companyId, issueId, runId,
+      contractId: run!.completionContractId!, resultId: saved!.id, triggerKind: "native_result", triggerActorCompanyId: companyId,
+      priorIssueStatus: issue!.status, priorStatusVersion: issue!.statusVersion, policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+      assessmentJson: {}, inputDigest: randomUUID() }).returning();
+    await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "arbitrating", resultId: saved!.id });
+    const commit = commitNativeStatusDecision({ db, companyId, issueId, runId, assessmentId: assessment!.id,
+      priorStatus: issue!.status as "in_progress", priorStatusVersion: issue!.statusVersion, priorDecisionId: issue!.lastStatusDecisionId,
+      decision: { policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION, statusAction: "done", toStatus: "done",
+        reasonCode: "completion_contract_satisfied", unblockDescriptor: null, effects: [{ kind: "release_checkout" }] } });
+    if (requested) await expect(commit).rejects.toThrow("native_status_race");
+    else await expect(commit).resolves.toMatchObject({ issue: { status: "done" } });
+    expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe(requested ? "in_progress" : "done");
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, saved!.id)))[0]!.resultJson).toEqual({});
   });
 
   it.each(refusedFirstTaskCompletionScenarios)(

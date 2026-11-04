@@ -1,7 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { createHash } from "node:crypto";
 import { assets, companies, completionContracts, documents, documentRevisions, heartbeatRuns, issueDocuments, issueAttachments, issues, issueThreadInteractions, issueWorkProducts, mcpAttachmentUploads, dotRunnerAssignments, type Db } from "@paperclipai/db";
-import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 import { projectHumanInteractionResponse } from "../execution-continuation.js";
 
 export class NativeDeliverableEvidenceError extends Error {}
@@ -18,6 +17,21 @@ function evidenceRefs(value: unknown): string[] {
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : {};
+}
+
+type NativePublicationEvidence = {
+  disposition: unknown;
+  artifacts: string[];
+  refs: string[];
+};
+
+function publicationEvidence(value: unknown): NativePublicationEvidence {
+  const result = record(value);
+  const artifacts = evidenceRefs(result.artifacts);
+  const criteria = record(result.completionClaim).criteria;
+  return { disposition: result.reportedWorkDisposition, artifacts,
+    refs: [...evidenceRefs(result.evidence), ...artifacts,
+      ...(Array.isArray(criteria) ? criteria.flatMap(entry => evidenceRefs(record(entry).evidenceRefs)) : [])] };
 }
 
 async function hasCurrentPublicationReceipt(db: Db, companyId: string, receipts: unknown, attachment: {
@@ -253,19 +267,16 @@ export async function publishedTaskDocuments(db: Db, binding: { companyId: strin
 /** Files cited as completed output must be reachable outside the agent workspace. */
 export async function validateNativeDeliverableEvidence(
   db: Db,
-  binding: { companyId: string; issueId: string; runId: string; objective: string; semanticToolReceipts: unknown; lockSources?: boolean },
-  result: PrpStructuredRunResult,
+  binding: { companyId: string; issueId: string; runId: string; objective: string; semanticToolReceipts: unknown; lockSources?: boolean; authoritativeDone?: true },
+  result: unknown,
 ): Promise<void> {
-  if (result.reportedWorkDisposition !== "done") return;
+  const evidence = publicationEvidence(result);
+  if (!binding.authoritativeDone && evidence.disposition !== "done") return;
   const fileRequested = explicitlyRequestsFileOutput(binding.objective);
   const taskDocumentRequested = explicitlyRequestsTaskDocumentOutput(binding.objective) &&
     !await declinedTaskDocumentNotRequired(db, binding);
-  const artifactRefs = new Set(evidenceRefs(result.artifacts));
-  const refs = new Set([
-    ...evidenceRefs(result.evidence),
-    ...artifactRefs,
-    ...result.completionClaim.criteria.flatMap(({ evidenceRefs }) => evidenceRefs),
-  ]);
+  const artifactRefs = new Set(evidence.artifacts);
+  const refs = new Set(evidence.refs);
   const citesTaskDocument = [...refs].some(ref => /^\/[^/?#]+\/issues\/[^/?#]+#document-[^/?#]+$/u.test(ref.trim()));
   const publishedDocuments = taskDocumentRequested || citesTaskDocument ? await publishedTaskDocuments(db, binding) : [];
   const publishedTaskDocument = taskDocumentRequested && publishedDocuments.length > 0;
