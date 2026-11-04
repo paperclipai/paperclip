@@ -122,7 +122,9 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
     && existingExecutionWorkspace.id === readNonEmptyString(issueRef?.executionWorkspaceId)
     && (existingExecutionWorkspace.status === "archived" || existingExecutionWorkspace.status === "cleanup_failed")
     && (readGitCacheExpiration(existingExecutionWorkspace as Parameters<typeof readGitCacheExpiration>[0])?.workspaceRemoved
-      || readTaskDirectoryRetention(existingExecutionWorkspace) !== null)) {
+      || readTaskDirectoryRetention(existingExecutionWorkspace) !== null
+      || (existingExecutionWorkspace.sourceIssueId === issueId
+        && existingExecutionWorkspace.cleanupReason?.startsWith("issue_terminal") === true))) {
     const [boundIssue] = await db.select({ id: issues.id, companyId: issues.companyId, projectId: issues.projectId })
       .from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId)));
     if (!boundIssue) throw new Error("Execution workspace issue is unavailable");

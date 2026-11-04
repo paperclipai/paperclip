@@ -541,8 +541,11 @@ export async function admitExplicitNativeContinuation(input: {
     action: "issue.fresh_workspace_selected", entityType: "issue", entityId: issueId,
     details: { ...readiness, runId: input.successorRunId } });
   if (input.taskRetryRequestId) await db.update(agentWakeupRequests).set({
-    payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}',
-      ${JSON.stringify(readiness?.mode === "fresh_isolated_workspace" ? "fresh_isolated_workspace" : "continue")}::jsonb)`,
+    // Preparation can fail before any recovery-action row exists. The admitted
+    // Retry receipt must retain dispatch authority even in that case.
+    payload: sql`jsonb_set(jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}',
+      ${JSON.stringify(readiness?.mode === "fresh_isolated_workspace" ? "fresh_isolated_workspace" : "continue")}::jsonb),
+      '{taskRetry,continuation}', ${JSON.stringify(authorization)}::jsonb)`,
   }).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.id, input.taskRetryRequestId)));
   return continuation;
 }
