@@ -240,13 +240,15 @@ describeEmbeddedPostgres("stopped observed native workspace preservation", () =>
     expect(await f.db.select().from(executionWorkspaceSnapshots).where(eq(executionWorkspaceSnapshots.executionWorkspaceId, f.workspaceId))).toHaveLength(0);
   }
 
-  it.each(["reusable", "inflight_cleanup", "unknown_cleanup", "unknown_recovery", "manual_failure", "live_controller",
+  it.each(["reusable", "inflight_cleanup", "unknown_cleanup", "null_stop_intent", "null_export_intent", "unknown_recovery", "manual_failure", "live_controller",
     "copyback_owner", "accepted_unbound", "other_allocation_owner", "wrong_epoch", "invalid_reference", "stopped_mismatch", "operator_stop"] as const)(
     "keeps unsafe observed source held without Stop or Delete (%s)", async mode => {
       const f = await seedSource(`HELD-${mode}`);
       if (mode === "reusable") await changeLease(f, { leasePolicy: "reuse_by_environment" });
       if (mode === "inflight_cleanup") await changeLease(f, {}, { pendingCleanupInFlight: true });
       if (mode === "unknown_cleanup") await changeLease(f, {}, { pendingCleanupInFlight: "unknown" });
+      if (mode === "null_stop_intent") await changeLease(f, {}, { sandboxStopAndRetain: null });
+      if (mode === "null_export_intent") await changeLease(f, {}, { nativeWorkspaceExportResume: null });
       if (mode === "unknown_recovery") await f.db.update(nativeRunFinalizations).set({ recoveryState: "awaiting_evidence" }).where(eq(nativeRunFinalizations.runId, f.runId));
       if (mode === "manual_failure") await f.db.update(nativeRunFinalizations).set({ failureCode: "native_restart_recovery_blocked" }).where(eq(nativeRunFinalizations.runId, f.runId));
       if (mode === "live_controller") await f.db.update(nativeRunFinalizations).set({ leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
@@ -266,7 +268,10 @@ describeEmbeddedPostgres("stopped observed native workspace preservation", () =>
       try {
         await heartbeat.sweepOrphanedActiveLeases({ backoffMs: 0, companyId, leaseId: f.leaseId });
         await heartbeat.sweepPendingCleanupLeases({ backoffMs: 0 });
-        expect((await readSource(f)).run.resultJson?.workspaceRestoreRecovery).toBeUndefined();
+        const current = await readSource(f);
+        expect(current.run.resultJson?.workspaceRestoreRecovery).toBeUndefined();
+        if (mode === "null_stop_intent") expect(current.lease.metadata?.sandboxStopAndRetain).toBeNull();
+        if (mode === "null_export_intent") expect(current.lease.metadata?.nativeWorkspaceExportResume).toBeNull();
         await sourceHeld(f);
         expect(stopped.mock.calls.filter(([input]) => input.providerLeaseId === f.providerLeaseId)).toHaveLength(0);
         expect(destroyed.mock.calls.filter(([input]) => input.providerLeaseId === f.providerLeaseId)).toHaveLength(0); expect(backend).not.toHaveBeenCalled();

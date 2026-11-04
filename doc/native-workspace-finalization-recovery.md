@@ -27,7 +27,8 @@ for that historical state only when the exact allocation remains active,
 unreleased and ephemeral. It rechecks the task, run, coordinator generation,
 prepared workspace writer, complete allocation history, current controller and
 cleanup state under short row locks. A reusable allocation, accepted result,
-competing writer, manual recovery state or ambiguous cleanup stays held.
+competing writer, manual recovery state or ambiguous cleanup stays held. The
+presence of a Stop-only marker remains a hold even when its value is invalid.
 
 The transaction pins the existing StopAndRetain intent before provider I/O. The
 ordinary cleanup owner stops only the recorded allocation and rechecks all its

@@ -7,7 +7,7 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notificati
 import { recordRequiredWorkspaceRestoreFailure } from "../legacy-execution-recovery.js";
 import { notifyNativeEnvironmentSettlement } from "../native-environment-settlement-notifications.js";
 import { hasRemoteTerminationReceipt } from "../remote-execution-termination.js";
-import { hasConfirmedSandboxStopAndRetain } from "../sandbox-stop-and-retain.js";
+import { hasConfirmedSandboxStopAndRetain, hasStopOnlyCleanup } from "../sandbox-stop-and-retain.js";
 import { hasRequiredWorkspaceRecovery } from "../workspace-restore-recovery-state.js";
 import { nativeSha256 } from "./canonical.js";
 import { NATIVE_ADOPTED_RUNNER_AUTHENTICATION_TIMEOUT, NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "./native-runner-ownership.js";
@@ -167,10 +167,10 @@ export async function pinFailedObservedWorkspace(db: Db, companyId: string, runI
       return Boolean(fence?.state === "stop_pending" && fenceMatches(fence, source, existing?.evidence));
     }
     const active = lease.leasePolicy === "ephemeral" && lease.status === "active" && lease.releasedAt === null && lease.cleanupStatus === null
-      && lease.metadata?.sandboxStopAndRetain == null && lease.metadata?.sandboxStopAndRetainReceipt == null
+      && !hasStopOnlyCleanup(lease) && lease.metadata?.sandboxStopAndRetainReceipt == null
       && lease.metadata?.remoteExecutionTermination == null && lease.metadata?.pendingCleanupAttemptId == null
       && (lease.metadata?.pendingCleanupLeaseExpiresAtMs == null || lease.metadata.pendingCleanupLeaseExpiresAtMs === 0)
-      && lease.metadata?.nativeWorkspaceExportResume == null && lease.metadata?.workspaceRecoveryCleanup == null;
+      && lease.metadata?.workspaceRecoveryCleanup == null;
     if (!active) return false;
     await notifyNativeEnvironmentSettlement(tx, { companyId, runId, issueId: task.id });
     const retained = await recordRequiredWorkspaceRestoreFailure(tx, run, { workspaceRestoreFailure: "restore_failed" }, lease);
