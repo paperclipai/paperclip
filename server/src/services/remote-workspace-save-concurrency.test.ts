@@ -23,6 +23,11 @@ import {
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
 
 const exec = promisify(execFile);
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>(ready => { resolve = ready; });
+  return { promise, resolve };
+}
 
 describe("remote workspace save parent lock order", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -112,7 +117,7 @@ describe("remote workspace save parent lock order", () => {
           when (new.heartbeat_run_id = '${f.runId}'::uuid and new.phase = 'remote_workspace_snapshot') execute function save_order_gate()`
       : `create trigger save_order_gate before update on execution_workspace_snapshots for each row
           when (new.source_run_id = '${f.runId}'::uuid and new.status = 'committed' and old.status = 'uploaded') execute function save_order_gate()`));
-    const ready = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const ready = deferred(), release = deferred();
     const barrier = db.transaction(async tx => {
       await tx.execute(sql`select pg_advisory_xact_lock(${barrierKey})`);
       ready.resolve(); await release.promise;
@@ -183,7 +188,7 @@ describe("remote workspace save parent lock order", () => {
     if (foreignCompany) await db.insert(companies).values({ id: companyId, name: "Other owner", issuePrefix: `S${companyId.slice(0, 6)}` });
     const [otherIssue] = await db.insert(issues).values({ companyId, title: "Other task", status: "blocked" }).returning();
     const saveDb = createDb(database.connectionString, { maxConnections: 1, applicationName: "save-order-binding" });
-    const ready = Promise.withResolvers<void>(), release = Promise.withResolvers<void>();
+    const ready = deferred(), release = deferred();
     const barrier = db.transaction(async tx => {
       await tx.select({ id: issues.id }).from(issues).where(eq(issues.id, f.issueId)).for("update");
       ready.resolve(); await release.promise;
