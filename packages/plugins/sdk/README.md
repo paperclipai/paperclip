@@ -52,7 +52,7 @@ The SDK is stable enough for local development and first-party examples, but the
 
 If you are authoring a plugin for others to deploy, treat npm-packaged installation as the supported path and treat repo-local example installs as a development convenience.
 
-## Worker quick start
+## Runner ingress failures
 
 Environment providers can throw `PluginEnvironmentRunnerIngressError` from
 `onEnvironmentRunnerIngressEndpoint` with a validated SDK HTTP status and one
@@ -63,6 +63,8 @@ validates it with `readEnvironmentRunnerIngressFailure`. Do not derive a status
 from error text. Unknown and configuration failures keep their normal errors.
 The envelope alone grants no retry, accounting or cleanup authority; native
 execution also requires its complete, current controller checkpoint proof.
+
+## Worker quick start
 
 ```ts
 import { definePlugin, runWorker } from "@paperclipai/plugin-sdk";
