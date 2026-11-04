@@ -1748,3 +1748,22 @@ the ordinary instance settings API. Seed inserts preserve an existing winner;
 replacements lock the row and reject stale revisions. Database/transaction
 handles permit atomic migration receipts. Connection URLs, API keys and unknown
 fields are excluded. See [field ownership and startup order](cloud-runtime-configuration.md).
+
+### Bound secret resolution reads
+
+Each bound secret access reads the secret, its consumer binding, and the requested
+version in one fresh query. Missing binding and version rows still pass through
+the ordered authority checks and failure audit. References resolve in order, so a
+rotation or revocation during one provider call is visible to the next reference.
+Successful accesses retain their individual access audit and `lastResolvedAt` update.
+
+The synthetic local PostgreSQL benchmark exercises the chat credential resolver
+with four encrypted references, checks returned values and audits, and compares
+query counts plus alternating uninstrumented Node CPU and wall samples:
+
+```sh
+pnpm --filter @paperclipai/server exec tsx scripts/benchmark-chat-credentials.ts --baseline-ref=410b0e27015495ab8951768b5b0b94727de33785
+```
+
+Use `--count-only` to omit timing samples. This benchmark does not establish hosted
+latency or database CPU savings.

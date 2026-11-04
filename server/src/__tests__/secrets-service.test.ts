@@ -2488,6 +2488,56 @@ describeEmbeddedPostgres("secretService", () => {
     });
   });
 
+  it("observes rotation and revocation between bound references and keeps partial access audits", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const env: Record<string, { type: "secret_ref"; secretId: string; version: "latest" }> = {};
+    const secrets = [];
+    for (const key of ["FIRST", "ROTATED", "REVOKED", "UNREACHED"]) {
+      const secret = await svc.create(companyId, { name: key, provider: "local_encrypted", value: `old-${key}` });
+      secrets.push(secret);
+      env[key] = { type: "secret_ref", secretId: secret.id, version: "latest" };
+    }
+    const context = { consumerType: "tool_connection" as const, consumerId: randomUUID(), actorType: "system" as const };
+    await svc.syncEnvBindingsForTarget(companyId, { targetType: context.consumerType, targetId: context.consumerId }, env);
+    const originalResolve = localEncryptedProvider.resolveVersion.bind(localEncryptedProvider);
+    const resolve = vi.spyOn(localEncryptedProvider, "resolveVersion").mockImplementationOnce(async input => {
+      // The first provider access is still in progress. Later references must
+      // observe changes committed here, rather than an earlier batch snapshot.
+      await svc.rotate(secrets[1]!.id, { value: "new-ROTATED" });
+      await db.update(companySecretVersions).set({ revokedAt: new Date() })
+        .where(eq(companySecretVersions.secretId, secrets[2]!.id));
+      return originalResolve(input);
+    });
+    await expect(svc.resolveEnvBindings(companyId, env, context)).rejects.toMatchObject({ details: { code: "version_inactive" } });
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(resolve.mock.calls[1]![0].context?.version).toBe(2);
+    const events = await db.select().from(secretAccessEvents).where(eq(secretAccessEvents.companyId, companyId));
+    expect(events.map(event => [event.secretId, event.outcome, event.version, event.errorCode])).toEqual(expect.arrayContaining([
+      [secrets[0]!.id, "success", 1, null],
+      [secrets[1]!.id, "success", 2, null],
+      [secrets[2]!.id, "failure", 1, "version_inactive"],
+    ]));
+    expect(events).toHaveLength(3);
+    expect((await svc.getById(secrets[3]!.id))?.lastResolvedAt).toBeNull();
+  });
+
+  it("checks a missing bound reference before a missing version and preserves low-trust binding restrictions", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, { name: "BOUND", provider: "local_encrypted", value: "protected" });
+    const context = { consumerType: "tool_connection" as const, consumerId: randomUUID(), configPath: "credentials.botToken" };
+    await expect(svc.resolveSecretValue(companyId, secret.id, 999, context)).rejects.toMatchObject({ details: { code: "binding_missing" } });
+    await svc.createBinding({ companyId, secretId: secret.id, targetType: context.consumerType,
+      targetId: context.consumerId, configPath: context.configPath });
+    await expect(svc.resolveSecretValue(companyId, secret.id, "latest", { ...context, allowedBindingIds: [] }))
+      .rejects.toMatchObject({ details: { code: "binding_not_allowed" } });
+    await expect(svc.resolveSecretValue(companyId, secret.id, 999, context)).rejects.toMatchObject({ details: { code: "version_missing" } });
+    await expect(svc.resolveSecretValue(companyId, secret.id, "latest", context)).resolves.toBe("protected");
+    await db.delete(companySecretBindings).where(eq(companySecretBindings.secretId, secret.id));
+    await expect(svc.resolveSecretValue(companyId, secret.id, "latest", context)).rejects.toMatchObject({ details: { code: "binding_missing" } });
+  });
+
   it("records stable redacted failure codes for routine env secret resolution", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);
