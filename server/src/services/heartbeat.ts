@@ -4288,6 +4288,7 @@ export function heartbeatService(
         createNativeBatch: heartbeatQueue.createNativeStatusWakeBatch,
         schedulingSuppressed: async () => (await getSchedulingSuppression(true)).suppressed,
       }, () => canRun() && readTaskDrain(new Date()) === null),
+    readIdleWatchdogSchedule: taskWatchdogs.readIdleSchedule,
     registerIssueStateRecoveryWork: (coordinator: Parameters<typeof registerIssueRecoveryWork>[1], canRun: () => boolean) =>
       registerIssueRecoveryWork(db, coordinator, {
         stranded: scope => reconcileStrandedAssignedIssues({ ...scope, skipExternalConversationSettlement: true, skipRelatedRecovery: true }),

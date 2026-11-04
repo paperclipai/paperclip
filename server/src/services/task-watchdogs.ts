@@ -1,3 +1,5 @@
+import type { DeadlineReconciliationSnapshot } from "./deadline-reconciliation.js";
+import { idleDeadlineRowLimit, type IdleDeadlineSnapshot } from "./idle-deadline-types.js";
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
 import { createHash } from "node:crypto";
@@ -900,8 +902,8 @@ export function upsertIssueWatchdogForIssue(
 export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) {
   const issuesSvc = issueService(db);
 
-  async function loadWatchdogSubtreeIssues(companyId: string, watchedIssueId: string) {
-    const rows = await db.execute(sql`
+  async function loadWatchdogSubtreeIssues(companyId: string, watchedIssueId: string, reader: Pick<Db, "select" | "execute"> = db) {
+    const rows = await reader.execute(sql`
       WITH RECURSIVE watched_issues AS (
         SELECT
           id,
@@ -974,8 +976,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     return { issues: issueRows, incomplete: issueRows.some((row) => row.subtreeIncomplete) };
   }
 
-  async function collectClassifierInput(companyId: string, watchdog: IssueWatchdogRow) {
-    const subtree = await loadWatchdogSubtreeIssues(companyId, watchdog.issueId);
+  async function collectClassifierInput(companyId: string, watchdog: IssueWatchdogRow, reader: Pick<Db, "select" | "execute"> = db, at = new Date()) {
+    const subtree = await loadWatchdogSubtreeIssues(companyId, watchdog.issueId, reader);
     const issueRows = subtree.issues;
     const subtreeIssueIds = issueRows.map((issue) => issue.id);
     if (subtreeIssueIds.length === 0 || subtree.incomplete) {
@@ -988,7 +990,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         blockers: [],
         pendingInteractions: [],
         pendingApprovals: [],
-        evaluatedAt: new Date(),
+        evaluatedAt: at,
         firstRunGraceMs: TASK_WATCHDOG_FIRST_RUN_GRACE_MS,
         completedRunIssueIds: [],
       } satisfies TaskWatchdogClassifierInput;
@@ -1005,7 +1007,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       documentActivityRows,
       workProductActivityRows,
     ] = await Promise.all([
-      db
+      reader
         .select({
           companyId: heartbeatRuns.companyId,
           agentId: heartbeatRuns.agentId,
@@ -1021,7 +1023,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             inArray(sql`${heartbeatRuns.contextSnapshot}->>'taskId'`, subtreeIssueIds),
           ),
         )),
-      db
+      reader
         .select({
           companyId: issues.companyId,
           agentId: heartbeatRuns.agentId,
@@ -1036,7 +1038,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           visibleIssueCondition(),
           inArray(heartbeatRuns.status, [...TASK_WATCHDOG_LIVE_RUN_STATUSES]),
         )),
-      db
+      reader
         .select({
           companyId: agentWakeupRequests.companyId,
           agentId: agentWakeupRequests.agentId,
@@ -1054,7 +1056,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             inArray(sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId'`, subtreeIssueIds),
           ),
         )),
-      db
+      reader
         .select({
           companyId: issueRelations.companyId,
           blockerIssueId: issueRelations.issueId,
@@ -1066,7 +1068,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           eq(issueRelations.type, "blocks"),
           inArray(issueRelations.relatedIssueId, subtreeIssueIds),
         )),
-      db
+      reader
         .select({
           companyId: issueThreadInteractions.companyId,
           issueId: issueThreadInteractions.issueId,
@@ -1080,7 +1082,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issueThreadInteractions.issueId, subtreeIssueIds),
           eq(issueThreadInteractions.status, "pending"),
         )),
-      db
+      reader
         .select({
           companyId: issueApprovals.companyId,
           issueId: issueApprovals.issueId,
@@ -1094,7 +1096,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issueApprovals.issueId, subtreeIssueIds),
           inArray(approvals.status, ["pending", "revision_requested"]),
         )),
-      db
+      reader
         .select({
           issueId: issueComments.issueId,
           latestAt: sql<Date | null>`MAX(${issueComments.updatedAt})`,
@@ -1106,7 +1108,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           isNull(issueComments.deletedAt),
         ))
         .groupBy(issueComments.issueId),
-      db
+      reader
         .select({
           issueId: issueDocuments.issueId,
           latestAt: sql<Date | null>`MAX(${issueDocuments.updatedAt})`,
@@ -1117,7 +1119,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
           inArray(issueDocuments.issueId, subtreeIssueIds),
         ))
         .groupBy(issueDocuments.issueId),
-      db
+      reader
         .select({
           issueId: issueWorkProducts.issueId,
           latestAt: sql<Date | null>`MAX(${issueWorkProducts.updatedAt})`,
@@ -1133,7 +1135,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
     const latestDocumentByIssueId = new Map(documentActivityRows.map((row) => [row.issueId, row.latestAt]));
     const latestWorkProductByIssueId = new Map(workProductActivityRows.map((row) => [row.issueId, row.latestAt]));
 
-    const evaluatedAt = new Date();
+    const evaluatedAt = at;
     const evaluatedAtMs = evaluatedAt.getTime();
     // Only the issues created within the first-run grace window can be racing
     // their own assignment run; scope the (potentially expensive) terminal-run
@@ -1145,7 +1147,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
         return createdAtMs != null && evaluatedAtMs - createdAtMs < TASK_WATCHDOG_FIRST_RUN_GRACE_MS;
       })
       .map((row) => row.id);
-    const completedRunIssueIds = await collectCompletedRunIssueIds(companyId, freshIssueIds);
+    const completedRunIssueIds = await collectCompletedRunIssueIds(companyId, freshIssueIds, reader);
 
     return {
       watchdog: {
@@ -1182,11 +1184,11 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   // Returns the subset of `issueIds` that already have at least one run in a
   // terminal status. Such issues have demonstrably executed, so a stopped
   // subtree is genuine and must not be masked by the pending-first-run guard.
-  async function collectCompletedRunIssueIds(companyId: string, issueIds: string[]) {
+  async function collectCompletedRunIssueIds(companyId: string, issueIds: string[], reader: Pick<Db, "select" | "execute"> = db) {
     if (issueIds.length === 0) return [];
     const candidates = new Set(issueIds);
     const [contextRuns, executionRuns] = await Promise.all([
-      db
+      reader
         .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
         .from(heartbeatRuns)
         .where(and(
@@ -1197,7 +1199,7 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
             inArray(sql`${heartbeatRuns.contextSnapshot}->>'taskId'`, issueIds),
           ),
         )),
-      db
+      reader
         .select({ issueId: issues.id })
         .from(issues)
         .innerJoin(heartbeatRuns, eq(issues.executionRunId, heartbeatRuns.id))
@@ -1726,6 +1728,42 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
   }
 
   return {
+    // Reuse this owner's classifier against the owned repeatable-read snapshot.
+    readIdleSchedule: async (tx: Pick<Db, "select" | "execute">, now: number,
+      owner: () => DeadlineReconciliationSnapshot, checkBudget: () => void = () => {}): Promise<IdleDeadlineSnapshot> => {
+      const before = owner();
+      const state: unknown[] = [before];
+      const blocked = (): IdleDeadlineSnapshot => ({ blocked: true, state, deadlines: [] });
+      if (!before.reconciled) return blocked();
+      const rows = await tx.select().from(issueWatchdogs).orderBy(asc(issueWatchdogs.id)).limit(idleDeadlineRowLimit + 1);
+      state.push(rows);
+      if (rows.length > idleDeadlineRowLimit) return blocked();
+      const deadlines: number[] = [];
+      let count = 0;
+      for (const row of rows) {
+        checkBudget();
+        if (row.status === "disabled") continue;
+        if (row.status !== "active") return blocked();
+        const input = await collectClassifierInput(row.companyId, row, tx, new Date(now));
+        count += input.issues.length;
+        if (count > idleDeadlineRowLimit) return blocked();
+        const { evaluatedAt: _at, ...facts } = input;
+        state.push(facts);
+        const classification = classifyTaskWatchdogSubtree(input);
+        if (classification.state === "incomplete" || classification.state === "stopped") return blocked();
+        if (classification.state === "pending_first_run") {
+          for (const issue of input.issues) if (classification.pendingIssueIds.includes(issue.id)) {
+            const created = toEpochMs(issue.createdAt);
+            if (created === null || created + TASK_WATCHDOG_FIRST_RUN_GRACE_MS <= now) return blocked();
+            deadlines.push(created + TASK_WATCHDOG_FIRST_RUN_GRACE_MS);
+          }
+        }
+      }
+      const after = owner();
+      if (!after.reconciled || before.revision !== after.revision) return blocked();
+      return { blocked: false, state, deadlines };
+    },
+
     getActiveForIssue: async (companyId: string, issueId: string): Promise<IssueWatchdog | null> => {
       const row = await db
         .select()

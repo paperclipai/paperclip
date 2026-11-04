@@ -1,3 +1,8 @@
+import type { IdleDeadlineOwners } from "./services/idle-deadline-types.js";
+import { bindIdleDeadlineOwner } from "./services/idle-deadline-owner.js";
+import { readIdleRetrySchedule } from "./services/heartbeat/idle-retry-schedule.js";
+import { readIdleQuotaSchedule } from "./services/heartbeat/idle-quota-schedule.js";
+import { readIdleSkillSourceSchedule } from "./services/skill-source-idle-schedule.js";
 import { registerNativeCancellationDelivery } from "./services/native-runtime/native-cancellation-delivery.js";
 import { registerNativeRuntimeResponseDelivery } from "./services/native-runtime/native-runtime-response-delivery.js";
 import { attentionRetentionService, registerAttentionRetentionWork } from "./services/attention-retention.js";
@@ -932,7 +937,9 @@ async function startServerWithDatabaseTeardown(
   if (cloudQualification && !cloudQualification.configurationPackagesEligible) {
     logger.warn({ scope: cloudQualification.scope, blockerCodes: cloudQualification.blockers.map((blocker) => blocker.code) }, "Cloud configuration and package qualification has blockers");
   }
+  const idleDeadlineOwners: IdleDeadlineOwners = {};
   const app = await createApp(db as any, {
+    idleDeadlineOwners,
     prepareIdleDatabaseBackup: idleDatabaseBackupEnabled
       ? async () => (await runServerDatabaseBackup("idle")) !== null
       : undefined,
@@ -1263,8 +1270,11 @@ async function startServerWithDatabaseTeardown(
     heartbeat: environmentLeaseCleanupHeartbeat,
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db as any, interaction),
   });
-  externalObjects.registerRefreshWork(deliveryWork,
+  const externalObjectWork = externalObjects.registerRefreshWork(deliveryWork,
     () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby());
+  idleDeadlineOwners.externalObjects = bindIdleDeadlineOwner(externalObjectWork.reconciliationSnapshot,
+    (tx, now, owner) => externalObjects.readIdleSchedule(tx, now, owner),
+    () => ({ coverage: { kind: "external_objects" } }));
   if (config.nativeHarnessBackupExpirationEnabled) {
     nativeHarnessBackupExpiration.registerCheckpointExpiration(deliveryWork);
     const backupExpirationWork = registerNativeHarnessBackupExpirationWork(deliveryWork, db as any, {
@@ -1334,6 +1344,8 @@ async function startServerWithDatabaseTeardown(
   const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
   server.on("close", accountingWorker.stop);
   skillSourceSync.start(deliveryWork);
+  idleDeadlineOwners.skills = bindIdleDeadlineOwner(skillSourceSync.reconciliationSnapshot, readIdleSkillSourceSchedule,
+    () => ({ coverage: { kind: "skill_sources" } }));
   skillPackageWork(db).start(deliveryWork);
   const runtimeAssetCleanup = runtimeAssetRetention(db).start(deliveryWork);
   server.on("close", () => { void runtimeAssetCleanup.stop(); });
@@ -1670,12 +1682,22 @@ async function startServerWithDatabaseTeardown(
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerActiveRunSilenceWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
-    if (config.heartbeatSchedulerEnabled) await heartbeat.registerIssueStateRecoveryWork(deliveryWork,
-      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      const work = heartbeat.registerIssueStateRecoveryWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
+      idleDeadlineOwners.watchdogs = bindIdleDeadlineOwner(work.watchdogs.reconciliationSnapshot,
+        heartbeat.readIdleWatchdogSchedule, () => ({ coverage: { kind: "watchdogs" } }));
+      await work.ready;
+    }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerDeferredReceiptWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
-    if (config.heartbeatSchedulerEnabled) await heartbeat.registerRunDispatchWork(deliveryWork,
-      () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready;
+    if (config.heartbeatSchedulerEnabled) {
+      const work = heartbeat.registerRunDispatchWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
+      idleDeadlineOwners.retries = bindIdleDeadlineOwner(work.retries.reconciliationSnapshot, readIdleRetrySchedule,
+        snapshot => ({ coverage: { kind: "scheduled_retries", runIds: snapshot.runIds, wakeIds: snapshot.wakeIds }, issueWaits: snapshot.issueWaits }));
+      await work.ready;
+    }
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerScheduledRetryCancellationWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
 
@@ -1791,8 +1813,14 @@ async function startServerWithDatabaseTeardown(
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
       await step("join_request_retention", () => registerJoinRequestRetentionWork(deliveryWork, joinRequestRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
-      await step("status_card_evaluation", () => registerStatusCardEvaluationWork(deliveryWork, statusCardEvaluation,
-        () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
+      await step("status_card_evaluation", () => {
+        const work = registerStatusCardEvaluationWork(deliveryWork, statusCardEvaluation,
+          () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped);
+        idleDeadlineOwners.statusCards = bindIdleDeadlineOwner(work.reconciliationSnapshot,
+          (tx, now, owner) => statusCardEvaluation.readIdleSchedule(tx, now, owner),
+          () => ({ coverage: { kind: "status_cards" } }));
+        return work.ready;
+      });
       await step("attention_retention", () => registerAttentionRetentionWork(deliveryWork, attentionRetentionService(db as any),
         () => !isIdleTaskDrainActive() && !isWarmStandby() && !heartbeatSchedulerStopped).ready);
     };
@@ -1821,6 +1849,8 @@ async function startServerWithDatabaseTeardown(
           if (result.triggered > 0) logger.info({ ...result }, "routine scheduler tick enqueued runs");
         }),
       });
+      idleDeadlineOwners.quota = bindIdleDeadlineOwner(scheduled.monitors.reconciliationSnapshot, readIdleQuotaSchedule,
+        snapshot => ({ issueWaits: snapshot.issueWaits }));
       trackHeartbeatSchedulerWork(Promise.all([scheduled.timers.ready, scheduled.monitors.ready, scheduled.routines.ready]));
     };
     trackHeartbeatSchedulerWork(runStartupHousekeeping().then(() => {

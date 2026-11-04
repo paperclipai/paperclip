@@ -12,8 +12,30 @@ export interface DomainScheduledWake {
 }
 export interface IdleDeadlineSnapshot {
   blocked: boolean;
-    state: unknown;
+  state: unknown;
   deadlines: number[];
 }
 export const idleDeadlineRowLimit = 10_000;
 export const isFutureIdleDeadline = (at: number, now: number) => Number.isFinite(at) && at > now;
+
+/** Process-local owner bindings are supplied by index, never reconstructed by
+ * a GET route. Replacement checks remain domain-owned and are not wire data. */
+export interface IdleDeadlineOwnerInspection {
+  snapshot: IdleDeadlineSnapshot;
+  current(): boolean;
+  coverage?: IdleDeadlineCoverage;
+  issueWaits?: readonly IdleIssueWait[];
+}
+export type IdleDeadlineOwnerReader = (
+  tx: Pick<import("@paperclipai/db").Db, "select" | "execute">,
+  now: number,
+  checkBudget: () => void,
+) => Promise<IdleDeadlineOwnerInspection>;
+export type IdleDeadlineOwners = Partial<Record<"statusCards" | "externalObjects" | "skills" | "retries" | "watchdogs" | "quota", IdleDeadlineOwnerReader>>;
+
+export type IdleIssueWait =
+  | { kind: "scheduled_retry"; issueId: string; runId: string }
+  | { kind: "provider_quota"; issueId: string; sourceRunId: string; targetAgentId: string; reviewer: boolean };
+export type IdleDeadlineCoverage =
+  | { kind: "status_cards" | "external_objects" | "skill_sources" | "watchdogs" }
+  | { kind: "scheduled_retries"; runIds: string[]; wakeIds: string[] };

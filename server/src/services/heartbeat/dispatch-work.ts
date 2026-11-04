@@ -51,6 +51,7 @@ export function registerRunDispatchWork(
     next: async () => null,
   });
   return {
+    retries,
     ready: Promise.all([retries.ready, queue.ready]),
     wake() { scopes.add("*"); retries.wake(); queue.wake(); },
     async stop() { await Promise.all([retries.stop(), queue.stop()]); },

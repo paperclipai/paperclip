@@ -4,7 +4,7 @@ import { getTableName } from "drizzle-orm";
 import { readIdleAgentTimerSchedule } from "./heartbeat/idle-timer-schedule.js";
 import { createHeartbeatTimerPolicy } from "./heartbeat/timer-policy.js";
 import { describe, expect, it } from "vitest";
-import { composeIdleDeadlineProof, createIdleDeadlineInspectionBudget, deadlineWorkReplacement, readIdleDeadlineProof,
+import { composeIdleDeadlineProof, createIdleDeadlineInspectionBudget, deadlineOwnerWorkReplacement, deadlineWorkReplacement, readIdleDeadlineProof,
   IdleDeadlineInspectionBudgetExceeded, type IdleDeadlineProofOptions } from "./idle-deadline-proof.js";
 import type { VerifiedIdleCapabilities } from "./idle-incoming-wake-capability.js";
 import { projectIdlePluginJobSchedule, type IdlePluginJobRow } from "./plugin-job-idle-schedule.js";
@@ -215,4 +215,28 @@ it("does not turn unrelated GitHub grant shapes into continuity authority", () =
   expect(projectIdleGitHubGrantContinuity([agent], now).connectionIds).toEqual(["connection"]);
   const orphan = github(); orphan.connection = null;
   expect(projectIdleGitHubGrantContinuity([orphan], now).blocked).toBe(true);
+});
+
+it("binds owner deadlines and revisions while retaining unregistered work checks", () => {
+  let current = true;
+  const inspection = { snapshot: snapshot({ revision: "registered:1" }, [now + 700_000]), current: () => current };
+  const first = composeIdleDeadlineProof(hold, { ...options, owners: { recovery: inspection } }, fixtures());
+  expect(first.blocked).toBe(false);
+  expect(first.owners?.recovery).toBe(inspection);
+  expect(deadlineWorkReplacement("heartbeat_runs")).toBeUndefined();
+  current = false;
+  expect(composeIdleDeadlineProof(hold, { ...options, owners: { recovery: inspection } }, fixtures())).toEqual({ blocked: true });
+  current = true;
+  expect(composeIdleDeadlineProof(hold, { ...options, owners: { recovery: {
+    ...inspection, snapshot: { ...inspection.snapshot, blocked: true },
+  } } }, fixtures())).toEqual({ blocked: true });
+});
+
+it("closed status coverage cannot replace unrelated execution or auth checks", () => {
+  const proof = { blocked: false, owners: { statusCards: {
+    snapshot: snapshot(), current: () => true, coverage: { kind: "status_cards" as const },
+  } } };
+  expect(deadlineOwnerWorkReplacement(proof, "status_cards")).toBeDefined();
+  for (const reason of ["heartbeat_runs", "agent_api_keys", "issues", "external_objects"])
+    expect(deadlineOwnerWorkReplacement(proof, reason)).toBeUndefined();
 });
