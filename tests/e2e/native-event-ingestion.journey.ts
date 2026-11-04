@@ -7,6 +7,8 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { json } from "./agent-chat.shared";
+import { h5Enabled, H5_MODE, H5_PROTOCOL, H5_LIMITS, H5_WORKLOAD_SHA256, ORIGINAL_BUDGETS,
+  observeStreaming, originalTerminal } from "./fixtures/native-ingestion-h5.mjs";
 
 type SeenMarker = { markerCode: string; index: number; visibleMs: number };
 type Emission = { nonce: string; markerCode: string; index: number; intendedMs: number; emittedMs: number; receivedAtMs: number };
@@ -23,6 +25,7 @@ type SetupActivation = { index: number; issueId: string; token: string; waveInde
 type SetupWave = { index: number; indices: number[]; startedAtMs: number; settledAtMs?: number;
   statuses?: Array<"fulfilled" | "rejected"> };
 const smoke = process.env.PAPERCLIP_INGESTION_SMOKE === "1";
+const h5 = h5Enabled(process.env.PAPERCLIP_INGESTION_OBSERVATION_MODE);
 const transport = process.env.PAPERCLIP_INGESTION_TRANSPORT ?? "sandbox-remote-with-local-stop";
 const providerReadinessMs = 300_000;
 const setupActivationConcurrency = 2;
@@ -150,6 +153,7 @@ const processAbsent = (pid: number) => {
 };
 
 test("native ingestion reaches the shipped UI promptly and survives reload", async ({ page, request }, info) => {
+  const bodyStartedAtMs = Date.now();
   const pending = new Map<string, Map<string, ServerResponse>>();
   const clocks = new Map<string, ClockCase>();
   let markerCounter = 0;
@@ -271,10 +275,13 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
   const browserRecording = { trace: captureMode(info.project.use.trace), video: captureMode(info.project.use.video),
     screencast: captureMode(info.project.use.trace) !== "off" || captureMode(info.project.use.video) !== "off" };
   const report: Record<string, unknown> = {
-    protocolVersion: "v4-remote-streaming-original-local-stop-clock-stream", transport,
+    protocolVersion: h5 ? H5_PROTOCOL : "v4-remote-streaming-original-local-stop-clock-stream", transport,
+    ...(h5 ? { observationMode: H5_MODE, workloadSha256: H5_WORKLOAD_SHA256, observationLimits: H5_LIMITS,
+      observationComplete: false, bodyStartedAtMs, actualPlaywrightTimeoutMs: info.timeout,
+      originalInvocationBudgetAssessment: "Requires independent owning Playwright observed total duration; conservative original900 assessment, not exact timeout expiration" } : {}),
     transportPolicy: { streaming: "sandbox-remote", operatorStop: "local",
       realCloudStop: "Separate required qualification; fake-plugin void receipts grant no remote Stop authority" },
-    resourceBudgets: { providerReadinessMs, fullInvocationMs: info.timeout, streamingMs: 120_000,
+    resourceBudgets: h5 ? ORIGINAL_BUDGETS : { providerReadinessMs, fullInvocationMs: info.timeout, streamingMs: 120_000,
       terminalDrainageMs: 180_000, stopAcknowledgementMs: 30_000, remoteLeaseCleanupMs: 30_000 },
     admissionProtocol: "two-at-a-time-provider-and-clock-readiness-before-common-epoch",
     setupActivationConcurrency,
@@ -307,7 +314,8 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
   report.fixtureSha256 = createHash("sha256").update(await readFile(path.resolve(import.meta.dirname, "fixtures/in-feed-codex.mjs"))).digest("hex");
   const protocolFiles = ["native-event-ingestion.journey.ts", "playwright-native-ingestion.config.ts", "fixtures/in-feed-codex.mjs",
     "fixtures/native-ingestion-bin/codex", "fixtures/composer-stop-codex-loader.mjs", "fixtures/native-ingestion-bootstrap.mjs",
-    "fixtures/native-ingestion-remote-server.mjs", "fixtures/native-ingestion-protocol-qualification.mjs"];
+    "fixtures/native-ingestion-remote-server.mjs", "fixtures/native-ingestion-protocol-qualification.mjs",
+    ...(h5 ? ["fixtures/native-ingestion-h5.mjs"] : [])];
   const protocolSources = await Promise.all(protocolFiles.map(async file => ({ file, bytes: await readFile(path.resolve(import.meta.dirname, file)) })));
   report.measurementSha256 = createHash("sha256").update(Buffer.concat(protocolSources.map(source => source.bytes))).digest("hex");
   const harnessRoot = path.resolve(import.meta.dirname, "../..");
@@ -529,7 +537,12 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       active.participants = participants;
       for (const response of pending.get(key)!.values()) response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify({ epochMs }));
       const observed = () => page.evaluate(code => (window as unknown as { nativeIngestionVisible: SeenMarker[] }).nativeIngestionVisible.filter(item => item.markerCode === code), markerCode);
-      await expect.poll(async () => (await observed()).length, { timeout: 120_000 }).toBeGreaterThanOrEqual(stop ? 3 : workload.events);
+      let streamingObservation: Awaited<ReturnType<typeof observeStreaming>> | undefined;
+      if (h5) streamingObservation = await observeStreaming({ readCount: async () => (await observed()).length,
+        target: stop ? 3 : workload.events,
+        poll: (read: () => Promise<number>, timeout: number, target: number) => expect.poll(read, { timeout }).toBeGreaterThanOrEqual(target),
+        onOutcome: (value: unknown) => { active.streamingObservation = value; } });
+      else await expect.poll(async () => (await observed()).length, { timeout: 120_000 }).toBeGreaterThanOrEqual(stop ? 3 : workload.events);
       let stopRequestedAt: number | undefined;
       if (stop) {
         const button = page.getByRole("button", { name: "Stop", exact: true });
@@ -539,11 +552,25 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       }
       active.phase = "terminal-drainage";
       let runs: any[] = [];
-      await expect.poll(async () => {
+      const terminalStartedAtMs = h5 ? Date.now() : undefined;
+      const terminalObservation = h5 ? { startedAtMs: terminalStartedAtMs!, deadlineMs: terminalStartedAtMs! + H5_LIMITS.terminalDrainageMs,
+        assessedAtMs: 0, lastObservedAtMs: 0, observedRuns: 0, terminalRuns: 0,
+        lastStatuses: [] as Array<{ runId: string; status: string }>, complete: false, censored: false } : undefined;
+      if (h5) active.terminalObservation = terminalObservation;
+      try { await expect.poll(async () => {
         runs = (await json(await request.get(`/api/companies/${company.id}/heartbeat-runs?limit=1000`))).filter((run: { issueId?: string; nativeIssueId?: string; contextSnapshot?: { issueId?: string; taskId?: string } }) => issueIds.includes(run.issueId ?? run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId));
+        if (terminalObservation) Object.assign(terminalObservation, { lastObservedAtMs: Date.now(), observedRuns: runs.length,
+          terminalRuns: runs.filter(run => ["succeeded", "cancelled", "failed"].includes(run.status)).length,
+          lastStatuses: runs.map(run => ({ runId: run.id, status: run.status })) });
         return runs.length === issueIds.length && runs.every(run => ["succeeded", "cancelled", "failed"].includes(run.status));
-      }, { timeout: 180_000 }).toBe(true);
+      }, { timeout: 180_000 }).toBe(true); }
+      catch (error) {
+        if (terminalObservation) { terminalObservation.assessedAtMs = Date.now(); terminalObservation.censored = true;
+          active.terminalOriginal = originalTerminal(streamingObservation!, terminalObservation); }
+        throw error;
+      }
       const settledAt = Date.now(), seenMarkers = await observed();
+      if (terminalObservation) { terminalObservation.assessedAtMs = settledAt; terminalObservation.complete = true; }
       active.settledAt = settledAt; active.seenMarkers = seenMarkers;
       const details = [];
       for (const run of runs) details.push(await json(await request.get(`/api/heartbeat-runs/${run.id}`)));
@@ -618,6 +645,11 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       const interChunkGaps = { paintCount: paintTimes.length, count, medianMs, maxMs };
       const clockEvidence: Array<Record<string, unknown>> = [];
       const result = { ...workload, stop, transport: caseTransport, environmentId: caseEnvironment.id,
+        ...(h5 ? { h5: { streaming: streamingObservation, terminalObservation,
+          terminalOriginal: originalTerminal(streamingObservation!, terminalObservation!),
+          visibleCountByOriginalPaintDeadline: seenMarkers.filter(marker => marker.visibleMs <= streamingObservation!.original.deadlineMs).length,
+          deadlineCountScope: "Original poll last count/time retained separately; paint-deadline count derives from unchanged2RAF timestamps" } } : {}),
+        ...(h5 ? { terminalStatuses: runs.map(run => ({ runId: run.id, runtimeMode: run.runtimeMode, status: run.status })) } : {}),
         setupActivationConcurrency, setupReadinessStartedAtMs, readinessDeadlineMs, allReadyObservedAtMs, activations, activationWaves,
         nonce, markerCode, epochMs, settledAtMs: settledAt, stopRequestedAtMs: stopRequestedAt,
         stopAcknowledgedAtMs: acknowledgedAt, preludeProof, controllerAuthority, clockEvidence, interChunkGaps,
@@ -648,16 +680,19 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         const code = state.streams.get(token)!.markerCode;
         expect(token).toBeTruthy();
         const deltas: Array<{ index: number; identity: string }> = [];
-        let afterSeq = 0;
+        let afterSeq = 0, resultAcceptedEvents = 0;
         while (true) {
           const rows = await json(await request.get(`/api/heartbeat-runs/${run.id}/events?afterSeq=${afterSeq}&limit=1000`));
           if (!rows.length) break;
           for (const row of rows) {
             const event = row.payload?.prpEvent;
+            if (h5 && (row.eventType === "run.result.accepted" || event?.eventType === "run.result.accepted")) resultAcceptedEvents++;
             if (event?.eventType !== "item.delta") continue;
             for (const match of String(event.payload?.text ?? "").matchAll(new RegExp(`\\[${code}([a-z0-9]{1,3})\\]`, "g"))) {
               const index = Number.parseInt(match[1], 36);
               expect(event.payload.text, "Every durable normalized delta retains its complete compact payload").toBe(`[${code}${index.toString(36)}] `);
+              if (h5) { expect(event.runId).toBe(run.id); expect(event.sourceInstanceId).toBeTruthy();
+                expect(event.sourceEventId).toBeTruthy(); expect(Number.isSafeInteger(event.sourceSeq) && event.sourceSeq > 0).toBe(true); }
               deltas.push({ index, identity: `${event.sourceInstanceId}:${event.sourceEventId}:${event.sourceSeq}` });
             }
           }
@@ -674,11 +709,21 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         expect(new Set(deltas.map(item => item.identity)).size).toBe(deltas.length);
         expect(deltas.map(item => item.index)).toEqual(Array.from({ length: stop ? deltas.length : workload.events }, (_, index) => index));
         if (stop) for (const item of visible) expect(deltas.some(delta => delta.index === item.index)).toBe(true);
-        durable.push({ runId: run.id, token, markerCode: code, individualDeltas: deltas.length, uniqueSourceIdentities: deltas.length, matchedSourceClocks: deltas.length, ordered: true });
+        if (h5) expect(resultAcceptedEvents).toBe(stop ? 0 : 1);
+        durable.push({ runId: run.id, token, markerCode: code, individualDeltas: deltas.length, uniqueSourceIdentities: deltas.length,
+          matchedSourceClocks: deltas.length, ordered: true, ...(h5 ? { resultAcceptedEvents } : {}) });
       }
       await expect.poll(() => [...state.streams.values()].every(stream => stream.ended || stream.aborted), { timeout: 30_000 }).toBe(true);
       expect(state.errors).toEqual([]);
       expect([...state.streams.values()].every(stream => !stream.error)).toBe(true);
+      if (h5) {
+        const verifiedAtMs = Date.now();
+        Object.assign(result.h5!, { independentDrain: { verifiedAtMs, elapsedFromEpochMs: verifiedAtMs - epochMs,
+          deltaCount: durable.reduce((count, row) => count + row.individualDeltas, 0),
+          resultAcceptedCount: durable.reduce((count, row) => count + (row.resultAcceptedEvents ?? 0), 0),
+          clockStreamsClosed: true,
+          scope: "Independent completion upper bound after existing reload/API/clock/lease checks; includes verification and screenshot overhead, not exact last-commit time" } });
+      }
       clockEvidence.push(...[...state.streams.values()].map(stream => ({ nonce: stream.nonce, markerCode: stream.markerCode,
         launcher: stream.launcher, providerPid: stream.providerPid,
         hello: stream.hello, ended: stream.ended, aborted: stream.aborted, error: stream.error, partialBytes: stream.partialBytes,
@@ -691,6 +736,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
     for (const workload of cases) await perform(workload);
     await perform({ name: "operator-stop", runs: 1, events: 512, intervalMs: 100, prelude: 0 }, true);
     report.complete = true;
+    if (h5) report.observationComplete = true;
   } catch (error) {
     report.primaryFailure = { name: error instanceof Error ? error.name : "UnknownError",
       message: error instanceof Error ? error.message : String(error), stack: error instanceof Error ? error.stack : undefined };
@@ -728,7 +774,9 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
     await attemptCleanup("restore-experimental-settings", async () => json(await request.patch("/api/instance/settings/experimental", {
       data: { enableNativeRunner: original.enableNativeRunner, enableWorktreeRunExecution: original.enableWorktreeRunExecution } })));
     report.cleanup = { errors: cleanupErrors, complete: cleanupErrors.length === 0 };
-    if (cleanupErrors.length) { report.complete = false; report.performanceAcceptanceEligible = false; }
+    if (cleanupErrors.length) { report.complete = false; report.performanceAcceptanceEligible = false;
+      if (h5) report.observationComplete = false; }
+    if (h5) report.bodyFinishedAtMs = Date.now();
     await info.attach("native-ingestion-evidence", { body: JSON.stringify(report, null, 2), contentType: "application/json" });
     if (!report.primaryFailure) expect(cleanupErrors, "API cleanup must succeed before accepting an invocation").toEqual([]);
   }

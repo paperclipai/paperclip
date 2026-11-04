@@ -3,9 +3,11 @@ import os from "node:os";
 import path from "node:path";
 import { defineConfig, type ReporterDescription } from "@playwright/test";
 import base from "./playwright.config";
+import { h5Enabled, H5_LIMITS } from "./fixtures/native-ingestion-h5.mjs";
 
 const server = base.webServer as Exclude<typeof base.webServer, unknown[]>;
 const evidence = process.env.PAPERCLIP_INGESTION_EVIDENCE_DIR;
+const h5 = h5Enabled(process.env.PAPERCLIP_INGESTION_OBSERVATION_MODE);
 const browserRecording = Boolean(process.env.PAPERCLIP_NATIVE_INGESTION_DIAGNOSTIC_DIR) || process.env.PAPERCLIP_INGESTION_BROWSER_CAPTURE === "1";
 process.env.PAPERCLIP_INGESTION_BROWSER_RECORDING = browserRecording ? "on" : "off";
 const appRoot = path.resolve(process.env.PAPERCLIP_INGESTION_APP_ROOT ?? path.resolve(import.meta.dirname, "../.."));
@@ -33,7 +35,7 @@ const providerHome = fs.mkdtempSync(path.join(os.tmpdir(), "ingestion-provider-"
 export default defineConfig({
   ...base,
   testMatch: "native-event-ingestion.journey.ts",
-  timeout: 900_000,
+  timeout: h5 ? H5_LIMITS.fullInvocationMs : 900_000,
   ...(evidence ? { outputDir: path.join(evidence, "test-results"),
     reporter: [["list"], ["json", { outputFile: path.join(evidence, "playwright.json") }]] as ReporterDescription[] } : {}),
   use: { ...base.use, trace: browserRecording ? "on" : "off", video: "off", actionTimeout: 20_000 },

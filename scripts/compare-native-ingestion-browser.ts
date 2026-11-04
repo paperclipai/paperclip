@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { noiseExceedingPairedWins } from "./native-ingestion-performance-gates.mjs";
+import { H5_MODE, H5_PROTOCOL, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS, ORIGINAL_BUDGETS, assessH5Arm, requireH5Candidate } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
+import { validateArmInventory } from "./native-ingestion-h5-inventory.mjs";
 
 // Each manifest entry points at native-ingestion-evidence JSON attachments
 // from two isolated compiled-app runs. Run the variants in alternating order;
@@ -11,12 +13,87 @@ const arg = (name: string) => process.argv.find(value => value.startsWith(`--${n
 const manifestPath = arg("pairs");
 assert.ok(manifestPath, "Pass --pairs=<JSON manifest of baselineFile/candidateFile pairs>");
 const phase = arg("phase") ?? "compare", expectation = arg("expect") ?? "improvement";
+const h5 = arg("observation-mode") === H5_MODE;
+assert.ok(arg("observation-mode") === undefined || h5, "Unknown observation mode");
+const candidatePolicy = arg("candidate-policy");
 assert.ok(["aa", "compare"].includes(phase));
 assert.ok(["improvement", "nonregression"].includes(expectation));
-const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Array<{ baselineFile: string; candidateFile: string }>;
+const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Array<{ baselineFile: string; candidateFile: string;
+  baselinePlaywrightFile?: string; candidatePlaywrightFile?: string; baselineInventoryFile?: string; candidateInventoryFile?: string }>;
 assert.ok(manifest.length >= 5, "At least five actual paired application runs are required");
+if (h5) assert.equal(manifest.length, 5, "H5 requires exactly five prospectively registered pairs");
 const load = async (file: string) => JSON.parse(await readFile(path.resolve(path.dirname(manifestPath), file), "utf8"));
-const pairs = await Promise.all(manifest.map(async entry => ({ baseline: await load(entry.baselineFile), candidate: await load(entry.candidateFile) })));
+async function owningResult(reportPath: string, evidence?: any) {
+  const bytes = await readFile(reportPath);
+  const report = JSON.parse(bytes.toString("utf8")), tests: any[] = [];
+  assert.deepEqual(report.errors ?? [], [], "Owning Playwright report has a global error");
+  const visit = (value: any) => {
+    if (Array.isArray(value)) for (const child of value) visit(child);
+    else if (value && typeof value === "object") {
+      if (Array.isArray(value.results) && Object.hasOwn(value, "expectedStatus")) tests.push(value);
+      for (const [key, child] of Object.entries(value)) if (key !== "results") visit(child);
+    }
+  };
+  visit(report); assert.equal(tests.length, 1, "One complete owning test is required; no partial selection");
+  const test = tests[0]; assert.equal(test.results.length, 1, "No retry or omitted owning attempt");
+  assert.equal(test.expectedStatus, "passed");
+  const result = test.results[0], attachments = result.attachments.filter((item: any) => item.name === "native-ingestion-evidence");
+  assert.ok(result.error === undefined || result.error === null, "Owning Playwright attempt has an error");
+  assert.equal(attachments.length, 1, "Owning result must carry this exact evidence attachment");
+  const attachment = attachments[0];
+  const attached = attachment.body ? JSON.parse(Buffer.from(attachment.body, "base64").toString("utf8"))
+    : JSON.parse(await readFile(path.resolve(path.dirname(reportPath), attachment.path), "utf8"));
+  if (evidence) assert.deepEqual(attached, evidence, "Playwright result belongs to a different evidence arm");
+  return { evidence: attached, owner: { reportFile: reportPath, reportSha256: createHash("sha256").update(bytes).digest("hex"),
+    status: result.status, retry: result.retry, errors: result.errors, startedAt: result.startTime,
+    durationMs: result.duration, timeoutMs: test.timeout } };
+}
+async function loadArm(file: string, playwrightFile?: string, inventoryFile?: string) {
+  const evidence = await load(file);
+  if (!h5) return evidence;
+  assert.ok(playwrightFile, "H5 requires each arm's independent owning Playwright JSON report");
+  evidence.owningPlaywright = (await owningResult(path.resolve(path.dirname(manifestPath!), playwrightFile), evidence)).owner;
+  assert.ok(inventoryFile, "H5 requires each arm's exact full artifact inventory sidecar");
+  evidence.armInventory = await validateArmInventory(path.resolve(path.dirname(manifestPath!), inventoryFile),
+    { evidence, owningPlaywright: evidence.owningPlaywright });
+  return evidence;
+}
+const pairs = await Promise.all(manifest.map(async entry => ({ baseline: await loadArm(entry.baselineFile, entry.baselinePlaywrightFile, entry.baselineInventoryFile),
+  candidate: await loadArm(entry.candidateFile, entry.candidatePlaywrightFile, entry.candidateInventoryFile) })));
+const h5Assessments: any[] = [];
+if (h5) {
+  if (phase === "compare") {
+    assert.ok(["final-b2", "cursor-nonregression"].includes(candidatePolicy ?? ""), "H5 requires an explicit candidate SLA policy");
+    assert.equal(expectation, candidatePolicy === "cursor-nonregression" ? "nonregression" : "improvement");
+  }
+  for (const pair of pairs) {
+    assert.ok(Object.values(H5_BASELINE_REVISIONS).includes(pair.baseline.sourceRevision), "H5 baseline must use the prospectively frozen B0 or B1 revision");
+    const baselineVariant = pair.baseline.sourceRevision === H5_BASELINE_REVISIONS.B0 ? "B0" : "B1";
+    assert.equal(pair.baseline.armInventory.variant, baselineVariant, "Baseline inventory role differs from its frozen revision");
+    if (phase === "aa") assert.equal(pair.candidate.armInventory.variant, baselineVariant, "A/A must use the same baseline inventory role");
+    if (phase === "compare" && candidatePolicy === "cursor-nonregression") {
+      assert.equal(pair.baseline.sourceRevision, H5_BASELINE_REVISIONS.B0, "Cursor policy requires B0→B1");
+      assert.equal(pair.candidate.sourceRevision, H5_BASELINE_REVISIONS.B1, "Cursor policy requires B0→B1");
+      assert.equal(pair.candidate.armInventory.variant, "B1", "Cursor policy cannot stand in for final B2 acceptance");
+    } else if (phase === "compare") {
+      assert.equal(pair.candidate.armInventory.variant, "B2", "Final policy requires the qualified B2 inventory role");
+      assert.ok(!Object.values(H5_BASELINE_REVISIONS).includes(pair.candidate.sourceRevision), "Final B2 must differ from both frozen baselines");
+    }
+    const baseline = assessH5Arm(pair.baseline, pair.baseline.owningPlaywright);
+    const candidate = assessH5Arm(pair.candidate, pair.candidate.owningPlaywright);
+    // The only prospectively known baseline workload SLA miss is loaded streaming.
+    const allowed = new Set(["burst512:streaming120", "invocation:observed-total-duration900"]);
+    for (const miss of baseline.misses) assert.ok(allowed.has(miss), "Unknown baseline deadline failure needs diagnosis");
+    if (phase === "aa") for (const miss of candidate.misses) assert.ok(allowed.has(miss), "Unknown A/A deadline failure needs diagnosis");
+    let candidateSlaPolicyError;
+    if (phase === "compare") {
+      try { requireH5Candidate(candidatePolicy, baseline, candidate); }
+      catch (error) { candidateSlaPolicyError = error instanceof Error ? error.message : String(error); }
+    }
+    h5Assessments.push({ baseline, candidate, candidateSlaPolicyError, candidateSlaPolicyPassed: !candidateSlaPolicyError,
+      owningPlaywright: { baseline: pair.baseline.owningPlaywright, candidate: pair.candidate.owningPlaywright } });
+  }
+}
 const workloads = [
   { name: "paced", runs: 1, events: 128, intervalMs: 25, prelude: 0, stop: false },
   { name: "burst16", runs: 1, events: 16, intervalMs: 0, prelude: 0, stop: false },
@@ -32,7 +109,8 @@ const sha256 = (value: unknown) => typeof value === "string" && /^[a-f0-9]{64}$/
 const uuid = (value: unknown) => typeof value === "string" && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(value);
 for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) {
   const report = pair[arm];
-  assert.equal(report.protocolVersion, "v4-remote-streaming-original-local-stop-clock-stream", "Fresh browser acceptance requires the qualified v4 mixed clock protocol");
+  assert.equal(report.protocolVersion, h5 ? H5_PROTOCOL : "v4-remote-streaming-original-local-stop-clock-stream",
+    h5 ? "Fresh browser acceptance requires its qualified H5 observation protocol" : "Fresh browser acceptance requires the qualified v4 mixed clock protocol");
   assert.equal(report.transport, "sandbox-remote-with-local-stop", "V4 requires remote streaming and the original local Stop transport");
   assert.deepEqual(report.transportPolicy, { streaming: "sandbox-remote", operatorStop: "local",
     realCloudStop: "Separate required qualification; fake-plugin void receipts grant no remote Stop authority" }, "Missing explicit transport and real cloud Stop qualification policy");
@@ -97,6 +175,8 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
   assert.equal(report.sourceRevision, first[arm].sourceRevision, "Every sample must cover the same revision per arm");
   assert.equal(report.serverEntrySha256, first[arm].serverEntrySha256, "Compiled artifact changed between samples");
   assert.deepEqual(report.compiledHotPathHashes, first[arm].compiledHotPathHashes, "Compiled ingestion/runtime changed between samples");
+  if (h5) for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision"])
+    assert.equal(report.armInventory[field], first[arm].armInventory[field], "Full qualified artifact inventory changed between samples");
   assert.equal(report.measurementSha256, first.baseline.measurementSha256, "Fixture/observer protocol changed between runs");
   if (phase === "aa") assert.equal(report.sourceRevision, first.baseline.sourceRevision, "A/A must use one source revision");
   for (const name of names) {
@@ -300,6 +380,56 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
     for (const field of ["runs", "events", "intervalMs", "prelude", "stop"]) assert.equal(result[field], reference[field], `Workload changed: ${name}.${field}`);
   }
 }
+let originalH4cConfirmation: Record<string, any> | undefined;
+if (h5 && phase === "compare" && candidatePolicy === "final-b2") {
+  originalH4cConfirmation = { required: true, passed: false, reason: "Later unchanged original H4c full functional proof is pending" };
+  if (arg("original-h4c-proof")) {
+    try {
+      assert.ok(arg("original-h4c-inventory"), "Original H4c proof requires its full artifact inventory sidecar");
+      const { evidence: proof, owner } = await owningResult(path.resolve(arg("original-h4c-proof")!));
+      assert.equal(owner.status, "passed"); assert.equal(owner.retry, 0); assert.deepEqual(owner.errors, []);
+      assert.equal(owner.timeoutMs, ORIGINAL_BUDGETS.fullInvocationMs);
+      assert.ok(owner.durationMs > 0 && owner.durationMs < ORIGINAL_BUDGETS.fullInvocationMs);
+      assert.equal(proof.protocolVersion, "v4-remote-streaming-original-local-stop-clock-stream");
+      assert.equal(proof.observationMode, undefined, "Confirmation must use unchanged original H4c defaults");
+      assert.equal(proof.harnessProvenance?.sourceRevision, "7d7e7a88d562a95a1d407b76474763b666c181f5");
+      assert.equal(proof.harnessProvenance.sourceStatus, "");
+      assert.equal(proof.measurementSha256, "5db4129bbdc1fa38775121aff5d0e68a8a11762519e41cfdf36eacd90ba7256b");
+      assert.deepEqual(proof.resourceBudgets, ORIGINAL_BUDGETS);
+      assert.equal(proof.complete, true); assert.equal(proof.qualificationOnly, false); assert.equal(proof.diagnosticOnly, false);
+      assert.equal(proof.performanceAcceptanceEligible, true); assert.equal(proof.serverArtifact, "compiled");
+      assert.equal(proof.cleanup?.complete, true); assert.deepEqual(proof.cleanup.errors, []);
+      assert.deepEqual(proof.browserRecording, first.candidate.browserRecording);
+      assert.equal(proof.sourceRevision, first.candidate.sourceRevision); assert.equal(proof.compiledBuildRevision, first.candidate.compiledBuildRevision);
+      assert.equal(proof.serverEntrySha256, first.candidate.serverEntrySha256);
+      assert.deepEqual(proof.compiledHotPathHashes, first.candidate.compiledHotPathHashes);
+      assert.equal(proof.transport, first.candidate.transport); assert.deepEqual(proof.transportPolicy, first.candidate.transportPolicy);
+      assert.deepEqual(proof.cases.map((item: any) => item.name), names, "Original confirmation must include all six workloads");
+      for (const fixed of workloads) {
+        const item = proof.cases.find((item: any) => item.name === fixed.name);
+        for (const field of ["runs", "events", "intervalMs", "prelude", "stop"] as const) assert.equal(item[field], fixed[field]);
+        assert.equal(item.persistedAfterReload, true); assert.equal(item.durable.length, fixed.runs);
+        assert.equal(item.matchedVisibleClocks, item.visible.length);
+        assert.ok(item.visible.length >= (fixed.stop ? 3 : fixed.events));
+        assert.equal(item.runIds.length, fixed.runs); assert.equal(new Set(item.runIds).size, fixed.runs);
+        for (const row of item.durable) {
+          assert.equal(row.ordered, true); assert.equal(row.uniqueSourceIdentities, row.individualDeltas);
+          assert.equal(row.matchedSourceClocks, row.individualDeltas);
+          if (!fixed.stop) assert.equal(row.individualDeltas, fixed.events);
+        }
+      }
+      const latestCandidateEnd = Math.max(...pairs.map(pair => Date.parse(pair.candidate.owningPlaywright.startedAt) + pair.candidate.owningPlaywright.durationMs));
+      assert.ok(Date.parse(owner.startedAt) > latestCandidateEnd, "Original confirmation must follow all candidate arms");
+      assert.ok(pairs.every(pair => proof.companyId !== pair.baseline.companyId && proof.companyId !== pair.candidate.companyId), "Original confirmation needs a fresh disposable company/database");
+      const inventory = await validateArmInventory(path.resolve(arg("original-h4c-inventory")!), { evidence: proof, owningPlaywright: owner });
+      for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision"] as const)
+        assert.equal(inventory[field], first.candidate.armInventory[field], "Original confirmation used a different full qualified artifact inventory");
+      originalH4cConfirmation = { required: true, passed: true, owner, inventory, sourceRevision: proof.sourceRevision };
+    } catch (error) {
+      originalH4cConfirmation.reason = error instanceof Error ? error.message : String(error);
+    }
+  }
+}
 const metric = (item: any, key: string): number => key.split(".").reduce((value, part) => value[part], item);
 const measurements = names.flatMap(name => {
   const observed = first.baseline.cases.find((item: any) => item.name === name);
@@ -334,11 +464,21 @@ const result: Record<string, any> = {
   comparatorSha256: createHash("sha256").update(await readFile(new URL(import.meta.url))).digest("hex"),
   manifestSha256: createHash("sha256").update(await readFile(manifestPath)).digest("hex"), measurements,
   primaryLoadedWorkload: "burst512", complete: true,
+  ...(h5 ? { observationMode: H5_MODE, workloadSha256: H5_WORKLOAD_SHA256, candidatePolicy, h5Assessments,
+    artifactInventories: { baseline: first.baseline.armInventory, candidate: first.candidate.armInventory }, originalH4cConfirmation,
+    originalProtocolAcceptance: "Baseline SLA misses are retained; H5 complete observation is not H4c PASS",
+    finalUnchangedH4cFunctionalPassRequired: candidatePolicy === "final-b2" } : {}),
 };
 if (phase === "compare") {
   assert.ok(arg("noise-report"), "Comparison requires its frozen A/A --noise-report");
   const noise = JSON.parse(await readFile(arg("noise-report")!, "utf8"));
   assert.equal(noise.phase, "aa"); assert.equal(noise.complete, true);
+  if (h5) {
+    assert.equal(noise.observationMode, H5_MODE); assert.equal(noise.workloadSha256, H5_WORKLOAD_SHA256);
+    assert.equal(noise.h5Assessments?.length, 5, "Fresh complete H5 A/A outcomes are required");
+    for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision"])
+      assert.equal(noise.artifactInventories?.baseline?.[field], result.artifactInventories.baseline[field], "Baseline inventory changed after H5 A/A");
+  }
   assert.equal(noise.protocolVersion, result.protocolVersion, "Noise report uses a different mixed protocol");
   assert.equal(noise.transport, result.transport, "Noise report uses a different transport");
   assert.deepEqual(noise.transportPolicy, result.transportPolicy, "Transport policy changed after A/A calibration");
@@ -362,10 +502,17 @@ if (phase === "compare") {
       noiseExceedingPairedWins: paired.noiseExceedingPairedWins, requiredPairedWins: paired.requiredPairedWins,
       passed: improvementRequired ? improvement : noRegression };
   });
-  result.acceptancePassed = result.gates.every((entry: any) => entry.passed);
+  result.performancePassed = result.gates.every((entry: any) => entry.passed)
+    && (!h5 || h5Assessments.every(entry => entry.candidateSlaPolicyPassed));
+  result.acceptancePassed = result.performancePassed && (!originalH4cConfirmation || originalH4cConfirmation.passed);
 }
 if (arg("output")) await writeFile(arg("output")!, JSON.stringify(result, null, 2));
 console.log(JSON.stringify(result, null, 2));
+if (process.argv.includes("--require-performance")) {
+  assert.equal(h5, true, "H5 performance-only gating is explicit; original H4c remains unchanged");
+  assert.equal(phase, "compare");
+  assert.equal(result.performancePassed, true, "H5 performance/SLA gates failed; retain results and diagnose");
+}
 if (process.argv.includes("--require-acceptance")) {
   assert.equal(phase, "compare", "A/A calibrates noise; it is not performance acceptance");
   assert.equal(result.acceptancePassed, true, "Browser performance acceptance failed; retain results and diagnose");
