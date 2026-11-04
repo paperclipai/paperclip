@@ -3,7 +3,7 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { plugins } from "@paperclipai/db";
 import { readTaskPanelActivations } from "../plugin-task-panels.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { renderPaperclipWakePrompt } from "@paperclipai/adapter-utils/server-utils";
 import { ONBOARDING_FIRST_TASK_ORIGIN_KIND } from "@paperclipai/shared";
@@ -64,7 +64,7 @@ import { assertCurrentWakeCommentsRead } from "./current-wake-comments.js";
 import { buildExecutionContinuation } from "../execution-continuation.js";
 import { childReviewOutcomes } from "./child-review-outcomes.js";
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
-import { materializeRuntimeQuestionFallback, nativeGovernedWaitResult } from "./native-session-executor.js";
+import { createGovernedWaitEventObservation, materializeRuntimeQuestionFallback, nativeGovernedWaitResult } from "./native-session-executor.js";
 import {
   subscribeAllCompanyLiveEvents,
   subscribeCompanyLiveEvents,
@@ -314,7 +314,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     }
   });
 
-  it.each(["settles", "checkpoint timeout"] as const)("retains a durably recorded governed terminal while its postcommit observer is pending: %s", async mode => {
+  it.each(["settles", "checkpoint timeout", "unscoped terminal"] as const)("retains a durably recorded governed terminal while its postcommit observer is pending: %s", async mode => {
     const identity = { ...CONTROL_PLANE_CONFORMANCE_OPEN.identity, issueId: randomUUID(), runId: randomUUID(), sessionId: randomUUID() };
     const runnerId = randomUUID();
     const fixtureContractId = randomUUID();
@@ -337,10 +337,20 @@ describe("PaperclipControlPlanePort conformance", () => {
     const recorded = new Promise<void>(resolve => { terminalRecorded = resolve; });
     let observerFinished!: () => void;
     const observerDone = new Promise<void>(resolve => { observerFinished = resolve; });
+    const observation = createGovernedWaitEventObservation(async () => {
+      const [pending] = await db.select().from(issueThreadInteractions).where(and(
+        eq(issueThreadInteractions.id, interaction.id), eq(issueThreadInteractions.companyId, identity.companyId),
+        eq(issueThreadInteractions.sourceRunId, identity.runId), eq(issueThreadInteractions.status, "pending"),
+      ));
+      return pending?.status === "pending" && pending.sourceRunId === identity.runId
+        ? nativeGovernedWaitResult({ interaction: pending, completionContract: contract }) : null;
+    });
+    let triggerConsumed = false;
     const port = new PaperclipControlPlanePort(db, { ...identity,
       completionContractId: fixtureContractId, completionContractSha256: contractSha,
       sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "park-control" }, {
       async onCommittedEvent(event) {
+        await observation.observe(event, event.eventType === "item.completed");
         if (event.eventType === "turn.interrupted") { terminalWasRecorded = true; terminalRecorded(); try { await observerGate; } finally { observerFinished(); } }
       },
     });
@@ -349,7 +359,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       title: interaction.title ?? null, summary: interaction.summary ?? null }, completionContract: contract });
     const event = (sourceSeq: number, eventType: PrpEvent["eventType"], payload: Record<string, unknown>): PrpEvent => ({
       schema: "paperclip.prp.event.v1", sourceEventId: `${runnerId}:${sourceSeq}`, sourceInstanceId: runnerId, sourceSeq,
-      sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId, turnId: "park-turn",
+      sourceKind: "runner", runId: identity.runId, normalizedSessionId: identity.sessionId, ...(mode === "unscoped terminal" ? {} : { turnId: "park-turn" }),
       eventType, schemaVersion: 1, priority: 0, emittedAt: new Date().toISOString(), payload,
     });
     let starts = 0, terminalEmitted = false;
@@ -376,30 +386,41 @@ describe("PaperclipControlPlanePort conformance", () => {
         session: { normalizedSessionId: identity.sessionId, driverKind: "codex_app_server", protocolVersion: 1 },
         provider: { kind: "codex", model: null }, interactionResponses: [], credentialBindings: [],
         completionContract: { id: fixtureContractId, sha256: contractSha, schemaVersion: "paperclip.completion-contract.v1", contract } }),
-      resolveGovernedWait: ({ event }: { event: PrpEvent }) => event.eventType === "item.completed" ? yielded : null,
+      resolveGovernedWait: ({ event }: { event: PrpEvent }) => {
+        const result = observation.consume(event);
+        triggerConsumed ||= result !== null;
+        return result;
+      },
     };
+    if (mode === "unscoped terminal") releaseObserver();
     const execution = executeNativeSession(options);
     const outcome = execution.then(value => ({ value }), error => ({ error }));
     try {
       await Promise.race([recorded, outcome.then(result => { if ("error" in result) throw result.error; throw new Error("run settled before recording terminal"); })]);
       const rows = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, identity.runId));
       expect(rows.some(row => row.eventType === "turn.interrupted")).toBe(true);
-      await new Promise(resolve => setTimeout(resolve, 700));
-      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
-      releaseObserver();
-      await observerDone;
-      if (mode === "settles") expect(await outcome).not.toHaveProperty("error");
-      else {
-        expect(await outcome).toMatchObject({ error: { message: "native session checkpoint timed out after 100ms" } });
+      expect(triggerConsumed).toBe(true);
+      if (mode !== "unscoped terminal") {
+        await new Promise(resolve => setTimeout(resolve, 700));
         expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
-        const restored = new PaperclipControlPlanePort(db, { ...identity, completionContractId: fixtureContractId,
-          completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "park-control" });
-        const checkpoint = await restored.loadSessionCheckpoint();
-        expect(checkpoint?.governedWait?.sourceEvent).toMatchObject({ sourceSeq: 1, turnId: "park-turn" });
-        const session = await backend.openSession({ identity });
-        const recovering = { ...backend, async recoverSession() { return { recovered: true as const, session }; } };
-        await expect(executeNativeSession({ ...options, checkpointTimeoutMs: 1_000, controlPlane: restored,
-          backend: recovering, persistedSession: checkpoint })).resolves.toMatchObject({ result: yielded });
+        releaseObserver();
+        await observerDone;
+        if (mode === "settles") expect(await outcome).not.toHaveProperty("error");
+        else {
+          expect(await outcome).toMatchObject({ error: { message: "native session checkpoint timed out after 100ms" } });
+          expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toEqual([]);
+          const restored = new PaperclipControlPlanePort(db, { ...identity, completionContractId: fixtureContractId,
+            completionContractSha256: contractSha, sourceInstanceId: runnerId, controlPlaneSourceInstanceId: "park-control" });
+          const checkpoint = await restored.loadSessionCheckpoint();
+          expect(checkpoint?.governedWait?.sourceEvent).toMatchObject({ sourceSeq: 1, turnId: "park-turn" });
+          const session = await backend.openSession({ identity });
+          const recovering = { ...backend, async recoverSession() { return { recovered: true as const, session }; } };
+          await expect(executeNativeSession({ ...options, checkpointTimeoutMs: 1_000, controlPlane: restored,
+            backend: recovering, persistedSession: checkpoint })).resolves.toMatchObject({ result: yielded });
+        }
+      } else {
+        expect(await outcome).not.toHaveProperty("error");
+        expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, identity.runId))).toHaveLength(1);
       }
       expect(starts).toBe(1);
       expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interaction.id)))[0]).toMatchObject({
@@ -553,7 +574,7 @@ describe("PaperclipControlPlanePort conformance", () => {
     } finally { release(); await duplicate; }
   });
 
-  it.each(["company", "agent", "run", "session", "source", "failed", "unproven", "nonterminal"] as const)("does not grant deferred terminal authority to %s evidence", async fault => {
+  it.each(["company", "agent", "run", "session", "source", "failed", "unproven", "nonterminal", "unscoped"] as const)("does not grant deferred terminal authority to %s evidence", async fault => {
     const f = await terminalObserverFixture();
     const event = { ...f.event,
       ...(fault === "run" ? { runId: randomUUID() } : {}),
@@ -562,6 +583,7 @@ describe("PaperclipControlPlanePort conformance", () => {
       ...(fault === "failed" ? { eventType: "turn.failed" as const } : {}),
       ...(fault === "unproven" ? { payload: { providerTerminalObserved: false } } : {}),
       ...(fault === "nonterminal" ? { eventType: "item.completed" as const } : {}),
+      ...(fault === "unscoped" ? { turnId: undefined } : {}),
     };
     const port = fault === "company" || fault === "agent" ? new PaperclipControlPlanePort(db, { ...f.binding,
       ...(fault === "company" ? { companyId: randomUUID() } : { agentId: randomUUID() }) }) : f.port;
