@@ -295,6 +295,8 @@ Paperclip writes a `native.recovery.transition` event for native restart
 classifications and for graceful restart suspension. A blocked remote retry
 records a changed hold reason once; repeated visits with the same hold reason,
 an existing future deadline, or a live lease do not append another transition.
+Exhausting the automatic admission policy records its terminal disposition even
+when the underlying hold reason remains the same.
 This immutable run-log
 record lets operators reconstruct recovery decisions without exporting data to
 Paperclip Telemetry or OpenTelemetry.

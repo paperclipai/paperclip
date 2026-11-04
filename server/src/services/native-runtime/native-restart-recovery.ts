@@ -687,13 +687,6 @@ export async function claimNativeRestartRecoveries(input: {
         if (!updated.length) throw new Error("native_retry_deferral_claim_changed");
         return { kind: "blocked", runId: row.run.id, reason, retryAt, transitionUnchanged } as const;
       };
-      const resumptionAgent = needsResumptionAdmission
-        ? await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })
-        : null;
-      if (needsResumptionAdmission && !resumptionAgent) {
-        const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
-        if (deferred) return deferred;
-      }
       if (failedRemoteRetry) {
         const source = alias(heartbeatRuns, "native_retry_source");
         const [newer] = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
@@ -711,7 +704,14 @@ export async function claimNativeRestartRecoveries(input: {
           if (deferred) return deferred;
         }
       }
-      if (row.issueExecutionRunId !== row.run.id && !(stopCleanup && row.issueExecutionRunId === null) && !releasedRemoteRetry) {
+      const resumptionAgent = needsResumptionAdmission
+        ? await readNativeSessionResumptionAgent(tx as unknown as Db, { issue, run: row.run, coordinator: row.coordinator })
+        : null;
+      if (needsResumptionAdmission && !resumptionAgent && !admission.exhausted) {
+        const deferred = await deferRemoteRetry("native_retry_admission_ineligible", ["done", "cancelled"].includes(issue.status));
+        if (deferred) return deferred;
+      }
+      if (row.issueExecutionRunId !== row.run.id && !(stopCleanup && row.issueExecutionRunId === null) && !releasedRemoteRetry && !admission.exhausted) {
         return {
           kind: "blocked",
           runId: row.run.id,
