@@ -7,6 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { sanitizeAssetNamespace } from "@paperclipai/shared";
 import { ApiError } from "@/api/client";
 import { queryKeys } from "../lib/queryKeys";
+import { markCachedSession } from "../lib/cached-session";
+import { startPersistedQueryCache } from "../lib/persisted-query-cache";
 import { ProfileSettings } from "./ProfileSettings";
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -265,5 +267,47 @@ describe("ProfileSettings", () => {
     expect(container.querySelector('[data-query-view="error"]')).toBeNull();
 
     await act(async () => root.unmount());
+  });
+
+  it.each(["user-1", "user-2"])("waits for session verification before saving a restored profile (%s)", async (verifiedUser) => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity }, mutations: { retry: false } } });
+    queryClient.setQueryData(queryKeys.auth.session, {
+      session: { id: "session-1", userId: "user-1" },
+      user: { id: "user-1", name: "Jane Example", email: "jane@example.com", image: null },
+    });
+    const cache = startPersistedQueryCache(queryClient, { storage: null, buildId: "test", eventTarget: null });
+    markCachedSession(queryClient);
+    let complete!: (value: unknown) => void;
+    mockAuthApi.getSession.mockReturnValue(new Promise((resolve) => { complete = resolve; }));
+    const root = await renderPage(queryClient);
+    try {
+      expect(container.textContent).toContain("Jane Example");
+      await act(async () => {
+        container.querySelector("form")?.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      });
+      await flushReact();
+      expect(mockAuthApi.getSession).toHaveBeenCalled();
+      expect(mockAuthApi.updateProfile).not.toHaveBeenCalled();
+
+      await act(async () => {
+        complete({
+          session: { id: "session-2", userId: verifiedUser },
+          user: { id: verifiedUser, name: "Verified User", email: "verified@example.com", image: null },
+        });
+      });
+      await flushReact();
+      await flushReact();
+
+      if (verifiedUser === "user-1") {
+        expect(mockAuthApi.updateProfile).toHaveBeenCalledTimes(1);
+        expect(mockAuthApi.updateProfile).toHaveBeenCalledWith({ name: "Jane Example", image: null });
+      } else {
+        expect(mockAuthApi.updateProfile).not.toHaveBeenCalled();
+      }
+    } finally {
+      await act(async () => root.unmount());
+      cache.dispose();
+      queryClient.clear();
+    }
   });
 });
