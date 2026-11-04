@@ -100,6 +100,7 @@ export {
 } from "./vercel-connect.js";
 export { smokeLabService } from "./smoke-lab.js";
 export { backfillLegacyToolOAuthTokens } from "./tool-oauth-legacy-backfill.js";
+export { migrateLegacyProfileToolNameEntries } from "./tool-profile-migration.js";
 export { toolAccessPolicyService } from "./tool-access-policy.js";
 export { routineService } from "./routines.js";
 export { costService } from "./costs.js";

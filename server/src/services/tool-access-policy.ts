@@ -626,7 +626,7 @@ function profileEntryMatches(entry: typeof toolProfileEntries.$inferSelect, ctx:
   const selected = entry.selectorType === "application" ? entry.applicationId === ctx.applicationId
     : entry.selectorType === "connection" ? entry.connectionId === ctx.connectionId
     : entry.selectorType === "catalog_entry" ? entry.catalogEntryId === ctx.catalogEntryId
-    : entry.selectorType === "tool_name" ? entry.toolName === ctx.toolName
+    : entry.selectorType === "tool_name" ? entry.toolName === (ctx.upstreamToolName ?? ctx.toolName)
     : entry.selectorType === "risk_level" ? entry.riskLevel === ctx.riskLevel : false;
   if (!selected) return false;
   const conditions = isRecord(entry.conditions) ? entry.conditions as ToolPolicyConditions : null;

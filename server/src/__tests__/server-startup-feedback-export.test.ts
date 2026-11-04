@@ -462,6 +462,11 @@ vi.mock("../services/index.js", () => ({
     agentMembershipsInserted: 0,
     humanGrantsInserted: 0,
   })),
+  migrateLegacyProfileToolNameEntries: vi.fn(async () => ({
+    scannedEntries: 0,
+    migratedEntries: 0,
+    unresolvedEntries: 0,
+  })),
   attentionService: vi.fn(() => ({
     list: vi.fn(async () => ({ items: [], nextCursor: null })),
   })),
