@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { activityLog, agents, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -81,6 +81,54 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const read = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
+
+  it.each(["matching", "different-session", "absent"])("persists the migrated logical cwd only for the receipt's exact session: %s", async receipt => {
+    const sameSession = receipt === "matching";
+    const { input, run, agent, issue } = await fixture();
+    const sessionId = randomUUID(), operationId = randomUUID();
+    const logicalCwd = "/paperclip/legacy/task-workspace";
+    const marker = { schema: "paperclip.native-workspace-migration.v1", operationId };
+    const [workspace] = await db.insert(executionWorkspaces).values({
+      companyId: agent.companyId, sourceIssueId: issue.id, name: "Migrated workspace",
+      mode: "shared_workspace", strategyType: "project_primary", cwd: "/tmp/ephemeral/task-workspace",
+      providerType: "cloud_sandbox", metadata: receipt === "absent" ? {} : { nativeWorkspaceMigration: marker },
+    }).returning();
+    await db.insert(workspaceOperations).values({
+      id: operationId, companyId: agent.companyId, executionWorkspaceId: workspace!.id,
+      phase: "remote_workspace_migration", status: "succeeded", metadata: {
+        schema: "paperclip.remote-workspace-migration.v1", snapshotId: randomUUID(),
+        nativeSessionContinuity: { schema: marker.schema, remoteCwd: sandbox.remoteCwd, sessions: [{
+          sourceRunId: randomUUID(), agentId: agent.id, issueId: issue.id,
+          sessionId: sameSession ? sessionId : randomUUID(), logicalCwd,
+        }] },
+      },
+    });
+    input.workspace.persistedExecutionWorkspace = workspace!;
+    input.workspace.executionWorkspace.cwd = logicalCwd;
+    input.workspace.executionTarget = sandbox;
+    const prior = await selectHeartbeatRuntime(db, input);
+    if (!prior.selected || !prior.nativeExecution) throw new Error("Expected prior native selection");
+    const priorInput = { ...prior.nativeExecution, session: { ...prior.nativeExecution.session, normalizedSessionId: sessionId } };
+    const priorProfile = (await read(run.id)).runnerProfileJson;
+    await db.update(heartbeatRuns).set({ status: "succeeded", nativeSessionId: sessionId,
+      runnerProfileJson: { ...priorProfile, nativeExecutionInput: priorInput, sessionCheckpoint: {
+        backendKind: "runner", driverKind: "codex_app_server", sessionId: "retained-provider-thread",
+        providerSessionId: "retained-provider-thread", identity: { ...priorInput.binding, sessionId },
+      } },
+    }).where(eq(heartbeatRuns.id, run.id));
+    const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: agent.companyId, agentId: agent.id,
+      issueId: issue.id, scopeKind: "issue", status: "running", nativeSessionId: sessionId,
+      createdAt: new Date(run.createdAt.getTime() + 1000),
+    }).returning();
+    input.run = nextRun!;
+    input.workspace.executionWorkspace.cwd = workspace!.cwd!;
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected migrated native selection");
+    expect(selected.nativeExecution.session.normalizedSessionId).toBe(sessionId);
+    expect(selected.nativeExecution.workspace.cwd).toBe(sameSession ? logicalCwd : workspace!.cwd);
+    expect((await read(nextRun!.id)).runnerProfileJson?.nativeExecutionInput).toEqual(selected.nativeExecution);
+    expect((await read(nextRun!.id)).nativeSessionId).toBe(selected.nativeExecution.session.normalizedSessionId);
+  });
 
   it.each([false, true])("persists the Cursor provider API placement and completion authority without a Computer lease (ephemeral: %s)", async ephemeral => {
     vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", String(ephemeral));

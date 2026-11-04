@@ -109,3 +109,11 @@ their prior restrictive default. Claude at `b12ecd823e` passed both strict
 migration assertions, including the downloaded reference, but its full browser
 workflow failed on an unnecessary confirmation and incorrect booking text.
 That failed user-flow result remains recorded separately from preservation.
+
+Fresh Grok (`b05ba3728a`) and ACPX Codex (`24fabf1d81`) migration campaigns each
+passed all 21 checks, including real provider continuation and cleanup. Default
+regression coverage now exercises the actual runtime-selection database path
+with matching, mismatched, and absent migration receipts. An executor-level
+test restores real backup files into a created warm lease only for the exact
+migrated session, verifies the retained provider identity, and checks the new
+lease's backup stamp. Neither test replaces the migration decision helper.
