@@ -1768,6 +1768,28 @@ not grant retry authority or change the budget. When the budget is exhausted,
 the task is blocked and its recovery action states that provider startup failed
 before any provider work began.
 
+An ingress endpoint failure can use that same bounded retry only when the
+environment provider returns a structured HTTP 429 or 5xx failure and the
+complete, encrypted controller checkpoint proves that this exact run never
+issued a Runner credential. The proof requires the new persisted v2 state and
+its retained origin and credential history. Old or partial checkpoints, warm
+handoffs, prior credentials, delivery or provider progress do not qualify. The
+executor rechecks the checkpoint fingerprint and current execution claim under
+the checkpoint owner's lock. Stop or a changed claim prevents settlement.
+Authentication, permission and configuration failures do not gain retry authority
+from a zero-usage proof. A terminal failed run with that proof can settle its
+usage as zero through the existing accounting owner. This does not establish
+physical termination, release a workspace hold, or create a semantic result.
+
+The automatic next attempt can admit absent remote Runner state only after it
+rechecks that proof against both the encrypted checkpoint and its complete local
+projection under the exact current claim. The frozen execution envelope must
+still match. It validates raw local state before checkpoint projection can omit
+streaming events or normalize event policy. It keeps the original pending `run.prepare` and `session.open`
+command IDs. A proved unused Codex home can rematerialize its sealed skills for
+that attempt. Provider progress, issued credentials, legacy state, Stop and
+configuration changes retain the normal state-identity hold.
+
 A failed, unowned native sandbox retry can outlive an explicit Retry that already
 completed successfully. Startup recovery and ordinary retry admission retire that
 old retry only with the same company, task and agent, a linked completed successor,
