@@ -510,6 +510,59 @@ describe("automatic retained workspace recovery", () => {
     return f;
   }
 
+  it.each(["new message", "saved message", "Retry"] as const)(
+    "continues recovered preparation with an inherited session through %s", async entry => {
+    const f = await failedRemotePreparation();
+    await db.update(heartbeatRuns).set({ sessionIdBefore: randomUUID() }).where(eq(heartbeatRuns.id, f.runId));
+    const source = await run(f.runId), app = boardRecoveryApp(), heartbeat = heartbeatService(db);
+    if (entry !== "saved message") await recoverRetainedWorkspace(f.input);
+    let requestId: string | undefined, commentId: string | undefined;
+    if (entry === "Retry") {
+      const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+      requestId = receipt.requestId;
+      await heartbeat.resumeTaskRetry(f.companyId, requestId!);
+    } else {
+      const body = { body: "Continue from the saved work", reopen: true, clientRequestId: randomUUID() };
+      const comment = (await request(app).post(`/api/issues/${f.issueId}/comments`).send(body).expect(201)).body;
+      commentId = comment.id;
+      expect((await request(app).post(`/api/issues/${f.issueId}/comments`).send(body).expect(201)).body.id).toBe(commentId);
+      await expect.poll(async () => (await db.select().from(agentWakeupRequests).where(and(
+        eq(agentWakeupRequests.companyId, f.companyId),
+        sql`${agentWakeupRequests.payload}->>'commentId' = ${commentId}`))).length).toBe(1);
+      if (entry === "saved message") {
+        expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+          eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+        await recoverRetainedWorkspace(f.input);
+      }
+      await heartbeat.resumeRemoteStopComments(await run(f.runId));
+    }
+    const successors = () => db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")));
+    await expect.poll(async () => (await successors()).length).toBe(1);
+    const [successor] = await successors();
+    expect(successor.contextSnapshot).toMatchObject({ forceFreshSession: true, previousRunId: f.runId,
+      ...(commentId ? { wakeCommentIds: [commentId] } : { taskRetryRequestId: requestId }) });
+    await Promise.all([heartbeat.resumeRemoteStopComments(await run(f.runId)),
+      requestId ? heartbeat.resumeTaskRetry(f.companyId, requestId) : heartbeat.resumeExecutionWaitComments()]);
+    expect(await successors()).toHaveLength(1);
+    const queue = (await request(app).get(`/api/issues/${f.issueId}/queued-comments`).expect(200)).body;
+    expect(queue.executionWait ?? null).toBeNull();
+    if (commentId) expect(queue).toMatchObject({ state: "queued", entries: [{ comment: { id: commentId } }] });
+    else expect(queue.entries).toEqual([]);
+    expect((await request(app).get(`/api/issues/${f.issueId}`).expect(200)).body.interruption)
+      .toMatchObject({ state: "working", canRetry: false });
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+    const original = await run(f.runId);
+    expect(original).toMatchObject({ status: "failed", error: source.error, sessionIdBefore: source.sessionIdBefore });
+    expect(await hasVerifiedWorkspaceRepair(db, original)).toBe(true);
+    const remote = original.runnerProfileJson!.remoteWorkspace as { snapshotId: string };
+    const saved = await createSavedWorkspaceLoader(db)({ companyId: f.companyId, workspaceId: f.workspaceId,
+      snapshotId: remote.snapshotId });
+    try { expect(await readFile(path.join(saved.root, "saved.txt"), "utf8")).toBe("finished work\n"); }
+    finally { await saved.cleanup(); }
+  }, 30_000);
+
   it("admits one HTTP Retry after a failed native preparation has verified saved work", async () => {
     const f = await failedRemotePreparation();
     await recoverRetainedWorkspace(f.input);
@@ -764,7 +817,7 @@ describe("automatic retained workspace recovery", () => {
     } finally { releaseStop(); await coordinator.stop(); await worker.stop(); }
   }, 40_000);
 
-  it.each(["delayed_provider_event", "native_input", "session_checkpoint", "controller_recovery", "process", "coordinator",
+  it.each(["delayed_provider_event", "native_input", "session_checkpoint", "session_after", "controller_recovery", "process", "coordinator",
     "runtime_selected", "live_controller", "missing_error", "missing_measurement", "foreign_error", "unknown_result",
     "wrong_snapshot", "wrong_generation", "active_writer", "missing_stop", "foreign_stop", "additional_unstopped_lease",
     "operator_stop", "newer_input", "reassigned", "wrong_actor", "actor_permission_revoked",
@@ -773,6 +826,7 @@ describe("automatic retained workspace recovery", () => {
     "active_lease", "pending_cleanup", "cleanup_failed", "cleanup_unknown", "cleanup_inflight", "unreleased", "foreign_lease_issue", "local_provider_claim"] as const)(
     "holds a failed-preparation HTTP Retry when current proof changes: %s", async gate => {
       const f = await failedRemotePreparation();
+      await db.update(heartbeatRuns).set({ sessionIdBefore: randomUUID() }).where(eq(heartbeatRuns.id, f.runId));
       await recoverRetainedWorkspace(f.input);
       const source = await run(f.runId), heartbeat = heartbeatService(db);
       const actorId = gate === "actor_permission_revoked" ? randomUUID() : "local-board";
@@ -793,6 +847,7 @@ describe("automatic retained workspace recovery", () => {
           .where(eq(heartbeatRuns.id, f.runId));
       }
       if (gate === "process") await db.update(heartbeatRuns).set({ processPid: 1386 }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "session_after") await db.update(heartbeatRuns).set({ sessionIdAfter: randomUUID() }).where(eq(heartbeatRuns.id, f.runId));
       if (gate === "coordinator") {
         await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId }).where(eq(heartbeatRuns.id, f.runId));
         await db.insert(nativeRunFinalizations).values({ companyId: f.companyId,
@@ -947,6 +1002,7 @@ describe("automatic retained workspace recovery", () => {
       process.env.DATABASE_URL = connectionString; process.env.PAPERCLIP_SECRETS_MASTER_KEY = "63".repeat(32);
       await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true, enableIsolatedWorkspaces: true });
       const f = await failedRemotePreparation(mode === "invalid_published_root" ? "raw" : "published");
+      if (mode === "complete") await db.update(heartbeatRuns).set({ sessionIdBefore: randomUUID() }).where(eq(heartbeatRuns.id, f.runId));
       await recoverRetainedWorkspace(f.input);
       const source = await run(f.runId), nextDirectory = path.join(root, randomUUID(), "next");
       await mkdir(nextDirectory, { recursive: true });
@@ -1122,6 +1178,10 @@ describe("automatic retained workspace recovery", () => {
       expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, completed.id)))
         .toEqual([expect.objectContaining({ schemaStatus: "accepted" })]);
       expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("done");
+      const app = boardRecoveryApp();
+      expect((await request(app).get(`/api/issues/${f.issueId}/queued-comments`).expect(200)).body.entries).toEqual([]);
+      expect((await request(app).get(`/api/issues/${f.issueId}`).expect(200)).body.interruption)
+        .toMatchObject({ state: "resolved", canRetry: false });
       await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId); expect(startTurn).toHaveBeenCalledOnce();
       expect((await run(f.runId)).error).toBe(source.error);
     } finally {

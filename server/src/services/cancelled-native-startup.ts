@@ -60,7 +60,7 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
     runnerInstanceId: heartbeatRuns.runnerInstanceId, nativePhase: heartbeatRuns.nativePhase,
     driverKind: heartbeatRuns.driverKind, driverVersion: heartbeatRuns.driverVersion,
     completionContractId: heartbeatRuns.completionContractId, completionContractSha256: heartbeatRuns.completionContractSha256,
-    sessionIdBefore: heartbeatRuns.sessionIdBefore, externalRunId: heartbeatRuns.externalRunId,
+    externalRunId: heartbeatRuns.externalRunId,
     logStore: heartbeatRuns.logStore, logRef: heartbeatRuns.logRef, logBytes: heartbeatRuns.logBytes,
     logSha256: heartbeatRuns.logSha256, logCompressed: heartbeatRuns.logCompressed,
     stdoutExcerpt: heartbeatRuns.stdoutExcerpt, stderrExcerpt: heartbeatRuns.stderrExcerpt,

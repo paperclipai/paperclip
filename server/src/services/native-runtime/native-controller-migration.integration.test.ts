@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { eq } from "drizzle-orm";
 import { afterEach, expect, it, vi } from "vitest";
 import { agentTaskSessions, heartbeatRuns, issues, nativeHarnessBackups, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
@@ -20,10 +20,11 @@ import { createStorageService } from "../../storage/service.js";
 import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
-describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable_failed"])("offline native controller migration (%s)", scenario => {
+describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable_failed",
+  "stale_confirmed", "stale_foreign", "stale_changed", "stale_success", "stale_busy", "stale_durable"])("offline native controller migration (%s)", scenario => {
   const environment = nativeRestartFixture();
   afterEach(() => vi.unstubAllEnvs());
-  async function fixture(commandCount = 1) {
+  async function fixture(commandCount = 1, warm = false) {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "73".repeat(32));
     const f = await environment.seedRun(randomUUID());
     const { companyId, agentId, paperclipHome, runtimeRoot } = environment.current;
@@ -33,7 +34,7 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
       task: { identifier: "MIG-1", title: "Retained work", description: null, prompt: "Continue the work.", workMode: "standard" },
       workspace: { cwd: "/workspace", repoUrl: null, repoRef: null, branchName: null },
       session: { normalizedSessionId: f.native.normalizedSessionId, driverKind: "codex_app_server", protocolVersion: 1,
-        lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null } },
+        lifecyclePolicy: warm ? { mode: "warm", idleTimeoutMs: 60_000 } : { mode: "per_turn", idleTimeoutMs: null } },
       completionContract: { id: randomUUID(), sha256: "fixture", schemaVersion: "paperclip.completion-contract.v1",
         contract: { revision: "1", objective: "Continue", criteria: [{ id: "objective", requirement: "Save work." }] } },
       credentialBindings: [], interactionResponses: [],
@@ -237,6 +238,66 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable
     const recovery = await resolveNativeControllerRecovery(f.db, { companyId: f.companyId, agentId: f.agentId,
       issueId: f.issueId, normalizedSessionId: f.native.normalizedSessionId, currentRunId: f.queuedId });
     expect(recovery.kind).not.toBe("recoverable");
+  });
+  if (scenario.startsWith("stale_")) it("archives a failed source only when its older supervisor matches scoped history", async () => {
+    const f = await fixture(1, true), priorId = randomUUID();
+    const priorSnapshot = { ...f.snapshot, identity: { ...f.snapshot.identity, runId: priorId } };
+    if (scenario === "stale_foreign") priorSnapshot.identity.agentId = randomUUID();
+    const priorProfile = { ...f.profile, nativeExecutionInput: { ...f.profile.nativeExecutionInput,
+      binding: { ...f.profile.nativeExecutionInput.binding, runId: priorId } }, sessionCheckpoint: priorSnapshot };
+    await f.db.insert(heartbeatRuns).values({ id: priorId, companyId: f.companyId, agentId: f.agentId,
+      nativeIssueId: f.issueId, nativeSessionId: f.native.normalizedSessionId, runnerInstanceId: f.native.runnerInstanceId,
+      runtimeMode: "native", status: "succeeded", createdAt: new Date(Date.now() - 60_000),
+      finishedAt: new Date(Date.now() - 50_000), runnerProfileJson: priorProfile });
+    const supervisor = JSON.stringify({ schema: "paperclip.native-session-supervisor.v1",
+      configDigest: f.paths.configDigest, snapshot: priorSnapshot });
+    await mkdir(dirname(f.paths.supervisorPath), { recursive: true });
+    await writeFile(f.paths.supervisorPath, supervisor, { mode: 0o600 });
+    if (scenario === "stale_changed") await f.db.update(heartbeatRuns).set({ runnerProfileJson: {
+      ...priorProfile, sessionCheckpoint: { ...priorSnapshot, sessionId: "different-provider-thread" },
+    } }).where(eq(heartbeatRuns.id, priorId));
+    if (scenario === "stale_success") await f.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+    if (scenario === "stale_busy") await f.db.update(nativeRunFinalizations).set({ leaseOwner: "live-owner",
+      leaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    if (scenario === "stale_durable") {
+      const checkpoint = captureLegacyDurablePrpCheckpoint(f.source, { runId: f.runId,
+        runnerInstanceId: f.native.runnerInstanceId, normalizedSessionId: f.native.normalizedSessionId },
+      { version: "migration-fixture", digest: `sha256:${"a".repeat(64)}` });
+      await f.db.transaction(tx => insertMigratedNativeRunnerCheckpoint(tx,
+        { companyId: f.companyId, issueId: f.issueId, runId: f.runId }, checkpoint));
+    }
+    const [originalRun] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [originalOwner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const storage = createStorageService(createLocalDiskStorageProvider(join(f.runtimeRoot, "durable-objects")));
+    const options = { storage, writersStopped: true as const, signal: AbortSignal.timeout(30_000) };
+    if (scenario !== "stale_confirmed") {
+      await expect(migrateNativeControllers(f.db, options)).rejects.toThrow();
+      expect(await f.db.select().from(nativeHarnessBackups)).toHaveLength(0);
+      expect(await hasLocalNativeControllerObligations(f.db, storage)).toBe(true);
+      expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(originalRun);
+      expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(originalOwner);
+      return;
+    }
+    const put = vi.spyOn(storage, "putFile").mockRejectedValue(new Error("storage unavailable"));
+    await expect(migrateNativeControllers(f.db, options)).rejects.toThrow("storage unavailable");
+    put.mockRestore();
+    expect(await migrateNativeControllers(f.db, options)).toMatchObject({ archivedFailed: 1, imported: 0 });
+    expect(await migrateNativeControllers(f.db, options)).toMatchObject({ archivedFailed: 1, imported: 0 });
+    expect(await hasLocalNativeControllerObligations(f.db, storage)).toBe(false);
+    expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toHaveLength(0);
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(originalRun);
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(originalOwner);
+    expect((await f.db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, f.session.id)))[0].lastRunId).toBe(f.runId);
+    await rm(f.paperclipHome, { recursive: true, force: true });
+    const descriptor = legacyNativeControllerArchive({ companyId: f.companyId, issueId: f.issueId,
+      runId: f.runId, controller: f.source, supervisor });
+    const replacement = join(f.runtimeRoot, "archived-stale-supervisor");
+    expect(await restoreDurableNativeHarnessBackup({ db: f.db, storage, companyId: f.companyId,
+      scopeDigest: descriptor.scopeDigest, backupRoot: replacement })).toBe(true);
+    expect(await readFile(join(replacement, "current", "control-plane-state.json"), "utf8")).toBe(f.source);
+    expect(await readFile(join(replacement, "current", "supervisor.json"), "utf8")).toBe(supervisor);
+    expect((await resolveNativeControllerRecovery(f.db, { companyId: f.companyId, agentId: f.agentId,
+      issueId: f.issueId, normalizedSessionId: f.native.normalizedSessionId, currentRunId: f.queuedId })).kind).not.toBe("recoverable");
   });
   if (scenario === "success") it("does not substitute a failure archive for a successful retained session", async () => {
     const f = await fixture();
