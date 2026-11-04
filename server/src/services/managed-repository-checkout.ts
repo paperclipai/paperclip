@@ -148,7 +148,10 @@ export async function materializeManagedProjectWorkspace(
     } else if (input.repoRef) {
       const repoRef = input.repoRef;
       try {
-        await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", ["-C", cloneTmpDir, "checkout", repoRef], { timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS }));
+        await measureRunPhase("workspace.checkout.git_ref", () => execFile("git", ["-C", cloneTmpDir, "checkout", repoRef], {
+          // Untranslated Git messages keep missing-ref classification locale independent.
+          timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS, env: { ...process.env, LC_ALL: "C", LANGUAGE: "C" },
+        }));
       } catch (error) {
         // Only a ref that a complete fresh clone cannot resolve is a missing ref;
         // every other checkout failure keeps its original cause.
