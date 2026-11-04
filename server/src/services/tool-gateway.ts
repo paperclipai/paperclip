@@ -54,6 +54,7 @@ import {
   eq,
   inArray,
   isNull,
+  lt,
   lte,
   ne,
   or,
@@ -487,7 +488,15 @@ type RemoteHttpExecutionAudit = {
     bodySizeBytes: number;
     upstreamRequestId: string | null;
   };
+  failureKind?: RemoteHttpFailureKind;
 };
+
+type RemoteHttpFailureKind =
+  | "invocation_timeout"
+  | "transport_failure"
+  | "protocol_failure";
+
+const REMOTE_CALL_TIMEOUT_HEALTH_MESSAGE = "Remote MCP tool call timed out.";
 
 type LocalStdioRuntimeTemplate = {
   templateId: string;
@@ -1457,6 +1466,10 @@ export function createToolGatewayService(
       // grant, and a successful call restores the shared health indicator.
       or(
         inArray(toolConnections.healthStatus, ["ok", "healthy"]),
+        and(
+          eq(toolConnections.healthStatus, "degraded"),
+          eq(toolConnections.healthMessage, REMOTE_CALL_TIMEOUT_HEALTH_MESSAGE),
+        ),
         eq(toolConnections.credentialPolicy, "per_user"),
       ),
       eq(toolApplications.companyId, companyId),
@@ -3887,8 +3900,10 @@ export function createToolGatewayService(
     connection: typeof toolConnections.$inferSelect,
     status: "ok" | "error" | "missing_secret" | "degraded",
     message: string | null,
+    options?: { observedAt?: Date },
   ) {
     const now = new Date();
+    const observedAt = options?.observedAt;
     await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
@@ -3899,7 +3914,11 @@ export function createToolGatewayService(
         lastError: status === "ok" ? null : message,
         updatedAt: now,
       })
-      .where(eq(toolConnections.id, connection.id)));
+      .where(
+        observedAt
+          ? and(eq(toolConnections.id, connection.id), lt(toolConnections.updatedAt, observedAt))
+          : eq(toolConnections.id, connection.id),
+      ));
   }
 
   function grantRefForCredential(
@@ -5895,6 +5914,30 @@ export function createToolGatewayService(
     };
   }
 
+  function remoteFailureKind(
+    error: ToolGatewayHttpError,
+  ): RemoteHttpFailureKind | undefined {
+    if (error.details.sessionExpired === true) return undefined;
+    switch (error.reasonCode) {
+      case "mcp_remote_status":
+      case "mcp_remote_invalid_json":
+      case "mcp_remote_response_too_large":
+      case "remote_mcp_error":
+      case "remote_mcp_malformed_response":
+        return "protocol_failure";
+      default:
+        return undefined;
+    }
+  }
+
+  function withFailureKind(
+    audit: RemoteHttpExecutionAudit,
+    failureKind: RemoteHttpFailureKind | undefined,
+  ): RemoteHttpExecutionAudit {
+    if (!failureKind || audit.failureKind) return audit;
+    return { ...audit, failureKind };
+  }
+
   function responseTooLargeError() {
     return new ToolGatewayHttpError(
       502,
@@ -6183,6 +6226,7 @@ export function createToolGatewayService(
     invocationId: string,
     callerHeaders?: ExecuteGatewayToolInput["callerHeaders"],
     useDefaultTimeout = false,
+    startedAt?: Date,
   ): Promise<RemoteHttpExecutionResult> {
     const { entry, connection } = await resolveConnectedRemoteTool(
       session,
@@ -6265,6 +6309,7 @@ export function createToolGatewayService(
         dispatched: true,
       },
     };
+    const invocationStartedAt = startedAt ?? new Date();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), ms);
     timer.unref?.();
@@ -6617,26 +6662,38 @@ export function createToolGatewayService(
         // The reader may have cancelled the stream partway, and the server can
         // then drop its session. Start a fresh session on the next call.
         if (mcpSession) forgetMcpHttpSession(mcpSession);
+        const failureKind = remoteFailureKind(failure);
         throw new ToolGatewayHttpError(failure.status, failure.message, failure.reasonCode, {
-          ...failure.details, connectionId: connection.id, catalogEntryId: entry.id, execution,
+          ...failure.details, connectionId: connection.id, catalogEntryId: entry.id,
+          execution: withFailureKind(execution, failureKind),
+          ...(failureKind ? { failureKind } : {}),
         });
       }
       if (error instanceof RailwayError) {
         throw new ToolGatewayHttpError(error.status, error.message, error.code, { connectionId: connection.id, catalogEntryId: entry.id, execution });
       }
       if (error instanceof ToolGatewayHttpError) {
+        const failureKind = remoteFailureKind(error);
+        const audit = (error.details.execution as RemoteHttpExecutionAudit | undefined) ?? execution;
         throw new ToolGatewayHttpError(
           error.status,
           error.message,
           error.reasonCode,
           {
             ...error.details,
-            execution: error.details.execution ?? execution,
+            execution: withFailureKind(audit, failureKind),
+            ...(failureKind ? { failureKind } : {}),
           },
         );
       }
       if (error instanceof Error && error.name === "AbortError") {
         if (mcpSession) forgetMcpHttpSession(mcpSession);
+        await markRemoteConnectionHealth(
+          connection,
+          "degraded",
+          REMOTE_CALL_TIMEOUT_HEALTH_MESSAGE,
+          { observedAt: invocationStartedAt },
+        );
         throw new ToolGatewayHttpError(
           504,
           "Remote MCP tool call timed out",
@@ -6644,7 +6701,8 @@ export function createToolGatewayService(
           {
             connectionId: connection.id,
             catalogEntryId: entry.id,
-            execution,
+            execution: withFailureKind(execution, "invocation_timeout"),
+            failureKind: "invocation_timeout",
           },
         );
       }
@@ -6652,6 +6710,12 @@ export function createToolGatewayService(
         await markCallHealth("error", "Remote MCP session authorization failed.");
       }
       if (mcpSession) forgetMcpHttpSession(mcpSession);
+      const failureKind = execution.response ? undefined : "transport_failure";
+      await markRemoteConnectionHealth(
+        connection,
+        "error",
+        "Remote MCP tool call failed.",
+      );
       throw new ToolGatewayHttpError(
         502,
         "Remote MCP tool call failed",
@@ -6659,7 +6723,8 @@ export function createToolGatewayService(
         {
           connectionId: connection.id,
           catalogEntryId: entry.id,
-          execution,
+          execution: withFailureKind(execution, failureKind),
+          ...(failureKind ? { failureKind } : {}),
         },
       );
     } finally {
@@ -11160,6 +11225,7 @@ export function createToolGatewayService(
                 invocationId,
                 input.callerHeaders,
                 input.timeoutMs === undefined,
+                new Date(startedAt),
               )
             : tool.providerType === "mcp_local_stdio"
               ? await executeLocalStdioTool(
