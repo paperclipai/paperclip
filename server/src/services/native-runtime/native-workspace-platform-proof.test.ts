@@ -22,10 +22,30 @@ describe("workspace platform stop proof", () => {
   it("fails closed on live, unknown, unreachable and unsigned platform responses", async () => {
     for (const response of [{ stopped: false }, { stopped: true }, { receipt: "forged" }]) {
       const fetchImpl = vi.fn().mockResolvedValue(Response.json(response));
-      expect(await requestWorkspaceWorkerStopProof(binding, { env, now, fetchImpl })).toBeNull();
+      expect(await requestWorkspaceWorkerStopProof(binding, { env, now, fetchImpl })).toEqual({ status: "pending" });
     }
-    expect(await requestWorkspaceWorkerStopProof(binding, { env, now, fetchImpl: vi.fn().mockRejectedValue(new Error("offline")) })).toBeNull();
-    expect(await requestWorkspaceWorkerStopProof(binding, { env, now, fetchImpl: vi.fn().mockResolvedValue(Response.json({ receipt: receipt() })) })).toMatchObject({ stopped: true });
+    expect(await requestWorkspaceWorkerStopProof(binding, { env, now, fetchImpl: vi.fn().mockRejectedValue(new Error("offline")) })).toEqual({ status: "pending" });
+    expect(await requestWorkspaceWorkerStopProof(binding, { env, now, fetchImpl: vi.fn().mockResolvedValue(Response.json({ receipt: receipt() })) })).toMatchObject({ status: "verified", proof: { stopped: true } });
+  });
+  it("does not schedule platform verification without a supported authenticated endpoint", async () => {
+    for (const unavailable of [
+      {},
+      { ...env, PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "" },
+      { ...env, PAPERCLIP_CLOUD_API_ORIGIN: "http://cloud.example" },
+      { ...env, PAPERCLIP_CLOUD_API_ORIGIN: "https://user:password@cloud.example" },
+      { ...env, PAPERCLIP_CLOUD_API_ORIGIN: "not a URL" },
+    ]) {
+      const fetchImpl = vi.fn();
+      expect(await requestWorkspaceWorkerStopProof(binding, { env: unavailable, now, fetchImpl }))
+        .toEqual({ status: "unsupported" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  });
+  it("keeps an authenticated but temporarily unavailable verification pending", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
+    expect(await requestWorkspaceWorkerStopProof(binding, { env, now, fetchImpl }))
+      .toEqual({ status: "pending" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
   it("records a complete platform identity, and does not guess legacy ownership", () => {
     expect(currentWorkspaceWorker({ RAILWAY_PROJECT_ID: "project", RAILWAY_ENVIRONMENT_ID: "environment", RAILWAY_SERVICE_ID: "service", RAILWAY_DEPLOYMENT_ID: "old-deployment" })).toEqual(worker);

@@ -208,7 +208,7 @@ async function handleServerRequestBody(
         };
       }
       if (
-        !toolAcceptsResult(tool, validation.result)
+        !toolAcceptsResult(tool, validation.result, completionInput !== request.params.arguments)
       ) {
         return {
           success: false,
@@ -218,7 +218,7 @@ async function handleServerRequestBody(
               text:
                 tool === CODEX_BLOCK_TOOL_NAME
                   ? "paperclip_block requires reportedWorkDisposition=blocked."
-                  : "paperclip_finish accepts done, needs_review, or yielded with a response_wake or persisted monitor continuation.",
+                  : "paperclip_finish accepts done, needs_review, or yielded with a response, monitor, handoff, or server-resolved workspace continuation.",
             },
           ],
         };

@@ -79,6 +79,7 @@ vi.mock("../services/plugin-environment-driver.js", () => ({
   REUSABLE_LEASE_WORKER_METHODS: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"],
   listReadyPluginEnvironmentDrivers: vi.fn(async () => []),
   resolvePluginSandboxProviderDriverByKey: vi.fn(async () => null),
+  resolvePluginSandboxProviderConfigSchema: vi.fn(async () => null),
   validatePluginEnvironmentDriverConfig: vi.fn(async ({ config }) => config),
   validatePluginSandboxProviderConfig: vi.fn(async ({ provider, config }) => ({
     normalizedConfig: config,
@@ -115,11 +116,11 @@ function createEnvironment(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function createApp(actor: Record<string, unknown>) {
+function createApp(actor: Express.Request["actor"]) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => {
-    (req as typeof req & { actor: Record<string, unknown> }).actor = actor;
+    req.actor = actor;
     next();
   });
   app.use("/api", environmentRoutes({

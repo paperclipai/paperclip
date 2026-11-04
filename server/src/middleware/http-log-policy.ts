@@ -54,6 +54,13 @@ export function isPrivateAgentCommentaryHttpRequest(url: string | undefined): bo
   return /^\/api\/companies\/[^/]+\/agent-commentary(?:\/|$)/i.test(pathname);
 }
 
+/** Destination credentials stay private even on malformed settings requests. */
+export function isPrivateAgentObservabilityHttpRequest(url: string | undefined): boolean {
+  if (!url) return false;
+  const pathname = normalizePath(url).replace(/^https?:\/\/[^/]*/i, "");
+  return /^\/api\/companies\/[^/]+\/observability(?:\/|$)/i.test(pathname);
+}
+
 /** Muse OAuth and worker payloads stay private even on malformed/rejected paths. */
 export function isPrivateMuseHttpRequest(url:string|undefined):boolean {
   if(!url)return false;
@@ -102,6 +109,9 @@ export function isSecretSensitiveHttpRequest(
   if (isPrivateWebhookHttpRequest(method, url) || isPrivateMuseHttpRequest(url)) return true;
   if (url && normalizePath(url).startsWith("/mcp/files/")) return true;
   if (isPrivateAgentCommentaryHttpRequest(url)) return true;
+  // Custom OTLP header values are arbitrary credentials, including on rejected
+  // methods or malformed subpaths. Named-field redaction cannot identify them.
+  if (isPrivateAgentObservabilityHttpRequest(url)) return true;
   // Avatar uploads and dedicated Dot MCP calls may contain private image bytes.
   if (url && /^(?:\/mcp\/runner(?:\/|$)|\/api\/companies\/[^/]+\/agents\/[^/]+\/avatar(?:\/|$))/i.test(normalizePath(url).replace(/^https?:\/\/[^/]*/i, ""))) return true;
   if (!method || !url) return false;

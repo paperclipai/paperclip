@@ -576,13 +576,14 @@ function importAdapterValues(
   sourceAdapterType?: string,
   runner?: AgentRunnerChoice,
 ): CreateConfigValues {
-  const nativeCodex = sourceAdapterType === "paperclip_runner" && choice === "codex_local";
+  const nativeHarness = sourceAdapterType === "paperclip_runner" && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(choice);
+  const nativeCodex = nativeHarness && choice === "codex_local";
   const savedBypass = sourceConfig?.dangerouslyBypassApprovalsAndSandbox
     ?? (nativeCodex ? undefined : sourceConfig?.dangerouslyBypassSandbox);
   return {
     ...defaultCreateValues,
-    adapterType: choice === "openai_dot" || choice === "muse" ? "paperclip_runner" : choice,
-    ...(runner !== undefined ? { runner } : nativeCodex ? { runner: agentRunner("paperclip_runner") } : {}),
+    adapterType: (choice === "openai_dot" || choice === "muse") ? "paperclip_runner" : choice,
+    ...(runner !== undefined ? { runner } : nativeHarness ? { runner: agentRunner("paperclip_runner") } : {}),
     ...(sourceConfig && choice === "codex_local" ? {
       model: typeof sourceConfig.model === "string" ? sourceConfig.model : "",
       thinkingEffort: String(sourceConfig.modelReasoningEffort ?? sourceConfig.reasoningEffort ?? ""),
@@ -592,7 +593,10 @@ function importAdapterValues(
           ? (sourceConfig.codexPermissionMode ?? PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES.codex.defaultMode) === "never"
           : resolveCodexLocalCliPolicy(sourceConfig).bypass,
     } : {}),
-    ...(nativeCodex && sourceConfig ? {
+    ...(sourceConfig && choice === "opencode_local" ? { model: typeof sourceConfig.model === "string" ? sourceConfig.model : "" } : {}),
+    ...(sourceConfig && choice === "pi_local" ? { model: typeof sourceConfig.model === "string" ? sourceConfig.model : "", thinkingEffort: String(sourceConfig.piThinkingLevel ?? sourceConfig.thinking ?? "") } : {}),
+    ...(sourceConfig && choice === "claude_local" ? { model: typeof sourceConfig.model === "string" ? sourceConfig.model : "", thinkingEffort: String(sourceConfig.modelReasoningEffort ?? sourceConfig.reasoningEffort ?? sourceConfig.effort ?? "") } : {}),
+    ...(nativeHarness && sourceConfig ? {
       cwd: typeof sourceConfig.cwd === "string" ? sourceConfig.cwd : "",
       instructionsFilePath: typeof sourceConfig.instructionsFilePath === "string" ? sourceConfig.instructionsFilePath : "",
       envBindings: { ...asObject(sourceConfig.env) },
@@ -1621,7 +1625,7 @@ export function CompanyImport() {
     resetMutationState();
     const agent = adapterAgents.find((a) => a.slug === slug);
     const currentType = agent ? effectiveAdapterType(agent) : adapterOverrides[slug] ?? "claude_local";
-    if (Object.keys(patch).some(key => key !== "runner")) {
+    if (Object.keys(patch).some(key => key !== "runner" && key !== "resolvedRunner")) {
       setAdapterConfigEditedSlugs(prev => new Set([...prev, slug]));
     }
     setAdapterConfigValues((prev) => ({
@@ -1679,14 +1683,16 @@ export function CompanyImport() {
     return importPreview.manifest.agents.map((a) => {
       const nativeCodex = a.adapterType === "paperclip_runner"
         && (a.adapterConfig?.provider === "codex" || a.adapterConfig?.provider === undefined);
+      const nativeHarness = nativeCodex || (a.adapterType === "paperclip_runner"
+        && ["claude_local", "opencode_local", "pi_local"].includes(agentHarnessType(a.adapterType, a.adapterConfig)));
       const adapterChoice = a.adapterType === "paperclip_runner" && a.adapterConfig?.provider === "openai_dot"
-        ? "openai_dot" : a.adapterType === "paperclip_runner" && a.adapterConfig?.provider === "muse" ? "muse" : nativeCodex ? agentHarnessType(a.adapterType, a.adapterConfig) : a.adapterType;
+        ? "openai_dot" : a.adapterType === "paperclip_runner" && a.adapterConfig?.provider === "muse" ? "muse" : nativeHarness ? agentHarnessType(a.adapterType, a.adapterConfig) : a.adapterType;
       let fallbackAdapterType: string | null = null;
       let availabilityWarning: string | undefined;
       if (a.adapterType === "paperclip_runner") {
-        const available = nativeCodex ? runnerInstalled : adapterChoice === "openai_dot" ? dotAvailable : adapterChoice === "muse" ? museAvailable : nativeRunnerAvailable;
-        if (!available && (availableAdapterTypes || !nativeCodex)) {
-          availabilityWarning = nativeCodex
+        const available = nativeHarness ? runnerInstalled : adapterChoice === "openai_dot" ? dotAvailable : adapterChoice === "muse" ? museAvailable : nativeRunnerAvailable;
+        if (!available && (availableAdapterTypes || !nativeHarness)) {
+          availabilityWarning = nativeHarness
             ? "Paperclip Runner is unavailable here. Choose a runner or another harness explicitly."
             : `Paperclip Runner provider ${String(a.adapterConfig?.provider)} requires its experimental feature to be enabled. This import keeps its saved harness until you choose another one.`;
         }
@@ -1729,8 +1735,11 @@ export function CompanyImport() {
     for (const agent of adapterAgents) {
       const selectedType = effectiveAdapterType(agent);
       const configVals = adapterConfigValues[agent.slug];
-      if (selectedType === agent.adapterChoice && !configVals) continue;
-      const apiType = selectedType === "openai_dot" || selectedType === "muse" ? "paperclip_runner" : selectedType;
+      if (selectedType === agent.adapterChoice && !adapterConfigEditedSlugs.has(agent.slug)
+        && (!configVals || configVals.runner === importAdapterValues(selectedType, agent.adapterConfig, agent.adapterType, agent.runner).runner)) continue;
+      const retainsNativeHarness = agent.adapterType === "paperclip_runner"
+        && selectedType === agent.adapterChoice && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(selectedType);
+      const apiType = selectedType === "openai_dot" || selectedType === "muse" || retainsNativeHarness ? "paperclip_runner" : selectedType;
       const override: CompanyPortabilityAdapterOverride = { adapterType: apiType };
       if (configVals?.runner !== undefined) override.runner = configVals.runner;
       if (configVals && (selectedType !== agent.adapterChoice || adapterConfigEditedSlugs.has(agent.slug))) {
@@ -1744,11 +1753,14 @@ export function CompanyImport() {
         if (selectedType === "muse" && configVals.adapterSchemaValues?.allowUnmeteredProvider !== true) {
           throw new Error("Muse requires acknowledgement of external billing. Configure Muse and enable Allow externally billed provider.");
         }
-        const build = getUIAdapter(configVals.adapterType).buildAdapterConfig;
+        const nativeClaudeForm = selectedType === "claude_local" && (retainsNativeHarness
+          || (configVals.runner !== "legacy" && configVals.adapterSchemaValues?.provider === "acpx"
+            && configVals.adapterSchemaValues.acpxAgent === "claude"));
+        const build = getUIAdapter(nativeClaudeForm ? "paperclip_runner" : configVals.adapterType).buildAdapterConfig;
         const edited = build(configVals);
         if (agent.adapterType === "paperclip_runner" && selectedType === agent.adapterChoice
-          && selectedType === "codex_local" && configVals.adapterType === "codex_local"
-          && agentHarnessType("paperclip_runner", configVals.adapterSchemaValues) === "codex_local") {
+          && ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(selectedType) && configVals.adapterType === selectedType
+          && agentHarnessType("paperclip_runner", configVals.adapterSchemaValues) === selectedType) {
           const original = importAdapterValues(selectedType, agent.adapterConfig, agent.adapterType, configVals.runner);
           const baseline = build(original);
           const retained = { ...agent.adapterConfig };
@@ -1761,7 +1773,22 @@ export function CompanyImport() {
           };
           applyChanges(original.adapterSchemaValues ?? {}, configVals.adapterSchemaValues ?? {});
           applyChanges(baseline, edited);
-          if (!overlayValuesEqual(baseline.modelReasoningEffort, edited.modelReasoningEffort)) delete retained.reasoningEffort;
+          if (selectedType === "claude_local") {
+            const commonBuild = getUIAdapter("claude_local").buildAdapterConfig;
+            const commonBefore = commonBuild(original);
+            const commonAfter = commonBuild(configVals);
+            for (const key of ["cwd", "instructionsFilePath", "env", "workspaceStrategy", "workspaceRuntime"]) {
+              if (overlayValuesEqual(commonBefore[key], commonAfter[key])) continue;
+              if (commonAfter[key] === undefined) delete retained[key];
+              else retained[key] = commonAfter[key];
+            }
+          }
+          if (original.model !== configVals.model && !configVals.model) delete retained.model;
+          if (original.thinkingEffort !== configVals.thinkingEffort) {
+            delete retained.reasoningEffort;
+            delete retained.effort;
+            if (!configVals.thinkingEffort) delete retained.modelReasoningEffort;
+          }
           override.adapterConfig = retained;
         } else {
           override.adapterConfig = edited;

@@ -59,3 +59,20 @@ export function appConnectionSourceSlug(connection: ToolConnection | null | unde
   const source = connection.config?.sourceTemplateKey ?? connection.transportConfig?.sourceTemplateKey;
   return typeof source === "string" && source.trim() ? source.trim() : null;
 }
+
+export function galleryEntryFor(
+  apps: AppGalleryDisplayEntry[],
+  connection: ToolConnection | undefined,
+  application: ToolApplication | undefined,
+): AppGalleryDisplayEntry | null {
+  if (!connection) return null;
+  const sourceSlug = appApplicationSourceSlug(application) ?? appConnectionSourceSlug(connection);
+  if (sourceSlug) {
+    const keyed = apps.find((app) => appDefinitionSlug(app) === sourceSlug);
+    if (keyed) return keyed;
+  }
+  const name = connection.name.toLowerCase();
+  return apps.find((app) => appDefinitionName(app).toLowerCase() === name) ??
+    apps.find((app) => appDefinitionSlug(app) === name) ??
+    null;
+}

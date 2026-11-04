@@ -68,7 +68,7 @@ describeDatabase("tool profile entry validation", () => {
     const foreign = await fixture(1);
     const service = toolAccessService(db);
     const profile = await service.createProfile(own.company.id, {
-      profileKey: `summary-${randomUUID()}`, name: "Summary profile", defaultAction: "deny",
+      profileKey: `summary-${randomUUID()}`, name: "Summary profile", status: "active", defaultAction: "deny",
       entries: [own.entries[0]],
     });
     // Exact selectors establish connection scope for subsequent tools. Future
@@ -117,7 +117,7 @@ describeDatabase("tool profile entry validation", () => {
   it("keeps schema payload growth out of repeated profile summary reads", async () => {
     const own = await fixture(50);
     await toolAccessService(db).createProfile(own.company.id, {
-      profileKey: `payload-${randomUUID()}`, name: "Payload profile", entries: own.entries,
+      profileKey: `payload-${randomUUID()}`, name: "Payload profile", status: "active", defaultAction: "deny", entries: own.entries,
     });
     const recorded = recordingDb(db);
     const service = toolAccessService(recorded.db);
@@ -140,7 +140,7 @@ describeDatabase("tool profile entry validation", () => {
     const { service, reads } = countedService();
     const started = performance.now();
     const profile = await service.createProfile(company.id, {
-      profileKey: `cold-${randomUUID()}`, name: "Cold runtime assignment", defaultAction: "deny", entries,
+      profileKey: `cold-${randomUUID()}`, name: "Cold runtime assignment", status: "active", defaultAction: "deny", entries,
     });
     const elapsedMs = performance.now() - started;
     const saved = await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.profileId, profile.id));
@@ -153,7 +153,7 @@ describeDatabase("tool profile entry validation", () => {
   it("replaces 518 selectors without repeating per-entry reads", async () => {
     const { company, entries } = await fixture(518);
     const existing = await toolAccessService(db).createProfile(company.id, {
-      profileKey: `replace-${randomUUID()}`, name: "Before replacement", entries: [entries[0]],
+      profileKey: `replace-${randomUUID()}`, name: "Before replacement", status: "active", defaultAction: "deny", entries: [entries[0]],
     });
     const { service, reads } = countedService();
     const started = performance.now();
@@ -169,7 +169,7 @@ describeDatabase("tool profile entry validation", () => {
     const foreign = await fixture();
     const service = toolAccessService(db);
     const profile = await service.createProfile(own.company.id, {
-      profileKey: `preserve-${randomUUID()}`, name: "Preserved profile", entries: own.entries,
+      profileKey: `preserve-${randomUUID()}`, name: "Preserved profile", status: "active", defaultAction: "deny", entries: own.entries,
     });
     const invalid = { ...own.entries[0], ...({
       application: { applicationId: foreign.application.id },
@@ -178,7 +178,7 @@ describeDatabase("tool profile entry validation", () => {
     }[kind]) };
     const status = kind === "catalog" ? 422 : 404;
     const key = `rejected-${randomUUID()}`;
-    await expect(service.createProfile(own.company.id, { profileKey: key, name: "Rejected", entries: [invalid] }))
+    await expect(service.createProfile(own.company.id, { profileKey: key, name: "Rejected", status: "active", defaultAction: "deny", entries: [invalid] }))
       .rejects.toMatchObject({ status });
     expect(await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, key))).toEqual([]);
     await expect(service.updateProfile(profile.id, { name: "Must not change", entries: [invalid] }))
@@ -198,7 +198,7 @@ describeDatabase("tool profile entry validation", () => {
   ] as const)("preserves the required %s selector check", async (selectorType, message) => {
     const { company } = await fixture();
     await expect(toolAccessService(db).createProfile(company.id, {
-      profileKey: `missing-${randomUUID()}`, name: "Missing selector", entries: [{ selectorType, effect: "include" }],
+      profileKey: `missing-${randomUUID()}`, name: "Missing selector", status: "active", defaultAction: "deny", entries: [{ selectorType, effect: "include" }],
     })).rejects.toMatchObject({ status: 400, message });
   });
 
@@ -206,7 +206,7 @@ describeDatabase("tool profile entry validation", () => {
     const own = await fixture();
     const foreign = await fixture();
     await expect(toolAccessService(db).createProfile(own.company.id, {
-      profileKey: `ordered-${randomUUID()}`, name: "Ordered errors", entries: [
+      profileKey: `ordered-${randomUUID()}`, name: "Ordered errors", status: "active", defaultAction: "deny", entries: [
         { ...own.entries[0], applicationId: foreign.application.id },
         { selectorType: "tool_name", effect: "include" },
       ],
@@ -216,9 +216,9 @@ describeDatabase("tool profile entry validation", () => {
   it("does not reuse validation after a catalog entry is removed", async () => {
     const { company, catalog, entries } = await fixture();
     const service = toolAccessService(db);
-    await service.createProfile(company.id, { profileKey: `valid-${randomUUID()}`, name: "Before removal", entries });
+    await service.createProfile(company.id, { profileKey: `valid-${randomUUID()}`, name: "Before removal", status: "active", defaultAction: "deny", entries });
     await db.delete(toolCatalogEntries).where(eq(toolCatalogEntries.id, catalog[0].id));
-    await expect(service.createProfile(company.id, { profileKey: `after-${randomUUID()}`, name: "After removal", entries }))
+    await expect(service.createProfile(company.id, { profileKey: `after-${randomUUID()}`, name: "After removal", status: "active", defaultAction: "deny", entries }))
       .rejects.toMatchObject({ status: 422 });
   });
 
@@ -227,7 +227,7 @@ describeDatabase("tool profile entry validation", () => {
     const foreign = await fixture();
     await db.update(toolConnections).set({ uid: foreign.connection.id }).where(eq(toolConnections.id, own.connection.id));
     await expect(toolAccessService(db).createProfile(own.company.id, {
-      profileKey: `uid-collision-${randomUUID()}`, name: "UID collision", entries: [
+      profileKey: `uid-collision-${randomUUID()}`, name: "UID collision", status: "active", defaultAction: "deny", entries: [
         own.entries[0], { ...own.entries[0], connectionId: foreign.connection.id },
       ],
     })).rejects.toMatchObject({ status: 404, message: "Tool connection not found" });
@@ -239,7 +239,7 @@ describeDatabase("tool profile entry validation", () => {
     own.entries[517] = { ...own.entries[517], catalogEntryId: foreign.catalog[0].id };
     const profileKey = `last-batch-${randomUUID()}`;
     await expect(toolAccessService(db).createProfile(own.company.id, {
-      profileKey, name: "Last batch", entries: own.entries,
+      profileKey, name: "Last batch", status: "active", defaultAction: "deny", entries: own.entries,
     })).rejects.toMatchObject({ status: 422 });
     expect(await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, profileKey))).toEqual([]);
   });
@@ -247,7 +247,7 @@ describeDatabase("tool profile entry validation", () => {
   it("preserves PostgreSQL UUID case matching", async () => {
     const own = await fixture();
     const profile = await toolAccessService(db).createProfile(own.company.id, {
-      profileKey: `upper-${randomUUID()}`, name: "Uppercase identifiers", entries: [{
+      profileKey: `upper-${randomUUID()}`, name: "Uppercase identifiers", status: "active", defaultAction: "deny", entries: [{
         ...own.entries[0], applicationId: own.application.id.toUpperCase(),
         connectionId: own.connection.id.toUpperCase(), catalogEntryId: own.catalog[0].id.toUpperCase(),
       }],

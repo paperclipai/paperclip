@@ -49,6 +49,7 @@ const STRANDED_RECOVERY_NOTICE_TITLES_BY_RUN_ERROR_CODE: Record<string, string> 
 
 const WORKSPACE_SCAN_NOTICES: Record<string, { title: string; nextAction: string }> = {
   workspace_git_scan_timeout: { title: "Workspace scan timed out", nextAction: "Check repository access and server load, then retry the task." },
+  remote_workspace_prepare_timeout: { title: "Workspace setup timed out", nextAction: "Inspect the failed run and check repository access and sandbox load before retrying the task." },
   workspace_git_scan_saturated: { title: "Workspace scan queue is full", nextAction: "Check server load and the workspace scan queue, then retry the task." },
   workspace_git_scan_output_limit: { title: "Workspace scan exceeded its limit", nextAction: "Check the repository size and workspace scan output limit before retrying the task." },
   workspace_git_scan_failed: { title: "Workspace scan failed", nextAction: "Inspect the failed run and check repository access and integrity before retrying the task." },
@@ -139,9 +140,9 @@ export function buildConfigurationIncompleteRecoveryNoticeSeed(
   }
   if (readNonEmptyStringField(configurationIncomplete, "reason") === "workspace_source_restricted") {
     return {
-      title: "Workspace source restricted",
-      body: "Paperclip stopped before the agent started because this task's workspace uses a shared project checkout that also holds another task's workspace, and this run cannot read that task. Paperclip does not copy a shared checkout with restricted files.",
-      nextAction: "Push any unpublished work from this task's workspace, then select a new workspace for the task. Alternatively, have an owner grant access to the restricted task. Then retry the task.",
+      title: "Task couldn’t start",
+      body: "The task couldn’t start.",
+      nextAction: "Retry the task.",
       tone: "danger",
     };
   }
@@ -264,6 +265,9 @@ export function buildStrandedRecoveryEscalationNotice(input: {
     presentation: systemNoticePresentation({ tone: seed?.tone ?? "danger", title }),
     metadata: {
       version: 1,
+      recoveryResponsibility: input.recoveryCause === "configuration_incomplete" ||
+        ["provider_quota", "claude_auth_required", "acpx_auth_required"].includes(input.sourceRun?.errorCode ?? "")
+        ? "user" : "system",
       sourceRunId: input.sourceRun?.id ?? null,
       sections,
     },

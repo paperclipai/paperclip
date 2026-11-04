@@ -1,3 +1,5 @@
+import { applyPendingMigrations } from "@paperclipai/db";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -36,7 +38,8 @@ import { DotHarnessDriver } from "../../../packages/paperclip-runner/src/drivers
 import { HarnessDriverBackend } from "../../../packages/paperclip-runner/src/backends/harness-driver-backend.js";
 import { eventFetch, signingKey, type EventFetch } from "../services/public-mcp/event-webhooks.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_PUBLIC_MCP_TEST_DATABASE_URL");
+const support = externalUrl ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 if (!support.supported) console.warn(`Public MCP database checks unavailable: ${support.reason}`);
 const config = { origin: "https://paperclip.example", resource: "https://paperclip.example/mcp/paperclip" };
 const redirectUri = "https://client.example/callback";
@@ -60,13 +63,14 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
   let oauth: ReturnType<typeof createPublicMcpOAuth>;
   beforeAll(async () => {
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", randomBytes(32).toString("base64"));
-    temp = await startEmbeddedPostgresTestDatabase("paperclip-public-mcp-");
-    db = createDb(temp.connectionString);
+    if (externalUrl) await applyPendingMigrations(externalUrl);
+    else temp = await startEmbeddedPostgresTestDatabase("paperclip-public-mcp-");
+    db = createDb(externalUrl ?? temp.connectionString);
     oauth = createPublicMcpOAuth(db, config);
     expect(await oauth.isEnabled()).toBe(false);
     await instanceSettingsService(db).updateExperimental({ enablePublicMcp: true });
   }, 90000);
-  afterAll(async () => { await temp?.cleanup(); vi.unstubAllEnvs(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temp?.cleanup(); vi.unstubAllEnvs(); });
 
   it("keeps public MCP and discovery out of SQL and SPA fallback until Cloud claim", async () => {
     let standby = true;
@@ -583,7 +587,7 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       api.use(activityRoutes(db));
       const execute = createPublicMcpExecutor(db, oauth, createMcpApiDispatch(api));
       const args = { companyId: f.company.id, requestId: randomUUID(), title: "Write a durable report", description: "Research the supplied material", assigneeAgentId: agent!.id };
-      const result = await execute(f.tokens.access_token, "paperclip_create_task", args);
+      const result: Record<string, unknown> = await execute(f.tokens.access_token, "paperclip_create_task", args);
       expect(result).toHaveProperty("task");
       const task = result.task as { id: string; status: string };
       expect(task.status).toBe("todo");
@@ -612,7 +616,7 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
       // Human assignment to a paused agent is deliberate and allowed by existing routes.
       // Creating its queued task must neither unpause the agent nor claim execution started.
       await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agent!.id));
-      const paused = await execute(f.tokens.access_token, "paperclip_create_task", { ...args, requestId: randomUUID(), title: "Wait for the paused researcher" });
+      const paused: Record<string, unknown> = await execute(f.tokens.access_token, "paperclip_create_task", { ...args, requestId: randomUUID(), title: "Wait for the paused researcher" });
       expect(paused).toHaveProperty("task.status", "todo");
       expect(paused.scheduling).toContain("does not guarantee execution has started");
       expect((await db.select().from(agents).where(eq(agents.id, agent!.id)))[0]?.status).toBe("paused");
@@ -665,7 +669,7 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
     const transfers = createPublicMcpTransfers(db, oauth, dispatch, storage);
     const execute = createPublicMcpExecutor(db, oauth, dispatch, transfers);
     const [issue] = await db.insert(issues).values({ companyId: f.company.id, title: "Work", status: "backlog" }).returning();
-    const call = (name: string, a: Record<string, unknown> = {}) => execute(f.tokens.access_token, name, { companyId: f.company.id, ...a });
+    const call = (name: string, a: Record<string, unknown> = {}): Promise<Record<string, unknown>> => execute(f.tokens.access_token, name, { companyId: f.company.id, ...a });
     return { ...f, issue: issue!, call, dispatch, transfers, storage, cleanup: () => rm(storageDir, { recursive: true, force: true }) };
   }
 
@@ -853,7 +857,7 @@ describe.skipIf(!support.supported)("public MCP OAuth and tool boundary", () => 
 
   it("completes OAuth and concurrent upload retries with a one-connection pool", async () => {
     const originalDb = db, originalOauth = oauth;
-    db = createDb(temp.connectionString, { maxConnections: 1 });
+    db = createDb(externalUrl ?? temp.connectionString, { maxConnections: 1 });
     oauth = createPublicMcpOAuth(db, config);
     let cleanup: (() => Promise<void>) | undefined;
     try {

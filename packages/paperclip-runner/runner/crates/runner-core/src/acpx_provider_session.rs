@@ -24,7 +24,7 @@ use crate::stable_identity::{is_stable_id, DURABLE_STABLE_ID_CHARS, SHORT_STABLE
 
 const MAX_ID_CHARS: usize = 240;
 const MAX_MODEL_CHARS: usize = 240;
-const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_SYSTEM_INSTRUCTIONS_BYTES: usize = 1024 * 1024;
 const MAX_JSON_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -72,6 +72,12 @@ pub struct AcpxProviderSessionIdentity {
     pub mode: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pi_thinking_level: Option<PiThinkingLevel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grok_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub grok_disable_web_search: Option<bool>,
     pub provider_lifetime_fence_candidates: [u16; 3],
 }
 
@@ -83,6 +89,7 @@ pub struct AcpxProviderRuntimePolicy {
 
 #[derive(Clone, Debug)]
 pub struct AcpxProviderSessionConfig {
+    pub candidate_admission: Option<crate::acpx_candidate_admission::AcpxCandidateAdmission>,
     pub transport: AcpxSidecarTransportConfig,
     pub agent: String,
     pub model: String,
@@ -94,6 +101,9 @@ pub struct AcpxProviderSessionConfig {
     pub permission_mode: AcpxPermissionMode,
     pub mode: Option<String>,
     pub pi_thinking_level: Option<PiThinkingLevel>,
+    pub claude_effort: Option<String>,
+    pub grok_effort: Option<String>,
+    pub grok_disable_web_search: Option<bool>,
     pub permission_mode_pinned: bool,
     pub provider_policy: Option<AcpxProviderRuntimePolicy>,
     pub system_instructions: String,
@@ -108,7 +118,43 @@ impl AcpxProviderSessionConfig {
         let profile = acpx_release_profile(&self.agent).ok_or_else(|| {
             LocalRunnerError::invalid("ACPX agent must name a known immutable profile")
         })?;
+        if let Some(admission) = &self.candidate_admission {
+            admission.validate_binding(
+                &self.agent,
+                &self.model,
+                &self.run_id,
+                &self.normalized_session_id,
+            )?;
+        } else if profile.qualification_pending {
+            return Err(LocalRunnerError::invalid(
+                "ACPX provider qualification is pending; this build cannot launch the provider",
+            ));
+        }
         validate_text(&self.model, MAX_MODEL_CHARS, "ACPX model")?;
+        if self.claude_effort.as_ref().is_some_and(|effort| {
+            self.agent != "claude"
+                || !matches!(effort.as_str(), "low" | "medium" | "high" | "xhigh" | "max")
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "Claude effort must be a supported Claude-only value",
+            ));
+        }
+        if self.grok_disable_web_search.is_some() && self.agent != "grok" {
+            return Err(LocalRunnerError::invalid(
+                "Grok search policy requires Grok",
+            ));
+        }
+        if self.grok_effort.as_ref().is_some_and(|effort| {
+            self.agent != "grok"
+                || !matches!(
+                    effort.as_str(),
+                    "minimal" | "low" | "medium" | "high" | "xhigh"
+                )
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "Grok effort must be a supported Grok-only value",
+            ));
+        }
         if (self.agent == "pi") != self.pi_thinking_level.is_some() {
             return Err(LocalRunnerError::invalid(
                 "ACPX Pi thinking level must be explicit for Pi and absent for other agents",
@@ -188,6 +234,9 @@ impl AcpxProviderSessionConfig {
                 || expected_identity.permission_mode != Some(self.permission_mode)
                 || expected_identity.mode != self.mode
                 || expected_identity.pi_thinking_level != self.pi_thinking_level
+                || expected_identity.claude_effort != self.claude_effort
+                || expected_identity.grok_effort != self.grok_effort
+                || expected_identity.grok_disable_web_search != self.grok_disable_web_search
             {
                 return Err(LocalRunnerError::invalid(
                     "ACPX expected identity conflicts with the requested session",
@@ -207,6 +256,23 @@ impl AcpxProviderSessionIdentity {
         }
         if let Some(mode) = self.mode.as_deref() {
             validate_text(mode, MAX_ID_CHARS, "ACPX provider mode")?;
+        }
+        if self.claude_effort.as_ref().is_some_and(|effort| {
+            !matches!(effort.as_str(), "low" | "medium" | "high" | "xhigh" | "max")
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX identity contains invalid Claude effort",
+            ));
+        }
+        if self.grok_effort.as_ref().is_some_and(|effort| {
+            !matches!(
+                effort.as_str(),
+                "minimal" | "low" | "medium" | "high" | "xhigh"
+            )
+        }) {
+            return Err(LocalRunnerError::invalid(
+                "ACPX identity contains invalid Grok effort",
+            ));
         }
         for (value, label) in [
             (&self.normalized_session_id, "normalized session"),
@@ -282,6 +348,7 @@ pub struct AcpxProviderSession {
     catalog_revision: u64,
     working_directory: PathBuf,
     closed: bool,
+    failure: Option<LocalRunnerError>,
     transport_terminated: bool,
     runtime_retired: bool,
 }
@@ -317,6 +384,7 @@ impl AcpxProviderSession {
             catalog_revision: config.catalog_revision,
             working_directory: config.working_directory.clone(),
             closed: false,
+            failure: None,
             transport_terminated: false,
             runtime_retired: false,
         })
@@ -399,6 +467,16 @@ impl AcpxProviderSession {
         message: &str,
         working_directory: &Path,
     ) -> Result<Value, LocalRunnerError> {
+        self.start_turn_timed(turn_id, message, working_directory, false)
+    }
+
+    pub fn start_turn_timed(
+        &mut self,
+        turn_id: &str,
+        message: &str,
+        working_directory: &Path,
+        performance: bool,
+    ) -> Result<Value, LocalRunnerError> {
         self.ensure_open()?;
         if self.runtime_retired {
             return Err(LocalRunnerError::invalid(
@@ -421,6 +499,14 @@ impl AcpxProviderSession {
             return Err(LocalRunnerError::invalid(
                 "ACPX provider session still has unsettled semantic tools",
             ));
+        }
+        if let Some(admission) = &self.config.candidate_admission {
+            admission.validate_binding(
+                &self.config.agent,
+                &self.config.model,
+                &self.config.run_id,
+                &self.config.normalized_session_id,
+            )?;
         }
         let rotate_turn_identity_ledger = self.state.settled_turn_identity_capacity_reached();
         let identity_validation = if rotate_turn_identity_ledger {
@@ -481,7 +567,7 @@ impl AcpxProviderSession {
         }
         let response = match self.transport.request(
             GeneratedAcpxSidecarCommand::TurnStart,
-            json!({"turnId":turn_id,"message":message}),
+            json!({"turnId":turn_id,"message":message,"performance":performance}),
         ) {
             Ok(response) => response,
             Err(error) => return Err(self.fail_closed(error)),
@@ -1028,7 +1114,10 @@ impl AcpxProviderSession {
 
     fn ensure_open(&self) -> Result<(), LocalRunnerError> {
         if self.closed {
-            return Err(LocalRunnerError::invalid("ACPX provider session is closed"));
+            return Err(self
+                .failure
+                .clone()
+                .unwrap_or_else(|| LocalRunnerError::invalid("ACPX provider session is closed")));
         }
         Ok(())
     }
@@ -1113,7 +1202,12 @@ impl AcpxProviderSession {
 
     fn fail_closed(&mut self, error: LocalRunnerError) -> LocalRunnerError {
         self.closed = true;
-        with_cleanup_error(error, self.terminate_transport())
+        let error = with_cleanup_error(
+            self.failure.clone().unwrap_or(error),
+            self.terminate_transport(),
+        );
+        self.failure = Some(error.clone());
+        error
     }
 }
 
@@ -1263,6 +1357,7 @@ fn sidecar_run_tool_operations(run_tool_set: &AuthorizedToolSet) -> Vec<Value> {
     run_tool_set
         .operations
         .iter()
+        .filter(|tool| !is_reserved_terminal_operation(&tool.operation_id))
         .map(|tool| {
             json!({
                 "name": tool.operation_id,
@@ -1313,11 +1408,31 @@ fn session_open_params(config: &AcpxProviderSessionConfig, sidecar_tools: &[Valu
         "tools": &sidecar_tools,
         "expectedIdentity": config.expected_identity,
     });
+    if let Some(admission) = &config.candidate_admission {
+        params["candidateAdmission"] = json!(admission);
+    }
+    if let Some(effort) = &config.claude_effort {
+        params["claudeEffort"] = json!(effort);
+    }
+    if let Some(effort) = &config.grok_effort {
+        params["grokEffort"] = json!(effort);
+    }
+    if let Some(disabled) = config.grok_disable_web_search {
+        params["grokDisableWebSearch"] = json!(disabled);
+    }
     if let Some(level) = config.pi_thinking_level {
         params["piThinkingLevel"] = json!(level);
     }
     if let Some(mode) = config.mode.as_deref() {
         params["mode"] = json!(mode);
+    }
+    params
+}
+
+fn initialize_params(config: &AcpxProviderSessionConfig) -> Value {
+    let mut params = json!({"agent": config.agent, "model": config.model});
+    if let Some(admission) = &config.candidate_admission {
+        params["candidateAdmission"] = json!(admission);
     }
     params
 }
@@ -1336,7 +1451,7 @@ fn bootstrap(
     let sidecar_tools = sidecar_run_tool_operations(&config.tool_set);
     let initialized = transport.request(
         GeneratedAcpxSidecarCommand::Initialize,
-        json!({"agent": config.agent, "model": config.model}),
+        initialize_params(config),
     )?;
     verify_initialize_response(&initialized, transport.process_id())?;
 
@@ -1430,6 +1545,9 @@ fn verify_open_response(
         || identity.permission_mode != Some(config.permission_mode)
         || identity.mode != config.mode
         || identity.pi_thinking_level != config.pi_thinking_level
+        || identity.claude_effort != config.claude_effort
+        || identity.grok_effort != config.grok_effort
+        || identity.grok_disable_web_search != config.grok_disable_web_search
         || config
             .expected_identity
             .as_ref()
@@ -1593,12 +1711,32 @@ fn with_cleanup_error(
         Ok(()) => error,
         Err(cleanup) => LocalRunnerError::invalid(format!(
             "{error}; ACPX sidecar cleanup also failed: {cleanup}"
-        )),
+        ))
+        .with_provider_failure(error.provider_failure()),
     }
 }
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn startup_cleanup_failure_keeps_the_validated_provider_cause() {
+        use super::*;
+        let cause = json!({
+            "schema":"paperclip.provider-failure.v1", "provider":"claude", "phase":"startup",
+            "category":"authentication", "message":"Sign in to the provider.", "retryability":"requires_action"
+        });
+        let original = LocalRunnerError::invalid("ACPX sidecar command session.open was rejected (retryable=false, classification=provider_authentication)")
+            .with_provider_failure(Some(cause.clone()));
+        let error = with_cleanup_error(
+            original.clone(),
+            Err(LocalRunnerError::invalid("cleanup was not confirmed")),
+        );
+        assert_eq!(error.provider_failure(), Some(cause));
+        assert!(error.to_string().starts_with(&original.to_string()));
+        assert!(error.to_string().contains("cleanup was not confirmed"));
+        assert!(!error.to_string().contains("Sign in to the provider."));
+    }
+
     #[test]
     fn live_request_snapshot_requires_current_unique_typed_callbacks() {
         use super::*;
@@ -1671,13 +1809,22 @@ mod tests {
 
     #[test]
     fn sidecar_catalog_leaves_reserved_terminal_tools_to_the_trusted_bridge() {
-        let operations = vec![AuthorizedTool {
+        let mut operations = vec![AuthorizedTool {
             operation_id: "get_task_context".to_owned(),
             version: 1,
             description: "Read the task context.".to_owned(),
             input_schema: json!({"type":"object"}),
             response_schema: json!({"type":"object"}),
         }];
+        for name in [PRP_BLOCK_TOOL_NAME, PRP_COMPLETION_TOOL_NAME] {
+            operations.push(AuthorizedTool {
+                operation_id: name.to_owned(),
+                version: 1,
+                description: "Trusted terminal operation.".to_owned(),
+                input_schema: json!({"type":"object"}),
+                response_schema: json!({"type":"object"}),
+            });
+        }
         let run_tool_set = AuthorizedToolSet {
             schema: TOOL_SET_SCHEMA.to_owned(),
             schema_version: 1,
@@ -1693,7 +1840,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["get_task_context"]
         );
-        assert_eq!(run_tool_set.operations.len(), 1);
+        assert_eq!(run_tool_set.operations.len(), 3);
         assert_eq!(
             sidecar_tools[0],
             json!({
@@ -1738,6 +1885,7 @@ mod mode_tests {
     fn config() -> AcpxProviderSessionConfig {
         let operations = Vec::new();
         AcpxProviderSessionConfig {
+            candidate_admission: None,
             transport: AcpxSidecarTransportConfig {
                 command: std::env::current_exe().unwrap(),
                 args: Vec::new(),
@@ -1755,6 +1903,9 @@ mod mode_tests {
             permission_mode: AcpxPermissionMode::ApproveReads,
             mode: Some("plan".to_owned()),
             pi_thinking_level: None,
+            claude_effort: None,
+            grok_effort: None,
+            grok_disable_web_search: None,
             permission_mode_pinned: true,
             provider_policy: Some(AcpxProviderRuntimePolicy { read_only: false }),
             system_instructions: String::new(),
@@ -1782,9 +1933,68 @@ mod mode_tests {
             permission_mode: Some(AcpxPermissionMode::ApproveReads),
             mode: Some("plan".to_owned()),
             pi_thinking_level: None,
+            claude_effort: None,
+            grok_effort: None,
+            grok_disable_web_search: None,
             provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
         }
     }
+    #[test]
+    fn pending_profile_cannot_launch_even_with_explicit_policy() {
+        let mut config = config();
+        config.agent = "antigravity".to_owned();
+        config.pi_thinking_level = None;
+        assert!(config
+            .validate()
+            .unwrap_err()
+            .to_string()
+            .contains("qualification is pending"));
+    }
+
+    #[test]
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn candidate_admission_is_bound_and_carried_through_both_bootstrap_requests() {
+        let mut cfg = config();
+        assert!(initialize_params(&cfg).get("candidateAdmission").is_none());
+        assert!(session_open_params(&cfg, &[])
+            .get("candidateAdmission")
+            .is_none());
+        cfg.agent = "antigravity".to_owned();
+        cfg.mode = None;
+        let admission = crate::acpx_candidate_admission::test_admission(
+            &cfg.run_id,
+            &cfg.normalized_session_id,
+        );
+        cfg.candidate_admission = Some(admission.clone());
+        cfg.validate().unwrap();
+        assert_eq!(
+            initialize_params(&cfg)["candidateAdmission"],
+            json!(admission)
+        );
+        assert_eq!(
+            session_open_params(&cfg, &[])["candidateAdmission"],
+            json!(admission)
+        );
+        for (field, value) in [
+            ("run", "different-run"),
+            ("session", "different-session"),
+            ("model", "different-model"),
+            ("agent", "codex"),
+        ] {
+            let mut invalid = cfg.clone();
+            match field {
+                "run" => invalid.run_id = value.to_owned(),
+                "session" => invalid.normalized_session_id = value.to_owned(),
+                "model" => invalid.model = value.to_owned(),
+                "agent" => invalid.agent = value.to_owned(),
+                _ => unreachable!(),
+            }
+            assert!(invalid.validate().is_err(), "{field}");
+        }
+        cfg.candidate_admission.as_mut().unwrap().expires_at = 0;
+        assert!(cfg.validate().is_err());
+    }
+
     #[test]
     fn model_is_explicit_and_provider_verified_for_every_agent() {
         let mut config = config();
@@ -1919,6 +2129,60 @@ mod mode_tests {
         identity.mode = None;
         identity.pi_thinking_level = config.pi_thinking_level;
         identity
+    }
+
+    #[test]
+    fn claude_effort_is_explicit_claude_only_and_forwarded_without_clamping() {
+        let mut cfg = config();
+        cfg.agent = "claude".to_owned();
+        for effort in ["low", "medium", "high", "xhigh", "max"] {
+            cfg.claude_effort = Some(effort.to_owned());
+            cfg.validate().unwrap();
+            assert_eq!(
+                session_open_params(&cfg, &[])["claudeEffort"],
+                json!(effort)
+            );
+        }
+        cfg.claude_effort = Some("ultra".to_owned());
+        assert!(cfg.validate().is_err());
+        cfg.claude_effort = Some("high".to_owned());
+        cfg.agent = "codex".to_owned();
+        assert!(cfg.validate().is_err());
+        cfg.claude_effort = None;
+        cfg.validate().unwrap();
+    }
+    #[test]
+    fn grok_search_policy_is_grok_only_and_preserves_false_in_the_sidecar() {
+        let mut cfg = config();
+        cfg.agent = "grok".to_owned();
+        for disabled in [true, false] {
+            cfg.grok_disable_web_search = Some(disabled);
+            cfg.validate().unwrap();
+            assert_eq!(
+                session_open_params(&cfg, &[])["grokDisableWebSearch"],
+                json!(disabled)
+            );
+        }
+        cfg.agent = "codex".to_owned();
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn grok_effort_is_explicit_grok_only_and_forwarded_without_clamping() {
+        let mut cfg = config();
+        cfg.agent = "grok".to_owned();
+        for effort in ["minimal", "low", "medium", "high", "xhigh"] {
+            cfg.grok_effort = Some(effort.to_owned());
+            cfg.validate().unwrap();
+            assert_eq!(session_open_params(&cfg, &[])["grokEffort"], json!(effort));
+        }
+        cfg.grok_effort = Some("ultra".to_owned());
+        assert!(cfg.validate().is_err());
+        cfg.grok_effort = Some("high".to_owned());
+        cfg.agent = "codex".to_owned();
+        assert!(cfg.validate().is_err());
+        cfg.grok_effort = None;
+        cfg.validate().unwrap();
     }
 
     #[test]

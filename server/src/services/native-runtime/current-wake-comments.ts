@@ -21,6 +21,8 @@ export const CURRENT_WAKE_COMMENTS_BINDING_SCHEMA =
   "paperclip.current-wake-comments-binding.v1";
 export const CURRENT_WAKE_COMMENTS_RECEIPT_SCHEMA =
   "paperclip.current-wake-comments-receipt.v1";
+export const NATIVE_CURRENT_WAKE_COMMENTS_UNREAD = "native_current_wake_comments_unread";
+export const NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ = "native_current_wake_comments_changed_after_read";
 
 const CURRENT_WAKE_COMMENTS_RECEIPT_KEY = "currentWakeCommentsReceipt";
 const MAX_PAGE_BODY_CHARS = 12_000;
@@ -816,17 +818,17 @@ export async function assertCurrentWakeCommentsRead(
       record(locked.resultJson)[CURRENT_WAKE_COMMENTS_RECEIPT_KEY],
     );
     if (!receipt || receipt.complete !== true || receipt.nextCursor !== null) {
-      throw new Error("native_current_wake_comments_unread");
+      throw new Error(NATIVE_CURRENT_WAKE_COMMENTS_UNREAD);
     }
     if (receipt.bindingDigest !== binding.bindingDigest) {
-      throw new Error("native_current_wake_comments_changed_after_read");
+      throw new Error(NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ);
     }
     const snapshot = await currentWakeCommentsSnapshot(
       tx as unknown as Db,
       binding,
     );
     if (receipt.snapshotDigest !== snapshot.snapshotDigest) {
-      throw new Error("native_current_wake_comments_changed_after_read");
+      throw new Error(NATIVE_CURRENT_WAKE_COMMENTS_CHANGED_AFTER_READ);
     }
   });
 }

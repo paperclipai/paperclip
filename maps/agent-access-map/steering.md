@@ -2,6 +2,8 @@
 
 Product map: [Steering and queued messages](../feature-map/steering.md).
 
+Feature ID: `steering`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -12,6 +14,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `queue`
+
+Capability ID: `steering/queue`.
 
 Review: `baseline`.
 
@@ -29,6 +33,10 @@ Compact task run reads retain `wakeupRequestId` and `queuedCommentSourceWakeIds`
 to identify consumed input queues, including coalesced requests. These receipt
 fields follow the existing task/run read checks and grant no queue mutation authority.
 
+The UI can place a queued turn's starting input in history without recording
+consumption. Drain release and expiry only reconsider existing queued runs under
+normal admission authority. They grant no new agent control or replay authority.
+
 Accepted deferred requests remain pending while their recipient agent is paused.
 Resume uses the normal admission checks. This grants no new pause, resume, queue
 mutation, or execution authority to an agent.
@@ -45,6 +53,8 @@ Gaps: Agents can read eligible queue state; sending/steering the person's queued
 messages requires separate authority.
 
 ## `edit-order-discard`
+
+Capability ID: `steering/edit-order-discard`.
 
 Review: `baseline`.
 
@@ -71,6 +81,8 @@ needed before granting one.
 
 ## `steer`
 
+Capability ID: `steering/steer`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -95,6 +107,8 @@ preserves this denial and cannot impersonate the steering user.
 
 ## `interrupt`
 
+Capability ID: `steering/interrupt`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -105,7 +119,7 @@ API: `present` — representative operation IDs:
 Agent access: `restricted` — Board-user interruption/cancel API.
 
 Policy: Queue inspection follows task visibility; queued user-message mutation and run
-cancellation require a board actor/user.
+cancellation require a board actor/user. The same queue endpoint accepts an explicit **Send** for a stopped native queue. It records fresh board intent, retains original comment authors, and keeps execution cleanup and admission gates. Agent Chat `/new` also retains native process, controller, workspace and lease checks before subsequent messages execute. It does not grant agents the ability to send saved user messages or interrupt live native turns.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L16166) at
 the reviewed commit above.
@@ -118,6 +132,8 @@ Gaps: Explicit operator action is distinct from an agent yielding/blocking its o
 
 ## `stop-and-pause`
 
+Capability ID: `steering/stop-and-pause`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -129,7 +145,9 @@ Agent access: `restricted` — Board control APIs; agent paperclip_finish/paperc
 for its own turn.
 
 Policy: Queue inspection follows task visibility; queued user-message mutation and run
-cancellation require a board actor/user.
+cancellation require a board actor/user. A saved pre-Stop message does not authorize
+automatic resumption. A later authorized user message may continue with retained
+input after current cleanup, ownership, and budget gates pass.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L16166) at
 the reviewed commit above.
@@ -142,6 +160,8 @@ Gaps: Task-tree/agent pause and confirmed stop need policy-preserving authority;
 generic agent management path.
 
 ## `drafts`
+
+Capability ID: `steering/drafts`.
 
 Review: `baseline`.
 
@@ -164,6 +184,8 @@ Gaps: No shared server draft resource for this presentation state; cross-client 
 would be a deliberate new capability.
 
 ## `approval-queue`
+
+Capability ID: `steering/approval-queue`.
 
 Review: `baseline`.
 
