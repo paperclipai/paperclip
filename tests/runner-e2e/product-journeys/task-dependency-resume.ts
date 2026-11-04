@@ -71,6 +71,9 @@ export async function taskDependencyResume(context: JourneyContext, session: Tar
       if (!context.capabilities.includes(capability)) throw new JourneyError("unsupported", `missing_${capability}`);
     }
     if (!agent || agent.runtimeMode !== "native" || !context.environmentId) throw new JourneyError("unsupported", "native_agent_and_environment_required");
+    if ([agent.provider, agent.model].some(value => typeof value !== "string" || !value.trim())) {
+      throw new JourneyError("unsupported", "dependency_execution_identity_unavailable");
+    }
     const summaries = async (route: string, limit?: number) => {
       const rows = await read.get<Row[]>(route);
       if (!Array.isArray(rows) || limit !== undefined && rows.length >= limit) throw new JourneyError("failed", "dependency_run_coverage_unavailable");

@@ -32,7 +32,10 @@ blocker completion audit. No agent work is permitted on the human-owned blocker.
 
 The case requires `company`, `board-user`, `task-write`, and `agent`. It declares
 one work run, uses the existing bounded case budget, and shares the original
-campaign deadline. It saves the agent's starting run history and retains those
+campaign deadline. The native agent must have nonblank provider and model
+identifiers before any observation read or task creation. An incomplete execution
+identity returns `unsupported` without task or agent work.
+It saves the agent's starting run history and retains those
 records while checking only newly appearing runs for this case. Earlier terminal
 campaign work stays in the accounting and does not count as new execution.
 Owned-task activity reads are complete and uncapped; the separate agent-filtered

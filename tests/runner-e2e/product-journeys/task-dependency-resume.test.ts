@@ -117,6 +117,24 @@ async function fixture(premature = false, options: FixtureOptions = {}) {
 }
 afterEach(() => { vi.useRealTimers(); controls.create.mockReset(); });
 describe("dependency browser flow orchestration", () => {
+  it.each((["provider", "model"] as const).flatMap(field => [
+    [field, "missing", undefined], [field, "null", null], [field, "empty", ""], [field, "blank", " \t "],
+  ] as const))("rejects a %s identity that is %s before observation or task work", async (field, _kind, value) => {
+    const f = await fixture();
+    Object.assign(f.context.agent!, { [field]: value });
+    const get = vi.spyOn(f.context.api, "get").mockRejectedValue(new Error("preflight_read_attempted"));
+    try {
+      await expect(taskDependencyResume(f.context, f.session, "journey-123-abcdef01", f.evidence,
+        { deadlineAt: Date.now() + 60_000, directory: f.directory })).rejects.toMatchObject({
+        outcome: "unsupported", code: "dependency_execution_identity_unavailable",
+      });
+      expect(get).not.toHaveBeenCalled(); expect(controls.create).not.toHaveBeenCalled();
+      expect(f.actions).toEqual([]); expect(f.owned).toEqual([]); expect(f.writes).toEqual([]);
+      expect(f.evidence.checks).toEqual([]);
+      expect(JSON.parse(await readFile(path.join(f.directory, "task-dependency-observations.json"), "utf8"))).toHaveProperty("stage", "prerequisites");
+      expect(JSON.parse(await readFile(path.join(f.directory, "observation-read-failures.json"), "utf8"))).toEqual({ failures: [] });
+    } finally { await rm(f.directory, { recursive: true, force: true }); }
+  });
   it.each([
     ["empty history", {}],
     ["completed earlier campaign runs", { priorRuns: 3 }],
