@@ -381,6 +381,7 @@ async function rotateExternalAuthorityEpoch(
       "PRP recovery identity does not match the durable session binding",
     );
   }
+  if (checkpoint) coldCheckpointProviderIdentity(controlPlaneState, checkpoint);
   const archive = authorityArchiveDirectory(root, priorIdentity);
   const archivedControlPlane = resolve(archive, "control-plane");
   const activeControlPlane = resolve(root, "control-plane");
@@ -556,7 +557,7 @@ function recoveredRunAttachment(state: {
 }
 
 function latestProviderIdentityEventIndex(
-  events: readonly { eventType: string }[],
+  events: readonly { eventType?: unknown }[],
 ): number {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const eventType = events[index]?.eventType;
@@ -569,6 +570,19 @@ function latestProviderIdentityEventIndex(
     }
   }
   return -1;
+}
+
+function coldCheckpointProviderIdentity(state: Record<string, unknown>, checkpoint: RunnerColdCheckpoint) {
+  const events = Array.isArray(state.committedEvents) ? state.committedEvents.map(record) : [];
+  const event = events[latestProviderIdentityEventIndex(events)];
+  const started = record(record(record(event?.envelope).payload).payload);
+  const { threadId, sessionId } = resolveRunnerdSessionIdentity(started);
+  if (!recoveryIdentityMatches(controlPlaneIdentity(state), checkpoint.identity) ||
+      threadId !== checkpoint.providerSessionId || sessionId === null) {
+    throw new Error("native_runner_cold_checkpoint_provider_identity_mismatch");
+  }
+  return { driverSessionId: threadId, providerSessionId: sessionId,
+    providerIdentity: typeof record(started.providerIdentity).kind === "string" ? structuredClone(record(started.providerIdentity)) : null };
 }
 
 function providerDrainStateFromSnapshot(state: Record<string, unknown>): {
@@ -5763,6 +5777,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         new Error("PRP provider resume state is unavailable"),
       );
     }
+    if (this.options.resumeColdCheckpoint) {
+      const checkpoint = this.options.resumeColdCheckpoint;
+      const source = recoveryIdentityMatches(controlPlaneIdentity(controlPlaneState!), checkpoint.identity)
+        ? controlPlaneState!
+        : readControlPlaneState(resolve(authorityArchiveDirectory(this.#root, checkpoint.identity), "control-plane"));
+      this.#checkpointProviderIdentityExpectation = coldCheckpointProviderIdentity(source, checkpoint);
+    }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());
     const runnerArtifact = this.options.runnerArtifact ?? approvedRunnerArtifact(runnerBinaryPath);
@@ -6014,6 +6035,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       this.#applyProviderIdentityEvent(
         committedEvents[adoptedProviderIdentityIndex]!,
       );
+    } else if (this.options.resumeColdCheckpoint) {
+      const expected = this.#checkpointProviderIdentityExpectation!;
+      this.#threadId = expected.driverSessionId;
+      this.#sessionId = expected.providerSessionId;
+      this.#providerIdentity = expected.providerIdentity;
     } else if (
       (exactAuthority || warmRecovery !== null) &&
       this.options.resumeProviderSession?.driverSessionId.trim() &&
@@ -6338,6 +6364,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           "authenticated recovery session.snapshot",
         );
       }
+    }
+    if (this.options.resumeColdCheckpoint) {
+      const snapshot = await this.#commandResult("session.snapshot", {}, admissionDeadline, true);
+      if (resolveRunnerdSessionIdentity(snapshot).threadId !== this.options.resumeColdCheckpoint.providerSessionId) {
+        throw new Error("native_runner_cold_checkpoint_provider_identity_mismatch");
+      }
+      this.#confirmCheckpointProviderIdentity(snapshot, "authenticated cold recovery session.snapshot");
     }
     // A relaunched executor proves its restored provider with either its fresh
     // resume identity or the authenticated snapshot above. An adopted live
