@@ -28,6 +28,7 @@ const supported = Boolean(externalUrl) || (await getEmbeddedPostgresTestSupport(
   });
   const select = () => findNativeSessionResumeRun(db, input);
   const source = () => run(0, { runnerInstanceId: randomUUID(), processPid: 17, processGroupId: 19, processStartedAt: at(0),
+    errorCode: "native_session_interrupted",
     runnerProfileJson: profile, contextSnapshot: { paperclipWake, paperclipIssue: { ...paperclipIssue, unrelated: "Omit" }, prompt: "Omit" } });
   const writeProfile = (id: string, value: unknown) => db.execute(sql`update ${heartbeatRuns}
     set runner_profile_json = ${JSON.stringify(value)}::jsonb where ${heartbeatRuns.id} = ${id}`);
