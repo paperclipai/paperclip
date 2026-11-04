@@ -298,7 +298,7 @@ export const secretDeliveryExternalCases = [
     },
     gradeSecretDelivery,
     {
-      authentication: "human-session",
+      oracleVersion: "paperclip.chat-catalog.external.v2", authentication: "human-session",
       expectedRunCount: 3,
       minimumRunCount: 3,
       expectedHumanMessageCount: 1,
