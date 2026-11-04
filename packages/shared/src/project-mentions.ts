@@ -209,6 +209,26 @@ export function extractProjectMentionIds(markdown: string): string[] {
   return [...ids];
 }
 
+const PROJECT_REFERENCE_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Every structured project link in the markdown: lowercase project UUIDs, plus
+ * a count of `project://` links that do not name a project UUID. Unlike
+ * `extractProjectMentionIds`, nothing is silently dropped.
+ */
+export function scanProjectMentions(markdown: string): { projectIds: string[]; malformed: number } {
+  const ids = new Set<string>();
+  let malformed = 0;
+  const re = new RegExp(PROJECT_MENTION_LINK_RE);
+  let match: RegExpExecArray | null;
+  while (markdown && (match = re.exec(markdown)) !== null) {
+    const projectId = parseProjectMentionHref(match[1])?.projectId;
+    if (projectId && PROJECT_REFERENCE_UUID_RE.test(projectId)) ids.add(projectId.toLowerCase());
+    else malformed += 1;
+  }
+  return { projectIds: [...ids], malformed };
+}
+
 export function extractAgentMentionIds(markdown: string): string[] {
   if (!markdown) return [];
   const ids = new Set<string>();

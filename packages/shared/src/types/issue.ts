@@ -882,6 +882,8 @@ export interface Issue {
   /** Collection projections omit task bodies and cannot seed the detail cache. */
   listProjection?: "index" | "rows";
   statusVersion?: number;
+  /** Server-owned; advances with every write to content that can carry project references. */
+  contextReferenceRevision?: number;
   /** True only while the title is the provisional slice of the initial prompt. */
   titleNeedsGeneration?: boolean;
   conversationAgentId?: string | null;

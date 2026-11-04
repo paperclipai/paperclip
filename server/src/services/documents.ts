@@ -1,5 +1,6 @@
 import { notifyStatusCardIssueChange } from "./status-card-notifications.js";
 import { notifyIssueRecovery } from "./issue-recovery-notifications.js";
+import { notifyTaskProjectReferences } from "./task-project-references.js";
 import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -241,6 +242,7 @@ export function documentService(db: Db) {
         try {
           return await db.transaction(async (tx) => {
           await notifyStatusCardIssueChange(tx, issue.companyId);
+          await notifyTaskProjectReferences(tx, { companyId: issue.companyId, issueId: issue.id });
           const now = new Date();
           const existing = await tx
             .select({
@@ -601,6 +603,7 @@ export function documentService(db: Db) {
         for (const companyId of new Set(rows.map(row => row.companyId))) {
           await notifyStatusCardIssueChange(tx, companyId);
           await notifyIssueRecovery(tx, { companyId });
+          await notifyTaskProjectReferences(tx, { companyId });
         }
         await insertRowsInChunks(tx, documents, documentRows);
         await insertRowsInChunks(tx, documentRevisions, revisionRows);
@@ -655,6 +658,7 @@ export function documentService(db: Db) {
         }
 
         await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyTaskProjectReferences(tx, existing);
         const now = new Date();
         const nextRevisionNumber = existing.latestRevisionNumber + 1;
         const [restoredRevision] = await tx
@@ -832,6 +836,7 @@ export function documentService(db: Db) {
         }
 
         await notifyIssueRecovery(tx, { companyId: existing.companyId });
+        await notifyTaskProjectReferences(tx, existing);
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
         await notifyStatusCardIssueChange(tx, existing.companyId);
         await tx.delete(documents).where(eq(documents.id, existing.id));

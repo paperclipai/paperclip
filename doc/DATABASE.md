@@ -926,6 +926,56 @@ its charges, then budget reservations. Policy updates take the same project
 lock. Settlement takes no project lock. Only the project-set step is implemented
 so far; claim paths keep their current locks until they are integrated.
 
+## Task project references
+
+The task-context owner (`server/src/services/task-project-references.ts`)
+defines which projects a task's execution references. The set is the optional
+primary project union every structured `project://` link in content Paperclip
+supplies to that execution: title, description, undeleted comments, every issue
+document, plan-review annotation comments, thread interactions (text leaves of
+their JSON), workflow case facts and an accepted plan revision chosen by the
+queued intent. A link to another task does not import that task's references.
+Wake snapshots and handoff excerpts are copies of these sources; prior run
+output, agent instructions and content an agent fetches through tools are not
+part of the set.
+
+Migration `0432` adds triggers that run in the statement of every source write,
+whatever service, route, tool, import or direct SQL performs it:
+
+- `issues.context_reference_revision` advances once per changed source. Edits to
+  status, metadata, source trust or timestamps do not advance it.
+- `issue_project_references` replaces that source's candidate rows. It is
+  company-scoped, indexed by `(company_id, project_id)` for reverse lookup and
+  has no project foreign key, so missing and foreign IDs stay visible. Its SQL
+  extractor returns every UUID inside a `project://` link, a tested superset of
+  the shared parser. The migration backfills existing tasks.
+
+A source write takes the task row lock (`FOR NO KEY UPDATE`) in its own
+statement, at the issue step of the lock order above. Claims already lock the
+task `FOR UPDATE`. A concurrent comment therefore either commits before a claim
+reads the sources or waits for the claim to commit; it cannot slip in as a
+phantom reference.
+
+The projection is only a candidate index. `resolveTaskProjectReferences`
+re-parses every source in full under the task lock, using the shared parser.
+Summaries, truncation, pagination and workspace staging never shrink the set.
+It returns the revision and complete set, or one of these typed outcomes:
+`revision_changed`, `invalid_references` (malformed or unavailable counts),
+`unauthorized` (checked by `project:read` for the execution's actor),
+`too_many_projects` (above 100, never the first 100),
+`context_source_unavailable` or `fresh_context_required`. Outcomes carry counts,
+never inaccessible IDs or names. A retained session (`agent_task_sessions`) adds
+the set of its last run's latest admission. A missing admission or an unknown
+set requires a fresh context.
+
+Admission (C2) reads `readTaskProjectReferenceHint`, locks those projects and
+then resolves with `expectedRevision`. A changed revision rolls back and
+retries from the new set. Nothing calls this from a claim path yet, so no
+capacity is enforced. Recording admissions for real sessions is also part of
+that later integration. The comment, issue and document write helpers publish
+`task-project-references` work signals after the outer commit. These are hints
+only; the revision and projection are the truth.
+
 ## Switching between modes
 
 The database mode is controlled by `DATABASE_URL`:
