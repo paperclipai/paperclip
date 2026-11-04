@@ -1777,8 +1777,11 @@ It has one local cell each for native Codex and ACPX Claude. It reuses the
 production wizard, first-task fixtures, $5 company task budget, twelve-run
 maximum, fifteen-minute attempt deadline, five-minute response waits, screenshots,
 private diagnostics, sanitized public evidence, and disposable-company cleanup.
-Expect seven provider work turns; setup probes are accounted separately. It
-permits one attempt and is excluded from `--all`. Run it explicitly when
+Expect seven provider work turns, including the writer's child. The outer
+runner accepts one to seven parent heartbeat records; it does not count the
+child as a parent run. The oracle independently requires all three human
+decisions and exactly one writer execution. Setup probes are accounted separately.
+The case permits one attempt and is excluded from `--all`. Run it explicitly when
 qualifying changes to onboarding or approval semantics:
 
 ```sh

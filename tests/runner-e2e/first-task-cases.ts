@@ -88,5 +88,6 @@ export const firstTaskTasks: readonly RunnerTaskFixture[] = FIRST_TASK_CASES.map
 export const onboardingApprovalHistoryTask = {
   ...buildFirstTaskFixture(approvalHistoryCase),
   expectedTerminalState: { issue: "done", run: "succeeded" } as const,
+  minimumExpectedRunCount: 1,
   automaticRetryPolicy: "single_attempt" as const,
 };

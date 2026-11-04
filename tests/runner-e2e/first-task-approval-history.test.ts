@@ -9,6 +9,7 @@ import { projectFirstTaskResult } from "./first-task-flow.js";
 import { runApprovalHistoryDecisions } from "./first-task-approval-history-flow.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
 import type { RunnerE2EResult } from "./types.js";
+import { matchesRunCount } from "./run-count.js";
 
 function recording(): FirstTaskEvidence {
   const { marker } = firstTaskScenario(APPROVAL_HISTORY_CASE, "history");
@@ -74,8 +75,16 @@ describe("onboarding approval history journey", () => {
   });
 
   it.each(runnerMatrix.filter(cell => cell.suite.id === APPROVAL_HISTORY_SUITE))(
-    "the grader's completed task matches the outer runner's expected statuses for $id", execution => {
+    "completed evidence satisfies the outer runner's status and parent-run contract for $id", execution => {
       const evidence = recording();
+      // Seven work turns include the writer: only six belong to the parent.
+      const leadRuns = ["interview-run", "plan-run", "hiring-request-run", "hire-run", "create-child-run", "parent-run"].map((id, index) => ({
+        id, nativeIssueId: evidence.onboardingIssueId, agentId: evidence.agentId, status: "succeeded", runtimeMode: "native",
+        contextSnapshot: { issueId: evidence.onboardingIssueId }, startedAt: `2026-11-01T00:0${[1, 2, 3, 5, 7, 8][index]}:00Z`,
+      }));
+      for (const checkpoint of evidence.checkpoints.filter(c => c.phase === "finished")) {
+        checkpoint.runs = [...leadRuns, ...checkpoint.runs.filter(run => run.agentId !== evidence.agentId)];
+      }
       expect(failures(evidence)).toEqual([]);
       const finished = evidence.checkpoints.at(-1)!;
       const parent = finished.tasks.find(task => task.id === evidence.onboardingIssueId)!;
@@ -83,6 +92,9 @@ describe("onboarding approval history journey", () => {
       expect(parent.status).toBe(execution.task.expectedTerminalState.issue);
       expect(parentRuns).not.toHaveLength(0);
       expect(parentRuns.every(run => run.status === execution.task.expectedTerminalState.run)).toBe(true);
+      expect(matchesRunCount(execution.task, parentRuns.length)).toBe(true);
+      expect(matchesRunCount(execution.task, 0)).toBe(false);
+      expect(matchesRunCount(execution.task, execution.task.expectedRunCount + 1)).toBe(false);
     });
 
   it("rejects a completed writer task when the onboarding parent remains in review", () => {
