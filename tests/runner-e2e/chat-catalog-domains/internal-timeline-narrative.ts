@@ -23,7 +23,7 @@ export function truthfulTimelineAccount(input: {
   const passiveAction = `\\b(?:was|got|had been|has been)\\s+${assignment}`;
   const handoffToRepairWorker = new RegExp(`${actorAction}${withinClause}{0,60}${target}|${passiveAction}${withinClause}{0,60}${target}${withinClause}{0,40}\\bby\\s+(?:(?:the|a|an)\\s+)?${humanActor}`, "i");
   const passiveHandoffToRepairWorker = new RegExp(`${passiveAction}${withinClause}{0,60}${target}`, "gi");
-  const successorOwnership = new RegExp(`\\b${escape(repairWorker)}\\s+took\\s+(?:over(?:\\s+(?:the\\s+)?(?:task|work))?|the\\s+same\\s+(?:task|work))\\b`, "gi");
+  const successorOwnership = new RegExp(`\\b${escape(repairWorker)}\\s+took\\s+(?:over\\s+(?:the\\s+)?(?:same\\s+)?(?:task|work)|over(?=\\s*(?:[,;.!?\\n]|$))|the\\s+same\\s+(?:task|work))\\b`, "gi");
   const differentNamedPerson = (text: string) => {
     const namedRole = /^\s*(?:Then\s+)?([A-Z][\p{L}'-]+(?:\s+[A-Z][\p{L}'-]+)*)\s*,?\s*(?:the\s+)?(?:human|person|user|operator)\b/u.exec(text);
     return !!namedRole && !["The", "A", "An", input.personName].some(name => name?.toLowerCase() === namedRole[1]!.toLowerCase())
@@ -31,7 +31,8 @@ export function truthfulTimelineAccount(input: {
   };
   const handoffMatches = (text: string) => {
     if (differentNamedPerson(text.replace(/^\s*by\s+/i, "")) || /\b(?:not|never|no)\b[^.!?]{0,50}\b(?:reassign|assign|hand|handoff)/i.test(text)) return [];
-    const byActors = [...text.matchAll(/\bby\s+(?:(?:the|a|an)\s+)?/gi)];
+    const byActors = [...text.matchAll(/\bby\s+(?:(the|a|an)\s+)?/gi)]
+      .filter(actor => actor[1] || !/^[a-z]+ing\b/.test(text.slice(actor.index + actor[0].length)));
     if (byActors.some(actor => !new RegExp(`^${humanActor}`, "i").test(text.slice(actor.index + actor[0].length)))) return [];
     const actorUnspecified = [...text.matchAll(passiveHandoffToRepairWorker), ...text.matchAll(successorOwnership)].filter(() =>
       !/\b(?:automatically|autonomously|self-assigned)\b/i.test(text));
@@ -111,13 +112,16 @@ export function truthfulTimelineAccount(input: {
   const explicitOwner = new RegExp(`['’]s\\s+${commandTail}`, "i");
   const repairOwner = new RegExp(`\\b${escape(repairWorker)}['’]s\\s+${commandTail}`, "i");
   const firstWorkerCommand = new RegExp(`\\b${escape(firstWorker)}\\s+(?:ran|executed|performed)\\s+(?:the\\s+)?${commandTail}`, "i");
-  const nonzeroExit = (text: string) => [...text.matchAll(/\bexit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*(-?\d+)\b/gi)]
+  const exitCode = /\bexit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*(-?\d+)\b/gi;
+  const currentResult = (text: string) => text.replace(new RegExp(`\\b(?:earlier|previous|prior|original)\\s+${exitCode.source}`, "gi"), "");
+  const nonzeroExit = (text: string) => [...currentResult(text).matchAll(exitCode)]
     .some(match => Number(match[1]) !== 0);
   const successIsOwned = (text: string, at: number) => {
     const before = text.slice(0, at);
     const resultStart = [...before.matchAll(/\b(?:verification|verify_launch_html|check|test|command)\b/gi)].at(-1)?.index ?? at;
     return (!explicitOwner.test(before) || repairOwner.test(before)) && !firstWorkerCommand.test(before)
-      && !nonzeroExit(text.slice(resultStart));
+      && !nonzeroExit(text.slice(resultStart))
+      && !/\b(?:not|never|no)\b|n['’]t\b/i.test(currentResult(before.slice(resultStart)));
   };
   const causedByRepair = /^\s+(?:with\s+exit(?:\s+(?:code|status))?\s*[:=]?\s*0\s+)?(?:(?:only|immediately|just)\s+)?(?:after|once)(?:\s+(?:the|a|missing|email|real|label|input|task|repair)){0,6}\s*$/i;
   const repairAfterSuccess = new RegExp(`\\bafter\\s+(?:(?:the|a|his|her|their|its)\\s+)?${commandTail}`, "i");
@@ -152,12 +156,12 @@ export function truthfulTimelineAccount(input: {
     const contextualResult = sameWorkerParagraph && !!contextualOutcome
       && contextualCommandLead.test(nextCommand.slice(0, contextualOutcome.index))
       && successIsOwned(nextCommand, contextualOutcome.index)
-      && !new RegExp(failureOutcome.source, "i").test(next)
+      && !new RegExp(failureOutcome.source, "i").test(currentResult(next))
       && !namesOtherActor(text + " " + nextCommand, repairWorker) && !mentions(text + " " + next, firstWorker);
     if (next && assertedRepair && !deniedRepairObject.test(passiveRepair ? lead : text.slice(end))
       && (repairObjectTail.test(text.slice(end)) || contextualResult)
       && !text.trimEnd().endsWith("?") && !next.trimEnd().endsWith("?") && (adjacentVerification.test(next) || contextualResult)
-      && !/\b(?:if|unless|whether|before|earlier|previous(?:ly)?|already|unrelated|different|other)\b/i.test(text + next)) return true;
+      && !/\b(?:if|unless|whether|before|earlier|previous(?:ly)?|already|unrelated|different|other)\b/i.test(currentResult(text + next))) return true;
     // An earlier success word counts only with the bounded causal relationship
     // "the check passed after [this worker's repair]", never by itself.
     const prefix = text.slice(0, match.index);
