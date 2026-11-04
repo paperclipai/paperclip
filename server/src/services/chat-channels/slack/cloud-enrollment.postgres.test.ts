@@ -32,7 +32,11 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
   const db = createDb(appUrl!, { maxConnections: 2, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   const pool = new Pool({ connectionString: cloudUrl!, max: 2 });
 
-  const registry = Reflect.construct(PostgresCloudHarnessRegistry, [pool]);
+  const registry = Reflect.construct(PostgresCloudHarnessRegistry, [pool]) as {
+    applyMigrations(folder: string, timeout: number): Promise<void>;
+    hydrate(): Promise<void>;
+    close(): Promise<void>;
+  };
   try {
     await registry.applyMigrations(path.resolve(cloudDist!, "../migrations"), 30_000);
     await registry.hydrate();
@@ -124,6 +128,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
     expect(onMessage).toHaveBeenCalledOnce();
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ message: expect.objectContaining({ author: expect.objectContaining({ userId: "UOPERATOR", userName: "Operator" }) }) }));
     expect(transport).toHaveBeenCalled();
+    await transport.assertNoErrors();
     expect(await connector.acknowledgeEvents({ subject: "actor", companyId, leaseId: leased!.leaseId, deliveryIds: [event.id] })).toBe(1);
     expect(await connector.leaseEvents({ subject: "actor", companyId, eventWakeVersion: 1 })).toBeNull();
     await db.update(chatEndpoints).set({ setup: { ...saved, runtimeGeneration: 2 } as InternalSetupState }).where(eq(chatEndpoints.id, endpointId));

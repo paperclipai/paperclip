@@ -37,6 +37,7 @@ describe("authenticated Slack Cloud receipt consumer", () => {
       expect(onMessage).toHaveBeenCalledOnce();
     expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ message: expect.objectContaining({ author: expect.objectContaining({ userId: "UOPERATOR", userName: "Operator" }) }) }));
       expect(transport).toHaveBeenCalled();
+    await transport.assertNoErrors();
       expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ provider: "slack", endpointId: f.binding.endpointId }));
       const response = await runtime.handleWebhook(new Request("https://external.invalid", { method: "POST",
         headers: { "content-type": "application/json", "x-slack-request-timestamp": f.timestamp, "x-slack-signature": f.signature },

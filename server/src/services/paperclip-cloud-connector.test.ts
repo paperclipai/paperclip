@@ -584,11 +584,13 @@ describe("Paperclip Cloud connector", () => {
       return Response.json({
         active: true,
         status: "active",
-        profiles: ["gmail.read", "drive.write", "unknown.profile", "gmail.read"],
+        profiles: ["gmail.read", "drive.write", "unknown.profile", "slack.events.v1", "gmail.read"],
+        slackEvents: { version: 1 },
       });
     });
     const connector = createPaperclipCloudConnector({ config: keys.config, request: request as typeof fetch });
     await expect(connector.getCapabilities()).resolves.toEqual(["gmail.read", "drive.write"]);
+    await expect(connector.slackEventsAvailable()).resolves.toBe(true);
   });
 
   it("fails capability discovery closed for inactive, legacy, malformed, or rejected status responses", async () => {

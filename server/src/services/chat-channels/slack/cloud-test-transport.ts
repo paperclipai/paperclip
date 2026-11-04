@@ -3,6 +3,10 @@ import https from "node:https";
 import { expect, vi } from "vitest";
 
 export function guardSlackFixtureNetwork() {
+  if (process.env.SLACK_GATE_EXPECT_PRELOAD === "1") {
+    expect(process.env.SLACK_GATE_GUARD_PID).toBe(String(process.pid));
+    console.info(JSON.stringify({ slackFixtureWorkerPid: process.pid, prewireGuardPid: process.env.SLACK_GATE_GUARD_PID }));
+  }
   const blocked: string[] = [];
   const check = (value: unknown) => {
     const url = value instanceof URL ? value : typeof value === "string" ? new URL(value) : undefined;
@@ -23,13 +27,29 @@ export function guardSlackFixtureNetwork() {
   const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
     check(input instanceof Request ? input.url : input); return realFetch(input, init);
   });
-  return { assertQuiet: () => expect(blocked).toEqual([]), restore: () => {
+  return { assertQuiet: () => {
+    expect(blocked).toEqual([]);
+    const stats = (process as typeof process & { __sleep2ChatNetworkStats?: () => unknown }).__sleep2ChatNetworkStats;
+    if (process.env.SLACK_GATE_EXPECT_PRELOAD === "1") {
+      expect(stats).toBeTypeOf("function");
+      console.info(JSON.stringify({ slackFixtureWorkerPid: process.pid, networkStats: stats!() }));
+    }
+  }, restore: () => {
     fetchSpy.mockRestore(); httpsSpy.mockRestore(); httpSpy.mockRestore();
   } };
 }
 
 export function stubSlackFixtureTransport(adapter: unknown) {
-  const client = (adapter as { _client: { axios: { defaults: { adapter: unknown } } } })._client;
+  const client = (adapter as { _client: {
+    axios: { defaults: { adapter: unknown } };
+    buildResult(response: unknown): Promise<unknown>;
+  } })._client;
+  const failures: unknown[] = [];
+  const buildResult = client.buildResult.bind(client);
+  client.buildResult = async response => {
+    try { return await buildResult(response); }
+    catch (error) { failures.push(error); throw error; }
+  };
   const transport = vi.fn(async (config: { url: string; baseURL: string }) => {
     const url = new URL(config.url, config.baseURL);
     if (url.hostname !== "127.0.0.1") throw new Error("Slack fixture API origin changed");
@@ -40,5 +60,8 @@ export function stubSlackFixtureTransport(adapter: unknown) {
     return { data, status: 200, statusText: "OK", headers: {}, config, request: { path: url.pathname } };
   });
   client.axios.defaults.adapter = transport;
-  return transport;
+  return Object.assign(transport, { assertNoErrors: async () => {
+    await Promise.all(transport.mock.results.map(result => result.value));
+    expect(failures).toEqual([]);
+  } });
 }

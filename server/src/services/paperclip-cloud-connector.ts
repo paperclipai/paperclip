@@ -36,7 +36,7 @@ export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
 export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events";
-export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot" | "slack.events.v1";
+export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
 export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
 
 export type PaperclipCloudConnectorConfig = {
@@ -86,12 +86,14 @@ export type SealedConnectorEvents = {
   }>;
 };
 
+type SealedEnvelopeProfileId = PaperclipCloudConnectorProfileId | "slack.events.v1";
+
 type SealedEnvelope = {
   v: 1;
   alg: "X25519-HKDF-SHA256-A256GCM";
   purpose: "initial" | "access" | "events";
   provider: PaperclipCloudConnectorProvider;
-  profile: PaperclipCloudConnectorProfileId;
+  profile: SealedEnvelopeProfileId;
   epk: string;
   iv: string;
   ct: string;
@@ -705,7 +707,7 @@ function parseEnvelope(
   value: unknown,
   purpose: SealedEnvelope["purpose"],
   provider: PaperclipCloudConnectorProvider,
-  profile: PaperclipCloudConnectorProfileId,
+  profile: SealedEnvelopeProfileId,
 ): SealedEnvelope {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw badEnvelope();
   const candidate = value as Partial<SealedEnvelope>;
@@ -775,7 +777,7 @@ function decryptEnvelope(
   instanceId: string,
   environment: string,
   provider: PaperclipCloudConnectorProvider,
-  profile: PaperclipCloudConnectorProfileId,
+  profile: SealedEnvelopeProfileId,
   scopes: readonly string[],
 ): unknown {
   const ephemeralRaw = Buffer.from(envelope.epk, "base64url");
