@@ -321,25 +321,40 @@ test('controlled admission rejects missing policy, automatic retries and job rer
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
-test('TestOps admission preserves the explicit legacy mode, current source and dedicated roster', async () => {
+test('TestOps admission preserves the selected mode gates, current source and dedicated roster', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
   const script = workflowShell(workflow, 'Validate accounting mode and retry envelope');
   const root = await mkdtemp(resolve(tmpdir(), 'runner-testops-admission-'));
   try {
-    for (const [mode, source, roster, expected] of [
-      ['legacy', 'a', 'protocol-live-testops-claude', 0],
-      ['controlled', 'a', 'protocol-live-testops-claude', 1],
-      ['legacy', 'b', 'protocol-live-testops-claude', 1],
-      ['legacy', 'a', 'all', 1],
+    for (const [mode, source, roster, policy, retries, expected] of [
+      ['legacy', 'a', 'protocol-live-testops-claude', true, '0', 0],
+      ['controlled', 'a', 'protocol-live-testops-claude', true, '0', 0],
+      ['controlled', 'a', 'protocol-live-testops-claude', false, '0', 1],
+      ['controlled', 'a', 'protocol-live-testops-claude', true, '1', 1],
+      ['controlled', 'b', 'protocol-live-testops-claude', true, '0', 1],
+      ['legacy', 'b', 'protocol-live-testops-claude', true, '0', 1],
+      ['legacy', 'a', 'all', true, '0', 1],
     ]) {
       const result = spawnSync('bash', ['-c', script], { encoding: 'utf8', env: { PATH: process.env.PATH,
-        ACCOUNTING_MODE: mode, EVENT_NAME: 'workflow_dispatch', GITHUB_RUN_ATTEMPT: '1', RETRIES: '0',
+        ACCOUNTING_MODE: mode, EVENT_NAME: 'workflow_dispatch', GITHUB_RUN_ATTEMPT: '1', RETRIES: retries,
         TESTOPS_REQUESTED: 'true', REQUESTED_ROSTERS: roster,
-        CONTROLLER_POLICY_JSON: JSON.stringify({schema:'paperclip.runner-eval.hosted-policy/v1',controllerLockSha256:'e'.repeat(64)}),
+        CONTROLLER_POLICY_JSON: policy ? JSON.stringify({schema:'paperclip.runner-eval.hosted-policy/v1',controllerLockSha256:'e'.repeat(64)}) : '',
         TARGET_SHA: source.repeat(40), GITHUB_SHA: 'a'.repeat(40), GITHUB_OUTPUT: resolve(root, 'output') } });
       assert.equal(result.status, expected, `${mode}/${source}/${roster}: ${result.stderr}`);
     }
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test('TestOps receives only a closed projection created inside the report boundary', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const report = workflow.slice(workflow.indexOf('  report:'), workflow.indexOf('  testops_report:'));
+  const publisher = workflow.slice(workflow.indexOf('  testops_report:'), workflow.indexOf('  publish_history:'));
+  assert.match(report, /environment:.*runner-e2e-private-history/u);
+  assert.match(report, /Create the closed TestOps projection inside the report boundary[\s\S]*runner-protocol-testops\.mjs export/u);
+  assert.match(report, /Transfer only the closed TestOps results and receipt[\s\S]*path: runner-protocol-testops-projection\//u);
+  assert.match(publisher, /name: runner-protocol-testops-projection-/u);
+  assert.doesNotMatch(publisher, /runner-protocol-eval-public-|runner-protocol-merged|private-history|AWS_ACCESS_KEY_ID|BRAINTRUST_API_KEY/u);
+  assert.match(publisher, /steps\.projection\.outcome != 'success'/u);
 });
 
 test('controlled evidence uses private storage and cloud credentials stay out of provider execution', async () => {

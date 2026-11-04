@@ -84,7 +84,12 @@ it("retains only closed startup failure facts in the actual CLI artifact", async
     expect(artifact.providerFailureDiagnostics).toEqual([{ phase: "startup", category: "authentication", httpStatus: 401, retryability: "requires_action" }]);
     expect(JSON.stringify(artifact)).not.toMatch(/PRIVATE-SECRET|private-request-id/);
     expect(artifact.infrastructureError).toBe("Provider startup rejected");
-  } finally { await rm(workspace, { recursive: true, force: true }); }
+  } finally {
+    for (const entry of await readdir(workspace)) {
+      if (entry.startsWith(".paperclip-eval-runtime-context-")) await chmod(join(workspace, entry, "instructions"), 0o700);
+    }
+    await rm(workspace, { recursive: true, force: true });
+  }
 });
 
 function agentCoreProfile(overrides: Record<string, unknown> = {}) {

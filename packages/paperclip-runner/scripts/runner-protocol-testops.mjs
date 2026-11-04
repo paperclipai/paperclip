@@ -31,8 +31,10 @@ export function selectCases(planned, context) {
     if (!found) fail("foreign_case");
     return found;
   });
-  if (context.accountingMode !== "legacy") fail("accounting_mode");
-  return { ...context, schema: "paperclip.runner-protocol-testops-selection/v1",
+  if (!["legacy", "controlled"].includes(context.accountingMode)) fail("accounting_mode");
+  const { runId, workflowSha, sourceSha, evalsSha, allureJobRunId, launchId, jobId, accountingMode } = context;
+  return { runId, workflowSha, sourceSha, evalsSha, allureJobRunId, launchId, jobId, accountingMode,
+    schema: "paperclip.runner-protocol-testops-selection/v1",
     projectId: contract.projectId, planId: contract.planId, rosterId: contract.rosterId,
     fullPlan: cases.length === contract.cases.length, cases };
 }
@@ -41,8 +43,9 @@ function validateSelection(selection) {
   const canonical = selectCases(selection.cases?.map(row => ({ id: row.testCaseId, selector: row.fullName })), selection);
   if (selection.schema !== canonical.schema || selection.projectId !== contract.projectId || selection.planId !== contract.planId
     || selection.rosterId !== contract.rosterId || selection.fullPlan !== canonical.fullPlan
+    || Object.keys(selection).some(key => !Object.hasOwn(canonical, key))
     || JSON.stringify(selection.cases) !== JSON.stringify(canonical.cases)) fail("selection_identity");
-  return selection;
+  return canonical;
 }
 
 export async function inspectSelection(api, env, manualPlan) {
@@ -65,7 +68,7 @@ export async function inspectSelection(api, env, manualPlan) {
     || plan.testCasesCount !== contract.cases.length) fail("plan_binding");
   const selected = selectCases(planned, { runId: env.GITHUB_RUN_ID, workflowSha: env.GITHUB_SHA,
     sourceSha: env.PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA, evalsSha: env.PAPERCLIP_PROTOCOL_EVALS_SHA,
-    allureJobRunId: String(jobRunId), launchId: launch.id, jobId: run.job.id, accountingMode: "legacy" });
+    allureJobRunId: String(jobRunId), launchId: launch.id, jobId: run.job.id, accountingMode: env.PAPERCLIP_PROTOCOL_ACCOUNTING_MODE });
   if (!manualPlan) return selected;
   const bootstrap = selected.cases.find(row => row.testCaseId === 194 && row.caseId === "get-task-context");
   if (!bootstrap) fail("bootstrap_case");
@@ -86,7 +89,7 @@ function publicUsage(usage) {
 }
 
 export function filterCatalog(catalog, selection) {
-  validateSelection(selection);
+  selection = validateSelection(selection);
   if (catalog.schema !== "paperclip.runner-protocol-eval.catalog/v1" || catalog.rosters?.length !== 1
     || catalog.source?.paperclipSha !== selection.sourceSha || catalog.source?.evalsSha !== selection.evalsSha) fail("catalog_binding");
   const roster = catalog.rosters[0];
@@ -111,7 +114,9 @@ export function projectResults({ selection, campaign, payloads = new Map() }) {
     || campaign.source?.paperclip?.sha !== selection.sourceSha || campaign.source?.evals?.sha !== selection.evalsSha
     || campaign.source?.workflowRunUrl !== campaignUrl || !Array.isArray(campaign.results)
     || new Set(campaign.results.map(row => row.caseId)).size !== campaign.results.length
-    || campaign.results.some(row => row.rosterId !== contract.rosterId
+    || campaign.results.some(row => row.rosterId !== contract.rosterId || row.model !== contract.model
+      || row.provider !== contract.provider || row.driver !== contract.driver
+      || !["passed", "behavior_failure", "infrastructure_failure"].includes(row.disposition)
       || !selection.cases.some(value => value.caseId === row.caseId)))) fail("campaign_binding");
   return selection.cases.map(expected => {
     const cell = campaign?.results.find(row => row.caseId === expected.caseId);
@@ -136,7 +141,7 @@ export function projectResults({ selection, campaign, payloads = new Map() }) {
       result: { uuid, name: expected.title, fullName: expected.fullName,
         historyId: createHash("sha256").update(`${expected.fullName}:${contract.rosterId}`).digest("hex"),
         testCaseId: expected.fullName, status, stage: "finished",
-        description: "Real Runner/provider qualification against the seeded mock control plane. One recorded Claude Sonnet 5 profile; direct provider accounting mode.",
+        description: `Real Runner/provider qualification against the seeded mock control plane. One recorded Claude Sonnet 5 profile; accounting mode: ${selection.accountingMode}.`,
         ...(status !== "passed" ? { statusDetails: { message: !recorded
           ? "Current-run protocol evidence is missing; this selected case is not verified."
           : status === "broken" ? "Protocol infrastructure failed; retained diagnostics remain in the workflow artifact."

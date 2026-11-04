@@ -983,11 +983,13 @@ this upload setting; private attempts still use the protected archive path.
 The existing workflow accepts the optional `ALLURE_JOB_RUN_ID` and
 `ALLURE_USERNAME` service inputs. Use `report_to_testops=true`,
 `rosters=protocol-live-testops-claude`, an exact eval commit that includes that
-roster, and explicit `accounting_mode=legacy` for the standing 41-case protocol
-plan. The source must be the trusted current workflow revision. This is a
-recorded Claude Sonnet 5 configuration with direct-provider accounting, not
-controlled-mode or all-provider qualification. Controlled admission remains
-unchanged and cannot publish through this path.
+roster, and an explicit `accounting_mode` for the standing 41-case protocol
+plan. The source must be the trusted current workflow revision. Qualification
+covers that recorded Claude Sonnet 5 configuration and accounting mode.
+Controlled mode preserves its reviewed policy, immutable lock/source/request
+bindings, tracing, private retention, first-attempt and zero-retry gates.
+Legacy mode uses direct-provider credentials. A pass in one mode does not prove
+the other's credential or routing path.
 
 Before provider work, a protected reporting job validates the current GitHub
 job run, launch, standing plan and exact selected case identities. The full
@@ -997,8 +999,11 @@ case 194 (`get-task-context`) to register the GitHub job with real evidence.
 A TestOps-triggered job uses its requested selection. Targeted selections retain their smaller coverage and omit the
 `full-run` launch tag. Full selections use `full-run` and `test-plan-3`.
 
-The final protected reporting job consumes only the separately sanitized
-current-run report. It checks source and attempt identity, uploads one result
+The report job creates a closed projection of case identities, checks, numeric
+usage and statuses. For controlled mode this happens inside the existing
+private-history boundary; raw attempts, controller evidence and chat reports
+remain there. Only the closed Allure results and receipt cross into the final
+protected reporting job. It checks source and attempt identity, uploads one result
 per selected case, and verifies the saved case and status bindings. Missing
 execution/report evidence becomes a broken result. A passing campaign row
 without matching successful behavioral checks is rejected. The original

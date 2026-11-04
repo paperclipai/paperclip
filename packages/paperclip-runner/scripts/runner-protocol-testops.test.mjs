@@ -38,12 +38,14 @@ test("rejects foreign, duplicate, missing and mismatched selections before provi
     assert.throws(() => filterCatalog(value, selected), /runner_testops_/);
   }
   assert.throws(() => filterCatalog(catalog(), { ...selected, schema: "other" }), /selection_identity/);
-  assert.throws(() => selectCases(planned, { ...context, accountingMode: "controlled" }), /accounting_mode/);
+  assert.throws(() => selectCases(planned, { ...context, accountingMode: "implicit" }), /accounting_mode/);
+  assert.throws(() => projectResults({ selection: { ...selected, private: "PRIVATE-SECRET" } }), /selection_identity/);
 });
 
 test("binds the selected TestOps job to this exact workflow run and standing plan", async () => {
   const env = { ALLURE_JOB_RUN_ID: "7", RUNNER_TESTOPS_REQUESTED_JOB_RUN_ID: "7", GITHUB_RUN_ID: "123", GITHUB_SHA: context.workflowSha,
-    PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA: context.sourceSha, PAPERCLIP_PROTOCOL_EVALS_SHA: context.evalsSha };
+    PAPERCLIP_PROTOCOL_EVAL_SOURCE_SHA: context.sourceSha, PAPERCLIP_PROTOCOL_EVALS_SHA: context.evalsSha,
+    PAPERCLIP_PROTOCOL_ACCOUNTING_MODE: "legacy" };
   const run = { id: 7, job: { id: 9, type: "github", url: "https://github.com/paperclipai/paperclip/actions/workflows/runner-protocol-live-evals.yml" },
     url: "https://github.com/paperclipai/paperclip/actions/runs/123", stage: "in_progress", launchId: 11 };
   const job = { ...run.job };
@@ -67,6 +69,11 @@ test("binds the selected TestOps job to this exact workflow run and standing pla
   assert.equal(admittedManual.fullPlan, false);
   assert.equal(admittedManual.cases.length, 1);
   assert.equal(admittedManual.cases[0].testCaseId, 194);
+  const controlled = await inspectSelection(api, { ...env, PAPERCLIP_PROTOCOL_ACCOUNTING_MODE: "controlled" });
+  assert.equal(controlled.accountingMode, "controlled");
+  assert.equal(projectResults({ selection: controlled })[0].evidence.accountingMode, "controlled");
+  assert.match(projectResults({ selection: controlled })[0].result.description, /accounting mode: controlled/);
+  await assert.rejects(inspectSelection(api, { ...env, PAPERCLIP_PROTOCOL_ACCOUNTING_MODE: undefined }), /accounting_mode/);
   await assert.rejects(inspectSelection(api, env, manual), /selection_mode/);
   assert.throws(() => standingPlanCases({ ...manual, tests: manual.tests.slice(0, 1) }), /standing_plan_coverage/);
   assert.throws(() => standingPlanCases({ ...manual, version: "other" }), /standing_plan/);
@@ -84,7 +91,8 @@ test("reports every unexecuted selected case as broken when the report is unavai
 test("only current-run successful behavioral evidence becomes a pass", () => {
   const selected = selection(planned.slice(0, 1));
   const expected = selected.cases[0];
-  const cell = { rosterId: contract.rosterId, caseId: expected.caseId, finalAttemptId: "attempt-1", disposition: "passed", passed: true };
+  const cell = { rosterId: contract.rosterId, caseId: expected.caseId, model: contract.model, provider: contract.provider,
+    driver: contract.driver, finalAttemptId: "attempt-1", disposition: "passed", passed: true };
   const campaign = { schema: "paperclip.runner-protocol-eval.campaign/v1", source: { paperclip: { sha: context.sourceSha },
     evals: { sha: context.evalsSha }, workflowRunUrl: "https://github.com/paperclipai/paperclip/actions/runs/123" }, results: [cell] };
   const payload = { attemptId: "attempt-1", caseId: expected.caseId, disposition: "passed", passed: true,
@@ -92,6 +100,9 @@ test("only current-run successful behavioral evidence becomes a pass", () => {
     checks: Object.entries(expected.checks).map(([id, kind]) => ({ id, kind, passed: true })) };
   const payloads = new Map([["attempt-1", payload]]);
   assert.equal(projectResults({ selection: selected, campaign, payloads })[0].result.status, "passed");
+  cell.model = "other-model";
+  assert.throws(() => projectResults({ selection: selected, campaign, payloads }), /campaign_binding/);
+  cell.model = contract.model;
   assert.throws(() => projectResults({ selection: selected, campaign }), /unsupported_pass/);
   payload.checks[0].passed = false;
   assert.throws(() => projectResults({ selection: selected, campaign, payloads }), /unsupported_pass/);
@@ -116,7 +127,8 @@ test("only current-run successful behavioral evidence becomes a pass", () => {
 test("preserves real behavior failures and infrastructure failures", () => {
   const selected = selection(planned.slice(0, 1));
   for (const [disposition, status] of [["behavior_failure", "failed"], ["infrastructure_failure", "broken"]]) {
-    const cell = { rosterId: contract.rosterId, caseId: selected.cases[0].caseId, finalAttemptId: "attempt-1", disposition, passed: false };
+    const cell = { rosterId: contract.rosterId, caseId: selected.cases[0].caseId, model: contract.model, provider: contract.provider,
+      driver: contract.driver, finalAttemptId: "attempt-1", disposition, passed: false };
     const campaign = { schema: "paperclip.runner-protocol-eval.campaign/v1", source: { paperclip: { sha: context.sourceSha },
       evals: { sha: context.evalsSha }, workflowRunUrl: "https://github.com/paperclipai/paperclip/actions/runs/123" }, results: [cell] };
     const payload = { attemptId: "attempt-1", caseId: cell.caseId, disposition, passed: false,
