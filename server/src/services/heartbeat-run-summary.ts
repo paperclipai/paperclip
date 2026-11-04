@@ -572,11 +572,17 @@ export function resolveHeartbeatRunResponse(input: {
 
   const existingText = readCommentText(input.existingComment?.body);
   if (input.nativeConversationFinalResponse) {
-    if (input.interactionOwnsResponse || hasYieldedSemanticResult(resultJson)) return {
+    if (input.interactionOwnsResponse || (hasYieldedSemanticResult(resultJson) && !input.conversationTurnFinished)) return {
       text: null,
       decision: decision("none", { commentAction: "none", reasonCodes: ["interaction_owns_conversation_response"] }),
     };
-    const final = resolveCompletedUpstreamResponse(false);
+    const final = resolveCompletedUpstreamResponse(false)
+      ?? (input.conversationTurnFinished && compatibleTerminalAssistant && finalAgentText
+        && !isStructuredSemanticResultText(finalAgentText) ? {
+          text: finalAgentText,
+          decision: decision("final_agent_message", { sourceEventId: input.finalAgentMessage?.sourceEventId,
+            commentAction: "create", reasonCodes: ["server_finished_conversation_terminal_message"] }),
+        } : null);
     if (final) {
       const reuse = !!input.existingComment && final.text === existingText;
       return { ...final, decision: { ...final.decision,
