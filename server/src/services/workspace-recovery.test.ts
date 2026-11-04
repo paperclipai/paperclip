@@ -472,7 +472,7 @@ describe("automatic retained workspace recovery", () => {
     return f;
   }
 
-  async function failedRemotePreparation(sourceLayout: RecoverySourceLayout = "retained") {
+  async function failedRemotePreparation(sourceLayout: RecoverySourceLayout = "retained", startedMarker = false, warning = false) {
     const f = await interruptedRemotePreparation("shutdown", sourceLayout);
     const source = await run(f.runId);
     const error = "Repository access is no longer available; refresh the repository catalog";
@@ -481,6 +481,11 @@ describe("automatic retained workspace recovery", () => {
         startedAt: new Date(Date.now() - 1000), contextSnapshot: { ...source.contextSnapshot, source: "native_status_decision" },
         resultJson: { ...source.resultJson, stopReason: "adapter_failed",
           executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } } });
+    if (warning) await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: source.agentId,
+      eventType: "agent_observability.unavailable", stream: "system", level: "warn",
+      payload: { reason: "unsupported_harness", revision: randomUUID() } });
+    if (startedMarker) await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: source.agentId,
+      eventType: "lifecycle", stream: "system", level: "info", message: "run started" });
     await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: source.agentId,
       eventType: "error", stream: "system", level: "error", message: error });
     await appendHeartbeatRunEvent(db, { companyId: f.companyId, runId: f.runId, agentId: source.agentId,
@@ -519,13 +524,13 @@ describe("automatic retained workspace recovery", () => {
     expect((await run(f.runId)).error).toBe(source.error);
   }, 30_000);
 
-  async function recoveredPreparationRetryChain(mode: "certified" | "inherited_session" = "inherited_session") {
-    const f = await failedRemotePreparation();
+  async function recoveredPreparationRetryChain(mode: "certified" | "inherited_session" | "historical_warning" = "inherited_session") {
+    const f = await failedRemotePreparation("retained", mode !== "certified", mode === "historical_warning");
     await recoverRetainedWorkspace(f.input);
-    if (mode === "inherited_session") await db.update(heartbeatRuns).set({ errorCode: "adapter_failed",
+    if (mode !== "certified") await db.update(heartbeatRuns).set({ errorCode: "adapter_failed",
       sessionIdBefore: randomUUID() }).where(eq(heartbeatRuns.id, f.runId));
     const source = await run(f.runId);
-    const [completed] = mode === "inherited_session" ? await db.insert(heartbeatRuns).values({
+    const [completed] = mode !== "certified" ? await db.insert(heartbeatRuns).values({
       companyId: f.companyId, issueId: f.issueId, agentId: source.agentId, status: "succeeded",
       createdAt: new Date(source.createdAt.getTime() - 1000), finishedAt: source.createdAt,
       sessionIdAfter: source.sessionIdBefore, resultJson: { summary: "Earlier turn completed" },
@@ -543,7 +548,7 @@ describe("automatic retained workspace recovery", () => {
     return { ...f, source, failed, completed };
   }
 
-  it.each(["certified", "inherited_session"] as const)("admits one HTTP Retry through a failed automatic successor after its preparation ancestor is recovered: %s", async mode => {
+  it.each(["certified", "inherited_session", "historical_warning"] as const)("admits one HTTP Retry through a failed automatic successor after its preparation ancestor is recovered: %s", async mode => {
     const f = await recoveredPreparationRetryChain(mode);
     const app = boardRecoveryApp(), heartbeat = heartbeatService(db);
     const intent = { observedRunId: f.failed.id, idempotencyKey: randomUUID() };
@@ -571,9 +576,13 @@ describe("automatic retained workspace recovery", () => {
 
   it.each(["foreign_company", "foreign_task", "foreign_agent", "conflicting_binding", "missing_edge", "cycle", "forged_context",
     "live_predecessor", "live_controller", "unknown_stop", "failed_cleanup", "pending_cleanup", "failed_save",
-    "unsafe_workspace", "operator_stop", "wrong_actor", "wrong_generation", "wrong_recovery_source", "sibling_hold", "completed_ancestor"] as const)(
+    "unsafe_workspace", "operator_stop", "wrong_actor", "wrong_generation", "wrong_recovery_source", "sibling_hold", "completed_ancestor",
+    "provider_event", "native_input", "session_checkpoint", "controller_recovery", "native_result", "process", "runtime_selected",
+    "unknown_result", "provider_usage", "invalid_accounting", "foreign_lease_issue", "foreign_started_event", "invalid_started_event",
+    "warning_reason", "provider_warning", "extra_after_warning", "unknown_failure_code", "missing_failure_code", "operator_stop_mislabeled"] as const)(
     "keeps ancestor Retry held when current proof changes: %s", async gate => {
-      const f = await recoveredPreparationRetryChain();
+      const f = await recoveredPreparationRetryChain(["warning_reason", "provider_warning", "extra_after_warning"].includes(gate)
+        ? "historical_warning" : "inherited_session");
       const heartbeat = heartbeatService(db), app = boardRecoveryApp();
       const original = readSystemRecovery((await action(f.actionId)).evidence)!;
       const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
@@ -605,7 +614,37 @@ describe("automatic retained workspace recovery", () => {
         .where(eq(heartbeatRuns.id, f.source.id));
       if (gate === "live_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) })
         .where(eq(heartbeatRuns.id, f.source.id));
+      if (gate === "provider_event" || gate === "extra_after_warning") await appendHeartbeatRunEvent(db, {
+        companyId: f.companyId, runId: f.source.id, agentId: f.source.agentId, stream: "system", level: "info",
+        eventType: gate === "provider_event" ? "session.started" : "lifecycle", message: "Unexpected later event" });
+      if (["native_input", "session_checkpoint", "controller_recovery"].includes(gate)) {
+        const key = gate === "native_input" ? "nativeExecutionInput" : gate === "session_checkpoint" ? "sessionCheckpoint" : "nativeControllerRecovery";
+        await db.update(heartbeatRuns).set({ runnerProfileJson: { ...f.source.runnerProfileJson, [key]: { sessionId: randomUUID() } } })
+          .where(eq(heartbeatRuns.id, f.source.id));
+      }
+      if (gate === "native_result") {
+        const [contract] = await db.select().from(completionContracts).where(eq(completionContracts.companyId, f.companyId));
+        await db.update(heartbeatRuns).set({ nativeIssueId: f.issueId, completionContractId: contract.id })
+          .where(eq(heartbeatRuns.id, f.source.id));
+        await db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId, runId: f.source.id,
+          completionContractId: contract.id, schemaStatus: "accepted", canonicalSha256: "unexpected", serverFingerprint: "unexpected",
+          resultJson: { terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL, result: CONTROL_PLANE_CONFORMANCE_RESULT } });
+      }
+      if (gate === "process") await db.update(heartbeatRuns).set({ processPid: 999999999 }).where(eq(heartbeatRuns.id, f.source.id));
+      if (gate === "runtime_selected") await db.update(heartbeatRuns).set({ runtimeModeResolvedAt: new Date() }).where(eq(heartbeatRuns.id, f.source.id));
+      if (gate === "unknown_result") await db.update(heartbeatRuns).set({ resultJson: { ...f.source.resultJson, unknownOutcome: true } })
+        .where(eq(heartbeatRuns.id, f.source.id));
+      if (gate === "provider_usage" || gate === "invalid_accounting") await db.update(heartbeatRuns).set({ usageJson: gate === "provider_usage"
+        ? { inputTokens: 1 } : { ledgerScope: { issueId: randomUUID(), projectId: null, billingCode: null } } }).where(eq(heartbeatRuns.id, f.source.id));
+      if (["foreign_started_event", "invalid_started_event", "warning_reason", "provider_warning"].includes(gate))
+        await db.update(heartbeatRunEvents).set(gate === "foreign_started_event" || gate === "provider_warning"
+          ? { sourceEventId: randomUUID() } : { payload: gate === "warning_reason" ? { reason: "unknown", revision: randomUUID() } : { unknown: true } })
+          .where(and(eq(heartbeatRunEvents.runId, f.source.id), eq(heartbeatRunEvents.seq, 1)));
       const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      if (gate === "foreign_lease_issue") {
+        const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "Other allocation owner" }).returning();
+        await db.update(environmentLeases).set({ issueId: other.id }).where(eq(environmentLeases.id, lease.id));
+      }
       if (gate === "unknown_stop") await db.update(environmentLeases).set({ metadata: { ...lease.metadata,
         remoteExecutionTermination: null } }).where(eq(environmentLeases.id, lease.id));
       if (gate === "failed_cleanup") await db.update(environmentLeases).set({ cleanupStatus: "failed" }).where(eq(environmentLeases.id, lease.id));
@@ -621,6 +660,9 @@ describe("automatic retained workspace recovery", () => {
           .where(eq(executionWorkspaces.id, f.workspaceId));
       }
       if (gate === "operator_stop") await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "operator_interrupted" })
+        .where(eq(heartbeatRuns.id, f.source.id));
+      if (["unknown_failure_code", "missing_failure_code", "operator_stop_mislabeled"].includes(gate)) await db.update(heartbeatRuns)
+        .set({ errorCode: gate === "missing_failure_code" ? null : gate === "operator_stop_mislabeled" ? "operator_interrupted" : "unknown_failure" })
         .where(eq(heartbeatRuns.id, f.source.id));
       if (gate === "wrong_actor") await db.update(agentWakeupRequests).set({ requestedByActorId: "other-user" })
         .where(eq(agentWakeupRequests.id, wake.id));

@@ -70,8 +70,10 @@ agent, a terminal state and an ordered creation time. Missing, cyclic, contradic
 or overlong lineage stays held; transcript hints confer no authority. Completed
 ancestors retain their existing recovery generation. A failed historical native
 source with an inherited session requires verified saved work, settled ownership
-and exact stop receipts before a fresh user turn. Prior action outcomes remain
-recorded and are never replayed by this authorization.
+and exact stop receipts before a fresh user turn. Its bounded host preparation
+settlement must prove no provider work; input, result, process, output and provider
+usage evidence still prevent admission. Prior action outcomes remain recorded and
+are never replayed by this authorization.
 
 A deliberate board Retry can continue a failed native preparation after its
 saved remote workspace is verified. The source must retain its unresolved native

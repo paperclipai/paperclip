@@ -20,10 +20,19 @@ type Run = Pick<typeof heartbeatRuns.$inferSelect,
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
 
 export async function isFailedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined) {
-  if (run.status === "interrupted") return !coordinator && isInterruptedNativePreparation(db, run);
+  return failedNativePreparation(db, run, coordinator, false);
+}
+
+export async function isFailedNativePreparationRetryAncestor(db: Db, run: Run, coordinator: Coordinator | undefined) {
+  return failedNativePreparation(db, run, coordinator, true);
+}
+
+async function failedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined, historicalRetryAncestor: boolean) {
+  if (run.status === "interrupted") return !historicalRetryAncestor && !coordinator && isInterruptedNativePreparation(db, run);
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  const preparationFailure = run.errorCode === "setup_failed" || historicalRetryAncestor && run.errorCode === "adapter_failed";
   if (run.status !== "failed" || !run.finishedAt || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt
-    || run.errorCode !== "setup_failed" || run.executionStage !== "preparing"
+    || !preparationFailure || run.executionStage !== "preparing"
     || claimedAdapterType(run) !== "paperclip_runner" || coordinator
     || recovery?.kind !== "bootstrap" || recovery.providerWorkStarted !== false
     || run.processPid || run.processGroupId || run.processStartedAt || run.sessionIdAfter
@@ -37,15 +46,15 @@ export async function isFailedNativePreparation(db: Db, run: Run, coordinator: C
     eq(nativeRunResults.companyId, run.companyId), eq(nativeRunResults.runId, run.id),
   )).limit(1);
   if (result || await nativeStartupHasExecutionEvidence(db, run)) return false;
-  if (!leases.length && run.runnerProfileJson?.remoteWorkspace == null) return true;
+  if (!leases.length && run.runnerProfileJson?.remoteWorkspace == null) return !historicalRetryAncestor;
   const issueId = run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId;
   return typeof issueId === "string" && leases.length > 0 && leases.every(lease => lease.issueId === issueId
     && lease.metadata?.pendingCleanupInFlight !== true && hasRemoteTerminationReceipt(lease))
-    && await hasSettledFailedPreparationEvidence(db, run)
+    && await hasSettledFailedPreparationEvidence(db, run, historicalRetryAncestor)
     && await hasVerifiedWorkspaceRepair(db, run);
 }
 
-async function hasSettledFailedPreparationEvidence(db: Db, run: Run): Promise<boolean> {
+async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalRetryAncestor = false): Promise<boolean> {
   const [source] = await db.select({ agentId: heartbeatRuns.agentId,
     runtimeModeResolverVersion: heartbeatRuns.runtimeModeResolverVersion, runtimeModeReason: heartbeatRuns.runtimeModeReason,
     runnerInstanceId: heartbeatRuns.runnerInstanceId, nativePhase: heartbeatRuns.nativePhase,
@@ -60,7 +69,8 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run): Promise<bo
     usageJson: heartbeatRuns.usageJson, exitCode: heartbeatRuns.exitCode, signal: heartbeatRuns.signal,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
   if (!source || source.logCompressed || source.lastOutputSeq !== 0 || Object.entries(source).some(([key, value]) =>
-    !["agentId", "logCompressed", "lastOutputSeq", "usageJson"].includes(key) && value !== null)
+    !["agentId", "logCompressed", "lastOutputSeq", "usageJson"].includes(key) &&
+    !(historicalRetryAncestor && key === "sessionIdBefore") && value !== null)
     || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
     || Object.keys(run.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "remoteWorkspace",
       "chatControlRecoveryAdmission"].includes(key))
@@ -68,7 +78,7 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run): Promise<bo
     || Object.keys(run.resultJson).some(key => !["stopReason", "timeoutFired", "timeoutSource", "executionRecovery",
       "timeoutConfigured", "effectiveTimeoutSec", "systemRecoveryAdoption", "workspaceRestoreFailure",
       "workspaceRestoreRecovery"].includes(key))) return false;
-  return Boolean(await readFailedPreparationSettlement(db, { ...run, agentId: source.agentId }));
+  return Boolean(await readFailedPreparationSettlement(db, { ...run, agentId: source.agentId }, historicalRetryAncestor));
 }
 
 function hasOnlyPreparationAccountingContext(usage: unknown, issueId: unknown): boolean {

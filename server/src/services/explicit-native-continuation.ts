@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
-import { isCancelledNativeStartup, isFailedNativePreparation } from "./cancelled-native-startup.js";
+import { isCancelledNativeStartup, isFailedNativePreparation, isFailedNativePreparationRetryAncestor } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
@@ -332,9 +332,11 @@ export async function admitExplicitNativeContinuation(input: {
       // A settings change never converts a known process/webhook execution into
       // a conversation. Those adapters retain their reconciliation contract.
       if (historicalAdapter && !isConversationAdapter(historicalAdapter)) {
-        if (!(taskRetry && freshIntent && agentIsNative && historicalAdapter === "paperclip_runner" && run.status === "failed") ||
+        if (!(taskRetry && run.id !== taskRetry.sourceRunId && freshIntent && agentIsNative &&
+              historicalAdapter === "paperclip_runner" && run.status === "failed") ||
             run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date() ||
-            await hasPendingRunCleanup(db, companyId, run.id) || !await hasVerifiedWorkspaceRepair(db, run)) return null;
+            await hasPendingRunCleanup(db, companyId, run.id) ||
+            !await isFailedNativePreparationRetryAncestor(db, run, coordinator)) return null;
       }
       if (!historicalAdapter && agent.adapterType === "paperclip_runner") return null;
     }
