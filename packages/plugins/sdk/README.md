@@ -259,6 +259,77 @@ A card or section rendered on the main dashboard. Use this for at-a-glance metri
 
 An additional tab on a project, issue, agent, goal, or run detail page. Rendered when the user navigates to that entity's detail view. Receives `PluginDetailTabProps` with `context.companyId` set to the active company and `context.entityId` / `context.entityType` guaranteed to be non-null, so you can immediately scope data fetches to the relevant entity. Specify which entity types the tab applies to via the `entityTypes` array in the manifest slot declaration. Requires the `ui.detailTab.register` capability.
 
+Agent detail tabs can also appear in task side panels. `taskSidePanel` makes the
+view available for manual selection with the running or assigned agent. Manual
+selection mounts the same component as the agent detail page, including while
+the task is idle. An optional activity mapping also opens it automatically:
+
+```ts
+taskSidePanel: {
+  availabilityPath: "/agents/:entityId/view/availability",
+  activation: { namespace: "example.runtime", activityKey: "desktop.used" },
+}
+```
+
+Declare the exact availability path as a board-only GET API route with
+`companyResolution: { from: "agent", param: "entityId" }`. Core maps the declared
+namespace/activity pair to installed agent detail tabs. Runner knows no plugin
+or UI slot. Declarations without `activation` support manual task-panel selection.
+Activity controls automatic opening and grants no access permission.
+
+#### Runtime activity recording
+
+A runtime client captures Runner's opaque activity context before an eligible
+operation, then sends a structured notification after successful use:
+
+```sh
+context=$("$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" notification-context)
+# Perform the operation; notify only on success.
+"$PAPERCLIP_RUNTIME_NOTIFICATION_HELPER" record-activity "$context" example.runtime desktop.used
+```
+
+Runner supplies the matching absolute executable as
+`PAPERCLIP_RUNTIME_NOTIFICATION_HELPER` and an atomic endpoint descriptor as
+`PAPERCLIP_RUNTIME_NOTIFICATION_CONTEXT`. Configured task environment cannot
+override them. Provider launch boundaries preserve both values. Codex receives
+read access to the helper, descriptor and publisher lock, plus write access to
+one named pipe. The pipe and lock live in a private temporary directory, outside
+durable Runner state. The enclosing directories remain protected.
+
+The helper captures context locally. After success, it publishes newline-delimited
+JSON through a nonblocking pipe. A leading newline terminates an interrupted
+previous write. A read-only file lock serializes publishers with a 500 ms deadline.
+Runner reuses its bounded line reader: 2 KiB per record, 128 queued records and
+16 records per control-loop iteration. Idle transport blocks; cleanup removes
+only its pipe, lock and empty private directory.
+
+A successful helper exit means publication to the pipe. Runner validates context
+against the active run, deduplicates up to 128 activity pairs per authority, and
+persists `runtime.activity.recorded` through its authenticated event stream.
+Warm attachment and process recovery rotate context. The helper accepts no run
+identity. Clients treat this hint as best effort, including with older runtimes.
+Notify only after successful use; exclude help, schema discovery, status probes
+and failures. No agent instruction is required.
+
+Identifiers are 1–160 Unicode code points, excluding C0 controls and DEL.
+Core maps declared activity identifiers to its consumers and applies their
+existing discovery, authorization and availability checks.
+
+Core reads durable activity on mount/reconnect and uses the existing live stream.
+The authorized run binding identifies company, task and agent; caller payloads
+cannot override them. Core replaces `:entityId` with the running agent ID, adds
+`runId` and `issueId`, and requires `{ available: true }`. History/live hints merge
+without losing earlier activity. Only matching current-task activity can open a
+panel automatically.
+Readiness and transient discovery failures get at most three attempts; authorization
+failures are not retried. No periodic readiness polling is added. Dismissal stays
+scoped to the current run. Only tab identity is stored in browser state; activity
+remains in the authorized run log. Failed history reads, unavailable views and
+access failures prevent automatic opening. Manual selection uses the viewer's
+own authorization and status handling. Missing or disabled plugins add no view.
+The plugin owns labels, content and controls. No private integration identifier
+belongs in Core.
+
 #### `taskDetailView`
 
 A specialized slot rendered in the context of a task or issue detail view. Similar to `detailTab` but designed for inline content within the task detail layout rather than a separate tab. Receives `context.companyId`, `context.entityId`, and `context.entityType` like `detailTab`. Requires the `ui.detailTab.register` capability.
@@ -1315,10 +1386,43 @@ implement `onResourceLifecycle` and `onWorkspaceOperation`. Project lifecycle
 creates and retains the storage; workspace operations manage task checkouts in
 that storage. Execution remains a separate environment driver contract.
 
-Set `project.executionWorkspacePolicy.storageProviderPluginId` to the installed
-plugin's UUID. Core then reserves an execution-workspace row and binds the task
-before it calls `onWorkspaceOperation`. Projects without this setting keep their
-current local behavior. Existing managed workspaces retain their original owner.
+Set `project.executionWorkspacePolicy.storageProviderPluginId` to an installed
+plugin's UUID for an explicit selection, or `null` for explicit Core/local storage.
+Omit the field to inherit the installed company-enabled default. A provider claims
+that default by declaring, for example:
+
+```ts
+workspaceProvider: {
+  modes: ["isolated_workspace", "operator_branch"],
+  strategies: ["git_worktree"],
+  defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" },
+}
+```
+
+The declared defaults must be supported by the provider. Core applies missing mode
+and strategy settings to Git projects, including existing unconfigured projects,
+without writing their policy. Explicit settings remain intact; incompatible
+settings fail with a configuration error. Multiple enabled default claims require
+an explicit project choice or disabling a conflicting provider. Worker health does
+not change the selected default: unavailable providers fail without local fallback.
+No company settings row means enabled, matching the normal plugin contract.
+
+New and imported tasks leave an unspecified project mode inherited. Provider-owned
+workspaces retain explicit project and task strategies in shared and operator-branch
+modes. If neither supplies a strategy, those modes use `project_primary`; an agent's
+Git strategy remains a fallback only for isolated mode.
+
+Project responses keep the stored `executionWorkspacePolicy` and expose the
+separate `workspaceProvider` configuration, including its source, effective policy,
+provider choices and configuration error. The project configuration UI supports
+inheritance, explicit plugins and Core/local storage. Conflicts remain readable so
+operators can resolve them through this flow.
+
+Core reserves an execution-workspace row and binds the task before calling
+`onWorkspaceOperation`. Source-free task directories do not prepare project storage. The resolved provider
+choice, including Core/local, stays fixed through source resolution and preparation.
+Existing workspaces, including local workspaces, retain their original owner. Changing defaults never migrates, resets or recreates them;
+normal retirement and cleanup gates still apply on disable/uninstall.
 
 The hook receives a company, project, source revision, execution-workspace ID,
 lifecycle generation, deadline, and stable operation ID. Run and agent IDs are
@@ -1399,3 +1503,32 @@ lifecycle inbox listings or the company secret catalog. Do not expose values
 through plugin entities, state, data handlers, UI, or logs. Agent instance
 secrets retain their existing lifecycle contract. Back up the tenant's existing
 local secrets master key together with its database.
+
+### Project Git credentials
+
+Trusted workspace providers can declare `projects.git-credentials` and call
+`ctx.projects.resolveGitCredential(projectId, workspaceId, companyId)` from the
+matching host-issued project lifecycle or workspace operation. Other invocations
+cannot obtain credentials through this method. The workspace must be a current
+repository in that project and company; plugins cannot supply arbitrary URLs.
+
+Background work uses a project writer's explicit consent to their own personal,
+company-installed GitHub Connector grant. It does not retain task context. Core
+checks the exact grant and its owner's active company membership on every use.
+Foreground preparation uses the active run's identity and trust policy instead.
+Public repositories return null and require no connection. Private repositories
+without authorization wait before provisioning. Repository visibility comes from
+the Connector catalog and retained project selections; legacy URL-only sources
+use anonymous discovery when visibility is unknown. A revoked or invalid private
+repository authorization fails closed. There is no fallback to another grant.
+Project consent follows the connection's current repository access, including
+sources added later, rather than a separate project repository approval list.
+The consenting user must retain project read access, and background credential
+export requires the project's existing trust policy to allow standard execution.
+Archived projects keep credential access only for host-issued workspace inspection
+and removal with existing consent; provisioning remains blocked.
+
+The return value is transient raw credential material with the Connector's
+existing permissions. This capability is for trusted execution infrastructure,
+not agent-facing tools or UI. Never expose or persist it. See
+[GitHub identity](../../../doc/execution-github-identity.md#project-authorization-for-background-repository-work).

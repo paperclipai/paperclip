@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
-import { agents, executionWorkspaceRepositories, executionWorkspaces, issues, heartbeatRuns, projects, projectWorkspaces } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
+import { agents, authUsers, companyMemberships, executionWorkspaceRepositories, executionWorkspaces, issues, heartbeatRuns, projects, projectWorkspaces } from "@paperclipai/db";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
@@ -15,6 +15,28 @@ const support = await getEmbeddedPostgresTestSupport();
   const originalSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   beforeAll(async () => { process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID(); server = await startRunnerApiTestServer(); }, 60_000);
   afterAll(async () => { await server?.close(); if (originalSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET; else process.env.PAPERCLIP_AGENT_JWT_SECRET = originalSecret; });
+  it("prepares a repository through native JWT authority for the local board and rechecks revoked access", async () => {
+    const f = await server.fixture({ disableWakeOnDemand: true });
+    await server.db.insert(authUsers).values({ id: "local-board", name: "Local Board", email: "local-board@example.invalid",
+      emailVerified: true, createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await server.db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: "local-board", membershipRole: "owner", status: "active" });
+    const [workspace] = await server.db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      name: "Local task files", cwd: f.workspace, mode: "isolated_workspace", strategyType: "task_directory" }).returning();
+    await server.db.update(issues).set({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: workspace.id,
+      responsibleUserId: "local-board" }).where(eq(issues.id, f.issueId));
+    await server.db.update(heartbeatRuns).set({ responsibleUserId: "local-board" }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(f.authority.execute({ tool: "prepare_repository", callId: randomUUID(), arguments: {
+      repository: { kind: "url", url: "https://github.com/public/example" }, requestKey: "local-board-native" } }))
+      .resolves.toMatchObject({ kind: "requires_next_admission" });
+    await server.db.delete(companyMemberships).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "local-board")));
+    const token = createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId, "local-board");
+    const denied = await fetch(`${server.apiUrl}/api/issues/${f.issueId}/workspace/repositories`, {
+      method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ repository: { kind: "url", url: "https://github.com/public/other" }, requestKey: "different-sponsor" }),
+    });
+    expect([403, 404]).toContain(denied.status);
+    expect(await server.db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.companyId, f.companyId))).toHaveLength(1);
+  });
   it("creates an explicit-workspace child through the authenticated low-trust API without repeating its saved policy", async () => {
     const f = await server.fixture({ connectionScenario: "fresh", disableWakeOnDemand: true });
     const policy = { trustPreset: "low_trust_review", authorizationPolicy: { trustPreset: "low_trust_review",
@@ -51,12 +73,30 @@ const support = await getEmbeddedPostgresTestSupport();
     const first = await call("prepare_repository", args) as { preparationId: string; kind: string };
     expect(first.kind).toBe("requires_next_admission");
     expect(await call("prepare_repository", args)).toMatchObject({ preparationId: first.preparationId });
+    const continued = await call("get_task_context", {}) as { completionContinuation: { kind: string; idempotencyKey: string } };
+    expect(continued.completionContinuation).toMatchObject({ kind: "same_agent" });
+    expect((await call("get_task_context", {}) as typeof continued).completionContinuation).toEqual(continued.completionContinuation);
+    await server.db.update(executionWorkspaceRepositories).set({ requestedByIssueId: f.blockerId }).where(eq(executionWorkspaceRepositories.id, first.preparationId));
+    expect(await call("get_task_context", {})).toMatchObject({ completionContinuation: null });
+    await server.db.update(executionWorkspaceRepositories).set({ requestedByIssueId: f.issueId, state: "ready" }).where(eq(executionWorkspaceRepositories.id, first.preparationId));
+    expect(await call("get_task_context", {})).toMatchObject({ completionContinuation: null });
     expect(await call("select_workspace", { selection: { kind: "task_directory" }, expectedBindingRevision: view.bindingRevision, requestKey: "root-one" })).toMatchObject({ kind: "scheduled", applies: "next_normal_admission" });
     const [task] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
     expect(task).toMatchObject({ executionWorkspaceId: workspace.id, projectId: null, workspacePendingSelection: { requestKey: "root-one" } });
     const runs = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId));
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({ id: f.runId, status: "running" });
+  });
+  it("rejects repository preparation on an environment-owned workspace before queuing a receipt", async () => {
+    const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
+    const [workspace] = await server.db.insert(executionWorkspaces).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      name: "Plugin workspace", cwd: ".", mode: "adapter_managed", strategyType: "adapter_managed", providerType: "adapter_managed" }).returning();
+    await server.db.update(issues).set({ projectId: null, projectWorkspaceId: null, executionWorkspaceId: workspace.id }).where(eq(issues.id, f.issueId));
+    const call = (tool: string, args: Record<string, unknown>) => f.authority.execute({ tool, arguments: args, callId: randomUUID() });
+    await expect(call("get_workspace", {})).resolves.toMatchObject({ capabilities: { prepareRepository: "unsupported" } });
+    await expect(call("prepare_repository", { repository: { kind: "url", url: "https://github.com/public/example" }, requestKey: "unsupported-plugin" }))
+      .rejects.toThrow("environment-owned workspace");
+    expect(await server.db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.executionWorkspaceId, workspace.id))).toEqual([]);
   });
   it("allows a projectless task to use a directory also configured by an unrelated protected project", async () => {
     const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });

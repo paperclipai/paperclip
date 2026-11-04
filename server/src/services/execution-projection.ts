@@ -14,6 +14,8 @@ import type { ExecutionProjection } from "@paperclipai/shared";
 import { EXECUTION_CONTROL_DEADLINE_MS } from "./execution-control-deadline.js";
 import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
+import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
+import { readTaskDrain } from "./task-admission.js";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
@@ -245,7 +247,8 @@ export function projectExecution(
     Object.assign(projection, { phase, label });
   if (recoveryAction?.status === "resolved" && recoveryAction.evidence?.automaticRecovery) {
     projection.cause = recoveryAction.cause;
-    projection.nextAction = recoveryAction.nextAction;
+    projection.nextAction = workspaceRecoveryDisplay(recoveryAction.evidence, run.id)?.message
+      ?? recoveryAction.nextAction;
     const continuation = recoveryAction.evidence.explicitUserContinuation as
       { previousRunId?: unknown; runId?: unknown } | undefined;
     const explicitSuccessor = text(continuation?.runId);
@@ -379,6 +382,11 @@ export function projectExecution(
     return leaseConfirmed || processConfirmed
       ? set("working", "Working")
       : set("reconnecting", "Confirming execution");
+  }
+  if (run.status === "queued" && !run.startedAt && readTaskDrain(now)) {
+    projection.cause = "task_drain";
+    projection.nextAction = "This turn will start automatically when maintenance finishes.";
+    return set("queued", "Waiting for maintenance");
   }
   return projection;
 }

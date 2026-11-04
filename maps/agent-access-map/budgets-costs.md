@@ -4,6 +4,18 @@ Product map: [Costs, budgets, and spending controls](../feature-map/budgets-cost
 
 Feature ID: `budgets-costs`.
 
+Budget admission commits under the company accounting lock. A separate ownership
+transaction rechecks scope and capacity immediately before provider handoff;
+provider work does not hold the company accounting lock. Company, applicable
+agent, and applicable project limits include unsettled
+observed run usage and reservations without counting either twice. A committed
+hard stop prevents fresh provider work immediately; scoped cancellation delivery
+runs asynchronously and preserves existing Stop acknowledgement and recovery
+requirements. Project enforcement does not pause an agent's unrelated projects.
+Hosted browser dispatch reserves a separate scoped hold, rechecks authority at
+the paid POST, and retains unknown charges until terminal accounting. The parent
+run reservation does not authorize or replace this separate browser cost cap.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.

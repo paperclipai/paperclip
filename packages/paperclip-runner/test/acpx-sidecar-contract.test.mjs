@@ -15,7 +15,13 @@ const schema = JSON.parse(
     "utf8",
   ),
 );
-const validate = new Ajv2020({ allErrors: true, strict: true }).compile(schema);
+const providerFailureSchema = JSON.parse(await readFile(new URL("../protocol/schemas/provider-failure.schema.json", import.meta.url), "utf8"));
+function compileSidecarSchema(value) {
+  return new Ajv2020({ allErrors: true, strict: true,
+    formats: { "date-time": /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/ },
+  }).addSchema(providerFailureSchema).compile(value);
+}
+const validate = compileSidecarSchema(schema);
 const protocolVersion = readAcpxSidecarProtocolVersion(schema);
 
 const messages = [
@@ -47,6 +53,38 @@ test("the ACPX sidecar schema accepts each versioned message family", () => {
   }
 });
 
+test("failed responses accept the bounded provider cause and reject extra diagnostic fields", () => {
+  const failure = { schema: "paperclip.provider-failure.v1", provider: "anthropic", phase: "startup",
+    category: "rate_limit", message: "Account rate limit reached.", httpStatus: 429, retryability: "unknown" };
+  const response = { protocolVersion, id: 1, ok: false,
+    error: { code: "ACPX_SESSION_ENSURE_FAILED", message: "Internal error", retryable: false } };
+  assert.equal(validate(response), true);
+  const withCause = value => ({ ...response, error: { ...response.error, providerFailure: value } });
+  assert.equal(validate(withCause(failure)), true, JSON.stringify(validate.errors));
+  for (const change of [{ httpStatus: 999 }, { message: "x".repeat(4001) }, { headers: { authorization: "private" } }, { category: "invented" }]) {
+    assert.equal(validate(withCause({ ...failure, ...change })), false);
+  }
+});
+
+test("candidate startup and sidecar admission share one strict identity-bound JSON record", () => {
+  const candidateAdmission = { schema: "paperclip.acpx-candidate-admission.v1", companyId: "company-1", agent: "antigravity", model: "gemini-3.8-flash-low",
+    profileDigest: `sha256:${"a".repeat(64)}`, nativeClosureDigest: `sha256:${"b".repeat(64)}`, platform: "darwin", architecture: "arm64",
+    expiresAt: 1800000060000, runId: "run-1", normalizedSessionId: "session-1" };
+  const startup = compileSidecarSchema({ ...schema, oneOf: undefined, $ref: "#/$defs/candidateAdmission" });
+  assert.equal(startup(candidateAdmission), true, JSON.stringify(startup.errors));
+  for (const command of ["initialize", "session.open"]) {
+    const request = { protocolVersion, id: 1, command, params: { agent: "antigravity", model: candidateAdmission.model, candidateAdmission } };
+    assert.equal(validate(request), true, JSON.stringify(validate.errors));
+    for (const change of [{ unknown: true }, { runId: undefined }, { normalizedSessionId: "wrong session" }, { platform: "linux" }, { expiresAt: "1800000060000" }]) {
+      const altered = JSON.parse(JSON.stringify({ ...request, params: { ...request.params, candidateAdmission: { ...candidateAdmission, ...change } } }));
+      assert.equal(validate(altered), false);
+      assert.equal(startup(altered.params.candidateAdmission), false);
+    }
+    assert.equal(validate({ ...request, params: { ...request.params, agent: "codex" } }), false);
+  }
+  assert.equal(validate({ protocolVersion, id: 1, command: "turn.start", params: { candidateAdmission } }), false);
+});
+
 test("Pi session admission requires an explicit supported thinking level including recovery", () => {
   const open = (params) => ({ protocolVersion, id: 1, command: "session.open", params });
   for (const piThinkingLevel of ["off", "low", "high", "max"]) {
@@ -64,6 +102,47 @@ test("Pi session admission requires an explicit supported thinking level includi
     assert.equal(validate(open({ agent, piThinkingLevel: "low" })), false);
     assert.equal(validate(open({ agent, expectedIdentity: { piThinkingLevel: "low" } })), false);
   }
+});
+
+test("session.open accepts only the schema's closed parameter set", () => {
+  const open = (params) => ({ protocolVersion, id: 1, command: "session.open", params });
+  const names = Object.keys(schema.$defs.sessionOpenParams.properties);
+  assert.ok(names.includes("grokEffort") && names.includes("runtimeContext"));
+  for (const name of names.filter(name => !["agent", "piThinkingLevel", "claudeEffort", "candidateAdmission", "expectedIdentity", "providerPolicy"].includes(name))) {
+    assert.equal(validate(open({ agent: "codex", [name]: "value" })), true, name);
+  }
+  assert.equal(validate(open({ agent: "codex", unsupportedField: true })), false);
+  for (const providerPolicy of [null, { readOnly: true }, { readOnly: false }]) {
+    assert.equal(validate(open({ agent: "codex", providerPolicy })), true, JSON.stringify(providerPolicy));
+  }
+  for (const providerPolicy of [{}, { readOnly: "yes" }, { readOnly: true, extra: true }]) {
+    assert.equal(validate(open({ agent: "codex", providerPolicy })), false, JSON.stringify(providerPolicy));
+  }
+});
+
+test("the runtime context schema closes every nested object", async () => {
+  const runtimeSchema = JSON.parse(await readFile(new URL("../protocol/provider-schemas/runtime-context.schema.json", import.meta.url), "utf8"));
+  const validateContext = new Ajv2020({ allErrors: true, strict: true }).compile(runtimeSchema);
+  const hex = "a".repeat(64);
+  const asset = { schema: "paperclip.runtime-asset.v1", digest: hex, manifestDigest: hex, rootPath: "/bundle", fileCount: 1, totalBytes: 2 };
+  const context = {
+    prompt: { revision: "paperclip-execution.v8", text: "prompt", digest: hex },
+    instructions: { entryPath: "AGENTS.md", bundle: asset, workingCopy: { rootPath: "/work", entryPath: "AGENTS.md", kind: "agent_files" } },
+    skills: [{ key: "skill", runtimeName: "skill", versionId: null, bundle: asset }],
+    mcp: { assignmentSetId: "set", digest: hex, bindingId: null },
+    connectionInstructions: { text: "connect", digest: hex },
+    aggregateDigest: hex,
+  };
+  assert.equal(validateContext(context), true, JSON.stringify(validateContext.errors));
+  const nested = [[], ["prompt"], ["instructions"], ["instructions", "bundle"], ["instructions", "workingCopy"], ["mcp"], ["connectionInstructions"]];
+  for (const path of nested) {
+    const altered = structuredClone(context);
+    path.reduce((value, key) => value[key], altered).unexpected = true;
+    assert.equal(validateContext(altered), false, path.join("."));
+  }
+  const alteredSkill = structuredClone(context);
+  alteredSkill.skills[0].unexpected = true;
+  assert.equal(validateContext(alteredSkill), false);
 });
 
 test("public Pi descriptors preserve effective thinking levels without invalidating historical replay", async () => {

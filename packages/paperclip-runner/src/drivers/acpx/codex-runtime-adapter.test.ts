@@ -34,6 +34,71 @@ const HANDLE: AcpRuntimeHandle = {
 };
 
 describe("Codex ACPX runtime adapter", () => {
+  it("retains the provider cause before assigning the generic session failure code", async () => {
+    const runtime = fakeRuntime();
+    const rejection = Object.assign(new Error("Internal error"), { code: -32603,
+      data: { details: "API error: 429 This request would exceed your account's rate limit." } });
+    vi.mocked(runtime.ensureSession).mockRejectedValue(rejection);
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toMatchObject({
+      code: "ACPX_SESSION_ENSURE_FAILED",
+      providerFailure: { provider: "anthropic", category: "rate_limit", httpStatus: 429,
+        message: rejection.data.details, phase: "startup" },
+    });
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+  });
+  it("keeps a redacted explanation for an ensure rejection that carries no ACP error", async () => {
+    const runtime = fakeRuntime();
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    options.launchEnvironment = { ANTHROPIC_API_KEY: "fixture-anthropic-secret" };
+    const rejection = new Error("Claude Code exited during startup for fixture-anthropic-secret (sk-ant-api03-fixtureprivate)");
+    vi.mocked(runtime.ensureSession).mockRejectedValue(rejection);
+    const failure = await openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime }).catch((error: unknown) => error);
+    expect(failure).toBe(rejection);
+    expect(failure).toMatchObject({ code: "ACPX_SESSION_ENSURE_FAILED", providerFailure: { provider: "anthropic",
+      phase: "startup", category: "unknown", message: "Claude Code exited during startup for [REDACTED] ([REDACTED])" } });
+    expect(JSON.stringify((failure as { providerFailure: unknown }).providerFailure)).not.toMatch(/fixture-anthropic-secret|fixtureprivate/);
+  });
+  it("classifies an ACP authentication-required ensure rejection", async () => {
+    const runtime = fakeRuntime();
+    const message = "Authentication required: This integration does not support using claude.ai subscriptions.";
+    vi.mocked(runtime.ensureSession).mockRejectedValue(Object.assign(new Error(message), { code: -32000 }));
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toMatchObject({ code: "ACPX_SESSION_ENSURE_FAILED",
+      providerFailure: { category: "authentication", message, phase: "startup", retryability: "requires_action" } });
+  });
+  it("attaches a provider cause to a non-error ensure rejection", async () => {
+    const runtime = fakeRuntime();
+    vi.mocked(runtime.ensureSession).mockRejectedValue({ code: -32603, message: "Internal error", data: { errorKind: "billing_error" } });
+    const options = openOptions(fakeCommand());
+    options.profile = { ...options.profile, agent: "claude" };
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toMatchObject({ code: "ACPX_SESSION_ENSURE_NON_ERROR",
+      providerFailure: { category: "quota_exhausted", providerCode: "billing_error", phase: "startup" } });
+  });
+  it("does not report Runner cancellation as a provider explanation", async () => {
+    const runtime = fakeRuntime();
+    const controller = new AbortController();
+    const reason = new Error("runtime admission cancelled");
+    const rejection = new Error("ACP connection closed");
+    vi.mocked(runtime.ensureSession).mockImplementation(async () => {
+      controller.abort(reason);
+      throw rejection;
+    });
+    const options = openOptions(fakeCommand());
+    options.signal = controller.signal;
+    await expect(openCodexAcpxRuntime(options, { createRegistry: () => registry(), createStore: () => store(),
+      createRuntime: () => runtime })).rejects.toBe(reason);
+    await vi.waitFor(() => expect(rejection).toHaveProperty("code", "ACPX_SESSION_ENSURE_FAILED"));
+    expect(rejection).not.toHaveProperty("providerFailure");
+    expect(reason).not.toHaveProperty("providerFailure");
+  });
   it.each([false, true])("acknowledges configured Claude effort before admission (restoring=%s)", async restoring => {
     const runtime = fakeRuntime();
     const child = fakeChild();
@@ -65,6 +130,48 @@ describe("Codex ACPX runtime adapter", () => {
     expect(await port.identity()).toMatchObject({ claudeEffort: "high" });
     if (restoring) expect(options.refreshConsumedCommand).toHaveBeenCalledOnce();
     else expect(options.refreshConsumedCommand).not.toHaveBeenCalled();
+    expect(runtime.startTurn).not.toHaveBeenCalled();
+    await port.close({ reason: "test complete" });
+  });
+  it.each([false, true])("acknowledges configured Grok effort before admission (restoring=%s)", async restoring => {
+    const runtime = Object.assign(fakeRuntime(), { requestExtension: vi.fn(async () => ({})) });
+    const child = fakeChild();
+    const options = openOptions({ spawn: () => child, close: async () => undefined });
+    options.profile = resolveQualifiedAcpxProfile("grok", "grok-4.7");
+    options.grokEffort = "high";
+    options.restoringSession = restoring;
+    options.refreshConsumedCommand = vi.fn(async () => undefined);
+    let created!: AcpRuntimeOptions;
+    const spawnProvider = () => created.spawnAgent!({ command: "ignored", args: [], options: {} });
+    const acknowledge = () => {
+      const guard = created.protocolGuardFactory!();
+      guard("outbound", { id: 0, method: "session/load", params: { sessionId: "backend-1" } });
+      guard("inbound", { id: 0, result: { models: { currentModelId: "grok-4.7" },
+        _meta: { "x.ai/sessionConfig": { options: [{ id: "high", category: "mode", selected: true }] } } } });
+    };
+    vi.mocked(runtime.ensureSession).mockImplementation(async input => {
+      expect(input.sessionOptions).toMatchObject({ model: "grok-4.7" });
+      if (!restoring) { spawnProvider(); acknowledge(); }
+      return HANDLE;
+    });
+    runtime.requestExtension.mockImplementation(async () => {
+      spawnProvider(); acknowledge(); return {};
+    });
+    const port = await openCodexAcpxRuntime(options, {
+      createRegistry: () => registry(), createStore: () => store(), createRuntime: value => { created = value; return runtime; },
+      awaitProviderOwnership: providerOwnershipEstablished,
+      awaitProviderExit: providerOwnershipEstablished,
+    });
+    expect(runtime.setConfigOption).not.toHaveBeenCalled();
+    expect(await port.identity()).toMatchObject({ grokEffort: "high" });
+    if (restoring) {
+      expect(runtime.requestExtension).toHaveBeenCalledExactlyOnceWith({ handle: HANDLE, method: "_x.ai/session/info",
+        params: { sessionId: "backend-1" }, sessionMode: "persistent" });
+      expect(options.refreshConsumedCommand).toHaveBeenCalledOnce();
+    } else {
+      expect(runtime.requestExtension).not.toHaveBeenCalled();
+      expect(options.refreshConsumedCommand).not.toHaveBeenCalled();
+    }
     expect(runtime.startTurn).not.toHaveBeenCalled();
     await port.close({ reason: "test complete" });
   });

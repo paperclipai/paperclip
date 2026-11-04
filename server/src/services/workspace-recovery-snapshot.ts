@@ -23,7 +23,7 @@ const snapshotSchema = z.object({
   leaseId: z.string().uuid(), providerLeaseId: z.string().min(1), archive: storedFileSchema, manifest: storedFileSchema,
 });
 export type PreservedWorkspaceSnapshot = z.infer<typeof snapshotSchema>;
-function readSnapshot(value: unknown, companyId: string, runId: string) {
+export function readSnapshot(value: unknown, companyId: string, runId: string) {
   const parsed = snapshotSchema.safeParse(value);
   if (!parsed.success) throw new SystemRecoveryFailure("snapshot_verification_failed", "service_required");
   const s = parsed.data;

@@ -19,6 +19,8 @@ import { documents } from "./documents.js";
 import { issues } from "./issues.js";
 import { labels } from "./labels.js";
 import { projects } from "./projects.js";
+import { workflows } from "./workflows.js";
+import type { CaseWorkflowTransition } from "@paperclipai/shared";
 
 export const cases = pgTable(
   "cases",
@@ -28,6 +30,7 @@ export const cases = pgTable(
     projectId: uuid("project_id").references(() => projects.id, { onDelete: "set null" }),
     workIssueId: uuid("work_issue_id").references(() => issues.id, { onDelete: "restrict" }),
     phase: text("phase"),
+    workflowId: uuid("workflow_id").references(() => workflows.id, { onDelete: "restrict" }),
     handoffVersion: integer("handoff_version").notNull().default(0),
     caseNumber: integer("case_number").notNull(),
     identifier: text("identifier").notNull(),
@@ -192,6 +195,9 @@ export const caseAccessSources = pgTable("case_access_sources", {
 }));
 
 export const caseHandoffs = pgTable("case_handoffs", {
+  workflowTransition: jsonb("workflow_transition").$type<CaseWorkflowTransition>(),
+  workflowPrompt: text("workflow_prompt"),
+  baseWorkflowDocumentRevisionId: uuid("base_workflow_document_revision_id"),
   id: uuid("id").primaryKey().defaultRandom(),
   companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
   caseId: uuid("case_id").notNull().references(() => cases.id, { onDelete: "cascade" }),

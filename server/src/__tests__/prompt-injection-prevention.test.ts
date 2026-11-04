@@ -24,6 +24,7 @@ import { errorHandler } from "../middleware/index.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
 import { SecretProviderClientError } from "../secrets/types.js";
 import { validateToolContent } from "../services/tool-content-guards.js";
+import { deliverBudgetEnforcement } from "../services/budgets.js";
 let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, db: ReturnType<typeof createDb>, home: string;
 beforeAll(async () => {
   home = await realpath(await mkdtemp(path.join(os.tmpdir(), "paperclip-injection-")));
@@ -49,6 +50,36 @@ async function fixture() {
   return { companyId, agentId, connections, binding, provider, service, context, config };
 }
 describe("prompt injection service", () => {
+  it("returns the model verdict and committed charge before slow budget stop delivery", async () => {
+    const f = await fixture();
+    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      windowKind: "calendar_month_utc", amount: 1, notifyEnabled: false });
+    f.provider.mockResolvedValue({ ...structuredClone(outcome), receipt: { ...outcome.receipt, costCents: "2.0000000" } });
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const cancelWorkForScope = vi.fn(() => gate);
+    const service = promptInjectionPreventionService(db, { provider: f.provider, budgetHooks: { cancelWorkForScope } });
+    const pending = service.classify(f.context, "Benign source code");
+    let delivery: Promise<void> | undefined;
+    let finished = false;
+    void pending.then(() => { finished = true; }, () => { finished = true; });
+    try {
+      await vi.waitFor(() => expect(finished).toBe(true), { timeout: 3000 });
+      expect(await pending).toMatchObject({ status: "classified", violation: false });
+      expect(f.provider).toHaveBeenCalledOnce();
+      expect(cancelWorkForScope).not.toHaveBeenCalled();
+      const events = await db.select().from(costEvents).where(eq(costEvents.companyId, f.companyId));
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ usageKind: "prompt_injection", costCents: 2 });
+      const [policy] = await db.select().from(budgetPolicies).where(eq(budgetPolicies.companyId, f.companyId));
+      expect(policy.enforcementVersion).toBeGreaterThan(policy.enforcementDeliveredVersion);
+      delivery = deliverBudgetEnforcement(db, { cancelWorkForScope }, f.companyId);
+      await vi.waitFor(() => expect(cancelWorkForScope).toHaveBeenCalledOnce());
+      expect((await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)))[0].enforcementDeliveredVersion).toBe(policy.enforcementDeliveredVersion);
+      release(); await delivery;
+      expect((await db.select().from(budgetPolicies).where(eq(budgetPolicies.id, policy.id)))[0].enforcementDeliveredVersion).toBe(policy.enforcementVersion);
+    } finally { release(); await pending.catch(() => undefined); await delivery?.catch(() => undefined); }
+  });
   it.each(["missing_key", "wrong_key", "remote_vault_outage"])("uses full regex fallback for %s without dispatch or charge", async failure => {
     const f = await fixture();
     const previousKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;

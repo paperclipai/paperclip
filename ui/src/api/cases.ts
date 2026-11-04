@@ -35,6 +35,8 @@ export interface CaseSummary {
   status: CaseStatus;
   fields: Record<string, unknown>;
   workIssueId?: string | null;
+  workflowId?: string | null;
+  workflow?: { id: string; name: string } | null;
   phase?: string | null;
   handoffVersion?: number;
   workIssue?: CaseWorkIssue | null;

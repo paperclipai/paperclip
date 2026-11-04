@@ -4284,7 +4284,7 @@ export function normalizePaperclipRunnerAdapterConfig(
 ): Record<string, unknown> {
   if (adapterType !== "paperclip_runner") return config;
   config = normalizeLegacyRunnerProvider(config);
-  if (config.provider === "openai_dot" || config.provider === "muse") {
+  if (config.provider === "openai_dot" || config.provider === "muse" || config.provider === "cursor_cloud") {
     return normalizePaperclipOperationalSkillPreference(adapterType, { lifecycleMode: "per_turn", ...config });
   }
   const next: Record<string, unknown> = {
@@ -4299,7 +4299,9 @@ export function normalizePaperclipRunnerAdapterConfig(
   }
   if (next.provider === "acpx") {
     next.acpxAgent ??= "claude";
-    next.model = resolvePaperclipRunnerModel("acpx", config.model);
+    if (next.acpxAgent !== "pi" && next.acpxAgent !== "kimi") {
+      next.model = resolvePaperclipRunnerModel("acpx", config.model);
+    }
   }
   return normalizePaperclipOperationalSkillPreference(adapterType, next);
 }
@@ -4563,6 +4565,10 @@ export async function materializePaperclipSkillCopy(
     skippedSymlinks: [],
   };
 
+  const sourceFingerprint = await hashSkillDirectory(sourceRoot);
+  if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint))
+    return result;
+
   const lockDir = `${targetRoot}.lock`;
   const releaseLock = await acquireMaterializeLock(lockDir);
   const tempRoot = `${targetRoot}.tmp-${process.pid}-${randomUUID()}`;
@@ -4608,7 +4614,6 @@ export async function materializePaperclipSkillCopy(
   }
 
   try {
-    const sourceFingerprint = await hashSkillDirectory(sourceRoot);
     if (
       await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)
     )

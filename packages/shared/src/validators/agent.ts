@@ -28,6 +28,7 @@ export const updateAgentInstructionsBundleSchema = z.object({
   rootPath: z.string().trim().min(1).nullable().optional(),
   entryFile: z.string().trim().min(1).optional(),
   clearLegacyPromptTemplate: z.boolean().optional().default(false),
+  requireExistingEntry: z.boolean().optional(),
 });
 
 export type UpdateAgentInstructionsBundle = z.infer<typeof updateAgentInstructionsBundleSchema>;
@@ -151,18 +152,39 @@ export const createAgentHireSchema = createAgentSchema.omit({ setupId: true }).e
 
 export type CreateAgentHire = z.infer<typeof createAgentHireSchema>;
 
+// Narrow intent used by roster bulk edits. The server merges only these fields
+// into the latest configuration and rejects stale previews.
+export const agentRuntimeSettingsPatchSchema = z.object({
+  harness: z.string().min(1),
+  model: z.string().trim().min(1).max(512).optional(),
+  aiConnection: aiConnectionBindingSchema.optional(),
+  expected: z.object({
+    model: z.string().nullable(),
+    aiConnection: aiConnectionBindingSchema.nullable(),
+  }).strict(),
+}).strict().refine(value => value.model !== undefined || value.aiConnection !== undefined, {
+  message: "Choose a connection or default model to change",
+});
+export type AgentRuntimeSettingsPatch = z.infer<typeof agentRuntimeSettingsPatchSchema>;
+
 export const updateAgentSchema = objectWithoutDefaults(
   createAgentSchema.omit({ permissions: true, onboardingFirstAgent: true, setupId: true }),
 )
   .partial()
   .extend({
     permissions: z.never().optional(),
+    runtimeSettings: agentRuntimeSettingsPatchSchema.optional(),
     replaceAdapterConfig: z.boolean().optional(),
+    expectedConfigurationRevision: z.string().regex(/^[a-f0-9]{64}$/).optional(),
     status: z.enum(["paused", "idle", "terminated"]).optional(),
     spentMonthlyCents: z.never().optional(),
   });
 
 export type UpdateAgent = z.infer<typeof updateAgentSchema>;
+
+export const qualifyAgentRunnerSchema = z.object({
+  expectedEnvironmentId: z.string().uuid(),
+}).strict();
 
 export const updateAgentInstructionsPathSchema = z.object({
   path: z.string().trim().min(1).nullable(),
@@ -301,6 +323,10 @@ export const updateAgentPermissionsSchema = z.object({
 });
 
 export type UpdateAgentPermissions = z.infer<typeof updateAgentPermissionsSchema>;
+
+export const addAgentProjectAccessSchema = z.object({
+  projectIds: z.array(z.string().uuid()).min(1).max(100),
+}).strict();
 
 export const resolveAgentInstructionCandidateSchema = z.object({
   baseRevisionId: z.string().uuid().nullable(),

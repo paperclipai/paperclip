@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, readFile, readdir, realpath, rm, symlink, writeFile } f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { assertPiNodeSystemDependencies, PI_BRACE_SECURITY_PATCH_SHA256, PI_DISTRIBUTION_PINS, materializePiDistribution, resolvePiBundledNpm, piDistributionInstallCommand, verifyLockedPiPackageGraph, writePiDistributionManifest } from "./materialize-pi-distribution.mjs";
+import { assertPiNodeSystemDependencies, downloadPinnedPiNodeArchive, PI_BRACE_SECURITY_PATCH_SHA256, PI_DISTRIBUTION_PINS, materializePiDistribution, resolvePiBundledNpm, piDistributionInstallCommand, verifyLockedPiPackageGraph, writePiDistributionManifest } from "./materialize-pi-distribution.mjs";
 import { verifyPiRuntimeManifest } from "../src/drivers/acpx/pi-verified-runtime.ts";
 
 async function fixture(t) {
@@ -136,4 +136,96 @@ test("setup selects the exact archive npm and rejects wrong versions or linked e
   await rm(join(root, prefix, "bin/npm-cli.js"));
   await symlink(join(root, prefix, "package.json"), join(root, prefix, "bin/npm-cli.js"));
   await assert.rejects(resolvePiBundledNpm(root), /invalid archive entry/);
+});
+
+test("Node archive download retries transport stalls and records each failed attempt", async () => {
+  const archive = Buffer.from("pinned node archive");
+  const archiveSha256 = createHash("sha256").update(archive).digest("hex");
+  const stalledBody = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1])); controller.error(new DOMException("The operation was aborted due to timeout", "TimeoutError")); } });
+  const replies = [
+    () => Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+    () => Promise.resolve(new Response(stalledBody)),
+    () => Promise.resolve(new Response(archive)),
+  ];
+  const signals = []; const warnings = [];
+  const bytes = await downloadPinnedPiNodeArchive({
+    url: "https://nodejs.org/dist/fixture.tar.gz", archiveSha256, retryDelayMs: 0, warn: (message) => warnings.push(message),
+    fetchImpl: (url, init) => { signals.push(init.signal); assert.equal(init.redirect, "error"); return replies.shift()(); },
+  });
+  assert.deepEqual(bytes, archive);
+  assert.equal(signals.length, 3);
+  assert.equal(new Set(signals).size, 3, "each attempt needs a fresh timeout");
+  assert.equal(warnings.length, 2);
+  assert.match(warnings[0], /attempt 1\/3 failed: The operation was aborted due to timeout; retrying/);
+});
+
+test("Node archive download deadline aborts stalled headers and stalled bodies", async () => {
+  const archive = Buffer.from("pinned node archive");
+  const archiveSha256 = createHash("sha256").update(archive).digest("hex");
+  const abortWith = (signal, fail) => signal.addEventListener("abort", () => fail(signal.reason), { once: true });
+  const replies = [
+    // Headers never arrive; only the supplied deadline can end this attempt.
+    (signal) => new Promise((_, reject) => abortWith(signal, reject)),
+    // Headers arrive, then the body stalls after one chunk until the same deadline fires.
+    (signal) => Promise.resolve(new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array([1])); abortWith(signal, (reason) => controller.error(reason)); } }))),
+    () => Promise.resolve(new Response(archive)),
+  ];
+  const warnings = [];
+  const bytes = await downloadPinnedPiNodeArchive({
+    url: "https://nodejs.org/dist/fixture.tar.gz", archiveSha256, timeoutMs: 20, retryDelayMs: 0, warn: (message) => warnings.push(message),
+    fetchImpl: (url, init) => replies.shift()(init.signal),
+  });
+  assert.deepEqual(bytes, archive);
+  assert.equal(warnings.length, 2);
+  for (const warning of warnings) assert.match(warning, /The operation was aborted due to timeout; retrying/);
+});
+
+test("Node archive download releases a rejected response before the next attempt", async () => {
+  const archive = Buffer.from("pinned node archive");
+  const archiveSha256 = createHash("sha256").update(archive).digest("hex");
+  const events = [];
+  const busy = () => new Response(new ReadableStream({ cancel() { events.push("cancel"); } }), { status: 503 });
+  const replies = [busy, () => new Response(archive)];
+  await downloadPinnedPiNodeArchive({
+    url: "https://nodejs.org/dist/fixture.tar.gz", archiveSha256, retryDelayMs: 0, warn: () => {},
+    fetchImpl: () => { events.push("fetch"); return Promise.resolve(replies.shift()()); },
+  });
+  assert.deepEqual(events, ["fetch", "cancel", "fetch"]);
+  events.length = 0;
+  await assert.rejects(downloadPinnedPiNodeArchive({
+    url: "https://nodejs.org/dist/fixture.tar.gz", archiveSha256, retryDelayMs: 0, warn: () => assert.fail("must not retry"),
+    fetchImpl: () => { events.push("fetch"); return Promise.resolve(new Response(new ReadableStream({ cancel() { events.push("cancel"); } }), { status: 404 })); },
+  }), /returned HTTP 404/);
+  assert.deepEqual(events, ["fetch", "cancel"]);
+});
+
+test("Node archive download names the exhausted request instead of an anonymous timeout", async () => {
+  let calls = 0;
+  await assert.rejects(downloadPinnedPiNodeArchive({
+    url: "https://nodejs.org/dist/fixture.tar.gz", archiveSha256: "0".repeat(64), retryDelayMs: 0, warn: () => {},
+    fetchImpl: () => { calls++; return Promise.reject(new TypeError("fetch failed")); },
+  }), /^Error: Pinned Pi Node download failed after 3 attempts: fetch failed$/);
+  assert.equal(calls, 3);
+  calls = 0;
+  await assert.rejects(downloadPinnedPiNodeArchive({
+    url: "https://nodejs.org/dist/fixture.tar.gz", archiveSha256: "0".repeat(64), retryDelayMs: 0, warn: () => {},
+    fetchImpl: () => { calls++; return Promise.resolve(new Response("busy", { status: 503 })); },
+  }), /failed after 3 attempts: Pinned Pi Node download returned HTTP 503/);
+  assert.equal(calls, 3);
+});
+
+test("Node archive download fails closed without retrying pin, bound, client or cancellation failures", async () => {
+  const options = { url: "https://nodejs.org/dist/fixture.tar.gz", archiveSha256: "0".repeat(64), retryDelayMs: 0, warn: () => assert.fail("must not retry") };
+  let calls = 0;
+  const once = (response) => () => { calls++; return Promise.resolve(response()); };
+  await assert.rejects(downloadPinnedPiNodeArchive({ ...options, fetchImpl: once(() => new Response("tampered")) }), /does not match its release pin/);
+  await assert.rejects(downloadPinnedPiNodeArchive({ ...options, fetchImpl: once(() => new Response("missing", { status: 404 })) }), /returned HTTP 404/);
+  const oversized = new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(128 * 1024 * 1024 + 1)); controller.close(); } });
+  await assert.rejects(downloadPinnedPiNodeArchive({ ...options, fetchImpl: once(() => new Response(oversized)) }), /exceeds its bound/);
+  assert.equal(calls, 3);
+  let checks = 0;
+  await assert.rejects(downloadPinnedPiNodeArchive({
+    ...options, warn: () => {}, checkCancelled: () => { if (++checks > 1) throw new Error("cancelled"); },
+    fetchImpl: () => Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError")),
+  }), /cancelled/);
 });

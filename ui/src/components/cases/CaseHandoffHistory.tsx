@@ -41,8 +41,8 @@ function HandoffRow({ handoff, task, agents }: { handoff: CaseHandoffView; task?
   const createdAt = new Date(handoff.createdAt).toISOString();
   const terminal = handoff.destinationKind === "done";
   const settled = handoff.state === "delivered" || handoff.state === "completed";
-  const stateLabel = handoff.state === "cancelled" ? "Cancelled" : settled ? null
-    : terminal ? "Waiting for task completion" : "Waiting";
+  const stateLabel = handoff.state === "cancelled" ? (handoff.assignmentAppliedAt ? "Applied · delivery cancelled" : "Cancelled before transfer") : settled ? null
+    : terminal ? "Waiting for task completion" : handoff.assignmentAppliedAt ? "Applied · waiting for delivery" : "Pending transfer";
   const handoffTask = task?.id === handoff.issueId ? task : null;
   return <li>
     <details className="group">
@@ -65,6 +65,10 @@ function HandoffRow({ handoff, task, agents }: { handoff: CaseHandoffView; task?
         </span>
       </summary>
       <div className="space-y-2 pb-4 pl-6">
+        {handoff.workflowTransition && <p className="text-xs text-muted-foreground">
+          {handoff.workflowTransition.from.name ?? "Case instructions"}{handoff.workflowTransition.from.phase ? ` · ${handoff.workflowTransition.from.phase}` : ""}
+          {" → "}{handoff.workflowTransition.to.name ?? "Case instructions"} · {handoff.workflowTransition.to.phase}
+        </p>}
         {handoff.lastError && !settled && handoff.state !== "cancelled" ? <p className="text-xs text-muted-foreground">{handoff.lastError}</p> : null}
         <MarkdownBody linkIssueReferences linkCaseReferences>{handoff.instructions}</MarkdownBody>
       </div>

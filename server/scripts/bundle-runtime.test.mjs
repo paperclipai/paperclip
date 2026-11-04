@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -71,6 +71,24 @@ describe("bundleRuntime", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
+  it("packages a maintenance entry without starting the application or needing a TypeScript loader", async () => {
+    const maintenanceEntry = path.join(root, "server", "dist", "maintenance.js");
+    write(maintenanceEntry, 'import { asset } from "@paperclipai/fixture"; console.log(JSON.stringify({ asset, phase: process.argv.at(-1) }));');
+    const outdir = path.join(root, "server", "dist-runtime");
+    await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir, maintenanceEntry });
+    const { stdout } = await execFileAsync(process.execPath, [path.join(outdir, "agent-files.mjs"), "--phase=eligibility"], { timeout: 30_000 });
+    expect(JSON.parse(stdout)).toEqual({ asset: "asset beside its source", phase: "--phase=eligibility" });
+  });
+
+  it("packages standalone enrollment without starting the app", async () => {
+    const ephemeralMigrationEntry = path.join(root, "server", "dist", "migration.js");
+    write(ephemeralMigrationEntry, 'import { values } from "@paperclipai/fixture"; console.log(JSON.stringify({ migrated: values.doubled }));');
+    const outdir = path.join(root, "server", "dist-runtime");
+    await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir, ephemeralMigrationEntry });
+    const { stdout } = await execFileAsync(process.execPath, [path.join(outdir, "ephemeral-migration.mjs")], { timeout: 30_000 });
+    expect(JSON.parse(stdout)).toEqual({ migrated: 42 });
+  });
+
   it("bundles workspace TypeScript and runs with plain node", async () => {
     const outdir = path.join(root, "server", "dist-runtime");
     const summary = await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir });
@@ -83,6 +101,69 @@ describe("bundleRuntime", () => {
     expect(output.asset).toBe("asset beside its source");
     expect(output.location).toBe(path.join(root, "packages", "fixture", "src"));
     expect(output.entryDir).toBe(path.join(root, "server", "dist"));
+  });
+
+  it("keeps database caller locations public in a source-mapped runtime bundle", async () => {
+    const captureModule = fileURLToPath(new URL("../../packages/db/src/response-capture.ts", import.meta.url));
+    write(path.join(root, "server", "dist", "services", "response-caller.js"), [
+      `import { publicDatabaseCallers } from ${JSON.stringify(captureModule)};`,
+      'export function callers() { return publicDatabaseCallers(new Error("private-capture-message").stack); }',
+    ].join("\n"));
+    write(path.join(root, "server", "dist", "index.js"), [
+      'import { callers } from "./services/response-caller.js";',
+      'console.log(JSON.stringify({ callers: callers() }));',
+    ].join("\n"));
+    const summary = await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir: path.join(root, "server", "dist-runtime") });
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS;
+    delete env.PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW;
+    const options = { cwd: path.join(root, "server"), env, timeout: 30_000 };
+    const plain = JSON.parse((await execFileAsync(process.execPath, [summary.outfile], options)).stdout);
+    const mapped = JSON.parse((await execFileAsync(process.execPath, ["--enable-source-maps", summary.outfile], options)).stdout);
+    expect(plain.callers).toEqual([]);
+    expect(mapped.callers).toEqual([expect.stringMatching(/^services\/response-caller\.js:\d+:\d+$/)]);
+    for (const result of [plain, mapped]) {
+      const output = JSON.stringify(result);
+      expect(output).not.toContain(root);
+      expect(output).not.toContain(captureModule);
+      expect(output).not.toContain("private-capture-message");
+    }
+  });
+
+  it("attributes asynchronous database operations in a plain runtime bundle", async () => {
+    const captureModule = fileURLToPath(new URL("../../packages/db/src/response-capture.ts", import.meta.url));
+    write(path.join(root, "server", "dist", "services", "database-owner.js"), [
+      `import { withDatabaseOperation } from ${JSON.stringify(captureModule)};`,
+      'export const run = (owner, db) => withDatabaseOperation(owner, async () => {',
+      '  await Promise.resolve();',
+      '  return await db.$client.unsafe("select $1", ["private-parameter"]);',
+      '});',
+    ].join("\n"));
+    write(path.join(root, "server", "dist", "index.js"), [
+      `import { createDatabaseResponseCapture, installDatabaseResponseCapture } from ${JSON.stringify(captureModule)};`,
+      'import { run } from "./services/database-owner.js";',
+      'const events = [];',
+      'const now = Date.now();',
+      'const capture = createDatabaseResponseCapture({ start: now, end: now + 60000 }, event => events.push(event));',
+      'const db = { $client: { unsafe: () => ({ then(resolve, reject) { return Promise.resolve(Object.assign([["private-result"]], { columns: [{ name: "value" }] })).then(resolve, reject); } }) } };',
+      'installDatabaseResponseCapture(db, {}, capture);',
+      'await Promise.all([run("fixture.first", db), run("fixture.second", db)]);',
+      'capture.flush();',
+      'console.log(JSON.stringify(events));',
+    ].join("\n"));
+    const summary = await bundleRuntime({ entry: path.join(root, "server", "dist", "index.js"), outdir: path.join(root, "server", "dist-runtime") });
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS;
+    delete env.PAPERCLIP_DB_RESPONSE_CAPTURE_WINDOW;
+    const { stdout } = await execFileAsync(process.execPath, [summary.outfile], { cwd: path.join(root, "server"), env, timeout: 30_000 });
+    const events = JSON.parse(stdout);
+    const entries = events.filter(event => event.event === "paperclip.db_response_capture.entry.v2");
+    expect(entries.map(entry => entry.owner).sort()).toEqual(["fixture.first", "fixture.second"]);
+    for (const entry of entries) expect(entry).toMatchObject({ calls: 1, rows: 1, callers: [] });
+    expect(events.at(-1)).toMatchObject({ event: "paperclip.db_response_capture.summary.v2", completedQueries: 2 });
+    expect(stdout).not.toContain("private-parameter");
+    expect(stdout).not.toContain("private-result");
+    expect(stdout).not.toContain(root);
   });
 
   it("emits a server module that loads without starting the server", async () => {

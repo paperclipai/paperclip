@@ -43,11 +43,36 @@ test("provider manifest digest survives disk JSON on supported and unsupported t
 test("candidate options stay explicit and supported native assets are included by default", () => {
   assert.deepEqual(parseProviderPackArguments(["--", "/pack"]), { output: "/pack", candidates: [] });
   assert.deepEqual(parseProviderPackArguments(["/pack", "--candidate-providers=pi,cursor"]), { output: "/pack", candidates: ["pi", "cursor"] });
+  assert.deepEqual(parseProviderPackArguments(["/pack", "--candidate-providers=kimi"]), { output: "/pack", candidates: ["kimi"] });
+});
+
+test("released Kimi enters ordinary inventory on only its two supported targets", () => {
+  const kimi = { version: "2.3.3", qualification: "qualified", profileDigest: "sha256:profile", closureDigest: "sha256:closure" };
+  for (const [platform, architecture] of [["darwin", "arm64"], ["linux", "x64"]]) {
+    assert.equal(providerPackProviders(platform, architecture, []).filter(provider => provider === "kimi").length, 1);
+    assert.equal(providerPackProviders(platform, architecture, ["kimi"]).filter(provider => provider === "kimi").length, 1);
+  }
+  for (const [platform, architecture] of [["darwin", "x64"], ["linux", "arm64"], ["win32", "x64"]]) {
+    assert.equal(providerPackProviders(platform, architecture, []).includes("kimi"), false);
+  }
+  for (const candidates of [[], ["kimi"]]) {
+    const fields = providerPackManifestFields({ kimi }, candidates);
+    assert.equal(fields.providers.kimi, kimi);
+    assert.equal(fields.candidateProviders?.kimi, undefined);
+    assert.equal(digest(JSON.parse(JSON.stringify(fields))), digest(fields));
+  }
+});
+
+test("Kimi's candidate builder rejects invalid paths before any public download", async t => {
+  let requests = 0;
+  t.mock.method(globalThis, "fetch", async () => { requests++; throw new Error("Unexpected Kimi download"); });
+  await assert.rejects(materializeCandidateProviderPack({ provider: "kimi", outputRoot: "relative-kimi-output" }), /Kimi distribution output must be absolute/);
+  assert.equal(requests, 0);
 });
 test("normal packs include Cursor and Copilot on their three pinned targets without breaking other hosts", () => {
   for (const [platform, architecture] of [["darwin", "arm64"], ["darwin", "x64"], ["linux", "x64"]]) {
-    assert.deepEqual(providerPackProviders(platform, architecture, []), ["pi", "cursor", "copilot"]);
-    assert.deepEqual(providerPackProviders(platform, architecture, ["cursor"]), ["pi", "cursor", "copilot"]);
+    assert.deepEqual(providerPackProviders(platform, architecture, []), ["pi", "cursor", "copilot", ...((platform === "darwin" && architecture === "arm64") || platform === "linux" ? ["kimi"] : [])]);
+    assert.deepEqual(providerPackProviders(platform, architecture, ["cursor"]), providerPackProviders(platform, architecture, []));
   }
   assert.deepEqual(providerPackProviders("linux", "arm64", []), []);
   assert.deepEqual(providerPackProviders("win32", "x64", []), []);

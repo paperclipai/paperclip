@@ -46,6 +46,8 @@ export interface CodexAppServerTransport {
   notify(method: string, params?: Record<string, unknown>): void;
   notifications(): AsyncIterable<CodexRpcNotification>;
   setServerRequestHandler(handler: CodexServerRequestHandler): void;
+  /** Establish a fresh owned provider lifetime before reading a retained conversation. */
+  prepareConversationResume?(params: Record<string, unknown>): Promise<void>;
   /** One-shot requests authenticated by an adopted live provider, never a saved checkpoint alone. */
   takeRestoredRuntimeRequests?(): CodexRpcServerRequest[];
   /**
@@ -251,7 +253,11 @@ export function createSanitizedCodexEnvironment(
     if (key.includes("PROXY") && proxyContainsCredentials(value)) continue;
     environment[key] = value;
   }
-  for (const key of ["PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY"]) {
+  // Secret-bearing launch material must come from the controller's explicit environment.
+  for (const key of [
+    "PAPERCLIP_AGENT_KEY_ID", "PAPERCLIP_AGENT_PUBLIC_KEY", "PAPERCLIP_AGENT_PRIVATE_KEY",
+    "OTEL_EXPORTER_OTLP_LOGS_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+  ]) {
     if (explicit?.[key] !== undefined) environment[key] = explicit[key];
   }
   Object.assign(environment, githubCredentialEnvironment(source), configuredEnvironment(explicit));

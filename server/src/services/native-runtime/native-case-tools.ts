@@ -12,7 +12,7 @@ import { caseReadPageShape, refineCaseReadPage } from "../case-agent-read.js";
 import type { RunnerApiCall } from "./runner-api-client.js";
 
 export const NATIVE_CASE_OPERATIONS = new Set([
-  "create_case", "read_case", "update_case",
+  "create_case", "read_case", "update_case", "list_workflows", "read_workflow", "create_workflow", "update_workflow",
 ]);
 
 /** Retain the case boundary on generic HTTP response captures too. Shared
@@ -33,10 +33,11 @@ export const createNativeCaseSchema = z.object({
   idempotencyKey: retryKey, caseType: z.string().trim().min(1).max(120), title: z.string().trim().min(1).max(500),
   summary: z.string().max(8000).optional(), fields: z.record(z.string(), z.unknown()).optional(),
   projectId: z.string().guid().nullable().optional(),
-  workflow_document_text: caseWorkflowDocumentTextSchema,
+  workflow_document_text: caseWorkflowDocumentTextSchema.optional(),
+  workflowId: z.string().guid().optional(),
   kickoff: z.object({ toAgentId: z.string().guid(), phase: z.string().trim().min(1).max(120), instructions: z.string().min(1).max(20000) }).strict(),
   initialDocuments: caseInitialDocumentsSchema.optional(),
-}).strict();
+}).strict().refine(input => Boolean(input.workflowId) !== (input.workflow_document_text !== undefined), "Provide workflowId or workflow_document_text, not both");
 
 const schemas = {
   read_case: identity.extend(caseReadPageShape).superRefine(refineCaseReadPage),

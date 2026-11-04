@@ -1,4 +1,11 @@
+import { admitAcpxSessionContext } from "./session-context-admission.js";
+import { createKimiInstructionAdmission } from "./kimi-instructions.js";
+import { kimiReadOnlyPermissionAllowed } from "./kimi-config.js";
+import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
+import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
+import { acpxProviderFailure } from "./provider-failure.js";
+import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { ChildProcess } from "node:child_process";
@@ -33,7 +40,8 @@ import {
 import type { AcpxModelStatus } from "./model-verification.js";
 import { AcpxApprovalRequiredError, decideAcpxPermission } from "./permission-policy.js";
 import { ACPX_CAPABILITY_PROFILES } from "./capability-profiles.js";
-import { admitCursorInstructions, createCursorInstructionAdmission } from "./cursor-instructions.js";
+import { createCursorInstructionAdmission } from "./cursor-instructions.js";
+import { createAntigravityAdmission } from "./antigravity-admission.js";
 import { createAcpxModeBinding } from "./provider-mode.js";
 import { assertCopilotPromptPolicy, createCopilotProtocolGuard } from "./copilot-policy.js";
 
@@ -318,19 +326,29 @@ export async function openQualifiedAcpxRuntime(
   const selectedPiThinkingLevel = resolvePiThinkingLevel(options.profile.agent, options.piThinkingLevel);
   const piThinking = selectedPiThinkingLevel ? createPiThinkingAdmission(selectedPiThinkingLevel, { restoring: options.restoringSession }) : undefined;
   const selectedClaudeEffort = resolveClaudeEffort(options.profile.agent, options.claudeEffort);
-  const claudeEffort = selectedClaudeEffort ? createClaudeEffortAdmission(selectedClaudeEffort) : undefined;
-  const cursorInstructions = options.profile.agent === "cursor"
+  const selectedGrokEffort = resolveGrokEffort(options.profile.agent, options.grokEffort);
+  const grokDisableWebSearch = resolveGrokDisableWebSearch(options.profile.agent, options.grokDisableWebSearch);
+  const effortAdmission = selectedClaudeEffort ? createClaudeEffortAdmission(selectedClaudeEffort)
+    : selectedGrokEffort ? createGrokEffortAdmission(selectedGrokEffort, options.profile.reportedModelId) : undefined;
+  const instructionAdmission = options.profile.agent === "kimi"
+    ? createKimiInstructionAdmission(options.systemInstructions)
+    : options.profile.agent === "cursor"
     ? createCursorInstructionAdmission(options.systemInstructions)
     : null;
+  const antigravityAdmission = options.profile.agent === "antigravity"
+    ? createAntigravityAdmission(options.systemInstructions, options.profile.reportedModelId)
+    : null;
+  const contextAdmission = instructionAdmission ?? antigravityAdmission;
   const runtimeOptions: GoalAwareAcpRuntimeOptions = {
     cwd: options.cwd,
-    ...(cursorInstructions || modeBinding ? { protocolGuardFactory: () => {
-      const instructions = cursorInstructions?.createGuard();
+    ...(instructionAdmission || modeBinding ? { protocolGuardFactory: () => {
+      const instructions = instructionAdmission?.createGuard();
       const mode = modeBinding?.createGuard();
       return (direction: "inbound" | "outbound", message: unknown) => { instructions?.(direction, message); mode?.(direction, message); };
     } } : {}),
     ...(piThinking ? { protocolGuardFactory: () => piThinking.createGuard() } : {}),
-    ...(claudeEffort ? { protocolGuardFactory: () => claudeEffort.createGuard() } : {}),
+    ...(effortAdmission ? { protocolGuardFactory: () => effortAdmission.createGuard() } : {}),
+    ...(antigravityAdmission ? { protocolGuardFactory: () => antigravityAdmission.createGuard() } : {}),
     sessionStore,
     agentRegistry: createRegistry({
       // Preserve Claude's ACP capability identity. This is metadata only: the
@@ -400,6 +418,8 @@ export async function openQualifiedAcpxRuntime(
       }
       if ((permissionBoundary.hasAdmittedTurn && !extensionBoundary.active)
         || extensionBoundary.active?.signal.aborted || context.signal.aborted) return { outcome: "cancel" };
+      if (options.profile.agent === "kimi" && options.readOnly === true
+        && !kimiReadOnlyPermissionAllowed(request, runnerOwnedMcpServerNames)) return { outcome: "reject_once" };
       const disposition = decideAcpxPermission(
         options.profile.agent,
         options.permissionMode,
@@ -509,18 +529,18 @@ export async function openQualifiedAcpxRuntime(
         },
       }),
     );
-  const handshake = (cursorInstructions || modeBinding
+  const handshake = (contextAdmission || modeBinding
     ? ensuredSession.then(async (ensuredHandle) => {
         handle = ensuredHandle;
         options.signal?.throwIfAborted();
-        if (cursorInstructions) await admitCursorInstructions(cursorInstructions, {
+        if (contextAdmission) await admitAcpxSessionContext(contextAdmission, {
           providerSpawned: commandLaunches.count > 0,
           load: async () => {
             // A fresh ACPX manager may reuse a saved record without spawning.
             // Its supported exact-model control forces session/load and the
             // current instruction acknowledgement before host admission.
             if (!runtime.setConfigOption) {
-              throw new Error("Cursor cold admission requires exact model configuration");
+              throw new Error("Cold instruction admission requires exact model configuration");
             }
             await runtime.setConfigOption({
               handle: ensuredHandle, key: "model", value: options.profile.reportedModelId,
@@ -537,7 +557,7 @@ export async function openQualifiedAcpxRuntime(
         if (modeBinding && !modeBinding.isReady()) {
           if (!runtime.setConfigOption) throw new Error("Provider mode admission requires native mode configuration");
           await runtime.setConfigOption({ handle: ensuredHandle, key: modeBinding.configKey, value: modeBinding.selectedMode });
-          cursorInstructions?.assertReady();
+          contextAdmission?.assertReady();
           modeBinding.assertReady();
           await children.verifyLifetimeOwnership();
           options.signal?.throwIfAborted();
@@ -556,14 +576,20 @@ export async function openQualifiedAcpxRuntime(
           await commandLaunches.refreshConsumedCommand?.();
         }
         return ensuredHandle;
-      }) : claudeEffort ? ensuredSession.then(async (ensuredHandle) => {
+      }) : effortAdmission ? ensuredSession.then(async (ensuredHandle) => {
         handle = ensuredHandle;
         options.signal?.throwIfAborted();
-        if (!claudeEffort.isReady()) {
-          if (!runtime.setConfigOption) throw new Error("Claude effort admission requires native configuration");
+        if (!effortAdmission.isReady()) {
           const spawnsBeforeControl = commandLaunches.count;
-          await runtime.setConfigOption({ handle: ensuredHandle, key: "effort", value: selectedClaudeEffort! });
-          claudeEffort.assertReady();
+          if (selectedGrokEffort) {
+            if (!runtime.requestExtension) throw new Error("Grok admission requires native session inspection");
+            await runtime.requestExtension({ handle: ensuredHandle, method: "_x.ai/session/info",
+              params: { sessionId: requireIdentity(ensuredHandle).backendSessionId }, sessionMode: "persistent" });
+          } else {
+            if (!runtime.setConfigOption) throw new Error("Effort admission requires native configuration");
+            await runtime.setConfigOption({ handle: ensuredHandle, key: "effort", value: selectedClaudeEffort! });
+          }
+          effortAdmission.assertReady();
           await children.verifyLifetimeOwnership();
           options.signal?.throwIfAborted();
           // Fresh sessions retain their initialized provider. Only a cold
@@ -575,7 +601,12 @@ export async function openQualifiedAcpxRuntime(
         return ensuredHandle;
       }) : ensuredSession)
     .catch((error: unknown) => {
-      throw classifySessionEnsureFailure(error);
+      // The closed code below cannot say why the provider session did not
+      // start, so every ensure rejection keeps its redacted explanation. An
+      // abort reason is Runner cancellation, not a provider explanation.
+      const providerFailure = acpxProviderFailure(error, options.profile.agent, "startup",
+        options.launchEnvironment, options.signal?.aborted !== true);
+      throw classifySessionEnsureFailure(error, providerFailure);
     });
   let lateCleanup: Promise<void> | null = null;
   try {
@@ -586,10 +617,10 @@ export async function openQualifiedAcpxRuntime(
     handle = options.signal
       ? await raceRuntimeHandshakeWithAbort(boundedHandshake, options.signal)
       : await boundedHandshake;
-    cursorInstructions?.assertReady();
+    contextAdmission?.assertReady();
     modeBinding?.assertReady();
     piThinking?.assertReady();
-    claudeEffort?.assertReady();
+    effortAdmission?.assertReady();
     // A provider can answer only after the verified sentinel is armed, but do
     // not admit the session until the owner has observed that exact handoff.
     await children.verifyLifetimeOwnership();
@@ -644,7 +675,7 @@ export async function openQualifiedAcpxRuntime(
     return runtimePort(
       runtime,
       handle,
-      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}), ...(selectedClaudeEffort ? { claudeEffort: selectedClaudeEffort } : {}) },
+      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}), ...(selectedClaudeEffort ? { claudeEffort: selectedClaudeEffort } : {}), ...(selectedGrokEffort ? { grokEffort: selectedGrokEffort } : {}), ...(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch }) },
       baseStore,
       children,
       runtimeCloseTimeoutMs,
@@ -677,20 +708,21 @@ export async function openQualifiedAcpxRuntime(
 /** Backward-compatible name retained for existing Codex-only consumers. */
 export const openCodexAcpxRuntime = openQualifiedAcpxRuntime;
 
-function classifySessionEnsureFailure(error: unknown): Error {
-  if (error instanceof Error) {
-    const details = error as Error & Record<string, unknown>;
-    if (typeof details.code !== "string" || details.code.length === 0) {
-      details.code =
-        error instanceof TypeError
-          ? "ACPX_SESSION_ENSURE_TYPE_ERROR"
-          : "ACPX_SESSION_ENSURE_FAILED";
-    }
-    return error;
+function classifySessionEnsureFailure(error: unknown, providerFailure: ProviderFailure | null): Error {
+  const failure = error instanceof Error ? error
+    : Object.assign(new Error("ACPX session ensure rejected a non-error"), { code: "ACPX_SESSION_ENSURE_NON_ERROR" });
+  const details = failure as Error & Record<string, unknown>;
+  if (typeof details.code !== "string" || details.code.length === 0) {
+    details.code =
+      failure instanceof TypeError
+        ? "ACPX_SESSION_ENSURE_TYPE_ERROR"
+        : "ACPX_SESSION_ENSURE_FAILED";
   }
-  return Object.assign(new Error("ACPX session ensure rejected a non-error"), {
-    code: "ACPX_SESSION_ENSURE_NON_ERROR",
-  });
+  // Keep a cause that an inner layer already attached.
+  if (providerFailure && !Object.hasOwn(failure, "providerFailure")) {
+    Object.defineProperty(failure, "providerFailure", { value: providerFailure, enumerable: false });
+  }
+  return failure;
 }
 
 function raceRuntimeHandshakeWithAbort<T>(

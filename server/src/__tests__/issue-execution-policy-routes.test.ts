@@ -19,7 +19,7 @@ const mockIssueService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   wakeup: vi.fn(async () => undefined),
-  triggerIssueMonitor: vi.fn(async () => ({ outcome: "triggered" as const })),
+  triggerIssueMonitor: vi.fn(async (): Promise<{ outcome: "triggered" } | { outcome: "skipped"; reason: string }> => ({ outcome: "triggered" })),
   reportRunActivity: vi.fn(async () => undefined),
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
@@ -59,10 +59,10 @@ const mockDb = vi.hoisted(() => ({
     callback({ select: mockDbSelect })),
 }));
 
-const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: unknown) => undefined));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
-  listForIssue: vi.fn(async () => []),
+  listForIssue: vi.fn(async (): Promise<unknown[]> => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
@@ -281,7 +281,7 @@ describe("issue execution policy routes", () => {
     { interrupt: true },
     { comment: "Continue now" },
   ])("rejects mixed snapshot-guarded updates before execution side effects: %j", async (controlFields) => {
-    const res = await request(await createApp({ type: "board", source: "local_implicit", userId: "local-board" }))
+    const res = await request(await createApp({ type: "board", source: "local_implicit", userId: "local-board", companyIds: ["company-1"], isInstanceAdmin: false }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ expectedExecutionPolicy: null, executionPolicy: null, ...controlFields });
     expect(res.status).toBe(422);
@@ -293,7 +293,7 @@ describe("issue execution policy routes", () => {
   });
 
   it("rejects a snapshot without a policy update", async () => {
-    const res = await request(await createApp({ type: "board", source: "local_implicit", userId: "local-board" }))
+    const res = await request(await createApp({ type: "board", source: "local_implicit", userId: "local-board", companyIds: ["company-1"], isInstanceAdmin: false }))
       .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
       .send({ expectedExecutionPolicy: null });
     expect(res.status).toBe(422);
@@ -1157,11 +1157,11 @@ describe("issue execution policy routes", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("triggers a scheduled monitor immediately from the dedicated route", async () => {
+  it.each(["in_progress", "blocked"])("triggers a scheduled monitor on an %s task from the dedicated route", async (status) => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       companyId: "company-1",
-      status: "in_progress",
+      status,
       assigneeAgentId: "33333333-3333-4333-8333-333333333333",
       assigneeUserId: null,
       createdByUserId: "local-board",
@@ -1192,6 +1192,20 @@ describe("issue execution policy routes", () => {
         agentId: null,
       }),
     );
+  });
+
+  it.each(["execution_reconciliation_required", "monitor_dispatch_deferred", "monitor_replaced"])("does not claim success for a skipped monitor check: %s", async (reason) => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", companyId: "company-1", status: "blocked",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333", assigneeUserId: null,
+    });
+    mockHeartbeatService.triggerIssueMonitor.mockResolvedValueOnce({ outcome: "skipped", reason });
+    const res = await request(await createApp())
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/monitor/check-now").send({});
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ details: { code: "issue_monitor_check_deferred", reason } });
+    if (reason === "monitor_replaced") expect(res.body.error).toContain("monitor changed");
+    expect(res.body.ok).toBeUndefined();
   });
 
   it("lets a board user create a child issue with a scheduled monitor", async () => {
