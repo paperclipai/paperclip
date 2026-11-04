@@ -18,7 +18,7 @@ import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notific
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
 import { cancelNativeSession, executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
-import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "./native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED } from "./native-restart-recovery.js";
 import { readSystemRecovery, SYSTEM_RECOVERY_MAX_RETRIES } from "../system-recovery-state.js";
 import { recoveryService } from "../recovery/service.js";
 import { issueService } from "../issues.js";
@@ -701,8 +701,10 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       when (old.run_id = '${f.runId}'::uuid) execute function ${name}()`));
     const [before] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     try {
+      const now = new Date();
       await expect(claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
-        restartKind: "hard", runIds: [f.runId] })).rejects.toThrow("native_retry_deferral_claim_changed");
+        restartKind: "hard", runIds: [f.runId], now })).resolves.toEqual([{ kind: "awaiting_evidence",
+          runId: f.runId, reason: NATIVE_RESTART_RECOVERY_FAILED, retryAt: new Date(now.getTime() + 30_000) }]);
       expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(before);
       await reconcileDatabaseWork(f.db, DELIVERY_QUEUES.nativeProcessSessions);
       expect(databaseWorkPending(f.db, DELIVERY_QUEUES.nativeProcessSessions)).toBe(false);

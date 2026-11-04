@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents, applyPendingMigrations, companies, createDb, environmentLeases, environments, heartbeatRunEvents,
   heartbeatRuns, issues, nativeRunFinalizations,
@@ -9,6 +12,8 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { heartbeatService } from "../heartbeat.js";
 import { claimNativeRestartRecoveries, NATIVE_RESTART_RECOVERY_FAILED } from "./native-restart-recovery.js";
+import { DurablePrpControlPlane } from "../../vendor/paperclip-runner/index.js";
+import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_TEST_DATABASE_URL");
 const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -19,6 +24,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
 // whose claim fails for an unrelated reason. Neither may stop the batch.
 (support.supported ? describe : describe.skip)("native restart recovery isolates one run's failure", () => {
   let db: ReturnType<typeof createDb>;
+  let runtimeRoot: string;
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   const companyId = randomUUID();
   const agentId = randomUUID();
@@ -32,8 +38,14 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
     }
     await db.insert(companies).values({ id: companyId, name: "Restart isolation", issuePrefix: companyId.slice(0, 8) });
     await db.insert(agents).values({ id: agentId, companyId, name: "Engineer", adapterType: "paperclip_runner" });
+    runtimeRoot = await mkdtemp(resolve(tmpdir(), "restart-isolation-authority-"));
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "83".repeat(32));
   }, 30_000);
-  afterAll(async () => { await db?.$client.end(); await temporary?.cleanup(); });
+  afterAll(async () => {
+    await db?.$client.end(); await temporary?.cleanup();
+    if (runtimeRoot) await rm(runtimeRoot, { recursive: true, force: true });
+    vi.unstubAllEnvs();
+  });
 
   async function seedScheduledResume(options: { lock: "self" | "none"; routine?: { id: string; fingerprint: string } }) {
     const issueId = randomUUID(), runId = randomUUID(), sessionId = randomUUID();
@@ -51,6 +63,7 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       environmentId: environment.id, provider: "daytona", providerLeaseId: randomUUID(), status: "active",
       leasePolicy: "ephemeral", metadata: { driver: "sandbox", remoteCwd: "/work" } }).returning();
     await db.update(heartbeatRuns).set({ runnerProfileJson: {
+      nativeExecutionInput: { binding: { companyId, issueId, runId, agentId } },
       nativeWorkspaceSync: {
         schema: "paperclip.native-workspace-sync/v3", state: "prepared", descriptorSha256: "a".repeat(64),
         baselineSha256: "b".repeat(64), finalHostSha256: null, workspaceId: runId,
@@ -63,9 +76,25 @@ const support = externalUrl ? { supported: true } : await getEmbeddedPostgresTes
       await db.update(issues).set({ executionRunId: runId, checkoutRunId: runId, executionLockedAt: failedAt })
         .where(eq(issues.id, issueId));
     }
+    const owner = { bootId: randomUUID(), generation: 1, leaseOwner: randomUUID() };
     await db.insert(nativeRunFinalizations).values({ runId, companyId, issueId, phase: "retryable_failure", attempt: 1,
+      controllerBootId: owner.bootId, controllerGeneration: owner.generation,
+      leaseOwner: owner.leaseOwner, leaseExpiresAt: new Date(Date.now() + 60_000),
       nextAttemptAt: new Date(Date.now() - 60_000), recoveryState: "resuming_session",
-      failureCode: "native_session_interrupted" });
+      failureCode: "native_session_interrupted",
+      failureDetail: { recoveryMode: "exact_checkpoint_resume", checkpointExists: true,
+        providerSessionEstablished: true, providerEventsExist: false } });
+    const authority = new DurablePrpControlPlane({ stateDirectory: resolve(runtimeRoot, runId),
+      identity: { runId, normalizedSessionId: sessionId, runnerInstanceId: randomUUID(),
+        environmentLeaseId: lease.id, turnId: randomUUID(), itemId: randomUUID() },
+      expectedRunnerVersion: "restart-isolation-fixture", expectedRunnerDigest: `sha256:${"a".repeat(64)}` });
+    authority.setCheckpointPersistence(nativeRunnerCheckpointWriter(db, {
+      companyId, issueId, runId, authorityRunId: runId, ...owner,
+    }));
+    await authority.flushCheckpoint();
+    await authority.stop();
+    await db.update(nativeRunFinalizations).set({ leaseOwner: null, leaseExpiresAt: null })
+      .where(eq(nativeRunFinalizations.runId, runId));
     return { issueId, runId };
   }
 
