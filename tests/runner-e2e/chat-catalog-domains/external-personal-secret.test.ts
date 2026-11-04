@@ -207,3 +207,10 @@ it.each(["foreign resolver", "changed payload", "before save", "wrong continuati
   if (fault === "missing UI") value.state.humanSubmittedSecurely = false;
   expect(gradePersonalSecret(value).passed).toBe(false);
 });
+
+it("accepts secure-form guidance only when its excluded chat destination stays excluded", () => {
+  expect(personalSecretGuidance("Enter your personal publishing credential in your secure form, never in the chat.")).toBe(true);
+  for (const conjunction of ["but", "then", "however"]) {
+    expect(personalSecretGuidance(`Enter your personal publishing credential in the secure form, not in chat ${conjunction} here.`)).toBe(false);
+  }
+});
