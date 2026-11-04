@@ -8,7 +8,7 @@ import { z } from "zod";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { heartbeatRuns, runUsageReceipts, costEvents, costAdjustments, type Db } from "@paperclipai/db";
 import type { AdapterExecutionResult, AdapterUsageCheckpoint } from "@paperclipai/adapter-utils";
-import { compareCents, normalizeCents, pricingProvenanceSchema, usdToUnits, unitsToCents } from "@paperclipai/shared";
+import { centsToUnits, compareCents, normalizeCents, pricingProvenanceSchema, usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { idleAccountingSpoolPath, registerIdleSpoolDirectory } from "./idle-local-work.js";
 import { conflict, notFound } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -227,7 +227,7 @@ function formatUsdUnits(units: bigint) {
  * reports make the increment exact, so post it instead of leaving the run wrong.
  * Lower or conflicting evidence stays visible debt for an operator to review. */
 function lateUsageGrowth(previous: Record<string, unknown>, late: UsageReceiptEnvelope,
-  event: typeof costEvents.$inferSelect, newer: boolean) {
+  event: typeof costEvents.$inferSelect, newer: boolean, reconciled?: UsageReceiptEnvelope["receipt"]) {
   const receipt = late.receipt;
   const accepted = (key: string) => typeof previous[key] === "number" ? previous[key] as number : 0;
   const billingType = receipt.billingType === "api" ? "metered_api"
@@ -244,8 +244,10 @@ function lateUsageGrowth(previous: Record<string, unknown>, late: UsageReceiptEn
   const acceptedUnits = moneyValue(previous.cacheAdjustedCostUsd) ?? moneyValue(previous.costUsdExact) ?? moneyValue(previous.costUsd);
   const reportedUnits = moneyValue(receipt.cacheAdjustedCostUsd) ?? moneyValue(receipt.costUsdExact) ?? moneyValue(receipt.costUsd);
   const subscription = billingType === "subscription_included";
+  // A price correction already moved the accepted total, so measure from it.
+  const correctedTotal = reconciled ? moneyValue(reconciled.cacheAdjustedCostUsd) ?? moneyValue(reconciled.costUsdExact) ?? moneyValue(reconciled.costUsd) : null;
   const units = subscription ? 0n : reportedUnits === null ? null
-    : late.lateDelta ? reportedUnits : reportedUnits - (acceptedUnits ?? 0n);
+    : late.lateDelta ? reportedUnits : reportedUnits - (correctedTotal ?? acceptedUnits ?? 0n);
   if (units !== null && units < 0n) return null;
   const totalUnits = units === null ? acceptedUnits : (acceptedUnits ?? 0n) + units;
   return { tokens, units, usage: {
@@ -314,7 +316,8 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
     }).where(eq(heartbeatRuns.id, run.id));
   }
   const growth = late && events.length === 1 && !reviewedValuation
-    ? lateUsageGrowth(previous, late, events[0].event, late.sequence > acceptedSequence) : null;
+    ? lateUsageGrowth(previous, late, events[0].event, late.sequence > acceptedSequence,
+      reconciled ? envelopeSchema.parse(reconciled.receiptJson).receipt : undefined) : null;
   if (growth && late) {
     const { event } = events[0];
     const costStatus = growth.units === null && event.billingType !== "subscription_included" ? "unpriced" : event.costStatus;
@@ -340,8 +343,15 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
     return true;
   }
   if (!qualified) { await updateDebtState(false); return false; }
+  // A receipt's money covers the whole run. Earlier late charges already hold
+  // their share, so the original charge may only be corrected to the remainder.
+  const lateCharges = await tx.select({ exact: sql<string>`${costEvents.costCents}::text` }).from(costEvents).where(and(
+    eq(costEvents.companyId, run.companyId), eq(costEvents.heartbeatRunId, run.id),
+    sql`left(${costEvents.idempotencyKey}, length(${automaticCorrectionPrefix})) = ${automaticCorrectionPrefix}`));
+  const correctedUnits = usdToUnits(rawAmount) - lateCharges.reduce((sum, charge) => sum + centsToUnits(charge.exact), 0n);
+  if (correctedUnits < 0n) { await updateDebtState(false); return false; }
   const corrected = receipt.billingType === "subscription_included" || receipt.billingType === "subscription"
-    ? "0.0000000" : unitsToCents(usdToUnits(rawAmount));
+    ? "0.0000000" : unitsToCents(correctedUnits);
   if (reviewedValuation) {
     if (compareCents(events[0].exact, corrected) !== 0) { await updateDebtState(false); return false; }
     // The operator has already reconciled this exact billing evidence. Resolve

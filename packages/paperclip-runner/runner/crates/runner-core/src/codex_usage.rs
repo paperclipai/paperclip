@@ -96,7 +96,8 @@ impl CodexRunUsage {
                 reported.saturating_sub(base)
             };
             late.insert(key.clone(), json!(increment));
-            self.late_watermark.insert(key.clone(), json!(reported));
+            self.late_watermark
+                .insert(key.clone(), json!(seen.unwrap_or(0).max(reported)));
             if increment == 0 {
                 continue;
             }
@@ -254,6 +255,24 @@ mod tests {
         assert_eq!(repeated, json!({"inputTokens":0,"outputTokens":0}));
         let (run, _) = usage.observe(&json!({"inputTokens":150,"outputTokens":15}), false);
         assert_eq!(run, json!({"inputTokens":30,"outputTokens":3}));
+    }
+
+    #[test]
+    fn replayed_late_reports_in_any_order_are_counted_once() {
+        let mut usage = CodexRunUsage::new(true);
+        usage.observe(&json!({"inputTokens":100,"outputTokens":10}), true);
+        usage.begin_run();
+        usage.observe(&json!({"inputTokens":150,"outputTokens":15}), false);
+        let first = usage.absorb_late_usage(&json!({"inputTokens":180,"outputTokens":15}));
+        assert_eq!(first["inputTokens"], 30);
+        let second = usage.absorb_late_usage(&json!({"inputTokens":190,"outputTokens":15}));
+        assert_eq!(second["inputTokens"], 10);
+        for replayed in [180, 190, 180] {
+            let late = usage.absorb_late_usage(&json!({"inputTokens":replayed,"outputTokens":15}));
+            assert_eq!(late["inputTokens"], 0);
+        }
+        let (run, _) = usage.observe(&json!({"inputTokens":190,"outputTokens":15}), false);
+        assert_eq!(run["inputTokens"], 50);
     }
 
     #[test]

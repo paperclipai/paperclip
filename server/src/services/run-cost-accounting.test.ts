@@ -197,6 +197,29 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId)))[0].costCents).toBe(1);
   });
 
+  it("never counts money twice when late growth and a price correction combine", async () => {
+    const sourceId = randomUUID();
+    const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
+    await persistUsageReceipt(db, receipt(owner, sourceId, 1, 1, 100));
+    await accountRunCost(db, owner.runId);
+    const total = async () => {
+      const charges = await db.select({ cents: sql<string>`${costEvents.costCents}::text` }).from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId));
+      return charges.reduce((sum, charge) => sum + Number(charge.cents), 0);
+    };
+    await persistUsageReceipt(db, receipt(owner, sourceId, 2, 1.2, 120));
+    expect(await accountRunCost(db, owner.runId)).toBe(true);
+    expect(await total()).toBeCloseTo(120);
+    // The same tokens at a corrected whole-run price.
+    await persistUsageReceipt(db, receipt(owner, sourceId, 3, 1.3, 120));
+    expect(await accountRunCost(db, owner.runId)).toBe(true);
+    expect(await total()).toBeCloseTo(130);
+    // More tokens after that correction charge only the new difference.
+    await persistUsageReceipt(db, receipt(owner, sourceId, 4, 1.5, 140));
+    expect(await accountRunCost(db, owner.runId)).toBe(true);
+    expect(await total()).toBeCloseTo(150);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId)))[0].costAccountingPending).toBe(false);
+  });
+
   it("corrects authoritative same-token late money on the original charge", async () => {
     const sourceId = randomUUID();
     const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });
