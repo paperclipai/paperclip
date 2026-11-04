@@ -937,6 +937,13 @@ identity, unknown failures, active leases, and incomplete cleanup still require
 their normal reconciliation and termination proof. Unknown historical setup errors remain
 outside this policy, and generic recovery cannot renew its exhausted budget.
 
+When an admitted continuation reuses a sandbox after verified cleanup, an
+unpublished preparation uses a directory bound to its writer epoch and lease.
+Earlier unpublished directories and their receipts stay intact. Repeating the
+same preparation retains its directory and receipt check. A published workspace
+on the same allocation retains its recorded directory. Automatic bootstrap
+timeout retries still require a fresh allocation under the policy above.
+
 ### Runner authentication and ACP startup handshake bounds
 
 The native Runner waits up to the ten-second connection setup budget for the
@@ -1258,12 +1265,28 @@ checks coordinator ownership in its terminal update, so a result recorded after
 the process check is also protected. Terminal task status remains authoritative;
 exhausted finalization retries do not keep an otherwise orphaned run alive.
 
+Only one open task of a routine can hold an execution lock. A failed run that
+waits for a scheduled resume keeps its task's lock, so the routine can queue a
+newer task meanwhile. When that task's run is claimed while the slot is held,
+the claim is rejected with a conflict, rolls back, and the run stays queued
+until the slot is released.
+
 A native failure that schedules a same-run resume marks the run `failed` but
 keeps the task's execution and checkout locks for that resume. The sweep leaves
 those locks in place and clears them only when the task is done or cancelled.
 If a scheduled resume finds its execution lock free, restart recovery reclaims
 it, as the local resume claim does, unless another run for the task is queued,
 running, or scheduled. A lock held by another run still blocks the resume.
+Another task can hold the same routine execution slot even when this task's
+lock is free. If that unique claim fails, restart recovery rolls back the whole
+candidate claim and waits through the existing recovery deadline. It preserves
+the current routine owner, checkpoint, and provider attempt, and continues the
+startup batch. Any other failure while claiming one run is handled the same
+way with reason `restart_recovery_failed`: the run's claim rolls back, the
+error is logged, a warning transition is recorded on the run, and the run waits
+for the next deadline. A failed transition write is logged and does not stop
+the claims that already committed. Only a failure of the candidate scan itself
+fails the recovery pass.
 
 Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.
 
@@ -1880,9 +1903,10 @@ An interrupted conversation does not permanently block its task. For local conve
 
 Shutdown, process loss, and provider failure use the existing durable failure retry counter and delay. Ordinary failure recovery permits at most two automatic retries in a failure chain. Accepted-interaction infrastructure recovery retains its existing bounded policy. Repeated scheduler visits reuse the same successor; restarting the server does not reset the counter. After exhaustion, automatic attempts stop. A new explicit user message can start a fresh run and failure budget. Productive max-turn continuation and confirmed workspace waits keep their separate existing semantics.
 
-If shutdown interrupts Paperclip Runner preparation before native execution was
-selected, recovery verifies that no provider, process launch, native result or
-coordinator exists. The previous controller must have settled or lost its lease.
+If shutdown or a recorded unexpected system interruption stops Paperclip Runner
+preparation before native execution was selected, recovery verifies that no
+provider, process launch, native result or coordinator exists. The previous
+controller must have settled or lost its lease.
 Required workspace recovery must have an exact saved-file receipt and stopped
 leases before the task can continue. Once these checks pass, the server retires
 its own unchanged bootstrap-failure block and schedules one bounded retry.
@@ -1891,7 +1915,8 @@ restart. A pending Retry or saved message owns its continuation instead of
 starting a competing automatic attempt. Retry uses the same preparation proof
 and preserves the recovered workspace. Current task ownership, human blocks,
 pauses, approvals, budgets and the existing retry limit remain effective.
-Operator Stops retain their explicit continuation requirements.
+Operator Stops retain their explicit continuation requirements. Other ambiguous
+interruptions without a server system-cancellation record remain held.
 
 Graceful shutdown interrupts an owned legacy adapter through its cancellation
 control, then waits within one shared 30-second window for provider stop and
@@ -2658,6 +2683,26 @@ configuration, and controller-owned credential or instruction resources use
 verified suspension and saved-history resume. This recovery can restart a
 provider; it does not suspend every healthy warm turn.
 
+A different task can reuse the same physical sandbox after its prior task
+finishes. Provider ingress has one listener per allocation. Before a new logical
+session starts, Runner retires a locally retained idle session that still owns
+that listener. The new run must hold the current native claim, task assignment,
+environment lease and remote workspace writer. Company, agent, provider,
+allocation, workspace and directory must match. The prior run must be committed
+and accounted, with its original controller generation and a clean released or
+expired lease. Retirement saves the prior session through its own checkpoint and
+file-collection callbacks and waits for close before the new listener binds.
+After close, admission rechecks the canonical native claim, task, workspace and
+leases before staging files or invoking the new backend. Ownership loss, Stop
+or a changed writer during retirement cannot authorize the new execution.
+The new task keeps its own logical session and authority.
+
+Active owners, a changed controller or writer, missing canonical proof and failed
+close block admission. A retained entry stays available for verified retirement;
+no process is selected by its port number. This rule covers current-controller
+warm entries with recorded physical identity. A historical process outside that
+registry still needs the existing exact-owner recovery proof.
+
 A fresh native session admitted for the current task may replace a terminal
 predecessor's goal source epoch when the saved goal is absent or complete.
 It must hold the task's execution lock and assignee. Its accepted terminal
@@ -2777,6 +2822,23 @@ existing non-null App claim. This historical identity proof grants no publicatio
 replay or access: the saved input and current principal, repository, conversation,
 runtime fence and execution containment still pass normal admission. Explicit
 conflicting App bindings remain denials.
+
+When comments join a queued run with an unclaimed queued wake, admission saves
+the accepted batch in both the run context and its authoritative primary wake in
+the same transaction as the coalesced receipt. Claim rebuilds input from that primary wake and filters deleted
+comments. It does not reconstruct input from historical coalesced receipts.
+Admission locks and rechecks the run and its same-company, same-agent primary
+wake. A changed status, mismatched binding, or mismatched durable-receipt actor preserves the incoming
+input as deferred work instead of consuming it into the old source. Legacy wakes
+without an authoritative batch retain their existing context-based claim path.
+An already claimed wake keeps its source unchanged for its existing recovery
+and replay path; this change does not grant it a new claim.
+Ordinary mixed-author comments keep their existing coalescing behavior. The
+primary wake retains its original actor, and each new receipt records its own
+actual actor. Coalescing updates the queued batch while preserving the original
+trigger comment fields, so recovery still verifies the original source actor.
+Same-named agents with different IDs retain separate authority;
+their new input is deferred without changing the other agent's queued work.
 
 ### Queued input after a native Stop
 
@@ -3350,3 +3412,29 @@ checkpoints publish the metadata without a separate migration write. Disk-free
 rollback requires a server that reads this envelope and the supported settled
 warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
 and readers lacking that suffix handling remain outside that rollback contract.
+
+### Stop a failed native retry
+
+A failed native run can still own a scheduled same-run bootstrap retry. The
+ordinary run detail offers Stop when the server's batched execution projection
+sets `canStop`: the native run is failed, its matching coordinator is retryable,
+and no result has been accepted. Unknown, legacy and accepted-result states
+remain ineligible. Grok failed retries keep their existing external Stop contract
+and do not gain this action; a pre-assignment failed retry is not supported by
+that endpoint. Existing Grok running/queued Stop and assignment fences stay in
+place. A false or absent hint does not remove the existing queued
+or running Cancel action. This presentation hint grants no permission; the existing
+company, actor and locked cancellation checks remain authoritative. A changed
+retry can reject Stop, which the run detail displays without claiming cleanup.
+Failed-native Stop keeps its request identity by company, run and current board
+actor through navigation or reload. It uses the shared HTTP-compatible UUID
+helper. A fresh run read can recover that same actor's canonical saved claim;
+another actor's claim cannot be borrowed. Browser storage and in-memory fallback
+retain unresolved request identities. This never retries Stop automatically.
+The server locks and checks the current retry before it
+accepts that identity. A stale request returns a conflict before cancellation
+activity is recorded. The client also rejects an unchanged successful HTTP
+response with no matching cancellation intent. A matching durable pending intent
+can be accepted without a terminal acknowledgement. The selected run and its
+history refresh after either outcome. Stop does not resume the provider or change
+a manual task hold.

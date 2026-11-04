@@ -1,5 +1,12 @@
 # Runner E2E security for a public repository
 
+The deployment-targeted `saved-skill-use` journey creates one synthetic skill on
+the campaign-owned agent. Its random receipt reference and numeric inputs occur
+only in the saved skill source. Exact source, immutable version, ordinary assignment, native read
+events and run-authored document revisions remain in the private bundle. The
+existing public projection exports closed checks and the authenticated owned
+task screenshot. The journey changes no shared agent, instance flag or budget.
+
 Native `cursor-cloud` acceptance uses a separate callback-only loopback listener.
 Its external HTTPS tunnel must never target the local_trusted operator app.
 Credential-free ingress checks require `/` and `/api/health` to return 404 and

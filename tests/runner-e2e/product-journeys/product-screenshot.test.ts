@@ -13,12 +13,12 @@ function fixture(options: { mounted?: boolean; redirect?: string; initialPath?: 
   return { page, locator, waitFor, screenshot };
 }
 describe("product screenshot boundary", () => {
-  it.each(["/QA/inbox/unread", "/QA/routines"])("retains an authenticated journey failure on %s", async initialPath => {
+  it.each(["/QA/inbox/unread", "/QA/routines", "/QA/chats/owned-agent"])("retains an authenticated journey failure on %s", async initialPath => {
     const f = fixture({ initialPath });
     await captureProductScreenshot(f.page, origin, "failed.png");
     expect(f.screenshot).toHaveBeenCalledTimes(1);
   });
-  it.each(["/login", "/QA/settings/keys", "/QA/inboxing", "/QA/routines-export"])("excludes unrelated or authentication paths: %s", async initialPath => {
+  it.each(["/login", "/QA/settings/keys", "/QA/inboxing", "/QA/routines-export", "/QA/chats-export"])("excludes unrelated or authentication paths: %s", async initialPath => {
     const f = fixture({ initialPath });
     await expect(captureProductScreenshot(f.page, origin, "failed.png")).rejects.toThrow("product_screen_unavailable");
     expect(f.waitFor).not.toHaveBeenCalled();

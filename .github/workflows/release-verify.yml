@@ -92,7 +92,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-typecheck-v2
+          shared-key: release-typecheck-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Rebuild workspace code and rerun every check. Cache only compiled
           # dependencies; never restore installed executables from cargo/bin.
           cache-workspace-crates: false
@@ -398,7 +398,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: ${{ steps.runner_rust_workspace.outputs.path }} -> target
-          shared-key: release-runner-v2
+          shared-key: release-runner-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}
           # Rebuild workspace code and rerun every check. Cache only compiled
           # dependencies; never restore installed executables from cargo/bin.
           cache-workspace-crates: false
@@ -680,7 +680,7 @@ jobs:
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           workspaces: ${{ steps.native_rust_workspace.outputs.path }} -> target
-          shared-key: release-native-v2-${{ matrix.host }}-${{ matrix.target }}-${{ hashFiles('packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/*.json') }}
+          shared-key: release-native-v2-${{ hashFiles('packages/paperclip-runner/runner/Cargo.toml', '.cargo/config', '.cargo/config.toml', 'packages/.cargo/config', 'packages/.cargo/config.toml', 'packages/paperclip-runner/.cargo/config', 'packages/paperclip-runner/.cargo/config.toml', 'packages/paperclip-runner/runner/.cargo/config', 'packages/paperclip-runner/runner/.cargo/config.toml') }}-${{ matrix.host }}-${{ matrix.target }}-${{ hashFiles('packages/paperclip-runner/protocol/**', 'packages/paperclip-runner/src/**', 'packages/paperclip-runner/*.json') }}
           cache-workspace-crates: false
           cache-bin: false
           cache-on-failure: false

@@ -4,7 +4,7 @@ import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinaliza
 import { claimedAdapterType } from "./conversation-continuation.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED } from "./native-local-process-stop.js";
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
-import { canContinueCancelledRun } from "./run-cancellation.js";
+import { canContinueCancelledRun, readRunCancellation } from "./run-cancellation.js";
 import { legacyControllerBootId } from "./legacy-controller-lease.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
@@ -37,14 +37,28 @@ export async function isFailedNativePreparation(db: Db, run: Run, coordinator: C
   return !lease && !result && !await nativeStartupHasExecutionEvidence(db, run);
 }
 
+/** Candidate state only. Admission must also verify ownership, execution records,
+ * stopped leases, and any saved-file obligation below. */
+export function isInterruptedNativePreparationCandidate(run: Run): boolean {
+  const cancellation = readRunCancellation(run.resultJson);
+  // Older shutdown records predate structured cancellation. Current records
+  // identify unexpected system interruption without relying on an error label.
+  const systemInterruption = cancellation
+    ? cancellation.initiator.type === "system" && cancellation.source !== "operator" &&
+      (cancellation.source === "shutdown" || cancellation.expected === false)
+    : run.errorCode === "server_shutdown_interrupted";
+  const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
+  return Boolean(systemInterruption && run.status === "interrupted" && run.finishedAt
+    && run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt && run.executionStage === "preparing"
+    && claimedAdapterType(run) === "paperclip_runner" && !run.processPid && !run.processGroupId
+    && !run.processStartedAt && !run.sessionIdAfter && !run.nativeIssueId && !run.nativeSessionId
+    && run.runnerProfileJson?.nativeExecutionInput == null && recovery?.providerWorkStarted !== true);
+}
+
 export async function isInterruptedNativePreparation(db: Db, run: Run): Promise<boolean> {
   const recovery = run.resultJson?.executionRecovery as Record<string, unknown> | undefined;
   const settled = recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
-  if (run.status !== "interrupted" || run.errorCode !== "server_shutdown_interrupted" || !run.finishedAt
-    || run.runtimeMode !== "legacy" || run.runtimeModeResolvedAt || run.executionStage !== "preparing"
-    || claimedAdapterType(run) !== "paperclip_runner" || run.processPid || run.processGroupId
-    || run.processStartedAt || run.sessionIdAfter || run.nativeIssueId || run.nativeSessionId
-    || run.runnerProfileJson?.nativeExecutionInput != null || recovery?.providerWorkStarted === true
+  if (!isInterruptedNativePreparationCandidate(run)
     || run.controllerLeaseExpiresAt && run.controllerLeaseExpiresAt > new Date()
     || !settled && (!run.controllerBootId || run.controllerBootId === legacyControllerBootId)) return false;
   const [coordinator] = await db.select({ id: nativeRunFinalizations.runId }).from(nativeRunFinalizations).where(and(

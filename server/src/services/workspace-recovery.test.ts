@@ -393,16 +393,20 @@ describe("automatic retained workspace recovery", () => {
     return { ...f, source, workspaceId, resultId, git, commit };
   }
 
-  async function interruptedRemotePreparation() {
+  async function interruptedRemotePreparation(interruption: "shutdown" | "lease" = "shutdown") {
     const f = await acceptedRemoteExport();
     await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     await db.delete(nativeRunResults).where(eq(nativeRunResults.runId, f.runId));
     const recovery = { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] };
     await db.update(heartbeatRuns).set({ runtimeMode: "legacy", nativeIssueId: null, completionContractId: null,
-      status: "interrupted", executionStage: "preparing", errorCode: "server_shutdown_interrupted",
+      status: "interrupted", executionStage: "preparing",
+      errorCode: interruption === "lease" ? "lease_released_before_terminal" : "server_shutdown_interrupted",
       controllerBootId: randomUUID(),
-      error: "Interrupted by graceful server shutdown (SIGTERM)",
-      resultJson: { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: recovery },
+      error: interruption === "lease" ? "Environment lease released before preparation settled" : "Interrupted by graceful server shutdown (SIGTERM)",
+      resultJson: { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: recovery,
+        ...(interruption === "lease" ? { cancellation: { source: "unknown", expected: false,
+          initiator: { type: "system" }, reason: "Environment lease released before preparation settled",
+          recordedAt: new Date().toISOString() } } : {}) },
     }).where(eq(heartbeatRuns.id, f.runId));
     await db.update(issues).set({ statusVersion: 2 }).where(eq(issues.id, f.issueId));
     await db.update(issueRecoveryActions).set({ cause: "legacy_execution_requires_reconciliation",
@@ -416,8 +420,8 @@ describe("automatic retained workspace recovery", () => {
     return f;
   }
 
-  it("admits HTTP Retry once after an interrupted Runner preparation recovers its remote workspace", async () => {
-    const f = await interruptedRemotePreparation();
+  it.each(["shutdown", "lease"] as const)("admits HTTP Retry once after an interrupted Runner preparation recovers its remote workspace (%s)", async interruption => {
+    const f = await interruptedRemotePreparation(interruption);
     await recoverRetainedWorkspace(f.input);
     expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(true);
     const intent = { observedRunId: f.runId, idempotencyKey: randomUUID() };
@@ -441,8 +445,9 @@ describe("automatic retained workspace recovery", () => {
     finally { await saved.cleanup(); }
   }, 30_000);
 
-  it.each([false, true])("automatically retries interrupted preparation after preservation, including recovered history at startup=%s", async alreadyRecovered => {
-    const f = await interruptedRemotePreparation();
+  it.each([false, true].flatMap(alreadyRecovered => (["shutdown", "lease"] as const).map(interruption => ({ alreadyRecovered, interruption }))))(
+    "automatically retries interrupted preparation after preservation ($interruption, startup=$alreadyRecovered)", async ({ alreadyRecovered, interruption }) => {
+    const f = await interruptedRemotePreparation(interruption);
     if (alreadyRecovered) await recoverRetainedWorkspace(f.input);
     const restarted = createDb(connectionString);
     try {
@@ -462,6 +467,60 @@ describe("automatic retained workspace recovery", () => {
     } finally { await restarted.$client.end(); }
   }, 30_000);
 
+  it("retries unpublished preparation from its preserved ancestor without an old failure-block receipt", async () => {
+    const f = await seed("legacy", false);
+    await requestWorkspaceRecovery({ ...f, idempotencyKey: randomUUID(), actorId: "board" });
+    await recoverRetainedWorkspace(f.input);
+    const ancestor = await run(f.runId), leaseId = randomUUID(), providerLeaseId = randomUUID();
+    await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: ancestor.agentId, status: "running" });
+    const app = boardRecoveryApp(), heartbeat = heartbeatService(db);
+    const first = (await request(app).post(`/api/issues/${f.issueId}/retry`).send({
+      observedRunId: f.runId, idempotencyKey: randomUUID(),
+    }).expect(202)).body;
+    await heartbeat.resumeTaskRetry(f.companyId, first.requestId);
+    const admitted = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")));
+    expect(admitted).toHaveLength(1);
+    const interruptedId = admitted[0].id;
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", status: "interrupted", executionStage: "preparing",
+      startedAt: new Date(Date.now() - 60_000), finishedAt: new Date(), controllerBootId: randomUUID(),
+      errorCode: "lease_released_before_terminal", error: "Lease released before preparation settled",
+      runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+      resultJson: { cancellation: { source: "unknown", expected: false, initiator: { type: "system" },
+        reason: "Lease released before preparation settled", recordedAt: new Date().toISOString() } },
+    }).where(eq(heartbeatRuns.id, interruptedId));
+    await db.update(issues).set({ executionRunId: null, checkoutRunId: null }).where(eq(issues.id, f.issueId));
+    const lease = { id: leaseId, companyId: f.companyId, heartbeatRunId: interruptedId,
+      provider: "daytona", providerLeaseId };
+    await db.insert(environmentLeases).values({ ...lease, issueId: f.issueId, environmentId: f.lease.environmentId,
+      status: "released", cleanupStatus: "success", releasedAt: new Date(),
+      metadata: { remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId, state: "stopped" }) },
+    });
+    await db.insert(issueRecoveryActions).values({ companyId: f.companyId, sourceIssueId: f.issueId,
+      kind: "active_run_watchdog", ownerType: "board", returnOwnerAgentId: ancestor.agentId,
+      cause: "legacy_execution_requires_reconciliation", fingerprint: `legacy-execution:${interruptedId}`,
+      status: "resolved", outcome: "blocked", nextAction: "Recorded actions require reconciliation",
+      evidence: { runId: interruptedId, originalFailureCode: "lease_released_before_terminal",
+        automaticRecovery: { policy: "preserve_without_replay_v1", runId: interruptedId, replay: "blocked", actionOutcome: "unknown" } },
+    });
+    const intent = { observedRunId: interruptedId, idempotencyKey: randomUUID() };
+    const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body;
+    await Promise.all([heartbeat.resumeTaskRetry(f.companyId, receipt.requestId),
+      heartbeat.resumeTaskRetry(f.companyId, receipt.requestId)]);
+    const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+      eq(heartbeatRuns.status, "queued")));
+    expect(successors).toHaveLength(1);
+    expect(successors[0].contextSnapshot).toMatchObject({ previousRunId: interruptedId });
+    expect((await request(app).post(`/api/issues/${f.issueId}/retry`).send(intent).expect(202)).body.requestId).toBe(receipt.requestId);
+    const restored = path.join(root, randomUUID()); await mkdir(restored);
+    const copies = await attachPreservedWorkspaceSnapshots({ db, companyId: f.companyId, issueId: f.issueId,
+      sourceRunIds: [interruptedId], cwd: restored });
+    expect(copies).toHaveLength(1);
+    expect(await readFile(path.join(copies[0]!.path, "files", "saved.txt"), "utf8")).toBe("finished work\n");
+    expect(await readFile(path.join(f.host, "newer.txt"), "utf8")).toBe("newer local work\n");
+    expect(await getExecutionBlocker(db, f.companyId, f.issueId)).toBeNull();
+  }, 30_000);
+
   it.each(["local", "none"])("continues verified interrupted preparation with %s leases", async provider => {
     const f = await interruptedRemotePreparation();
     await db.update(heartbeatRuns).set({ runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
@@ -476,9 +535,10 @@ describe("automatic retained workspace recovery", () => {
   }, 30_000);
 
   it.each(["provider_started", "provider_dispatch_recorded", "runtime_selected", "live_controller", "wrong_snapshot", "operator_stop",
+    "operator_stop_metadata", "missing_stop_receipt", "unrecorded_interruption",
     "retry_exhausted", "human_reblock", "paused", "reassigned"] as const)(
     "keeps the interrupted preparation continuation behind %s", async gate => {
-      const f = await interruptedRemotePreparation();
+      const f = await interruptedRemotePreparation("lease");
       await recoverRetainedWorkspace(f.input);
       const source = await run(f.runId);
       if (gate === "provider_started") await db.insert(heartbeatRunEvents).values({ companyId: f.companyId,
@@ -492,6 +552,17 @@ describe("automatic retained workspace recovery", () => {
         remoteWorkspace: { ...(source.runnerProfileJson!.remoteWorkspace as Record<string, unknown>), snapshotId: randomUUID() },
       } }).where(eq(heartbeatRuns.id, f.runId));
       if (gate === "operator_stop") await db.update(heartbeatRuns).set({ status: "cancelled", errorCode: "operator_interrupted" }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "operator_stop_metadata") await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+        cancellation: requestedRunCancellation({ cancelledByActorType: "user", cancelledByUserId: "operator" }, "Stop requested"),
+      } }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "unrecorded_interruption") await db.update(heartbeatRuns).set({ resultJson: { ...source.resultJson,
+        cancellation: null,
+      } }).where(eq(heartbeatRuns.id, f.runId));
+      if (gate === "missing_stop_receipt") {
+        const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+        await db.update(environmentLeases).set({ metadata: { ...lease.metadata, remoteExecutionTermination: null } })
+          .where(eq(environmentLeases.id, f.lease.id));
+      }
       if (gate === "retry_exhausted") await db.update(heartbeatRuns).set({ scheduledRetryAttempt: 2 }).where(eq(heartbeatRuns.id, f.runId));
       if (gate === "human_reblock") await db.update(issues).set({ statusVersion: 3 }).where(eq(issues.id, f.issueId));
       if (gate === "paused") await db.update(agents).set({ status: "paused" }).where(eq(agents.id, source.agentId));
@@ -500,7 +571,8 @@ describe("automatic retained workspace recovery", () => {
       await heartbeat.resumeRemoteStopComments(await run(f.runId));
       expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
         eq(heartbeatRuns.retryOfRunId, f.runId)))).toHaveLength(0);
-      if (["provider_started", "provider_dispatch_recorded", "runtime_selected", "live_controller", "wrong_snapshot", "operator_stop"].includes(gate)) {
+      if (["provider_started", "provider_dispatch_recorded", "runtime_selected", "live_controller", "wrong_snapshot", "operator_stop",
+        "operator_stop_metadata", "missing_stop_receipt", "unrecorded_interruption"].includes(gate)) {
         const receipt = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
           actorId: "local-board", actorSource: "local_implicit", observedRunId: f.runId, idempotencyKey: randomUUID() });
         await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId!);
@@ -1767,7 +1839,9 @@ describe("automatic retained workspace recovery", () => {
         existingWorkspaceId: kind === "same" ? first.workspace.id : null });
       const prepared = await prepareRemoteWorkspace({ db, storage, workspace: nextWorkspace, runId: nextRun.id,
         lease: nextLease as EnvironmentLease, target: { ...target, remoteCwd: resumed!.metadata!.remoteCwd as string } });
-      expect(prepared.remoteRoot).toBe(path.join(allocationRoot, ".paperclip-workspaces", nextWorkspace.id));
+      const expectedRemoteRoot = kind === "same" ? first.remoteRoot : path.join(allocationRoot, ".paperclip-workspaces",
+        `${nextWorkspace.id}-${readRemoteWorkspaceAuthority(nextWorkspace.metadata)!.epoch}-${nextLease.id}`);
+      expect(prepared.remoteRoot).toBe(expectedRemoteRoot);
       if (kind === "same") expect(await readFile(path.join(prepared.remoteRoot, "saved.txt"), "utf8")).toBe("prior task work\n");
       else expect(prepared.remoteRoot).not.toBe(first.remoteRoot);
       await saveRemoteWorkspace({ db, storage, workspace: prepared.workspace, runId: nextRun.id, lease: prepared.lease,
@@ -2385,7 +2459,7 @@ describe("automatic retained workspace recovery", () => {
       expect(await createWakeAdmissionReader().matchesActiveWakeActor(scope, actor)).toBe(true);
       expect(await createWakeAdmissionReader().matchesActiveWakeActor(scope, { ...actor, requestedByActorId: "other-user" })).toBe(false);
       await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(scope, {
-        companyId: f.companyId, agentId: original.agentId, activeExecutionRunId: queued.id,
+        companyId: f.companyId, agentId: original.agentId, activeExecutionRunId: queued.id, activeExecutionRunStatus: queued.status,
         mergedContextSnapshot: mergeCoalescedContextSnapshot((await run(queued.id)).contextSnapshot, incoming,
           { preserveExistingInteractionContinuation: true }),
         source: "on_demand", triggerDetail: "manual",

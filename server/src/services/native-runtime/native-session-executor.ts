@@ -229,6 +229,7 @@ import {
 } from "./remote-runner-recovery-diagnostics.js";
 import { readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS } from "./remote-runner-recovery-probe.js";
 import { inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, type RemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
 import { persistActivity, publishActivity } from "../activity-log.js";
@@ -584,6 +585,7 @@ export type NativeInstructionWorkingCopy = {
 };
 
 type WarmNativeSession = {
+  ingressOwner?: NativeWarmIngressOwner;
   onReleased: () => void;
   sessionCheckpointPersisted?: (snapshot: PersistedNativeSession) => void;
   pluginTaskId?: string;
@@ -1860,6 +1862,7 @@ const sessionToolAuthorityEpochs = new Map<string, SessionAuthorityEpoch>();
 const initializingSessionToolAuthorities = new Set<string>();
 const executingRunnerdSessionScopes = new Map<string, string>();
 const executingNativeOwnerScopes = new Map<string, symbol>();
+const executingNativeIngressAllocations = new Map<string, symbol>();
 
 export function nativeSessionScopeDigestIsBusy(digest: string): boolean {
   const scopes = [
@@ -1966,21 +1969,32 @@ async function retireSupersededWarmNativeSessions(
   ownerScope: string,
   nextSessionScope: string,
   nextSessionId: string,
+  ingress?: { db: Db; claim: NativeWarmIngressClaim },
 ): Promise<void> {
   for (const [scope, entry] of warmNativeSessions) {
-    if (scope === nextSessionScope || entry.ownerScope !== ownerScope) continue;
-    if (entry.busy || executingRunnerdSessionScopes.has(scope)) {
+    if (scope === nextSessionScope) continue;
+    const logicalOwner = entry.ownerScope === ownerScope;
+    const priorIngress = entry.ingressOwner;
+    const physicalOwner = ingress && priorIngress && nativeWarmIngressAllocation(priorIngress.ingress) === nativeWarmIngressAllocation(ingress.claim.ingress);
+    if (!logicalOwner && !physicalOwner) continue;
+    if (entry.busy || entry.preparingRunId || executingRunnerdSessionScopes.has(scope)) {
       throw new Error("native_session_supervisor_busy");
+    }
+    if (!logicalOwner) {
+      await assertNativeWarmIngressRetirement(ingress!.db, ingress!.claim, priorIngress!);
+      if (warmNativeSessions.get(scope) !== entry || entry.ingressOwner !== priorIngress
+        || entry.busy || entry.preparingRunId || executingRunnerdSessionScopes.has(scope)) throw new Error("native_session_supervisor_busy");
     }
     if (entry.idleTimer !== null) clearTimeout(entry.idleTimer);
     entry.idleTimer = null;
     entry.busy = true;
-    entry.closeOnReleaseReason = "warm native session identity changed";
+    entry.closeOnReleaseReason = logicalOwner ? "warm native session identity changed" : "warm native ingress requires another session";
     try {
       await closeWarmNativeSession(entry, entry.closeOnReleaseReason, {
-        discardUnsettledSession: entry.normalizedSessionId !== nextSessionId,
+        discardUnsettledSession: logicalOwner && entry.normalizedSessionId !== nextSessionId,
       });
       forgetWarmNativeSession(scope, entry);
+      if (!logicalOwner) await assertNativeWarmIngressRetirement(ingress!.db, ingress!.claim, priorIngress!);
     } finally {
       // A failed close retains the owner and prevents launch. A later attempt
       // must retry retirement, never adopt this partially closed transport.
@@ -8315,7 +8329,17 @@ export async function executePaperclipNativeSession(input: {
     input.runnerExecutionTarget?.environmentId ?? null,
   );
   const ownerToken = Symbol("native execution owner");
+  const physicalIngress = input.useRunnerd ? nativeWarmIngressIdentity(input.execution, input.runnerExecutionTarget) : undefined;
+  const physicalIngressKey = physicalIngress ? nativeWarmIngressAllocation(physicalIngress) : undefined;
+  let ownsPhysicalIngress = false;
   try {
+    if (physicalIngressKey) {
+      const retained = warmNativeSessions.get(nativeSessionScopeKey(input.execution));
+      if (retained && retained.issueId !== input.execution.binding.issueId) throw new Error("native_session_supervisor_busy");
+      if (executingNativeIngressAllocations.has(physicalIngressKey)) throw new Error("native_session_supervisor_busy");
+      executingNativeIngressAllocations.set(physicalIngressKey, ownerToken);
+      ownsPhysicalIngress = true;
+    }
     // Reserve across session identities before retiring or staging anything.
     if (executingNativeOwnerScopes.has(ownerScope)) {
       throw new Error("native_session_supervisor_busy");
@@ -8366,7 +8390,8 @@ export async function executePaperclipNativeSession(input: {
     const workspaceRoot = input.execution.workspace.cwd;
     if (workspaceRoot === null) throw new Error("native_workspace_required");
     const needsWarmRetirement = [...warmNativeSessions].some(([scope, entry]) =>
-      scope !== sessionScopeId && entry.ownerScope === ownerScope);
+      scope !== sessionScopeId && (entry.ownerScope === ownerScope || physicalIngress && entry.ingressOwner
+        && nativeWarmIngressAllocation(entry.ingressOwner.ingress) === nativeWarmIngressAllocation(physicalIngress)));
     const prepareAttachments = async () => {
       const admissionSha256 = nativeSha256(input.execution);
       const targetKind = input.runnerExecutionTarget?.kind ?? "local";
@@ -8444,6 +8469,9 @@ export async function executePaperclipNativeSession(input: {
       if (startup.executionContext.active) startup.executionContext.abort(new Error("native_execution_startup_completed"));
       startupUnsettled = !(await startup.executionContext.drain());
       startup.executionContext.finish();
+    }
+    if (ownsPhysicalIngress && physicalIngressKey && executingNativeIngressAllocations.get(physicalIngressKey) === ownerToken) {
+      executingNativeIngressAllocations.delete(physicalIngressKey);
     }
     if (executingNativeOwnerScopes.get(ownerScope) === ownerToken) {
       executingNativeOwnerScopes.delete(ownerScope);
@@ -8941,9 +8969,12 @@ async function executePaperclipNativeSessionWithinScope(
     // Claim current native authority before the old warm checkpoint writer
     // must prove its same-controller successor. Shared staging stays after
     // strict predecessor suspension; it cannot run on a failed claim/Stop.
+    const ingress = nativeWarmIngressIdentity(input.execution, input.runnerExecutionTarget);
     if (input.useRunnerd && !claimedStopCleanup) await retireSupersededWarmNativeSessions(
       nativeSessionOwnerScope(input.execution, input.runnerExecutionTarget?.environmentId ?? null),
       nativeSessionScopeKey(input.execution), nativeSessionKey(input.execution),
+      ingress ? { db: input.db, claim: { ...input.execution.binding, ingress, leaseOwner,
+        controllerBootId: controller.bootId, controllerGeneration } } : undefined,
     );
     claimedStartupContext?.assertOpen();
     if (prepareAfterClaim) input = await prepareAfterClaim();
@@ -10035,11 +10066,18 @@ async function executePaperclipNativeSessionWithinScope(
                   if (existing.session !== session) {
                     existing.sessionCheckpointPersisted = runnerdBackend?.sessionCheckpointPersisted;
                   }
+                  const ingress = input.useRunnerd ? nativeWarmIngressIdentity(input.execution, input.runnerExecutionTarget) : undefined;
+                  existing.ingressOwner = ingress ? { ...input.execution.binding, ingress,
+                    controllerBootId: controller.bootId, controllerGeneration } : undefined;
                   existing.session = session;
                   existing.runId = input.execution.binding.runId;
                   existing.issueId = input.execution.binding.issueId;
                 } else
                   warmNativeSessions.set(warmSessionId, {
+                    ingressOwner: (() => {
+                      const ingress = input.useRunnerd ? nativeWarmIngressIdentity(input.execution, input.runnerExecutionTarget) : undefined;
+                      return ingress ? { ...input.execution.binding, ingress, controllerBootId: controller.bootId, controllerGeneration } : undefined;
+                    })(),
                     sessionCheckpointPersisted: runnerdBackend?.sessionCheckpointPersisted,
                     onReleased: () => releaseRetainedNativeSessionCleanup(input.db, {
                       companyId: input.execution.binding.companyId, agentId: input.execution.binding.agentId,
