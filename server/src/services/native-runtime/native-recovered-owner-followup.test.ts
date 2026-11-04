@@ -41,6 +41,8 @@ import { createRunnerdBackend } from "./native-session-executor.js";
 // authority proves admission passed; no provider or runner process starts.
 const ADMITTED = "follow-up admission reached tool authority";
 const STRANDED = "runner_state_identity_mismatch: prior_owner_terminal_state_indeterminate";
+/** The held follow-up names the retirement proof that failed. */
+const stranded = (refused: string) => `${STRANDED}; retirement_refused=${refused}`;
 
 describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered per-turn native owner", () => {
   let database: Awaited<ReturnType<typeof startRecoveryPostgres>>;
@@ -227,7 +229,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
         await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
       }
     })();
-    expect(error).toBe(STRANDED);
+    expect(error).toBe(stranded("owner_observed"));
     await db.update(heartbeatRuns).set({ status: "failed", errorCode: "adapter_failed", error, finishedAt: new Date(),
       nativePhase: "observed", resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } })
       .where(eq(heartbeatRuns.id, followUp.runId));
@@ -314,7 +316,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     const prior = await seedRecoveredPriorRun();
     const followUp = await admitFollowUp(prior);
     await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
-    expect(await followUp.start()).toBe(STRANDED);
+    expect(await followUp.start()).toBe(stranded("owner_observed"));
     expect(await quarantined()).toHaveLength(1);
     await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
     expect(await followUp.start()).toBe(ADMITTED);
@@ -327,7 +329,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     // Learn the scope key from a held attempt, then give the active root the
     // local evidence of an owner whose Runner never suspended.
     await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
-    expect(await followUp.start()).toBe(STRANDED);
+    expect(await followUp.start()).toBe(stranded("owner_observed"));
     const [copy] = await quarantined();
     const root = join(stateDirectory, copy!.split(".")[0]!);
     await rename(join(stateDirectory, "quarantine", copy!), root);
@@ -335,11 +337,11 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
     await writeFile(join(root, "runner", "runner-state.json"), JSON.stringify({
       schema: "paperclip.runner.durable.state.v1", lifecycle: "ready", ...prior.identity }));
     await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
-    expect(await followUp.start()).toBe(STRANDED);
+    expect(await followUp.start()).toBe(stranded("runner_lifecycle_not_suspended"));
     expect(await quarantined()).toHaveLength(1);
     // The retry restores only the database journal. The quarantined receipt
     // must still hold it.
-    expect(await followUp.start()).toBe(STRANDED);
+    expect(await followUp.start()).toBe(stranded("quarantine_runner_lifecycle_not_suspended"));
     expect(await quarantined()).toHaveLength(2);
     expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
   }, 60_000);
@@ -370,7 +372,7 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       // A copy of this projection is harmless; a different owner saved under
       // the same scope is unresolved evidence that must not be overtaken.
       await db.update(nativeRunFinalizations).set({ phase: "observed" }).where(eq(nativeRunFinalizations.runId, prior.runId));
-      expect(await followUp.start()).toBe(STRANDED);
+      expect(await followUp.start()).toBe(stranded("owner_observed"));
       const [copy] = await quarantined();
       const foreign = join(stateDirectory, "quarantine", copy!.replace(/\.[0-9a-f-]{36}$/, `.${randomUUID()}`));
       await cp(join(stateDirectory, "quarantine", copy!), foreign, { recursive: true });
@@ -381,8 +383,17 @@ describe.skipIf(!recoveryPostgresSupport.supported)("follow-up after a recovered
       expectedQuarantine = 3;
     }
     const outcome = await followUp.start();
-    // A live owner is still waited for before any projection is rebuilt.
-    expect(outcome).toBe(scenario === "live controller lease" ? "native_controller_recovery_waiting_for_owner" : STRANDED);
+    // A live owner is still waited for before any projection is rebuilt. Every
+    // other hold names its failed proof instead of one indeterminate state.
+    expect(outcome).toBe({
+      "uncommitted result": stranded("owner_retryable_failure"),
+      "live controller lease": "native_controller_recovery_waiting_for_owner",
+      "unexpired controller lease": stranded("controller_remote_controller_lease_live"),
+      "recovery pending": stranded("owner_recovery_resuming_session"),
+      "pending command": stranded("journal_commands_unsettled(runner.suspend.pending)"),
+      "unanswered tool input": stranded("journal_tool_input_unanswered"),
+      "foreign quarantine": stranded("quarantine_journal_identity_mismatch"),
+    }[scenario]);
     expect(await quarantined()).toHaveLength(scenario === "live controller lease" ? 0 : expectedQuarantine);
     expect(followUp.logs.join("")).not.toContain("finished without a saved runner checkpoint");
   }, 60_000);
