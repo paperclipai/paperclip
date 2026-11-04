@@ -1,41 +1,79 @@
-import { createIssueThreadInteractionSchema } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { issueComments, issueThreadInteractions, issues } from "@paperclipai/db";
+import { issueComments, issueThreadInteractions } from "@paperclipai/db";
 import { createLocalAgentJwt } from "../../agent-auth-jwt.js";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
-import { issueThreadInteractionService } from "../issue-thread-interactions.js";
 
 describe("confirmation reply through the native API tool", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
   const oldSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
   beforeAll(async () => { process.env.PAPERCLIP_AGENT_JWT_SECRET = randomUUID(); server = await startRunnerApiTestServer(); }, 60_000);
   afterAll(async () => { await server?.close(); if (oldSecret === undefined) delete process.env.PAPERCLIP_AGENT_JWT_SECRET; else process.env.PAPERCLIP_AGENT_JWT_SECRET = oldSecret; });
-  async function seed(mode: "standard" | "planning" | "ask" = "standard") {
+  async function proposal(
+    f: Awaited<ReturnType<typeof server.fixture>>,
+    idempotencyKey: string,
+    prompt: string,
+    resolverPolicy?: "human_only",
+  ) {
+    const result = await f.authority.execute({ tool: "request_human_input", callId: randomUUID(), arguments: {
+      idempotencyKey, interactionKind: "confirmation", title: "Approve child task", prompt,
+      continuationPolicy: "wake_assignee", ...(resolverPolicy === undefined ? {} : { resolverPolicy }),
+      payload: { version: 1, supersedeOnUserComment: false, acceptLabel: "Approve", rejectLabel: "Revise", rejectRequiresReason: true },
+    } });
+    const [card] = await server.db.select().from(issueThreadInteractions).where(and(
+      eq(issueThreadInteractions.companyId, f.companyId), eq(issueThreadInteractions.idempotencyKey, idempotencyKey),
+    ));
+    if (!card) throw new Error("Native proposal did not persist its confirmation");
+    expect(result).toMatchObject({ disposition: "applied", interaction: { id: card.id, status: "pending" } });
+    return card;
+  }
+  async function seed(mode: "standard" | "planning" | "ask" = "standard", resolverPolicy?: "human_only") {
     const f = await server.fixture({ conversation: true, disableWakeOnDemand: true, mode });
-    const [issue] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
-    const card = await issueThreadInteractionService(server.db).create(issue!, createIssueThreadInteractionSchema.parse({ kind: "request_confirmation", payload: { version: 1, prompt: "Write the welcome note?" } }), { agentId: f.agentId });
+    const card = await proposal(f, "first-task-proposal-confirmation", "Approve creating one child task to write the welcome note?", resolverPolicy);
     const [comment] = await server.db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: f.userId, body: "Yes, write it." }).returning();
     const call = { tool: "call_api", callId: randomUUID(), arguments: { operationId: "POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment", pathParams: { id: f.issueId, interactionId: card.id }, body: { commentId: comment!.id, decision: "accept" } } };
     return { f, card, comment: comment!, call };
   }
   it("advertises and executes the real authenticated route, including retry", async () => {
     const { f, card, comment, call } = await seed();
+    expect(card).toMatchObject({ requestedResolverPolicy: "anyone", effectiveResolverPolicy: "anyone", resolverPolicyProvenance: "inherited" });
     const first = await f.authority.execute(call);
-    expect(first).toMatchObject({ status: 200, data: { deduplicated: false, interaction: { id: card.id, status: "accepted", result: { commentId: comment.id } } } });
+    expect(first).toMatchObject({ status: 200, data: { deduplicated: false, interaction: {
+      id: card.id, status: "accepted", result: { outcome: "accepted", commentId: comment.id },
+      resolvedByAgentId: f.agentId, resolvedByRunId: f.runId, resolvedByUserId: null,
+    } } });
     const retry = await f.authority.execute({ ...call, callId: randomUUID() });
     expect(retry).toMatchObject({ status: 200, data: { deduplicated: true } });
     const snapshot = await f.snapshot();
     expect(snapshot.activity.filter(row => row.action === "issue.thread_interaction_accepted")).toHaveLength(1);
   });
   it("denies human-only resolution and foreign-message provenance through the same tool", async () => {
-    const { f, card, call, comment } = await seed();
-    await server.db.update(issueThreadInteractions).set({ effectiveResolverPolicy: "human_only" }).where(eq(issueThreadInteractions.id, card.id));
+    const { f, card, call, comment } = await seed("standard", "human_only");
+    expect(card).toMatchObject({ requestedResolverPolicy: "human_only", effectiveResolverPolicy: "human_only", resolverPolicyProvenance: "explicit" });
     expect(await f.authority.execute(call)).toMatchObject({ status: 403 });
+    expect((await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, card.id)))[0]).toMatchObject({ status: "pending", result: null });
     const other = await seed();
     const foreignAnswer = { ...other.call, arguments: { ...other.call.arguments, body: { ...other.call.arguments.body, commentId: comment.id } } };
     expect(await other.f.authority.execute(foreignAnswer)).toMatchObject({ status: 422 });
+  });
+  it("records acceptance on the revised native proposal without accepting its superseded predecessor", async () => {
+    const { f, card: original } = await seed();
+    const revised = await proposal(f, "first-task-proposal-confirmation-revised", "Approve creating one child task to write the revised Sunday welcome note?");
+    const [comment] = await server.db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
+      authorType: "user", authorUserId: f.userId, body: "Yes, I accept the revised Sunday proposal. Please do it." }).returning();
+    const call = { tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "POST /api/issues/{id}/interactions/{interactionId}/resolve-from-comment",
+      pathParams: { id: f.issueId, interactionId: original.id }, body: { commentId: comment!.id, decision: "accept" },
+    } };
+    expect(await f.authority.execute(call)).toMatchObject({ status: 409 });
+    expect(await f.authority.execute({ ...call, callId: randomUUID(), arguments: {
+      ...call.arguments, pathParams: { ...call.arguments.pathParams, interactionId: revised.id },
+    } })).toMatchObject({ status: 200, data: { interaction: { id: revised.id, status: "accepted", result: { commentId: comment!.id },
+      resolvedByAgentId: f.agentId, resolvedByRunId: f.runId, resolvedByUserId: null } } });
+    expect((await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, original.id)))[0]).toMatchObject({
+      status: "expired", result: { outcome: "superseded_by_newer_request", supersededByInteractionId: revised.id },
+    });
   });
   it("records a conversational decision in Plan mode without opening writes in Ask mode", async () => {
     const planning = await seed("planning");
