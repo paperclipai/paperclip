@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { and, eq, inArray, ne, or, sql } from "drizzle-orm";
 import {
-  environmentLeases, executionWorkspaceRepositories, executionWorkspaceRuntimeLeases, executionWorkspaceSnapshots, executionWorkspaces,
+  companies, environmentLeases, executionWorkspaceRepositories, executionWorkspaceRuntimeLeases, executionWorkspaceSnapshots, executionWorkspaces,
   heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, projects, workspaceOperations, workspaceRuntimeServices, type Db,
 } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceSourceSchema, type RemoteWorkspaceAuthority, type RemoteWorkspaceSource } from "@paperclipai/shared";
@@ -227,9 +227,15 @@ export async function migrateRemoteWorkspace(input: {
   if (!input.apply) return { ...await inventoryRemoteWorkspaceMigration(input.db, input), applied: false };
   return withExecutionWorkspaceLifecycleLock(input.db, input.workspaceId, async lock => {
     const reserved = await input.db.transaction(async tx => {
+      const [selected] = await tx.select({ sourceIssueId: executionWorkspaces.sourceIssueId }).from(executionWorkspaces)
+        .where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId)));
+      if (!selected) throw new Error("remote_workspace_migration_workspace_missing");
+      await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, input.companyId)).for("key share");
+      if (selected.sourceIssueId) await tx.select({ id: issues.id }).from(issues).where(and(
+        eq(issues.companyId, input.companyId), eq(issues.id, selected.sourceIssueId))).for("update");
       const [workspace] = await tx.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.id, input.workspaceId))).for("update");
       if (!workspace) throw new Error("remote_workspace_migration_workspace_missing");
-      if (workspace.sourceIssueId) await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, workspace.companyId), eq(issues.id, workspace.sourceIssueId))).for("update");
+      if (workspace.sourceIssueId !== selected.sourceIssueId) throw new Error("remote_workspace_migration_source_changed");
       const current = await inspect(tx as unknown as Db, input);
       if (current.authority) return { workspace, authority: current.authority, operation: null, source: current.source, sourceFingerprint: "", issueBinding: current.issueBinding, retainedDirectory: null, archivedGitSource: null, legacyRecoverySources: [] as LegacyWorkspaceRecoverySource[] };
       if (current.reasons.length) throw new Error(`remote_workspace_migration_blocked:${current.reasons.join(",")}`);

@@ -746,18 +746,50 @@ blocks concurrent task or run updates. It allows audit inserts to retain their
 foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
 foreign keys and their deletion behavior remain enforced.
 
-## Remote workspace save row locks
+## Remote workspace row locks
 
-Remote snapshot reservation and publication lock the company for foreign-key
-reference, then the source task and run, before the workspace. The run's task
-binding is rechecked under the run lock. This order matches task-first workspace
-admission and file preservation. It prevents an operation insert from holding a
-workspace while its task or run foreign key waits on another workspace owner.
+The runtime workspace service takes company `KEY SHARE`, current task `UPDATE`,
+run `UPDATE`, then workspace `UPDATE` locks. It rechecks the run's task binding
+under the run lock. A shared workspace can retain a different original source
+task; new provisioning and snapshot operations belong to the current run's task.
+Existing operation receipts keep their recorded attribution.
 
-The workspace lock still serializes generations and publication. Existing
-foreign keys, ownership checks and transaction-aware work notifications remain
-in place. Archive capture and object upload run between transactions, without
-these row locks.
+| Owning transaction | Locks after company, current task and run |
+| --- | --- |
+| Workspace reservation | Shared-selection advisory lock when needed, workspace |
+| Preparation publication | Workspace, source lease, existing restore receipt |
+| Snapshot reservation and publication | Workspace, operation and snapshot rows |
+| Provisioning reservation | Workspace, existing operation or new receipt |
+
+`workspace_operations` has ordinary company, task, run and workspace foreign
+keys. An insert takes `KEY SHARE` locks on those parents even when the service
+does not explicitly select them. Locking the parents first prevents their
+foreign-key checks, or a later run-reference write, from reversing the order.
+File preservation already takes task, run, workspace and lease locks in that
+order. Confirmed lease destruction locks matching workspaces before the lease;
+its workspace-location update takes no task or run lock afterward.
+
+Provisioning settlement and save-invocation settlement lock the workspace and
+update existing receipt metadata. They neither add a parent foreign-key
+reference nor lock a task or run afterward. Snapshot upload and retention own
+snapshot rows; the snapshot ledger has no parent foreign keys. These paths do
+not need an otherwise unused parent lock.
+
+Administrative import reservation takes company `KEY SHARE`, original source
+task `UPDATE`, then workspace `UPDATE`, and rechecks that source binding. This
+also applies to an already-imported no-op, which can overlap runtime saves.
+The lifecycle advisory lock alone does not fence a runtime save. Import
+publication retains its separate legacy/offline validation: the workspace has
+no remote authority before publication, current writers and unresolved work
+are rechecked, and offline imports require the deployment-stopped maintenance
+fence. Ordinary save requires an existing prepared remote location. It cannot
+enter this legacy publication phase; an already-imported call uses the ordered
+reservation path instead.
+
+The workspace lock still serializes generations and publication. Foreign keys,
+ownership and epoch checks, and transaction-aware work notifications remain in
+place. Remote preparation, command execution, archive capture and object upload
+run outside these transactions. No workspace or parent row lock spans that I/O.
 
 ## Execution admission accounting
 

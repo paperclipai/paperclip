@@ -18,9 +18,10 @@ import { createLocalDiskStorageProvider } from "../storage/local-disk-provider.j
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
 import {
   createSavedWorkspaceLoader, prepareRemoteWorkspace, readRemoteWorkspaceAuthority,
-  reserveRemoteWorkspace, saveRemoteWorkspace,
+  provisionRemoteWorkspace, reserveRemoteWorkspace, saveRemoteWorkspace,
 } from "./remote-workspaces.js";
 import { remoteTerminationReceipt } from "./remote-execution-termination.js";
+import { migrateRemoteWorkspace } from "./remote-workspace-migration.js";
 
 const exec = promisify(execFile);
 function deferred() {
@@ -178,6 +179,188 @@ describe("remote workspace save parent lock order", () => {
       await Promise.all([saving, preserving]);
       await db.execute(sql`drop trigger save_order_gate on ${sql.identifier(triggerTable)}`);
       await db.execute(sql`drop function save_order_gate()`);
+      await saveDb.$client.end(); await peerDb.$client.end();
+    }
+  }, 30_000);
+
+  it("releases database locks while a provisioning command is in flight", async () => {
+    const f = await preparedFailure();
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+    const authority = readRemoteWorkspaceAuthority(f.workspace.metadata)!;
+    const ready = deferred(), release = deferred();
+    const execute = f.target.runner!.execute.bind(f.target.runner!);
+    const command = "printf 'one effect\\n' >> in-flight.txt";
+    let calls = 0;
+    f.target.runner!.execute = async input => {
+      if (input.command === "bash" && input.args?.[1] === command) {
+        calls++; ready.resolve(); await release.promise;
+      }
+      return execute(input);
+    };
+    const provision = () => provisionRemoteWorkspace({ db, companyId: f.companyId, workspaceId: f.workspace.id,
+      runId: f.runId, epoch: authority.epoch, remoteCwd: authority.location!.remoteCwd, target: f.target, commands: [command] });
+    const provisioning = provision();
+    try {
+      await ready.promise;
+      await saveRemoteWorkspace({ db, storage: f.storage, workspace: f.workspace, runId: f.runId,
+        lease: f.lease, target: f.target, boundary: "checkpoint", assertOwned: async () => undefined });
+      expect(calls).toBe(1);
+      release.resolve(); await provisioning; await provision();
+      expect(calls).toBe(1);
+      expect(await readFile(path.join(authority.location!.remoteCwd, "in-flight.txt"), "utf8")).toBe("one effect\n");
+    } finally { release.resolve(); await provisioning; }
+  }, 30_000);
+
+  it("holds an unknown provisioning effect after a lost command response", async () => {
+    const f = await preparedFailure();
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null }).where(eq(heartbeatRuns.id, f.runId));
+    const authority = readRemoteWorkspaceAuthority(f.workspace.metadata)!;
+    const execute = f.target.runner!.execute.bind(f.target.runner!);
+    const command = "printf 'one effect\\n' >> unknown-effect.txt";
+    let calls = 0;
+    f.target.runner!.execute = async input => {
+      const result = await execute(input);
+      if (input.command === "bash" && input.args?.[1] === command) { calls++; throw new Error("command response lost"); }
+      return result;
+    };
+    const provision = () => provisionRemoteWorkspace({ db, companyId: f.companyId, workspaceId: f.workspace.id,
+      runId: f.runId, epoch: authority.epoch, remoteCwd: authority.location!.remoteCwd, target: f.target, commands: [command] });
+    await expect(provision()).rejects.toThrow("command response lost");
+    await expect(provision()).rejects.toThrow("remote_workspace_provision_unverified");
+    expect(calls).toBe(1);
+    expect(await readFile(path.join(authority.location!.remoteCwd, "unknown-effect.txt"), "utf8")).toBe("one effect\n");
+    const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspace.id));
+    expect(readRemoteWorkspaceAuthority(workspace.metadata)).toEqual(authority);
+    expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+      eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "remote_workspace_provision"))))
+      .toEqual([expect.objectContaining({ status: "running", metadata: expect.objectContaining({ uncertain: true }) })]);
+  }, 30_000);
+
+  it("does not admit Save before an administrative import publishes remote authority", async () => {
+    const f = await preparedFailure(), workspaceId = randomUUID();
+    const [issue] = await db.insert(issues).values({ companyId: f.companyId, title: "Import legacy files" }).returning();
+    const cwd = path.join(root, workspaceId); await mkdir(cwd);
+    await writeFile(path.join(cwd, "local.txt"), "retained local work\n");
+    const [workspace] = await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.companyId,
+      sourceIssueId: issue.id, mode: "isolated_workspace", strategyType: "project_primary", providerType: "local_fs",
+      name: "Legacy files", cwd, providerRef: cwd }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, issue.id));
+    const ready = deferred(), release = deferred();
+    const storage = { ...f.storage, putFile: async (input: Parameters<typeof f.storage.putFile>[0]) => {
+      const saved = await f.storage.putFile(input); ready.resolve(); await release.promise; return saved;
+    } };
+    const migrating = migrateRemoteWorkspace({ db, storage, companyId: f.companyId, workspaceId, apply: true })
+      .then(value => ({ value }), error => ({ error }));
+    try {
+      await ready.promise;
+      await expect(saveRemoteWorkspace({ db, storage, workspace, runId: f.runId,
+        lease: f.lease, target: f.target, assertOwned: async () => undefined })).rejects.toThrow("remote_workspace_save_binding_mismatch");
+      await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: issue.id,
+        runtimeMode: "legacy", status: "running", contextSnapshot: { issueId: issue.id } });
+      release.resolve();
+      expect(await migrating).toMatchObject({ error: expect.objectContaining({ message: expect.stringContaining("active_execution") }) });
+      const [current] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspaceId));
+      expect(readRemoteWorkspaceAuthority(current.metadata)).toBeNull();
+      expect(await readFile(path.join(cwd, "local.txt"), "utf8")).toBe("retained local work\n");
+    } finally { release.resolve(); await migrating; }
+  }, 30_000);
+
+  it("rechecks the migration source task after waiting for the workspace", async () => {
+    const f = await preparedFailure();
+    const [other] = await db.insert(issues).values({ companyId: f.companyId, title: "Changed source" }).returning();
+    const peerDb = createDb(database.connectionString, { maxConnections: 1, applicationName: "save-order-migration-binding" });
+    const ready = deferred(), release = deferred();
+    const barrier = db.transaction(async tx => {
+      await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, f.workspace.id)).for("update");
+      ready.resolve(); await release.promise;
+      await tx.update(executionWorkspaces).set({ sourceIssueId: other.id }).where(eq(executionWorkspaces.id, f.workspace.id));
+    });
+    await ready.promise;
+    const migrating = migrateRemoteWorkspace({ db: peerDb, storage: f.storage, companyId: f.companyId,
+      workspaceId: f.workspace.id, apply: true }).then(value => ({ value }), error => ({ error }));
+    try {
+      await expect.poll(async () => (await db.execute<{ waiting: boolean }>(sql`select exists(select 1 from pg_stat_activity
+        where datname = current_database() and application_name = 'save-order-migration-binding'
+          and wait_event_type = 'Lock' and query like '%"execution_workspaces"%') as waiting`))[0]?.waiting,
+      { timeout: 5000 }).toBe(true);
+      release.resolve(); await barrier;
+      expect(await migrating).toMatchObject({ error: expect.objectContaining({ message: "remote_workspace_migration_source_changed" }) });
+      const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspace.id));
+      expect(readRemoteWorkspaceAuthority(workspace.metadata)).toEqual(readRemoteWorkspaceAuthority(f.workspace.metadata));
+      expect(workspace.metadata?.remoteWorkspaceMigration).toBeUndefined();
+      expect(await readFile(path.join(readRemoteWorkspaceAuthority(workspace.metadata)!.location!.remoteCwd, "saved.txt"), "utf8"))
+        .toBe("one preserved result\n");
+    } finally { release.resolve(); await barrier; await migrating; await peerDb.$client.end(); }
+  }, 30_000);
+
+  it.each(["prepare", "provision", "migrate"] as const)("saves beside actual %s started first", async mode => {
+    const f = await preparedFailure();
+    await db.update(heartbeatRuns).set({ status: "running", finishedAt: null, resultJson: null, errorCode: null })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const metadata = { ...f.lease.metadata }; delete metadata.remoteExecutionTermination;
+    const [lease] = await db.update(environmentLeases).set({ status: "active", releasedAt: null, cleanupStatus: null, metadata })
+      .where(eq(environmentLeases.id, f.lease.id)).returning();
+    const authority = readRemoteWorkspaceAuthority(f.workspace.metadata)!;
+    const saveDb = createDb(database.connectionString, { maxConnections: 1, applicationName: "save-order-reverse-save" });
+    const peerDb = createDb(database.connectionString, { maxConnections: 1, applicationName: "save-order-reverse-peer" });
+    await saveDb.execute(sql`select set_config('deadlock_timeout', '50ms', false)`);
+    const ready = deferred(), release = deferred();
+    const barrier = db.transaction(async tx => {
+      await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, f.workspace.id)).for("update");
+      ready.resolve(); await release.promise;
+    });
+    await ready.promise;
+    const command = "printf 'effect\\n' >> provision-count.txt";
+    const provision = () => provisionRemoteWorkspace({ db: peerDb, companyId: f.companyId, workspaceId: f.workspace.id,
+      runId: f.runId, epoch: authority.epoch, remoteCwd: authority.location!.remoteCwd, target: f.target, commands: [command] });
+    const settle = <T,>(work: Promise<T>): Promise<PromiseSettledResult<T>> => work.then(
+      value => ({ status: "fulfilled", value }), reason => ({ status: "rejected", reason }));
+    let saving: Promise<PromiseSettledResult<Awaited<ReturnType<typeof saveRemoteWorkspace>>>> | undefined;
+    let peer: Promise<PromiseSettledResult<unknown>> | undefined;
+    try {
+      const waiting = async (application: string) => (await db.execute<{ pid: number; query: string; blockers: number[] }>(sql`
+        select pid, query, pg_blocking_pids(pid) as blockers from pg_stat_activity
+        where datname = current_database() and application_name = ${application} and wait_event_type = 'Lock'`))[0];
+      peer = settle<unknown>(mode === "prepare" ? prepareRemoteWorkspace({ db: peerDb, storage: f.storage,
+        workspace: f.workspace, runId: f.runId, lease: lease as EnvironmentLease, target: f.target })
+        : mode === "provision" ? provision() : migrateRemoteWorkspace({ db: peerDb, storage: f.storage,
+          companyId: f.companyId, workspaceId: f.workspace.id, apply: true }));
+      await expect.poll(async () => (await waiting("save-order-reverse-peer"))?.query,
+        { timeout: 5000 }).toContain('"execution_workspaces"');
+      const peerWait = await waiting("save-order-reverse-peer");
+      saving = settle(saveRemoteWorkspace({ db: saveDb, storage: f.storage, workspace: f.workspace,
+        runId: f.runId, lease: lease as EnvironmentLease, target: f.target, boundary: "checkpoint", assertOwned: async () => undefined }));
+      await expect.poll(async () => Boolean(await waiting("save-order-reverse-save")), { timeout: 5000 }).toBe(true);
+      const saveWait = await waiting("save-order-reverse-save");
+      release.resolve(); await barrier;
+      const results = await Promise.all([saving, peer]);
+      const errors = results.filter(result => result.status === "rejected").map(result =>
+        (result as PromiseRejectedResult).reason as Error & { cause?: { code?: string; detail?: string; where?: string } });
+      if (errors.length) console.info("save-order-reverse-postgres-evidence", JSON.stringify({ mode,
+        peerQuery: peerWait?.query, saveQuery: saveWait?.query,
+        errors: errors.map(error => ({ code: error.cause?.code, detail: error.cause?.detail, where: error.cause?.where })) }));
+      expect(errors).toEqual([]);
+      if (mode === "migrate") expect((results[1] as PromiseFulfilledResult<unknown>).value).toMatchObject({ applied: true, replayed: true });
+      if (mode === "provision") {
+        await provision();
+        expect(await readFile(path.join(authority.location!.remoteCwd, "provision-count.txt"), "utf8")).toBe("effect\n");
+        expect(await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.companyId, f.companyId),
+          eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "remote_workspace_provision"))))
+          .toEqual([expect.objectContaining({ issueId: f.issueId, status: "succeeded", metadata: expect.objectContaining({ uncertain: false }) })]);
+      }
+      const [current] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, f.workspace.id));
+      const saved = await saveRemoteWorkspace({ db: saveDb, storage: f.storage, workspace: current,
+        runId: f.runId, lease: lease as EnvironmentLease, target: f.target, assertOwned: async () => undefined });
+      const loaded = await createSavedWorkspaceLoader(db, f.storage)({ companyId: f.companyId,
+        workspaceId: f.workspace.id, snapshotId: saved.snapshotId });
+      try {
+        expect(await readFile(path.join(loaded.root, "saved.txt"), "utf8")).toBe("one preserved result\n");
+        if (mode === "provision") expect(await readFile(path.join(loaded.root, "provision-count.txt"), "utf8")).toBe("effect\n");
+      } finally { await loaded.cleanup(); }
+    } finally {
+      release.resolve(); await barrier; await Promise.all([saving, peer]);
       await saveDb.$client.end(); await peerDb.$client.end();
     }
   }, 30_000);
