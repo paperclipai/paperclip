@@ -79,7 +79,10 @@ test('reported pass requires real assertions, successful cleanup and exact curre
 
 test('missing results remain explicit broken cases and cannot improve the denominator', () => {
   const projected = projectProductResults(undefined, selection(productRegressionCases), targetSha);
-  assert.deepEqual(projected.summary, { selected: 20, passed: 0, failed: 0, broken: 20, fullPlan: true });
+  const { cases, ...counts } = projected.summary;
+  assert.deepEqual(counts, { selected: 20, passed: 0, failed: 0, broken: 20, fullPlan: true });
+  assert.equal(cases.length, 20);
+  assert.equal(cases.every(row => row.status === 'broken'), true);
   assert.equal(projected.records.filter(row => row.file.endsWith('-result.json')).length, 20);
   const partial = projectProductResults(campaign([]), selection([selected]), targetSha);
   assert.equal(partial.summary.broken, 1);
@@ -135,6 +138,9 @@ test('a TestOps job run must belong to this workflow, source launch and GitHub e
     assert.deepEqual(await verifyProductJob(route => route === '/api/job/50' ? { ...values[route], url } : values[route],
       { jobRunId: '456', launchId: 789 }, env), { jobId: 50, launchId: 789 });
   }
+  const pending = route => route === '/api/jobrun/456' ? { ...values[route], url: null } : values[route];
+  await verifyProductJob(pending, { jobRunId: '456', launchId: 789 }, env, true);
+  await assert.rejects(verifyProductJob(pending, { jobRunId: '456', launchId: 789 }, env));
   await assert.rejects(verifyProductJob(route => route === '/api/launch/789' ? { id: 789, projectId: 2 } : values[route], { jobRunId: '456', launchId: 789 }, env));
   await assert.rejects(verifyProductJob(route => route === '/api/job/50' ? { ...values[route], url: 'https://github.com/other/repo' } : values[route], { jobRunId: '456', launchId: 789 }, env));
   await assert.rejects(verifyProductJob(route => route === '/api/job/50' ? { ...values[route], url: workflowUrl.replace('runner-full-stack-e2e', 'runner-protocol-live-evals') } : values[route], { jobRunId: '456', launchId: 789 }, env));
@@ -142,10 +148,16 @@ test('a TestOps job run must belong to this workflow, source launch and GitHub e
 
 test('server verification accepts real Allure string statuses and rejects wrong verdicts or identities', () => {
   const rows = [{ testCaseId: selected.id, fullName: selected.fullName, projectId: 1, launchId: 789, jobRun: { id: 456 }, status: 'passed' }];
-  const summary = { passed: 1, failed: 0, broken: 0 };
+  const summary = { passed: 1, failed: 0, broken: 0, cases: [{ caseId: selected.id, status: 'passed' }] };
   validateUploadedProductResults(rows, selection([selected]), summary);
   assert.throws(() => validateUploadedProductResults([{ ...rows[0], status: 'failed' }], selection([selected]), summary));
   assert.throws(() => validateUploadedProductResults([{ ...rows[0], jobRun: { id: 999 } }], selection([selected]), summary));
+  const other = productRegressionCases[0];
+  const mixed = [rows[0], { ...rows[0], testCaseId: other.id, fullName: other.fullName, status: 'failed' }];
+  const expected = { passed: 1, failed: 1, broken: 0, cases: [{ caseId: selected.id, status: 'passed' }, { caseId: other.id, status: 'failed' }] };
+  validateUploadedProductResults(mixed, selection([selected, other]), expected);
+  assert.throws(() => validateUploadedProductResults([{ ...mixed[0], status: 'failed' }, { ...mixed[1], status: 'passed' }],
+    selection([selected, other]), expected), /uploaded_status_mismatch/);
 });
 
 test('the separated selection, retained-report projection and server verification preserve one TestOps subset', async t => {
@@ -182,6 +194,18 @@ test('the separated selection, retained-report projection and server verificatio
   await writeFile(path.join(runtime.REPORT_DIR, 'normalized', 'normalized-results.json'), JSON.stringify(campaign()));
   assert.equal(await productTestOps('project', selectionFile, runtime, exec, fetchImpl), 0);
   assert.equal(await productTestOps('verify', selectionFile, runtime, exec, fetchImpl), 0);
+  const failureOutput = path.join(root, 'failed-selection-output');
+  const badPlan = async (command, args) => args[1] === 'plan'
+    ? (await writeFile(args.at(-1), JSON.stringify({ version: '1.0', tests: [{ id: '999', selector: selected.fullName }] })), { stdout: '' })
+    : exec(command, args);
+  await assert.rejects(productTestOps('select', path.join(root, 'failed-selection.json'), { ...runtime, GITHUB_OUTPUT: failureOutput }, badPlan, fetchImpl), /case_mismatch/);
+  const cleanupContext = await readFile(failureOutput, 'utf8');
+  assert.match(cleanupContext, /job_run_started=true/);
+  assert.match(cleanupContext, /job_run_id=456/);
+  let opened = false;
+  await assert.rejects(productTestOps('select', path.join(root, 'invalid-manual.json'),
+    { ...runtime, ALLURE_JOB_RUN_ID: '', TESTOPS_CASE: 'unknown' }, async () => { opened = true; }, fetchImpl), /manual_selection_invalid/);
+  assert.equal(opened, false);
   uploadedStatus = 'failed';
   await assert.rejects(productTestOps('verify', selectionFile, runtime, exec, fetchImpl), /uploaded_status_mismatch/);
   await writeFile(selectionFile, JSON.stringify({ ...receipt, targetSha: workflowSha }));
@@ -198,5 +222,8 @@ test('workflow keeps reporting credentials and trusted code outside candidate/pr
     assert.doesNotMatch(block, /secrets\.(OPENAI|OPENROUTER|ANTHROPIC)|ref: \$\{\{ needs.authorize.outputs.target_sha/);
   }
   assert.match(workflow, /SELECT_ID: \$\{\{ needs.testops_selection.outputs.ids \|\| inputs.id \}\}/);
+  assert.match(reportingJob.split('    steps:\n')[0], /if: always\(\) && needs.testops_selection.outputs.job_run_started == 'true'/);
+  assert.doesNotMatch(reportingJob.split('    steps:\n')[0], /!cancelled\(\)/);
+  assert.match(reportingJob, /Finish the original TestOps job run\n\s+if: always\(\)/);
   assert.doesNotMatch(workflow.slice(0, workflow.indexOf('\njobs:')), /workflow_call:/);
 });

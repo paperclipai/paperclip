@@ -159,5 +159,5 @@ export function projectProductResults(campaign, selection, sourceSha) {
   }
   return { records, summary: { selected: selection.cases.length, passed: summaries.filter(row => row.status === 'passed').length,
     failed: summaries.filter(row => row.status === 'failed').length, broken: summaries.filter(row => row.status === 'broken').length,
-    fullPlan: selection.cases.length === productRegressionCases.length } };
+    fullPlan: selection.cases.length === productRegressionCases.length, cases: summaries } };
 }

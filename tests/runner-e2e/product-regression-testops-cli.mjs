@@ -42,10 +42,11 @@ export function officialProductContext(stdout) {
   return { jobRunId: found.ALLURE_JOB_RUN_ID, launchId: Number(found.ALLURE_LAUNCH_ID) };
 }
 
-export async function verifyProductJob(api, context, env) {
+export async function verifyProductJob(api, context, env, allowUnstarted = false) {
   const run = await api(`/api/jobrun/${context.jobRunId}`);
   if (run.id !== Number(context.jobRunId) || run.launchId !== context.launchId || !positive(run.job?.id)
-      || run.job.type !== 'github' || run.url !== `https://github.com/paperclipai/paperclip/actions/runs/${env.GITHUB_RUN_ID}`) fail('job_run_mismatch');
+      || run.job.type !== 'github' || (run.url !== `https://github.com/paperclipai/paperclip/actions/runs/${env.GITHUB_RUN_ID}`
+        && !(allowUnstarted && (run.url == null || run.url === '')))) fail('job_run_mismatch');
   const [job, launch] = await Promise.all([api(`/api/job/${run.job.id}`), api(`/api/launch/${context.launchId}`)]);
   if (job.id !== run.job.id || job.type !== 'github' || !workflowUrls.has(job.url)
       || launch.id !== context.launchId || launch.projectId !== 1) fail('job_mismatch');
@@ -53,13 +54,18 @@ export async function verifyProductJob(api, context, env) {
 }
 
 export function validateUploadedProductResults(details, selection, summary) {
+  if (!Array.isArray(summary.cases) || summary.cases.length !== selection.cases.length
+      || new Set(summary.cases.map(row => row.caseId)).size !== selection.cases.length
+      || summary.cases.some(row => !selection.cases.some(value => value.id === row.caseId)
+        || !['passed', 'failed', 'broken'].includes(row.status))) fail('expected_status_invalid');
   if (details.length !== selection.cases.length || new Set(details.map(row => row.testCaseId)).size !== selection.cases.length || details.some(row => {
     const selected = selection.cases.find(value => value.id === row.testCaseId);
     return !selected || row.fullName !== selected.fullName || row.projectId !== 1 || row.launchId !== selection.launchId
       || row.jobRun?.id !== Number(selection.jobRunId) || !['passed', 'failed', 'broken'].includes(row.status);
   })) fail('uploaded_identity_mismatch');
   const counts = Object.fromEntries(['passed', 'failed', 'broken'].map(status => [status, details.filter(row => row.status === status).length]));
-  if (Object.entries(counts).some(([status, count]) => summary[status] !== count)) fail('uploaded_status_mismatch');
+  if (Object.entries(counts).some(([status, count]) => summary[status] !== count)
+      || details.some(row => summary.cases.find(value => value.caseId === row.testCaseId).status !== row.status)) fail('uploaded_status_mismatch');
 }
 
 export async function productTestOps(command, argument, env = process.env, exec = execute, fetchImpl = fetch) {
@@ -67,14 +73,26 @@ export async function productTestOps(command, argument, env = process.env, exec 
   if (command === 'select') {
     const requestedJob = env.ALLURE_JOB_RUN_ID || '';
     if (requestedJob && !positive(requestedJob)) fail('job_run_invalid');
+    // Reject a bad bootstrap selector before opening any run. Before adopting
+    // a TestOps dispatch, independently check its pending job and project.
+    const manualCases = requestedJob ? undefined : selectProductRegression(undefined, env.TESTOPS_CASE || 'all');
+    const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);
+    if (requestedJob) {
+      const pending = await api(`/api/jobrun/${requestedJob}`);
+      if (!Number.isSafeInteger(pending.launchId) || pending.launchId < 1) fail('job_run_invalid');
+      await verifyProductJob(api, { jobRunId: requestedJob, launchId: pending.launchId }, env, true);
+    }
     // Start and stop are separated so the official job run remains open while
     // the existing isolated GitHub matrix runs in other jobs.
+    // A final always() job uses the same official CI identity even if start
+    // times out ambiguously or cancellation interrupts the following reads.
+    await appendFile(env.GITHUB_OUTPUT, 'job_run_started=true\n');
     await exec('allurectl', ['job-run', 'start'], { env, timeout: 60_000, maxBuffer: 32_768 });
     const { stdout } = await exec('allurectl', ['job-run', 'env'], { env, timeout: 30_000, maxBuffer: 16_384 });
     const context = officialProductContext(stdout);
     if (requestedJob && requestedJob !== context.jobRunId) fail('job_run_mismatch');
+    await appendFile(env.GITHUB_OUTPUT, `job_run_id=${context.jobRunId}\nlaunch_url=${endpoint}/launch/${context.launchId}\n`);
     const boundEnv = { ...env, ALLURE_JOB_RUN_ID: context.jobRunId };
-    const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);
     const job = await verifyProductJob(api, context, env);
     let plan;
     if (requestedJob) {
@@ -83,7 +101,7 @@ export async function productTestOps(command, argument, env = process.env, exec 
         { env: boundEnv, timeout: 30_000, maxBuffer: 32_768 });
       plan = await readJson(planFile, 65_536);
     }
-    const cases = selectProductRegression(plan, env.TESTOPS_CASE || 'all', Boolean(requestedJob));
+    const cases = manualCases ?? selectProductRegression(plan, env.TESTOPS_CASE || 'all', true);
     const selection = { schema: 'paperclip.product-regression-testops-selection/v1',
       runId: env.GITHUB_RUN_ID, attempt: env.GITHUB_RUN_ATTEMPT, workflowSha: env.GITHUB_SHA,
       targetSha: env.SOURCE_SHA, ...context, ...job, cases };
@@ -91,7 +109,7 @@ export async function productTestOps(command, argument, env = process.env, exec 
     const bytes = Buffer.from(JSON.stringify(selection, null, 2));
     await mkdir(path.dirname(argument), { recursive: true });
     await writeFile(argument, bytes, { flag: 'wx', mode: 0o600 });
-    await appendFile(env.GITHUB_OUTPUT, `ids=${cases.map(row => row.executionId).join(',')}\njob_run_id=${context.jobRunId}\nselection_sha256=${hash(bytes)}\nlaunch_url=${endpoint}/launch/${context.launchId}\n`);
+    await appendFile(env.GITHUB_OUTPUT, `ids=${cases.map(row => row.executionId).join(',')}\nselection_sha256=${hash(bytes)}\n`);
     return 0;
   }
   if (!['project', 'verify'].includes(command)) fail('command_invalid');
