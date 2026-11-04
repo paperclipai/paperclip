@@ -386,7 +386,15 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     await db.update(heartbeatRuns).set({ lastOutputAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 1_000) })
       .where(eq(heartbeatRuns.id, writer.id));
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ status: 409 });
+    // An ended writer whose save has not settled still holds the workspace:
+    // the next run waits from the writer's end, within the same holder cutoff.
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, writer.id));
+    await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({
+      constructor: WorkspaceBusyDeferral, code: "workspace_busy", executionWorkspaceId: workspace.id,
+      holder: { runId: writer.id, issueId: parent.id, ended: true },
+    });
+    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 1_000) })
+      .where(eq(heartbeatRuns.id, writer.id));
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toMatchObject({ status: 409 });
     expect(await readAuthority()).toEqual(authority);
     expect(acquire).not.toHaveBeenCalled();
