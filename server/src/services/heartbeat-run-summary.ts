@@ -127,17 +127,6 @@ export function summarizeHeartbeatRunResultJson(
 const NARRATION_OPENERS =
   /^(let me\b|i['’]ll\b|i['’]m going\b|i need to\b|i can see\b|now i['’]ll\b|next,? i['’]ll\b|looking at\b|fetching\b|checking\b|first,)/i;
 
-// An acknowledgement followed only by a promised investigation is progress,
-// even if it was posted through the ordinary comment tool. Keep multiple
-// substantive sentences out of this narrow fallback.
-function isProgressPromise(text: string): boolean {
-  const sentences = text.trim().split(/(?<=[.!?])\s+(?=[A-Z])/);
-  if (/^Handling (?:the|your) request\b/i.test(sentences[0] ?? "")) sentences.shift();
-  return sentences.length === 1
-    && /^I(?: will|['’]ll)\s+(?:check|verify|inspect|investigate|review|read|fetch)\b/i.test(sentences[0]!)
-    && !/\b(?:but|however|failed|succeeded|completed|saved)\b/i.test(text);
-}
-
 export const LEGACY_WITHHELD_RUN_COMMENT =
   "Run completed. Agent did not post a summary comment this run (transcript withheld — see run log).";
 
@@ -418,6 +407,7 @@ export function resolveHeartbeatRunResponse(input: {
   existingComment?: { id: string; body?: string | null } | null;
   interactionOwnsResponse?: boolean;
   preferFinalResponseOverExistingComment?: boolean;
+  nativeConversationFinalResponse?: boolean;
   externalChatResponseWakeSummaryAuthorized?: boolean;
   /** Server-only proof of the exact accepted response after durable status
    * finalization. Never read this capability from provider/context JSON. */
@@ -453,7 +443,7 @@ export function resolveHeartbeatRunResponse(input: {
   const explicitProviderFinal = input.finalAgentMessage?.channel === "final";
   const compatibleTerminalAssistant =
     input.finalAgentMessage?.channel === "unknown";
-  const resolveCompletedUpstreamResponse = () => {
+  const resolveCompletedUpstreamResponse = (allowCompatibility = true) => {
     if (
       explicitProviderFinal &&
       finalAgentText &&
@@ -473,7 +463,7 @@ export function resolveHeartbeatRunResponse(input: {
     }
 
     const adapterFinal = readMarkedAdapterFinalResponse(resultJson);
-    if (adapterFinal) {
+    if (allowCompatibility && adapterFinal) {
       return {
         text: adapterFinal,
         decision: decision("adapter_final_response", {
@@ -484,7 +474,7 @@ export function resolveHeartbeatRunResponse(input: {
     }
 
     if (
-      compatibleTerminalAssistant &&
+      allowCompatibility && compatibleTerminalAssistant &&
       finalAgentText &&
       !isStructuredSemanticResultText(finalAgentText)
     ) {
@@ -516,7 +506,7 @@ export function resolveHeartbeatRunResponse(input: {
       readCommentText(resultJson.summary) ??
       readCommentText(resultJson.result) ??
       readCommentText(resultJson.message);
-    if (legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
+    if (allowCompatibility && legacyText && !NARRATION_OPENERS.test(legacyText.trimStart())) {
       return {
         text: legacyText,
         decision: decision("adapter_final_response", {
@@ -581,18 +571,22 @@ export function resolveHeartbeatRunResponse(input: {
   }
 
   const existingText = readCommentText(input.existingComment?.body);
-  if (input.existingComment && existingText) {
-    if (isProgressPromise(existingText) && semanticResultCandidates(resultJson).some(candidate =>
-      candidate.schema === "paperclip.run_result.v1" && candidate.reportedWorkDisposition === "done"
-      && readCommentText(candidate.summary)) && !hasYieldedSemanticResult(resultJson)) {
-      const completed = resolveCompletedUpstreamResponse();
-      if (completed && completed.text !== existingText) return {
-        ...completed,
-        decision: { ...completed.decision, reasonCodes: [
-          ...completed.decision.reasonCodes, "completed_response_after_progress_promise",
-        ] },
-      };
+  if (input.nativeConversationFinalResponse) {
+    if (input.interactionOwnsResponse || hasYieldedSemanticResult(resultJson)) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["interaction_owns_conversation_response"] }),
+    };
+    const final = resolveCompletedUpstreamResponse(false);
+    if (final) {
+      const reuse = !!input.existingComment && final.text === existingText;
+      return { ...final, decision: { ...final.decision,
+        commentAction: reuse ? "reuse" : "create",
+        commentId: reuse ? input.existingComment!.id : null,
+        reasonCodes: [...final.decision.reasonCodes, "native_conversation_final_precedence"],
+      } };
     }
+  }
+  if (input.existingComment && existingText) {
     return {
       text: existingText,
       decision: decision("existing_issue_comment", {

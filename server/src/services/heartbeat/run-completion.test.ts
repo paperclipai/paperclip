@@ -2,7 +2,7 @@ import { createNativeUsageDelivery } from "../native-runtime/native-usage-delive
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, caseHandoffs, cases, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseHandoffs, cases, companies, costEvents, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -340,6 +340,39 @@ describe.skipIf(!support.supported && !process.env.PAPERCLIP_TEST_DATABASE_URL)(
     await f.completion.completeRun(f.input);
     expect((await read(f.run.id)).status).toBe("succeeded");
     expect(f.input.onProviderTraceFinalized).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { runtimeMode: "native" as const, conversation: true, createsFinal: true },
+    { runtimeMode: "native" as const, conversation: false, createsFinal: false },
+    { runtimeMode: "legacy" as const, conversation: true, createsFinal: false },
+  ])("scopes final-response precedence to native standing conversations: %j", async ({ runtimeMode, conversation, createsFinal }) => {
+    const f = await fixture({ runtimeMode });
+    const [issue] = await db.insert(issues).values({ companyId: f.run.companyId, title: "Conversation reply",
+      ...(conversation ? { assigneeAgentId: f.agent.id, conversationAgentId: f.agent.id,
+        conversationUserId: "board-person", conversationState: "active" } : {}),
+    }).returning();
+    const [earlier] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId: issue.id,
+      authorAgentId: f.agent.id, createdByRunId: f.run.id, body: "Checking the request.",
+    }).returning();
+    f.input.issueId = issue.id;
+    f.input.issueRef = issue;
+    f.input.issueContext = await createHeartbeatRunPreparation(db).getIssueExecutionContext(f.run.companyId, issue.id);
+    f.input.adapterResult.resultJson = { nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary: "The complete answer" } };
+    f.deps.findRunIssueComment.mockResolvedValue(earlier);
+    f.deps.issuesSvc.addComment.mockImplementation(async (issueId, body) => {
+      const [comment] = await db.insert(issueComments).values({ companyId: f.run.companyId, issueId,
+        authorAgentId: f.agent.id, authorType: "agent", createdByRunId: f.run.id, body }).returning();
+      return { ...comment, authorType: "agent" as const };
+    });
+    await f.completion.completeRun(f.input);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issue.id));
+    expect(comments.some(comment => comment.id === earlier.id && comment.body === earlier.body)).toBe(true);
+    expect(comments.filter(comment => comment.body === "The complete answer")).toHaveLength(createsFinal ? 1 : 0);
+    expect((await read(f.run.id)).resultJson).toMatchObject({ presentationDecision: {
+      chosenSource: createsFinal ? "semantic_result_summary" : "existing_issue_comment",
+      commentAction: createsFinal ? "create" : "reuse",
+    } });
   });
 
   it("keeps completion and session persistence moving after a response comment fails", async () => {

@@ -1338,10 +1338,12 @@ failed or cancelled even when the agent already reported completed work.
 The final assistant message is the visible task response. Response selection runs
 after preceding event persistence completes; the completion summary cannot replace
 an available final answer. Existing fallback and explicit-comment precedence still
-apply. A progress-only promise to investigate does not replace an available final
-response backed by an accepted completed semantic result. Substantive explicit
-outcomes keep precedence. A yielded result or missing final response does not
-cause a second comment. The presentation decision records this selection.
+apply for ordinary tasks. In native standing conversations, a completed final
+response or accepted non-yielded semantic response takes precedence over earlier
+tool comments. Those comments stay in history. Identical text reuses its existing
+comment. With no qualified final, the explicit comment remains the response.
+Governed waits and interaction cards keep ownership. The presentation decision
+records the conversation-specific choice.
 Stream closure without a turn terminal is not proof of success. Event
 replay uses the existing source receipts and never repeats provider work merely
 to recover recorded output.
