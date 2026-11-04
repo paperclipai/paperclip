@@ -37,12 +37,8 @@ export function truthfulTimelineAccount(input: {
       return !prefix || ["The", "A", "An", "Then", input.personName].some(name => name?.toLowerCase() === prefix[1]!.toLowerCase());
     });
   };
-  // A named Markdown section can own its paragraph's command result and
-  // subject pronoun. Never carry that ownership across a blank line, another
-  // worker, or an unlabelled paragraph. Other paragraphs keep explicit actors.
   let offset = 0;
   const paragraphs = reply.replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    // A heading-only block introduces only its immediately following paragraph.
     .replace(/^([ \t]*(?:#{1,6} +[^\n]+|\*\*[^\n*]+\*\*))[ \t]*\n[ \t]*\n(?=\S)/gm, "$1\n")
     .replace(/^([ \t]*\*\*[^\n*]+\*\*)[ \t]+(?=\S)/gm, "$1\n")
     .split(/\n\s*\n/).map(raw => {
@@ -51,12 +47,9 @@ export function truthfulTimelineAccount(input: {
     const owner = owners.length === 1 && ![firstWorker, repairWorker].some(name => name !== owners[0] && mentions(raw, name)) ? owners[0] : undefined;
     const resolvedPronouns = new Set<number>();
     const headingPrefix = heading?.[0] ?? "";
-    // A soft wrap stays in its sentence. List items retain structural boundaries.
     const unwrapped = headingPrefix + raw.slice(headingPrefix.length).replace(/\n(?![ \t]*(?:[-+*]\s+|\d+[.)]\s+|#{1,6} +|\*\*))/g, " ");
     const text = unwrapped.replace(/[*`]/g, "")
-      // Timeline bullets can prefix the same milestone with a display clock.
       .replace(/^[ \t]*(?:(?:[-+] |\d+[.)] )\s*)?\d{1,2}:\d{2}(?::\d{2})?(?:[ \t]+(?:AM|PM))?(?:[ \t]*[—–:-][ \t]*|[ \t]+)/gim, "")
-      // Inline source markup still names its semantic repair object.
       .replace(/<([a-z][a-z0-9]*)(?:\s+[^<>]*|\s*\/?)>/gi, "$1 ").replace(/<\/[a-z][a-z0-9]*\s*>/gi, "")
       .replace(/(^|\n|[.!?]\s+)(he|she|they)\b/gi, (match, lead, _pronoun, at, paragraph) => {
         if (!owner || !heading) return match;
@@ -92,8 +85,6 @@ export function truthfulTimelineAccount(input: {
   const commandSubject = `(?:${commandModifier}[ \\t]+){0,3}(?:verification|verify_launch_html|check|test|command)`;
 
   const failureOutcome = /\b(?:fail(?:ed|ure|ing)?|exit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*1)\b/gi;
-  // Heading ownership fills an omitted actor only when the command itself is
-  // the clause subject. It cannot override an explicit different actor.
   const commandIsSubject = new RegExp(`^\\s*(?:(?:then|next|later|finally)\\s+)?(?:(?:the|a|an)\\s+)?${commandSubject}\\b`, "i");
   const failures = clauses.flatMap(({ text, at, owner }) => (mentions(text, firstWorker) || owner === firstWorker && commandIsSubject.test(text) && !namesOtherActor(text.replace(commandIsSubject, ""), firstWorker))
     && new RegExp(`\\b${commandSubject}\\b`, "i").test(text)
