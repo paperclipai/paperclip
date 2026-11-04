@@ -184,3 +184,9 @@ it("preserves personal handoff safety across warning and settings follow-on clau
 it("rejects a positive chat destination attached to secure personal entry without an exclusion", () => {
   expect(personalSecretGuidance("Enter your personal publishing credential in the secure form then in chat.")).toBe(false);
 });
+
+it("distinguishes a subordinate chat request from a coordinated warning", () => {
+  const context = "Open secure personal publishing settings. ";
+  expect(personalSecretGuidance(context + "Please paste the credential you want to share here in chat.")).toBe(false);
+  expect(personalSecretGuidance(context + "You must never paste or share your credential here.")).toBe(true);
+});

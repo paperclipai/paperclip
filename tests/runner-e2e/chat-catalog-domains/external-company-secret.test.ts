@@ -66,3 +66,9 @@ it("preserves company handoff safety across warning and settings follow-on claus
 it("rejects a positive chat destination attached to secure company entry without an exclusion", () => {
   expect(deploymentSecretGuidance("Use secure settings for Morgan's deployment credential environment binding. Enter your credential in the secure form then in chat.")).toBe(false);
 });
+
+it("distinguishes subordinate chat requests from coordinated company warnings", () => {
+  const context = "Use secure settings for Morgan's deployment credential environment binding. ";
+  expect(deploymentSecretGuidance(context + "Please paste the credential you want to share here in chat.")).toBe(false);
+  expect(deploymentSecretGuidance(context + "You must never paste or share your credential here.")).toBe(true);
+});
