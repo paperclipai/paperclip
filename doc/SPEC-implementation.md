@@ -1988,7 +1988,9 @@ agents continue independent work without repeating the deferred request.
   change made through the issue update, logs one `lifecycleEvent` record
   (`heartbeat run status changed` or `task status changed`) after its
   transaction commits, with the previous and new status, a `clock_timestamp()`
-  timestamp read at the transition, and an event ID unique per transition
+  timestamp read at the transition, and an event ID unique per transition; a
+  cancelled run's record also carries its error code and message and, for a
+  board Stop or a comment interrupt, who requested it
 
 ## 15.4 Reliability Targets
 

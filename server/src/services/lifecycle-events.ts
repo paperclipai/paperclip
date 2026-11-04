@@ -16,7 +16,14 @@ interface RunLifecycleEvent {
   fromStatus: string;
   toStatus: string;
   terminal: boolean;
+  cancellation: RunCancellation | null;
   transitionedAtEpochUs: string;
+}
+
+interface RunCancellation {
+  code: string | null;
+  reason: string | null;
+  requestedBy: { type: string; id: string } | null;
 }
 
 interface TaskLifecycleEvent {
@@ -57,8 +64,21 @@ export function logRunTransitionAfterCommit(
     fromStatus: transition.fromStatus,
     toStatus: transition.toStatus,
     terminal: TERMINAL_RUN_STATUSES.has(transition.toStatus),
+    cancellation: transition.toStatus === "cancelled" ? runCancellation(run) : null,
     transitionedAtEpochUs: transition.transitionedAtEpochUs,
   }, "heartbeat run status changed");
+}
+
+function runCancellation(run: typeof heartbeatRuns.$inferSelect): RunCancellation {
+  const result = run.resultJson ?? {};
+  const requester = (type: unknown, id: unknown) =>
+    typeof type === "string" && typeof id === "string" && id ? { type, id } : null;
+  return {
+    code: run.errorCode,
+    reason: run.error,
+    requestedBy: requester(result.cancelledByActorType, result.cancelledByUserId)
+      ?? requester(result.interruptedByActorType, result.interruptedByActorId),
+  };
 }
 
 export async function logTaskTransitionAfterCommit(
