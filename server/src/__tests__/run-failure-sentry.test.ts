@@ -111,6 +111,19 @@ describe("captureRunFailure", () => {
     sentryModule.captureTaskInterruptionFailure({ ...event, intentId: "next-intent" });
     sentryModule.captureTaskInterruptionFailure({ ...event, runId: "next-run" });
     expect(captureException).toHaveBeenCalledTimes(3);
+    expect(captureException.mock.calls[2]![1]?.tags).not.toHaveProperty("run_error_code");
+  });
+
+  it("tags a saved-message report with a valid run error code without splitting its group", async () => {
+    const { sentryModule, captureException } = await importFreshSentryWithGateOpen();
+    const event = { companyId: "company", agentId: "agent", taskId: "task", agentAdapter: "process",
+      runStatus: "failed" as const, intentId: null };
+    sentryModule.captureTaskInterruptionFailure({ ...event, runId: "run", runErrorCode: "native_workspace_sync_out_failed" });
+    sentryModule.captureTaskInterruptionFailure({ ...event, runId: "other", runErrorCode: "token=abc secret" });
+    expect(captureException.mock.calls[0]![1]).toMatchObject({
+      tags: { run_error_code: "native_workspace_sync_out_failed" }, fingerprint: ["task_attempt_failed", "process"] });
+    expect(captureException.mock.calls[1]![1]?.tags).not.toHaveProperty("run_error_code");
+    expect(JSON.stringify(captureException.mock.calls[1])).not.toContain("secret");
   });
 
   it("does not consume a saved-message report while reporting is off or capture fails", async () => {
