@@ -1686,6 +1686,12 @@ execution, unchanged task ownership, and current source, channel, principal and
 review binding authorization. Stop, pause, cancellation, changed review head and
 revoked access retain their normal gates. The status committer rechecks the
 preserved-result proof and current authority under its existing locks.
+If recovery folds an already saved Retry into that same result, its history
+records the preservation generation separately from the Retry request identity.
+These identities do not grant execution or ancestry authority. New generation
+proof must match exactly; an absent or foreign field cannot certify a folded
+legacy Retry. Ordinary legacy history that already names the exact preservation
+generation retains only its existing passive proof, without status ownership.
 
 An exhausted workspace export records the exact Blocked status version it
 creates, bound to its source run, result, contract and identity. Recovery may

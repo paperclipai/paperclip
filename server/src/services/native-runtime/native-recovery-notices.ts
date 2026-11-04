@@ -7,9 +7,11 @@ import { pendingNativeStatusEffectsCondition } from "./native-pending-effect-wor
 import { pendingNativeRunProjectionCondition } from "./native-run-projection.js";
 import { completedWorkspaceRecoveryCondition } from "../workspace-recovery-receipt.js";
 
+const workspaceExportFailureCauses = ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"];
+
 function recoveredExportNotice(runId: string | typeof nativeRunFinalizations.runId) {
   return and(
-    inArray(issueRecoveryActions.cause, ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"]),
+    inArray(issueRecoveryActions.cause, workspaceExportFailureCauses),
     completedWorkspaceRecoveryCondition(runId),
   );
 }
@@ -19,7 +21,8 @@ function matchingNotice(runId: string | typeof nativeRunFinalizations.runId) {
     eq(issueRecoveryActions.kind, "active_run_watchdog"),
     inArray(issueRecoveryActions.status, ["active", "escalated"]),
     sql`${issueRecoveryActions.evidence}->>'runId' = ${runId}::text`,
-    or(sql`${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'`,
+    or(and(not(inArray(issueRecoveryActions.cause, workspaceExportFailureCauses)),
+      sql`${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'`),
       eq(issueRecoveryActions.cause, "native_workspace_finalization_owner_unverified"), recoveredExportNotice(runId)),
   );
 }

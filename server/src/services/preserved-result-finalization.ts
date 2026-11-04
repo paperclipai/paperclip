@@ -58,6 +58,7 @@ export async function resumePreservedResultFinalization(db: Db, companyId: strin
       nextAttemptAt: new Date(), failureCode: null, failureDetail: null, updatedAt: new Date(),
       recoveryHistory: [...coordinator.recoveryHistory, {
         kind: "preserved_result_finalization", generationId,
+        preservationGenerationId: recovery.generationId,
         resultId: result.id, previousFailureCode: coordinator.failureCode,
         previousFailureDetail: coordinator.failureDetail, at: new Date().toISOString(),
       }],

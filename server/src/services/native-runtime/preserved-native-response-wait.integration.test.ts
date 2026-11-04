@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
@@ -20,6 +22,7 @@ import { remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { resumePreservedResultFinalization } from "../preserved-result-finalization.js";
 import { recoverRetainedWorkspace, requestWorkspaceRecovery } from "../workspace-recovery.js";
 import { readSystemRecovery } from "../system-recovery-state.js";
+import { readTaskRetryIntent, requestTaskRetry } from "../task-retry.js";
 import { readPublishedGitHubReviewCompletionContinuation, resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import { finalizeNativeRun } from "./native-run-finalizer.js";
 import { recordNativeWorkspaceFinalizationFailure } from "./native-workspace-finalizer.js";
@@ -56,12 +59,17 @@ vi.mock("../environment-execution-target.js", async importOriginal => ({
 describe("preserved native response wait", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>, root: string;
+  const servers = new Set<Server>();
   beforeAll(async () => {
     root = await mkdtemp(path.join(os.tmpdir(), "preserved-native-wait-"));
     temporary = await startEmbeddedPostgresTestDatabase("preserved-native-wait-db-");
     db = createDb(temporary.connectionString);
   }, 90_000);
   afterAll(async () => {
+    for (const server of servers) {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
     await db?.$client.end();
     await temporary?.cleanup();
     if (root) await rm(root, { recursive: true, force: true });
@@ -72,7 +80,8 @@ describe("preserved native response wait", () => {
     | "connection_disabled" | "review_head_changed" | "stop" | "cancelled_run" | "cancelled_task"
     | "owner_changed" | "newer_cancelled" | "newer_active" | "incomplete_preservation" | "missing_receipt"
     | "defer_notice" | "http_reconcile" | "existing_assessment" | "commit_stop" | "commit_status" | "commit_identity"
-    | "commit_newer" | "commit_principal" | "commit_preservation" | "commit_head" | "commit_cancelled";
+    | "commit_newer" | "commit_principal" | "commit_preservation" | "commit_head" | "commit_cancelled"
+    | "saved_retry" | "saved_chat_retry";
   async function recovered(scenario: Scenario = "valid") {
     const f = await seedBoundChatAuthorization(db);
     const prefix = `PW${randomUUID().slice(0, 6)}`;
@@ -82,7 +91,8 @@ describe("preserved native response wait", () => {
     const context = { ...f.context, source: "chat:github", issueId: f.issueId,
       wakeCommentId: f.commentId, paperclipWake: { checkedOutByHarness: true,
         externalChatProvider: "github", issue: { id: f.issueId }, commentIds: [f.commentId] } };
-    await db.update(chatEndpoints).set({ provider: "github" }).where(eq(chatEndpoints.id, f.endpointId));
+    await db.update(chatEndpoints).set({ provider: "github",
+      ...(scenario === "saved_retry" ? { externalExecutionPolicy: "agent" as const } : {}) }).where(eq(chatEndpoints.id, f.endpointId));
     await db.update(chatExternalPrincipals).set({ provider: "github" }).where(eq(chatExternalPrincipals.id, f.principalId));
     await db.update(chatEndpointResources).set({ type: "repository", providerResourceId: "example/repository",
       metadata: { providerRepositoryId: "101" } }).where(eq(chatEndpointResources.id, f.resourceId));
@@ -192,18 +202,47 @@ describe("preserved native response wait", () => {
       app.use("/api", issueRoutes(db, { provider: "local_disk", putFile: async () => { throw new Error("unused"); },
         getObject: async () => { throw new Error("unused"); }, headObject: async () => ({ exists: false }), deleteObject: async () => {} }));
       app.use(errorHandler);
+      const server = createServer(app);
+      servers.add(server);
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => { server.removeListener("error", reject); resolve(); });
+      });
+      const api = request(`http://127.0.0.1:${(server.address() as AddressInfo).port}`);
       const body = { actionId: action.id, runId: f.runId, idempotencyKey: randomUUID() };
-      expect((await request(app).post(`/api/issues/${f.issueId}/recovery-actions/recover-workspace`).send(body)).status).toBe(202);
+      expect((await api.post(`/api/issues/${f.issueId}/recovery-actions/recover-workspace`).send(body)).status).toBe(202);
       replayRecovery = async () => {
-        const response = await request(app).post(`/api/issues/${f.issueId}/recovery-actions/recover-workspace`).send(body);
+        const response = await api.post(`/api/issues/${f.issueId}/recovery-actions/recover-workspace`).send(body);
         expect(response.status).toBe(202);
         expect(response.body).toMatchObject({ actionId: action.id, status: "recovered" });
+        const refreshed = await api.get(`/api/issues/${f.issueId}/recovery-actions`);
+        expect(refreshed.status).toBe(200);
+        expect(refreshed.body.active).toBeNull();
+        expect(refreshed.body.actions.some((value: { id: string; status: string }) => value.id === action.id
+          && ["active", "escalated"].includes(value.status))).toBe(false);
       };
     } else await requestWorkspaceRecovery({ ...input, idempotencyKey: randomUUID(), actorId: f.userId });
     await recoverRetainedWorkspace(input);
     const [preserved] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
     expect(readSystemRecovery(preserved.evidence)?.state).toBe("complete");
     expect(await readFile(path.join(host, "review.txt"), "utf8")).toBe("Original reviewed work\n");
+    let retryRequestId: string | null = null;
+    if (scenario === "saved_retry") {
+      const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId,
+        actorId: f.userId, actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
+      expect(retry.accepted).toBe(true);
+      retryRequestId = retry.requestId;
+    }
+    if (scenario === "saved_chat_retry") {
+      retryRequestId = randomUUID();
+      const payload = { issueId: f.issueId, taskRetry: { schema: "paperclip.task-retry.v1", generationId: retryRequestId,
+        sourceRunId: f.runId, actorId: f.userId, actorSource: "local_implicit", strategy: "evaluate" } };
+      expect(readTaskRetryIntent(payload)?.sourceRunId).toBe(f.runId);
+      await db.insert(agentWakeupRequests).values({ id: retryRequestId, companyId: f.companyId, agentId: f.agentId,
+        source: "on_demand", triggerDetail: "manual", reason: "task_retry", status: "deferred_issue_execution",
+        requestedByActorType: "user", requestedByActorId: f.userId, idempotencyKey: `task-retry:${randomUUID()}`, payload });
+    }
+    if (retryRequestId) expect(retryRequestId).not.toBe(readSystemRecovery(preserved.evidence)?.generationId);
     if (scenario === "legacy") {
       const { workspaceFinalizationBlock: _block, ...evidence } = preserved.evidence;
       await db.update(issueRecoveryActions).set({ evidence }).where(eq(issueRecoveryActions.id, action.id));
@@ -280,7 +319,7 @@ describe("preserved native response wait", () => {
       if (scenario === "commit_head") await db.update(chatGitHubReviews).set({ headSha: "d".repeat(40) })
         .where(eq(chatGitHubReviews.id, reviewId));
     };
-    const finalized = ["http_reconcile", "existing_assessment"].includes(scenario)
+    const finalized = ["http_reconcile", "existing_assessment", "saved_retry", "saved_chat_retry"].includes(scenario)
       ? (await reconcileNativeFinalizations(db, [f.runId], { environmentRuntime: runtime })).find(row => row.runId === f.runId)!
       : await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true,
           skipNativeRecoveryNotices: scenario === "defer_notice" });
@@ -290,7 +329,16 @@ describe("preserved native response wait", () => {
     expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([accepted]);
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(scenario === "commit_newer" ? 2 : 1);
     expect(await db.select().from(chatActions).where(eq(chatActions.companyId, f.companyId))).toHaveLength(1);
-    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    const wakes = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId));
+    expect(wakes).toHaveLength(retryRequestId ? 1 : 0);
+    if (retryRequestId) {
+      expect(wakes[0]).toMatchObject({ id: retryRequestId, status: "coalesced", runId: f.runId });
+      expect(readTaskRetryIntent(wakes[0].payload)?.strategy).toBe("finalize_result");
+      expect(afterFinalization.recoveryHistory).toEqual(expect.arrayContaining([expect.objectContaining({
+        kind: "preserved_result_finalization", generationId: retryRequestId,
+        preservationGenerationId: readSystemRecovery(preserved.evidence)?.generationId,
+      })]));
+    }
     if (scenario.startsWith("commit_")) {
       expect(commitRace.rejected).toEqual(["NativeStatusRaceError"]);
       const [currentIssue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
@@ -340,6 +388,38 @@ describe("preserved native response wait", () => {
     const f = await recovered("existing_assessment");
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_review");
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId)))[0].status).toBe("resolved");
+  }, 60_000);
+
+  it.each(["saved_retry", "saved_chat_retry"] as const)("settles the same wait after ordinary Recover folds %s", async scenario => {
+    const f = await recovered(scenario);
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_review");
+    expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId)))[0].status).toBe("resolved");
+  }, 60_000);
+
+  it.each(["mismatched", "malformed", "missing_folded"] as const)("rejects %s preservation generation proof", async scenario => {
+    const f = await recovered(scenario === "missing_folded" ? "saved_retry" : "legacy");
+    expect((await readPreservedNativeResultFinalization(db, f.binding))?.statusRestoration).toBe("unproven");
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const history = coordinator.recoveryHistory.map(entry => {
+      if (entry.kind !== "preserved_result_finalization") return entry;
+      const value = { ...entry };
+      if (scenario === "missing_folded") delete value.preservationGenerationId;
+      else value.preservationGenerationId = scenario === "mismatched" ? randomUUID() : { generationId: randomUUID() };
+      return value;
+    });
+    await db.update(nativeRunFinalizations).set({ recoveryHistory: history }).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(await readPreservedNativeResultFinalization(db, f.binding)).toBeNull();
+  }, 60_000);
+
+  it("retains exact normal legacy generation proof without granting status ownership", async () => {
+    const f = await recovered("legacy");
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    await db.update(nativeRunFinalizations).set({ recoveryHistory: coordinator.recoveryHistory.map(entry => {
+      const value = { ...entry }; delete value.preservationGenerationId; return value;
+    }) }).where(eq(nativeRunFinalizations.runId, f.runId));
+    expect((await readPreservedNativeResultFinalization(db, f.binding))?.statusRestoration).toBe("unproven");
+    expect(await resolveExternalChatResponseWaitAuthorization({ db, binding: f.binding })).toBe("authorized");
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("blocked");
   }, 60_000);
 
   it.each(["commit_stop", "commit_status", "commit_identity", "commit_newer", "commit_principal", "commit_preservation", "commit_head", "commit_cancelled"] as const)(
@@ -454,12 +534,14 @@ describe("preserved native response wait", () => {
   }, 60_000);
 
   it.each(["missing_operation", "foreign_issue", "different_action", "wrong_barrier", "failed_operation",
-    "nonarray_operations", "empty_operations"] as const)("retains a notice with %s preservation proof", async scenario => {
+    "nonarray_operations", "empty_operations", "legacy_resume_policy"] as const)("retains a notice with %s preservation proof", async scenario => {
       const f = await recovered("defer_notice");
       const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
       const policy = readSystemRecovery(action.evidence)!;
       const operationId = policy.preservationOperationIds[0];
-      if (scenario === "missing_operation") await db.delete(workspaceOperations).where(eq(workspaceOperations.id, operationId));
+      if (scenario === "missing_operation" || scenario === "legacy_resume_policy") await db.delete(workspaceOperations).where(eq(workspaceOperations.id, operationId));
+      if (scenario === "legacy_resume_policy") await db.update(issueRecoveryActions).set({ wakePolicy: { kind: "resume_native_run", runId: f.runId } })
+        .where(eq(issueRecoveryActions.id, action.id));
       if (scenario === "foreign_issue") await db.update(workspaceOperations).set({ issueId: f.otherIssueId })
         .where(eq(workspaceOperations.id, operationId));
       if (scenario === "different_action") {

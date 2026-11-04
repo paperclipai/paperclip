@@ -72,7 +72,9 @@ export async function readPreservedNativeResultFinalization(db: Db, binding: {
       'workspaceFinalizationBlock', ${issueRecoveryActions.evidence}->'workspaceFinalizationBlock')`,
     hasRecoveryHistory: sql<boolean>`exists (select 1 from jsonb_array_elements(${nativeRunFinalizations.recoveryHistory}) entry
       where entry->>'kind' = 'preserved_result_finalization' and entry->>'resultId' = ${nativeRunResults.id}::text
-        and entry->>'generationId' = ${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}')`,
+        and case when entry ? 'preservationGenerationId'
+          then entry->>'preservationGenerationId' = ${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}'
+          else entry->>'generationId' = ${issueRecoveryActions.evidence}#>>'{systemRecovery,generationId}' end)`,
   }).from(heartbeatRuns)
     .innerJoin(issues, and(eq(issues.companyId, binding.companyId), eq(issues.id, binding.issueId)))
     .innerJoin(nativeRunFinalizations, and(eq(nativeRunFinalizations.companyId, binding.companyId),
