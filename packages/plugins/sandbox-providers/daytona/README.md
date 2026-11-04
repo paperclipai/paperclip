@@ -46,10 +46,17 @@ cd packages/plugins/sandbox-providers/daytona
 pnpm install --ignore-workspace --no-lockfile
 pnpm build
 pnpm test
+pnpm test:sdk-ingress
 pnpm typecheck
 ```
 
 These commands assume the repo root has already been installed once so the local `@paperclipai/plugin-sdk` workspace package is available to the compiler during development.
+
+`test:sdk-ingress` requires this package's installed, pinned Daytona SDK. It sends
+local HTTP faults through the real SDK and worker RPC without a provider account
+or sandbox. The root workspace does not install standalone provider dependencies;
+its normal Daytona tests use mocked SDK boundaries. This target fails if the SDK
+is missing and runs all ingress acceptance cases without a conditional skip.
 
 The capacity regression uses Python 3 for a real local PTY, Bash, and GNU core
 utilities (`gtar`, `gdd`, and `gbase64` on macOS). It skips when those prerequisites

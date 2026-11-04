@@ -16,7 +16,7 @@ import { canonicalNativeRuntimeContextDigest, createNativeSessionBackend, create
   type RunnerProcessHandle } from "../../vendor/paperclip-runner/index.js";
 import { nativeRestartFixture, describeEmbeddedPostgres, stopOwnedProcessGroup } from "../../__tests__/helpers/native-restart.js";
 import { canonicalNativeJson, nativeSha256 } from "./canonical.js";
-import { executePaperclipNativeSession, nativeSessionWorkspaceScope } from "./native-session-executor.js";
+import { executePaperclipNativeSession, nativeSessionWorkspaceScope, resolveNativeBilling } from "./native-session-executor.js";
 import { createNativeRunnerExecutionDriver } from "./native-runner-execution-driver.js";
 import { claimNativeSessionResumptions, reconcileNativeFinalizations } from "./native-finalization-reconciler.js";
 import { currentNativeControllerIdentity } from "./native-restart-recovery.js";
@@ -25,6 +25,8 @@ import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { spawnRunner } from "../../vendor/paperclip-runner/testing.js";
 import { materializeAsset } from "./runtime-context.js";
 import { nativeRuntimeContextFixture } from "./runtime-context.test-fixture.js";
+import { createNativeUsageDelivery } from "./native-usage-delivery.js";
+import { accountRunCost } from "../run-cost-accounting.js";
 
 describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner", () => {
   const environment = nativeRestartFixture();
@@ -78,10 +80,11 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
         identity: { kind: provider } }, normalizedSessionId: native.normalizedSessionId }));
     const digest = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
     const opencode = join(runtimeRoot, "fake-opencode-ingress");
+    const providerCalls = join(sandbox, "provider-calls.log");
     if (provider === "opencode") {
       const script = resolve(runnerWorkspace, "../test/fixtures/fake-opencode-server.mjs");
       execFileSync("cc", ["-x", "c", "-o", opencode, "-"], { input:
-        `#include <unistd.h>\n#include <stdlib.h>\nint main(int argc, char **argv) { char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(process.execPath)}; args[1] = ${JSON.stringify(script)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }` });
+        `#include <unistd.h>\n#include <stdlib.h>\n#include <stdio.h>\nint main(int argc, char **argv) { FILE *log = fopen(${JSON.stringify(providerCalls)}, "a"); if (!log) return 126; fputs("process-start\\n", log); fclose(log); char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(process.execPath)}; args[1] = ${JSON.stringify(script)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }` });
     }
     const proxy = resolve(runnerWorkspace, "../dist/cli/opencode-app-server-proxy.cjs");
     const identity = { runnerInstanceId: native.runnerInstanceId, environmentLeaseId: runId, runId,
@@ -144,6 +147,7 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
     const bundles: ReturnType<typeof createRunnerdCodexTransport>[] = [];
     const handles: RunnerProcessHandle[] = [];
     const diagnostics: string[] = [];
+    let usageDelivery: Awaited<ReturnType<typeof createNativeUsageDelivery>> | undefined;
     vi.stubEnv("PAPERCLIP_RUNNER_STATE_DIR", stateBase);
     const endpoint: () => Promise<RunnerIngressEndpoint> = async () => {
       const response = await fetch(`https://127.0.0.1:${previewAddress.port}/preview`);
@@ -164,10 +168,11 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
         const processStarted = new Promise<void>(done => { started = done; });
         const bundle = createRunnerdCodexTransport({
           provider, runnerBinary, codexCommand: fakeProvider, codexArgs: ["--state-file", join(sandbox, "provider.json"),
-            "--terminal-result-file", resultFile, "--call-log", join(sandbox, "provider-calls.log")],
+            "--terminal-result-file", resultFile, "--call-log", providerCalls, "--record-process-start"],
           stateDirectory: root, runnerStateDirectory: join(sandbox, "runner"), runnerFilesystemRoot: filesystem,
           runtimeContext, runnerRuntimeContext: runtimeContext, closeGraceMs: 1_000,
           onDiagnostic: message => { diagnostics.push(message); },
+          onAccountingEvent: async event => { await usageDelivery?.capture(event); },
           environment: { CODEX_HOME: codexHome, PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-fixture-key" }, sourceCodexHome: codexHome,
           ...(provider === "opencode" ? { opencodeCommand: opencode, opencodeCommandSha256: digest(opencode),
             opencodeProxyPath: proxy, opencodeProxySha256: digest(proxy), providerNodeCommand: process.execPath,
@@ -202,11 +207,19 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
       expect(handles).toHaveLength(0);
       const saved = await loadNativeRunnerCheckpoint(db, execution.binding);
       expect(saved?.records.size).toBe(4);
+      const savedBootstrapIds = [...saved!.records].filter(([part]) => part.startsWith("command:"))
+        .map(([, value]) => JSON.parse(value).commandId);
+      expect(savedBootstrapIds).toHaveLength(2);
+      const [beforeRetry] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(beforeRetry.usageJson?.accountingProviderWorkStarted).not.toBe(false);
+      expect(beforeRetry.costAccountedAt).toBeNull();
       const [failed] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
       expect(failed).toMatchObject({ phase: "retryable_failure", attempt: 1, failureDetail: { recoveryMode: "bootstrap_retry" } });
       const [claim] = await claimNativeSessionResumptions({ db, runnerInstanceId: "fixture-resumption", runIds: [runId],
         now: new Date(failed!.nextAttemptAt!.getTime() + 1), deferIneligible: false });
       expect(claim).toBeDefined();
+      usageDelivery = await createNativeUsageDelivery(db, { companyId, runId, runnerInstanceId: native.runnerInstanceId,
+        provider: execution.provider, billing: resolveNativeBilling(execution.provider) });
       healthy = true;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const retry = execute(claim!.leaseOwner);
@@ -221,12 +234,23 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
       const commands = [...completed!.records].filter(([part]) => part.startsWith("command:")).map(([, value]) => JSON.parse(value));
       expect(commands.filter(command => command.type === "run.prepare")).toHaveLength(1);
       expect(commands.filter(command => command.type === "session.open")).toHaveLength(1);
+      expect(commands.filter(command => ["run.prepare", "session.open"].includes(command.type))
+        .map(command => command.commandId)).toEqual(savedBootstrapIds);
+      expect((await readFile(providerCalls, "utf8")).split("\n").filter(line => line === "process-start")).toHaveLength(1);
       const results = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, runId));
       expect(results).toHaveLength(1);
       expect(results[0]).toMatchObject({ schemaStatus: "accepted" });
       await reconcileNativeFinalizations(db, [runId]);
       const [settled] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId));
       expect(settled).toMatchObject({ phase: "committed", attempt: 2 });
+      const [completedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(completedRun.usageJson?.accountingProviderWorkStarted).not.toBe(false);
+      expect(completedRun.usageJson?.accountingReceiptReady).toBe(true);
+      expect(Number(completedRun.usageJson?.inputTokens)).toBeGreaterThan(0);
+      expect(await accountRunCost(db, runId)).toBe(true);
+      expect(await accountRunCost(db, runId)).toBe(false);
+      const [accountedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      expect(accountedRun.costAccountedAt).toBeInstanceOf(Date);
     } finally {
       for (const bundle of bundles) await bundle.transport.close().catch(() => undefined);
       for (const handle of handles) await stopOwnedProcessGroup(handle.child.pid ?? null, sandbox);
