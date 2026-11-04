@@ -242,6 +242,21 @@ async function assertNoSymlinkComponents(
   }
 }
 
+function decodeLsofPath(raw: string): string {
+  return raw.replace(/\\\\|(?:\\x[0-9a-fA-F]{2})+/gu, (token) => {
+    if (token === "\\\\") return "\\";
+    const bytes = Buffer.alloc(token.length / 4);
+    for (let index = 0; index < bytes.length; index += 1) {
+      bytes[index] = Number.parseInt(token.slice(index * 4 + 2, index * 4 + 4), 16);
+    }
+    const decoded = bytes.toString("utf8");
+    if (!Buffer.from(decoded, "utf8").equals(bytes)) {
+      throw new Error("paperclip_runner_file_handoff_descriptor_unverifiable");
+    }
+    return decoded;
+  });
+}
+
 async function openedFilePath(fd: number): Promise<string> {
   if (process.platform === "darwin") {
     const output = await new Promise<Buffer>((resolve, reject) => {
@@ -253,7 +268,7 @@ async function openedFilePath(fd: number): Promise<string> {
           maxBuffer: 16_384,
           timeout: 1_000,
           // lsof escapes non-ASCII names under the C locale, breaking descriptor verification.
-          env: { ...process.env, LC_ALL: "en_US.UTF-8" },
+          env: { LC_ALL: "C" },
         },
         (error, stdout) => {
           if (error) reject(error);
@@ -266,7 +281,7 @@ async function openedFilePath(fd: number): Promise<string> {
           .toString("utf8")
           .split("\0")
           .filter((field) => field.startsWith("n"))
-          .map((field) => field.slice(1))
+          .map((field) => decodeLsofPath(field.slice(1)))
       : [];
     if (paths.length !== 1 || !path.isAbsolute(paths[0]!)) {
       throw new Error("paperclip_runner_file_handoff_descriptor_unverifiable");
