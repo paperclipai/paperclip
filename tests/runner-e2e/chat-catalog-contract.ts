@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { askUserQuestionsPayloadSchema } from "../../packages/shared/src/validators/issue.js";
 import type { AskUserQuestionsInteraction } from "../../packages/shared/src/types/issue.js";
 import type { ChatFlowInput, ChatIssue, ChatRun } from "./chat-flow.js";
 import type { CredentialName } from "./types.js";
@@ -243,6 +245,7 @@ export function chatCatalogHumanHistoryMatches(input: {
 }): boolean {
   const count = input.implementation.setupHumanMessageCount ?? 0;
   return (!input.questionAnswer || chatCatalogAllowsHumanQuestionAnswer(input.implementation.scenarioId ?? ""))
+    && (!input.questionAnswer?.companyEnvironmentNameAnswer || input.implementation.scenarioId === "secrets.configure-company-secret")
     && validChatCatalogHumanCounts(input.implementation)
     && input.boundary.humanCommentIds.length === count
     && input.boundary.humanCommentIds.every((id, index) => input.human[index]?.id === id)
@@ -258,7 +261,7 @@ export function chatCatalogHumanQuestionPolicies(row: { resolverPolicy?: unknown
     .every(policy => policy === "anyone" || policy === "human_only");
 }
 
-export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string }
+export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string; companyEnvironmentNameAnswer?: { questionId: string; payloadHash: string; value: "DEPLOYMENT_API_KEY" } }
 export interface ChatCatalogVerifiedHumanQuestionAnswer extends ChatCatalogExpectedHumanQuestionAnswer { continuationRunId: string; resolvedAt: string }
 export interface ChatCatalogHumanQuestionAudit {
   companyId?: string; entityId?: string; action?: string; actorType?: string; actorId?: string;
@@ -275,13 +278,24 @@ export function verifyChatCatalogHumanQuestionAnswer(input: {
     || row.companyId !== input.companyId || row.issueId !== input.issueId || row.sourceRunId !== b.sourceRunId
     || row.createdByAgentId !== input.agentId || row.createdByUserId || row.addresseeUserId !== b.userId || row.addresseeAgentId
     || row.kind !== "ask_user_questions" || row.status !== "answered" || !chatCatalogHumanQuestionPolicies(row)
-    || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.answers?.length !== 1
-    || row.result.answers.some(answer => !!answer.otherText)) return;
+    || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.answers?.length !== 1) return;
+  const environmentName = b.companyEnvironmentNameAnswer;
+  if (environmentName) {
+    const parsed = askUserQuestionsPayloadSchema.safeParse(row.payload), qs = parsed.success ? parsed.data.questionSet : undefined;
+    const q = qs?.questions[0], answer = row.result.answers[0];
+    if (!qs || qs.questions.length !== 1 || !q || q.id !== environmentName.questionId || q.answerMode !== "text" || !q.required
+      || q.options?.length || q.customAnswer?.enabled || q.initialText !== undefined
+      || q.textValidation?.pattern !== "^[A-Za-z_][A-Za-z0-9_]*$" || q.textValidation.minLength !== 1
+      || !q.textValidation.maxLength || q.textValidation.maxLength > 120 || q.textValidation.maxLength < 18
+      || environmentName.value !== "DEPLOYMENT_API_KEY" || answer?.questionId !== q.id || answer.optionIds.length !== 0
+      || answer.otherText !== environmentName.value || createHash("sha256").update(JSON.stringify(row.payload)).digest("hex") !== environmentName.payloadHash) return;
+  } else if (row.result.answers.some(answer => !!answer.otherText)) return;
   const resolvedAt = Date.parse(String(row.resolvedAt));
   const audits = input.activity.filter(event => event.details?.interactionId === b.interactionId && event.action === "issue.thread_interaction_answered");
   const audit = audits[0];
   if (!Number.isFinite(resolvedAt) || audits.length !== 1 || !audit || audit.companyId !== input.companyId || audit.entityId !== input.issueId
-    || audit.actorType !== "user" || audit.actorId !== b.userId || audit.details?.interactionKind !== "ask_user_questions" || audit.details.interactionStatus !== "answered") return;
+    || audit.actorType !== "user" || audit.actorId !== b.userId || audit.details?.interactionKind !== "ask_user_questions" || audit.details.interactionStatus !== "answered"
+    || (environmentName && audit.details.answeredQuestionCount !== 1)) return;
   const source = input.runs.find(run => run.id === b.sourceRunId);
   const continuations = input.runs.filter(run => run.contextSnapshot?.interactionId === b.interactionId), run = continuations[0];
   if (!source || source.companyId !== input.companyId || source.agentId !== input.agentId || source.runtimeMode !== "native" || source.status !== "succeeded"
