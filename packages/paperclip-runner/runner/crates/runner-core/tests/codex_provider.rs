@@ -7485,7 +7485,7 @@ fn durable_codex_usage_keeps_run_baselines_through_requests_recovery_and_attachm
 }
 
 #[test]
-fn late_codex_usage_requires_durable_reconciliation_before_or_after_handoff() {
+fn late_codex_usage_reports_its_owner_without_blocking_the_session() {
     for mode in ["before", "after", "after-paid", "unsafe"] {
         let handoff_first = mode.starts_with("after");
         let directory = temporary_directory("late-accounting-reconciliation");
@@ -7609,87 +7609,82 @@ fn late_codex_usage_requires_durable_reconciliation_before_or_after_handoff() {
             } else {
                 executor.poll_events().unwrap()
             };
+            // In "after-paid" the successor already counted past this total.
             if events.iter().any(|event| {
                 event.event_type == "usage.reported"
-                    || event.payload["code"] == "codex_usage_accounting_integrity"
+                    || (mode == "after-paid"
+                        && event.payload["code"] == "codex_resume_usage_snapshot")
             }) {
                 break events;
             }
             executor.acknowledge_events(events.len()).unwrap();
         };
-        if handoff_first {
-            assert!(retained
-                .iter()
-                .filter(|event| event.event_type == "usage.reported")
-                .all(|event| event.payload["runDeltaAvailable"] == false));
-            assert!(retained
-                .iter()
-                .any(|event| event.event_type == "usage.reported"
-                    && event.payload["runDeltaAvailable"] == false));
-            assert!(retained
-                .iter()
-                .any(|event| event.event_type == "run.terminal"
-                    && event.payload["runTerminalState"] == "failed"));
-            let required = retained
-                .iter()
-                .find(|event| event.event_type == "usage.reported")
-                .unwrap();
+        assert!(!retained
+            .iter()
+            .any(|event| event.event_type == "run.terminal"
+                || event.payload["code"] == "codex_usage_accounting_integrity"));
+        let reported = retained
+            .iter()
+            .find(|event| event.event_type == "usage.reported");
+        if mode == "after-paid" {
+            assert!(reported.is_none());
+        } else if handoff_first {
+            let reported = reported.unwrap();
+            assert_eq!(reported.payload["runDeltaAvailable"], false);
+            assert_eq!(reported.payload["runDelta"]["inputTokens"], 20);
             assert_eq!(
-                required.payload["reconciliation"]["cumulative"]["inputTokens"],
+                reported.payload["reconciliation"]["cumulative"]["inputTokens"],
                 120
             );
             assert_eq!(
-                required.payload["reconciliation"]["priorOrigin"]["runId"],
+                reported.payload["reconciliation"]["priorOrigin"]["runId"],
                 "run-1"
             );
-            let evidence = retained
-                .iter()
-                .find(|event| event.payload["code"] == "codex_usage_accounting_integrity")
-                .unwrap();
-            assert_eq!(evidence.payload["priorOrigin"]["runId"], "run-1");
-            assert_eq!(evidence.payload["receivedTurnId"], "provider-turn-1");
-            assert_eq!(evidence.payload["cumulative"]["inputTokens"], 120);
         } else {
-            assert_eq!(
-                retained
-                    .iter()
-                    .find(|event| event.event_type == "usage.reported")
-                    .unwrap()
-                    .payload["runDelta"]["inputTokens"],
-                120
-            );
+            assert_eq!(reported.unwrap().payload["runDelta"]["inputTokens"], 120);
         }
         let saved: Value =
             serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
                 .unwrap();
-        assert_eq!(saved["lifecycle"], "reconciliation_required");
-        assert!(!saved["pendingEvents"].as_array().unwrap().is_empty());
-        let error = executor
-            .execute(&command(
-                "blocked-attach",
-                5,
-                "run.attach",
-                json!({"authorizedTools":task_context_tool_set()}),
-            ))
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("requires explicit reconciliation"));
+        if mode == "unsafe" {
+            // An unexpected tail still fails closed during the drain itself.
+            assert_eq!(saved["lifecycle"], "reconciliation_required");
+            let error = executor
+                .execute(&command(
+                    "blocked-attach",
+                    5,
+                    "run.attach",
+                    json!({"authorizedTools":task_context_tool_set()}),
+                ))
+                .unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("requires explicit reconciliation"));
+        } else {
+            if mode == "after-paid" {
+                assert_eq!(saved["lifecycle"], "turn_active");
+                assert!(saved["activeProviderTurnId"].is_string());
+            } else {
+                assert_eq!(saved["lifecycle"], "session_open");
+                executor.acknowledge_events(retained.len()).unwrap();
+                for _ in 0..50 {
+                    let events = poll_and_ack(&mut executor).unwrap();
+                    if events.is_empty() {
+                        break;
+                    }
+                }
+                executor
+                    .execute(&command(
+                        "next-attach",
+                        5,
+                        "run.attach",
+                        json!({"authorizedTools":task_context_tool_set()}),
+                    ))
+                    .expect("late usage must not block the next run");
+            }
+        }
         executor.shutdown().unwrap();
         drop(executor);
-        let mut restored = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
-        let error = restored
-            .execute(&command(
-                "blocked-after-restart",
-                6,
-                "run.attach",
-                json!({"authorizedTools":task_context_tool_set()}),
-            ))
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("requires explicit reconciliation"));
-        restored.shutdown().unwrap();
         fs::remove_dir_all(directory).unwrap();
     }
 }

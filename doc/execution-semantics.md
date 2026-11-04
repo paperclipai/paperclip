@@ -459,6 +459,13 @@ continues automatically when the workspace is available. Internal scheduling
 attempts remain in the run log without conversation cancellation markers,
 cancellation toasts, or manual Retry controls. Users can keep sending instructions.
 
+A remote task workspace stays held by its last writer run until that writer's
+save and sandbox release settle. This hold continues after the writer run ends.
+A new run that finds such a recently ended writer waits for the workspace. It does
+not fail setup. The wait uses the same one-hour holder cutoff as a quiet live
+writer, measured from the time the writer ended. After the cutoff, preparation
+fails with the unfinished-writer error and leaves the held files unchanged.
+
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
 these existing runs immediately. The shared delivery coordinator owns the drain's
@@ -1682,6 +1689,24 @@ Subtree pause and cancel record the authenticated board actor on each run they
 interrupt. A verified native stop must not become an unexplained failure simply
 because it came from a subtree action. The explicit pause hold still prevents
 future execution until Resume, and missing stop proof still blocks continuation.
+
+### Late provider usage
+
+A provider can report more usage after its run's charge was posted. That usage
+already happened, so it never fails a run or blocks a session. Codex usage totals
+are cumulative, so the Runner reports the exact increment above the known total and
+names its owning run when the provider turn proves the owner. A report at or below
+the known total was already counted by the run that saw it, and it adds nothing, so
+the sum across runs always equals the thread total. For a remote session, Core posts the increment to that run as a
+separate cost event and records `cost.late_usage_posted` in the activity log. If
+the owner is not proven, Core charges the session's last finished run, or the
+delivering run if the session has none, and records the attribution as inferred. A late charge can put an agent over budget after later
+work started; budget evaluation runs after each correction. Conflicting evidence,
+such as a lower total or a changed model, stays visible as accounting debt for
+an operator to review. It does not change the charge or stop the session. A local
+session has no durable path for this, so its late usage stays with the run that is
+active when it arrives, or the next run. The total stays exact, but the attribution
+can be off by those tokens.
 
 ### Session settlement after a run
 
