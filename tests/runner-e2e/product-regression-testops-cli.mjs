@@ -52,6 +52,16 @@ export async function verifyProductJob(api, context, env) {
   return { jobId: job.id, launchId: launch.id };
 }
 
+export function validateUploadedProductResults(details, selection, summary) {
+  if (details.length !== selection.cases.length || new Set(details.map(row => row.testCaseId)).size !== selection.cases.length || details.some(row => {
+    const selected = selection.cases.find(value => value.id === row.testCaseId);
+    return !selected || row.fullName !== selected.fullName || row.projectId !== 1 || row.launchId !== selection.launchId
+      || row.jobRun?.id !== Number(selection.jobRunId) || !['passed', 'failed', 'broken'].includes(row.status);
+  })) fail('uploaded_identity_mismatch');
+  const counts = Object.fromEntries(['passed', 'failed', 'broken'].map(status => [status, details.filter(row => row.status === status).length]));
+  if (Object.entries(counts).some(([status, count]) => summary[status] !== count)) fail('uploaded_status_mismatch');
+}
+
 export async function productTestOps(command, argument, env = process.env, exec = execute, fetchImpl = fetch) {
   admitProductTestOps(env);
   if (command === 'select') {
@@ -114,13 +124,7 @@ export async function productTestOps(command, argument, env = process.env, exec 
     await new Promise(resolve => setTimeout(resolve, 2_000));
   }
   const details = await Promise.all(observed.content.map(row => api(`/api/testresult/${row.id}`)));
-  if (new Set(details.map(row => row.testCaseId)).size !== selection.cases.length || details.some(row => {
-    const selected = selection.cases.find(value => value.id === row.testCaseId);
-    return !selected || row.fullName !== selected.fullName || row.projectId !== 1 || row.launchId !== selection.launchId
-      || row.jobRun?.id !== Number(selection.jobRunId) || !['passed', 'failed', 'broken'].includes(row.status?.name);
-  })) fail('uploaded_identity_mismatch');
-  const counts = Object.fromEntries(['passed', 'failed', 'broken'].map(status => [status, details.filter(row => row.status.name === status).length]));
-  if (Object.entries(counts).some(([status, count]) => summary[status] !== count)) fail('uploaded_status_mismatch');
+  validateUploadedProductResults(details, selection, summary);
   return 0;
 }
 

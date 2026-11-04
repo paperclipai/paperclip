@@ -73,7 +73,16 @@ export function projectProductResults(campaign, selection, sourceSha) {
       || !Array.isArray(campaign.results) || !Array.isArray(campaign.expected)
       || JSON.stringify([...campaign.expected].sort()) !== JSON.stringify(selection.cases.map(row => row.executionId).sort()))) fail('report_binding');
   const rows = campaign?.results ?? [];
-  if (rows.length > selection.cases.length * 10 || rows.some(row => !selection.cases.some(value => value.executionId === row.executionId))) fail('unexpected_result');
+  if (rows.length > selection.cases.length || new Set(rows.map(row => row.executionId)).size !== rows.length
+      || rows.some(row => !selection.cases.some(value => value.executionId === row.executionId))) fail('unexpected_result');
+  const accounting = campaign?.accounting;
+  if (accounting && (accounting.version !== 1 || !['retained_attempts', 'selected_results'].includes(accounting.scope)
+      || !Array.isArray(accounting.attempts) || accounting.attempts.length > selection.cases.length * 10
+      || !Number.isSafeInteger(accounting.missingAttempts) || accounting.missingAttempts < 0
+      || !Number.isSafeInteger(accounting.excludedArtifacts) || accounting.excludedArtifacts < 0
+      || accounting.attempts.some(row => !selection.cases.some(value => value.executionId === row.executionId)
+        || !Number.isSafeInteger(row.attempt) || row.attempt < 1 || row.attempt > 10
+        || !['passed', 'failed'].includes(row.status) || !['passed', 'failed', 'not_started'].includes(row.cleanup)))) fail('accounting_invalid');
   const records = [], summaries = [];
   for (const selected of selection.cases) {
     const attempts = rows.filter(row => row.executionId === selected.executionId).sort((a, b) => a.attempt - b.attempt);
@@ -108,6 +117,14 @@ export function projectProductResults(campaign, selection, sourceSha) {
           name: identifier(check.matcher?.path) ? check.matcher.path : identifier(check.matcher?.kind) ? check.matcher.kind : 'assertion',
           passed: check.passed,
         })),
+        retainedAttempts: (accounting?.attempts ?? []).filter(row => row.executionId === selected.executionId).map(row => ({
+          attempt: row.attempt, status: row.status, cleanup: row.cleanup,
+          durationMs: Number.isFinite(row.durationMs) && row.durationMs >= 0 ? row.durationMs : null,
+          startedAt: Number.isFinite(Date.parse(row.startedAt)) ? new Date(row.startedAt).toISOString() : null,
+          finishedAt: Number.isFinite(Date.parse(row.finishedAt)) ? new Date(row.finishedAt).toISOString() : null,
+        })),
+        attemptAccounting: accounting ? { scope: accounting.scope, missingAttempts: accounting.missingAttempts,
+          excludedArtifacts: accounting.excludedArtifacts } : null,
         note: result && !missingArtifact ? 'Original full-stack assertions, attempts and diagnostics remain in the linked workflow report.'
           : 'No bound full-stack result was retained. This case is unverified and cannot pass.',
       };

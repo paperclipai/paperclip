@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { productRegressionCases, selectProductRegression, validateSelection, projectProductResults, workflowUrl } from './product-regression-testops.mjs';
-import { admitProductTestOps, officialProductContext, verifyProductJob } from './product-regression-testops-cli.mjs';
+import { admitProductTestOps, officialProductContext, verifyProductJob, validateUploadedProductResults } from './product-regression-testops-cli.mjs';
 
 const workflowSha = 'a'.repeat(40), targetSha = 'b'.repeat(40);
 const env = {
@@ -88,15 +88,31 @@ test('missing results remain explicit broken cases and cannot improve the denomi
   assert.throws(() => projectProductResults(campaign([{ ...missing, status: 'passed' }]), selection([selected]), targetSha));
 });
 
-test('original functional and infrastructure failures survive, and earlier failed retries remain in the export', () => {
+test('original functional and infrastructure failures survive', () => {
   for (const [failureClass, expected] of [['candidate_failure', 'failed'], ['permanent_infrastructure', 'broken'], ['transient_infrastructure', 'broken']]) {
     const projected = projectProductResults(campaign([result({ status: 'failed', failureClass })]), selection([selected]), targetSha);
     assert.equal(projected.records[0].value.status, expected);
   }
-  const projected = projectProductResults(campaign([result({ status: 'failed', failureClass: 'candidate_failure' }), result({ attempt: 2 })]), selection([selected]), targetSha);
-  assert.deepEqual(projected.records.filter(row => row.file.endsWith('-result.json')).map(row => row.value.status), ['failed', 'passed']);
-  assert.equal(projected.summary.passed, 1);
   assert.throws(() => projectProductResults(campaign([result(), result()]), selection([selected]), targetSha));
+});
+
+test('authoritative normalized accounting preserves earlier failed attempt verdicts beside the selected result', () => {
+  const measured = { ...campaign([result({ attempt: 2 })]), accounting: { version: 1, scope: 'retained_attempts',
+    missingAttempts: 0, excludedArtifacts: 0, attempts: [
+      { id: 'retained-failure', executionId: selected.executionId, attempt: 1, status: 'failed', cleanup: 'passed', durationMs: 1000 },
+      { id: 'selected-success', executionId: selected.executionId, attempt: 2, status: 'passed', cleanup: 'passed', durationMs: 1000 },
+    ] } };
+  const projected = projectProductResults(measured, selection([selected]), targetSha);
+  assert.equal(projected.summary.passed, 1);
+  assert.equal(projected.records.filter(row => row.file.endsWith('-result.json')).length, 1);
+  assert.deepEqual(projected.records[1].value.retainedAttempts.map(row => row.status), ['failed', 'passed']);
+  assert.deepEqual(projected.records[1].value.attemptAccounting, { scope: 'retained_attempts', missingAttempts: 0, excludedArtifacts: 0 });
+  assert.throws(() => projectProductResults({ ...measured, accounting: { ...measured.accounting, attempts: [{ ...measured.accounting.attempts[0], status: 'unknown' }] } }, selection([selected]), targetSha));
+  const openCode = productRegressionCases.find(row => row.id === 54);
+  const model = 'openrouter/deepseek/deepseek-v4.1-flash-1017';
+  const record = result({ executionId: openCode.executionId, suiteId: openCode.suite, caseId: openCode.name, profileId: openCode.profile, model });
+  const openCodeCampaign = { ...campaign([record]), expected: [openCode.executionId] };
+  assert.equal(projectProductResults(openCodeCampaign, selection([openCode]), targetSha).records[1].value.model, model);
 });
 
 test('the transmission projection excludes raw errors, provider IDs, narratives and unexpected fields', () => {
@@ -115,6 +131,14 @@ test('a TestOps job run must belong to this workflow, source launch and GitHub e
   assert.deepEqual(await verifyProductJob(route => values[route], { jobRunId: '456', launchId: 789 }, env), { jobId: 50, launchId: 789 });
   await assert.rejects(verifyProductJob(route => route === '/api/launch/789' ? { id: 789, projectId: 2 } : values[route], { jobRunId: '456', launchId: 789 }, env));
   await assert.rejects(verifyProductJob(route => route === '/api/job/50' ? { ...values[route], url: 'https://github.com/other/repo' } : values[route], { jobRunId: '456', launchId: 789 }, env));
+});
+
+test('server verification accepts real Allure string statuses and rejects wrong verdicts or identities', () => {
+  const rows = [{ testCaseId: selected.id, fullName: selected.fullName, projectId: 1, launchId: 789, jobRun: { id: 456 }, status: 'passed' }];
+  const summary = { passed: 1, failed: 0, broken: 0 };
+  validateUploadedProductResults(rows, selection([selected]), summary);
+  assert.throws(() => validateUploadedProductResults([{ ...rows[0], status: 'failed' }], selection([selected]), summary));
+  assert.throws(() => validateUploadedProductResults([{ ...rows[0], jobRun: { id: 999 } }], selection([selected]), summary));
 });
 
 test('workflow keeps reporting credentials and trusted code outside candidate/provider jobs', async () => {
