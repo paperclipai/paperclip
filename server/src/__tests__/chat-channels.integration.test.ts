@@ -40,6 +40,7 @@ import { createChatRuntime } from "../services/chat-runtime.js";
 import { createChatSdkRuntime } from "../services/chat-sdk-runtime.js";
 import { readFreshWorkspaceReadiness } from "../services/fresh-workspace-continuation.js";
 import { requestTaskRetry, reconcileTaskChatRetryReceipts } from "../services/task-retry.js";
+import * as taskRetryModule from "../services/task-retry.js";
 import { taskInterruptionPresentation } from "../services/task-interruption-presentation.js";
 import { withQueuedCommentIdsInWakePayload } from "../services/issue-queued-comment-queue.js";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
@@ -64389,8 +64390,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     return { ...f, pending, originalDelivery };
   }
 
-  async function busyChatRetryHttpFixture() {
-    const f = await currentGitHubTaskRetryFixture();
+  async function busyChatRetryHttpFixture(withPending = false) {
+    const f = await currentGitHubTaskRetryFixture(withPending);
     const originalPublications = await readChatPublicationsByEndpointId(f.endpoint.id);
     const { issueRoutes } = await import("../routes/issues.js");
     const companyId = f.fixture.companyId, issueId = f.issue.id;
@@ -64473,7 +64474,150 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it.each(["source_edited", "principal_revoked", "stopped", "mixed_publications"] as const)(
+  it.each(["unchanged", "source_edited", "principal_revoked", "unknown_source", "actor_revoked_before"] as const)("retains HTTP Retry under the endpoint authorization row lock: %s", async mode => {
+    const f = await busyChatRetryHttpFixture(true);
+    let release = () => {};
+    let holding: Promise<unknown> | undefined;
+    try {
+      await f.releaseIdentity();
+      const sourceIds = [f.action.id, f.pending!.id];
+      const originalInputs = await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, sourceIds))
+        .orderBy(asc(agentWakeupRequests.id));
+      if (mode === "unknown_source") {
+        const [source] = await readHeartbeatRunsById(f.runId);
+        await db.update(heartbeatRuns).set({ contextSnapshot: { ...source.contextSnapshot, source: "chat:unknown" } })
+          .where(eq(heartbeatRuns.id, f.runId));
+      }
+      if (mode === "actor_revoked_before") await db.update(companyMemberships).set({ status: "suspended", updatedAt: new Date() })
+        .where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "owner-user")));
+      let acquired = () => {};
+      const locked = new Promise<void>(resolve => { acquired = resolve; });
+      const held = new Promise<void>(resolve => { release = resolve; });
+      holding = db.transaction(async tx => {
+        await tx.select({ id: chatEndpoints.id }).from(chatEndpoints).where(and(eq(chatEndpoints.companyId, f.companyId),
+          eq(chatEndpoints.id, f.endpoint.id))).for("no key update");
+        acquired(); await held;
+      });
+      await locked;
+      const response = await request(f.app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
+      if (mode === "unknown_source" || mode === "actor_revoked_before") {
+        expect(response.status, JSON.stringify(response.body)).toBe(mode === "unknown_source" ? 409 : 404);
+        expect(await db.select().from(chatActions).where(and(eq(chatActions.companyId, f.companyId),
+          eq(chatActions.kind, "failed_run_retry")))).toEqual([]);
+        expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, f.companyId),
+          eq(agentWakeupRequests.reason, "task_retry")))).toEqual([]);
+        expect(f.wakeup).not.toHaveBeenCalled();
+        expect(await readChatPublicationsByEndpointId(f.endpoint.id)).toEqual(f.originalPublications);
+        expect(await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, sourceIds))
+          .orderBy(asc(agentWakeupRequests.id))).toEqual(originalInputs);
+        expect((await readHeartbeatRunsByCompanyId(f.companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
+        return;
+      }
+      expect(response.status, JSON.stringify(response.body)).toBe(202);
+      await f.service.processFailedChatRunRetry(response.body.chatActionId);
+      expect((await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId)))[0])
+        .toMatchObject({ status: "issued", payload: { sourceAuthorizationPending: true }, result: { attemptCount: 0 } });
+      expect(f.wakeup).not.toHaveBeenCalled();
+      expect(await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, sourceIds))
+        .orderBy(asc(agentWakeupRequests.id))).toEqual(originalInputs);
+      expect(await readChatPublicationsByEndpointId(f.endpoint.id)).toEqual(f.originalPublications);
+      if (mode === "source_edited") await db.update(issueComments).set({ body: "Changed saved request",
+        updatedAt: new Date(Date.now() + 1) }).where(eq(issueComments.id, String(f.pending!.payload.commentId)));
+      if (mode === "principal_revoked") await db.update(companyMemberships).set({ status: "suspended", updatedAt: new Date() })
+        .where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "owner-user")));
+      release(); await holding;
+      await vi.waitFor(async () => {
+        await f.service.processFailedChatRunRetries();
+        const [action] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+        expect(action.status).toBe(mode === "unchanged" ? "processed" : "failed");
+      }, { timeout: 5_000, interval: 50 });
+      if (mode === "unchanged") {
+        await reconcileTaskChatRetryReceipts(db, { companyId: f.companyId, requestId: response.body.requestId });
+        const [intent] = await readAgentWakeupRequestsById(response.body.requestId);
+        expect((await readHeartbeatRunsById(intent.runId!))[0]).toMatchObject({ status: "queued", retryOfRunId: f.runId,
+          contextSnapshot: { wakeCommentIds: [f.pending!.payload.commentId] } });
+        expect(f.wakeup).toHaveBeenCalledOnce();
+        expect((await readHeartbeatRunsByCompanyId(f.companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
+      } else {
+        expect(f.wakeup).not.toHaveBeenCalled();
+        expect((await readAgentWakeupRequestsById(response.body.requestId))[0]).toMatchObject({ status: "failed", runId: null });
+        expect(await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, sourceIds))
+          .orderBy(asc(agentWakeupRequests.id))).toEqual(originalInputs);
+        expect(await readChatPublicationsByEndpointId(f.endpoint.id)).toEqual(f.originalPublications);
+        expect((await readHeartbeatRunsByCompanyId(f.companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
+      }
+    } finally { release(); await holding; await f.releaseIdentity(); await f.service.shutdown(); }
+  });
+
+  it("keeps a saved HTTP Retry alive through a healthy nine-second identity transaction", async () => {
+    const f = await busyChatRetryHttpFixture();
+    try {
+      const original = (await readHeartbeatRunsById(f.runId))[0];
+      const originalInput = (await readAgentWakeupRequestsById(f.action.id))[0];
+      const response = await request(f.app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
+      expect(response.status, JSON.stringify(response.body)).toBe(202);
+      const started = performance.now();
+      await vi.waitFor(async () => {
+        await f.service.processFailedChatRunRetries();
+        expect(performance.now() - started).toBeGreaterThanOrEqual(9_000);
+      }, { timeout: 12_000, interval: 50 });
+      const [waiting] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+      expect(waiting.status).toBe("issued");
+      expect(waiting.result?.attemptCount).toBe(0);
+      expect(waiting.payload.sourceAuthorizationPending).toBe(true);
+      expect(f.wakeup).not.toHaveBeenCalled();
+      expect(await readChatPublicationsByEndpointId(f.endpoint.id)).toEqual(f.originalPublications);
+      expect((await readAgentWakeupRequestsById(f.action.id))[0]).toEqual(originalInput);
+      expect((await readHeartbeatRunsByCompanyId(f.companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
+      await f.releaseIdentity();
+      await vi.waitFor(async () => {
+        await f.service.processFailedChatRunRetries();
+        await reconcileTaskChatRetryReceipts(db, { companyId: f.companyId, requestId: response.body.requestId });
+        expect((await readAgentWakeupRequestsById(response.body.requestId))[0]?.runId).toBeTruthy();
+      }, { timeout: 5_000, interval: 50 });
+      expect(f.wakeup).toHaveBeenCalledOnce();
+      expect((await readHeartbeatRunsByCompanyId(f.companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
+      expect((await readHeartbeatRunsById(f.runId))[0]).toEqual(original);
+    } finally { await f.releaseIdentity(); await f.service.shutdown(); }
+  }, 30_000);
+
+  it("projects prepared but unsettled task Retry using its actual stale-claim deadline", async () => {
+    const f = await busyChatRetryHttpFixture();
+    let releaseWake = () => {};
+    const heldWake = new Promise<void>(resolve => { releaseWake = resolve; });
+    let processing: ReturnType<typeof f.service.processFailedChatRunRetry> | undefined;
+    try {
+      const response = await request(f.app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
+      expect(response.status, JSON.stringify(response.body)).toBe(202);
+      await f.service.processFailedChatRunRetry(response.body.chatActionId);
+      const [waiting] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+      await f.releaseIdentity();
+      const wake = heartbeatService(db).wakeup;
+      f.wakeup.mockImplementation(async (...args) => { await heldWake; return wake(...args); });
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, Date.parse(String(waiting.result?.retryAt)) - Date.now()) + 1));
+      processing = f.service.processFailedChatRunRetry(response.body.chatActionId);
+      await vi.waitFor(() => expect(f.wakeup).toHaveBeenCalledOnce());
+      const [prepared] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+      expect(prepared.status).toBe("processing");
+      expect(prepared.payload.sourceAuthorizationPending).toBeUndefined();
+      expect((await readAgentWakeupRequestsById(response.body.requestId))[0]?.runId).toBeNull();
+      const deadline = await f.service.nextChatActionAt("failed_run_retry");
+      expect(deadline).not.toBeNull();
+      expect(await taskInterruptionPresentation(db, (await readIssuesById(f.issueId))[0]))
+        .toMatchObject({ state: "retry_scheduled", canRetry: false, nextRetryAt: new Date(deadline!).toISOString() });
+      releaseWake();
+      await processing;
+      await reconcileTaskChatRetryReceipts(db, { companyId: f.companyId, requestId: response.body.requestId });
+      expect((await readAgentWakeupRequestsById(response.body.requestId))[0]?.runId).toBeTruthy();
+      expect(await taskInterruptionPresentation(db, (await readIssuesById(f.issueId))[0]))
+        .toMatchObject({ state: "working", nextRetryAt: null });
+    } finally { releaseWake(); await processing; await f.releaseIdentity(); await f.service.shutdown(); }
+  });
+
+  it.each(["source_edited", "principal_revoked", "stopped", "mixed_publications", "newer_queued_run"] as const)(
     "does not adopt input or deliver a pending identity-contended Retry after %s", async mode => {
       const f = await busyChatRetryHttpFixture();
       try {
@@ -64488,6 +64632,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         if (mode === "principal_revoked") await db.update(companyMemberships).set({ status: "suspended", updatedAt: new Date() })
           .where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, "owner-user")));
         if (mode === "stopped") await heartbeatService(db).cancelInvocationsForAgents([f.fixture.assignedAgentId], "operator_stop");
+        if (mode === "newer_queued_run") {
+          const [source] = await readHeartbeatRunsById(f.runId);
+          await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.fixture.assignedAgentId,
+            issueId: f.issueId, nativeIssueId: f.issueId, runtimeMode: "native", status: "queued",
+            createdAt: new Date(Math.max(Date.now(), source.createdAt.getTime() + 1)),
+            contextSnapshot: { issueId: f.issueId } });
+        }
         if (mode === "mixed_publications") {
           const [comment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: f.issueId,
             authorAgentId: f.fixture.assignedAgentId, createdByRunId: f.runId, body: "Saved failed result" }).returning();
@@ -64498,6 +64649,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           })));
           expectedPublications = await readChatPublicationsByEndpointId(f.endpoint.id);
         }
+        const expectedRunIds = (await readHeartbeatRunsByCompanyId(f.companyId)).map(run => run.id).sort();
         await f.releaseIdentity();
         await vi.waitFor(async () => {
           await f.service.processFailedChatRunRetries();
@@ -64507,15 +64659,153 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(f.wakeup).not.toHaveBeenCalled();
         expect(await readChatPublicationsByEndpointId(f.endpoint.id)).toEqual(expectedPublications);
         expect(await taskInterruptionPresentation(db, (await readIssuesById(f.issueId))[0]))
-          .toMatchObject({ state: "failed", nextRetryAt: null });
+          .toMatchObject({ state: mode === "newer_queued_run" ? "working" : "failed", nextRetryAt: null });
         expect((await readAgentWakeupRequestsById(f.action.id))[0]).toEqual(originalInput);
         expect((await readAgentWakeupRequestsById(response.body.requestId))[0]?.runId).toBeNull();
         if (mode === "stopped") expect((await readAgentWakeupRequestsById(response.body.requestId))[0]?.status).toBe("cancelled");
         expect((await readHeartbeatRunsByCompanyId(f.companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
+        expect((await readHeartbeatRunsByCompanyId(f.companyId)).map(run => run.id).sort()).toEqual(expectedRunIds);
       } finally { await f.releaseIdentity(); await f.service.shutdown(); }
     });
 
-  it("exhausts the existing identity-contended Retry budget without background renewal", async () => {
+  it.each([false, true])("expires the saved identity wait without renewal when the lock is released before expiry processing: %s", async released => {
+    const f = await busyChatRetryHttpFixture();
+    let restarted: ReturnType<typeof createService> | undefined;
+    try {
+      const originalInput = (await readAgentWakeupRequestsById(f.action.id))[0];
+      const body = { observedRunId: f.runId, idempotencyKey: randomUUID() };
+      const response = await request(f.app).post(`/api/issues/${f.issueId}/retry`).send(body);
+      expect(response.status, JSON.stringify(response.body)).toBe(202);
+      const [saved] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+      const deadline = String(saved.result?.identityContentionDeadlineAt);
+      expect(Date.parse(deadline)).toBe(saved.createdAt.getTime() + 60_000);
+      await f.service.processFailedChatRunRetry(saved.id);
+      const [waiting] = await db.select().from(chatActions).where(eq(chatActions.id, saved.id));
+      expect(waiting.result).toMatchObject({ attemptCount: 0, identityContentionCount: 1,
+        identityContentionDeadlineAt: deadline });
+      expect(Date.parse(String(waiting.result?.retryAt))).toBeLessThanOrEqual(Date.parse(deadline));
+      for (const value of [body, { ...body, idempotencyKey: randomUUID() }]) {
+        const duplicate = await request(f.app).post(`/api/issues/${f.issueId}/retry`).send(value);
+        expect(duplicate.status, JSON.stringify(duplicate.body)).toBe(202);
+        expect(duplicate.body.requestId).toBe(response.body.requestId);
+      }
+      expect((await db.select().from(chatActions).where(eq(chatActions.id, saved.id)))[0].result)
+        .toEqual(waiting.result);
+      await f.service.shutdown();
+      restarted = createService(new FakeChatSdkRuntime(), f.providerFetch, { wakeup: heartbeatService(db).wakeup });
+      const expiredDeadline = new Date(Date.now() - 1).toISOString();
+      await db.update(chatActions).set({ result: { ...waiting.result,
+        identityContentionDeadlineAt: expiredDeadline, retryAt: expiredDeadline } }).where(eq(chatActions.id, saved.id));
+      if (released) await f.releaseIdentity();
+      await restarted.service.processFailedChatRunRetries();
+      const [failed] = await db.select().from(chatActions).where(eq(chatActions.id, saved.id));
+      expect(failed).toMatchObject({ status: "failed", payload: { sourceAuthorizationPending: true },
+        result: { code: "failed_chat_retry_contention_expired", attemptCount: 0,
+          identityContentionDeadlineAt: expiredDeadline } });
+      expect(failed.result?.retryAt).toBeUndefined();
+      await f.releaseIdentity();
+      await restarted.service.processFailedChatRunRetries();
+      await restarted.service.processFailedChatRunRetry(saved.id);
+      await heartbeatService(db).resumeTaskRetry(f.companyId, response.body.requestId);
+      expect((await db.select().from(chatActions).where(eq(chatActions.id, saved.id)))[0]).toEqual(failed);
+      expect((await readAgentWakeupRequestsById(response.body.requestId))[0]).toMatchObject({ status: "failed", runId: null });
+      expect((await readAgentWakeupRequestsById(f.action.id))[0]).toEqual(originalInput);
+      expect(restarted.wakeup).not.toHaveBeenCalled();
+      expect(f.wakeup).not.toHaveBeenCalled();
+      expect(await readChatPublicationsByEndpointId(f.endpoint.id)).toEqual(f.originalPublications);
+      expect((await readHeartbeatRunsByCompanyId(f.companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
+    } finally { await f.releaseIdentity(); await restarted?.service.shutdown(); await f.service.shutdown(); }
+  });
+
+  it("persists the first identity wait deadline for an older pending action", async () => {
+    const f = await busyChatRetryHttpFixture();
+    let restarted: ReturnType<typeof createService> | undefined;
+    try {
+      const response = await request(f.app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
+      expect(response.status, JSON.stringify(response.body)).toBe(202);
+      await f.service.processFailedChatRunRetry(response.body.chatActionId);
+      await db.update(chatActions).set({ result: { code: "failed_chat_retry_contended", attemptCount: 0 } })
+        .where(eq(chatActions.id, response.body.chatActionId));
+      const startedAt = Date.now();
+      await f.service.processFailedChatRunRetry(response.body.chatActionId);
+      const [waiting] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+      const deadline = Date.parse(String(waiting.result?.identityContentionDeadlineAt));
+      expect(deadline).toBeGreaterThanOrEqual(startedAt + 60_000);
+      expect(deadline).toBeLessThanOrEqual(Date.now() + 60_000);
+      await f.service.shutdown();
+      restarted = createService(new FakeChatSdkRuntime(), f.providerFetch, { wakeup: heartbeatService(db).wakeup });
+      await new Promise(resolve => setTimeout(resolve, Math.max(0, Date.parse(String(waiting.result?.retryAt)) - Date.now()) + 1));
+      await restarted.service.processFailedChatRunRetries();
+      const [again] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+      expect(again.result).toMatchObject({ attemptCount: 0, identityContentionCount: 2,
+        identityContentionDeadlineAt: waiting.result?.identityContentionDeadlineAt });
+      expect(restarted.wakeup).not.toHaveBeenCalled();
+    } finally { await f.releaseIdentity(); await restarted?.service.shutdown(); await f.service.shutdown(); }
+  });
+
+  it.each(["early_release", "expired_release"] as const)("honors a prepared Retry identity wait after %s", async mode => {
+    const f = await busyChatRetryHttpFixture();
+    let release = () => {};
+    let holding: Promise<unknown> | undefined;
+    try {
+      const originalInput = (await readAgentWakeupRequestsById(f.action.id))[0];
+      const response = await request(f.app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
+      expect(response.status, JSON.stringify(response.body)).toBe(202);
+      await f.service.processFailedChatRunRetry(response.body.chatActionId);
+      const processDue = async () => {
+        const [current] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, Date.parse(String(current.result?.retryAt)) - Date.now()) + 1));
+        await f.service.processFailedChatRunRetry(current.id);
+      };
+      await f.releaseIdentity();
+      f.wakeup.mockRejectedValueOnce(new Error("temporary_wakeup_unavailable"));
+      await processDue();
+      const [prepared] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+      expect(prepared.status).toBe("issued");
+      expect(prepared.payload.sourceAuthorizationPending).toBeUndefined();
+      expect(prepared.result?.identityContentionPending).toBeUndefined();
+      let acquired = () => {};
+      const locked = new Promise<void>(resolve => { acquired = resolve; });
+      const held = new Promise<void>(resolve => { release = resolve; });
+      holding = db.transaction(async tx => {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`chat-identity:${f.companyId}:${f.action.principalId}`}, 0))`);
+        acquired(); await held;
+      });
+      await locked;
+      await processDue();
+      const [waiting] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+      expect(waiting).toMatchObject({ status: "issued", result: { attemptCount: 1, identityContentionCount: 2,
+        identityContentionDeadlineAt: prepared.result?.identityContentionDeadlineAt } });
+      expect(f.wakeup).toHaveBeenCalledOnce();
+      if (mode === "expired_release") {
+        const expired = new Date(Date.now() - 1).toISOString();
+        await db.update(chatActions).set({ result: { ...waiting.result,
+          identityContentionDeadlineAt: expired, retryAt: expired } }).where(eq(chatActions.id, waiting.id));
+      }
+      release(); await holding;
+      await processDue();
+      const [settled] = await db.select().from(chatActions).where(eq(chatActions.id, waiting.id));
+      expect(settled.status).toBe(mode === "expired_release" ? "failed" : "processed");
+      expect(settled.result?.identityContentionPending).toBeUndefined();
+      if (mode === "expired_release") {
+        expect(settled.result).toMatchObject({ code: "failed_chat_retry_contention_expired", attemptCount: 1 });
+        expect(f.wakeup).toHaveBeenCalledOnce();
+        expect((await readAgentWakeupRequestsById(response.body.requestId))[0]).toMatchObject({ status: "failed", runId: null });
+        expect((await readAgentWakeupRequestsById(f.action.id))[0]).toEqual(originalInput);
+        expect(await readChatPublicationsByEndpointId(f.endpoint.id)).toEqual(f.originalPublications);
+        expect((await readHeartbeatRunsByCompanyId(f.companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(0);
+      } else {
+        await reconcileTaskChatRetryReceipts(db, { companyId: f.companyId, requestId: response.body.requestId });
+        expect((await readAgentWakeupRequestsById(response.body.requestId))[0]?.runId).toBeTruthy();
+        expect(f.wakeup).toHaveBeenCalledTimes(2);
+        expect((await readHeartbeatRunsByCompanyId(f.companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
+      }
+    } finally { release(); await holding; await f.releaseIdentity(); await f.service.shutdown(); }
+  });
+
+  it("exhausts the existing delivery Retry budget after identity authorization without background renewal", async () => {
     const f = await busyChatRetryHttpFixture();
     try {
       const originalInput = (await readAgentWakeupRequestsById(f.action.id))[0];
@@ -64523,6 +64813,9 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         .send({ observedRunId: f.runId, idempotencyKey: randomUUID() });
       expect(response.status, JSON.stringify(response.body)).toBe(202);
       await f.service.processFailedChatRunRetry(response.body.chatActionId);
+      const [contended] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
+      await f.releaseIdentity();
+      f.wakeup.mockRejectedValue(new Error("temporary_wakeup_unavailable"));
       for (let attempt = 0; attempt < 8; attempt++) {
         const [current] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
         if (current.status === "failed") break;
@@ -64532,14 +64825,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await f.service.processFailedChatRunRetries();
       }
       const [failed] = await db.select().from(chatActions).where(eq(chatActions.id, response.body.chatActionId));
-      expect(failed).toMatchObject({ status: "failed", result: { attemptCount: 8 } });
+      expect(failed).toMatchObject({ status: "failed", result: { attemptCount: 8, identityContentionCount: 1,
+        identityContentionDeadlineAt: contended.result?.identityContentionDeadlineAt } });
+      expect(failed.payload.sourceAuthorizationPending).toBeUndefined();
+      expect(f.wakeup).toHaveBeenCalledTimes(8);
       await f.service.processFailedChatRunRetries();
       await f.service.processFailedChatRunRetry(failed.id);
       await heartbeatService(db).resumeTaskRetry(f.companyId, response.body.requestId);
       expect((await db.select().from(chatActions).where(eq(chatActions.id, failed.id)))[0]).toEqual(failed);
       expect((await readAgentWakeupRequestsById(response.body.requestId))[0]).toMatchObject({ status: "failed", runId: null });
       expect((await readAgentWakeupRequestsById(f.action.id))[0]).toEqual(originalInput);
-      expect(f.wakeup).not.toHaveBeenCalled();
+      expect(f.wakeup).toHaveBeenCalledTimes(8);
       expect(await readChatPublicationsByEndpointId(f.endpoint.id)).toEqual(f.originalPublications);
     } finally { await f.releaseIdentity(); await f.service.shutdown(); }
   }, 20_000);
@@ -65542,7 +65838,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it.each([
-    ...(["real_budget_ingress", "legacy_budget_ingress", "legacy_prior_response", "legacy_execution", "legacy_execution_log", "legacy_execution_lease", "legacy_execution_profile", "legacy_execution_event", "legacy_execution_controller", "legacy_execution_intent", "legacy_no_prior", "legacy_prior_late", "legacy_prior_unprocessed", "legacy_prior_delivery_unprocessed", "legacy_prior_numeric_app", "legacy_response_conflict", "legacy_prior_wrong_app", "legacy_prior_wrong_agent", "legacy_prior_unlinked", "legacy_prior_retargeted", "legacy_explicit_null", "legacy_explicit_empty", "legacy_explicit_malformed", "legacy_explicit_mismatch", "legacy_current_app_changed", "source_app_changed", "source_destination_changed", "accepted", "multiple_saved", "real_queue", "committed_succeeded", "committed_consumed", "committed_failure", "committed_failed_publication", "committed_unknown_publication", "committed_pending_publication", "committed_mixed_publication", "committed_consumed_publication", "committed_succeeded_publication", "committed_delayed_cleanup", "committed_board", "committed_board_existing", "committed_board_existing_coalesced", "committed_board_existing_identity_contended", "committed_board_existing_source_edited", "committed_board_existing_board_edited", "committed_board_existing_controller", "committed_board_existing_allocation", "committed_board_existing_receipt", "committed_board_existing_delivered", "committed_board_existing_source_owner", "committed_board_existing_source_delivered", "committed_unknown_cleanup", "committed_live_controller", "unreconciled", "source_edited", "source_claimed", "malformed_previous", "endpoint_paused", "principal_revoked", "still_budget_blocked"] as const)
+    ...(["real_budget_ingress", "legacy_budget_ingress", "legacy_prior_response", "legacy_execution", "legacy_execution_log", "legacy_execution_lease", "legacy_execution_profile", "legacy_execution_event", "legacy_execution_controller", "legacy_execution_intent", "legacy_no_prior", "legacy_prior_late", "legacy_prior_unprocessed", "legacy_prior_delivery_unprocessed", "legacy_prior_numeric_app", "legacy_response_conflict", "legacy_prior_wrong_app", "legacy_prior_wrong_agent", "legacy_prior_unlinked", "legacy_prior_retargeted", "legacy_explicit_null", "legacy_explicit_empty", "legacy_explicit_malformed", "legacy_explicit_mismatch", "legacy_current_app_changed", "source_app_changed", "source_destination_changed", "accepted", "multiple_saved", "real_queue", "committed_succeeded", "committed_consumed", "committed_failure", "committed_failed_publication", "committed_unknown_publication", "committed_pending_publication", "committed_mixed_publication", "committed_consumed_publication", "committed_succeeded_publication", "committed_delayed_cleanup", "committed_board", "committed_board_existing", "committed_board_existing_coalesced", "committed_board_existing_identity_contended", "committed_board_existing_identity_expired", "committed_board_existing_source_edited", "committed_board_existing_board_edited", "committed_board_existing_controller", "committed_board_existing_allocation", "committed_board_existing_receipt", "committed_board_existing_delivered", "committed_board_existing_source_owner", "committed_board_existing_source_delivered", "committed_unknown_cleanup", "committed_live_controller", "unreconciled", "source_edited", "source_claimed", "malformed_previous", "endpoint_paused", "principal_revoked", "still_budget_blocked"] as const)
       .map(mode => ({ provider: "github" as const, mode })),
   ])("retries the newer saved $provider request instead of the failed request after a budget hold: $mode", async ({ provider, mode }) => {
     const queuedBoard = mode === "committed_board" || mode.startsWith("committed_board_existing");
@@ -66090,7 +66386,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                       .orderBy(asc(agentWakeupRequests.id))).toEqual(before);
                   } finally { unsubscribes.forEach(unsubscribe => unsubscribe()); }
                 }
-                if (mode !== "committed_board_existing" && mode !== "committed_board_existing_coalesced" && mode !== "committed_board_existing_identity_contended") {
+                if (mode !== "committed_board_existing" && mode !== "committed_board_existing_coalesced" && mode !== "committed_board_existing_identity_contended" && mode !== "committed_board_existing_identity_expired") {
                   await expect(requestTaskRetry(nextInput)).rejects.toMatchObject({
                     details: { code: "chat_failed_run_retry_not_authorized" },
                   });
@@ -66108,7 +66404,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                   idempotencyKey: nextInput.idempotencyKey, observedRunId: nextInput.observedRunId,
                 }).expect(202);
                 const retryWithIdentityContention = async () => {
-                  if (mode !== "committed_board_existing_identity_contended") return retryHttp();
+                  if (mode !== "committed_board_existing_identity_contended" && mode !== "committed_board_existing_identity_expired") return retryHttp();
                   let release = () => {};
                   const held = new Promise<void>(resolve => { release = resolve; });
                   let acquired = () => {};
@@ -66120,6 +66416,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                   try {
                     await locked;
                     const response = await retryHttp();
+                    if (mode === "committed_board_existing_identity_expired")
+                      await context.service.processFailedChatRunRetry(response.body.chatActionId);
                     expect(await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, inputIds))
                       .orderBy(asc(agentWakeupRequests.id))).toEqual(before);
                     return response;
@@ -66127,6 +66425,43 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                 };
                 const next = (await retryWithIdentityContention()).body;
                 expect(next).toMatchObject({ accepted: true });
+                if (mode === "committed_board_existing_identity_expired") {
+                  const [pending] = await db.select().from(chatActions).where(eq(chatActions.id, next.chatActionId!));
+                  expect(pending.payload).toMatchObject({ sourceAuthorizationPending: true, restoreUnstartedInput: true });
+                  const deadline = Date.now() + 5_000;
+                  await db.update(chatActions).set({ result: { ...pending.result,
+                    identityContentionDeadlineAt: new Date(deadline).toISOString(), retryAt: new Date(0).toISOString() } })
+                    .where(eq(chatActions.id, pending.id));
+                  const realPermission = taskRetryModule.taskRetryMutationAllowed;
+                  const permission = vi.spyOn(taskRetryModule, "taskRetryMutationAllowed").mockImplementation(async (database, input) => {
+                    const allowed = await realPermission(database, input);
+                    if (input.companyId === companyId) {
+                      expect(await database.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
+                        eq(activityLog.runId, failed.id), eq(activityLog.action, "issue.retry_inputs_restored")))).toHaveLength(1);
+                      await new Promise(resolve => setTimeout(resolve, Math.max(0, deadline - Date.now()) + 1));
+                    }
+                    return allowed;
+                  });
+                  const publications = await readChatPublicationsByEndpointId(context.endpoint.id);
+                  const runIds = (await readHeartbeatRunsByCompanyId(companyId)).map(run => run.id).sort();
+                  context.wakeup.mockClear();
+                  try {
+                    await context.service.processFailedChatRunRetry(pending.id);
+                    expect(permission).toHaveBeenCalled();
+                    expect((await db.select().from(chatActions).where(eq(chatActions.id, pending.id)))[0])
+                      .toMatchObject({ status: "failed", payload: { sourceAuthorizationPending: true },
+                        result: { code: "failed_chat_retry_contention_expired" } });
+                    expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
+                      eq(activityLog.runId, failed.id), eq(activityLog.action, "issue.retry_inputs_restored")))).toEqual([]);
+                    expect(await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, inputIds))
+                      .orderBy(asc(agentWakeupRequests.id))).toEqual(before);
+                    expect(context.wakeup).not.toHaveBeenCalled();
+                    expect(await readChatPublicationsByEndpointId(context.endpoint.id)).toEqual(publications);
+                    expect((await readAgentWakeupRequestsById(next.requestId!))[0]).toMatchObject({ status: "failed", runId: null });
+                    expect((await readHeartbeatRunsByCompanyId(companyId)).map(run => run.id).sort()).toEqual(runIds);
+                  } finally { permission.mockRestore(); }
+                  return;
+                }
                 expect((await retryHttp()).body.requestId).toBe(next.requestId);
                 if (mode === "committed_board_existing_identity_contended") await vi.waitFor(async () => {
                   await context.service.processFailedChatRunRetries();

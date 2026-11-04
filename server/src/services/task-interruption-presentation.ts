@@ -198,7 +198,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
         sql`${chatActions.payload}->>'issueId' = ${wakeIssue}`,
         sql`${chatActions.payload}->>'agentId' = ${agentWakeupRequests.agentId}::text`,
         sql`${chatActions.payload}->>'failedRunId' = ${agentWakeupRequests.payload}#>>'{taskRetry,sourceRunId}'`,
-        sql`${chatActions.payload}->'sourceAuthorizationPending' = 'true'::jsonb`))
+        inArray(chatActions.status, ["issued", "processing", "failed", "cancelled"])))
       .where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
         eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user")))
       .orderBy(wakeIssue, isRetryWait, desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id)),
