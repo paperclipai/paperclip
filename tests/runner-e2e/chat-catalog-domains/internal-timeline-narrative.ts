@@ -22,14 +22,18 @@ export function truthfulTimelineAccount(input: {
   const actorAction = `${humanActor}(?:\\s+(?:then|later|now|personally|explicitly|actually|had|has|have|also)){0,3}\\s+${assignment}`;
   const passiveAction = `\\b(?:was|got|had been|has been)\\s+${assignment}`;
   const handoffToRepairWorker = new RegExp(`${actorAction}${withinClause}{0,60}${target}|${passiveAction}${withinClause}{0,60}${target}${withinClause}{0,40}\\bby\\s+(?:(?:the|a|an)\\s+)?${humanActor}`, "i");
+  const passiveHandoffToRepairWorker = new RegExp(`${passiveAction}${withinClause}{0,60}${target}`, "gi");
   const differentNamedPerson = (text: string) => {
     const namedRole = /^\s*(?:Then\s+)?([A-Z][\p{L}'-]+(?:\s+[A-Z][\p{L}'-]+)*)\s*,?\s*(?:the\s+)?(?:human|person|user|operator)\b/u.exec(text);
     return !!namedRole && !["The", "A", "An", input.personName].some(name => name?.toLowerCase() === namedRole[1]!.toLowerCase())
       || /\b(?:another|different|other)\s+(?:human|person|user|operator)\b/i.test(text);
   };
-  const humanHandoffMatches = (text: string) => {
+  const handoffMatches = (text: string) => {
     if (differentNamedPerson(text) || /\b(?:not|never|no)\b[^.!?]{0,50}\b(?:reassign|assign|hand|handoff)/i.test(text)) return [];
-    return [...text.matchAll(new RegExp(handoffToRepairWorker.source, "gi"))].filter(match => {
+    const actorUnspecified = [...text.matchAll(passiveHandoffToRepairWorker)].filter(match =>
+      !/\bby\b/i.test(text.slice(match.index + match[0].length))
+      && !/\b(?:automatically|autonomously|self-assigned)\b/i.test(text));
+    return [...text.matchAll(new RegExp(handoffToRepairWorker.source, "gi")), ...actorUnspecified].filter(match => {
       // An explicit other person's role must not become the current human just
       // because earlier milestones share this sentence.
       if (!/^(?:human|person|user|operator|board)\b/i.test(match[0])) return true;
@@ -48,14 +52,14 @@ export function truthfulTimelineAccount(input: {
     const resolvedPronouns = new Set<number>();
     const headingPrefix = heading?.[0] ?? "";
     const unwrapped = headingPrefix + raw.slice(headingPrefix.length).replace(/\n(?![ \t]*(?:[-+*]\s+|\d+[.)]\s+|#{1,6} +|\*\*))/g, " ");
-    const text = unwrapped.replace(/[*`]/g, "")
+    const text = unwrapped.replace(/^[ \t]*(?:[-+*]\s+|\d+[.)]\s+)/gm, "").replace(/[*`]/g, "")
       .replace(/^[ \t]*(?:(?:[-+] |\d+[.)] )\s*)?\d{1,2}:\d{2}(?::\d{2})?(?:[ \t]+(?:AM|PM))?(?:[ \t]*[—–:-][ \t]*|[ \t]+)/gim, "")
       .replace(/<([a-z][a-z0-9]*)(?:\s+[^<>]*|\s*\/?)>/gi, "$1 ").replace(/<\/[a-z][a-z0-9]*\s*>/gi, "")
       .replace(/(^|\n|[.!?]\s+)(he|she|they)\b/gi, (match, lead, _pronoun, at, paragraph) => {
         if (!owner || !heading) return match;
         const before = paragraph.slice(heading[0].replace(/[*`]/g, "").length, at).trim();
         const previous = before.match(/[^.!?\n]+[.!?]?$/)?.[0]?.trim() ?? "";
-        const directHandoff = owner === repairWorker && humanHandoffMatches(previous)
+        const directHandoff = owner === repairWorker && handoffMatches(previous)
           .some(match => !namesOtherActor(previous.replace(match[0], ""), owner));
         const sameSubject = (new RegExp(`^${escape(owner)}\\b`, "i").test(previous)
           || resolvedPronouns.has(paragraph.lastIndexOf(previous, at))) && !namesOtherActor(previous, owner);
@@ -71,7 +75,7 @@ export function truthfulTimelineAccount(input: {
   // Search milestone clauses, not the first occurrence of a worker or outcome.
   // A summary or heading may mention the repair before the ordered account.
   const clauses = [...body.matchAll(new RegExp(`${withinClause}+(?:[!?]|\\.(?=\\s|$)|(?=\\n|$))`, "g"))]
-    .map(match => ({ text: match[0], at: match.index, owner: paragraphs.find(row => row.start <= match.index && row.end > match.index)?.owner }));
+    .map(match => { const paragraph = paragraphs.find(row => row.start <= match.index && row.end > match.index); return { text: match[0], at: match.index, owner: paragraph?.owner, paragraphStart: paragraph?.start }; });
   // A command noun can have ordinary modifiers, but never absorb a new event,
   // actor, negation or clause boundary while connecting this pause to failure.
   const commandBoundaries = [
@@ -89,7 +93,7 @@ export function truthfulTimelineAccount(input: {
   const failures = clauses.flatMap(({ text, at, owner }) => (mentions(text, firstWorker) || owner === firstWorker && commandIsSubject.test(text) && !namesOtherActor(text.replace(commandIsSubject, ""), firstWorker))
     && new RegExp(`\\b${commandSubject}\\b`, "i").test(text)
     ? [...text.matchAll(failureOutcome)].map(match => ({ at: at + match.index, end: at + match.index + match[0].length, clauseAt: at })) : []);
-  const handoffs = clauses.flatMap(({ text, at }) => humanHandoffMatches(text).map(match => ({ at: at + match.index })));
+  const handoffs = clauses.flatMap(({ text, at }) => handoffMatches(text).map(match => ({ at: at + match.index })));
   const repairGap = "(?:\\s+|\\s*[,:—–-]\\s*)";
   const repairModifier = "(?:then|later|now|personally|explicitly|actually|had|has|have|also|who|successfully|finally|subsequently|after\\s+the\\s+handoff)";
   const repairVerb = [
@@ -114,10 +118,11 @@ export function truthfulTimelineAccount(input: {
   // Only an immediately adjacent, complete command result can finish this
   // repair account. No intervening sentence or earlier/unrelated result joins.
   const adjacentVerification = new RegExp(`^\\s*(?:(?:the|a|an)\\s+|${escape(repairWorker)}['’]s\\s+)?${commandSubject}\\s+${successModifiers}(?:${repairSuccess.source})(?:\\s+with\\s+exit(?:\\s+(?:code|status))?\\s*[:=]?\\s*0)?\\s*[.!]?\\s*$`, "i");
+  const contextualCommandLead = new RegExp(`^\\s*(?:(?:the|a|an)\\s+)?${commandSubject}(?:[ \\t]+${commandModifier}){0,5}\\s+${successModifiers}$`, "i");
   const repairObjectTail = new RegExp(`^(?:[ \\t]+${commandModifier}){0,6}\\s*[.!]?\\s*$`, "i");
   const passiveRepairSubject = new RegExp(`^\\s*(?:${commandModifier}[ \\t]+){1,6}$`, "i");
   const deniedRepairObject = /^\s*(?:[a-z]+ly\s+){0,2}(?:(?:no|none|neither|nothing)\b|zero(?=\s|[.!?]|$))/i;
-  const repairs = clauses.flatMap(({ text, at }, clauseIndex) => [...text.matchAll(repairAction)].filter(match => {
+  const repairs = clauses.flatMap(({ text, at, owner, paragraphStart }, clauseIndex) => [...text.matchAll(repairAction)].filter(match => {
     const end = match.index + match[0].length;
     const laterSuccess = [...text.slice(end).matchAll(new RegExp(repairSuccess.source, "gi"))].some(success => {
       const outcomeAt = end + success.index;
@@ -131,9 +136,17 @@ export function truthfulTimelineAccount(input: {
     const passiveRepair = /^\b(?:was|got|had been|has been)\b/i.test(match[0]);
     const assertedRepair = /^\s*(?:(?:then|later|finally)\s+)?$/i.test(lead)
       || passiveRepair && passiveRepairSubject.test(lead);
+    const nextClause = clauses[clauseIndex + 1];
+    const contextualOutcome = next && repairSuccess.exec(next);
+    const contextualResult = owner === repairWorker && nextClause?.owner === repairWorker
+      && paragraphStart === nextClause.paragraphStart && !!contextualOutcome
+      && contextualCommandLead.test(next.slice(0, contextualOutcome.index))
+      && successIsOwned(next, contextualOutcome.index)
+      && !new RegExp(failureOutcome.source, "i").test(next)
+      && !namesOtherActor(text + " " + next, repairWorker) && !mentions(text + " " + next, firstWorker);
     if (next && assertedRepair && !deniedRepairObject.test(passiveRepair ? lead : text.slice(end))
-      && repairObjectTail.test(text.slice(end))
-      && !text.trimEnd().endsWith("?") && adjacentVerification.test(next)
+      && (repairObjectTail.test(text.slice(end)) || contextualResult)
+      && !text.trimEnd().endsWith("?") && !next.trimEnd().endsWith("?") && (adjacentVerification.test(next) || contextualResult)
       && !/\b(?:if|unless|whether|before|earlier|previous(?:ly)?|already|unrelated|different|other)\b/i.test(text + next)) return true;
     // An earlier success word counts only with the bounded causal relationship
     // "the check passed after [this worker's repair]", never by itself.

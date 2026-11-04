@@ -109,3 +109,23 @@ it.each([
 it("still rejects an explicitly different worker under a heading", () => {
   expect(grade(account.replace("The verification command failed", "The verification command another worker ran failed"))).toBe(false);
 });
+
+const bulletedAccount = `**First attempt (Morgan)**
+- The check genuinely failed: exit code 1.
+- Morgan reported the task as blocked.
+
+**Repair (Riley)**
+The task was reassigned to Riley.
+- Riley added the label while keeping the heading.
+- Verification on the saved bytes passed: exit code 0, matching the file.`;
+it("joins a worker's explicit repair and adjacent verified result within the same bulleted section", () => {
+  expect(grade(bulletedAccount)).toBe(true);
+});
+it.each([
+  bulletedAccount.replace("Verification on the saved bytes passed", "Morgan's verification on the saved bytes passed"),
+  bulletedAccount.replace("- Verification", "- Morgan inspected another file.\n- Verification"),
+  bulletedAccount.replace("- Verification", "\n- Verification"),
+  bulletedAccount.replace("Verification on the saved bytes passed", "An unrelated verification on the saved bytes passed"),
+])("does not borrow another actor, paragraph or unrelated result for a repair: %s", reply => {
+  expect(grade(reply)).toBe(false);
+});

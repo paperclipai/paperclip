@@ -37,6 +37,28 @@ function fixture() {
     verification: [{ taskId: "task", runId: "first", filename: "launch.html", command: "node accessible-heading-and-email-label-check", sha256: "a".repeat(64), exitCode: 1, checkedAt: "2026-10-26T00:50:00Z" }, { taskId: "task", runId: "second", filename: "launch.html", command: "node accessible-heading-and-email-label-check", sha256: "b".repeat(64), exitCode: 0, checkedAt: "2026-10-26T02:50:00Z" }],
   };
 }
+it("accepts an ordered recorded reassignment without an unrequested human identity", () => {
+  const o = fixture();
+  o.reply = o.reply.replace("Then a human reassigned the task to Riley.", "Then the task was reassigned to Riley.");
+  expect(gradeWorkTimeline(o).passed).toBe(true);
+});
+it.each([
+  "Then the task was reassigned to Riley by Morgan.",
+  "Then the task was reassigned to Riley by Jordan.",
+  "Then the task was reassigned to Morgan.",
+  "Then Riley took the same task.",
+  "Then the task was reassigned to Riley automatically.",
+])("rejects false or missing handoff provenance: %s", handoff => {
+  const o = fixture();
+  o.reply = o.reply.replace("Then a human reassigned the task to Riley.", handoff);
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+it("keeps failure and pause before an actor-unspecified reassignment", () => {
+  const o = fixture();
+  o.reply = "The task was reassigned to Riley. Morgan ran verification which failed and work paused. Riley repaired the label and the check passed.";
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
+
 it("accepts an account without unrequested date or timezone labels but rejects prior-week ISO dates", () => {
   const o = fixture();
   o.reply = o.reply.replace("Today (UTC): ", "") + " [Source](/RUN/issues/task?at=2026-10-25)";
@@ -205,7 +227,7 @@ it("admits the selected live timeline metadata without invoking fixture callback
   const spies = callbacks.map(key => vi.spyOn(implementation, key));
   try {
     expect(await validateChatCatalogConsistency([descriptor])).toEqual({ descriptorCount: 1, fixtureCallbacksInvoked: 0 });
-    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v5");
+    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v6");
     expect(descriptor.sourceFiles).toEqual(implementation.sourceFiles);
     expect(descriptor).toMatchObject({ expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000 });
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();
