@@ -8,6 +8,7 @@ import { createDb, authUsers, companyMemberships, connectionGrants, executionWor
 import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { ghFetch } from "../services/github-fetch.js";
 import { projectRoutes } from "../routes/projects.js";
+import { createGitHubWorkspaceDeliveryResolver } from "../services/github-workspace-delivery.js";
 import { projectGitAuthorizationService } from "../services/project-git-authorization.js";
 import { errorHandler } from "../middleware/index.js";
 import { githubCredentialsFixture } from "./helpers/github-credentials-fixture.js";
@@ -49,6 +50,60 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
       const request = { companyId: input.companyId, projectId: project.id, workspaceId: workspace.id };
       return { input, selected, project, workspace, service, request, scope: { projectId: project.id } };
     }
+    it("uses project consent for private delivery checks and rechecks revocation without a task", async () => {
+      const f = await projectAuthorizationFixture();
+      await f.service.set(f.input.companyId, f.project.id, "A", f.selected.id);
+      await db.update(projects).set({ archivedAt: new Date() }).where(eq(projects.id, f.project.id));
+      await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.input.runId));
+      const head = "a".repeat(40);
+      const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer test-token-A");
+        return Response.json({ ref: "refs/heads/main", object: { type: "commit", sha: head } });
+      });
+      const resolve = createGitHubWorkspaceDeliveryResolver(db, { fetch });
+      const input = { companyId: f.input.companyId, repoUrl: f.workspace.repoUrl, headSha: head,
+        destinationRef: "refs/heads/main", projectSource: { projectId: f.project.id, workspaceId: f.workspace.id } };
+      expect(await resolve(input)).toMatchObject({ status: "delivered" });
+      expect(fetch).toHaveBeenCalledTimes(1);
+      await db.update(connectionGrants).set({ status: "revoked" }).where(eq(connectionGrants.id, f.selected.id));
+      expect(await resolve(input)).toMatchObject({ status: "unknown" });
+      expect(fetch).toHaveBeenCalledTimes(1);
+    });
+    it.each(["missing consent", "different repository", "different company", "different project"])("retains delivery with %s without exporting credentials", async fault => {
+      const f = await projectAuthorizationFixture();
+      if (fault !== "missing consent") await f.service.set(f.input.companyId, f.project.id, "A", f.selected.id);
+      vault.resolveUserSecretValue.mockClear();
+      const fetch = vi.fn<typeof globalThis.fetch>();
+      const credentialProvider = vi.fn(async () => ({ token: "legacy-token", source: "company_secret" as const, secretName: "GITHUB_TOKEN" }));
+      const resolve = createGitHubWorkspaceDeliveryResolver(db, { fetch, credentialProvider });
+      expect(await resolve({ companyId: fault === "different company" ? randomUUID() : f.input.companyId,
+        repoUrl: fault === "different repository" ? "https://github.com/other/repo" : f.workspace.repoUrl,
+        headSha: "a".repeat(40), destinationRef: "refs/heads/main",
+        projectSource: { projectId: fault === "different project" ? randomUUID() : f.project.id, workspaceId: f.workspace.id },
+      })).toMatchObject({ status: "unknown" });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(credentialProvider).not.toHaveBeenCalled();
+      expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
+    });
+    it("checks public project delivery anonymously without acquiring a different credential", async () => {
+      const f = await projectAuthorizationFixture();
+      const [saved] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, f.selected.id));
+      await db.update(connectionGrants).set({ providerTenant: { ...saved.providerTenant, github: { ...saved.providerTenant!.github!,
+        repositories: [{ id: "1", fullName: "fixture/project", installationId: "1", private: false }] } } }).where(eq(connectionGrants.id, f.selected.id));
+      const head = "a".repeat(40);
+      const fetch = vi.fn<typeof globalThis.fetch>(async (_url, init) => {
+        expect(new Headers(init?.headers).has("authorization")).toBe(false);
+        return Response.json({ ref: "refs/heads/main", object: { type: "commit", sha: head } });
+      });
+      const credentialProvider = vi.fn(async () => ({ token: "legacy-token", source: "company_secret" as const, secretName: "GITHUB_TOKEN" }));
+      vault.resolveUserSecretValue.mockClear();
+      const resolve = createGitHubWorkspaceDeliveryResolver(db, { fetch, credentialProvider });
+      expect(await resolve({ companyId: f.input.companyId, repoUrl: f.workspace.repoUrl, headSha: head,
+        destinationRef: "refs/heads/main", projectSource: { projectId: f.project.id, workspaceId: f.workspace.id },
+      })).toMatchObject({ status: "delivered" });
+      expect(credentialProvider).not.toHaveBeenCalled();
+      expect(vault.resolveUserSecretValue).not.toHaveBeenCalled();
+    });
     it("uses explicit project consent without a task and journals consent changes", async () => {
       const f = await projectAuthorizationFixture();
       await expect(f.service.resolve(f.request, f.scope)).rejects.toThrow("Authorize this project");

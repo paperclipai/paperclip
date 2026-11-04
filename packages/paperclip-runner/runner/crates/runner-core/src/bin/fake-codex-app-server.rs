@@ -333,20 +333,60 @@ fn finish_turn_with_send(
             "text": "Codex completed the fake turn."
         }}
     }))?;
+    let cumulative_accounting = std::env::args().any(|arg| arg == "--cumulative-accounting-usage");
+    let warm_tail_accounting = std::env::args().any(|arg| arg == "--warm-tail-accounting");
+    let total_input = if warm_tail_accounting {
+        if state.next_turn == 1 {
+            100
+        } else {
+            150
+        }
+    } else if cumulative_accounting {
+        100 + state.next_turn * 100
+    } else {
+        12
+    };
+    let total_output = if warm_tail_accounting {
+        if state.next_turn == 1 {
+            10
+        } else {
+            15
+        }
+    } else if cumulative_accounting {
+        20 + state.next_turn * 10
+    } else {
+        3
+    };
+    if cumulative_accounting {
+        send(
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":state.thread_id,"turnId":turn_id,
+            "tokenUsage":{"total":{"inputTokens":total_input-40,"outputTokens":total_output-4},"last":{"inputTokens":10,"outputTokens":1}}}}),
+        )?;
+    }
     send(json!({
         "method": "thread/tokenUsage/updated",
         "params": {
             "threadId": state.thread_id,
             "tokenUsage": {
-                "total": {"inputTokens": 12, "outputTokens": 3},
-                "last": {"inputTokens": 12, "outputTokens": 3, "requests": 1}
+                "total": {"inputTokens": total_input, "outputTokens": total_output},
+                "last": {"inputTokens": if cumulative_accounting {40} else {12}, "outputTokens": if cumulative_accounting {4} else {3}, "requests": 1}
             }
         }
     }))?;
+    if state.next_turn > 1 && std::env::args().any(|arg| arg == "--hold-second-accounting-terminal")
+    {
+        return Ok(());
+    }
     send(json!({
         "method": "turn/completed",
         "params": {"turn": {"id": turn_id, "status": status}}
     }))?;
+    if std::env::args().any(|arg| arg == "--accounting-tail-after-terminal") {
+        send(
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":state.thread_id,"turnId":turn_id,
+            "tokenUsage":{"total":{"inputTokens":120,"outputTokens":12},"last":{"inputTokens":20,"outputTokens":2}}}}),
+        )?;
+    }
     Ok(())
 }
 
@@ -709,6 +749,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let repair_assigned_discovery = args
         .iter()
         .any(|value| value == "--repair-assigned-discovery");
+    let repair_first_task_confirmation = args
+        .iter()
+        .any(|value| value == "--repair-first-task-confirmation");
     let require_completion_contract = args
         .iter()
         .any(|value| value == "--require-completion-contract");
@@ -726,8 +769,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .map(|value| value.parse::<usize>())
         .transpose()?
         .unwrap_or(64);
-    if !(1..=4096).contains(&held_output_count) {
-        return Err("--held-output-count must be between 1 and 4096".into());
+    if !(1..=8192).contains(&held_output_count) {
+        return Err("--held-output-count must be between 1 and 8192".into());
     }
     let exit_after_turn_start = args.iter().any(|value| value == "--exit-after-turn-start");
     let exit_after_turn_completion = args
@@ -1007,6 +1050,53 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             continue;
         }
+        if repair_first_task_confirmation
+            && message.get("method").is_none()
+            && message.get("id") == Some(&json!("first-task-confirmation-request"))
+        {
+            let text = message
+                .pointer("/result/contentItems/0/text")
+                .and_then(Value::as_str)
+                .ok_or("confirmation response omitted content")?;
+            let result: Value = serde_json::from_str(text)?;
+            if message.pointer("/result/success") == Some(&json!(false)) {
+                let hint = result
+                    .pointer("/error/message")
+                    .and_then(Value::as_str)
+                    .ok_or("confirmation rejection omitted guidance")?;
+                if !hint.contains("payload.version")
+                    || !hint.contains("payload.supersedeOnUserComment")
+                    || !hint.contains("Keep approval")
+                    || !hint.contains("confirmation or checkbox")
+                    || hint.contains("payload.questionSet")
+                    || !hint.contains("/additionalProperties")
+                    || hint.contains("PRIVATE_CONFIRMATION_SCOPE")
+                {
+                    return Err("confirmation rejection lacks metadata placement and approval-preserving guidance".into());
+                }
+                log_call(call_log.as_deref(), "first-task:repair-guidance")?;
+                send(
+                    json!({"id":"first-task-confirmation-request", "method":"item/tool/call", "params":{
+                        "threadId":state.thread_id, "turnId":state.active_turn_id,
+                        "callId":"first-task-confirmation", "tool":"request_human_input",
+                        "arguments": {"idempotencyKey":"first-task-proposal-confirmation", "interactionKind":"confirmation",
+                            "title":"Approve child task", "prompt":"Approve PRIVATE_CONFIRMATION_SCOPE?",
+                            "continuationPolicy":"wake_assignee", "payload":{"version":1,"supersedeOnUserComment":false,
+                                "acceptLabel":"Approve","rejectLabel":"Revise","rejectRequiresReason":true}}
+                    }}),
+                )?;
+            } else {
+                if message.pointer("/result/success") != Some(&json!(true))
+                    || result.pointer("/interaction/kind") != Some(&json!("request_confirmation"))
+                    || result.pointer("/interaction/status") != Some(&json!("pending"))
+                {
+                    return Err("corrected proposal did not return a pending confirmation".into());
+                }
+                log_call(call_log.as_deref(), "first-task:confirmation-pending")?;
+                finish_turn(&state_path, &mut state, "completed")?;
+            }
+            continue;
+        }
         if message.get("method").is_none()
             && message.get("id") == Some(&json!("terminal-result-request"))
         {
@@ -1022,7 +1112,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             finish_turn(
                 &state_path,
                 &mut state,
-                if success { "completed" } else { "failed" },
+                if success || complete_after_tool_call {
+                    "completed"
+                } else {
+                    "failed"
+                },
             )?;
             continue;
         }
@@ -1125,6 +1219,55 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }))?;
             }
             "initialized" => {}
+            "paperclip/ackTerminal" => {
+                let path = argument(&args, "--cursor-cloud-terminal-file")
+                    .ok_or("terminal fixture missing")?;
+                let delivery: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                if message.pointer("/params/turnId") != delivery.get("turnId")
+                    || message.pointer("/params/receiptId") != delivery.get("receiptId")
+                {
+                    return Err("terminal receipt changed".into());
+                }
+                if Path::new(&format!("{path}.hold-ack")).exists() {
+                    send(
+                        json!({"id": id, "error": {"code": -32000, "message": "controlled lost receipt"}}),
+                    )?;
+                } else {
+                    fs::remove_file(path)?;
+                    send(
+                        json!({"id": id, "result": {"acknowledged": true, "turnId": delivery["turnId"], "receiptId": delivery["receiptId"]}}),
+                    )?;
+                }
+            }
+            "paperclip/shutdown" if args.iter().any(|arg| arg == "--cursor-cloud-shutdown") => {
+                let unconfirmed =
+                    argument(&args, "--cursor-cloud-shutdown-control").is_some_and(|path| {
+                        fs::read_to_string(path).is_ok_and(|value| value.trim() == "unconfirmed")
+                    });
+                let params = &message["params"];
+                let has_remote_run = state.next_turn > 0;
+                if !unconfirmed {
+                    state.active_turn_id = None;
+                    save_state(&state_path, &state)?;
+                }
+                let mut receipt = json!({
+                    "threadId": params["threadId"], "turnId": params["turnId"],
+                    "remoteStopped": !unconfirmed,
+                    "remoteAgentId": if has_remote_run { json!("cursor-agent-fixture") } else { Value::Null },
+                    "remoteRunId": if has_remote_run { json!("cursor-run-fixture") } else { Value::Null },
+                    "status": if unconfirmed { "RUNNING" } else { "CANCELLED" },
+                });
+                if let Some(path) = argument(&args, "--cursor-cloud-terminal-file") {
+                    if !unconfirmed && Path::new(&path).exists() {
+                        let delivery: Value = serde_json::from_slice(&fs::read(path)?)?;
+                        receipt["remoteRunId"] = delivery["providerRunId"].clone();
+                        receipt["status"] = delivery["status"].clone();
+                        receipt["cursorCloudTerminalDelivery"] = delivery;
+                    }
+                }
+                send(json!({"id":id,"result":receipt}))?;
+            }
+
             "thread/start" => {
                 if let Some(delay) = argument(&args, "--thread-start-delay-ms") {
                     thread::sleep(Duration::from_millis(delay.parse()?));
@@ -1231,7 +1374,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     for _ in 0..2 {
                         send(json!({"method": "thread/tokenUsage/updated", "params": {
                             "threadId": state.thread_id, "turnId": format!("provider-turn-{}", state.next_turn),
-                            "tokenUsage": {"total": {"inputTokens": 100, "outputTokens": 20}, "last": {"inputTokens": 50, "outputTokens": 10}}
+                            "tokenUsage": {"total": {"inputTokens": if args.iter().any(|arg| arg == "--cumulative-accounting-usage") {100 + state.next_turn * 100} else {100}, "outputTokens": if args.iter().any(|arg| arg == "--cumulative-accounting-usage") {20 + state.next_turn * 10} else {20}}, "last": {"inputTokens": 50, "outputTokens": 10}}
                         }}))?;
                     }
                 }
@@ -1278,6 +1421,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 send(json!({"id": id, "result": {"data": turns, "nextCursor": null}}))?;
             }
             "thread/read" => {
+                if let Some(path) = argument(&args, "--cursor-cloud-terminal-file") {
+                    if Path::new(&path).exists() {
+                        let first_read = format!("{path}.first-read");
+                        let finishes_between_reads = args
+                            .iter()
+                            .any(|arg| arg == "--cursor-cloud-finish-between-reads")
+                            && !Path::new(&first_read).exists();
+                        if finishes_between_reads {
+                            fs::write(first_read, b"observed active")?;
+                        } else {
+                            let delivery: Value = serde_json::from_slice(&fs::read(&path)?)?;
+                            state.active_turn_id = None;
+                            save_state(&state_path, &state)?;
+                            send(
+                                json!({"id": id, "result": {"thread": {"id": state.thread_id, "turns": []}, "cursorCloudTerminalDelivery": delivery}}),
+                            )?;
+                            continue;
+                        }
+                    }
+                }
                 if descendant_notifications
                     && message.pointer("/params/threadId").and_then(Value::as_str)
                         == Some("descendant-1")
@@ -1756,6 +1919,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "arguments":{"query":{"PRIVATE_QUERY":"private search"}}
                         }}),
                     )?;
+                } else if repair_first_task_confirmation {
+                    send(
+                        json!({"id":"first-task-confirmation-request", "method":"item/tool/call", "params":{
+                            "threadId":state.thread_id, "turnId":provider_turn_id,
+                            "callId":"first-task-confirmation", "tool":"request_human_input",
+                            "arguments": {"idempotencyKey":"first-task-proposal-confirmation", "interactionKind":"confirmation",
+                                "title":"Approve child task", "prompt":"Approve PRIVATE_CONFIRMATION_SCOPE?",
+                                "continuationPolicy":"wake_assignee", "payload":{"acceptLabel":"Approve","rejectLabel":"Revise","rejectRequiresReason":true},
+                                "version":1,"supersedeOnUserComment":false}
+                        }}),
+                    )?;
                 } else if let Some(result) = &terminal_result {
                     send(json!({
                         "id": "terminal-result-request", "method": "item/tool/call",
@@ -1791,6 +1965,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     finish_turn(&state_path, &mut state, "completed")?;
                 } else if emit_split_event_burst {
                     send_split_event_burst(&state, split_event_prefix_count)?;
+                } else if hold_turn && args.iter().any(|arg| arg == "--held-final-message") {
+                    send(json!({"method": "item/completed", "params": {
+                        "threadId": state.thread_id, "turnId": provider_turn_id,
+                        "item": {"id": "final", "type": "agentMessage", "text": "Durable Cloud final"}
+                    }}))?;
                 } else if hold_turn && args.iter().any(|arg| arg == "--held-output") {
                     if let Some(release_file) = argument(&args, "--held-output-release-file") {
                         let deadline = Instant::now() + Duration::from_secs(60);
@@ -1824,6 +2003,43 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }))?;
                     }
+                    if state.next_turn == 1 {
+                        if let Some(gate) =
+                            argument(&args, "--late-accounting-tail-gate").map(PathBuf::from)
+                        {
+                            let thread_id = state.thread_id.clone();
+                            let turn_id = provider_turn_id.clone();
+                            let unsafe_tail =
+                                args.iter().any(|arg| arg == "--unsafe-after-late-usage");
+                            let duplicate_burst = args
+                                .iter()
+                                .any(|arg| arg == "--late-accounting-duplicate-burst");
+                            thread::spawn(move || {
+                                let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                                while !gate.is_file() && std::time::Instant::now() < deadline {
+                                    thread::sleep(Duration::from_millis(1));
+                                }
+                                if gate.is_file() {
+                                    if duplicate_burst {
+                                        for _ in 0..33 {
+                                            let _ = send(
+                                                json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread_id,"turnId":turn_id,"tokenUsage":{"total":{"inputTokens":100,"outputTokens":10}}}}),
+                                            );
+                                        }
+                                    }
+                                    let _ = send(
+                                        json!({"method":"thread/tokenUsage/updated","params":{"threadId":thread_id,"turnId":turn_id,
+                                    "tokenUsage":{"total":{"inputTokens":120,"outputTokens":12},"last":{"inputTokens":20,"outputTokens":2}}}}),
+                                    );
+                                    if unsafe_tail {
+                                        let _ = send(
+                                            json!({"method":"turn/started","params":{"threadId":thread_id,"turn":{"id":"unsafe-next-turn"}}}),
+                                        );
+                                    }
+                                }
+                            });
+                        }
+                    }
                     if emit_post_completion_warning {
                         send(json!({
                             "method": "warning",
@@ -1835,7 +2051,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             json!({
                                 "method": "thread/tokenUsage/updated",
                                 "params": {"threadId": state.thread_id, "turnId": provider_turn_id,
-                                    "tokenUsage": {"total": {"inputTokens": 120, "outputTokens": 12},
+                                    "tokenUsage": {"total": {"inputTokens": if args.iter().any(|arg| arg == "--warm-tail-accounting") && state.next_turn > 1 {150} else {120}, "outputTokens": if args.iter().any(|arg| arg == "--warm-tail-accounting") && state.next_turn > 1 {15} else {12}},
                                         "last": {"inputTokens": 20, "outputTokens": 2}}}
                             }),
                             json!({

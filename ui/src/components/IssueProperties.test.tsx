@@ -2367,15 +2367,18 @@ describe("IssueProperties", () => {
     act(() => root.unmount());
   });
 
-  it("discovers Copilot overrides with the assignee connection and environment", async () => {
-    const binding = { provider: "github", method: "api_key", mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" };
-    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: "Copilot", role: "engineer", status: "active",
+  it.each([
+    { name: "Copilot", acpxAgent: "copilot", provider: "github", method: "api_key", model: "gpt-5.6-luna", label: "Copilot Luna" },
+    { name: "Antigravity", acpxAgent: "antigravity", provider: "google", method: "subscription", model: "gemini-exact", label: "Personal Gemini" },
+  ] as const)("discovers $name overrides with the assignee connection and environment", async ({ acpxAgent, provider, method, model, label }) => {
+    const binding = { provider, method, mode: "shared", connectionId: "11111111-1111-4111-8111-111111111111", grantId: "33333333-3333-4333-8333-333333333333" };
+    mockAgentsApi.list.mockResolvedValue([{ id: "agent-1", name: acpxAgent, role: "engineer", status: "active",
       adapterType: "paperclip_runner", defaultEnvironmentId: "daytona-1",
-      adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" },
+      adapterConfig: { provider: "acpx", acpxAgent, model },
       runtimeConfig: { aiConnection: binding } }]);
-    mockAgentsApi.adapterModels.mockResolvedValue([{ id: "gpt-5.6-luna", label: "Copilot Luna" }]);
+    mockAgentsApi.adapterModels.mockResolvedValue([{ id: model, label }]);
     const { root, queryClient } = renderPropertiesWithQueryClient(container, {
-      issue: createIssue({ assigneeAgentId: "agent-1", assigneeAdapterOverrides: { adapterConfig: { model: "gpt-5.6-luna" } } }),
+      issue: createIssue({ assigneeAgentId: "agent-1", assigneeAdapterOverrides: { adapterConfig: { model } } }),
       childIssues: [], onUpdate: vi.fn(), inline: true,
     });
     await flush();
@@ -2385,7 +2388,7 @@ describe("IssueProperties", () => {
     expect(modelTrigger).toBeDefined();
     await act(async () => modelTrigger!.click());
     await waitForAssertion(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "paperclip_runner", {
-      environmentId: "daytona-1", provider: "acpx", acpxAgent: "copilot", agentId: "agent-1", aiConnection: binding,
+      environmentId: "daytona-1", provider: "acpx", acpxAgent, agentId: "agent-1", aiConnection: binding,
     }));
     await act(async () => { await queryClient.invalidateQueries({ type: "active" }, { cancelRefetch: false }); });
     expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(1);

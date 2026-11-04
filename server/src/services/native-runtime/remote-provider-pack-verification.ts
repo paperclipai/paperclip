@@ -15,6 +15,7 @@ export type ProviderPackIdentity = {
   digest: string;
   payload: {
     compatibility?: { opencode: number; acpx: number };
+    contractDigest?: string;
     acpxProfileDigests?: Record<string, string>;
     providers?: Record<string, unknown>;
     candidateProviders?: Record<string, unknown>;
@@ -30,6 +31,9 @@ export type PackProvider = { kind: "opencode" } | { kind: "acpx"; agent: string 
 
 /** Admission of a build-qualified, OS-protected installation. Source revisions,
  * dependency pins and unrelated provider changes are provenance, not an interface.
+ * The interface is the hand-maintained compatibility revision plus the pack's
+ * computed contract digest; a pack without a digest predates that check and
+ * is replaced rather than reused.
  * The metadata comes from the trusted runner, never from a provider tool result.
  */
 function compatibleInstallation<T extends ProviderPackIdentity>(
@@ -44,7 +48,9 @@ function compatibleInstallation<T extends ProviderPackIdentity>(
     || actual.digest !== `sha256:${createHash("sha256").update(canonicalProviderPackJson(payload)).digest("hex")}`
     || canonicalProviderPackJson(payload.target) !== canonicalProviderPackJson(expected.payload.target)
     || (requireExactIdentity ? actual.digest !== expected.digest
-      : !Number.isSafeInteger(contract) || contract! < 1 || payload.compatibility?.[provider.kind] !== contract)
+      : !Number.isSafeInteger(contract) || contract! < 1 || payload.compatibility?.[provider.kind] !== contract
+        || !/^sha256:[a-f0-9]{64}$/.test(expected.payload.contractDigest ?? "")
+        || payload.contractDigest !== expected.payload.contractDigest)
     || typeof payload.pins?.opencode !== "string") {
     throw new Error("runner_remote_provider_artifact_incompatible: installed provider pack interface or installation is incompatible");
   }

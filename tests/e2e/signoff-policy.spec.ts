@@ -589,12 +589,12 @@ test("a deferred signoff wake ignores cancelled history from an earlier stage", 
 test.describe("Signoff execution policy", () => {
   let ctx: TestContext;
 
-  test.beforeAll(async () => {
+  test.beforeEach(async () => {
     const boardRequest = await pwRequest.newContext({ baseURL: BASE_URL });
     ctx = await setupCompany(boardRequest);
   });
 
-  test.afterAll(async () => {
+  test.afterEach(async () => {
     if (!ctx) return;
     const board = ctx.boardRequest;
 

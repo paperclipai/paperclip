@@ -1773,6 +1773,7 @@ mod tests {
             runner_digest: "sha256:test".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 64 * 1024,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
@@ -2647,6 +2648,8 @@ mod tests {
         struct EventExecutor {
             session_open_calls: Arc<AtomicUsize>,
             shutdown_calls: Arc<AtomicUsize>,
+            #[cfg(unix)]
+            activity_context_path: std::path::PathBuf,
         }
 
         impl super::super::CommandExecutor for EventExecutor {
@@ -2655,6 +2658,14 @@ mod tests {
                 command: &Command,
             ) -> Result<super::super::CommandExecution, DurableRunnerError> {
                 if command.command_type == "session.open" {
+                    #[cfg(unix)]
+                    {
+                        let endpoint: Value = serde_json::from_slice(
+                            &std::fs::read(&self.activity_context_path).unwrap(),
+                        )
+                        .unwrap();
+                        assert!(!endpoint["context"].as_str().unwrap().is_empty(), "welcome commands must see active activity context before starting provider work");
+                    }
                     let calls = self.session_open_calls.fetch_add(1, Ordering::SeqCst) + 1;
                     return Ok(super::super::CommandExecution {
                         result: json!({"status": "completed", "calls": calls}),
@@ -2827,6 +2838,8 @@ mod tests {
             EventExecutor {
                 session_open_calls: session_open_calls.clone(),
                 shutdown_calls: shutdown_calls.clone(),
+                #[cfg(unix)]
+                activity_context_path: crate::runtime_notifications::context_path(&directory),
             },
         )
         .unwrap();

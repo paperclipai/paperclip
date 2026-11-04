@@ -65,8 +65,14 @@ export function aiBindingForAuthRecovery(
   const missingProvider = failure ? missingPersonalAiCredentialProvider(failure) : undefined;
   for (const provider of AI_PROVIDERS) {
     if (missingProvider && missingProvider !== provider) continue;
-    const binding = { provider, method: AI_CONNECTION_CAPABILITIES[provider].methods.subscription ? "subscription" : "api_key", mode: "responsible_user" } as const;
-    if (isAiConnectionCompatible(binding, adapterType, config.model, config.provider, config.acpxAgent)) return binding;
+    for (const method of ["subscription", "api_key"] as const) {
+      if (!AI_CONNECTION_CAPABILITIES[provider].methods[method]) continue;
+      // Recovery presents a concrete sign-in method. A responsible-user binding
+      // normally follows any compatible default, so check exact metadata first.
+      if (isAiConnectionCompatible({ provider, method }, adapterType, config.model, config.provider, config.acpxAgent)) {
+        return { provider, method, mode: "responsible_user" };
+      }
+    }
   }
   return undefined;
 }

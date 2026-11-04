@@ -1,10 +1,10 @@
-import type { Query, QueryClient } from "@tanstack/react-query";
+import type { Query, QueryClient, QueryFilters } from "@tanstack/react-query";
 
-export function createLiveQueryRecovery(client: QueryClient, isCurrent: () => boolean) {
+export function createLiveQueryRecovery(client: QueryClient, isCurrent: () => boolean, filters: QueryFilters = {}) {
   const waiting = new WeakSet<Query>();
   return () => {
     if (!isCurrent()) return;
-    for (const query of client.getQueryCache().findAll({ type: "active" })) {
+    for (const query of client.getQueryCache().findAll({ ...filters, type: "active" })) {
       if (waiting.has(query)) continue;
       const refresh = () => client.invalidateQueries({ queryKey: query.queryKey, exact: true }, { cancelRefetch: false });
       if (query.state.fetchStatus !== "fetching") {

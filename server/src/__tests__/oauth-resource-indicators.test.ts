@@ -190,12 +190,6 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
 
   describe("Authorization URL construction", () => {
     function createMockAuthStart(authorizationUrl: string, resource: string | null, scopes: string[] = ["https://mcp.dev.azure.com/.default"]) {
-      const mockDb = {
-        delete: () => ({ where: () => Promise.resolve() }),
-        insert: () => ({ values: () => Promise.resolve() }),
-        update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
-      } as unknown as Db;
-
       const connectionRow = {
         id: "conn-fixture",
         companyId: "company-fixture",
@@ -203,7 +197,18 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
         status: "draft" as const,
         credentialPolicy: "per_user" as const,
         config: { transport: "http", sourceTemplateKey: null, url: resource },
+        transportConfig: {},
+        credentialSecretRefs: [],
       };
+
+      const mockDb = {
+        delete: () => ({ where: () => Promise.resolve() }),
+        insert: () => ({ values: () => Promise.resolve() }),
+        transaction: async (run: (tx: unknown) => Promise<unknown>) => run({
+          select: () => ({ from: () => ({ where: () => ({ for: async () => [connectionRow] }) }) }),
+          update: () => ({ set: () => ({ where: () => Promise.resolve() }) }),
+        }),
+      } as unknown as Db;
 
       return createOAuthAuthorizationStart(mockDb, {
         now: () => new Date(),

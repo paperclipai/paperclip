@@ -1,0 +1,70 @@
+{
+  "schema": "paperclip.antigravity_distribution.v1",
+  "version": "1.4.3",
+  "platforms": {
+    "darwin-arm64": {
+      "url": "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.3-darwin-arm64.zip",
+      "archiveSha256": "c57db0a9b8b712daa9c3c17cdb990a61842ea569f279e8bd79d7aa85a303b20b",
+      "closureSha256": "044792d793e203bc8b4524a418f1816c4d34db67bb41fa4bae5947a050c49b4a",
+      "provisioning": "verified-closure",
+      "executable": "agy_acp_server.par",
+      "args": [],
+      "entries": [
+        {
+          "path": "agy_acp_server.par",
+          "sha256": "c5231c13eeb6a9fd554567e5ce6411d95fe8c2fe952302bbd52d7b81a4e63f15",
+          "size": 280804016,
+          "executable": true
+        },
+        {
+          "path": "localharness_external",
+          "sha256": "9e8fdc6e20a3262ca0a771850ca4a8414ca839a642cc964ec5c547cc2c33c200",
+          "size": 122957936,
+          "executable": true
+        }
+      ],
+      "vendorEntries": [
+        {
+          "path": "agy_acp_server.par",
+          "sha256": "1251927db3e21f3d693fd042d6890d82f65eb00587e97f1f3d8f0d798e7f0954",
+          "size": 282446160,
+          "executable": true
+        },
+        {
+          "path": "localharness_external",
+          "sha256": "9e8fdc6e20a3262ca0a771850ca4a8414ca839a642cc964ec5c547cc2c33c200",
+          "size": 122957936,
+          "executable": true
+        }
+      ],
+      "vendorClosureSha256": "023881d9f3b460adb22634c625725657358679e08c085156cc6de35e5f87b3c2",
+      "patchVersion": "1.4.3-paperclip.5",
+      "admissionSourceSha256": "d660759a424ddc27ac382ce4512e85ca4eb87e5ca446ea111e093d3ab257f7da"
+    },
+    "darwin-x64": {
+      "url": "https://dl.google.com/agy-extensions/releases/macos/agy-acp-server-1.4.3-darwin-x86_64.zip",
+      "archiveSha256": "9392dbbdad7f0663dbfb5a0bf641297b0cf80d2ee9cd2d49a616bbbc7378731d",
+      "provisioning": "inventory-only",
+      "executable": "agy_acp_server.par",
+      "args": []
+    },
+    "linux-x64": {
+      "url": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.3-linux-x86_64.zip",
+      "archiveSha256": "0634ce5306ba92c932945455e7a83fda78e2d99c33fa8aa6ee0566206a382714",
+      "provisioning": "inventory-only",
+      "executable": "agy_acp_server.par",
+      "args": [
+        "--uid="
+      ]
+    },
+    "linux-arm64": {
+      "url": "https://dl.google.com/agy-extensions/releases/linux/agy-acp-server-1.4.3-linux-arm64.zip",
+      "archiveSha256": "05c153443b0b1175151c760eeddea538950bc9843e317d54786a1f03670182bc",
+      "provisioning": "inventory-only",
+      "executable": "agy_acp_server.par",
+      "args": [
+        "--uid="
+      ]
+    }
+  }
+}

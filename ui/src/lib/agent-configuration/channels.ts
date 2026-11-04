@@ -23,8 +23,8 @@ export function planChannelChanges(snapshot: AgentConfigurationSnapshot, documen
           !equal(value, previous.settings[key as keyof typeof previous.settings])));
         add(`Channel settings: ${row.id}`, () => chatEndpointsApi.update(row.id, changes));
       }
-      if (!equal(previous.resources, row.resources)) {
-        const resources = previous.resources.map(resource => row.resources.find(value => value.id === resource.id) ?? { ...resource, enabled: false });
+      const resources = previous.resources.map(resource => row.resources.find(value => value.id === resource.id) ?? { ...resource, enabled: false });
+      if (!equal(previous.resources, resources)) {
         add(`Channel resources: ${row.id}`, () => chatEndpointsApi.updateResources(row.id, resources));
       }
     }

@@ -1,12 +1,22 @@
 import { randomUUID } from "node:crypto";
+import { setTimeout as realDelay } from "node:timers/promises";
 import type { Db } from "@paperclipai/db";
 import {
-  activityLog, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
+  activityLog, applyPendingMigrations, reconcileDatabaseWork, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
   completionContracts, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
+import { heartbeatService } from "../heartbeat.js";
+import { instanceSettingsService } from "../instance-settings.js";
+import { companyService } from "../companies.js";
+import { issueService } from "../issues.js";
+import { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { registerScheduledWork } from "../scheduled-work.js";
+import { idleWorkSnapshot, readTaskDrain, startTaskDrain, stopTaskDrain } from "../task-admission.js";
 import { conflict } from "../../errors.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatRunState } from "./run-state.js";
@@ -45,6 +55,7 @@ function callbacks(db: Db) {
     getSchedulingSuppression: vi.fn(async () => ({ suppressed: false })),
     getWorktreeExecutionCutoff: vi.fn<HeartbeatSchedulingDependencies["getWorktreeExecutionCutoff"]>(async () => null),
     parseHeartbeatPolicy: vi.fn<HeartbeatSchedulingDependencies["parseHeartbeatPolicy"]>(() => timerPolicy),
+    nextTimerHeartbeatAt: vi.fn<HeartbeatSchedulingDependencies["nextTimerHeartbeatAt"]>(async agent => new Date(agent.lastHeartbeatAt ?? agent.createdAt).getTime() + 60_000),
     claimDueTimerHeartbeat: vi.fn<HeartbeatSchedulingDependencies["claimDueTimerHeartbeat"]>(async () => ({ wasFirstHeartbeat: true })),
   } satisfies HeartbeatSchedulingDependencies;
 }
@@ -63,7 +74,7 @@ describe("heartbeat scheduling module boundary", () => {
     for (const callback of Object.values(deps)) if (vi.isMockFunction(callback)) expect(callback).not.toHaveBeenCalled();
   });
 
-  it.each(["tickTimers", "recoverActiveSessionGoals", "recoverPendingSessionGoalActions"] as const)(
+  it.each(["tickTimers", "tickAgentTimers", "tickIssueMonitors", "recoverActiveSessionGoals", "recoverPendingSessionGoalActions"] as const)(
     "honors suppression before %s reads or admits work", async (operation) => {
       const database = guardedDatabase();
       const deps = callbacks(database.db);
@@ -77,25 +88,30 @@ describe("heartbeat scheduling module boundary", () => {
   );
 });
 
-const postgres = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HEARTBEAT_SCHEDULING_TEST_DATABASE_URL");
+const postgres = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-scheduling-module");
-    db = createDb(database.connectionString);
+    if (external) await applyPendingMigrations(external);
+    else database = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-scheduling-module");
+
+
+    db = createDb(external ?? database!.connectionString, { idleTimeoutSeconds: 0, maxLifetimeSeconds: 0, connectTimeoutSeconds: 0 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => {
     await db?.$client.end();
     await database?.cleanup();
   });
   beforeEach(async () => {
+    await reconcileDatabaseWork(db, DELIVERY_QUEUES.issueMonitors);
     await db.execute(sql`truncate table companies restart identity cascade`);
   });
 
-  async function fixture() {
+  async function fixture(adapterType = "paperclip_runner") {
     const [company] = await db.insert(companies).values({ name: "Scheduling", issuePrefix: "SCH" }).returning();
-    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Scheduled agent", adapterType: "paperclip_runner", createdAt: dueAt }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Scheduled agent", adapterType, createdAt: dueAt }).returning();
     const [issue] = await db.insert(issues).values({
       companyId: company.id, title: "Check deployment", status: "in_progress", assigneeAgentId: agent.id,
       monitorNextCheckAt: dueAt, monitorAttemptCount: 0, createdAt: dueAt,
@@ -319,7 +335,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
-  it.each(["scheduled", "manual"] as const)("applies expired monitor recovery after workspace settlement without another turn (%s)", async (dispatch) => {
+  it.each(["scheduled", "manual", "worker"] as const)("applies expired monitor recovery after workspace settlement without another turn (%s)", async (dispatch) => {
     const f = await fixture();
     const start = new Date();
     const nextCheckAt = new Date(start.getTime() + 60_000).toISOString();
@@ -364,17 +380,31 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     const expiredAt = new Date(start.getTime() + 180_000);
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(expiredAt);
+    let monitorWorker: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
     try {
       await expect(nativeCompletionFeedback(db, run!.id, result)).rejects.toThrow("persisted, eligible monitor");
       expect(await f.scheduler.tickTimers(expiredAt)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
       await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now: expiredAt })).rejects.toThrow("waiting for the previous run to settle");
+      if (dispatch === "worker") {
+        monitorWorker = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => { throw error; } });
+        const workers = registerScheduledWork(monitorWorker, { retryMs: 1000, canRun: () => true,
+          tickAgentTimers: async () => {}, nextAgentTimerAt: async () => null, tickRoutines: async () => {}, nextRoutineRunAt: async () => null,
+          tickIssueMonitors: signal => f.scheduler.tickIssueMonitors(new Date(), () => !signal.aborted),
+          nextIssueMonitorAt: () => f.scheduler.nextIssueMonitorAt(),
+        });
+        await Promise.all([workers.monitors.ready, workers.routines.ready, workers.timers.ready]);
+        expect(monitorWorker.nextWakeAt()).toBeNull();
+      }
       await finalizeNativeRun({ db, runId: run!.id, workspaceFinalizeStatus: "succeeded" });
       expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run!.id)))[0])
         .toMatchObject({ phase: "committed", failureCode: null });
       expect(await readIssue(f.issue.id)).toMatchObject({ executionRunId: null, checkoutRunId: null,
         monitorNextCheckAt: new Date(nextCheckAt) });
       if (dispatch === "manual") await f.scheduler.triggerIssueMonitor(f.issue.id, { now: expiredAt });
-      else await f.scheduler.tickTimers(expiredAt);
+      else if (dispatch === "worker") {
+        vi.setSystemTime(new Date(expiredAt.getTime() + 2000));
+        await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull(), { timeout: 5000 });
+      } else await f.scheduler.tickTimers(expiredAt);
       expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: null,
         executionState: { monitor: { status: "cleared", clearReason: "timeout_exceeded" } } });
       expect(await db.select().from(issueComments).where(eq(issueComments.issueId, f.issue.id))).toHaveLength(1);
@@ -384,6 +414,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
       expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
       expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, saved!.id)))[0]!.resultJson).toEqual(saved!.resultJson);
     } finally {
+      await monitorWorker?.stop();
       vi.useRealTimers();
     }
   });
@@ -399,7 +430,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
   });
 
   it("combines timer and monitor counts and passes the timer claim receipt to admission", async () => {
-    const f = await fixture();
+    const f = await fixture("process");
     enableTimer(f.deps);
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 2, enqueued: 2, skipped: 0 });
     expect(f.deps.claimDueTimerHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ id: f.agent.id }), now, 60);
@@ -409,7 +440,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
   });
 
   it("does not enqueue a timer after losing its due claim", async () => {
-    const f = await fixture();
+    const f = await fixture("process");
     enableTimer(f.deps);
     await db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issue.id));
     f.deps.claimDueTimerHeartbeat.mockResolvedValue(null);
@@ -418,7 +449,7 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
   });
 
   it("enforces worktree cutoffs and agent invokability before timer claims", async () => {
-    const f = await fixture();
+    const f = await fixture("process");
     enableTimer(f.deps);
     await db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issue.id));
     f.deps.getWorktreeExecutionCutoff.mockResolvedValue(now);
@@ -430,6 +461,25 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(f.deps.claimDueTimerHeartbeat).not.toHaveBeenCalled();
     await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agent.id));
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+  });
+
+  it.each([
+    { provider: "codex" }, { provider: "acpx", acpxAgent: "antigravity" }, { provider: "openai_dot" },
+  ])("leaves task-required $provider agents idle between tasks while preserving their due task monitor", async adapterConfig => {
+    const f = await fixture();
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, f.agent.id));
+    enableTimer(f.deps);
+    // Only the task-bound monitor is admitted, even though the generic timer is due.
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(f.deps.claimDueTimerHeartbeat).not.toHaveBeenCalled();
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledExactlyOnceWith(f.agent.id,
+      expect.objectContaining({ contextSnapshot: expect.objectContaining({ issueId: f.issue.id }) }));
+    expect((await db.select().from(agents).where(eq(agents.id, f.agent.id)))[0])
+      .toMatchObject({ status: f.agent.status, lastHeartbeatAt: f.agent.lastHeartbeatAt });
+    f.deps.enqueueWakeup.mockClear();
+    expect(await f.scheduler.tickTimers(new Date(now.getTime() + 120_000))).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(f.deps.claimDueTimerHeartbeat).not.toHaveBeenCalled();
   });
 
   it("recovers active goals with stable revision-based admission keys", async () => {
@@ -482,4 +532,300 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     const failed = await db.select().from(agentSessionGoalActions).where(eq(agentSessionGoalActions.id, action!.id));
     expect(failed[0]).toMatchObject({ status: "failed", error: "session_goal_control_payload_invalid" });
   });
+  describe("issue monitor deadline lifecycle", () => {
+    let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
+    let draining = false;
+    const errors: unknown[] = [];
+    beforeEach(() => {
+      draining = false; errors.length = 0;
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      vi.setSystemTime(now);
+    });
+    afterEach(async () => {
+      await coordinator?.stop(); coordinator = undefined;
+      stopTaskDrain();
+      vi.useRealTimers(); vi.restoreAllMocks();
+      expect(errors).toEqual([]);
+    });
+    async function start(f: { scheduler: Pick<ReturnType<typeof createHeartbeatScheduling>, "tickIssueMonitors" | "nextIssueMonitorAt"> }) {
+      coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining,
+        canReconcile: () => true, onError: error => errors.push(error) });
+      const workers = registerScheduledWork(coordinator, { retryMs: 30_000, canRun: () => !draining,
+        tickAgentTimers: async () => {}, nextAgentTimerAt: async () => null, tickRoutines: async () => {}, nextRoutineRunAt: async () => null,
+        tickIssueMonitors: signal => f.scheduler.tickIssueMonitors(new Date(), () => !draining && !signal.aborted),
+        nextIssueMonitorAt: () => f.scheduler.nextIssueMonitorAt(),
+      });
+      await Promise.all([workers.monitors.ready, workers.routines.ready, workers.timers.ready]);
+      return workers;
+    }
+    async function advance(milliseconds: number) {
+
+
+      for (let remaining = milliseconds; remaining > 0; remaining -= 1000) {
+        await vi.advanceTimersByTimeAsync(Math.min(1000, remaining));
+        await realDelay(5);
+      }
+    }
+    async function quiet() {
+
+      await advance(31_000);
+      if (!draining) await vi.waitFor(() => {
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(coordinator!.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      const select = vi.spyOn(db, "select"), execute = vi.spyOn(db, "execute"), transaction = vi.spyOn(db, "transaction");
+      try {
+        await advance(120_000);
+        expect(select).not.toHaveBeenCalled(); expect(execute).not.toHaveBeenCalled(); expect(transaction).not.toHaveBeenCalled();
+      } finally { select.mockRestore(); execute.mockRestore(); transaction.mockRestore(); }
+    }
+    async function schedule(f: Awaited<ReturnType<typeof fixture>>, at: Date, owner = db) {
+      return issueService(owner).update(f.issue.id, { monitorNextCheckAt: at, executionPolicy: {
+        mode: "normal", commentRequired: true, stages: [], monitor: { nextCheckAt: at.toISOString() },
+      } });
+    }
+
+    it.each(["commit", "rollback"] as const)("reconciles worktree activation only after its outer transaction %s", async outcome => {
+      const f = await fixture();
+      const deadline = now.getTime() + 3_600_000;
+      await db.update(issues).set({ monitorNextCheckAt: new Date(deadline),
+        executionPolicy: { monitor: { nextCheckAt: new Date(deadline).toISOString() } } }).where(eq(issues.id, f.issue.id));
+      const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "monitor-activation-fixture" };
+      const settings = instanceSettingsService(db, { runtimeEnv });
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      const heartbeat = heartbeatService(db, { runtimeEnv });
+      await start({ scheduler: heartbeat });
+      await quiet();
+      let release!: () => void, entered!: () => void;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const ready = new Promise<void>(resolve => { entered = resolve; });
+      const writing = db.transaction(async tx => {
+        await instanceSettingsService(tx as unknown as Db, { runtimeEnv }).updateExperimental({ enableWorktreeRunExecution: true });
+        entered();
+        await held;
+        if (outcome === "rollback") throw new Error("rollback activation");
+      }).then(() => undefined, error => error as Error);
+      try {
+        await ready;
+        await advance(31_000);
+
+
+        expect(await heartbeat.nextIssueMonitorAt()).toBeNull();
+        expect((await readIssue(f.issue.id)).monitorAttemptCount).toBe(0);
+      } finally { release(); }
+      const error = await writing;
+      if (outcome === "rollback") {
+        expect(error?.message).toBe("rollback activation");
+        await quiet();
+      } else {
+        expect(error).toBeUndefined();
+        await advance(31_000);
+        await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(deadline), { timeout: 5000 });
+        await settings.updateExperimental({ enableWorktreeRunExecution: false });
+        await quiet();
+      }
+      expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: new Date(deadline), monitorAttemptCount: 0 });
+    });
+
+    it("uses fresh worktree activation for immediate monitor deadline inspection", async () => {
+      const f = await fixture();
+      const runtimeEnv = { PAPERCLIP_IN_WORKTREE: "true", PAPERCLIP_INSTANCE_ID: "monitor-fresh-fixture" };
+      const settings = instanceSettingsService(db, { runtimeEnv });
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      const heartbeat = heartbeatService(db, { runtimeEnv });
+      expect(await heartbeat.nextIssueMonitorAt()).toBeNull();
+      await settings.updateExperimental({ enableWorktreeRunExecution: true });
+      expect(await heartbeat.nextIssueMonitorAt()).toBe(dueAt.getTime());
+      await settings.updateExperimental({ enableWorktreeRunExecution: false });
+      expect(await heartbeat.nextIssueMonitorAt()).toBeNull();
+      expect(await heartbeat.tickIssueMonitors()).toEqual({ checked: 0, triggered: 0, skipped: 0 });
+      expect((await readIssue(f.issue.id)).monitorNextCheckAt).toEqual(dueAt);
+    });
+
+    it("stays quiet with retained history, then a real producer schedules and consumes its deadline", async () => {
+      const f = await fixture();
+      await db.update(issues).set({ monitorNextCheckAt: null, executionPolicy: null }).where(eq(issues.id, f.issue.id));
+      await db.insert(issues).values({ companyId: f.company.id, title: "Old monitor", status: "done",
+        assigneeAgentId: f.agent.id, monitorNextCheckAt: dueAt });
+      await start(f); await quiet();
+      expect(coordinator!.nextWakeAt()).toBeNull();
+      const at = new Date(Date.now() + 10_000);
+      await schedule(f, at);
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(at.getTime()));
+      await advance(10_000);
+      await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      await quiet(); expect(coordinator!.nextWakeAt()).toBeNull();
+    });
+
+    it.each([false, true])("waits for the outer producer transaction and handles rollback=%s", async rollback => {
+      const f = await fixture();
+      await db.update(issues).set({ monitorNextCheckAt: null, executionPolicy: null }).where(eq(issues.id, f.issue.id));
+      await start(f);
+      let release!: () => void, entered!: () => void;
+      const hold = new Promise<void>(r => { release = r; });
+      const written = new Promise<void>(r => { entered = r; });
+      const at = new Date(Date.now() + 60_000);
+      const writing = db.transaction(async tx => {
+        await schedule(f, at, tx as unknown as Db);
+        entered(); await hold;
+        if (rollback) throw new Error("rollback monitor");
+      }).catch(error => { if (!rollback) throw error; expect(error.message).toBe("rollback monitor"); });
+      try {
+        await written;
+        await advance(2000);
+        expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+        expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull();
+      } finally { release(); await writing; }
+      if (rollback) {
+        await advance(30_000);
+        await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull());
+        await quiet();
+      }
+      else {
+        await advance(30_000);
+        await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(at.getTime()));
+      }
+    });
+
+    it.each(["stop", "expiry"] as const)("resumes a saved monitor after maintenance drain %s", async end => {
+      const f = await fixture();
+      const at = new Date(Date.now() + 10_000);
+      await db.update(issues).set({ monitorNextCheckAt: at }).where(eq(issues.id, f.issue.id));
+      f.deps.getSchedulingSuppression.mockImplementation(async () => ({ suppressed: readTaskDrain(new Date()) !== null }));
+      await start(f);
+      startTaskDrain({ ttlMs: end === "expiry" ? 90_000 : null });
+      const select = vi.spyOn(db, "select");
+      try {
+        await advance(60_000);
+        expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+        expect(select).not.toHaveBeenCalled();
+        expect(coordinator!.nextWakeAt()).not.toBeNull();
+      } finally { select.mockRestore(); }
+      if (end === "stop") stopTaskDrain();
+      await advance(60_000);
+      await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      await quiet();
+    });
+
+    it("retains a first producer during drain without passive SQL, then resumes", async () => {
+      const f = await fixture();
+      await db.update(issues).set({ monitorNextCheckAt: null, executionPolicy: null }).where(eq(issues.id, f.issue.id));
+      await start(f); draining = true;
+      await schedule(f, new Date(Date.now() + 10_000));
+      await quiet(); expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+      draining = false;
+      await advance(30_000);
+      await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      await quiet();
+    });
+
+    it("backs off a deferred admission and disarms after the retry succeeds", async () => {
+      const f = await fixture(); f.deps.enqueueWakeup.mockResolvedValueOnce(null);
+      await start(f);
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      await advance(5000);
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      expect(coordinator!.nextWakeAt()).not.toBeNull();
+      await advance(30_000);
+      await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(2);
+      await quiet();
+    });
+
+    it("retains the overdue remainder of a capped pass until the next bounded drain", async () => {
+      const f = await fixture();
+      await db.insert(issues).values(Array.from({ length: 50 }, (_, index) => ({
+        companyId: f.company.id, title: `Due monitor ${index}`, status: "in_progress", assigneeAgentId: f.agent.id,
+        monitorNextCheckAt: dueAt, executionPolicy: f.issue.executionPolicy,
+      })));
+      await start(f);
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(50);
+      expect(await f.scheduler.nextIssueMonitorAt()).toBe(dueAt.getTime());
+      await advance(30_000);
+      await vi.waitFor(() => expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(51));
+      await quiet();
+      expect(await f.scheduler.nextIssueMonitorAt()).toBeNull();
+    }, 30_000);
+
+    it("replaces an earlier deadline and cancels it through the ordinary issue producer", async () => {
+      const f = await fixture();
+      await db.update(issues).set({ monitorNextCheckAt: null, executionPolicy: null }).where(eq(issues.id, f.issue.id));
+      await start(f);
+      const later = new Date(Date.now() + 600_000);
+      await schedule(f, later);
+      await advance(30_000);
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(later.getTime()), { timeout: 5000 });
+      const earlier = new Date(Date.now() + 60_000);
+      await schedule(f, earlier);
+      await advance(30_000);
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(earlier.getTime()), { timeout: 5000 });
+      await issueService(db).update(f.issue.id, { monitorNextCheckAt: null, executionPolicy: null });
+      await quiet();
+      await advance(600_000);
+      expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    });
+
+    it("reconstructs a claim deadline and respects its strict five-minute fence", async () => {
+      const f = await fixture();
+      const claimedAt = new Date();
+      await db.update(issues).set({ monitorWakeRequestedAt: claimedAt }).where(eq(issues.id, f.issue.id));
+      expect(await f.scheduler.nextIssueMonitorAt()).toBe(claimedAt.getTime() + 300_001);
+      expect(await f.scheduler.tickIssueMonitors(new Date(claimedAt.getTime() + 300_000))).toMatchObject({ triggered: 0 });
+      await start(f);
+      expect(coordinator!.nextWakeAt()).toBe(claimedAt.getTime() + 300_001);
+      await advance(300_001);
+      await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      await quiet();
+    });
+
+    it("disarms while the company is paused and reactivates on its committed resume", async () => {
+      const f = await fixture();
+      await companyService(db).update(f.company.id, { status: "paused" });
+      await start(f); await quiet();
+      expect(coordinator!.nextWakeAt()).toBeNull();
+      await companyService(db).update(f.company.id, { status: "active" });
+      await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      await quiet();
+    });
+
+    it("bounds global scans during repeated ordinary checkout and release writes", async () => {
+      const f = await fixture();
+      const at = new Date(Date.now() + 300_000);
+      await db.update(issues).set({ status: "todo", monitorNextCheckAt: at }).where(eq(issues.id, f.issue.id));
+      const next = vi.spyOn(f.scheduler, "nextIssueMonitorAt");
+      const tick = vi.spyOn(f.scheduler, "tickIssueMonitors");
+      await start(f);
+      const service = issueService(db);
+      for (let i = 0; i < 12; i++) {
+        await service.checkout(f.issue.id, f.agent.id, ["todo"], null);
+        await service.release(f.issue.id, f.agent.id, null);
+        await advance(2000);
+      }
+      expect(next).toHaveBeenCalledOnce();
+      expect(tick).toHaveBeenCalledOnce();
+      await service.checkout(f.issue.id, f.agent.id, ["todo"], null);
+      await advance(6000);
+      await vi.waitFor(() => expect(next).toHaveBeenCalledTimes(2));
+      expect(tick).toHaveBeenCalledTimes(2);
+      await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBe(at.getTime()));
+      expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    });
+
+    it("checkout reactivates a retained monitor on a formerly ineligible task", async () => {
+      const f = await fixture();
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, f.issue.id));
+      await start(f); await quiet();
+      expect(coordinator!.nextWakeAt()).toBeNull();
+      await issueService(db).checkout(f.issue.id, f.agent.id, ["todo"], null);
+      await vi.waitFor(async () => expect((await readIssue(f.issue.id)).monitorNextCheckAt).toBeNull());
+      expect(f.deps.enqueueWakeup).toHaveBeenCalledOnce();
+      await quiet();
+    });
+  });
+
 });

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 
 /** Controller-owned, secret-bearing options; excluded from all durable descriptors. */
 export interface ProviderObservabilityLaunch {
-  kind: "codex" | "claude";
+  kind: "codex" | "claude" | "opencode";
   compatibilityKey: string;
   otelConfig?: Record<string, unknown>;
   environment: Readonly<Record<string, string>>;
@@ -20,7 +20,7 @@ export const AGENT_OBSERVABILITY_ENV_KEYS = [
   "OTEL_EXPORTER_OTLP_LOGS_TIMEOUT", "OTEL_EXPORTER_OTLP_TRACES_TIMEOUT",
   "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "OTEL_EXPORTER_OTLP_METRICS_HEADERS", "OTEL_EXPORTER_OTLP_METRICS_PROTOCOL",
   "OTEL_LOG_USER_PROMPTS", "OTEL_LOG_ASSISTANT_RESPONSES", "OTEL_LOG_TOOL_DETAILS", "OTEL_LOG_TOOL_CONTENT", "OTEL_LOG_RAW_API_BODIES",
-  "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG",
+  "PAPERCLIP_OBSERVABILITY_CODEX_CONFIG", "PAPERCLIP_OBSERVABILITY_OPENCODE",
 ] as const;
 
 export function providerObservabilityEnvironment(source: NodeJS.ProcessEnv | undefined, agent: string): NodeJS.ProcessEnv {

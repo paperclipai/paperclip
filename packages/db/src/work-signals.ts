@@ -1,11 +1,12 @@
 import { sql } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 
-// Process-local hints about existing durable queues. No SQL triggers, tables,
-// background timers, or driver query replay. Only opted-in transactions fetch
-// an XID, so unrelated transactions keep their existing SQL behavior.
+// Hints about existing durable queues; process-local by default, with optional
+// commit-bound PostgreSQL notifications during controller replacement. No SQL
+// triggers, tables, timers, or query replay. Only registered work fetches an XID.
 type Listener = (event: "intent" | "settled", hints?: ReadonlySet<string>) => void;
 type Transaction = { topics: Set<string>; hints: Map<string, Set<string>>; xid?: Promise<string>; uncertain: boolean };
-type Scope = { key: object; listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection };
+type Scope = { key: object; listeners: Map<string, Set<Listener>>; transactions: Set<Transaction>; root: Connection; notificationOrigin: string; notify: boolean };
 type Context = { scope: Scope; transaction?: Transaction };
 type Connection = { transaction: (...args: any[]) => Promise<any>; execute: (...args: any[]) => Promise<any> };
 const contexts = new WeakMap<object, Context>();
@@ -19,7 +20,7 @@ function publish(scope: Scope, topic: string, event: "intent" | "settled" = "set
 
 /** Installed once by createDb; dedicated child pools share their owner's scope. */
 export function installDatabaseWorkSignals<T extends Connection>(db: T, owner?: object): T {
-  const scope = (owner && contexts.get(owner)?.scope) || { key: {}, listeners: new Map(), transactions: new Set(), root: db };
+  const scope = (owner && contexts.get(owner)?.scope) || { key: {}, listeners: new Map(), transactions: new Set(), root: db, notificationOrigin: randomUUID(), notify: false };
   install(db, { scope });
   return db;
 }
@@ -73,6 +74,42 @@ export async function signalDatabaseWork(connection: object, topic: string, hint
   // Keep a failed acquisition distinguishable from an uncertain queue write.
   try { await state.xid; }
   catch (error) { state.xid = undefined; throw error; }
+  if (context.scope.notify) {
+    // PostgreSQL delivers only after the outer commit, including savepoints.
+    // Queue rows remain authoritative; notification payloads contain no data.
+    await (connection as Connection).execute(sql`select pg_notify(${DATABASE_WORK_CHANNEL}, ${notification(context.scope, topic)})`);
+  }
+}
+
+export const DATABASE_WORK_CHANNEL = "paperclip_work_v1";
+const validTopic = (topic: string) => /^[a-zA-Z0-9:_-]{1,200}$/.test(topic);
+function notification(scope: Scope, topic: string) {
+  if (!validTopic(topic)) throw new Error("Invalid database work topic");
+  return JSON.stringify({ version: 1, origin: scope.notificationOrigin, topic });
+}
+export function enableDatabaseWorkNotifications(owner: object): void {
+  const scope = contexts.get(owner)?.scope;
+  if (!scope) throw new Error("Database work notifications require createDb");
+  scope.notify = true;
+}
+/** A post-commit invalidation hint, for already-persisted live UI state. */
+export async function publishDatabaseWorkHint(owner: object, topic: string): Promise<void> {
+  const scope = contexts.get(owner)?.scope;
+  if (scope?.notify) await scope.root.execute(sql`select pg_notify(${DATABASE_WORK_CHANNEL}, ${notification(scope, topic)})`);
+}
+export function receiveDatabaseWorkNotification(owner: object, payload: string): void {
+  const scope = contexts.get(owner)?.scope;
+  if (!scope || payload.length > 1024) return;
+  let value: { version?: unknown; origin?: unknown; topic?: unknown };
+  try { value = JSON.parse(payload); } catch { return; }
+  if (!value || value.version !== 1 || typeof value.origin !== "string" || value.origin === scope.notificationOrigin
+    || typeof value.topic !== "string" || !validTopic(value.topic)) return;
+  publish(scope, value.topic);
+}
+/** Reconnect can lose hints. Reconstruct existing durable queues once; no poll. */
+export function reconcileDatabaseWorkNotifications(owner: object): void {
+  const scope = contexts.get(owner)?.scope;
+  if (scope) for (const topic of scope.listeners.keys()) publish(scope, topic);
 }
 
 export function databaseWorkPending(owner: object, topic: string): boolean {

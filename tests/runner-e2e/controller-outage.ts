@@ -40,13 +40,14 @@ export function configuredControllerOutage(env: NodeJS.ProcessEnv, defaultHoldMs
 }
 
 export function controllerOutageForExecution(execution: MatrixExecution, env: NodeJS.ProcessEnv): ControllerOutage | undefined {
+  if (execution.suite.id === "rolling-web-deployment") return undefined;
   if (execution.task.flow !== "everyday_workflow" || execution.task.id !== "recover-controller"
     || execution.environment.id !== "daytona" || execution.profile.generation !== "native"
     || (execution.profile.provider !== "codex" && execution.profile.provider !== "acpx")) return undefined;
   const declaredHoldMs = execution.suite.definitionMetadata?.controllerDowntimeMs;
   if (typeof declaredHoldMs !== "number") throw new Error("Controller recovery suite must declare its outage duration");
   const outage = configuredControllerOutage(env, declaredHoldMs);
-  if (execution.suite.id === "daytona-restart-continuity" && outage.holdMs < declaredHoldMs) {
+  if (["daytona-restart-continuity", "remote-workspace-storage"].includes(execution.suite.id) && outage.holdMs < declaredHoldMs) {
     throw new Error("Controller outage is shorter than the dedicated continuity contract");
   }
   return outage;

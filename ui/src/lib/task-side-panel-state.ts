@@ -38,7 +38,7 @@ export type TaskSidePanelTabPayload =
   | { kind: "agent-tasks" }
   | { kind: "attachment"; attachmentId: string }
   | { kind: "skill"; skillId: string }
-  | { kind: "issue-document"; documentKey: string }
+  | { kind: "issue-document"; documentKey: string; revisionId?: string; documentIssueId?: string }
   | {
       kind: "files-browser";
       query: string | null;
@@ -107,7 +107,7 @@ function parsePayload(value: unknown): TaskSidePanelTabPayload | null {
   }
   if (kind === "issue-document") {
     return typeof input.documentKey === "string" && input.documentKey.length > 0
-      ? { kind, documentKey: input.documentKey }
+      ? { kind, documentKey: input.documentKey, ...(typeof input.revisionId === "string" ? { revisionId: input.revisionId } : {}), ...(typeof input.documentIssueId === "string" && input.documentIssueId ? { documentIssueId: input.documentIssueId } : {}) }
       : null;
   }
   if (kind === "files-browser") {
@@ -243,14 +243,14 @@ export function taskPanelSkillTab(skillId: string, label = "Skill"): SidePanelTa
   return { id: `skill:${skillId}`, type: "skill", label, closable: true, contentMode: "prose", payload: { kind: "skill", skillId } };
 }
 
-export function taskPanelDocumentTab(documentKey: string, label: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
+export function taskPanelDocumentTab(documentKey: string, label: string, revisionId?: string, documentIssueId?: string): SidePanelTabRecord<TaskSidePanelTabPayload> {
   return {
-    id: `document:${documentKey}`,
+    id: `document:${documentIssueId ? `${documentIssueId}:` : ""}${documentKey}${revisionId ? `:${revisionId}` : ""}`,
     type: "issue-document",
     label,
     closable: true,
     contentMode: "prose",
-    payload: { kind: "issue-document", documentKey },
+    payload: { kind: "issue-document", documentKey, ...(revisionId ? { revisionId } : {}), ...(documentIssueId ? { documentIssueId } : {}) },
   };
 }
 

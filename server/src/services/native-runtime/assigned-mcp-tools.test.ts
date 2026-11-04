@@ -19,6 +19,50 @@ describe("assigned MCP runner tools", () => {
   const searchName = "paperclip_search_assigned_tools";
   const callName = "paperclip_call_assigned_tool";
 
+  it.each(["", " \t\n"])("discovers and calls assigned tools through MCP with a blank schema reference %j", async schemaTool => {
+    const github = descriptor("github_bot:read_pull_request");
+    const f = fixture([github, descriptor("calendar.search")]);
+    const assigned = await createAssignedMcpTools({ ...f, delivery: "on_demand" });
+    const bridge = await startOpenCodeMcpBridge({ tools: assigned.definitions(), handler: call => assigned.execute(call) });
+    let id = 0;
+    const call = async (name: string, args: Record<string, unknown>) => {
+      const response = await fetch(bridge.url, {
+        method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method: "tools/call", params: { name, arguments: args } }),
+      });
+      const result = (await response.json()).result;
+      expect(result.isError).not.toBe(true);
+      return JSON.parse(result.content[0].text);
+    };
+    try {
+      const page = await call(searchName, { query: "github", schemaTool });
+      expect(page.tools).toHaveLength(1);
+      expect(page.tools[0]).toMatchObject({ description: expect.stringContaining(github.name), inputSchema: github.parametersSchema });
+      expect(await call(searchName, { query: "github", schemaTool, schemaOffset: 0 })).toEqual(page);
+      expect((await call(searchName, { query: "", schemaTool })).tools).toHaveLength(2);
+      await call(callName, { name: page.tools[0].name, arguments: { query: "fixture" } });
+      expect(f.executeTool).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+        tool: github.name, parameters: { query: "fixture" }, gatewayPublicId: f.gatewayPublicId, sessionToken: f.bearerToken,
+      }));
+      f.listToolsForNamedGateway.mockResolvedValue([]);
+      expect(await call(searchName, { query: "github", schemaTool })).toEqual({ tools: [], nextOffset: null });
+    } finally {
+      await bridge.close();
+    }
+  });
+
+  it("explains how to recover from an unknown schema reference or an offset without a reference", async () => {
+    const f = fixture([descriptor("github_bot:read_pull_request")]);
+    const assigned = await createAssignedMcpTools({ ...f, delivery: "on_demand" });
+    await expect(assigned.execute({ tool: searchName, arguments: { query: "github", schemaTool: "unknown" } }))
+      .rejects.toThrow("Omit schemaTool to search assigned tools");
+    for (const schemaTool of [undefined, "", " \t\n"]) {
+      await expect(assigned.execute({ tool: searchName, arguments: { query: "github", schemaTool, schemaOffset: 1 } }))
+        .rejects.toThrow("A positive schemaOffset requires an exact inputSchemaRef in schemaTool");
+    }
+    expect(f.executeTool).not.toHaveBeenCalled();
+  });
+
   it.each([undefined, "on_demand"] as const)("advertises usable page limits through MCP discovery (%s)", async delivery => {
     const f = fixture(Array.from({ length: 25 }, (_, i) => descriptor(`operation_${i}`)));
     const assigned = await createAssignedMcpTools({ ...f, delivery });
@@ -240,6 +284,27 @@ describe("assigned MCP runner tools", () => {
     await expect(assigned.execute({ tool: searchName, arguments: { query: "" } })).rejects.toThrow("gateway_token_revoked");
   });
 
+  it("keeps pagination stable when an earlier tool is revoked between pages", async () => {
+    const descriptors = ["alpha", "bravo", "charlie", "delta"].map(name => descriptor(name));
+    const f = fixture(descriptors);
+    const assigned = await createAssignedMcpTools(f);
+    const definitions = assigned.definitions();
+    const first = await assigned.execute({
+      tool: searchName, arguments: { query: "", offset: 0, limit: 2 },
+    }) as { tools: unknown[]; nextOffset: number };
+    expect(first).toEqual({ tools: definitions.slice(0, 2), nextOffset: 2 });
+
+    f.listToolsForNamedGateway.mockResolvedValue(descriptors.slice(1));
+    await expect(assigned.execute({
+      tool: searchName, arguments: { query: "", offset: first.nextOffset, limit: 2 },
+    })).resolves.toEqual({ tools: definitions.slice(2), nextOffset: null });
+
+    f.listToolsForNamedGateway.mockResolvedValue([descriptors[1]!, descriptors[3]!]);
+    await expect(assigned.execute({
+      tool: searchName, arguments: { query: "", offset: first.nextOffset, limit: 2 },
+    })).resolves.toEqual({ tools: definitions.slice(3), nextOffset: null });
+  });
+
   it.each(["planning", "ask"] as const)("preserves pinned and fresh %s restrictions through the call wrapper", async mode => {
     const f = fixture([descriptor("read"), descriptor("write", "write")]);
     const assigned = await createAssignedMcpTools(f);
@@ -381,7 +446,7 @@ describe("assigned MCP runner tools", () => {
     expect(f.executeTool).not.toHaveBeenCalled();
   });
 
-  it.each(["planning", "ask"] as const)("exposes and permits only read tools in %s mode", async workMode => {
+  it.each(["planning", "ask", "skill_test"] as const)("exposes and permits only read tools in %s mode", async workMode => {
     const f = fixture([descriptor("read"), descriptor("remember", "write"), descriptor("forget", "destructive")]);
     const standard = await createAssignedMcpTools(f);
     const restricted = await createAssignedMcpTools({ ...f, workMode });
@@ -402,7 +467,7 @@ describe("assigned MCP runner tools", () => {
     for (const [call] of f.executeTool.mock.calls) expect(call).not.toHaveProperty("approvedActionRequestId");
   });
 
-  it.each(["planning", "ask"] as const)("enforces fresh %s mode without relaxing the pinned mode", async currentMode => {
+  it.each(["planning", "ask", "skill_test"] as const)("enforces fresh %s mode without relaxing the pinned mode", async currentMode => {
     const f = fixture([descriptor("read"), descriptor("remember", "write")]);
     const standard = await createAssignedMcpTools(f);
     const restricted = await createAssignedMcpTools({ ...f, workMode: currentMode });

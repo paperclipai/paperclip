@@ -73,7 +73,9 @@ export function buildCodexLocalConfig(v: CreateConfigValues): Record<string, unk
 }
 
 /** Build a provider profile accepted by the experimental Rust runner. */
-export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string, unknown> {
+export function buildPaperclipRunnerConfig(v: CreateConfigValues, context?: {
+  candidateHarnesses?: readonly { agent: "antigravity"; model: string }[];
+}): Record<string, unknown> {
   const config = buildCodexLocalConfig(v);
   const schemaValues = normalizeLegacyRunnerProvider({ ...(v.adapterSchemaValues ?? {}) });
   const configuredEffort = typeof v.thinkingEffort === "string"
@@ -109,8 +111,23 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
     return { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: schemaValues.allowUnmeteredProvider === true, dotWorkspaceAccess: schemaValues.dotWorkspaceAccess === true, dotAttachmentAccess: schemaValues.dotAttachmentAccess === true,
       ...(typeof schemaValues.dotBindingId === "string" ? { dotBindingId: schemaValues.dotBindingId } : {}) };
   }
+  if (provider === "cursor_cloud") {
+    const model = typeof config.model === "string" && config.model.trim()
+      ? config.model.trim() : typeof schemaValues.model === "string" ? schemaValues.model.trim() : "";
+    if (!model) throw new Error("Cursor Cloud requires an explicit model before saving.");
+    if (v.promptTemplate?.trim() || v.bootstrapPrompt?.trim()) throw new Error("Cursor Cloud with Paperclip Runner uses assigned instructions. Remove custom prompt templates before saving.");
+    const cloudKeys = ["repoUrl", "repoRef", "prUrl", "cloudEnvType", "cloudEnvName", "runtimeEnvType", "runtimeEnvName", "repoStartingRef", "repoPullRequestUrl", "workOnCurrentBranch", "autoCreatePR", "skipReviewerRequest", "cursorCloudTimeoutMs"];
+    return { provider, model, lifecycleMode: "per_turn",
+      ...(config.instructionsFilePath ? { instructionsFilePath: config.instructionsFilePath } : {}),
+      ...(config.env ? { env: config.env } : {}),
+      ...Object.fromEntries(cloudKeys.filter(key => schemaValues[key] !== undefined).map(key => [key, schemaValues[key]])),
+    };
+  }
   const selectedAcpxProfile = PAPERCLIP_RUNNER_ACPX_PROFILES.find(profile => profile.value === schemaValues.acpxAgent);
-  if (provider === "acpx" && selectedAcpxProfile && !selectedAcpxProfile.qualified) {
+  const candidate = context?.candidateHarnesses?.find(candidate => candidate.agent === schemaValues.acpxAgent);
+  const selectedModel = typeof v.model === "string" && v.model ? v.model : schemaValues.model;
+  if (provider === "acpx" && selectedAcpxProfile && !selectedAcpxProfile.qualified
+    && !(candidate && candidate.model === selectedModel)) {
     throw new Error(`${selectedAcpxProfile.label} is not enabled for production`);
   }
   const acpxAgent = selectedAcpxProfile?.value ?? "claude";
@@ -126,7 +143,7 @@ export function buildPaperclipRunnerConfig(v: CreateConfigValues): Record<string
   if (provider === "acpx" && acpxAgent === "copilot" && (!configuredModel && !schemaModel || ["auto", "default"].includes((configuredModel || schemaModel).toLowerCase()))) {
     throw new Error("Select an available Copilot model before saving.");
   }
-  if (provider === "acpx" && ["cursor", "pi"].includes(acpxAgent) && !configuredModel && !schemaModel) {
+  if (provider === "acpx" && ["cursor", "pi", "kimi"].includes(acpxAgent) && !configuredModel && !schemaModel) {
     throw new Error(`${acpxAgent} requires an explicit provider model`);
   }
   const managedProfileId = typeof schemaValues.managedProfileId === "string"

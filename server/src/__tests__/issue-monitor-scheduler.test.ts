@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
   costEvents,
@@ -31,7 +31,24 @@ import { heartbeatService } from "../services/heartbeat.ts";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
 import { PaperclipRunnerToolAuthority } from "../services/native-runtime/paperclip-runner-tool-authority.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+// These process fixtures do not consume skills. Keep the real scheduler,
+// execution lifecycle and selection snapshot, without a cold catalog expansion
+// competing with the monitor's existing three-second settlement assertion.
+vi.mock("../services/company-skills.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("../services/company-skills.js")>();
+  return { ...actual, companySkillService: (...args: Parameters<typeof actual.companySkillService>) => {
+    const service = actual.companySkillService(...args);
+    return { ...service, withRuntimeSkillEntries: async <T>(_companyId: string,
+      options: Parameters<typeof service.withRuntimeSkillEntries>[1],
+      consume: (entries: Awaited<ReturnType<typeof service.listRuntimeSkillEntries>>) => T | Promise<T>) => {
+      await options.selectVersions?.([]);
+      return consume([]);
+    } };
+  } };
+});
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_ISSUE_MONITOR_TEST_DATABASE_URL");
+const embeddedPostgresSupport = external ? { supported: true, reason: undefined } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 if (!embeddedPostgresSupport.supported) {
@@ -46,8 +63,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   const seededAgentIds = new Set<string>();
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
-    db = createDb(tempDb.connectionString);
+    if (!external) tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
+    db = createDb(external ?? tempDb!.connectionString);
   }, 20_000);
 
   async function waitForHeartbeatIdle(timeoutMs = 3_000) {
@@ -164,7 +181,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     const monitorAttemptCount = input?.monitorAttemptCount ?? 0;
-    const monitor = {
+    const monitor: Record<string, unknown> = {
       nextCheckAt: nextCheckAt.toISOString(),
       notes: "Check deploy",
       scheduledBy: "assignee",
@@ -259,9 +276,9 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const unrelatedPolicy = { commentRequired: false, futureAuthorization: { preserve: true } };
     await db.update(issues).set({ executionPolicy: { ...before.executionPolicy, ...unrelatedPolicy } }).where(eq(issues.id, issueId));
 
-    const result = await heartbeat.tickTimers(tickAt);
+    const result = await heartbeat.tickIssueMonitors(tickAt);
 
-    expect(result.enqueued).toBe(1);
+    expect(result.triggered).toBe(1);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
     expect(issue.monitorNextCheckAt).toBeNull();

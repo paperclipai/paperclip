@@ -77,10 +77,12 @@ export async function loadAgentConfiguration(id: string, companyId: string) {
       },
       instructions: { mode: bundle.mode, rootPath: bundle.rootPath, entryFile: bundle.entryFile,
         files: Object.fromEntries(files.map(file => [file.path, file.content])) },
-      skills: skills.desiredSkillEntries ?? skills.desiredSkills.map(key => ({ key, versionId: null })),
+      skills: (skills.desiredSkillEntries ?? skills.desiredSkills.map(key => ({ key, versionId: null })))
+        .map(skill => ({ ...skill, versionId: skill.versionId ?? null })),
       tools: {
-        connections: connections.connections.map(connection => ({ connectionId: connection.id,
-          installed: (connection.installs ?? []).some(install => install.targetType === "agent" && install.targetId === id) })),
+        connections: connections.connections.flatMap(connection =>
+          (connection.installs ?? []).some(install => install.targetType === "agent" && install.targetId === id)
+            ? [{ connectionId: connection.id, installed: true }] : []),
         profiles: directProfiles,
         policies: directPolicies.map(policy => ({ id: policy.id, configuration: policyConfiguration(policy) })),
       },
@@ -97,19 +99,6 @@ export async function loadAgentConfiguration(id: string, companyId: string) {
       apiKeys: { create: [], revoke: [] }, revisions: { restore: null },
       secrets: { create: [], rotate: [], update: [], proposals: [] },
       channelOperations: { create: [], setup: [], revokeIdentityLinks: [] },
-    },
-    observed: {
-      apiKeys: keys, revisions: revisions.map(({ id, source, changedKeys, createdAt }) => ({ id, source, changedKeys, createdAt })),
-      instructionFiles: bundle.files.filter(file => !file.editable || file.binary || file.virtual), instructionWarnings: bundle.warnings,
-      skillWarnings: skills.warnings,
-      connections: connections.connections.map(connection => ({ id: connection.id, name: connection.name,
-        inherited: (connection.installs ?? []).some(install => install.targetType === "company" && install.targetId === companyId) })),
-      availableProfiles: profiles.profiles.map(profile => ({ id: profile.id, configuration: profileConfiguration(profile) })),
-      inheritedProfiles: profiles.profiles.filter(profile => profile.bindings.some(binding => binding.targetType === "company" && binding.targetId === companyId)).map(profile => ({ id: profile.id, configuration: profileConfiguration(profile) })),
-      inheritedPolicies: policies.policies.filter(policy => !directPolicies.includes(policy) && (policyAgentIds(policy).length === 0 || policyAgentIds(policy).includes(id))).map(policy => ({ id: policy.id, configuration: policyConfiguration(policy) })),
-      channels: channels.map(({ detail, resources, principals }) => ({ id: detail.id, status: detail.status, botLabel: detail.botLabel, resources, principals })),
-      secrets: secrets.map(({ id, name, key, provider, latestVersion }) => ({ id, name, key, provider, latestVersion })),
-      secretProposals: proposals.filter(proposal => (proposal.target?.id === id || proposal.proposedBy.id === id)),
     },
   }) as AgentConfigurationDocument;
   return { agent, core, bundle, files: new Map<string, AgentInstructionsFileDetail>(files.map(file => [file.path, file])),

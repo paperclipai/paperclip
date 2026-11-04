@@ -11,6 +11,16 @@ import { errorHandler } from "../middleware/error-handler.js";
 import { testAdapterEnvironmentSchema } from "@paperclipai/shared";
 import { createHttpLogger } from "../middleware/logger.js";
 
+it("redacts a routine caller run token on ordinary HTTP routes", async () => {
+  const chunks: string[] = [];
+  const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+  const app = express();
+  app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+  app.get("/api/health", (_req, res) => res.json({ ok: true }));
+  await request(app).get("/api/health").set("X-Paperclip-Source-Run-Token", "private-routine-caller-token");
+  expect(chunks.join("")).not.toContain("private-routine-caller-token");
+});
+
 describe("HTTP logger redaction", () => {
   it.each([200, 400, 500])("keeps connector and observability credentials out of %i logs", async status => {
     const canaries = ["configuration-canary", "signing-canary", "client-canary", "bot-canary", "oauth-code-canary", "provider-echo-canary"];
@@ -329,7 +339,7 @@ describe("HTTP logger redaction", () => {
         createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)),
       );
       routes.post("/chat-webhooks/:publicId/:provider", (req, _res, next) => {
-        req.params.extra = privateFile;
+        (req.params as Record<string, string>).extra = privateFile;
         req.log.warn({ req }, "Webhook fixture rejected");
         const error = Object.assign(new Error(`SDK echoed ${privateText}`), {
           name: privateFile,
@@ -489,6 +499,26 @@ describe("HTTP logger redaction", () => {
       "[Redacted]",
     );
     expect(log.res.headers["set-cookie"]).toBe("[Redacted]");
+  });
+
+  it.each([200, 401, 403, 500])("redacts Runner tool scope credentials from HTTP %i logs", async status => {
+    const capability = "runner-tool-scope-capability-canary";
+    const chunks: string[] = [];
+    const stream = new Writable({ write(chunk, _encoding, callback) { chunks.push(chunk.toString()); callback(); } });
+    const app = express();
+    app.use(createHttpLogger(pino({ redact: [...HTTP_LOG_REDACT_PATHS] }, stream)));
+    const path = "/mcp/native-runs/00000000-0000-4000-8000-000000000762";
+    app.post(path, (_req, res) => { res.status(status).json({ status }); });
+
+    await request(app).post(path)
+      .set("X-Paperclip-Runner-Scope-Token", "Bearer " + capability)
+      .send({}).expect(status);
+
+    expect(chunks.join("")).not.toContain(capability);
+    const log = JSON.parse(chunks.join("").trim());
+    expect(log.req.headers["x-paperclip-runner-scope-token"]).toBe("[Redacted]");
+    expect(log.req.url).toBe(path);
+    expect(log.res.statusCode).toBe(status);
   });
 
   it.each([200, 403, 500])("redacts runtime GitHub capabilities from HTTP %i logs", async (status) => {

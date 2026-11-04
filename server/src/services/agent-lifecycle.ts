@@ -1,4 +1,10 @@
+import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
+import { notifyDeferredExecutionEligibility } from "./deferred-execution-notifications.js";
+import { notifyRunDispatch } from "./run-dispatch-notifications.js";
+import { notifyAttentionRetentionWork } from "./retention-work-notifications.js";
+import { notifyNativeReviewResponse } from "./native-review-response-notifications.js";
 import { isAgentStatusInvokable } from "@paperclipai/shared";
+import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { logger } from "../middleware/logger.js";
 import { companies, type Db } from "@paperclipai/db";
@@ -18,13 +24,15 @@ import { trackIdleWork } from "./task-admission.js";
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { pluginEnvironmentRequiresAgent } from "./plugin-environment-driver.js";
+import { isProviderApiSetupDraft } from "./native-runtime/provider-api-placement.js";
 
 export { scheduleAgentLifecycle, processAgentLifecycle } from "../modules/agent-lifecycle/index.js";
 export type { LifecycleDriver, LifecycleAgent } from "../modules/agent-lifecycle/index.js";
 
 export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): lifecycle.LifecycleEffects {
   return {
-    async setupRequiresPreparation(db, companyId, environmentId) {
+    async setupRequiresPreparation(db, companyId, environmentId, profile) {
+      if (isProviderApiSetupDraft(profile)) return false;
       const id = environmentId ?? (await instanceSettingsService(db).get()).defaultEnvironmentId;
       const environment = id ? await environmentService(db).getById(id) : null;
       if (!environment || !await pluginEnvironmentRequiresAgent(db, environment)) return false;
@@ -35,8 +43,17 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
       return true;
     },
     notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
-    async beforeStatusChange(tx, companyId, _agentId, before, after) {
+    async beforeStatusChange(tx, companyId, agentId, before, after) {
+      await notifyAttentionRetentionWork(tx, { companyId });
+      if (before !== after) {
+        await notifyStrandedAgentStatus(tx, { companyId, agentId });
+        await notifyRunDispatch(tx, { companyId });
+        await notifyDeferredExecutionEligibility(tx, { companyId });
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.agentTimers);
+      }
       if (!isAgentStatusInvokable(before) && isAgentStatusInvokable(after)) {
+        await notifyNativeResponsePresentation(tx, { companyId, agentId });
+        await notifyNativeReviewResponse(tx, { companyId, agentId });
         await notifyChatInboundWakeNotices(tx, { companyId });
       }
     },

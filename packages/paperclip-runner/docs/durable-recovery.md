@@ -70,17 +70,115 @@ a scripted harness, removes the controller's launch files, then recovers the
 same process and provider session and completes another turn. This exercises the
 real transport; it does not qualify a hosted OpenCode or ACPX deployment.
 
-## Source-bound profile history
+## Settled ACPX sessions across a Runner upgrade
 
-Copilot profile v68 binds the merged hot-upgrade and current master transport.
-Published v66 and the earlier hot-upgrade v67 identity remain byte-for-byte
-historical records. The distinct development v66 identity is retained under
-`copilot-profile-v66-hot-upgrade-candidate-historical-identity.json`; it does not
-replace the published v66 fixture. Decoding historical versions does not grant
-fresh-launch permission. Installation still requires the exact current profile,
-package and digest. These records do not establish hosted harness qualification.
+Saved ACPX provider state records the digest of the launch profile that wrote
+it: the provider-pack authority, the sidecar command and arguments, each launch
+artifact's SHA-256, and any candidate admission. A deploy that ships a new
+provider pack or sidecar build changes the digest. The state stores only the
+digest, so restore cannot tell which part changed.
+
+Restore re-binds a saved session to the current launch profile, and keeps the
+conversation, only when all of these are true:
+
+- The session is suspended. It has no active turn, pending runtime request,
+  undelivered provider event, or unconfirmed provider exit.
+- The startup has no candidate admission.
+- The saved descriptor names this startup's sidecar command and arguments.
+
+Every other binding stays exact. The saved descriptor must match this build's
+qualified agent profile (ACPX version, agent server package and version, and
+command digest). Session start verifies each artifact and the restored provider
+identity. Candidate grants and run bindings keep their own checks.
+
+Any other launch-profile mismatch, and a saved descriptor that names a release
+this build does not qualify, fails restore with the closed command-result
+classification `provider_state_incompatible`. The controller reads the classification from the
+authenticated result, not from the message. If the run allows a replacement
+after a failed resume, it opens a fresh provider session as before. Otherwise the
+run fails with `native_provider_state_incompatible` and is not retried. A board
+Retry then continues the task in a fresh provider session in the same workspace.
+
+## Profile identity
+
+Every ACPX provider's `commandDigest` attests only its own upstream release.
+Each provider declares how in `ACPX_RELEASE_ATTESTATIONS`
+(`scripts/acpx-release-attestations.mjs`):
+
+| Kind | Providers | The digest is |
+| --- | --- | --- |
+| `installed-command` | Claude, Codex | the upstream package's launch command, hashed at installation |
+| `launcher` | Grok | the SHA-256 of the launcher shipped verbatim |
+| `closure` | Copilot, Pi, Kimi | upstream versions and the complete platform closure pins |
+| `declaration` | Cursor, Antigravity | a checked-in release declaration, as canonical JSON |
+
+`generate:acpx-profiles` writes the computed digests and `check:acpx-profiles`
+refuses a stale one, so a digest changes only with its upstream release. Every
+ACPX harness binds the shared ACPX layer the same way: saved inputs must match
+the current ACPX version, and the provider pack's `contractDigest` binds the
+Runner's ACPX patch with the other Runner contracts. Runner source changes
+change no provider digest.
+
+A profile version changes only to reset every saved session for that provider
+on purpose; an upstream release keeps it, and a new provider starts at 1. Saved
+inputs with any version from 1 through the current one decode, so they reach
+recovery. Launch and recovery admission require the exact current profile and
+digest, and refuse the rest. A profile identity does not establish hosted
+harness qualification. [`rules/acpx-profile-identity.mdc`](../../../rules/acpx-profile-identity.mdc)
+summarizes these practices for contributors.
+
+Qualified ACPX native executables use Runner's persistent digest cache. The cache
+stores a computed SHA-256 digest under a key made from device, inode, size,
+nanosecond modification time, and nanosecond change time. Each check compares
+that digest with the independently selected build-owned pin. A changed file
+identity, missing entry, or unusable cache causes a full descriptor read and
+hash. A hit reuses the earlier digest; metadata identity is not a fresh content
+hash. Claude, Codex, and Grok use the same native executable admission path.
+
+Cache entries live in the operating-system temporary directory under
+`paperclip-runner-<uid>/executable-digests-v1`, outside task workspaces such as
+`/home/agent`. Neither `HOME` nor the task working directory selects this path.
+Node's `os.tmpdir()` selects the root and honors the platform's absolute
+`TMPDIR`, `TMP`, or `TEMP` override. Hosts must keep that root outside task
+workspaces; a relative or unusable root disables caching. Temporary-directory
+eviction removes the optimization until a later full hash fills it again. The
+directory and files are private to that user. Writes use a temporary file and
+atomic rename, so later Runner or sidecar processes can reuse complete entries.
+Cache errors fall back to hashing. The cache stores no credentials or file paths.
+
+Every admission still opens the executable without following its final symlink,
+checks its regular-file type, bounds, execute permission, and before/after file
+identity, and retains the descriptor for launch. Package qualification and the
+preparation-to-launch identity check remain. The cache deliberately trusts the
+operating-system user: a process with that user's access can plant a digest for
+a chosen fingerprint. It is not authenticated with a secret or signature.
+An administrator-owned read-only Runner can therefore use a user-writable cache,
+but this provides weaker protection against that same user than hashing every
+executable on each admission. Removing the cache restores full hashing.
+
+Kimi retains released revision 17, which separates ordinary admission from
+pending revision 16. Its upstream-only release attestation replaces the earlier
+source-bound digest without another revision bump. Historical candidate and
+released records remain unchanged and readable; exact current digest admission
+refuses their old launch identities.
 
 ## External controller checkpoints
+
+New controllers create `paperclip.runner.durable.control-plane-state.v2` with
+`paperclip.runner.bootstrap-history.v1`. This history retains its original full
+run identity, issued credential count and adoption flag across run rotations.
+Every launch persists credential issuance before handing the ticket to a process.
+Credential pruning cannot remove this history. Older controllers reject v2 state;
+current controllers can still restore v1 state without granting it this proof.
+Checkpoint decoding and external persistence never add missing origin history.
+
+`inspectUnclaimedBootstrapCheckpoint` validates the complete four-part bootstrap
+journal and exact identity. Only pending `run.prepare` and `session.open` commands
+are allowed. Any credential issuance, connection, command delivery, event, warm
+transition or unsupported history prevents the proof. Its fingerprint lets an
+embedding owner recheck the exact revision under its execution fence. The proof
+describes provider usage only. It does not authorize replay or prove that a
+sandbox, callback bridge or other process has terminated.
 
 The optional controller persistence callback stores recovery control state, not
 an output transcript. Text deltas do not trigger callbacks; usage updates are

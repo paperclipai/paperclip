@@ -21,7 +21,7 @@ const companySvc = {
   // Async-empty default (not a bare vi.fn()): every new-company import reads
   // the existing names for de-duplication, including describes that never
   // touch this mock.
-  list: vi.fn(async () => []),
+  list: vi.fn(async (): Promise<Array<{ name: string }>> => []),
   create: vi.fn(),
   update: vi.fn(),
 };
@@ -516,7 +516,7 @@ describe("company portability", () => {
       entryFile: "AGENTS.md",
       warnings: [],
     }));
-    agentInstructionsSvc.materializeManagedBundle.mockImplementation(async (agent: { adapterConfig: Record<string, unknown> }) => ({
+    agentInstructionsSvc.materializeManagedBundle.mockImplementation(async (agent: { id: string; adapterConfig: Record<string, unknown> }) => ({
       bundle: null,
       adapterConfig: {
         ...agent.adapterConfig,
@@ -4168,6 +4168,7 @@ describe("company portability", () => {
     const insertedRelationValues: Array<Record<string, unknown>> = [];
     const monitorUpdates: Array<Record<string, unknown>> = [];
     const db = {
+      transaction: async (write: (tx: unknown) => Promise<unknown>) => write(db),
       insert: () => ({
         values: (rows: Array<Record<string, unknown>>) => ({
           onConflictDoNothing: async () => {
@@ -4184,6 +4185,7 @@ describe("company portability", () => {
       }),
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     } as any;
+    db.transaction = async (write: (tx: typeof db) => Promise<unknown>) => write(db);
     return { db, insertedRelationValues, monitorUpdates };
   }
 

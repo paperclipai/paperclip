@@ -1,3 +1,4 @@
+import { notifyChatResponseAvailability } from "../../chat-response-availability.js";
 import { notifyVoicePublication } from "../../voice/voice-reply-notifications.js";
 import { createGitHubPublicationPolicy } from "../github/publication-policy.js";
 
@@ -155,6 +156,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
         : Math.min(60_000, 2 ** Math.max(0, attempts) * 1_000);
     const result = await db.transaction(async (tx) => {
       await notifyChatPublicationWork(tx, terminal ? publication : undefined);
+      if (!terminal) await notifyChatResponseAvailability(tx, publication);
       const [settled] = await tx
         .update(chatPublications)
         .set({
@@ -475,6 +477,7 @@ export function createChatPublicationWorker(db: Db, options: PublicationWorkerOp
           await publicationLease.assertOwned();
           await db.transaction(async (tx) => {
             await notifyChatPublicationWork(tx);
+            await notifyChatResponseAvailability(tx, publication);
             return tx
               .update(chatPublications)
               .set({

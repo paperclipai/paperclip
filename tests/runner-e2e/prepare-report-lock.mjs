@@ -26,6 +26,29 @@ export async function prepareReportLock(root = path.resolve(import.meta.dirname,
     return 'reviewed-correction';
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
+export async function refreshReportLock(root = path.resolve(import.meta.dirname, '../..')) {
+  const directory = path.join(root, 'tests/runner-e2e');
+  const policyPath = path.join(directory, 'report-lock.json');
+  const policy = JSON.parse(await readFile(policyPath, 'utf8'));
+  const committed = execFileSync('git', ['show', 'HEAD:pnpm-lock.yaml'], { cwd: root });
+  const inputSha256 = sha256(committed);
+  if (![policy.inputSha256, policy.outputSha256].includes(inputSha256)) {
+    throw new Error('Committed report lock is not reviewed; refusing to refresh its proof');
+  }
+  const resolved = await readFile(path.join(root, 'pnpm-lock.yaml'));
+  if (resolved.equals(committed)) return 'unchanged';
+  const patch = execFileSync('git', ['diff', '--no-ext-diff', '--no-textconv', '--no-color', 'HEAD', '--', 'pnpm-lock.yaml'], { cwd: root });
+  const changed = execFileSync('git', ['apply', '--numstat', '-'], { cwd: root, input: patch, encoding: 'utf8' });
+  if (!/^\d+\s+\d+\s+pnpm-lock\.yaml\n$/.test(changed)) throw new Error('Report correction must change only the lockfile');
+  await writeFile(path.join(directory, 'report-lock.patch'), patch);
+  await writeFile(policyPath, JSON.stringify({ inputSha256, outputSha256: sha256(resolved), patchSha256: sha256(patch),
+    basis: 'Generated with the trusted master lockfile refresh. Review this offline correction and its hashes with the dependency changes.' }, null, 2) + '\n');
+  return 'refreshed';
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {
-  console.log(await prepareReportLock());
+  const args = process.argv.slice(2);
+  if (args.length === 0) console.log(await prepareReportLock());
+  else if (args.length === 1 && args[0] === '--refresh') console.log(await refreshReportLock());
+  else throw new Error('Usage: prepare-report-lock.mjs [--refresh]');
 }

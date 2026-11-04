@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import type { ComponentProps, ReactNode } from "react";
+import { act as reactAct } from "react";
 import { webcrypto } from "node:crypto";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
@@ -13,7 +14,16 @@ import { rememberComposerEffort } from "../lib/recent-composer-effort";
 import { addStagedFilesToIssue, NewIssueDialog } from "./NewIssueDialog";
 
 const primaryState = vi.hoisted(() => ({ primaryAgentId: null as string | null, loading: false }));
+const storedFiles = vi.hoisted(() => new Map<string, import("../lib/staged-issue-files").StagedIssueFile[]>());
+vi.mock("../lib/staged-issue-files", () => ({
+  readStagedIssueFiles: vi.fn(async (key: string) => storedFiles.get(key) ?? []),
+  writeStagedIssueFiles: vi.fn(async (key: string, files: import("../lib/staged-issue-files").StagedIssueFile[]) => {
+    storedFiles.set(key, files);
+  }),
+}));
 vi.mock("./primary-agent/PrimaryAgentPresentation", () => ({ usePrimaryAgentPresentation: () => primaryState }));
+const coordinatorState = vi.hoisted(() => ({ enabled: false }));
+vi.mock("../hooks/useCoordinatorWorkspaceEnabled", () => ({ useCoordinatorWorkspaceEnabled: () => coordinatorState }));
 
 const dialogState = vi.hoisted(() => ({
   newIssueOpen: true,
@@ -289,7 +299,7 @@ function act(callback: () => void | Promise<void>): void | Promise<void> {
 }
 
 async function flush() {
-  await act(async () => {
+  await reactAct(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
@@ -355,6 +365,7 @@ describe("NewIssueDialog", () => {
   let originalInnerHeightDescriptor: PropertyDescriptor | undefined;
 
   beforeEach(() => {
+    coordinatorState.enabled = false;
     primaryState.primaryAgentId = null;
     primaryState.loading = false;
     vi.useRealTimers();
@@ -399,6 +410,7 @@ describe("NewIssueDialog", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
     mockMissingUserSecretsBannerRender.mockReset();
     localStorage.clear();
+    storedFiles.clear();
     mockIssuesApi.create.mockResolvedValue({
       id: "issue-2",
       companyId: "company-1",
@@ -1357,6 +1369,61 @@ describe("NewIssueDialog", () => {
     await act(async () => root.unmount());
   });
 
+  it.each([false, true])("creates a task from one description field (Coordinator %s)", async (enabled) => {
+    coordinatorState.enabled = enabled;
+    const { root } = renderDialog(container);
+    await flush();
+    expect(container.querySelector("#new-task-success-criteria")).toBeNull();
+    expect(container.querySelectorAll("textarea")).toHaveLength(1);
+    expect(container.textContent).not.toContain("New Task");
+    const submit = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
+    expect(submit.disabled).toBe(true);
+    await typeTextareaValue(container.querySelector('textarea[aria-label="Describe a task…"]')!, "Write the launch post");
+    await waitForAssertion(() => expect(submit.disabled).toBe(false));
+    await act(async () => submit.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+    const payload = mockIssuesApi.create.mock.calls[0][1];
+    expect(payload.description).toBe("Write the launch post");
+    expect(payload).not.toHaveProperty("successCriteria");
+    expect(payload).not.toHaveProperty("title");
+    await act(async () => root.unmount());
+  });
+
+  it.each([
+    { enabled: false, description: "Write the launch post", criteria: "  Ready for review  ", expected: "Write the launch post\n\n## Success criteria\nReady for review" },
+    { enabled: true, description: "Write the launch post", criteria: "  Ready for review  ", expected: "Write the launch post\n\n## Success criteria\nReady for review" },
+    { enabled: true, description: "", criteria: "Ready for review", expected: "## Success criteria\nReady for review" },
+    { enabled: true, description: "Write the launch post", criteria: " \n ", expected: "Write the launch post" },
+  ])("restores legacy draft criteria into the editable description (Coordinator $enabled, criteria '$criteria')", async ({ enabled, description, criteria, expected }) => {
+    coordinatorState.enabled = enabled;
+    localStorage.setItem("paperclip:issue-draft:user-1", JSON.stringify({
+      title: "", description, successCriteria: criteria, status: "todo", priority: "medium",
+      assigneeValue: "", reviewerValue: "", approverValue: "", projectId: "",
+      assigneeModelOverride: "", assigneeThinkingEffort: "", assigneeChrome: false,
+    }));
+    const { root } = renderDialog(container);
+    await flush();
+    expect(container.querySelector("#new-task-success-criteria")).toBeNull();
+    const descriptionInput = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+    expect(descriptionInput.value).toBe(expected);
+    const editedDescription = `${expected}\nKeep this edit.`;
+    await typeTextareaValue(descriptionInput, editedDescription);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 850)); });
+    const savedDraft = JSON.parse(localStorage.getItem("paperclip:issue-draft:user-1")!);
+    expect(savedDraft.description).toBe(editedDescription);
+    expect(savedDraft).not.toHaveProperty("successCriteria");
+    await act(async () => root.unmount());
+    const reopened = renderDialog(container);
+    await flush();
+    expect(container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!.value).toBe(editedDescription);
+    const submit = container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!;
+    await waitForAssertion(() => expect(submit.disabled).toBe(false));
+    await act(async () => submit.click());
+    await waitForAssertion(() => expect(mockIssuesApi.create).toHaveBeenCalledTimes(1));
+    expect(mockIssuesApi.create.mock.calls[0][1].description).toBe(editedDescription);
+    await act(async () => reopened.root.unmount());
+  });
+
   it.each(["Corrected task title", ""])("lets users edit or clear an inherited title (%s)", async (nextTitle) => {
     dialogState.newIssueDefaults = { title: "Suggested title", description: "Investigate the redirect" };
     const { root } = renderDialog(container);
@@ -1780,6 +1847,57 @@ describe("NewIssueDialog", () => {
       if (!unavailable) expect(localStorage.getItem("paperclip:issue-draft:user-1")).toContain("Typed before account lookup");
       expect(mockIssuesApi.create).not.toHaveBeenCalled();
     } finally { storage?.mockRestore(); act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it.each(["image/png", "", "application/octet-stream"])("shows staged images above text with MIME '%s' and uploads only retained files", async (type) => {
+    dialogState.newIssueDefaults = { title: "Review image references" };
+    mockIssuesApi.create.mockResolvedValue({ id: "image-task", identifier: "PAP-1", companyId: "company-1" });
+    mockIssuesApi.uploadAttachment.mockResolvedValue({});
+    const { root, queryClient } = renderDialog(container);
+    try {
+      await flush();
+      const editor = container.querySelector<HTMLTextAreaElement>('textarea[aria-label="Describe a task…"]')!;
+      await typeTextareaValue(editor, "Keep this caption");
+      const retained = new File(["image"], "reference.png", { type });
+      const removed = new File(["other"], "removed.png", { type: "image/png" });
+      const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+      Object.defineProperty(input, "files", { configurable: true, value: [retained, removed] });
+      await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+      await flush();
+      const row = container.querySelector('[data-testid="task-chat-composer-images"]')!;
+      expect(row.querySelectorAll("img")).toHaveLength(2);
+      expect(row.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(editor.value).toBe("Keep this caption");
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Remove removed.png"]')!.click(); });
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+      await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledTimes(1));
+      expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith("company-1", "image-task", retained);
+      expect(mockIssuesApi.create.mock.calls[0][1].description).toBe("Keep this caption");
+      expect(mockAssetsApi.uploadImage).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
+  it("restores staged image bytes after remount and clears them after creation", async () => {
+    dialogState.newIssueDefaults = { title: "Retain these images" };
+    const file = new File(["image bytes"], "reference.png", { type: "image/png", lastModified: 12 });
+    const first = renderDialog(container);
+    await flush();
+    await waitForAssertion(() => expect(container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.disabled).toBe(false));
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { configurable: true, value: [file] });
+    await act(async () => { input.dispatchEvent(new Event("change", { bubbles: true })); });
+    await flush();
+    expect(storedFiles.get(JSON.stringify(["user-1", "company-1"]))?.[0].file).toBe(file);
+    act(() => first.root.unmount());
+    first.queryClient.clear();
+    const second = renderDialog(container);
+    try {
+      await flush();
+      await waitForAssertion(() => expect(container.querySelector('img[alt="reference.png"]')).not.toBeNull());
+      await act(async () => { container.querySelector<HTMLButtonElement>('[aria-label="Create task"]')!.click(); });
+      await waitForAssertion(() => expect(mockIssuesApi.uploadAttachment).toHaveBeenCalledWith("company-1", "issue-2", file));
+      await waitForAssertion(() => expect(storedFiles.get(JSON.stringify(["user-1", "company-1"])) ?? []).toEqual([]));
+    } finally { act(() => second.root.unmount()); second.queryClient.clear(); }
   });
 
   it.each(["create", "upload"] as const)("stops old staged work after an account change during %s", async (during) => {

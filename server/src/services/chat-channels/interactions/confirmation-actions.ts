@@ -1,3 +1,4 @@
+import { notifyChatContinuationWork } from "../../chat-continuation-notifications.js";
 import { connectionIntentService } from "../../connection-intents.js";
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "../../issue-assignment-wakeup.js";
 import { chatInteractionPresentation } from "../../chat-interaction-presentation.js";
@@ -580,6 +581,7 @@ export function createChatConfirmationActions(db: Db, options: ChatConfirmationO
         })
         .onConflictDoNothing();
       if (shouldWake && issue.assigneeAgentId) {
+        await notifyChatContinuationWork(tx, { companyId: issue.companyId, issueId: issue.id });
         await tx
           .insert(chatActions)
           .values({

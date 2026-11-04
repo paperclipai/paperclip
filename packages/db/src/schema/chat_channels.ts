@@ -564,6 +564,8 @@ export const chatPublications = pgTable(
       name: "chat_publications_company_comment_fk",
     }),
     index("chat_publications_work_idx").on(table.state, table.nextAttemptAt),
+    index("chat_publications_comment_destination_idx").on(table.companyId, table.commentId, table.endpointId, table.conversationId)
+      .where(sql`${table.commentId} is not null`),
     uniqueIndex("chat_publications_idempotency_uq").on(
       table.companyId,
       table.idempotencyKey,
@@ -673,6 +675,9 @@ export const chatActions = pgTable(
       .defaultNow(),
   },
   (table) => [
+    index("chat_actions_continuation_work_idx")
+      .on(table.companyId, table.id)
+      .where(sql`${table.kind} = 'interaction_wakeup' AND ${table.status} IN ('issued', 'processing')`),
     index("chat_actions_confirmation_recovery_idx")
       .on(table.companyId, table.id)
       .where(sql`${table.kind} = 'confirmation_response' AND ${table.status} = 'processing'`),
@@ -680,6 +685,17 @@ export const chatActions = pgTable(
       table.endpointId,
       table.providerActionId,
     ),
+    index("chat_actions_github_stale_head_idx").on(table.companyId, table.endpointId,
+      sql`(${table.payload}->'event'->>'deliveryId')`).where(sql`${table.kind} = 'github_review_check'
+        and ${table.status} = 'cancelled' and ${table.result}->>'code' = 'stale_head'`),
+    index("chat_actions_github_check_work_idx").on(table.id).where(sql`${table.kind} = 'github_review_check'
+      and (${table.status} = 'received' or (${table.status} = 'failed' and ${table.result}->>'retryable' = 'true'))`),
+    index("chat_actions_github_terminal_work_idx").on(table.id).where(sql`${table.kind} = 'github_response_comment'
+      and ${table.status} = 'processed' and ${table.deliveryId} is not null
+      and coalesce(${table.result}->>'final', 'false') <> 'true'`),
+    index("chat_actions_github_ack_work_idx").on(table.id).where(sql`${table.kind} = 'github_response_comment'
+      and ${table.deliveryId} is not null and coalesce(${table.result}->>'final', 'false') <> 'true'
+      and (${table.status} = 'received' or (${table.status} = 'failed' and ${table.result}->>'retryable' = 'true'))`),
     foreignKey({
       columns: [table.companyId, table.deliveryId],
       foreignColumns: [chatDeliveries.companyId, chatDeliveries.id],

@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import { mkdtemp, mkdir, readFile, readdir, chmod, lstat, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -290,7 +291,11 @@ describe("buildNativeRuntimeContext", () => {
     };
 
     const context = await buildNativeRuntimeContext(input);
+    const reads = vi.spyOn(fs, "readFile");
     const repeated = await buildNativeRuntimeContext(input);
+    expect(reads.mock.calls.some(([file]) => String(file).startsWith(selectedRoot)
+      || String(file).startsWith(context.skills[0]!.bundle.rootPath))).toBe(false);
+    reads.mockRestore();
 
     expect(serviceMocks.exportFiles).toHaveBeenCalledWith(input.agent, { rejectSymlinks: true });
     expect(serviceMocks.getEffectiveToolAssignmentsForAgent).toHaveBeenCalledWith("company-1", "agent-1");
@@ -322,6 +327,19 @@ describe("buildNativeRuntimeContext", () => {
     expect(repeated.aggregateDigest).toBe(context.aggregateDigest);
     expect(repeated.instructions.bundle.rootPath).toBe(context.instructions.bundle.rootPath);
     expect(repeated.skills[0]!.bundle.rootPath).toBe(context.skills[0]!.bundle.rootPath);
+    await writeFile(path.join(selectedRoot, "references/checklist.md"), "- Verify edits\n");
+    const edited = await buildNativeRuntimeContext(input);
+    expect(edited.skills[0]!.bundle.digest).not.toBe(context.skills[0]!.bundle.digest);
+    const corrupted = path.join(edited.skills[0]!.bundle.rootPath, "SKILL.md");
+    await chmod(corrupted, 0o644);
+    await writeFile(corrupted, "Corrupted saved asset");
+    const repaired = await buildNativeRuntimeContext(input);
+    expect(repaired.skills[0]!.bundle.digest).toBe(edited.skills[0]!.bundle.digest);
+    expect(await readFile(corrupted, "utf8")).toContain("Use the checklist");
+    await chmod(path.dirname(corrupted), 0o755);
+    await fs.rm(corrupted);
+    expect((await buildNativeRuntimeContext(input)).skills[0]!.bundle.digest).toBe(edited.skills[0]!.bundle.digest);
+    expect(await readFile(corrupted, "utf8")).toContain("Use the checklist");
   });
 
   it("does not materialize assigned skills or external MCP in preconfigured mode", async () => {

@@ -430,6 +430,79 @@ describeEmbeddedPostgres("reportRunFailure", () => {
     expect(mockCaptureRunFailure).toHaveBeenCalledTimes(2);
   });
 
+  /** The persisted shape after the native finalizer commits a capacity decision. */
+  async function nativeCapacityFailure(input: {
+    run?: Partial<typeof heartbeatRuns.$inferSelect>;
+    resultJson?: Record<string, unknown>;
+    retry?: Partial<typeof heartbeatRuns.$inferInsert> | null;
+  } = {}) {
+    await seedCompanyAndAgent({ adapterType: "paperclip_runner" });
+    const run = buildRun({
+      error: "Selected model is at capacity. Please try a different model.",
+      errorCode: "native_provider_overloaded", runtimeMode: "native", nativePhase: "committed",
+      executionStage: "preparing", exitCode: null, signal: null,
+      resultJson: {
+        nativeProviderFailure: { provider: "codex", category: "server_overloaded" },
+        finalizationPhase: "committed", finalizationReasonCode: "native_provider_overloaded",
+        ...input.resultJson,
+      },
+      ...input.run,
+    });
+    const [stored] = await db.insert(heartbeatRuns).values(run).returning();
+    if (input.retry !== null) {
+      await db.insert(heartbeatRuns).values({
+        companyId, agentId, invocationSource: "automation", triggerDetail: "system", status: "scheduled_retry",
+        retryOfRunId: run.id, scheduledRetryReason: "native_provider_overloaded", scheduledRetryAttempt: 1,
+        scheduledRetryAt: new Date(Date.now() + 60_000), errorCode: "native_provider_overloaded",
+        contextSnapshot: { issueId: run.nativeIssueId, retryOfRunId: run.id }, ...input.retry,
+      });
+    }
+    return stored!;
+  }
+
+  it("keeps a native model capacity failure local once its automatic retry is scheduled", async () => {
+    const run = await nativeCapacityFailure();
+    await reportRunFailure(db, run);
+    await reportRunFailure(db, run, { phase: "execute" });
+    expect(mockCaptureRunFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["the retries are exhausted", { resultJson: { finalizationReasonCode: "native_provider_overloaded_exhausted" }, retry: null }],
+    ["the task holds the retry", { resultJson: { finalizationReasonCode: "native_provider_overloaded_held" }, retry: null }],
+    ["no retry run exists", { retry: null }],
+    ["the successor belongs to another retry lane", { retry: { scheduledRetryReason: "native_safe_replacement" } }],
+    ["the successor belongs to another task", { retry: { contextSnapshot: { issueId: randomUUID() } } }],
+    ["the run has no native task", { run: { nativeIssueId: null } }],
+    ["finalization is not committed", { resultJson: { finalizationPhase: "retryable_failure" } }],
+    ["the diagnostic is not typed capacity evidence", { resultJson: { nativeProviderFailure: { provider: "codex", category: "turn_failed" } } }],
+    ["the diagnostic is missing", { resultJson: { nativeProviderFailure: undefined } }],
+    ["the run is legacy", { run: { runtimeMode: "legacy" } }],
+    ["the run has a signal", { run: { signal: "SIGTERM" } }],
+    ["the run timed out", { run: { status: "timed_out" } }],
+  ] as const)("reports a native capacity failure when %s", async (_label, input) => {
+    const run = await nativeCapacityFailure(input as Parameters<typeof nativeCapacityFailure>[0]);
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledOnce();
+  });
+
+  it("reports a native capacity retry during setup, in all mode, or when its retry cannot be read", async () => {
+    const run = await nativeCapacityFailure();
+    await reportRunFailure(db, run, { phase: "setup" });
+    const select = db.select.bind(db);
+    // The agent lookup succeeds; the retry read fails.
+    const spy = vi.spyOn(db, "select").mockImplementationOnce(select as typeof db.select)
+      .mockImplementation(() => { throw new Error("fixture retry read failed"); });
+    try {
+      await reportRunFailure(db, run);
+    } finally {
+      spy.mockRestore();
+    }
+    vi.stubEnv("PAPERCLIP_SENTRY_RUN_FAILURES", "all");
+    await reportRunFailure(db, run);
+    expect(mockCaptureRunFailure).toHaveBeenCalledTimes(3);
+  });
+
   function providerAccessRun(overrides: Partial<typeof heartbeatRuns.$inferSelect> = {}) {
     return buildRun({
       error: "ACP agent reported a terminal access failure.\nInvalid API key · Fix external API key",

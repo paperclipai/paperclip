@@ -439,7 +439,7 @@ describe("native runner performance trace", () => {
       ).toBe("agent.turn");
       await trace.measure("provider.dynamic", async () => undefined);
       await trace.record({
-        name: "provider.turn.queue",
+        name: "runner.turn.submitted_to_started",
         parentName: "agent.turn",
         startedAtMs: 1_085,
         endedAtMs: 1_090,
@@ -469,7 +469,7 @@ describe("native runner performance trace", () => {
     expect(parentOf("stage.asset.ca_bundle")).toBe("stage.sync");
     expect(parentOf("agent.turn")).toBe("native.session.execute");
     expect(parentOf("provider.dynamic")).toBe("agent.turn");
-    expect(parentOf("provider.turn.queue")).toBe("agent.turn");
+    expect(parentOf("runner.turn.submitted_to_started")).toBe("agent.turn");
 
     expect(spans.filter((span) => span.name === "task.provider_session")).toHaveLength(1);
     expect(spans.some((span) => span.name === "task.provider_session.measured")).toBe(false);

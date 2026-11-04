@@ -1,3 +1,12 @@
+import { GITHUB_RECOVERY_STATE_KEY, GITHUB_RECOVERY_INTERVAL_MS, GITHUB_RECOVERY_WINDOW_MS,
+  GITHUB_RECOVERY_SCAN_LEASE_MS, githubRecoveryWindow, type GitHubRecoveryWindow } from "./webhook-recovery-state.js";
+import { githubWebhookRecoverySchedule } from "./webhook-recovery-schedule.js";
+import { registerGitHubWebhookRecoveryWork } from "./webhook-recovery-work.js";
+import { notifyGitHubWebhookRecovery } from "./webhook-recovery-notifications.js";
+import { createChatSdkStatePersistence } from "../sdk-state.js";
+import type { ChatSdkStateCompareAndSetInput } from "../../chat-sdk-state.js";
+import type { createDeliveryWorkCoordinator } from "../../delivery-work-coordinator.js";
+
 import type { EndpointRow, DbTransaction, DbOrTransaction, RuntimeContext, LifecycleRuntimeFence } from "../runtime-types.js";
 
 import { githubRepositoryInventoryItemFromPayload } from "./resources.js";
@@ -74,37 +83,9 @@ import type { EndpointRecord } from "../runtime-types.js";
     | { kind: "ignored" }
     | { actionId: string; kind: "staged" };
 
-export const GITHUB_RECOVERY_STATE_KEY = "paperclip:github-webhook-recovery:v1";
-export const GITHUB_RECOVERY_INTERVAL_MS = 60_000;
-export const GITHUB_RECOVERY_WINDOW_MS = 60 * 60_000;
-export const GITHUB_RECOVERY_SCAN_LEASE_MS = 5 * 60_000;
-export type GitHubRecoveryWindow = LifecycleRuntimeFence & {
-  appId: string;
-  webhookUrl: string;
-  floor: string;
-  nextScanAt: string;
-};
 export type GitHubRecoveryReceipt = GitHubRecoveryWindow & {
   original: GitHubAppWebhookDeliveryDetail;
 };
-
-export function githubRecoveryWindow(value: unknown): GitHubRecoveryWindow | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const item = value as GitHubRecoveryWindow;
-  return Number.isSafeInteger(item.generation) &&
-    item.generation >= 0 &&
-    typeof item.credentialFingerprint === "string" &&
-    /^[a-f0-9]{64}$/.test(item.credentialFingerprint) &&
-    typeof item.appId === "string" &&
-    /^\d+$/.test(item.appId) &&
-    typeof item.webhookUrl === "string" &&
-    typeof item.floor === "string" &&
-    Number.isFinite(Date.parse(item.floor)) &&
-    typeof item.nextScanAt === "string" &&
-    Number.isFinite(Date.parse(item.nextScanAt))
-    ? item
-    : null;
-}
 
 export type GitHubWebhookIngressPayload = {
   version: 1;
@@ -1073,6 +1054,7 @@ export function createGitHubWebhookIngress(db: Db, options: GitHubWebhookIngress
   async function githubRecoverySourceIsCurrent(
     detail: GitHubAppWebhookDeliveryDetail,
     credentials: Record<string, string>,
+    sourceFetch: typeof fetch = fetchImpl,
   ): Promise<boolean> {
     const comment = detail?.payload?.comment;
     if (
@@ -1082,7 +1064,7 @@ export function createGitHubWebhookIngress(db: Db, options: GitHubWebhookIngress
     )
       return false;
     const current = await getGitHubRecoveryComment({
-      fetch: fetchImpl,
+      fetch: sourceFetch,
       appToken: githubAppJwt(credentials.appId, credentials.privateKey),
       installationId: credentials.installationId,
       repositoryFullName: detail.payload.repositoryFullName,
@@ -1161,424 +1143,468 @@ export function createGitHubWebhookIngress(db: Db, options: GitHubWebhookIngress
       )
       .orderBy(asc(chatSdkState.updatedAt), asc(chatEndpoints.id))
       .limit(Math.min(5, Math.max(1, limit)));
-    for (const { endpoint } of rows) {
-      const record = await endpointRecord(endpoint.id);
-      if (!record || !record.endpoint.botExternalId) continue;
-      const context = runtimeContextForRecord(record);
-      const webhookUrl = `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/github`;
-      const scope = { companyId: endpoint.companyId, endpointId: endpoint.id };
-      const stored = await persistence.read(scope, GITHUB_RECOVERY_STATE_KEY);
-      const previous = githubRecoveryWindow(stored?.value);
-      const epochMatches =
-        previous &&
-        previous.generation === context.generation &&
-        previous.credentialFingerprint === context.credentialFingerprint &&
-        previous.webhookUrl === webhookUrl &&
-        previous.appId === record.endpoint.botExternalId;
-      if (epochMatches && Date.parse(previous.nextScanAt) > now.getTime())
-        continue;
-      const window: GitHubRecoveryWindow = {
-        generation: context.generation,
-        credentialFingerprint: context.credentialFingerprint,
-        appId: record.endpoint.botExternalId,
-        webhookUrl,
-        floor: epochMatches ? previous.floor : now.toISOString(),
-        nextScanAt: new Date(
-          now.getTime() + GITHUB_RECOVERY_SCAN_LEASE_MS,
-        ).toISOString(),
-      };
+    for (const { endpoint } of rows) await recoverGitHubWebhookEndpoint(endpoint.id);
+    return rows.length;
+  }
+
+  async function saveRecoveryWindow(input: ChatSdkStateCompareAndSetInput) {
+    return db.transaction(async tx => {
+      await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: input.endpointId });
+      return createChatSdkStatePersistence(tx as unknown as Db).compareAndSet(input);
+    });
+  }
+
+  async function recoverGitHubWebhookEndpoint(
+    endpointId: string,
+    canRun: () => boolean = () => true,
+    signal?: AbortSignal,
+  ) {
+    const admitted = () => !isShuttingDown() && canRun() && !signal?.aborted;
+    if (!admitted() || !getWebhookPublicBaseUrl()?.startsWith("https://")) return;
+    const assertAdmitted = () => {
+      if (!admitted()) throw signal?.reason ?? new Error("GitHub webhook recovery stopped");
+    };
+    const recoveryFetch: typeof fetch = (input, init) => {
+      assertAdmitted();
+      return fetchImpl(input, init);
+    };
+    const now = new Date();
+    const record = await endpointRecord(endpointId);
+    if (!record || !record.endpoint.botExternalId) return;
+    const endpoint = record.endpoint;
+    const context = runtimeContextForRecord(record);
+    const webhookUrl = `${getWebhookPublicBaseUrl()}/api/chat-webhooks/${endpoint.publicId}/github`;
+    const scope = { companyId: endpoint.companyId, endpointId: endpoint.id };
+    const stored = await persistence.read(scope, GITHUB_RECOVERY_STATE_KEY);
+    const previous = githubRecoveryWindow(stored?.value);
+    const epochMatches =
+      previous &&
+      previous.generation === context.generation &&
+      previous.credentialFingerprint === context.credentialFingerprint &&
+      previous.webhookUrl === webhookUrl &&
+      previous.appId === record.endpoint.botExternalId;
+    if (epochMatches && Date.parse(previous.nextScanAt) > now.getTime())
+      return;
+    const window: GitHubRecoveryWindow = {
+      generation: context.generation,
+      credentialFingerprint: context.credentialFingerprint,
+      appId: record.endpoint.botExternalId,
+      webhookUrl,
+      floor: epochMatches ? previous.floor : now.toISOString(),
+      nextScanAt: new Date(
+        now.getTime() + GITHUB_RECOVERY_SCAN_LEASE_MS,
+      ).toISOString(),
+    };
+    if (
+      !(await saveRecoveryWindow({
+        ...scope,
+        key: GITHUB_RECOVERY_STATE_KEY,
+        expectedVersion: stored?.version ?? null,
+        value: window,
+        expiresAt: null,
+      }))
+    )
+      return;
+    const claimedVersion = (stored?.version ?? 0) + 1;
+    let nextDelay = GITHUB_RECOVERY_INTERVAL_MS;
+    let outcome = "scanned";
+    let requested = 0;
+    let inspected = 0;
+    try {
+      if (!epochMatches) {
+        outcome = "epoch_initialized";
+        return;
+      }
+      const credentials = await resolveCredentialRefs(
+        record.endpoint,
+        record.credentialSecretRefs,
+      );
+      if (credentials.appId !== window.appId || !credentials.installationId)
+        return;
+      const appToken = githubAppJwt(
+        credentials.appId,
+        credentials.privateKey,
+      );
+      const config = await readGitHubAppWebhookConfig({
+        fetch: recoveryFetch,
+        appToken,
+      });
       if (
-        !(await persistence.compareAndSet({
-          ...scope,
-          key: GITHUB_RECOVERY_STATE_KEY,
-          expectedVersion: stored?.version ?? null,
-          value: window,
-          expiresAt: null,
-        }))
-      )
-        continue;
-      const claimedVersion = (stored?.version ?? 0) + 1;
-      let nextDelay = GITHUB_RECOVERY_INTERVAL_MS;
-      let outcome = "scanned";
-      let requested = 0;
-      let inspected = 0;
-      try {
-        if (!epochMatches) {
-          outcome = "epoch_initialized";
-          continue;
-        }
-        const credentials = await resolveCredentialRefs(
-          record.endpoint,
-          record.credentialSecretRefs,
-        );
-        if (credentials.appId !== window.appId || !credentials.installationId)
-          continue;
-        const appToken = githubAppJwt(
-          credentials.appId,
-          credentials.privateKey,
-        );
-        const config = await readGitHubAppWebhookConfig({
-          fetch: fetchImpl,
+        config.url !== webhookUrl ||
+        config.contentType !== "json" ||
+        config.insecureSsl !== "0"
+      ) {
+        outcome = "callback_mismatch";
+        nextDelay = 5 * 60_000;
+        return;
+      }
+      const attempts: GitHubAppWebhookDelivery[] = [];
+      const floor = Math.max(
+        Date.parse(window.floor),
+        now.getTime() - GITHUB_RECOVERY_WINDOW_MS,
+      );
+      let cursor: string | undefined;
+      let truncated = false;
+      let previousTimestamp = Number.POSITIVE_INFINITY;
+      for (let page = 0; page < 3; page += 1) {
+        const result = await listGitHubAppWebhookDeliveries({
+          fetch: recoveryFetch,
           appToken,
+          cursor,
         });
+
+
+
+        for (const attempt of result.deliveries) {
+          const timestamp = Date.parse(attempt.deliveredAt);
+          if (timestamp > previousTimestamp)
+            throw new Error("GitHub recovery history ordering changed");
+          previousTimestamp = timestamp;
+          if (timestamp >= floor) attempts.push(attempt);
+        }
+        if (previousTimestamp < floor) break;
+        if (!result.nextCursor) break;
+        if (result.nextCursor === cursor)
+          throw new Error("GitHub recovery pagination did not advance");
+        cursor = result.nextCursor;
+        truncated = page === 2;
+      }
+
+
+      if (truncated) {
+        outcome = "history_limit_reached";
+        nextDelay = 5 * 60_000;
+        return;
+      }
+      const groups = new Map<string, GitHubAppWebhookDelivery[]>();
+      for (const attempt of attempts) {
+        const group = groups.get(attempt.guid) ?? [];
+        group.push(attempt);
+        groups.set(attempt.guid, group);
+      }
+      for (const [guid, group] of groups) {
         if (
-          config.url !== webhookUrl ||
-          config.contentType !== "json" ||
-          config.insecureSsl !== "0"
-        ) {
-          outcome = "callback_mismatch";
-          nextDelay = 5 * 60_000;
+          inspected >= 5 ||
+          isShuttingDown() ||
+          Date.now() >= Date.parse(window.nextScanAt)
+        )
+          break;
+        if (
+          group.some(
+            (item) =>
+              item.statusCode !== null &&
+              item.statusCode >= 200 &&
+              item.statusCode < 400,
+          )
+        )
           continue;
-        }
-        const attempts: GitHubAppWebhookDelivery[] = [];
-        const floor = Math.max(
-          Date.parse(window.floor),
-          now.getTime() - GITHUB_RECOVERY_WINDOW_MS,
-        );
-        let cursor: string | undefined;
-        let truncated = false;
-        let previousTimestamp = Number.POSITIVE_INFINITY;
-        for (let page = 0; page < 3; page += 1) {
-          const result = await listGitHubAppWebhookDeliveries({
-            fetch: fetchImpl,
-            appToken,
-            cursor,
-          });
-          // GitHub's official recovery recipe uses newest-first pagination
-          // and stops at the age floor. Reject observed ordering drift rather
-          // than assuming unseen pages cannot contain a successful sibling.
-          for (const attempt of result.deliveries) {
-            const timestamp = Date.parse(attempt.deliveredAt);
-            if (timestamp > previousTimestamp)
-              throw new Error("GitHub recovery history ordering changed");
-            previousTimestamp = timestamp;
-            if (timestamp >= floor) attempts.push(attempt);
-          }
-          if (previousTimestamp < floor) break;
-          if (!result.nextCursor) break;
-          if (result.nextCursor === cursor)
-            throw new Error("GitHub recovery pagination did not advance");
-          cursor = result.nextCursor;
-          truncated = page === 2;
-        }
-        // All pages in this time window are needed to rule out a successful
-        // sibling; do not act on a partial window after hitting the work cap.
-        if (truncated) {
-          outcome = "history_limit_reached";
-          nextDelay = 5 * 60_000;
+        const originals = group.filter((item) => !item.redelivery);
+        if (originals.length !== 1) continue;
+        const original = originals[0]!;
+        if (
+          Date.parse(original.deliveredAt) < floor ||
+          Date.parse(original.deliveredAt) > now.getTime() - 10_000 ||
+          original.statusCode === null ||
+          original.statusCode < 500 ||
+          original.action !== "created" ||
+          !["issue_comment", "pull_request_review_comment"].includes(
+            original.event,
+          ) ||
+          original.installationId !== credentials.installationId ||
+          !original.repositoryId ||
+          !(await githubRecoveryResource(db, endpoint, original.repositoryId))
+        )
           continue;
-        }
-        const groups = new Map<string, GitHubAppWebhookDelivery[]>();
-        for (const attempt of attempts) {
-          const group = groups.get(attempt.guid) ?? [];
-          group.push(attempt);
-          groups.set(attempt.guid, group);
-        }
-        for (const [guid, group] of groups) {
-          if (
-            inspected >= 5 ||
-            isShuttingDown() ||
-            Date.now() >= Date.parse(window.nextScanAt)
+        const recoveryId = `github_webhook_recovery:${guid}`;
+        if (await githubRecoveryAlreadyReceived(db, endpoint, guid)) continue;
+        const receipt = await db
+          .select()
+          .from(chatActions)
+          .where(
+            and(
+              eq(chatActions.endpointId, endpoint.id),
+              eq(chatActions.providerActionId, recoveryId),
+            ),
           )
-            break;
-          if (
-            group.some(
-              (item) =>
-                item.statusCode !== null &&
-                item.statusCode >= 200 &&
-                item.statusCode < 400,
-            )
-          )
-            continue;
-          const originals = group.filter((item) => !item.redelivery);
-          if (originals.length !== 1) continue;
-          const original = originals[0]!;
-          if (
-            Date.parse(original.deliveredAt) < floor ||
-            Date.parse(original.deliveredAt) > now.getTime() - 10_000 ||
-            original.statusCode === null ||
-            original.statusCode < 500 ||
-            original.action !== "created" ||
-            !["issue_comment", "pull_request_review_comment"].includes(
-              original.event,
-            ) ||
-            original.installationId !== credentials.installationId ||
-            !original.repositoryId ||
-            !(await githubRecoveryResource(db, endpoint, original.repositoryId))
-          )
-            continue;
-          const recoveryId = `github_webhook_recovery:${guid}`;
-          if (await githubRecoveryAlreadyReceived(db, endpoint, guid)) continue;
-          const receipt = await db
-            .select()
-            .from(chatActions)
-            .where(
-              and(
-                eq(chatActions.endpointId, endpoint.id),
-                eq(chatActions.providerActionId, recoveryId),
-              ),
-            )
-            .then((items) => items[0] ?? null);
-          const count =
-            typeof receipt?.result?.attempts === "number"
-              ? receipt.result.attempts
-              : 0;
-          const receiptWindow = githubRecoveryWindow(receipt?.payload);
-          const latest = [...group].sort(
-            (left, right) =>
-              Date.parse(right.deliveredAt) - Date.parse(left.deliveredAt),
-          )[0]!;
-          if (
+          .then((items) => items[0] ?? null);
+        const count =
+          typeof receipt?.result?.attempts === "number"
+            ? receipt.result.attempts
+            : 0;
+        const receiptWindow = githubRecoveryWindow(receipt?.payload);
+        const latest = [...group].sort(
+          (left, right) =>
+            Date.parse(right.deliveredAt) - Date.parse(left.deliveredAt),
+        )[0]!;
+        if (
+          latest.statusCode === null ||
+          latest.statusCode < 500 ||
+          latest.throttledAt !== null ||
+          Date.parse(latest.deliveredAt) > now.getTime() - 10_000
+        )
+          continue;
+        if (
+          receipt &&
+          (receipt.status === "cancelled" ||
+            !receiptWindow ||
+            receiptWindow.generation !== window.generation ||
+            receiptWindow.credentialFingerprint !==
+              window.credentialFingerprint ||
+            receiptWindow.webhookUrl !== window.webhookUrl ||
+            count >= 3 ||
+            receipt.result?.latestAttemptId === latest.id ||
+            !latest.redelivery ||
             latest.statusCode === null ||
             latest.statusCode < 500 ||
-            latest.throttledAt !== null ||
-            Date.parse(latest.deliveredAt) > now.getTime() - 10_000
-          )
-            continue;
-          if (
-            receipt &&
-            (receipt.status === "cancelled" ||
-              !receiptWindow ||
-              receiptWindow.generation !== window.generation ||
-              receiptWindow.credentialFingerprint !==
-                window.credentialFingerprint ||
-              receiptWindow.webhookUrl !== window.webhookUrl ||
-              count >= 3 ||
-              receipt.result?.latestAttemptId === latest.id ||
-              !latest.redelivery ||
-              latest.statusCode === null ||
-              latest.statusCode < 500 ||
-              Date.parse(latest.deliveredAt) <
-                Date.parse(String(receipt.result?.requestedAt)) ||
-              Date.parse(String(receipt.result?.retryAt)) > now.getTime())
-          )
-            continue;
-          inspected += 1;
-          const detail = await getGitHubAppWebhookDelivery({
-            fetch: fetchImpl,
+            Date.parse(latest.deliveredAt) <
+              Date.parse(String(receipt.result?.requestedAt)) ||
+            Date.parse(String(receipt.result?.retryAt)) > now.getTime())
+        )
+          continue;
+        inspected += 1;
+        const detail = await getGitHubAppWebhookDelivery({
+          fetch: recoveryFetch,
+          appToken,
+          deliveryId: original.id,
+        });
+        const comment = detail.payload.comment;
+        if (
+          detail.id !== original.id ||
+          detail.guid !== guid ||
+          detail.redelivery ||
+          detail.url !== webhookUrl ||
+          detail.event !== original.event ||
+          detail.deliveredAt !== original.deliveredAt ||
+          detail.statusCode !== original.statusCode ||
+          detail.installationId !== original.installationId ||
+          detail.repositoryId !== original.repositoryId ||
+          detail.action !== "created" ||
+          detail.payload.action !== "created" ||
+          detail.payload.installationId !== credentials.installationId ||
+          detail.payload.repositoryId !== original.repositoryId ||
+          !comment ||
+          comment.userType !== "User" ||
+          detail.payload.senderId !== comment.userId ||
+          Date.parse(comment.createdAt) < floor ||
+          comment.createdAt !== comment.updatedAt ||
+          !(await githubRecoveryResource(
+            db,
+            endpoint,
+            original.repositoryId,
+            detail.payload.repositoryFullName,
+          ))
+        ) {
+          await rememberGitHubRecoverySkip(
+            endpoint,
+            context,
+            window,
+            original,
+            "not_eligible_for_recovery",
+          );
+          continue;
+        }
+        if (!(await githubRecoverySourceIsCurrent(detail, credentials, recoveryFetch))) {
+          await rememberGitHubRecoverySkip(
+            endpoint,
+            context,
+            window,
+            original,
+            "source_changed_or_unavailable",
+          );
+          continue;
+        }
+        await withCredentialMutationLease(endpoint, async (lease) => {
+          await lease.assertOwned();
+          const currentConfig = await readGitHubAppWebhookConfig({
+            fetch: recoveryFetch,
             appToken,
-            deliveryId: original.id,
           });
-          const comment = detail.payload.comment;
           if (
-            detail.id !== original.id ||
-            detail.guid !== guid ||
-            detail.redelivery ||
-            detail.url !== webhookUrl ||
-            detail.event !== original.event ||
-            detail.deliveredAt !== original.deliveredAt ||
-            detail.statusCode !== original.statusCode ||
-            detail.installationId !== original.installationId ||
-            detail.repositoryId !== original.repositoryId ||
-            detail.action !== "created" ||
-            detail.payload.action !== "created" ||
-            detail.payload.installationId !== credentials.installationId ||
-            detail.payload.repositoryId !== original.repositoryId ||
-            !comment ||
-            comment.userType !== "User" ||
-            detail.payload.senderId !== comment.userId ||
-            Date.parse(comment.createdAt) < floor ||
-            comment.createdAt !== comment.updatedAt ||
-            !(await githubRecoveryResource(
-              db,
-              endpoint,
-              original.repositoryId,
-              detail.payload.repositoryFullName,
-            ))
-          ) {
-            await rememberGitHubRecoverySkip(
-              endpoint,
+            currentConfig.url !== webhookUrl ||
+            currentConfig.contentType !== "json" ||
+            currentConfig.insecureSsl !== "0"
+          )
+            return;
+          const requestedAt = new Date().toISOString();
+          const claimed = await db.transaction(async (tx) => {
+            await lease.assertOwned(tx);
+            const current = await runtimeCallbackEndpoint(
+              tx,
+              endpoint.id,
               context,
-              window,
-              original,
-              "not_eligible_for_recovery",
+              ["active"],
             );
-            continue;
-          }
-          if (!(await githubRecoverySourceIsCurrent(detail, credentials))) {
-            await rememberGitHubRecoverySkip(
-              endpoint,
-              context,
-              window,
-              original,
-              "source_changed_or_unavailable",
-            );
-            continue;
-          }
-          await withCredentialMutationLease(endpoint, async (lease) => {
-            await lease.assertOwned();
-            const currentConfig = await readGitHubAppWebhookConfig({
-              fetch: fetchImpl,
-              appToken,
-            });
             if (
-              currentConfig.url !== webhookUrl ||
-              currentConfig.contentType !== "json" ||
-              currentConfig.insecureSsl !== "0"
-            )
-              return;
-            const claimed = await db.transaction(async (tx) => {
-              await lease.assertOwned(tx);
-              const current = await runtimeCallbackEndpoint(
-                tx,
-                endpoint.id,
-                context,
-                ["active"],
-              );
-              if (
-                !current ||
-                !(await githubRecoveryResource(
-                  tx,
-                  current,
-                  original.repositoryId!,
-                  detail.payload.repositoryFullName,
-                ))
-              )
-                return null;
-              const connection = await tx
-                .select({ id: toolConnections.id })
-                .from(toolConnections)
-                .where(
-                  and(
-                    eq(toolConnections.id, current.connectionId),
-                    eq(toolConnections.companyId, current.companyId),
-                    eq(toolConnections.enabled, true),
-                    eq(toolConnections.status, "active"),
-                  ),
-                )
-                .then((items) => items[0]);
-              const scan = await tx
-                .select({ id: chatSdkState.id })
-                .from(chatSdkState)
-                .where(
-                  and(
-                    eq(chatSdkState.endpointId, endpoint.id),
-                    eq(chatSdkState.stateKey, GITHUB_RECOVERY_STATE_KEY),
-                    eq(chatSdkState.version, claimedVersion),
-                  ),
-                )
-                .then((items) => items[0]);
-              const local = await githubRecoveryAlreadyReceived(
+              !current ||
+              !(await githubRecoveryResource(
                 tx,
                 current,
-                guid,
-              );
-              if (
-                !connection ||
-                !scan ||
-                local ||
-                isShuttingDown() ||
-                Date.now() >= Date.parse(window.nextScanAt)
+                original.repositoryId!,
+                detail.payload.repositoryFullName,
+              ))
+            )
+              return null;
+            const connection = await tx
+              .select({ id: toolConnections.id })
+              .from(toolConnections)
+              .where(
+                and(
+                  eq(toolConnections.id, current.connectionId),
+                  eq(toolConnections.companyId, current.companyId),
+                  eq(toolConnections.enabled, true),
+                  eq(toolConnections.status, "active"),
+                ),
               )
-                return null;
-              const result = {
-                attempts: count + 1,
-                latestAttemptId: latest.id,
-                requestedAt: new Date().toISOString(),
-                retryAt: new Date(
-                  Date.now() + 60_000 * 5 ** count,
-                ).toISOString(),
-              };
-              const payload: GitHubRecoveryReceipt = {
-                ...window,
-                original: detail,
-              };
-              const changes = receipt
-                ? await tx
-                    .update(chatActions)
-                    .set({
-                      status: "processing",
-                      result,
-                      updatedAt: new Date(),
-                    })
-                    .where(
-                      and(
-                        eq(chatActions.id, receipt.id),
-                        eq(chatActions.updatedAt, receipt.updatedAt),
-                      ),
-                    )
-                    .returning({ id: chatActions.id })
-                : await tx
-                    .insert(chatActions)
-                    .values({
-                      companyId: endpoint.companyId,
-                      endpointId: endpoint.id,
-                      kind: "github_webhook_recovery",
-                      providerActionId: recoveryId,
-                      payload,
-                      status: "processing",
-                      result,
-                    })
-                    .onConflictDoNothing()
-                    .returning({ id: chatActions.id });
-              return changes[0]?.id ?? null;
-            });
-            if (!claimed) return;
-            requested += 1;
-            // Commit the immutable denial fence before transport. Even an
-            // ambiguous POST is not reattempted without a distinct failed
-            // provider delivery. A stale scanner cannot overwrite a successor.
+              .then((items) => items[0]);
+            const scan = await tx
+              .select({ id: chatSdkState.id })
+              .from(chatSdkState)
+              .where(
+                and(
+                  eq(chatSdkState.endpointId, endpoint.id),
+                  eq(chatSdkState.stateKey, GITHUB_RECOVERY_STATE_KEY),
+                  eq(chatSdkState.version, claimedVersion),
+                ),
+              )
+              .then((items) => items[0]);
+            const local = await githubRecoveryAlreadyReceived(
+              tx,
+              current,
+              guid,
+            );
+            if (
+              !connection ||
+              !scan ||
+              local ||
+              isShuttingDown() ||
+              Date.now() >= Date.parse(window.nextScanAt)
+            )
+              return null;
+            const result = {
+              attempts: count + 1,
+              latestAttemptId: latest.id,
+              requestedAt,
+              retryAt: new Date(
+                Date.now() + 60_000 * 5 ** count,
+              ).toISOString(),
+            };
+            const payload: GitHubRecoveryReceipt = {
+              ...window,
+              original: detail,
+            };
+            const changes = receipt
+              ? await tx
+                  .update(chatActions)
+                  .set({
+                    status: "processing",
+                    result,
+                    updatedAt: new Date(),
+                  })
+                  .where(
+                    and(
+                      eq(chatActions.id, receipt.id),
+                      eq(chatActions.updatedAt, receipt.updatedAt),
+                    ),
+                  )
+                  .returning({ id: chatActions.id })
+              : await tx
+                  .insert(chatActions)
+                  .values({
+                    companyId: endpoint.companyId,
+                    endpointId: endpoint.id,
+                    kind: "github_webhook_recovery",
+                    providerActionId: recoveryId,
+                    payload,
+                    status: "processing",
+                    result,
+                  })
+                  .onConflictDoNothing()
+                  .returning({ id: chatActions.id });
+            return changes[0]?.id ?? null;
+          });
+          if (!claimed) return;
+          const ownsAttempt = and(
+            eq(chatActions.id, claimed),
+            eq(chatActions.status, "processing"),
+            sql`(${chatActions.result}->>'attempts')::int = ${count + 1}`,
+            sql`${chatActions.result}->>'latestAttemptId' = ${latest.id}`,
+            sql`${chatActions.result}->>'requestedAt' = ${requestedAt}`,
+          );
+          let transportStarted = false;
+          try {
             await lease.assertOwned();
-            try {
-              await requestGitHubAppWebhookRedelivery({
-                fetch: fetchImpl,
-                appToken,
-                deliveryId: original.id,
-              });
-              await db
-                .update(chatActions)
-                .set({ status: "processed", updatedAt: new Date() })
-                .where(
-                  and(
-                    eq(chatActions.id, claimed),
-                    eq(chatActions.status, "processing"),
-                    sql`(${chatActions.result}->>'attempts')::int = ${count + 1}`,
-                  ),
-                );
-            } catch (error) {
+            await requestGitHubAppWebhookRedelivery({
+              fetch: (input, init) => {
+                assertAdmitted();
+                transportStarted = true;
+                requested += 1;
+                return fetchImpl(input, init);
+              },
+              appToken,
+              deliveryId: original.id,
+            });
+            await db
+              .update(chatActions)
+              .set({ status: "processed", updatedAt: new Date() })
+              .where(ownsAttempt);
+          } catch (error) {
+            if (transportStarted) {
               await db
                 .update(chatActions)
                 .set({ status: "delivery_unknown", updatedAt: new Date() })
-                .where(
-                  and(
-                    eq(chatActions.id, claimed),
-                    eq(chatActions.status, "processing"),
-                    sql`(${chatActions.result}->>'attempts')::int = ${count + 1}`,
-                  ),
-                );
-              throw error;
+                .where(ownsAttempt);
+            } else {
+              await db.transaction(async (tx) => {
+                await notifyGitHubWebhookRecovery(tx, { kind: "endpoint", id: endpoint.id });
+                if (receipt) {
+                  await tx
+                    .update(chatActions)
+                    .set({ status: receipt.status, result: receipt.result, updatedAt: receipt.updatedAt })
+                    .where(ownsAttempt);
+                } else {
+                  await tx.delete(chatActions).where(ownsAttempt);
+                }
+              });
             }
-          });
-        }
-      } catch (error) {
-        outcome = "scan_failed";
-        nextDelay = Math.max(
-          5 * 60_000,
-          Math.min(
-            24 * 60 * 60_000,
-            Number((error as { retryAfterMs?: unknown })?.retryAfterMs) || 0,
-          ),
-        );
-        logger.warn(
-          { endpointId: endpoint.id, error: redactError(error) },
-          "GitHub webhook recovery deferred",
-        );
-      } finally {
-        await persistence.compareAndSet({
-          ...scope,
-          key: GITHUB_RECOVERY_STATE_KEY,
-          expectedVersion: claimedVersion,
-          value: {
-            ...window,
-            nextScanAt: new Date(Date.now() + nextDelay).toISOString(),
-            outcome,
-            requested,
-          },
-          expiresAt: null,
+            throw error;
+          }
         });
       }
+    } catch (error) {
+      outcome = "scan_failed";
+      nextDelay = Math.max(
+        5 * 60_000,
+        Math.min(
+          24 * 60 * 60_000,
+          Number((error as { retryAfterMs?: unknown })?.retryAfterMs) || 0,
+        ),
+      );
+      logger.warn(
+        { endpointId: endpoint.id, error: redactError(error) },
+        "GitHub webhook recovery deferred",
+      );
+    } finally {
+      await saveRecoveryWindow({
+        ...scope,
+        key: GITHUB_RECOVERY_STATE_KEY,
+        expectedVersion: claimedVersion,
+        value: {
+          ...window,
+          nextScanAt: new Date(Date.now() + nextDelay).toISOString(),
+          outcome,
+          requested,
+        },
+        expiresAt: null,
+      });
     }
-    return rows.length;
+  }
+
+  const recoverySchedule = githubWebhookRecoverySchedule(db, {
+    runtimeGeneration, credentialFingerprint, getWebhookPublicBaseUrl,
+    recover: recoverGitHubWebhookEndpoint,
+  });
+  function registerWebhookRecoveryWork(coordinator: ReturnType<typeof createDeliveryWorkCoordinator>, canRun: () => boolean) {
+    return registerGitHubWebhookRecoveryWork(coordinator, recoverySchedule, () => canRun() && !isShuttingDown());
   }
 
   async function processPendingGitHubWebhookIngress(
@@ -1598,5 +1624,5 @@ export function createGitHubWebhookIngress(db: Db, options: GitHubWebhookIngress
     for (const action of actions) await processGitHubWebhookIngress(action.id);
     return actions.length;
   }
-  return { stageGitHubWebhookIngress, githubIngressAcceptedResponse, processGitHubWebhookIngress, processFailedGitHubWebhookDeliveries, processPendingGitHubWebhookIngress };
+  return { registerWebhookRecoveryWork, stageGitHubWebhookIngress, githubIngressAcceptedResponse, processGitHubWebhookIngress, processFailedGitHubWebhookDeliveries, processPendingGitHubWebhookIngress };
 }

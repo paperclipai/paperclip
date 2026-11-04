@@ -9,6 +9,7 @@ import {
   reconnectDelayFor,
   retryDelayFor,
   shouldReportQueryError,
+  QueryNotReadyError,
   shouldRetryRequest,
   TRANSIENT_RETRY_DELAYS_MS,
   type MutationErrorToast,
@@ -59,6 +60,7 @@ describe("retry policy", () => {
   it("reports only unexpected query errors to Sentry", () => {
     expect(shouldReportQueryError(new ApiError("boom", 500, null))).toBe(true);
     expect(shouldReportQueryError(new Error("parse failure"))).toBe(true);
+    expect(shouldReportQueryError(new QueryNotReadyError("Not ready"))).toBe(false);
     expect(shouldReportQueryError(gatewayDown())).toBe(false);
     expect(shouldReportQueryError(new TypeError("Failed to fetch"))).toBe(false);
     expect(shouldReportQueryError(new ApiError("Not found", 404, null))).toBe(false);
@@ -274,5 +276,44 @@ describe("createAppQueryClient", () => {
     expect(queryFn).toHaveBeenCalledTimes(2);
     expect(reportError).toHaveBeenCalledTimes(1);
     unsubscribe();
+  });
+
+  it("leaves a cache-only alias stale instead of refetching it without a queryFn", async () => {
+    client.setQueryData(["issues", "detail", "issue-uuid"], { id: "issue-uuid", title: "Seeded" });
+    const queryFn = vi.fn(async () => "fetched");
+    client.setQueryData(["issues", "detail", "PAP-1"], "seeded");
+    await client.prefetchQuery({ queryKey: ["issues", "detail", "PAP-1"], queryFn, staleTime: 0 });
+    queryFn.mockClear();
+
+    void client.invalidateQueries({ queryKey: ["issues", "detail"], refetchType: "inactive" });
+    void client.refetchQueries({ queryKey: ["issues", "detail"], type: "all" });
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    const alias = client.getQueryCache().find({ queryKey: ["issues", "detail", "issue-uuid"], exact: true });
+    expect(alias?.state.status).toBe("success");
+    expect(alias?.state.isInvalidated).toBe(true);
+    expect(alias?.state.data).toEqual({ id: "issue-uuid", title: "Seeded" });
+    expect(queryFn).toHaveBeenCalledTimes(2);
+    expect(reportError).not.toHaveBeenCalled();
+
+    const aliasQueryFn = vi.fn(async () => ({ id: "issue-uuid", title: "Fresh" }));
+    const observer = new QueryObserver(client, { queryKey: ["issues", "detail", "issue-uuid"], queryFn: aliasQueryFn });
+    const unsubscribe = observer.subscribe(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(aliasQueryFn).toHaveBeenCalledTimes(1);
+    expect(observer.getCurrentResult().data).toEqual({ id: "issue-uuid", title: "Fresh" });
+    unsubscribe();
+  });
+
+  it("keeps the caller's refetch predicate", async () => {
+    const keep = vi.fn(async () => "keep");
+    const skip = vi.fn(async () => "skip");
+    await client.prefetchQuery({ queryKey: ["keep"], queryFn: keep });
+    await client.prefetchQuery({ queryKey: ["skip"], queryFn: skip });
+
+    await client.refetchQueries({ predicate: (query) => query.queryKey[0] === "keep" });
+
+    expect(keep).toHaveBeenCalledTimes(2);
+    expect(skip).toHaveBeenCalledTimes(1);
   });
 });

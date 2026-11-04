@@ -29,6 +29,13 @@ describe("composer run settings", () => {
     expect(composerEfforts(native, "grok-4.7", ["grok-4.7"])).toEqual(["low", "medium", "high", "xhigh"]);
     expect(readComposerRunSettings({ adapterConfig: native.adapterConfig }, native.adapterType)).toMatchObject({ effort: "high" });
   });
+  it("preserves the explicit native Kimi model without inventing a default or effort control", () => {
+    const native = { ...agent("paperclip_runner", "acpx"), adapterConfig: { provider: "acpx", acpxAgent: "kimi" } };
+    expect(composerDefaultModel(native)).toBe("");
+    const configured = { ...native, adapterConfig: { ...native.adapterConfig, model: "exact-kimi-model" } };
+    expect(composerDefaultModel(configured)).toBe("exact-kimi-model");
+    expect(composerEfforts(configured, "exact-kimi-model", ["exact-kimi-model"])).toEqual([]);
+  });
   it("shows only effort levels known for the selected harness and model", () => {
     expect(composerEfforts(agent("codex_local"), "gpt-6-astra", [])).toContain("ultra");
     expect(composerEfforts(agent("paperclip_runner", "codex"), "gpt-6-astra", [])).toContain("ultra");

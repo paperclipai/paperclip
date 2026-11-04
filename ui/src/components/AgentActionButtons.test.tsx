@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Agent } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { History } from "lucide-react";
 import { AgentActionButtons } from "./AgentActionButtons";
 import { useAgentLifecycleStatus } from "./AgentLifecycleStatus";
 import { queryKeys } from "../lib/queryKeys";
@@ -148,6 +149,17 @@ describe("AgentActionButtons", () => {
     expect(mockNavigate).toHaveBeenCalledWith(expect.stringContaining(`runner=${adapterType === "paperclip_runner" ? "paperclip" : "legacy"}`));
     expect(mockAgentsApi.resume).not.toHaveBeenCalled();
   });
+  it("reopens the saved pending Antigravity choice while its execution adapter remains held", async () => {
+    render(makeAgent({ adapterType: "process", adapterConfig: {}, status: "paused", lifecycleState: "paused", pauseReason: "setup",
+      metadata: { setupAdapterPending: true, setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } } }));
+    await flushReact();
+    const finish = [...container.querySelectorAll("button")].find(button => button.textContent === "Finish setup");
+    await act(() => finish!.click());
+    const params = new URL(mockNavigate.mock.calls[0][0], "http://local").searchParams;
+    expect(Object.fromEntries(params)).toMatchObject({ adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto", setupAgentId: "agent-1" });
+    expect(mockAgentsApi.resume).not.toHaveBeenCalled();
+    expect(mockAgentsApi.invoke).not.toHaveBeenCalled();
+  });
 
   it.each(["paused", "preparing", "verifying", "pausing", undefined] as const)("replaces run controls with one setup action when lifecycle is %s", async lifecycleState => {
     render(makeAgent({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "claude" }, status: "paused", lifecycleState, pauseReason: "setup" }));
@@ -264,6 +276,57 @@ describe("AgentActionButtons", () => {
     await flushReact();
 
     expect(document.body.textContent).toContain("Reset Sessions");
+  });
+
+  it("moves work actions into the menu, leaving Assign task as the one button", async () => {
+    const openHistory = vi.fn();
+    render(makeAgent({ status: "error" }), {
+      assignLabel: "Assign task",
+      workActionsInMenu: true,
+      menuItems: [{ label: "Agent history", icon: History, onSelect: openHistory }],
+    });
+    await flushReact();
+
+    expect([...container.querySelectorAll("button")].map((button) => button.textContent?.trim()).filter(Boolean)).toEqual(["Assign task"]);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+    const items = [...document.body.querySelectorAll("[data-slot='popover-content'] button, [data-radix-popper-content-wrapper] button")].map((button) => button.textContent?.trim());
+    expect(items).toEqual(["Run Heartbeat", "Clear error", "Agent history", "Duplicate agent", "Copy agent ID", "Reset sessions", "Terminate"]);
+
+    await act(async () => {
+      [...document.body.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Agent history")?.click();
+    });
+    expect(openHistory).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Clear error and return agent to idle"]')?.click();
+    });
+    await flushReact();
+    expect(mockAgentsApi.clearError).toHaveBeenCalledWith("agent-1", "company-1");
+  });
+
+  it("keeps Finish setup as the one button while setup is pending in menu mode", async () => {
+    render(makeAgent({ status: "paused", lifecycleState: "paused", pauseReason: "setup" }), {
+      assignLabel: "Assign task",
+      workActionsInMenu: true,
+    });
+    await flushReact();
+
+    expect([...container.querySelectorAll("button")].map((button) => button.textContent?.trim()).filter(Boolean)).toEqual(["Finish setup"]);
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+    const items = [...document.body.querySelectorAll("[data-slot='popover-content'] button, [data-radix-popper-content-wrapper] button")].map((button) => button.textContent?.trim());
+    expect(items).toEqual(["Assign task", "Duplicate agent", "Copy agent ID", "Reset sessions", "Terminate"]);
   });
 
   it("calls clearError and refreshes agent-related queries", async () => {

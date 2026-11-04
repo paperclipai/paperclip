@@ -74,43 +74,6 @@ mutations. Qualify a useful model task separately from saving the account.
 
 ### `session`
 
-For a plugin computer, complete a task, let its warm session suspend, then send
-two follow-ups within the next warm window. Verify the first resumes the saved
-session and the second keeps the same provider history without an identity
-mismatch. After a fresh recovery into a repository-free directory, send another
-ordinary follow-up. Verify it retains that directory without Core Git worktree
-preparation. Explicit repository strategies and changed provider owners must
-remain denied. Executor and workspace-preparation regressions cover control
-behavior; they do not establish live provider acceptance.
-
-For a remote OpenCode agent configured with `per_turn`, complete a task, then
-send two follow-ups without resetting its session. Verify that each continuation
-restores its external controller checkpoint, retains provider context and saved
-files, and finishes with no stranded task lock. A missing checkpoint, an active
-prior owner or a mismatched session must still stop admission. The
-rejected active-owner attempt must not prevent a later continuation from reading
-the owner's newer completed checkpoint. The
-[executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
-cover checkpoint restoration and its guards; real-provider acceptance remains
-separate evidence.
-
-After a completed warm turn, change an agent setting that invalidates its
-instruction copy, then send a follow-up. Verify the old runner suspends during
-preparation, saved files remain available, and the follow-up completes once.
-Repeat with an expired or foreign preparation owner and verify that execution
-stays held. The checkpoint integration regression covers the ownership boundary;
-a real provider run remains separate acceptance evidence.
-
-For a repository project that inherits storage-plugin defaults, run a task and
-send two follow-ups. Start with unset task workspace settings, then repeat with
-an explicit isolated mode or strategy. Binding must save `reuse_existing` and
-the resolved mode without changing the effective policy,
-session fingerprint, and workspace identity. An actual project-policy change
-must still reset the session and preserve the stored workspace owner. The
-[session admission regression](../../server/src/__tests__/heartbeat-session-preparation.test.ts)
-checks this with PostgreSQL and synthetic provider execution; it is not live
-warm-process or latency evidence.
-
 For `runs-adapters/session`, complete a task in a disposable warm sandbox and
 retain its saved workspace file. Let the warm session close normally and verify
 that the retained lease has a complete, lease-bound harness backup before
@@ -122,11 +85,6 @@ reads the retained file and appends one new line. Verify a replacement sandbox,
 a new provider session, the exact file contents, successful finalization and no
 stranded task lock. Send another follow-up and verify ordinary session reuse.
 
-With external controller checkpoints enabled, also admit a fresh session on a
-reused sandbox lease. Verify startup from canonical controller evidence and
-reject a marker without a registered controller, changed identity or prior turn
-activity. An existing remote session directory must retain its recovery gate.
-
 Repeat without resetting the session: its replacement must restore verified
 history or remain blocked. Missing backup state must not silently start an
 existing session again. The [executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
@@ -134,8 +92,21 @@ cover the bootstrap identity, activity and atomic directory claim; those
 controls do not establish live provider acceptance.
 
 ### `adapter-setup`
+Cloud-managed instances load adapters from the release image. Installing,
+removing, or overriding adapters remains platform-managed.
+
 
 Automated: [adapter validation routes](../../server/src/__tests__/agent-adapter-validation-routes.test.ts) and [model refresh](../../server/src/__tests__/adapter-model-refresh-routes.test.ts) cover server behavior.
+
+Cursor Cloud keeps Legacy as its automatic default. Choose Paperclip Runner
+explicitly under Advanced for experimental native support on a local controller.
+Select an exact model, bind a Cursor API key, and configure the repository or
+named Cloud environment. Save/reopen and Test must retain those choices. Test
+requires a reachable HTTPS callback origin and checks account/model access without
+starting a paid prompt. Cursor owns native shell permissions and does not
+independently acknowledge the effective model. Use the
+[qualification ledger](../../doc/plans/2026-10-28-cursor-cloud-native-runner.md)
+to distinguish local controls from live task, continuation, Stop and artifact proof.
 
 Claude native setup uses the existing Anthropic API-key or subscription connection
 flow. Record the selected account separately from successful execution; unavailable
@@ -217,9 +188,7 @@ cover ordering, failure drain and credential projection; they do not qualify a
 live response-time target.
 For native OpenCode with assigned connections, inspect the provider tool surface
 on both local and sandbox execution. It should contain bounded assigned-tool
-search/call schemas. Confirm the search description states the 1–20 page limit
-and default of 5. Follow `nextOffset` to inspect later pages.
-Discover an allowed tool, call its returned alias, revoke
+search/call schemas. Discover an allowed tool, call its returned alias, revoke
 its grant, and confirm discovery and execution enforce that revocation. Repeat
 in planning/ask mode with a write tool and confirm denial. The controller must
 retain the assigned gateway URL and token. An older direct-catalog OpenCode
@@ -294,7 +263,7 @@ revised-source live onboarding and follow-up proof.
   `/company/settings/connections` configures decision/fast-response models,
   not the general model-account library.
 
-- The run log is instance database data; it is not the opt-out first-party Telemetry system or operator-configured OpenTelemetry tracing.
+- Structured run events stay in the instance database. Optional stdout/stderr and raw trace payload storage can use S3; see [run evidence storage](../../doc/run-evidence-storage.md). Both are separate from first-party Telemetry and operator OpenTelemetry export.
 - Authentication/model discovery does not establish tool, image, steering, or resumption capability parity.
 - Use [recovery](./recovery.md) for interrupted runs and [execution environments](./execution-environments.md) for local/SSH/sandbox differences.
 
@@ -321,3 +290,21 @@ cleanup before hire and retains its unconfirmed recovery state.
 ### `delegated-configuration`
 
 See the canonical [delegated configuration guidance and acceptance evidence](connection-setup.md#delegated-configuration).
+
+### Kimi Code verification
+
+The qualified native Kimi profile uses `paperclipai runtime setup kimi` on Mac
+ARM64 or Linux x64, an exact typed model, and a `KIMI_API_KEY` company secret.
+Ordinary setup, hiring and Runtime Test require no candidate grant. Runtime Test
+queries the authenticated Code model catalog without inference. Existing legacy
+Kimi agents keep their saved runtime. Future pending profiles retain protected
+startup admission; saved agent configuration and public requests cannot grant it.
+
+Use the explicit `kimi-qualification` Product E2E suite for local and Daytona
+reply, semantic question/plan, file/download, Stop, and continuation cases.
+Verify the actual task result, persisted state and process cleanup. Run the
+ordinary New Agent draft → model/secret → Test → save/reopen → task journey
+through ordinary released selection. Native filesystem/shell tools are denied in read-only
+Kimi work; scoped Paperclip tools retain control-plane authorization. This recipe
+is a test path, not a statement that live acceptance passed. Current evidence:
+[Kimi release ledger](../../doc/plans/2026-10-28-kimi-code-runner-integration.md).

@@ -65,3 +65,17 @@ describe("qualification image dependency correction", () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });
+
+describe("release image capacity prerequisite", () => {
+  it.each([34, 35])("checks the unchanged disk threshold for every image route: %s GiB", async available => {
+    const workflow = await readFile(new URL("../../.github/workflows/docker-runner-check.yml", import.meta.url), "utf8");
+    const step = workflow.split("      - name: Prepare hosted image build capacity\n")[1]!.split("\n      - ")[0]!;
+    expect(step).toContain("if: inputs.build_eval_image || inputs.publish_eval_image\n");
+    expect(step).not.toContain("release_run_id");
+    const script = step.split("        run: |\n")[1]!.replace(/^ {10}/gm, "");
+    const result = spawnSync("bash", ["-c", `sudo() { test "$*" = "rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc"; }; df() { printf 'Avail\\n%sG\\n' "$AVAILABLE"; }; ${script}`], {
+      encoding: "utf8", env: { PATH: process.env.PATH, AVAILABLE: String(available) },
+    });
+    expect(result.status, result.stderr).toBe(available >= 35 ? 0 : 1);
+  });
+});

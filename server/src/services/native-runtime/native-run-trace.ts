@@ -150,6 +150,7 @@ const NOOP_SPAN: SpanHandle = {
 const SAFE_NATIVE_RUN_SPAN_ATTRIBUTE_KEYS = new Set([
   "adapter",
   "bytesTransferred",
+  "inputBytes", "toolSchemaBytes", "toolCount", "contextReused", "tokenDataAvailable",
   "connectionOwner",
   "driver",
   "duration_ms",

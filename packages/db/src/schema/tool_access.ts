@@ -231,6 +231,8 @@ export const connectionGrants = pgTable(
         appSlug?: string;
         accessRevision?: string;
         lastAccessRefreshAt?: string;
+        bindingSync?: { id: string; removeInstallationIds: string[] };
+        continuityRetry?: { at: string; attempts: number; revision: string };
         lastWebhookAt?: string;
         webhookHealth?: "pending" | "healthy" | "unhealthy";
       };

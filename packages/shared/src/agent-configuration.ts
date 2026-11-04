@@ -3,7 +3,7 @@ import { resolveAgentAppearance } from "./agent-appearance.js";
 import type { Agent } from "./types/agent.js";
 import { createAgentSchema } from "./validators/agent.js";
 import { objectWithoutDefaults } from "./validators/partial.js";
-import { agentConfigurationResourceShape } from "./agent-configuration-resources.js";
+import { agentConfigurationInputResourceShape, agentConfigurationResourceShape } from "./agent-configuration-resources.js";
 
 export const agentConfigurationSpecSchema = objectWithoutDefaults(createAgentSchema.pick({
   name: true,
@@ -30,6 +30,10 @@ export const agentConfigurationDocumentSchema = z.object({
 
 export type AgentConfigurationSpec = z.infer<typeof agentConfigurationSpecSchema>;
 export type AgentConfigurationDocument = z.infer<typeof agentConfigurationDocumentSchema>;
+export const agentConfigurationInputSchema = agentConfigurationDocumentSchema.extend({
+  spec: agentConfigurationSpecSchema.partial().extend(agentConfigurationInputResourceShape),
+});
+export type AgentConfigurationInput = z.infer<typeof agentConfigurationInputSchema>;
 export type AgentConfigurationSource = Omit<Pick<Agent, "id" | keyof AgentConfigurationSpec>, "role" | "adapterType"> & {
   role: string;
   adapterType: string;

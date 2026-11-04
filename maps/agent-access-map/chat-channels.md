@@ -70,7 +70,7 @@ Gaps: This individual operation has source review but no recorded HTTP verificat
 
 API: `present` — `POST /api/chat-endpoints/{endpointId}/slack/managed/provision`; JSON REST.
 Agent access: `available` — agent REST and default native `search_api` / `call_api`.
-Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
+Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked. The request body's grantId resolves from the Slack manager-grant registry; its company and owner must match the endpoint and current responsible user. A tool-connection grant does not authorize Slack provisioning.
 Evidence: `source-only` — [route](../../server/src/routes/chat-channels.ts); reviewed in the working tree based on the source commit above.
 Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
 Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
@@ -615,6 +615,14 @@ not task completion. Source:
 PostgreSQL-backed provider fixtures; this entry does not claim live provider
 qualification for the new retry path.
 
+GitHub review formatting (2026-10-30): new bot catalogs describe `submit_review`
+summary and rationale as body-only fields; generated review instructions also
+explain this contract to existing bots. The publisher supplies the score heading
+and footer, removing leading copied current-bot or legacy score headings from
+the two text fields. Saved assessments, tool authority, and publication policy
+are unchanged. The PostgreSQL-backed publication fixture checks a newly
+configured bot with simulated GitHub responses; this is not live model proof.
+
 GitHub main-response identity (2026-10-19): PR requests share a company-, App-,
 repository- and PR-bound comment. Agents still supply no comment destination.
 Current sender, assignee, repository and publication authority are checked before
@@ -1020,9 +1028,25 @@ receipt preserves the original skipped receipt and older failed native result.
 Current access and normal native stop/cleanup guards still govern execution;
 board wake metadata alone cannot manufacture chat authority or replay old work.
 
+After a successful connected run, board Retry can resume a newer deferred inbound
+receipt through the original chat owner. It rechecks the board's current task
+permission and the saved source's current authority, and waits for prior cleanup.
+It grants no permission to replay the successful result or manufacture a chat
+request. Concurrent clicks share the canonical retry receipt; completed tasks
+and superseding execution retire unadmitted retry intent.
+
 Deferred chat Retry excludes independent board queues from its pinned batch.
 An explicit board Retry can restore a historical mixed batch only with exact
 never-started evidence, current source authority, unchanged board comments and
 no prior delivery or allocation. The server records the restoration in activity;
 failed runs and original skipped receipts remain history. This grants no new
 agent retry capability and does not weaken execution-time source validation.
+
+GitHub finding category contract (2026-10-31): manual and automatic review
+instructions list the repository policy categories. `begin_review` returns the
+assessment snapshot's `findingCategories`; later settings do not change that
+snapshot. Submit an unknown category and confirm rejection before publication,
+then submit a listed custom category and inspect the saved assessment and
+processed publication. The channel integration fixture covers real PostgreSQL
+and the service path with simulated GitHub HTTP; live model behavior remains
+unverified.

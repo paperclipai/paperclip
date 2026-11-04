@@ -11,6 +11,12 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { activityLog, agents, companies, companyMemberships, createDb, executionWorkspaceRepositoryAccess, executionWorkspaceRepositoryRoots, executionWorkspaceRepositories, executionWorkspaces, goals, issueAccessGrants, issues, projects, projectAccessMembers, projectWorkspaces, type Db } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { taskRepositoryRelativePath } from "../services/execution-workspace-repositories.js";
+import type {
+  ResolvedWorkspaceResource,
+  WorkspaceFileAvailabilityResponse,
+  WorkspaceFileContent,
+  WorkspaceFileListResponse,
+} from "@paperclipai/shared";
 import { errorHandler } from "../middleware/index.js";
 import { canActorReadExecutionWorkspace } from "../services/authorization.js";
 import {
@@ -23,13 +29,15 @@ import {
 import {
   WORKSPACE_FILE_TEXT_MAX_BYTES,
   workspaceFileResourceService,
+  type PreparedWorkspaceFileDownload,
 } from "../services/workspace-file-resources.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const externalDatabase = process.env.PAPERCLIP_TEST_DATABASE_URL?.trim();
+const embeddedPostgresSupport = externalDatabase ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const execFileAsync = promisify(execFile);
 let seedGraphSequence = 0;
@@ -205,11 +213,15 @@ describeEmbeddedPostgres("workspace file resources", () => {
 
   beforeAll(async () => {
     vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-file-resources-");
-    db = createDb(tempDb.connectionString);
+    if (externalDatabase) db = createDb(externalDatabase);
+    else {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-file-resources-");
+      db = createDb(tempDb.connectionString);
+    }
   }, 60_000);
 
   afterAll(async () => {
+    await db?.$client.end();
     await tempDb?.cleanup();
     vi.unstubAllEnvs();
   });
@@ -1462,7 +1474,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
     });
     expect(JSON.stringify(resolveRead?.details)).not.toContain(projectRoot);
 
-    let releaseSlowResolve: (() => void) | null = null;
+    let releaseSlowResolve = null as (() => void) | null;
     let slowResolveStarted: (() => void) | null = null;
     const slowResolve = new Promise<void>((resolve) => {
       releaseSlowResolve = resolve;
@@ -1478,7 +1490,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       list: vi.fn(async () => {
         throw new Error("not used");
       }),
-      resolve: vi.fn(async () => {
+      resolve: vi.fn(async (): Promise<ResolvedWorkspaceResource> => {
         slowResolveStarted?.();
         await slowResolve;
         return {
@@ -1526,7 +1538,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
     releaseSlowResolve?.();
     expect((await firstResolveResponse).status).toBe(200);
 
-    let releaseSlowContent: (() => void) | null = null;
+    let releaseSlowContent = null as (() => void) | null;
     let slowContentStarted: (() => void) | null = null;
     const slowContent = new Promise<void>((resolve) => {
       releaseSlowContent = resolve;
@@ -1545,7 +1557,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       resolve: vi.fn(async () => {
         throw new Error("not used");
       }),
-      readContent: vi.fn(async () => {
+      readContent: vi.fn(async (): Promise<WorkspaceFileContent> => {
         slowContentStarted?.();
         await slowContent;
         return {
@@ -1624,7 +1636,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       readContent: vi.fn(async () => {
         throw new Error("not used");
       }),
-      prepareDownload: vi.fn(async () => {
+      prepareDownload: vi.fn(async (): Promise<PreparedWorkspaceFileDownload> => {
         slowDownloadStarted?.();
         return {
           resource: {
@@ -1691,7 +1703,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
   it("uses tighter list-specific rate and concurrency limits", async () => {
     const { projectRoot, executionRoot } = await makeWorkspace();
     const graph = await seedGraph(db, { projectRoot, executionRoot });
-    let releaseSlowList: (() => void) | null = null;
+    let releaseSlowList = null as (() => void) | null;
     let slowListStarted: (() => void) | null = null;
     const slowList = new Promise<void>((resolve) => {
       releaseSlowList = resolve;
@@ -1704,7 +1716,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
       availability: vi.fn(async () => {
         throw new Error("not used");
       }),
-      list: vi.fn(async () => {
+      list: vi.fn(async (): Promise<WorkspaceFileListResponse> => {
         slowListStarted?.();
         await slowList;
         return {
@@ -1721,6 +1733,7 @@ describeEmbeddedPostgres("workspace file resources", () => {
             mode: "all",
             q: null,
             limit: 25,
+            offset: 0,
           },
           items: [],
           scannedCount: 0,
@@ -1952,11 +1965,15 @@ describeEmbeddedPostgres("file resource route guards", () => {
   let db: Db;
 
   beforeAll(async () => {
-    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-file-resource-guards-");
-    db = createDb(tempDb.connectionString);
+    if (externalDatabase) db = createDb(externalDatabase);
+    else {
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-file-resource-guards-");
+      db = createDb(tempDb.connectionString);
+    }
   }, 60_000);
 
   afterAll(async () => {
+    await db?.$client.end();
     await tempDb?.cleanup();
   });
 
@@ -1967,7 +1984,7 @@ describeEmbeddedPostgres("file resource route guards", () => {
       name: "Rate limit company",
       issuePrefix: "RAT",
     });
-    let releaseSlowRead: (() => void) | null = null;
+    let releaseSlowRead = null as (() => void) | null;
     let slowReadStarted: (() => void) | null = null;
     const slowRead = new Promise<void>((resolve) => {
       releaseSlowRead = resolve;
@@ -1983,7 +2000,7 @@ describeEmbeddedPostgres("file resource route guards", () => {
       list: vi.fn(async () => {
         throw new Error("not used");
       }),
-      resolve: vi.fn(async () => {
+      resolve: vi.fn(async (): Promise<ResolvedWorkspaceResource> => {
         slowReadStarted?.();
         await slowRead;
         return {
@@ -2040,7 +2057,7 @@ describeEmbeddedPostgres("file resource route guards", () => {
       name: "Availability rate limit company",
       issuePrefix: "AVL",
     });
-    let releaseSlowAvailability: (() => void) | null = null;
+    let releaseSlowAvailability = null as (() => void) | null;
     let slowAvailabilityStarted: (() => void) | null = null;
     const slowAvailability = new Promise<void>((resolve) => {
       releaseSlowAvailability = resolve;
@@ -2050,7 +2067,7 @@ describeEmbeddedPostgres("file resource route guards", () => {
     });
     const service: WorkspaceFileResourceService = {
       getIssue: vi.fn(async () => ({ companyId })),
-      availability: vi.fn(async () => {
+      availability: vi.fn(async (): Promise<WorkspaceFileAvailabilityResponse> => {
         slowAvailabilityStarted?.();
         await slowAvailability;
         return { kind: "workspace_file_availability", results: [] };

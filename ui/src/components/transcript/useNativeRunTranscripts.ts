@@ -59,14 +59,16 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
   };
   const gapPendingRef = useRef(new Set<string>());
   const historyReadsRef = useRef(new Map<string, AbortSignal>());
+  const interruptedReadsRef = useRef(new Set<string>());
   const refreshByRunRef = useRef(new Map<string, (force?: boolean) => void>());
   const previousCompanyRef = useRef(options.companyId);
+  const refreshContextRef = useRef<readonly unknown[]>([]);
   useEffect(() => {
     if (previousCompanyRef.current === options.companyId) return;
     previousCompanyRef.current = options.companyId;
     setEventsByRun(new Map()); setErrorsByRun(new Map()); setHydratedRunIds(new Set()); setHydratedStatusByRun(new Map());
     projectionCacheRef.current.clear(); cursorByRunRef.current.clear(); conversationOnlyByRunRef.current.clear();
-    sequencesRef.current.clear(); gapPendingRef.current.clear();
+    sequencesRef.current.clear(); gapPendingRef.current.clear(); interruptedReadsRef.current.clear();
   }, [options.companyId]);
   const stream = useTranscriptLiveStream(nativeRuns.filter(run => isLive(run.status)).map(run => run.id), options, event => {
     const runId = typeof event.payload.runId === "string" ? event.payload.runId : null;
@@ -89,10 +91,14 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
 
 
   useEffect(() => {
+    const context = [retryGeneration, visible, options.enabled, options.companyId, stream.healthy, stream.epoch];
+    const refreshExisting = context.some((value, index) => value !== refreshContextRef.current[index]);
+    refreshContextRef.current = context;
     if (!visible || options.enabled === false) return;
+    const changedModes = new Set<string>();
     for (const run of nativeRuns) {
       const mode = Boolean(run.conversationOnly);
-      if (conversationOnlyByRunRef.current.get(run.id) !== mode) { cursorByRunRef.current.delete(run.id); sequencesRef.current.delete(run.id); }
+      if (conversationOnlyByRunRef.current.get(run.id) !== mode) { changedModes.add(run.id); cursorByRunRef.current.delete(run.id); sequencesRef.current.delete(run.id); }
       conversationOnlyByRunRef.current.set(run.id, mode);
     }
     let cancelled = false;
@@ -100,6 +106,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
     const timers = new Map<string, number>();
     const pendingRefresh = new Set<string>();
     const retainedIds = new Set(nativeRuns.map((run) => run.id));
+    for (const id of interruptedReadsRef.current) if (!retainedIds.has(id)) interruptedReadsRef.current.delete(id);
     const retainMap = <T,>(previous: Map<string, T>) => {
       const next = new Map([...previous].filter(([id]) => retainedIds.has(id)));
       return next.size === previous.size ? previous : next;
@@ -161,6 +168,7 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
           next.delete(run.id);
           return next;
         });
+        interruptedReadsRef.current.delete(run.id);
         setHydratedStatusByRun((previous) => {
           if (previous.get(run.id) === run.status) return previous;
           return new Map(previous).set(run.id, run.status);
@@ -196,13 +204,17 @@ export function useNativeRunTranscripts(runs: readonly NativeRunTranscriptSource
         if (force) pendingRefresh.add(run.id);
         void refreshRun(run);
       });
-      void refreshRun(run);
+      if (refreshExisting || changedModes.has(run.id) || interruptedReadsRef.current.has(run.id) || isLive(run.status)
+        || hydratedStatusByRun.get(run.id) !== run.status || errorsByRun.has(run.id) || sequence(run.id).needsCatchup) void refreshRun(run);
     }
     return () => {
       cancelled = true;
       refreshByRunRef.current.clear();
       controller.abort();
-      for (const [id, signal] of historyReadsRef.current) if (signal === controller.signal) historyReadsRef.current.delete(id);
+      for (const [id, signal] of historyReadsRef.current) if (signal === controller.signal) {
+        interruptedReadsRef.current.add(id);
+        historyReadsRef.current.delete(id);
+      }
       for (const timer of timers.values()) window.clearTimeout(timer);
     };
   }, [nativeRuns, retryGeneration, visible, options.enabled, options.companyId, stream.healthy, stream.epoch]);

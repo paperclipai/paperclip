@@ -34,6 +34,12 @@ export const activityLog = pgTable(
     ),
     runIdIdx: index("activity_log_run_id_idx").on(table.runId),
     entityIdx: index("activity_log_entity_type_id_idx").on(table.entityType, table.entityId),
+    companyEntityCreatedIdx: index("activity_log_company_entity_created_idx").on(
+      table.companyId,
+      table.entityType,
+      table.entityId,
+      table.createdAt,
+    ),
     companyUserIssueActorIdx: index("activity_log_company_user_issue_actor_idx")
       .on(table.companyId, table.actorId, table.entityId)
       .where(sql`${table.actorType} = 'user' AND ${table.entityType} = 'issue'`),

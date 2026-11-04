@@ -24,7 +24,7 @@ import {
 import { HttpError, badRequest, conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { toolAccessService } from "./tool-access.js";
 import { logActivity } from "./activity-log.js";
-import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
+import { notifyChatCompanyAuthorityChange } from "./chat-run-milestone-notifications.js";
 import { githubBotRequest } from "./chat-github-client.js";
 import { environmentService } from "./environments.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -165,7 +165,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
       const allowUnlinkedPeople = config.people.some((p) => p.kind === "guest");
       if ((!currentEndpoint.allowUnlinkedPeople && allowUnlinkedPeople) ||
           (allowUnlinkedPeople && currentEndpoint.sponsorUserId !== config.responsibleUserId)) {
-        await notifyChatRunMilestones(tx, { companyId: bot.companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId: bot.companyId });
       }
       const values = {
         companyId: bot.companyId,
@@ -335,7 +335,7 @@ export function githubChatManagementService(db: Db, fetchImpl = fetch) {
         updatedAt: new Date(),
       };
       if (prior?.status !== "linked") {
-        await notifyChatRunMilestones(tx, { companyId: bot.companyId });
+        await notifyChatCompanyAuthorityChange(tx, { companyId: bot.companyId });
       }
       await tx
         .insert(chatIdentityLinks)

@@ -63,7 +63,7 @@ describe("Advanced agent configuration", () => {
   it("retains an invalid or rejected draft and reloads the saved configuration explicitly", async () => {
     api.save.mockRejectedValue(new Error("Agent configuration changed while you were editing."));
     await render(); await settle(() => expect(editor()).toBeTruthy());
-    await edit(source => source.replace("budgetMonthlyCents: 0", "budgetMonthlyCents: -1"));
+    await edit(source => `${source}  budgetMonthlyCents: -1\n`);
     expect(button("Save changes").disabled).toBe(true);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("spec.budgetMonthlyCents");
     await edit(source => source.replace("budgetMonthlyCents: -1", "budgetMonthlyCents: 500"));
@@ -72,7 +72,7 @@ describe("Advanced agent configuration", () => {
     expect(editor().state.doc.toString()).toContain("budgetMonthlyCents: 500");
     expect(api.save.mock.calls[0][1].spec.budgetMonthlyCents).toBe(500);
     await act(() => button("Reload saved").click());
-    await settle(() => expect(editor().state.doc.toString()).toContain("budgetMonthlyCents: 0"));
+    await settle(() => expect(editor().state.doc.toString()).not.toContain("budgetMonthlyCents:"));
     expect(button("Save changes").disabled).toBe(true);
   });
 
@@ -84,7 +84,7 @@ describe("Advanced agent configuration", () => {
     await settle(() => expect(onSaved).toHaveBeenCalledTimes(1));
     expect(button("Save changes").disabled).toBe(true);
     expect(editor().state.doc.toString()).toContain("name: Codie Two");
-    await edit(source => source.replace("title: null", "title: Engineer"));
+    await edit(source => `${source}  title: Engineer\n`);
     await act(() => button("Save changes").click());
     await settle(() => expect(api.save).toHaveBeenCalledTimes(2));
     expect(api.save.mock.calls[1][0].core.configurationRevision).toBe("b".repeat(64));
@@ -97,7 +97,7 @@ describe("Advanced agent configuration", () => {
       throw new ConfigurationSaveInterrupted("second key", ["first key"], new Error("Network lost"));
     });
     await render(); await settle(() => expect(editor()).toBeTruthy());
-    await edit(source => source.replace("title: null", "title: Engineer"));
+    await edit(source => `${source}  title: Engineer\n`);
     await act(() => button("Save changes").click());
     await settle(() => expect(container.textContent).toContain("Reload saved before saving again"));
     expect(button("Save changes").disabled).toBe(true);
@@ -106,8 +106,8 @@ describe("Advanced agent configuration", () => {
     await edit(source => source.replace("title: Engineer", "title: Lead"));
     expect(button("Save changes").disabled).toBe(true);
     await act(() => button("Reload saved").click());
-    await settle(() => expect(editor().state.doc.toString()).toContain("title: null"));
-    await edit(source => source.replace("title: null", "title: Lead"));
+    await settle(() => expect(editor().state.doc.toString()).not.toContain("title:"));
+    await edit(source => `${source}  title: Lead\n`);
     expect(button("Save changes").disabled).toBe(false);
   });
 
@@ -115,7 +115,7 @@ describe("Advanced agent configuration", () => {
     let complete!: (value: ReturnType<typeof snapshot>) => void;
     api.save.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
     await render(); await settle(() => expect(editor()).toBeTruthy());
-    await edit(source => source.replace("title: null", "title: Engineer"));
+    await edit(source => `${source}  title: Engineer\n`);
     expect(container.querySelector("summary")?.textContent).toBe("1 change to apply");
     expect(container.querySelector("details")?.textContent).toContain("Agent configuration");
     const view = editor();
@@ -130,7 +130,7 @@ describe("Advanced agent configuration", () => {
   it("validates read-only sections before enabling Save", async () => {
     api.load.mockResolvedValue({ ...snapshot(), document: { ...snapshot().document, observed: { apiKeys: [] } } });
     await render(); await settle(() => expect(editor()).toBeTruthy());
-    await edit(source => source.replace("apiKeys: []", "apiKeys: [changed]"));
+    await edit(source => `${source}observed:\n  apiKeys: [changed]\n`);
     expect(button("Save changes").disabled).toBe(true);
     expect(container.textContent).toContain("observed is read-only");
     expect(api.save).not.toHaveBeenCalled();

@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { githubLauncherSource } from "./github-launcher.js";
+import { ACP_PROCESS_TERMINAL_SIGNALS, type ACP_PROCESS_TERMINAL_SOURCES } from "./acpx-engine/constants.js";
 import type { SshRemoteExecutionSpec } from "./ssh.js";
 import {
   prepareCommandManagedRuntime,
@@ -185,7 +186,7 @@ export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWor
   transport: "sandbox";
   providerKey?: string | null;
   /** Host-bound plugin task RPC. Both sides validate the wire contract. */
-  runnerTask?: (operation: unknown) => Promise<unknown>;
+  runnerTask?: (operation: unknown, context?: { executionContext?: unknown }) => Promise<unknown>;
   runnerTaskProjectIds?: readonly string[];
   /** Private Core-issued identity for a bounded, tool-free setup probe. */
   runnerTaskProbe?: { runId: string; sessionId: string };
@@ -377,8 +378,19 @@ export interface AdapterExecutionTargetPaperclipBridgeHandle {
   stop(): Promise<void>;
 }
 
+// First terminal evidence a sandbox process session observed. Every field is a
+// closed value: no message, command, path, payload, or provider error text.
+export interface AdapterExecutionTargetProcessSessionTerminalEvidence {
+  source: (typeof ACP_PROCESS_TERMINAL_SOURCES)[number];
+  outcome: "exit" | "error";
+  exitCode: number | "unknown";
+  signal: (typeof ACP_PROCESS_TERMINAL_SIGNALS)[number] | "unknown";
+}
+
 export interface AdapterExecutionTargetProcessSessionBridgeHandle {
   agentCommand: string;
+  // Returns null until the session records terminal evidence.
+  readTerminalEvidence?(): AdapterExecutionTargetProcessSessionTerminalEvidence | null;
   stop(): Promise<void>;
 }
 
@@ -735,23 +747,53 @@ export async function ensureAdapterExecutionTargetCommandResolvable(
   });
 }
 
+function executionTargetCheckUnavailable(message: string, cause?: unknown): Error {
+  return Object.assign(new Error(message, { cause }), { code: "adapter_execution_target_unavailable" });
+}
+
+/** Preserve target failures before an adapter translates them into a failed check. */
+export function isAdapterExecutionTargetUnavailableError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error
+    && error.code === "adapter_execution_target_unavailable";
+}
+
+async function runRemoteExecutionTargetCheck(
+  target: AdapterExecutionTarget,
+  description: string,
+  check: () => Promise<RunProcessResult>,
+): Promise<RunProcessResult> {
+  let result: RunProcessResult;
+  try {
+    result = await check();
+  } catch (error) {
+    throw executionTargetCheckUnavailable(`Could not complete ${description}`, error);
+  }
+  if (result.timedOut || result.signal || result.exitCode === null
+    || (target.kind === "remote" && target.transport === "ssh" && result.exitCode === 255)) {
+    throw executionTargetCheckUnavailable(`${result.timedOut ? "Timed out" : "Could not complete"} ${description}`);
+  }
+  return result;
+}
+
 async function probeSandboxCommandResolvable(
   command: string,
   target: AdapterSandboxExecutionTarget,
   env: Record<string, string>,
-): Promise<{ resolved: boolean; timedOut: boolean; stderr: string }> {
+): Promise<{ resolved: boolean; stderr: string }> {
   const runner = requireSandboxRunner(target);
   const probeScript = `command -v ${shellQuote(command)}`;
-  const result = await runner.execute({
-    command: "sh",
-    args: ["-c", probeScript],
-    cwd: target.remoteCwd,
-    env,
-    timeoutMs: target.timeoutMs ?? 15_000,
-  });
+  const result = await runRemoteExecutionTargetCheck(
+    target, `checking command "${command}" on sandbox target.`,
+    () => runner.execute({
+      command: "sh",
+      args: ["-c", probeScript],
+      cwd: target.remoteCwd,
+      env,
+      timeoutMs: target.timeoutMs ?? 15_000,
+    }),
+  );
   return {
-    resolved: !result.timedOut && (result.exitCode ?? 1) === 0,
-    timedOut: result.timedOut,
+    resolved: result.exitCode === 0,
     stderr: result.stderr.trim(),
   };
 }
@@ -772,15 +814,13 @@ async function ensureSandboxCommandResolvable(
   // SSH's buildSshSpawnTarget) so this and the hello probe agree on PATH.
   let probe = await probeSandboxCommandResolvable(command, target, env);
   if (probe.resolved) return;
-  if (probe.timedOut) {
-    throw new Error(`Timed out checking command "${command}" on sandbox target.`);
-  }
 
   // If the caller supplied an install command, attempt the install once via
   // the sandbox runner (which the sandbox provider wraps in a login shell)
   // and re-probe before reporting failure. This lets fresh sandbox leases
   // bring up the CLI before the resolvability gate, mirroring the test path.
   let installFailureDetail: string | null = null;
+  let installUnavailable: Error | null = null;
   if (installCommand) {
     const runner = requireSandboxRunner(target);
     const installTimeoutMs =
@@ -797,6 +837,9 @@ async function ensureSandboxCommandResolvable(
       });
       if (installResult.timedOut) {
         installFailureDetail = `install command timed out: ${installCommand}`;
+        installUnavailable = executionTargetCheckUnavailable("The runtime installation timed out.");
+      } else if (installResult.signal || installResult.exitCode === null) {
+        installUnavailable = executionTargetCheckUnavailable("The runtime installation did not complete.");
       } else if ((installResult.exitCode ?? 0) !== 0) {
         const tail = (text: string) =>
           text.split(/\r?\n/).filter((line) => line.trim().length > 0).slice(-2).join(" | ").slice(0, 240);
@@ -805,12 +848,11 @@ async function ensureSandboxCommandResolvable(
       }
     } catch (err) {
       installFailureDetail = `install command threw: ${err instanceof Error ? err.message : String(err)}`;
+      installUnavailable = executionTargetCheckUnavailable("The runtime installation was unavailable.", err);
     }
     probe = await probeSandboxCommandResolvable(command, target, env);
     if (probe.resolved) return;
-    if (probe.timedOut) {
-      throw new Error(`Timed out checking command "${command}" on sandbox target.`);
-    }
+    if (installUnavailable) throw installUnavailable;
   }
 
   const probeStderr = probe.stderr.length > 0 ? ` probe stderr: ${probe.stderr}` : "";
@@ -1270,7 +1312,8 @@ export async function ensureAdapterExecutionTargetFile(
  * `mkdir -p` (when allowed) followed by a `[ -d ]` check so the result reflects
  * the directory state inside the environment, not on the Paperclip host.
  *
- * Throws an Error with a human-readable message on failure.
+ * Throws an Error with a human-readable message on failure. Temporary target
+ * failures carry a typed code so adapters can retain them as retryable checks.
  */
 export async function ensureAdapterExecutionTargetDirectory(
   runId: string,
@@ -1296,17 +1339,16 @@ export async function ensureAdapterExecutionTargetDirectory(
     ? `mkdir -p ${quoted} && [ -d ${quoted} ]`
     : `[ -d ${quoted} ]`;
 
-  const result = await runAdapterExecutionTargetShellCommand(runId, target, script, {
-    cwd: target.kind === "remote" ? target.remoteCwd : cwd,
-    env: options.env,
-    timeoutSec: options.timeoutSec ?? 15,
-    graceSec: options.graceSec ?? 5,
-    onLog: options.onLog,
-  });
-
-  if (result.timedOut) {
-    throw new Error(`Timed out checking working directory on remote target: "${cwd}"`);
-  }
+  const result = await runRemoteExecutionTargetCheck(
+    target, `checking working directory on remote target: "${cwd}"`,
+    () => runAdapterExecutionTargetShellCommand(runId, target, script, {
+      cwd: target.remoteCwd,
+      env: options.env,
+      timeoutSec: options.timeoutSec ?? 15,
+      graceSec: options.graceSec ?? 5,
+      onLog: options.onLog,
+    }),
+  );
   if ((result.exitCode ?? 1) !== 0) {
     const detail = (result.stderr || result.stdout || "").trim();
     if (createIfMissing) {
@@ -1446,11 +1488,13 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   syncWorkspace?: boolean;
   workspaceInboundMode?: WorkspaceInboundMode;
   workspaceSnapshotIsolation?: "worker";
+  workspaceGitIndexRefresh?: boolean;
   workspaceDurableSeed?: WorkspaceDurableSeedPaths;
   workspaceCheckpoint?: boolean;
   onWorkspaceCheckpoint?: (metrics: WorkspaceCheckpointMetrics) => Promise<void>;
   workspaceSeedCacheDirectory?: string;
   workspaceSeedCacheCompanyDirectory?: string;
+  workspaceSeedCacheScope?: "workspace" | "company";
   workspaceBaseline?: DirectorySnapshot;
   workspaceGitSnapshot?: GitWorkspaceSnapshot | null;
   workspaceRepositories?: NonNullable<GitWorkspaceSnapshot["repositories"]>;
@@ -1541,11 +1585,13 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     syncWorkspace: input.syncWorkspace,
     workspaceInboundMode: input.workspaceInboundMode,
     workspaceSnapshotIsolation: input.workspaceSnapshotIsolation,
+    workspaceGitIndexRefresh: input.workspaceGitIndexRefresh,
     workspaceDurableSeed: input.workspaceDurableSeed,
     workspaceCheckpoint: input.workspaceCheckpoint,
     onWorkspaceCheckpoint: input.onWorkspaceCheckpoint,
     workspaceSeedCacheDirectory: input.workspaceSeedCacheDirectory,
     workspaceSeedCacheCompanyDirectory: input.workspaceSeedCacheCompanyDirectory,
+    workspaceSeedCacheScope: input.workspaceSeedCacheScope,
     workspaceBaseline: input.workspaceBaseline,
     workspaceGitSnapshot: input.workspaceGitSnapshot,
     workspaceRepositories: input.workspaceRepositories,
@@ -2203,22 +2249,19 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     }
   };
   let pollTimer: NodeJS.Timeout | null = null;
-  let terminalEvidenceRecorded = false;
+  let terminalEvidence: AdapterExecutionTargetProcessSessionTerminalEvidence | null = null;
   const recordTerminalEvidence = (
-    source: "remote_event" | "input_delivery" | "output_poll" | "output_stream" | "proxy_close",
+    source: AdapterExecutionTargetProcessSessionTerminalEvidence["source"],
     event: { type?: string; code?: number | null; signal?: string | null },
   ) => {
-    if (terminalEvidenceRecorded) return;
-    terminalEvidenceRecorded = true;
+    if (terminalEvidence) return;
     // Remote frames are untrusted. Keep the retained diagnostic bounded and
     // independent of messages, commands, paths, payloads, and provider errors.
     const outcome = event.type === "exit" ? "exit" : "error";
     const code = typeof event.code === "number" && Number.isInteger(event.code)
       && event.code >= 0 && event.code <= 255 ? event.code : "unknown";
-    const signal = typeof event.signal === "string" && [
-      "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGABRT", "SIGFPE", "SIGKILL",
-      "SIGSEGV", "SIGPIPE", "SIGALRM", "SIGTERM", "SIGBUS", "SIGXCPU", "SIGXFSZ",
-    ].includes(event.signal) ? event.signal : "unknown";
+    const signal = ACP_PROCESS_TERMINAL_SIGNALS.find((name) => name === event.signal) ?? "unknown";
+    terminalEvidence = { source, outcome, exitCode: code, signal };
     logFailureWithoutWaiting(
       `[paperclip] ACP process session terminal: source=${source} outcome=${outcome} exitCode=${code} signal=${signal}.\n`,
     );
@@ -2597,6 +2640,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
 
   return {
     agentCommand,
+    readTerminalEvidence: () => terminalEvidence,
     stop: async () => {
       stopping = true;
       // End the `sandbox.agentProcess` span now, before the caller ends the run

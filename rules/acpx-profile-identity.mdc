@@ -1,0 +1,72 @@
+---
+description: Give every ACPX provider the same identity model - its commandDigest attests the upstream release, the pack contract digest covers Runner source and the shared ACPX layer, and profile versions change only for deliberate resets.
+globs: "packages/paperclip-runner/acpx-profiles.json,packages/paperclip-runner/cursor-contract.json,packages/paperclip-runner/cursor-distributions.json,packages/paperclip-runner/antigravity-distributions.json,packages/paperclip-runner/scripts/acpx-release-attestations.mjs,packages/paperclip-runner/scripts/generate-acpx-profiles.mjs,packages/paperclip-runner/scripts/contracts/**,packages/paperclip-runner/src/drivers/acpx/**,packages/paperclip-runner/src/providers/**,packages/paperclip-runner/protocol/**"
+alwaysApply: false
+---
+
+# ACPX profile identity
+
+## Scope and purpose
+
+This rule covers ACPX provider profiles, their release declarations and pins,
+the profile generator, the provider-pack contract registry, and the ACPX
+driver and provider code. Every ACPX harness (Claude, Codex, Copilot, Cursor,
+Grok, Pi, Antigravity and any new one) uses the same identity model, so a
+change behaves the same way for all of them.
+
+## The identity model
+
+A provider profile in `acpx-profiles.json` has a version and a `commandDigest`.
+Three things decide whether saved work and installed packs stay compatible:
+
+| What changed | What carries it | Effect |
+| --- | --- | --- |
+| The provider's upstream release: package versions, platform closures, a launcher shipped verbatim | The profile's `commandDigest` | Saved sessions for that provider start fresh |
+| The shared ACPX layer | The profile's `acpxVersion` and the Runner's ACPX patch in the pack `contractDigest` | The same for every provider |
+| A runner/pack contract: schemas, generated catalogs, Rust shapes and env keys | The provider pack's `contractDigest` | Older image packs are not reused |
+
+Ordinary Runner source changes, refactors and comments change none of these.
+
+## Required behavior
+
+- **Attest the upstream release.** Declare each provider's attestation in
+  `ACPX_RELEASE_ATTESTATIONS` (`scripts/acpx-release-attestations.mjs`), using
+  the kind that fits: `installed-command`, `launcher`, `closure` or
+  `declaration`. The digest binds only what a repackager copies verbatim from
+  the upstream release, so the same release gives the same digest wherever the
+  pack is built or installed.
+- **Keep Paperclip source and the ACPX layer out of provider digests.**
+  Runner/pack compatibility belongs to the `contractDigest`. When Runner code
+  and a pack must agree on a new field or behavior, declare it in a schema
+  under `protocol/` and generate the TypeScript, so the contract registry
+  covers it.
+- **Regenerate instead of hand-editing.** After an upstream bump or a pin
+  change, run `pnpm --filter @paperclipai/paperclip-runner generate:acpx-profiles`.
+  `check:acpx-profiles` runs in the build and refuses a stale digest.
+- **Keep the profile version.** An upstream release changes the digest, not the
+  version. A new provider starts at version 1. Bump a version only to reset
+  every saved session for that provider on purpose, such as a change in saved
+  session semantics that exact admission cannot detect. Record the reason in
+  the PR and in the version table in `profile-compatibility.test.ts`.
+- **Keep earlier versions decodable.** Saved inputs with any version from 1
+  through the current one decode, so recovery can refuse them. Launch and
+  recovery admission require the exact current profile and digest.
+
+## Adding a provider
+
+1. Add its profile at version 1 to `acpx-profiles.json`.
+2. Add its attestation to `ACPX_RELEASE_ATTESTATIONS`, with its pins in
+   erasable TypeScript or JSON that the generator can read.
+3. Run `generate:acpx-profiles`, then `node --test scripts/acpx-release-attestations.test.mjs`.
+
+## Review criteria
+
+- Does every provider digest change only with its upstream release?
+- Is a new runner/pack contract declared where the `contractDigest` reads it?
+- Does a version bump state which saved sessions it resets, and why?
+- Does the change treat every ACPX harness the same way?
+
+The canonical reference is
+[`packages/paperclip-runner/docs/durable-recovery.md`](../packages/paperclip-runner/docs/durable-recovery.md#profile-identity).
+The pack contract digest is described in
+[`docker/daytona-runner/README.md`](../docker/daytona-runner/README.md).

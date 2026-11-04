@@ -8,10 +8,18 @@ interface Submission {
   attemptId: number;
   issueId: string | null;
   agentId: string;
+  previousAgentId: string | null;
   runIds: Set<string>;
   clientRequestId: string;
   interruptionKey: string;
   takingLonger: boolean;
+}
+
+type SubmissionAgent = Partial<Pick<Agent, "status" | "orgChainHealth">>;
+
+function agentBlocksStartup(agent: SubmissionAgent | undefined) {
+  return (agent?.status !== undefined && !isAgentStatusInvokable(agent.status)) ||
+    agent?.orgChainHealth?.status === "invalid_org_chain";
 }
 
 export function useRunnerSubmission({
@@ -28,7 +36,7 @@ export function useRunnerSubmission({
 }: {
   issueId: string | null;
   agentId: string | null;
-  agent?: Partial<Pick<Agent, "status" | "orgChainHealth">>;
+  agent?: SubmissionAgent;
   blocked?: boolean;
   comments: readonly IssueChatComment[];
   issueStatus?: string;
@@ -44,9 +52,10 @@ export function useRunnerSubmission({
   const interruptionKey = JSON.stringify([
     interruption?.intentId, interruption?.state, interruption?.observedRunId,
   ]);
+  // A reassignment can still be saving. The previous assignee's availability
+  // does not decide whether the selected recipient can respond.
   const startupBlocked = blocked ||
-    (agent?.status !== undefined && !isAgentStatusInvokable(agent.status)) ||
-    agent?.orgChainHealth?.status === "invalid_org_chain";
+    ((!submission || submission.agentId === agentId) && agentBlocksStartup(agent));
   const savedComment = submission && comments.find(comment =>
     comment.clientRequestId === submission.clientRequestId && !comment.clientStatus);
   const acknowledgedAt = savedComment ? new Date(savedComment.createdAt).getTime() : null;
@@ -58,7 +67,7 @@ export function useRunnerSubmission({
     )) : [];
   const settled = Boolean(submission && (
     runId || startupBlocked || isTerminalIssueStatus(issueStatus) ||
-    submission.agentId !== agentId ||
+    (submission.agentId !== agentId && submission.previousAgentId !== agentId) ||
     (submission.issueId && submission.issueId !== issueId) ||
     (interruption && interruption.state !== "working" &&
       interruptionKey !== submission.interruptionKey &&
@@ -87,15 +96,17 @@ export function useRunnerSubmission({
     return () => window.clearTimeout(timeout);
   }, [pending, attemptId]);
 
-  const begin = useCallback((clientRequestId: string) => {
-    const next: Submission | null = agentId && !startupBlocked ? {
-      issueId, agentId, interruptionKey, clientRequestId,
+  const begin = useCallback((clientRequestId: string, recipient?: { agentId: string | null; agent?: SubmissionAgent }) => {
+    const targetAgentId = recipient ? recipient.agentId : agentId;
+    const targetAgent = recipient ? recipient.agent : agent;
+    const next: Submission | null = targetAgentId && !blocked && !agentBlocksStartup(targetAgent) ? {
+      issueId, agentId: targetAgentId, previousAgentId: agentId, interruptionKey, clientRequestId,
       attemptId: ++nextAttemptId.current, takingLonger: false,
       runIds: new Set(linkedRuns.map(run => run.runId)),
     } : null;
     setSubmission(next);
     return next?.attemptId ?? null;
-  }, [agentId, issueId, interruptionKey, linkedRuns, startupBlocked]);
+  }, [agentId, agent, blocked, issueId, interruptionKey, linkedRuns]);
 
   const reject = useCallback((attempt: number | null, error: unknown) => {
     setSubmission(current => {
@@ -105,5 +116,5 @@ export function useRunnerSubmission({
     });
   }, []);
 
-  return { pending, takingLonger, begin, reject, blocked: startupBlocked };
+  return { pending, agentId: pending ? submission.agentId : null, takingLonger, begin, reject, blocked: startupBlocked };
 }

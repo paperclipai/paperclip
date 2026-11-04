@@ -36,6 +36,10 @@ Use `/<company-prefix>/onboarding` to resume an existing company's agent setup;
 the unprefixed route starts at organization naming on self-hosted instances.
 Cloud-managed instances reuse their existing company for agent setup.
 
+First-agent onboarding offers only Claude and Codex, subject to instance adapter
+availability. Other providers remain available through Add agent after onboarding.
+A saved draft for another provider requires a new choice.
+
 ### `cli-setup`
 
 Use `paperclipai onboard --help` or `paperclipai run --help` to select an isolated data directory before setup.
@@ -131,25 +135,6 @@ failed: the child document existed, but the physical file was attached to the
 parent, and recovery stopped the completion callback before a provider turn.
 The failed report remains evidence; the revised source still needs live proof.
 Local cases and automatic selection remain unchanged.
-
-First-task task creation enforces proposal acceptance at the shared server
-boundary. Verify that native `create_task` and both REST creation endpoints reject
-an authenticated onboarding run before its latest proposal has a saved human
-acceptance, including an explicit standalone parent. Then accept a confirmation
-or the current plan revision and verify creation succeeds. Opening answers,
-agent-only acceptance, stale plans and newer pending/rejected proposals must not
-admit new work. [Admission controls](../../server/src/__tests__/onboarding-first-task-admission.test.ts)
-exercise native and REST calls against disposable PostgreSQL; live model and
-Cloud onboarding remain separate evidence.
-
-Native completion also requires a saved human proposal decision. An opening
-answer alone must leave the first task in review. Verify that premature native
-completion is refused, including a result already saved before finalization.
-Accepted proposals and acknowledged human rejections can close the first task;
-rejection still does not authorize new tasks. The
-[native completion controls](../../server/src/services/native-runtime/paperclip-control-plane-port.test.ts)
-exercise these boundaries against disposable PostgreSQL. These controls do not
-identify a historical Cloud failure or establish live onboarding success.
 
 For accepted file-producing work, verify exactly one self-assigned child with a
 self-contained description. The onboarding run must yield through the existing
