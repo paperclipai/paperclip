@@ -87,6 +87,40 @@ process-cold continuation when the provider preserves the selected native
 history; it does not establish recovery from loss of that storage or qualify a
 hosted deployment.
 
+## Host-managed parking
+
+`PAPERCLIP_HOSTED_RUNNER_PARKING=1` additionally permits hosted native Codex
+launches to negotiate warm `retention: "host"` when the provider advertises both
+`warmCheckpointVersion: 1` and `hostedParkingVersion: 1`. The existing warm mode
+and default idle timeout remain unchanged for other launches. Parking also
+requires a verified checkpoint from the just-completed turn.
+
+Core persists a token-free park intent before requesting parking. Once the
+provider acknowledges the parked state, Core detaches and drains its old route
+without suspending or stopping Runner, then removes its warm timer and owner.
+Normal server shutdown therefore leaves that parked process with the host.
+A lost reply is reconciled against the same task. An uncertain park remains an
+idle blocker until a provider observation or successful adoption settles it;
+no idle polling is added. A narrowly attested capacity refusal instead closes
+the current owner gracefully and preserves its cold continuation without
+changing the successful turn result.
+
+While parked, the Runner can outlast the old connection lease. The host can release the VM wake hold while keeping workspace and account mounts. A live autonomous goal or outstanding tool request prevents parking. ACPX retains its existing lifecycle.
+
+A new lease reserves the same process with an opaque park ID and the incoming
+run ID as claim ID. Core validates that reservation, reconstructs the source
+controller checkpoint after restart, and fences its writer with the current run
+owner. It issues and durably flushes a fresh single-use source bootstrap before
+sending the protected claim and opening outbound transport. The bearer remains
+transient; lease metadata and logs contain no bootstrap ticket. Reauthentication
+then uses the existing `run.attach` protocol to admit the successor.
+
+A `bootstrapBound` claim observation means the host has already bound a ticket,
+even if delivery acknowledgement was lost. Core does not replace that secret.
+Before any successor attachment or work, Core persists and requests conditional retirement of the exact reserved source. The host verifies its captured state and the Runner checks the original claim and journal cut before accepting retirement. Core then requires independent proof that the process stopped and an accepted replay of the exact retirement request before cold continuation, including after a lost reply or Core restart. Staged transitions and work that already began
+retain their adoption/reconciliation path. Neither an uncertain claim nor an
+old controller authorizes another executor or a signal to a successor.
+
 ## Adoption and retired launch artifacts
 
 A live runner is adopted with its admitted artifact binding and authenticated

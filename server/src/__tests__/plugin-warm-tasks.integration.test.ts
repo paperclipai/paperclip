@@ -8,19 +8,22 @@ import { eq, sql } from "drizzle-orm";
 import { agents, companies, createDb, applyPendingMigrations, environmentLeases, environments, heartbeatRuns, issues, plugins, projects, sandboxCreationOperations } from "@paperclipai/db";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { recordSandboxCreationResource } from "../services/sandbox-creation-operations.js";
-import { resolvePluginTaskResume } from "../services/environment-task-runtime.js";
+import { resolvePluginTaskColdCheckpoint, resolvePluginTaskResume } from "../services/environment-task-runtime.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 const external=resolveExternalTestDatabaseUrl("PAPERCLIP_PLUGIN_WARM_TASKS_TEST_DATABASE_URL");
 const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("retained Codex plugin task leases",()=>{
- let db:ReturnType<typeof createDb>,stop:()=>Promise<void>;
- beforeAll(async()=>{if(external){await applyPendingMigrations(external);db=createDb(external);stop=()=>db.$client.end({timeout:1});return;}const started=await startEmbeddedPostgresTestDatabase("plugin-warm-tasks");db=createDb(started.connectionString);stop=started.cleanup;});
+ let db:ReturnType<typeof createDb>,stop:()=>Promise<void>,connectionString:string;
+ beforeAll(async()=>{if(external){await applyPendingMigrations(external);connectionString=external;db=createDb(external);stop=()=>db.$client.end({timeout:1});return;}const started=await startEmbeddedPostgresTestDatabase("plugin-warm-tasks");connectionString=started.connectionString;db=createDb(started.connectionString);stop=started.cleanup;});
  afterAll(async()=>{await stop?.();});
  async function fixture(initialProjects:string[]=[],initialExpiry?:string,deadline?:Date){
   const companyId=randomUUID(),agentId=randomUUID(),issueId=randomUUID(),environmentId=randomUUID(),pluginId=randomUUID();
   let runId=randomUUID(),allocation=0,stopped=false,outage=false,releaseFails=false;
+  let nativeRunId=runId;
+  let retirementProof:string|undefined,lostRetirementReply=false;
+  let sessionStateAvailable = true;
   const calls:string[]=[];
   let projectIds=[...initialProjects],providerExpiry=initialExpiry;
   const taskExpiries=new Map<string,string|undefined>(),acquireRequests:any[]=[];
@@ -45,9 +48,20 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
     if(method==="environmentResumeLease") {if(outage) throw Error("unreachable");
      if(resumeGate){if(++resumes===2)releaseResume!();await resumeGate;}return {providerLeaseId:stopped?null:p.providerLeaseId,expiresAt:taskExpiries.get(p.providerLeaseId),metadata:{runId:p.runId}};}
     if(method==="environmentReleaseLease") {if(releaseFails) throw Error("release unavailable");return {providerLeaseId:p.providerLeaseId,state:"stopped"};}
-    if(p.operation.kind==="status") return {kind:"status",taskId:p.taskId,phase:stopped?"completed":"running",executionStopped:stopped,sessionStateAvailable:stopped};
+    if(p.operation.kind==="status") return {kind:"status",taskId:p.taskId,phase:stopped?"completed":"running",executionStopped:stopped,sessionStateAvailable:stopped && sessionStateAvailable};
     if(p.operation.kind==="read_state") return {kind:"state",taskId:p.taskId,state:{...p.operation.identity,lifecycle:"ready"}};
-    if(p.operation.kind==="stop") stopped=true;
+    if(p.operation.kind==="stop") {
+     if(p.operation.ifParkedClaim) {
+      const proof=JSON.stringify(p.operation.ifParkedClaim);
+      if(stopped ? retirementProof!==proof : p.operation.ifParkedClaim.resumeCheckpoint.identity.runId!==nativeRunId)
+       throw Error("conditional source changed before signal");
+      const [owner]=await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId,p.runId));
+      expect(owner.metadata?.runnerTaskConditionalRetirement).toEqual(p.operation.ifParkedClaim);
+      retirementProof=proof;
+     }
+     stopped=true;
+     if(p.operation.ifParkedClaim && lostRetirementReply){lostRetirementReply=false;throw Error("lost retirement reply");}
+    }
     if(p.operation.kind==="prepare") return {kind:"prepared",taskId:p.taskId,launch:{configurationId:"configuration",requirementsDigest:`sha256:${"a".repeat(64)}`,provider:{}}};
     if(p.operation.kind==="check_project_auth") return {kind:"project_auth",taskId:p.taskId,configurationId:p.operation.configurationId,provider:"openai",allowed:true};
     if(p.operation.kind==="describe") return {kind:"description",taskId:p.taskId,runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`},warmTaskVersion:1};
@@ -63,12 +77,66 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
    launch:{runnerVersion:"fixture",runnerDigest:`sha256:${"a".repeat(64)}`,maxOutboxBytes:262144,p0ReserveBytes:65536,lifecyclePolicy:{mode:"warm",idleTimeoutMs:300000}}}});
   await runtime().releaseRunLeases(runId,"released",undefined,"keep_running");
   await db.update(heartbeatRuns).set({status:"succeeded"}).where(eq(heartbeatRuns.id,runId));
-  return {companyId,first,identity,calls,runtime,acquire,acquireRequests,
+  return {companyId,first,identity,calls,runtime,acquire,acquireRequests,workers,
+   attachTarget(){nativeRunId=runId;},loseRetirementReply(){lostRetirementReply=true;},noSuspendedCheckpoint(){sessionStateAvailable=false;},
    setExpiry(next?:string){providerExpiry=next;},
    async nextRun(){runId=randomUUID();await db.insert(heartbeatRuns).values({id:runId,companyId,agentId,nativeIssueId:issueId,invocationSource:"manual",status:"running"});return runId;},
-   setProjects(next:string[]){projectIds=next;},stopped(){stopped=true;},failRelease(){releaseFails=true;},outage(){outage=true;},
+   setProjects(next:string[]){projectIds=next;},stopped(retainsSuspendedState=true){stopped=true;sessionStateAvailable=retainsSuspendedState;},failRelease(){releaseFails=true;},outage(){outage=true;},
    raceResume(){resumeGate=new Promise<void>(resolve=>{releaseResume=resolve;});}};
  }
+ it.each(["accepted","lost-reply","refused","refused-then-stopped","unrelated-stop"])("reconciles a historical park cut after controller restart: %s",async mode=>{
+  const f=await fixture();f.noSuspendedCheckpoint();
+  const checkpoint={schema:"paperclip.runner.cold-checkpoint.v1" as const,sourceId:"exact-park-cut",sha256:`sha256:${"1".repeat(64)}`,
+   runnerStateSha256:`sha256:${"2".repeat(64)}`,identity:f.identity,providerSessionId:"same-native-thread"};
+  const parkId="exact-park";
+  await db.update(environmentLeases).set({metadata:sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+   runnerTaskColdCheckpoint:checkpoint,runnerTaskParkIntent:{identity:f.identity,resumeCheckpoint:checkpoint},runnerTaskRetention:{state:"parked",parkId},
+  })}::jsonb`}).where(eq(environmentLeases.id,f.first.lease.id));
+  const runId=await f.nextRun(),next=await f.acquire();
+  await db.update(environmentLeases).set({metadata:sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+   providerMetadata:{parkedClaim:{parkId,claimId:runId}},
+  })}::jsonb`}).where(eq(environmentLeases.id,next.lease.id));
+  const identity={...f.identity,runId,turnId:"next-turn",itemId:"next-item"};
+  await f.runtime().task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"prepare",projectIds:[],priorIdentity:f.identity,accountIdentity:"account",requirements:{
+   schema:"paperclip.runner.launch-requirements.v1",identity,provider:"codex",model:null,instructions:"Prepared successor",runtimeContext:null,settings:{},
+   approvalPolicy:"never",readOnly:false,preparedConversation:false,includeCollaborationModeInstructions:false}}});
+  const reader=createDb(connectionString);
+  try {
+   const read=()=>resolvePluginTaskColdCheckpoint(reader,{companyId:f.companyId,resumeFrom:f.first.lease.providerLeaseId!,priorIdentity:f.identity});
+   expect(await read()).toBeUndefined();
+   expect(await resolvePluginTaskColdCheckpoint(reader,{companyId:f.companyId,resumeFrom:f.first.lease.providerLeaseId!,priorIdentity:f.identity,parkId:"foreign"})).toBeUndefined();
+   expect(await resolvePluginTaskColdCheckpoint(reader,{companyId:f.companyId,resumeFrom:f.first.lease.providerLeaseId!,priorIdentity:f.identity,parkId})).toEqual(checkpoint);
+   const refused=mode==="refused" || mode==="refused-then-stopped" || mode==="unrelated-stop";
+   if(mode.startsWith("refused")) f.attachTarget();
+   if(mode==="unrelated-stop") f.stopped(false);
+   if(mode==="lost-reply") f.loseRetirementReply();
+   const stop=f.runtime().task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"stop",ifParkedClaim:{parkId,claimId:runId,resumeCheckpoint:checkpoint}}});
+   const restarted=environmentRuntimeService(reader,{pluginWorkerManager:f.workers});
+   if(refused) {
+    await expect(stop).rejects.toThrow("reconcile the same task");
+    if(mode!=="refused") f.stopped(false);
+    const observed=restarted.task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"status"}});
+    if(mode==="refused") await expect(observed).resolves.toMatchObject({executionStopped:false});
+    else await expect(observed).rejects.toThrow("reconcile the same task");
+    expect(await read()).toBeUndefined();
+    const [current]=await reader.select().from(environmentLeases).where(eq(environmentLeases.id,next.lease.id));
+    expect(current.metadata?.runnerTaskConditionalRetirement).toEqual({parkId,claimId:runId,resumeCheckpoint:checkpoint});
+   } else {
+    if(mode==="lost-reply") await expect(stop).rejects.toThrow("reconcile the same task");
+    else await expect(stop).resolves.toMatchObject({kind:"accepted"});
+    expect(await read()).toBeUndefined();
+    const [pending]=await reader.select().from(environmentLeases).where(eq(environmentLeases.id,next.lease.id));
+    expect(pending.metadata?.runnerTaskConditionalRetirement).toEqual({parkId,claimId:runId,resumeCheckpoint:checkpoint});
+    await expect(restarted.task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"status"}})).resolves.toMatchObject({executionStopped:true});
+    expect(await read()).toEqual(checkpoint);
+    await restarted.task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"complete"}});
+    await restarted.task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"describe"}});
+    expect(await resolvePluginTaskResume(reader,{companyId:f.companyId,leaseId:next.lease.id,priorIdentity:f.identity})).toBe(f.first.lease.providerLeaseId);
+    await expect(restarted.task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"read_state",identity:f.identity,
+     resumeFrom:f.first.lease.providerLeaseId!,resumeCheckpoint:checkpoint}})).resolves.toMatchObject({kind:"state",state:f.identity});
+   }
+  } finally {await reader.$client.end({timeout:1});}
+ });
  it("hands a retained process to a new run after controller reconstruction",async()=>{
   const f=await fixture();
   expect(f.first.lease.leasePolicy).toBe("reuse_by_environment");
@@ -108,6 +176,31 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   expect(next.lease.providerLeaseId).not.toBe(f.first.lease.providerLeaseId);
   expect(f.calls).toContain("complete");
   await expect(resolvePluginTaskResume(db,{companyId:f.companyId,leaseId:next.lease.id,priorIdentity:f.identity})).resolves.toBe(f.first.lease.providerLeaseId);
+ });
+ it("keeps a successful run and its exact cold checkpoint after host eviction", async () => {
+  const f = await fixture();
+  const checkpoint = {
+    schema: "paperclip.runner.cold-checkpoint.v1",
+    sourceId: "settled-source",
+    sha256: `sha256:${"1".repeat(64)}`,
+    runnerStateSha256: `sha256:${"2".repeat(64)}`,
+    identity: f.identity,
+    providerSessionId: "same-provider-thread",
+  };
+  await db.update(environmentLeases).set({metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb)
+    || ${JSON.stringify({runnerTaskColdCheckpoint: checkpoint})}::jsonb`}).where(eq(environmentLeases.id, f.first.lease.id));
+  f.stopped(false);
+  const followUp = await f.nextRun();
+  const next = await f.acquire();
+  expect(next.lease.providerLeaseId).not.toBe(f.first.lease.providerLeaseId);
+  const source = await resolvePluginTaskResume(db, {companyId:f.companyId,leaseId:next.lease.id,priorIdentity:f.identity});
+  expect(source).toBe(f.first.lease.providerLeaseId);
+  const restored = await resolvePluginTaskColdCheckpoint(db, {companyId:f.companyId,resumeFrom:source!,priorIdentity:f.identity});
+  expect(restored).toEqual(checkpoint);
+  expect(f.calls.filter(call => call === "environmentAcquireLease")).toHaveLength(2);
+  const status = async (id:string) => (await db.select({status:heartbeatRuns.status}).from(heartbeatRuns).where(eq(heartbeatRuns.id,id)))[0]?.status;
+  expect(await status(f.identity.runId)).toBe("succeeded");
+  expect(await status(followUp)).toBe("running");
  });
  it("does not allocate a replacement when the retained computer cannot be inspected",async()=>{
   const f=await fixture();f.outage();await f.nextRun();
