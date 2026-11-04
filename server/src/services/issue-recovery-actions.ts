@@ -29,6 +29,31 @@ function asDatabaseDate(value: string | Date | null) {
   return typeof value === "string" ? new Date(value) : value;
 }
 
+function asEvidenceRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function mergeRecoveryActionEvidence(input: {
+  existing: Record<string, unknown> | null | undefined;
+  incoming: Record<string, unknown> | undefined;
+  preserveExistingOwner: boolean;
+}): Record<string, unknown> {
+  if (!input.preserveExistingOwner) return input.incoming ?? input.existing ?? {};
+  const base = { ...(input.existing ?? {}), ...(input.incoming ?? {}) };
+  const existingWorkspaceValidation = asEvidenceRecord(input.existing?.workspaceValidation);
+  const incomingWorkspaceValidation = asEvidenceRecord(input.incoming?.workspaceValidation);
+  if (!existingWorkspaceValidation || !incomingWorkspaceValidation) return base;
+  return {
+    ...base,
+    workspaceValidation: {
+      ...existingWorkspaceValidation,
+      ...incomingWorkspaceValidation,
+    },
+  };
+}
+
 function isRecoveryBudgetExhausted(evidence: Record<string, unknown>) {
   const budget = evidence.recoveryBudget;
   return Boolean(
@@ -383,6 +408,15 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
     if (existing && input.createOnly) return existing;
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
+      const isExistingWorkspaceValidation =
+        existing.cause === "workspace_validation_failed" ||
+        existing.kind === "workspace_validation";
+      const isIncomingGenericSweep =
+        input.cause === "stranded_assigned_issue" ||
+        input.cause === "execution_review_participant_recovery";
+      if (isExistingWorkspaceValidation && isIncomingGenericSweep) {
+        return existing;
+      }
       // A distinct failure identity must not overwrite the active action of a
       // prior identity. Resolve the prior action and insert a new one, so the
       // operator gets a new notice for the new failure.
@@ -520,12 +554,11 @@ export function issueRecoveryActionService(db: DbOrTransaction) {
               : input.returnOwnerAgentId ?? existing.returnOwnerAgentId,
             cause: input.preserveExistingOwner ? existing.cause : input.cause,
             fingerprint: input.preserveExistingOwner ? existing.fingerprint : input.fingerprint,
-            evidence: input.preserveExistingOwner
-              ? {
-                ...(existing.evidence ?? {}),
-                ...(input.evidence ?? {}),
-              }
-              : input.evidence ?? existing.evidence,
+            evidence: mergeRecoveryActionEvidence({
+              existing: existing.evidence,
+              incoming: input.evidence,
+              preserveExistingOwner: input.preserveExistingOwner === true,
+            }),
             nextAction: input.preserveExistingOwner ? existing.nextAction : input.nextAction,
             wakePolicy: input.preserveExistingOwner
               ? existing.wakePolicy

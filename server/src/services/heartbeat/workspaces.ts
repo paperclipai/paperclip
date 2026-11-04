@@ -766,6 +766,21 @@ export function isWorkspaceValidationFailure(
   );
 }
 
+export function findWorkspaceValidationFailure(
+  error: unknown,
+): WorkspaceValidationFailureLike | null {
+  let current = error;
+  const visited = new Set<unknown>();
+  while (current && typeof current === "object" && !visited.has(current)) {
+    visited.add(current);
+    if (isWorkspaceValidationFailure(current)) {
+      return current;
+    }
+    current = "cause" in current ? (current as { cause?: unknown }).cause : null;
+  }
+  return null;
+}
+
 export function isWorkspaceValidationFailedRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode"> | null | undefined,
 ) {
@@ -2357,7 +2372,7 @@ export async function provisionExecutionWorkspaceForFreshnessDecision<
   try {
     restored = (await input.restoreExistingWorkspace?.()) ?? null;
   } catch (error) {
-    if (isWorkspaceValidationFailure(error)) {
+    if (findWorkspaceValidationFailure(error)) {
       throw error;
     }
     reuseFailure = formatInheritedExecutionWorkspaceReuseFailure({

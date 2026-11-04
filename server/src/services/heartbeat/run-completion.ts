@@ -15,7 +15,7 @@ import { findReusableSandboxResumeError } from "../reusable-sandbox-resume-error
 import { type RunSessionOutcome, resolveNextSessionState, normalizeUsageTotals, resolveCacheAdjustedCostUsd, resolveLedgerBiller, resolveLedgerCostStatus, normalizeLedgerBillingType } from "./run-state.js";
 import { readGitConnectionFailure } from "../git-connection-failure.js";
 import { CONFIGURATION_INCOMPLETE_FAILURE_CODE, ConfigurationIncompleteFailure } from "./run-preparation.js";
-import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, attachPaperclipSessionMetadataToSessionParams } from "./workspaces.js";
+import { isWorkspaceValidationFailedRun, isWorkspaceValidationFailure, findWorkspaceValidationFailure, attachPaperclipSessionMetadataToSessionParams } from "./workspaces.js";
 import { preserveWorkspaceRestoreRecoveryMetadataSql } from "../legacy-workspace-restore-recovery.js";
 import { cancellationResultJson, controllerLeaseLossCancellation, readRunCancellation } from "../run-cancellation.js";
 import { CONTROLLER_LEASE_LOST_FAILURE_CODE, LegacyControllerLeaseLostError } from "../legacy-controller-lease.js";
@@ -1084,9 +1084,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       identityRedactor.redact(err instanceof Error ? err.message : "Unknown adapter failure"),
       currentUserRedactionOptions,
     );
-    const workspaceValidationFailure = isWorkspaceValidationFailure(err)
-      ? err
-      : null;
+    const workspaceValidationFailure = findWorkspaceValidationFailure(err);
     const configurationIncompleteFailure = isConfigurationIncompleteFailure(
       err,
     )
@@ -1330,11 +1328,8 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
     // A missing secret/env binding is a known pre-dispatch configuration gap,
     // not an opaque setup crash. Surface it with its own errorCode so the
     // recovery path routes it to a human owner instead of looping retries.
-    const workspaceValidationSetupFailure = isWorkspaceValidationFailure(
-      outerErr,
-    )
-      ? outerErr
-      : null;
+    const workspaceValidationSetupFailure =
+      findWorkspaceValidationFailure(outerErr);
     const configurationIncompleteSetupFailure =
       isConfigurationIncompleteFailure(outerErr) ? outerErr : null;
     const unresolvedBaseRefSetupFailure = isUnresolvedWorkspaceBaseRefError(
