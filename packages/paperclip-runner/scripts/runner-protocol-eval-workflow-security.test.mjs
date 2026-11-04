@@ -321,6 +321,22 @@ test('controlled admission rejects missing policy, automatic retries and job rer
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('controlled workers keep the required GitHub-hosted origin even when the legacy AWS fleet is enabled', async () => {
+  const workflow = await readFile(workflowPath, 'utf8');
+  const script = workflowShell(workflow.slice(0, workflow.indexOf('\n  target_lock:')), 'Select paid test runner');
+  const root = await mkdtemp(resolve(tmpdir(), 'runner-controlled-origin-'));
+  try {
+    for (const [mode, aws, runner] of [['controlled', 'true', 'ubuntu-latest'], ['controlled', 'false', 'ubuntu-latest'],
+      ['legacy', 'true', 'runs-on/fleet=paperclip-public-pr-x64/env=public-ci'], ['legacy', 'false', 'ubuntu-latest']]) {
+      const output = resolve(root, `${mode}-${aws}`);
+      const result = spawnSync('bash', ['-euc', script], { encoding: 'utf8', env: { PATH: process.env.PATH,
+        ACCOUNTING_MODE: mode, AWS_PAID_RUNNER_ENABLED: aws, GITHUB_OUTPUT: output } });
+      assert.equal(result.status, 0, result.stderr);
+      assert.match(await readFile(output, 'utf8'), new RegExp(`^runner=${runner}$`, 'm'));
+    }
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test('TestOps admission preserves the selected mode gates, current source and dedicated roster', async () => {
   const workflow = await readFile(workflowPath, 'utf8');
   const script = workflowShell(workflow, 'Validate accounting mode and retry envelope');

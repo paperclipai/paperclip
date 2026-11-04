@@ -988,6 +988,8 @@ plan. The source must be the trusted current workflow revision. Qualification
 covers that recorded Claude Sonnet 5 configuration and accounting mode.
 Controlled mode preserves its reviewed policy, immutable lock/source/request
 bindings, tracing, private retention, first-attempt and zero-retry gates.
+Its paid workers use `ubuntu-latest`, matching the required GitHub-hosted
+operating origin even when the legacy AWS fleet selector is enabled.
 Legacy mode uses direct-provider credentials. A pass in one mode does not prove
 the other's credential or routing path.
 

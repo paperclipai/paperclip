@@ -203,9 +203,10 @@ jobs:
         id: runner
         env:
           AWS_PAID_RUNNER_ENABLED: ${{ vars.RUNNER_E2E_AWS_ENABLED }}
+          ACCOUNTING_MODE: ${{ steps.mode.outputs.mode }}
         run: |
           set -euo pipefail
-          if [ "$AWS_PAID_RUNNER_ENABLED" = true ]; then
+          if [ "$ACCOUNTING_MODE" != controlled ] && [ "$AWS_PAID_RUNNER_ENABLED" = true ]; then
             {
               echo 'runner=runs-on/fleet=paperclip-public-pr-x64/env=public-ci'
               echo 'max_parallel_default=100'
