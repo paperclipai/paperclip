@@ -436,15 +436,25 @@ it("retries a replacement whose staging failed before any process launched", asy
     runnerReconnectGraceMs: 5_000, runnerProcessLauncher: launch,
   });
   try {
-    await bundle.transport.request("thread/start", { cwd: directory });
+    const opened = await bundle.transport.request("thread/start", { cwd: directory }) as { thread: { id: string } };
     let failure: unknown = null;
     const pump = (async () => {
       for await (const _event of bundle.transport.notifications()) {}
     })().catch(error => { failure = error; });
     children[0]!.kill("SIGKILL");
-    await vi.waitFor(() => expect(launch).toHaveBeenCalledTimes(3), { timeout: 4_000 });
-    await vi.waitFor(() => expect(bundle.transport.processInfo()).toMatchObject({ exited: false }), { timeout: 4_000 });
-    await new Promise(resolveWait => setTimeout(resolveWait, 250));
+    // Recovery reports restoration only after the replacement authenticates
+    // as the single active connection to the durable PRP authority.
+    await vi.waitFor(
+      () => expect(bundle.evidence().diagnostics).toContain("runner process restored its durable PRP session"),
+      { timeout: 4_000 },
+    );
+    expect(launch).toHaveBeenCalledTimes(3);
+    expect(children).toHaveLength(2);
+    expect(bundle.evidence().runnerPid).toBe(children[1]!.pid);
+    expect(failure).toBeNull();
+    // The restored runner still serves the same provider thread.
+    const resumed = await bundle.transport.request("thread/resume", { threadId: opened.thread.id }) as { thread: { id: string } };
+    expect(resumed.thread.id).toBe(opened.thread.id);
     expect(failure).toBeNull();
     void pump;
   } finally {
