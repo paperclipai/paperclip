@@ -4571,3 +4571,21 @@ one-time config-file seed preserves existing choices, then later starts use the
 database without loading home `.env` files or repairing worktree config. See
 [Cloud runtime configuration](cloud-runtime-configuration.md) for field ownership,
 secret handling, initialization order and migration interfaces.
+
+
+### Dedicated native recovery test database
+
+`PAPERCLIP_RECOVERY_TEST_DATABASE_URL` selects an explicitly owned PostgreSQL
+database for native recovery fixtures. The URL must name a dedicated database
+ending in `_test`, without database-name or connection-option overrides. The
+fixture applies pending migrations and closes registered clients at cleanup;
+it does not create or drop that database. Its provisioning owner remains
+responsible for disposal. `nativeRestartFixture({ dedicatedDatabaseUrl })` can
+also select this path explicitly. Without either opt-in, the existing recovery
+fixture allocation behavior remains unchanged.
+
+The native idle-sleep continuation integration uses a controlled local provider
+with the real heartbeat queue, authorized comment wake, native session
+checkpoint, files, secret encryption, and owned idle preflight. It requires
+`DATABASE_POOL_MAX=4` and verifies the driver's actual pool setting. It does not
+exercise the remote Runner harness backup transport or a live provider.

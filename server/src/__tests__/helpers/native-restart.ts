@@ -79,7 +79,7 @@ export async function stopOwnedProcessGroup(
   await waitForCondition(`owned process ${pid} to exit`, () => !processAlive(pid));
 }
 
-export function nativeRestartFixture() {
+export function nativeRestartFixture(options: { dedicatedDatabaseUrl?: string } = {}) {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let runtimeRoot: string;
   let paperclipHome: string;
@@ -93,7 +93,7 @@ export function nativeRestartFixture() {
   let successor: NativeControllerIdentity;
 
   beforeAll(async () => {
-    temporary = await startRecoveryPostgres("native-runner-restart-recovery-");
+    temporary = await startRecoveryPostgres("native-runner-restart-recovery-", options);
     runtimeRoot = await mkdtemp(resolve(tmpdir(), "native-restart-runtime-"));
     isolatedHome = createIsolatedTestHome();
     paperclipHome = isolatedHome.home;
