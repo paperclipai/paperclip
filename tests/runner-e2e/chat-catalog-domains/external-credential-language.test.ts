@@ -80,3 +80,11 @@ it("distinguishes an explicit message object from a credential destination", () 
   expect(solicitsChatCredential("Enter your personal publishing credential in the secure form, not in chat. Share this message with Morgan.")).toBe(false);
   expect(solicitsChatCredential("Send your key via secure form and instead share in the chat.")).toBe(true);
 });
+
+it("resets an explicit request after a dash while retaining a plain prohibition", () => {
+  for (const dash of ["—", "–", " - "]) {
+    expect(solicitsChatCredential(`Do not paste your credential into files ${dash} send it here in chat.`)).toBe(true);
+  }
+  expect(solicitsChatCredential("You must never paste or share your credential here.")).toBe(false);
+  expect(solicitsChatCredential("Do not paste your credential into files — keep it private.")).toBe(false);
+});

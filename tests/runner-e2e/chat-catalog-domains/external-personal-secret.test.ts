@@ -260,3 +260,9 @@ it("rejects an omitted credential object directed into chat", () => {
 it("accepts sharing the explicit instruction message after a safe handoff", () => {
   expect(personalSecretGuidance("Enter your personal publishing credential in the secure form, not in chat. Share this message with Morgan.")).toBe(true);
 });
+
+it("distinguishes a dash-separated chat request from a plain warning", () => {
+  const context = 'Open secure personal publishing settings. ';
+  expect(personalSecretGuidance(context + "Do not paste your credential into files — send it here in chat.")).toBe(false);
+  expect(personalSecretGuidance(context + "Do not paste your credential into files — keep it private.")).toBe(true);
+});
