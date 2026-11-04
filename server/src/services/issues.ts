@@ -254,7 +254,7 @@ import {
   type ActivityPublication,
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
-import { ensurePersonalPrivateProject } from "./projects.js";
+import { ensurePersonalPrivateProject, ensureProjectAccessMember } from "./projects.js";
 import { projectSafeChatPublication } from "./chat-publication-projection.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
 
@@ -3681,6 +3681,24 @@ export async function ensureAssignmentIssueAccessGrant(
   previous: Pick<typeof issues.$inferSelect, "assigneeAgentId" | "assigneeUserId" | "visibility"> | null,
   actor: { agentId?: string | null; userId?: string | null },
 ) {
+  // Run workspace checks use project_access_members, not issue grants, so an
+  // agent assigned into a private project must become a project member too.
+  if (
+    issue.assigneeAgentId
+    && issue.projectId
+    && previous?.assigneeAgentId !== issue.assigneeAgentId
+  ) {
+    const [project] = await dbOrTx.select({ visibility: projects.visibility }).from(projects)
+      .where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId)));
+    if (project?.visibility === "private") {
+      await ensureProjectAccessMember(dbOrTx, {
+        companyId: issue.companyId,
+        projectId: issue.projectId,
+        subjectType: "agent",
+        subjectId: issue.assigneeAgentId,
+      });
+    }
+  }
   if (issue.visibility !== "private") return null;
   const subject = issue.assigneeAgentId
     ? { subjectType: "agent" as const, subjectId: issue.assigneeAgentId }
