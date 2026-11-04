@@ -119,6 +119,7 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
     await expect(ctx.input.page).toHaveURL(url => url.origin === new URL(source).origin
       && (url.pathname === studioRoute || url.pathname === detailRoute), { timeout: remaining() });
     if (new URL(ctx.input.page.url()).pathname === detailRoute) {
+      await ctx.input.page.getByRole("tab", { name: "Files", exact: true }).click({ timeout: remaining() });
       await ctx.input.page.getByRole("button", { name: "Edit", exact: true }).click({ timeout: remaining() });
     }
   };
