@@ -104,6 +104,36 @@ describe("claude_local failure classification precedence", () => {
     expect(result.errorCode).toBe("model_not_found");
   });
 
+  it.each([
+    "The page says login required for guests.",
+    "Login test: authentication failed, the bearer token is invalid as expected.",
+  ])("keeps a max-turns stop when its summary quotes auth prose: %s", async (summary) => {
+    mockExecutionResult(buildProcResult({ subtype: "error_max_turns", is_error: true, result: summary }));
+    const result = await execute(buildContext() as never);
+    expect(result.errorCode).toBe("max_turns_exhausted");
+    expect(result.resultJson).toMatchObject({ stopReason: "max_turns_exhausted", result: summary });
+    expect(result.clearSession).toBe(true);
+  });
+
+  it.each([
+    { api_error_status: 401 },
+    { error: "authentication_failed" },
+    { errors: ["Invalid bearer token"] },
+  ])("keeps genuine provider auth evidence ahead of a max-turns stop: %j", async (evidence) => {
+    mockExecutionResult(buildProcResult({ subtype: "error_max_turns", is_error: true, ...evidence }));
+    const result = await execute(buildContext() as never);
+    expect(result.errorCode).toBe("claude_auth_required");
+  });
+
+  it("keeps a plain CLI login diagnostic ahead of a max-turns stop", async () => {
+    mockExecutionResult({
+      ...buildProcResult({ subtype: "error_max_turns", is_error: true }),
+      stderr: "Invalid API key · Please run /login",
+    });
+    const result = await execute(buildContext() as never);
+    expect(result.errorCode).toBe("claude_auth_required");
+  });
+
   const cleanup: NonNullable<RunProcessResult["terminalResultCleanup"]> = {
     kind: "terminal_result_cleanup",
     stopped: true,
@@ -118,7 +148,7 @@ describe("claude_local failure classification precedence", () => {
     { exitCode: 143, signal: null, forceKilled: false },
     { exitCode: null, signal: "SIGTERM", forceKilled: false },
     { exitCode: null, signal: "SIGKILL", forceKilled: true },
-  ] as const)("preserves unfinished background cleanup evidence: %j", async (stop) => {
+  ] as const)("does not turn transcript auth prose into an auth error during cleanup: %j", async (stop) => {
     const terminalResultCleanup = { ...cleanup, signal: stop.signal ?? "SIGTERM", forceKilled: stop.forceKilled };
     mockExecutionResult({
       ...buildProcResult({ subtype: "success", is_error: false, result: "Snapshot refresh is still running." },
@@ -133,10 +163,10 @@ describe("claude_local failure classification precedence", () => {
     expect(result).toMatchObject({
       exitCode: stop.exitCode,
       signal: stop.signal,
-      errorCode: cleanup.stopReason,
-      errorMessage: cleanup.reason,
-      resultJson: { stopReason: cleanup.stopReason, unmanagedBackgroundTask: terminalResultCleanup },
+      errorCode: null,
+      resultJson: { unmanagedBackgroundTask: terminalResultCleanup },
     });
+    expect(result.resultJson).not.toHaveProperty("stopReason", cleanup.stopReason);
   });
 
   it("does not infer cleanup from exit 143 without cleanup evidence", async () => {

@@ -243,18 +243,23 @@ export function detectClaudeLoginRequired(input: {
 }): { requiresLogin: boolean; loginUrl: string | null } {
   const parsed = input.parsed ?? null;
   const terminalFailed = parsed !== null && claudeResultIndicatesAuthFailure(parsed);
-  const terminalText = terminalFailed ? collectClaudeTerminalText(parsed) : "";
-  const startupText = parsed === null
-    ? [input.stdout, input.stderr].join("\n").split(/\r?\n/).filter((line) => {
+  // A turn-budget stop can carry the model's last answer in result. Keep that
+  // prose out of both auth scans, while retaining explicit provider errors.
+  const terminalText = terminalFailed
+    ? collectClaudeTerminalText(isClaudeMaxTurnsResult(parsed) ? { ...parsed, result: "" } : parsed)
+    : "";
+  // Plain startup output and failed-run stderr can carry a CLI login prompt.
+  // JSON transcript records and diagnostics after success are not auth evidence.
+  const diagnosticText = (parsed === null ? [input.stdout, input.stderr] : terminalFailed ? [input.stderr] : [])
+    .join("\n").split(/\r?\n/).filter((line) => {
         try {
           JSON.parse(line);
           return false;
         } catch {
           return true;
         }
-      }).join("\n")
-    : "";
-  const loginPrompt = CLAUDE_LOGIN_PROMPT_RE.test(terminalText || startupText);
+      }).join("\n");
+  const loginPrompt = CLAUDE_LOGIN_PROMPT_RE.test([terminalText, diagnosticText].join("\n"));
   const tokenFailure = terminalFailed && CLAUDE_AUTH_TOKEN_FAILURE_RE.test(terminalText);
   const unauthorizedStatus = parsed !== null &&
     (asNumber(parsed.api_error_status, 0) === 401 || asNumber(parsed.error_status, 0) === 401);
