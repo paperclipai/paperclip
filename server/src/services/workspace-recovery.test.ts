@@ -81,6 +81,8 @@ import { createReusableLeaseHandoff } from "./environment-lease-handoff.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-runtime/native-workspace-finalization-state.js";
 import { getExecutionBlocker } from "./execution-blocker.js";
 import { buildExecutionContinuation } from "./execution-continuation.js";
+import { createHeartbeatRunOutput } from "./heartbeat/run-output.js";
+import { objectLogFixture } from "./heartbeat/__tests__/object-log-fixture.js";
 import { issueRoutes } from "../routes/issues.js";
 import { plugins } from "@paperclipai/db";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
@@ -529,7 +531,7 @@ describe("automatic retained workspace recovery", () => {
     expect((await run(f.runId)).error).toBe(source.error);
   }, 30_000);
 
-  async function recoveredPreparationRetryChain(mode: "certified" | "inherited_session" | "historical_warning" = "inherited_session") {
+  async function recoveredPreparationRetryChain(mode: "certified" | "inherited_session" | "historical_warning" | "empty_object_log" = "inherited_session") {
     const f = await failedRemotePreparation("retained", mode !== "certified", mode === "historical_warning");
     await recoverRetainedWorkspace(f.input);
     if (mode !== "certified") await db.update(heartbeatRuns).set({ errorCode: "adapter_failed",
@@ -541,6 +543,7 @@ describe("automatic retained workspace recovery", () => {
       sessionIdAfter: source.sessionIdBefore, resultJson: { summary: "Earlier turn completed" },
     }).returning() : [];
     if (completed) await db.update(heartbeatRuns).set({ retryOfRunId: completed.id }).where(eq(heartbeatRuns.id, source.id));
+    if (mode === "empty_object_log") await recordPreparationObjectLog(source);
     const [failed] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, issueId: f.issueId,
       agentId: source.agentId, runtimeMode: "legacy", status: "failed", retryOfRunId: source.id,
       sessionIdBefore: source.sessionIdBefore,
@@ -553,7 +556,22 @@ describe("automatic retained workspace recovery", () => {
     return { ...f, source, failed, completed };
   }
 
-  it.each(["certified", "inherited_session", "historical_warning"] as const)("admits one HTTP Retry through a failed automatic successor after its preparation ancestor is recovered: %s", async mode => {
+  async function recordPreparationObjectLog(source: typeof heartbeatRuns.$inferSelect, outputText?: string) {
+    const store = objectLogFixture();
+    const output = createHeartbeatRunOutput(db, { run: source, runId: source.id, issueId: source.issueId,
+      runLogStore: store, identityRedactor: { chunk: (_stream, value) => value, redact: value => value },
+      secretKeys: new Set(), appendRunEvent: vi.fn(), getCurrentUserRedactionOptions: async () => ({ enabled: false }) });
+    const handlers = await output.begin(source);
+    if (outputText) await handlers.onLog("stdout", outputText);
+    const summary = await store.finalize(output.handle!);
+    await output.flushOutputProgress({ force: true });
+    await db.update(heartbeatRuns).set({ logBytes: summary.bytes, logSha256: summary.sha256,
+      logCompressed: summary.compressed, stdoutExcerpt: output.stdoutExcerpt, stderrExcerpt: output.stderrExcerpt,
+    }).where(eq(heartbeatRuns.id, source.id));
+    return { store, summary };
+  }
+
+  it.each(["certified", "inherited_session", "historical_warning", "empty_object_log"] as const)("admits one HTTP Retry through a failed automatic successor after its preparation ancestor is recovered: %s", async mode => {
     const f = await recoveredPreparationRetryChain(mode);
     const app = boardRecoveryApp(), heartbeat = heartbeatService(db);
     const intent = { observedRunId: f.failed.id, idempotencyKey: randomUUID() };
@@ -578,6 +596,35 @@ describe("automatic retained workspace recovery", () => {
     expect((await run(f.runId)).error).toBe(f.source.error);
     if (f.completed) expect(await run(f.completed.id)).toEqual(f.completed);
   }, 30_000);
+
+  it.each(["unknown_size", "unknown_digest", "wrong_digest", "nonempty_size", "foreign_reference", "other_store",
+    "stdout", "stderr", "output_sequence", "output_time", "output_bytes", "output_stream", "compressed", "recorded_output"] as const)(
+    "keeps a logged preparation ancestor held without complete empty-output proof: %s", async gate => {
+      const f = await recoveredPreparationRetryChain("empty_object_log");
+      if (gate === "recorded_output") await recordPreparationObjectLog(await run(f.source.id), "Provider work was recorded.\n");
+      const patch: Partial<typeof heartbeatRuns.$inferInsert> = gate === "unknown_size" ? { logBytes: null }
+        : gate === "unknown_digest" ? { logSha256: null }
+        : gate === "wrong_digest" ? { logSha256: "0".repeat(64) }
+        : gate === "nonempty_size" ? { logBytes: 1 }
+        : gate === "foreign_reference" ? { logRef: `${f.companyId}/${f.source.agentId}/${randomUUID()}` }
+        : gate === "other_store" ? { logStore: "s3_archive" }
+        : gate === "stdout" ? { stdoutExcerpt: "Recorded provider output" }
+        : gate === "stderr" ? { stderrExcerpt: "Recorded diagnostic output" }
+        : gate === "output_sequence" ? { lastOutputSeq: 1 }
+        : gate === "output_time" ? { lastOutputAt: new Date() }
+        : gate === "output_bytes" ? { lastOutputBytes: 1 }
+        : gate === "output_stream" ? { lastOutputStream: "stdout" }
+        : gate === "compressed" ? { logCompressed: true } : {};
+      if (Object.keys(patch).length) await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.source.id));
+      const receipt = (await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.failed.id, idempotencyKey: randomUUID() }).expect(202)).body;
+      await heartbeatService(db).resumeTaskRetry(f.companyId, receipt.requestId);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`))).toHaveLength(0);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId)))[0])
+        .toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect((await action(f.actionId)).evidence.explicitUserContinuation).toBeUndefined();
+    }, 30_000);
 
   it.each(["foreign_company", "foreign_task", "foreign_agent", "conflicting_binding", "missing_edge", "cycle", "forged_context",
     "live_predecessor", "live_controller", "unknown_stop", "failed_cleanup", "pending_cleanup", "failed_save",

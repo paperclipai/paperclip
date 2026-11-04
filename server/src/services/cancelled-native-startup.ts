@@ -1,4 +1,5 @@
 import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
+import { createHash } from "node:crypto";
 import { and, eq, inArray, isNotNull, or } from "drizzle-orm";
 import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { isUuidLike } from "@paperclipai/shared";
@@ -18,6 +19,7 @@ type Run = Pick<typeof heartbeatRuns.$inferSelect,
   "sessionIdAfter" | "issueId" | "nativeIssueId" | "nativeSessionId" | "executionStage" |
   "controllerBootId" | "controllerLeaseExpiresAt">;
 type Coordinator = typeof nativeRunFinalizations.$inferSelect;
+const EMPTY_LOG_SHA256 = createHash("sha256").digest("hex");
 
 export async function isFailedNativePreparation(db: Db, run: Run, coordinator: Coordinator | undefined) {
   return failedNativePreparation(db, run, coordinator, false);
@@ -68,9 +70,14 @@ async function hasSettledFailedPreparationEvidence(db: Db, run: Run, historicalR
     lastOutputStream: heartbeatRuns.lastOutputStream, lastOutputBytes: heartbeatRuns.lastOutputBytes,
     usageJson: heartbeatRuns.usageJson, exitCode: heartbeatRuns.exitCode, signal: heartbeatRuns.signal,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.id, run.id)));
+  const emptyLog = source && source.logStore === "s3_segments"
+    && source.logRef === `${run.companyId}/${source.agentId}/${run.id}`
+    && source.logBytes === 0 && source.logSha256 === EMPTY_LOG_SHA256
+    && [source.stdoutExcerpt, source.stderrExcerpt].every(value => value === null || value === "");
   if (!source || source.logCompressed || source.lastOutputSeq !== 0 || Object.entries(source).some(([key, value]) =>
     !["agentId", "logCompressed", "lastOutputSeq", "usageJson"].includes(key) &&
-    !(historicalRetryAncestor && key === "sessionIdBefore") && value !== null)
+    !(historicalRetryAncestor && key === "sessionIdBefore") &&
+    !(emptyLog && ["logStore", "logRef", "logBytes", "logSha256", "stdoutExcerpt", "stderrExcerpt"].includes(key)) && value !== null)
     || !hasOnlyPreparationAccountingContext(source.usageJson, run.issueId ?? run.contextSnapshot?.issueId)
     || Object.keys(run.runnerProfileJson ?? {}).some(key => !["adapterDispatch", "remoteWorkspace",
       "chatControlRecoveryAdmission"].includes(key))

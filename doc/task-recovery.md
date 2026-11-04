@@ -87,6 +87,12 @@ request resumes through normal admission and current repository access checks.
 Unknown execution, operator Stop, changed ownership and missing receipts keep
 the request held. Preservation alone does not authorize automatic replay.
 
+Preparation can initialize an object run log before provider dispatch. A finalized
+log with zero bytes and the SHA-256 digest of empty content is compatible with
+the no-output proof when its reference binds the exact company, agent and run.
+Output progress and nonempty excerpts still block admission. Unknown size or
+digest, another log backend, and incomplete preparation settlement remain held.
+
 Agent Chat additionally requires the current conversation owner and enabled
 Agent Chat. Admission and dispatch both recheck these conditions under the
 issue lock. An unadmitted receipt from a former owner cannot own the current
