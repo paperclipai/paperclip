@@ -672,6 +672,33 @@ describe.skipIf(!support.supported)("onboarding first-task execution admission",
       .resolves.toMatchObject({ acceptedPlan: { revisionId: p.plan!.latestRevisionId } });
   });
 
+  it.each([false, true])("retains only the selected plan scope after a later execution approval (anchored=%s)", async anchored => {
+    const f = await fixture();
+    const [issue] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
+    const plan = (await documentService(server.db).upsertIssueDocument({ issueId: f.issueId, key: "plan",
+      format: "markdown", body: "First: read-only discovery. Later: implementation, only if approved." })).document;
+    const svc = issueThreadInteractionService(server.db);
+    const selected = { id: "discovery", label: "Read-only discovery", description: "Inspect and write the architecture document." };
+    const card = await svc.create(issue, { kind: "request_checkbox_confirmation", payload: {
+      version: 1, prompt: "Which plan steps may start?", minSelected: 1, maxSelected: 2,
+      defaultSelectedOptionIds: ["discovery", "implementation"],
+      options: [selected, { id: "implementation", label: "Change the application" }],
+      target: { type: "issue_document", key: "plan", issueId: f.issueId, documentId: plan.id, revisionId: plan.latestRevisionId! },
+    } }, { agentId: f.agentId });
+    await svc.acceptInteraction(issue, card.id, { selectedOptionIds: [selected.id] }, { userId: f.responsibleUserId! });
+    await acceptFollowUp(f, { issue, plan, svc, card });
+    if (anchored) await server.db.update(heartbeatRuns).set({ contextSnapshot: {
+      issueId: f.issueId, planReviewInteraction: { acceptedTargetRevision: { revisionId: plan.latestRevisionId } },
+    } }).where(eq(heartbeatRuns.id, f.runId));
+    const context = await f.authority.execute({ tool: "get_task_context", callId: randomUUID(), arguments: {} }) as {
+      acceptedPlan: { revisionId: string; approvedOptions?: unknown[] };
+    };
+    expect(context.acceptedPlan.revisionId).toBe(plan.latestRevisionId);
+    expect(context.acceptedPlan.approvedOptions).toEqual([selected]);
+    const [saved] = await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, card.id));
+    expect(saved.result).toMatchObject({ selectedOptionIds: [selected.id] });
+  });
+
   it.each([
     { selectedOptionIds: [] },
     { selectedOptionIds: ["unapproved"] },

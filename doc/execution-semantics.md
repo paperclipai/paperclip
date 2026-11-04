@@ -40,6 +40,9 @@ uses the latest plan proposal, so pending, rejected, invalid, or stale plan
 approval cannot fall back to an older acceptance. A later pending or rejected
 execution proposal still stops creation. Accepted checkbox plan confirmations
 also appear in native task context and authorize normal accepted-plan decomposition.
+Native context includes `acceptedPlan.approvedOptions` for checkbox decisions,
+with the saved selected IDs and option text. It does not substitute the card's
+defaults or unchecked options, including after a later execution confirmation.
 
 Planning documents, questions and proposal cards remain available before approval.
 Ordinary task delegation and previously committed task-creation replay retain
