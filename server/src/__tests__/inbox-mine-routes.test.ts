@@ -87,6 +87,28 @@ describeEmbeddedPostgres("Mine inbox snapshot routes", () => {
       : { state: "covered", blockingTreeLive: true, unresolvedBlockerCount: 1 });
   });
 
+  it("keeps private blocker details out of Mine attention summaries", async () => {
+    const f = await seed("Private Mine attention");
+    const parent = await addTask(f.companyId, f.userId, { status: "blocked" });
+    const privateId = randomUUID();
+    await addTask(f.companyId, "someone-else", {
+      id: privateId, parentId: parent.id, title: "PRIVATE_ATTENTION_CONTENT", status: "todo",
+      visibility: "private", privacyRootIssueId: privateId,
+    });
+    const app = appFor(f.userId);
+    await request(app).get(`/api/issues/${privateId}`).expect(404);
+    const response = await request(app).get(`/api/companies/${f.companyId}/inbox/mine`).expect(200);
+    const row = (response.body as InboxMineSnapshot).issues.find(issue => issue.id === parent.id);
+    expect(row?.blockerAttention).toEqual({
+      state: "needs_attention", reason: "attention_required", unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0, stalledBlockerCount: 0, attentionBlockerCount: 1,
+      sampleBlockerIdentifier: null, sampleStalledBlockerIdentifier: null, blockingTreeLive: false,
+    });
+    const serialized = JSON.stringify(response.body);
+    expect(serialized).not.toContain("PRIVATE_ATTENTION_CONTENT");
+    expect(serialized).not.toContain(privateId);
+  });
+
   it("returns the legacy authorized index, archived parent captions and canonical rich failure state in one snapshot", async () => {
     const f = await seed("Snapshot equivalence");
     const app = appFor(f.userId);

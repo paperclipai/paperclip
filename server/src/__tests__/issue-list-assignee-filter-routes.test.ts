@@ -999,6 +999,44 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
     }
   });
 
+  it.each([
+    [false, false, "todo"],
+    [true, false, "todo"],
+    [true, true, "todo"],
+    [true, true, "in_review"],
+  ] as const)("keeps index attention free of private blocker details (explicit=%s, deep=%s, status=%s)", async (explicit, deep, status) => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
+    try {
+      const companyId = randomUUID(), parentId = randomUUID(), childId = randomUUID(), intermediateId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Private attention", issuePrefix: uniqueIssuePrefix() });
+      await seedCloudTenantMember(companyId);
+      await db.insert(issues).values([
+        { id: parentId, companyId, title: "Public stopped task", status: "blocked" },
+        { id: childId, companyId, parentId: explicit ? null : parentId, identifier: "PRIVATE-SAMPLE", title: "PRIVATE_BLOCKER_CONTENT", status, visibility: "private", privacyRootIssueId: childId, createdByUserId: "someone-else" },
+        ...(deep ? [{ id: intermediateId, companyId, title: "Readable intermediate blocker", status: "blocked" }] : []),
+      ]);
+      if (explicit) await db.insert(issueRelations).values([
+        { companyId, issueId: childId, relatedIssueId: deep ? intermediateId : parentId, type: "blocks" },
+        ...(deep ? [{ companyId, issueId: intermediateId, relatedIssueId: parentId, type: "blocks" as const }] : []),
+      ]);
+      const app = createApp(companyId);
+      await request(app).get(`/api/issues/${childId}`).expect(404);
+      const response = await request(app).get(`/api/companies/${companyId}/issues`)
+        .query({ view: "index", ids: parentId, includeLiveDescendantSummary: "true" }).expect(200);
+      expect(response.body[0].blockerAttention).toEqual({
+        state: status === "in_review" ? "stalled" : "needs_attention",
+        reason: status === "in_review" ? "stalled_review" : "attention_required", unresolvedBlockerCount: 1,
+        coveredBlockerCount: 0, stalledBlockerCount: status === "in_review" ? 1 : 0,
+        attentionBlockerCount: status === "in_review" ? 0 : 1,
+        sampleBlockerIdentifier: null, sampleStalledBlockerIdentifier: null, blockingTreeLive: false,
+      });
+      expect(JSON.stringify(response.body[0].blockerAttention)).not.toContain(childId);
+      expect(JSON.stringify(response.body[0].blockerAttention)).not.toContain(intermediateId);
+      expect(JSON.stringify(response.body)).not.toContain("PRIVATE-SAMPLE");
+      expect(JSON.stringify(response.body)).not.toContain("PRIVATE_BLOCKER_CONTENT");
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("returns opt-in live descendant counts for offscreen live descendants only", async () => {
     const companyId = randomUUID();
     const otherCompanyId = randomUUID();
