@@ -26,18 +26,26 @@ async function body<T>(
   return response.json() as Promise<T>;
 }
 
+async function dismissAnnouncement(page: Page, dismiss: Locator) {
+  const menuOpen = await page.getByRole("menu", { name: "Add to composer", exact: true }).isVisible();
+  if (menuOpen) await page.keyboard.press("Escape");
+  const [button] = await dismiss.elementHandles();
+  if (button) {
+    try { await button.click(); }
+    catch (error) {
+      if (!(error instanceof Error) || !error.message.includes("Element is not attached") || await dismiss.count()) throw error;
+    }
+  }
+  if (menuOpen) await page.getByRole("button", { name: "Add to composer", exact: true }).click();
+}
+
 async function setup(page: Page, request: APIRequestContext, classic: boolean) {
   // Announcements can appear after navigation or reload and cover the classic
   // composer's attachment button. Dismiss through the same UI as a Board user.
   await page.addLocatorHandler(
     page.getByRole("complementary", { name: "Paperclip announcements", exact: true })
       .getByRole("button", { name: "Dismiss announcement", exact: true }),
-    async (dismiss) => {
-      const menuOpen = await page.getByRole("menu", { name: "Add to composer", exact: true }).isVisible();
-      if (menuOpen) await page.keyboard.press("Escape");
-      await dismiss.click();
-      if (menuOpen) await page.getByRole("button", { name: "Add to composer", exact: true }).click();
-    },
+    async (dismiss) => dismissAnnouncement(page, dismiss),
   );
   const company = await body<{ id: string; issuePrefix: string }>(
     await request.post("/api/companies", {
@@ -573,4 +581,24 @@ test("legacy failed upload can be removed before sending the retained text", asy
     "Keep this text after removing the failed file.",
   );
   expect(await fixture.attachments()).toHaveLength(0);
+});
+
+test("announcement dismissal handler tolerates an already-removed announcement", async ({ page }) => {
+  await page.setContent(`<aside aria-label="Paperclip announcements"><button aria-label="Dismiss announcement">Dismiss</button></aside><button id="continue" onclick="this.dataset.clicked='yes'">Continue</button>`);
+  const dismiss = page.getByRole("complementary", { name: "Paperclip announcements" }).getByRole("button", { name: "Dismiss announcement" });
+  await page.addLocatorHandler(dismiss, async locator => {
+    await page.locator("aside").evaluate(element => element.remove());
+    await dismissAnnouncement(page, locator);
+  });
+  await page.getByRole("button", { name: "Continue", exact: true }).click({ timeout: 1000 });
+  await expect(page.locator("#continue")).toHaveAttribute("data-clicked", "yes");
+});
+
+test("announcement dismissal handler preserves errors while the target remains", async ({ page }) => {
+  await page.setContent('<aside aria-label="Paperclip announcements"><button disabled aria-label="Dismiss announcement">Dismiss</button></aside><button>Continue</button>');
+  const dismiss = page.getByRole("complementary", { name: "Paperclip announcements" }).getByRole("button", { name: "Dismiss announcement" });
+  page.setDefaultTimeout(1000);
+  await expect(dismissAnnouncement(page, dismiss)).rejects.toThrow(/Timeout|timeout/);
+  await expect(dismiss).toBeVisible();
+  await expect(dismiss).toBeDisabled();
 });

@@ -103,7 +103,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   const repair = manifest.source.repairMetadata;
   assert.equal(repair.baseTargetSha, '3b66c3c144360ddf32714a0742fd774b8ceafb16');
   assert.equal(repair.previousTargetSha, 'ab2019e976076ec0eb60b026844f3d9211cb0208');
-  assert.equal(manifest.targetSha, '2c8f1cf44e2fc536c9e8d10852e2f5ac44dd0853');
+  assert.equal(manifest.targetSha, '25cd5e4ebb6b955701778d2d1d702f86a573cfaa');
   assert.equal(repair.definitionSourceSha, manifest.metadataSourceSha);
   assert.equal(repair.candidateDescriptorSnapshot, 'fixtures/chat-repair-candidate-descriptors.json');
   const descriptorBytes = readFileSync(new URL(repair.candidateDescriptorSnapshot, import.meta.url));
@@ -325,7 +325,7 @@ test('repair source metadata binds the corrected candidate and explicit changed 
   assert.equal(repair.runtimeConditions.toolGuidance106.corePRUnmerged, false);
   assert.equal(repair.runtimeConditions.sdkPublicProof.scannerAndCanaryCertificatesUnchanged, true);
   assert.equal(repair.runtimeConditions.sdkPublicProof.sourceInputsChanged, true);
-  assert.equal(repair.runtimeConditions.sdkPublicProof.registrySha256, "8ecea303821644fa8b7c21d042086096d43dda6c1615b1ca00fbcc4ebb9389c4");
+  assert.equal(repair.runtimeConditions.sdkPublicProof.registrySha256, "efa70621e9fb42aa185f7ee616a1a726aa3eccb367e67e28817cedf26ef2ade8");
   assert.equal(repair.runtimeConditions.sdkPublicProof.plugin558StillHeld, true);
   assert.equal(repair.runtimeConditions.sdkPublicProof.expectedLockSha256, "54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8");
   assert.equal(repair.runtimeConditions.sdkPublicProof.runtimeCompilerParserZodIdentitiesUnchanged, true);
