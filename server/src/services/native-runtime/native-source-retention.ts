@@ -1,4 +1,4 @@
-import { and, desc, eq, ne, or, sql } from "drizzle-orm";
+import { and, desc, eq, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { persistActivity } from "../activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -105,10 +105,10 @@ export async function settleRecoveredNativeSourceRetention(db: Db, input: Worksp
     || marker.originalLeasePolicy !== "reuse_by_environment"
     || !hasRemoteTerminationReceipt(lease) || lease.metadata?.pendingCleanupInFlight === true
     || (lease.metadata?.remoteExecutionTermination as { state?: string })?.state !== "stopped") return false;
-  const [other] = await db.select({ id: environmentLeases.id }).from(environmentLeases).where(and(
-    ne(environmentLeases.id, lease.id), eq(environmentLeases.provider, lease.provider!), eq(environmentLeases.providerLeaseId, lease.providerLeaseId!),
-  )).limit(1);
-  if (other) return false;
+  // Recheck the same retired-predecessor and live-owner proof used at
+  // adoption. Valid allocation history must not prevent policy settlement.
+  const inspected = await inspectWorkspaceRecoverySource(db, input, { maximumSources: 1 });
+  if (inspected.sources[0]?.lease.id !== lease.id) return false;
   if (reference.state === "prepared") {
     const operation = await verifiedWorkspaceSnapshotReceipt(db, { ...input, operationIds,
       leaseId: lease.id, providerLeaseId: reference.providerLeaseId });

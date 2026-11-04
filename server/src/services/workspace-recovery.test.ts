@@ -222,8 +222,9 @@ describe("automatic retained workspace recovery", () => {
   const action = async (id: string) => (await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, id)))[0]!;
   const run = async (id: string) => (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)))[0]!;
 
-  async function failedWarmSource(exportOnly = false) {
-    const f = await seed("native", true, "keep_running");
+  async function failedWarmSource(exportOnly = false, hops = 0) {
+    const f = hops ? await warmHandoffSource(hops) : await seed("native", true, "keep_running");
+    if (hops) await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.runId));
     await db.update(environmentLeases).set({ leasePolicy: "reuse_by_environment" }).where(eq(environmentLeases.id, f.lease.id));
     const retry = await requestTaskRetry({ db, companyId: f.companyId, issueId: f.issueId, actorId: "board",
       actorSource: "local_implicit", idempotencyKey: randomUUID(), observedRunId: f.runId });
@@ -1763,6 +1764,55 @@ describe("automatic retained workspace recovery", () => {
         if (original.home === undefined) delete process.env.PAPERCLIP_HOME; else process.env.PAPERCLIP_HOME = original.home;
       }
     });
+  it.each([{ hops: 1, snapshot: false }, { hops: 2, snapshot: false }, { hops: 2, snapshot: true }])(
+    "settles adopted warm source history: $hops handoffs, snapshot=$snapshot", async ({ hops, snapshot }) => {
+      const f = await failedWarmSource(false, hops);
+      if (snapshot) {
+        const runner = targets.get(f.lease.id)!.runner!;
+        runner.syncIn = async () => ({ filesTransferred: 0, bytesTransferred: 0, operations: [] });
+        runner.syncOut = async operations => {
+          for (const operation of operations) for (const file of operation.files)
+            await cp(file.sourcePath, file.targetPath, { recursive: true, dereference: false });
+          return { filesTransferred: 2, bytesTransferred: 0, operations: [] };
+        };
+        await rm(path.join(nativeWorkspaceSyncStateRoot(), f.runId), { recursive: true });
+      }
+      await recoverRetainedWorkspace(f.input);
+      expect(readSystemRecovery((await action(f.actionId)).evidence)?.state).toBe("complete");
+      const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      expect(lease).toMatchObject({ status: "released", cleanupStatus: "success",
+        leasePolicy: snapshot ? "retain_on_failure" : "reuse_by_environment" });
+      expect(await hasVerifiedWorkspaceRepair(db, await run(f.runId))).toBe(!snapshot);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.retry.requestId!)))[0])
+        .toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(f.runtime.resumeRunLease).toHaveBeenCalledOnce();
+      if (snapshot) {
+        const state = readSystemRecovery((await action(f.actionId)).evidence)!;
+        expect(await verifiedWorkspaceSnapshotReceipt(db, { companyId: f.companyId, issueId: f.issueId,
+          runId: f.runId, actionId: f.actionId, operationIds: state.preservationOperationIds })).not.toBeNull();
+        expect(lease.metadata?.nativeSourceRetention).toMatchObject({ settlement: "snapshot_retained" });
+      } else expect(await readFile(path.join(f.host, "after-warm-stop.txt"), "utf8")).toBe("stopped turn work\n");
+    }, 30_000);
+
+  it("keeps adopted warm history held when a predecessor changes after export", async () => {
+    const f = await failedWarmSource(false, 1);
+    const history = await db.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, f.companyId),
+      eq(environmentLeases.providerLeaseId, f.providerLeaseId)));
+    const predecessor = history.find(lease => lease.id !== f.lease.id)!;
+    const stop = f.runtime.retryPendingSandboxTeardown.getMockImplementation()!;
+    f.runtime.retryPendingSandboxTeardown.mockImplementationOnce(async input => {
+      const receipt = await stop(input);
+      await db.update(environmentLeases).set({ status: "active" }).where(eq(environmentLeases.id, predecessor.id));
+      return receipt;
+    });
+    await recoverRetainedWorkspace(f.input);
+    const state = readSystemRecovery((await action(f.actionId)).evidence)!;
+    expect(state.state).not.toBe("complete");
+    expect(state.failure?.code).toBe("allocation_ownership_ambiguous");
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0].leasePolicy).toBe("retain_on_failure");
+    expect(await readFile(path.join(f.host, "after-warm-stop.txt"), "utf8")).toBe("stopped turn work\n");
+  }, 30_000);
+
   it.each([1, 2])("recovers a stopped native source after %s verified warm predecessor handoffs", async hops => {
     const f = await warmHandoffSource(hops);
     expect((await run(f.priorRunId)).runnerProfileJson?.nativeWorkspaceSync).toMatchObject({ state: "finalized", leaseId: f.priorLeaseId });

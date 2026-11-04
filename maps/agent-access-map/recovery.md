@@ -21,17 +21,6 @@ preservation path. It changes the archive transport, grants no new agent entry
 point, and still requires the caller's exact stopped-source and workspace fences.
 Provider transfer tests do not establish task admission or agent authority.
 
-Native warm-source retention uses the existing authorized board Retry receipt.
-The maintenance owner rechecks current task mutation authority and exact source,
-allocation, writer and controller fences. Its one-time adoption retains the prior
-failed generation and grants file preservation only. It exposes no new agent
-entry point, credential grant or provider-turn authority. Snapshot-only settlement
-keeps the old allocation retained and routes only authorized fresh input through
-normal admission; it cannot reopen an unfinished result finalizer. Ordinary source
-inspection remains read-only and rejects an unretained policy until maintenance
-has established the retention hold. Hosted physical recovery remains separate
-from the controlled database and runtime regressions.
-
 Remote process probes remain server-owned. Confirmed exit requires `ESRCH` or a
 zombie with the saved generation. Read-only transport retries use the existing
 shared deadline with backoff; signal requests remain single-attempt. Unknown adopted-process ownership rejects the
