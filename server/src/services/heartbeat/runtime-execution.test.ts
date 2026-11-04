@@ -1,6 +1,7 @@
 import { NativeControllerRecoveryWaitingError } from "../native-runtime/native-controller-recovery.js";
 
 import { createNativeUsageDelivery } from "../native-runtime/native-usage-delivery.js";
+import { flushBudgetEvaluationWork } from "../budgets.js";
 import type { PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -239,6 +240,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
       exact = saved.costUsdExact as string;
       expect(Number(exact)).toBe(1.002);
       expect(saved.budgetExposure).toMatchObject({ costCents: "100.2000000" });
+      await flushBudgetEvaluationWork(db, { companyId: run.companyId });
       expect((await db.select().from(agents).where(eq(agents.id, input.agent.id)))[0].lifecycleHolds).toContain("budget");
       return { exitCode: 0, signal: null, timedOut: false, usageComplete: true, costUsd: null, model: "gpt-6.1-sol" };
     });

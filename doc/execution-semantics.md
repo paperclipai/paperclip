@@ -3493,3 +3493,16 @@ response with no matching cancellation intent. A matching durable pending intent
 can be accepted without a terminal acknowledgement. The selected run and its
 history refresh after either outcome. Stop does not resume the provider or change
 a manual task hold.
+
+### Native session diagnostic ownership
+
+Native session diagnostics follow the current execution's recorder epoch, including
+warm-session reuse. Active diagnostics enter the recorder synchronously. Execution
+retirement detaches that exact epoch without awaiting optional progress metadata.
+The recorder retains ownership of admitted-byte draining and finalization, including
+its existing unknown-size/hash result when an append cannot settle. A later idle transport
+close retains its transport evidence and emits only a fixed diagnostic category
+with company/run identifiers to the process logger; it cannot append provider text
+to a completed run or borrow a successor run's recorder. Canonical native output
+export, source coverage, secret redaction and persistence-failure warnings retain
+their existing contracts.

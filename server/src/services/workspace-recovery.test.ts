@@ -44,7 +44,7 @@ import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { materializeIsolatedTaskDirectory } from "./isolated-task-directory.js";
 import { execFile } from "node:child_process";
 import { generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
@@ -361,14 +361,16 @@ describe("automatic retained workspace recovery", () => {
     return app;
   }
 
-  async function acceptedRemoteExport(publishedSource = false) {
+  type RecoverySourceLayout = "retained" | "published" | "raw";
+
+  async function acceptedRemoteExport(sourceLayout: RecoverySourceLayout = "retained") {
     const f = await seed("native", false);
     const source = await run(f.runId);
     let workspaceId: string = randomUUID(), remoteCwd = await realpath(f.remote);
     let preparedReference: Awaited<ReturnType<typeof prepareRemoteWorkspace>>["reference"] | undefined;
-    if (publishedSource) {
+    if (sourceLayout === "published") {
       // Fresh modern sources retain the actual publisher's path and authority.
-      // Raw retained roots remain separate fixtures for legacy recovery/refusal.
+      // The explicit raw fixture remains available for refusal coverage.
       targets.get(f.lease.id)!.remoteCwd = remoteCwd;
       const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
       await db.update(issues).set({ status: "in_progress", executionRunId: f.runId, executionLockedAt: new Date() })
@@ -394,6 +396,12 @@ describe("automatic retained workspace recovery", () => {
         error: source.error, errorCode: source.errorCode }).where(eq(heartbeatRuns.id, f.runId));
       await db.update(issues).set({ status: issue.status, executionRunId: issue.executionRunId,
         executionLockedAt: issue.executionLockedAt }).where(eq(issues.id, f.issueId));
+    } else if (sourceLayout === "retained") {
+      const publishedRoot = path.join(path.dirname(f.remote), ".paperclip-workspaces", workspaceId);
+      await mkdir(path.dirname(publishedRoot), { recursive: true });
+      await rename(f.remote, publishedRoot);
+      f.remote = publishedRoot;
+      remoteCwd = await realpath(f.remote);
     }
     const git = (args: string[], cwd = remoteCwd) => new Promise<string>((resolve, reject) =>
       execFile("git", args, { cwd }, (error, stdout) => error ? reject(error) : resolve(stdout.trim())));
@@ -406,7 +414,7 @@ describe("automatic retained workspace recovery", () => {
     const authority = { schema: "paperclip.remote-workspace.v1", epoch: 1, snapshotId: null,
       source: { kind: "empty" }, writerRunId: f.runId, dirty: true,
       location: { environmentId: f.lease.environmentId!, leaseId: f.lease.id, providerLeaseId: f.providerLeaseId, remoteCwd } };
-    if (!publishedSource) await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.companyId, sourceIssueId: f.issueId,
+    if (sourceLayout !== "published") await db.insert(executionWorkspaces).values({ id: workspaceId, companyId: f.companyId, sourceIssueId: f.issueId,
       name: "Completed remote work", cwd: remoteCwd, providerType: "cloud_sandbox", mode: "isolated_workspace",
       strategyType: "project_primary", status: "active", metadata: { remoteWorkspace: authority } });
     await db.update(issues).set({ executionWorkspaceId: workspaceId }).where(eq(issues.id, f.issueId));
@@ -433,11 +441,11 @@ describe("automatic retained workspace recovery", () => {
     await db.update(issueRecoveryActions).set({ cause: "native_workspace_sync_out_retry_exhausted", evidence: { runId: f.runId } })
       .where(eq(issueRecoveryActions.id, f.actionId));
     await adoptSystemRecovery(db, f);
-    return { ...f, ...(publishedSource ? { remote: remoteCwd } : {}), source, workspaceId, resultId, git, commit };
+    return { ...f, ...(sourceLayout === "published" ? { remote: remoteCwd } : {}), source, workspaceId, resultId, git, commit };
   }
 
-  async function interruptedRemotePreparation(interruption: "shutdown" | "lease" = "shutdown", publishedSource = false) {
-    const f = await acceptedRemoteExport(publishedSource);
+  async function interruptedRemotePreparation(interruption: "shutdown" | "lease" = "shutdown", sourceLayout: RecoverySourceLayout = "retained") {
+    const f = await acceptedRemoteExport(sourceLayout);
     await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
     await db.delete(nativeRunResults).where(eq(nativeRunResults.runId, f.runId));
     const recovery = { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [f.lease.id] };
@@ -463,8 +471,8 @@ describe("automatic retained workspace recovery", () => {
     return f;
   }
 
-  async function failedRemotePreparation(publishedSource = false) {
-    const f = await interruptedRemotePreparation("shutdown", publishedSource);
+  async function failedRemotePreparation(sourceLayout: RecoverySourceLayout = "retained") {
+    const f = await interruptedRemotePreparation("shutdown", sourceLayout);
     const source = await run(f.runId);
     const error = "Repository access is no longer available; refresh the repository catalog";
     await terminalizeLegacyExecution({ db, run: source, status: "failed", reconcileIfNeeded: false,
@@ -731,7 +739,7 @@ describe("automatic retained workspace recovery", () => {
       storage = vi.spyOn(storageBackend, "getStorageService").mockReturnValue({ ...localStorage, provider: "s3" });
       process.env.DATABASE_URL = connectionString; process.env.PAPERCLIP_SECRETS_MASTER_KEY = "63".repeat(32);
       await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true, enableIsolatedWorkspaces: true });
-      const f = await failedRemotePreparation(mode !== "invalid_published_root");
+      const f = await failedRemotePreparation(mode === "invalid_published_root" ? "raw" : "published");
       await recoverRetainedWorkspace(f.input);
       const source = await run(f.runId), nextDirectory = path.join(root, randomUUID(), "next");
       await mkdir(nextDirectory, { recursive: true });
