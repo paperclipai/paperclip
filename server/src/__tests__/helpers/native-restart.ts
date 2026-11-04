@@ -16,6 +16,7 @@ import { prepareNativeHeartbeatRun } from "../../services/native-runtime/prepare
 import { createIsolatedTestHome } from "./isolated-test-home.js";
 import { type NativeControllerIdentity } from "../../services/native-runtime/native-restart-recovery.js";
 import { waitForPendingRunFailureReports } from "../../services/run-failure-report.js";
+import { registerLocalRuntimeApiServer } from "../../runtime-api.js";
 
 // An explicitly supplied disposable database also permits qualification on hosts
 // where native Postgres cannot allocate semaphores. Never fall back silently.
@@ -106,6 +107,7 @@ export function nativeRestartFixture() {
         : new Date(),
     };
     server = createServer();
+    registerLocalRuntimeApiServer(server);
     await new Promise<void>((resolveListen) =>
       server!.listen(0, "127.0.0.1", resolveListen),
     );

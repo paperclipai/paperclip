@@ -52,6 +52,21 @@ export function isWorkflowUrl(url, workflowId, context = {}) {
     || context.catalog === 'full' && url === `https://github.com/paperclipai/paperclip/blob/master/${workflow}`
     || url === (context.catalog === 'full' ? 'https://github.com/paperclipai/paperclip/actions?query=workflow%3A%22Chat+catalog+TestOps%22' : 'https://github.com/paperclipai/paperclip/actions?query=workflow%3A%22Chat+completion+TestOps%22');
 }
+function validatedResultStatus(result, id, expected, selection, context, runUrl) {
+  const { targetSha } = catalogDefinition(context);
+  if (result?.id !== id || result.projectId !== 1 || result.launchId !== selection.launchId || result.testCaseId !== expected.caseId
+    || result.fullName !== (expected.registeredFullName ?? expected.fullName) || result.jobRun?.id !== Number(selection.allureJobRunId)
+    || result.jobRun?.launchId !== selection.launchId || result.jobRun?.url !== runUrl
+    || result.jobRun.job != null && (result.jobRun.job.id !== selection.jobId
+      || result.jobRun.job.type != null && result.jobRun.job.type !== 'github'
+      || result.jobRun.job.url != null && !isWorkflowUrl(result.jobRun.job.url, context.workflowId, context))
+    || result.links != null && (!Array.isArray(result.links) || result.links.some(link => !link || typeof link.url === 'string'
+      && (link.url.startsWith('https://github.com/paperclipai/paperclip/actions/runs/') && link.url !== runUrl
+        || link.url.startsWith('https://github.com/paperclipai/paperclip/commit/') && link.url !== `https://github.com/paperclipai/paperclip/commit/${targetSha}`)))) reject('result_mismatch');
+  if (!Object.hasOwn(result, 'status')) return undefined;
+  if (!['failed', 'broken', 'passed', 'skipped', 'unknown'].includes(result.status)) reject('result_mismatch');
+  return result.status;
+}
 function assertCase(actual, expected) {
   if (actual.id !== expected.caseId || actual.projectId !== 1 || actual.fullName !== (expected.registeredFullName ?? expected.fullName)
     || actual.automated !== true || actual.deleted === true) reject('case_mismatch');
@@ -269,16 +284,10 @@ async function verifyUploadScope(api, selection, context, exported, executionId,
       if (!expected || !positive(listedRow.id)) reject('foreign_result');
       const wanted = exported.find(value => value.caseId === expected.caseId);
       const result = await get(`/api/testresult/${listedRow.id}`);
-      if (result.id !== listedRow.id || result.projectId !== 1 || result.launchId !== selection.launchId || result.testCaseId !== expected.caseId
-        || result.fullName !== (expected.registeredFullName ?? expected.fullName) || result.jobRun?.id !== Number(selection.allureJobRunId)
-        || result.jobRun?.launchId !== selection.launchId || result.jobRun?.url !== runUrl
-        || result.jobRun.job != null && (result.jobRun.job.id !== selection.jobId
-          || result.jobRun.job.type != null && result.jobRun.job.type !== 'github'
-          || result.jobRun.job.url != null && !isWorkflowUrl(result.jobRun.job.url, context.workflowId, context))
-        || !Array.isArray(result.links) || result.links.some(link => typeof link.url === 'string'
-          && (link.url.startsWith('https://github.com/paperclipai/paperclip/actions/runs/') && link.url !== runUrl
-            || link.url.startsWith('https://github.com/paperclipai/paperclip/commit/') && link.url !== `https://github.com/paperclipai/paperclip/commit/${targetSha}`))
-        || !['unknown', wanted.status].includes(result.status)) reject('result_mismatch');
+      const status = validatedResultStatus(result, listedRow.id, expected, selection, context, runUrl);
+      if (context.catalog === 'full' && status === undefined) return { executionId: expected.executionId, caseId: expected.caseId,
+        resultId: result.id, cleanup: wanted.cleanup, attachmentsVerified: false };
+      if (!Array.isArray(result.links) || !['unknown', wanted.status].includes(status)) reject('result_mismatch');
       const attached = await get(`/api/testresult/attachment?${new URLSearchParams({ testResultId: String(result.id), page: '0', size: '100' })}`);
       const attachments = pageRows(attached);
       if (attached.totalElements !== attachments.length || attachments.length > 10 || new Set(attachments.map(row => row.id)).size !== attachments.length
@@ -325,14 +334,18 @@ export async function inspectPilotCaseUpload(api, selection, context, executionI
     return api(route, 'GET', undefined, Math.min(30_000, remaining));
   };
   for (let poll = 0; poll < 12 && now() < deadline; poll++) {
-    const { run, launch } = await uploadBinding(get, selection, context);
+    const { run, launch, runUrl } = await uploadBinding(get, selection, context);
     if (launch.closed === true) reject('launch_mismatch');
     const rows = await resultRows(get, selection.launchId, authorized.length, true);
     if (rows !== null) {
       if (new Set(rows.map(value => value.id)).size !== rows.length
         || new Set(rows.map(value => value.testCaseId)).size !== rows.length) reject('result_page');
       if (rows.some(value => !positive(value.id) || !authorized.some(expected => expected.caseId === value.testCaseId))) reject('foreign_result');
-      return { present: rows.some(value => value.testCaseId === row.caseId), jobRunStage: run.stage };
+      const existing = rows.find(value => value.testCaseId === row.caseId);
+      if (!existing) return { present: false, jobRunStage: run.stage };
+      const result = await get(`/api/testresult/${existing.id}`);
+      return { present: validatedResultStatus(result, existing.id, row, selection, context, runUrl) !== undefined,
+        jobRunStage: run.stage };
     }
     if (poll < 11 && now() + 5000 < deadline) await wait(5000);
   }

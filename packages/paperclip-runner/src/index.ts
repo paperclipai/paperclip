@@ -1,5 +1,6 @@
 export * from "./configured-environment.js";
 export * from "./catalog/index.js";
+export { taskDocumentKeySchema } from "./protocol-actions/task-document-key-schema.js";
 export { CURSOR_DISTRIBUTION_PINS } from "./drivers/acpx/generated-profiles.js";
 export { KIMI_DISTRIBUTION_CLOSURE_SHA256 } from "./drivers/acpx/kimi-closure-pins.js";
 export * from "./contracts/control-plane-port.js";
@@ -45,7 +46,10 @@ export {
   type DurablePrpControlPlaneOptions,
   type DurablePrpCheckpoint,
   decodeDurablePrpCheckpoint,
+  captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
+  inspectUnclaimedBootstrapCheckpoint,
+  inspectUnclaimedBootstrapState,
   type PrpWireConnection,
   type PrpWireAttachment,
   type TransportCloseReason,
@@ -119,3 +123,12 @@ export { RUNNER_GITHUB_LAUNCHER_VERSION, bindRunnerLaunchResources, createRunner
 export type { RunnerProviderLaunchRequirements, RunnerProviderLaunchEnvironment, PreparedRunnerProviderLaunch, RunnerLaunchPreparer } from "./live/runner-provider-launch.js";
 
 export { resolveGrokDisableWebSearch } from "./drivers/acpx/grok-web-search.js";
+
+export { CURSOR_CLOUD_DEFAULT_TIMEOUT_MS, parseNativeCursorCloudConfig, type NativeCursorCloudConfig } from "./contracts/cursor-cloud.js";
+
+export { CursorCloudClient, CursorCloudClientError, isCursorCloudRunActive } from "./drivers/cursor-cloud/cloud-client.js";
+
+export { archiveCursorCloudSessionCheckpoint } from "./drivers/cursor-cloud/checkpoint.js";
+
+export { readProviderFailure, type ProviderFailure } from "./contracts/provider-failure.generated.js";
+export { providerFailureFromError } from "./drivers/provider-failure.js";

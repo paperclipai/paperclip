@@ -18,7 +18,7 @@ describe.skipIf(!support.supported)("provider-owned fresh retry reservations", (
   let db: ReturnType<typeof createDb>, stopDb: (() => Promise<void>) | undefined;
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("plugin-fresh-workspaces");
-    db = createDb(started.connectionString); stopDb = started.stop;
+    db = createDb(started.connectionString); stopDb = started.cleanup;
   });
   afterAll(async () => { await db?.$client.end(); await stopDb?.(); });
   beforeEach(() => { cache.release.mockReset().mockResolvedValue(undefined); });

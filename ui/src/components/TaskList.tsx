@@ -57,7 +57,7 @@ export function TaskList({ items, allItems = items, initialColumns = defaultTask
   const [columns, setColumns] = useState(initialColumns);
   const [columnOrder, setColumnOrder] = useState(allTaskListColumns);
   const [localSort, setLocalSort] = useState<TaskListSort>();
-  const sort = controlledSort ?? (onSortChange ? undefined : localSort);
+  const sort = controlledSort ?? (onSortChange ? undefined : localSort) ?? defaultTaskListSort;
   const setSort = (next: TaskListSort | undefined) => {
     setLocalSort(next);
     onSortChange?.(next);

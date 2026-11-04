@@ -1,4 +1,5 @@
-import { isPreDispatchReviewWait } from "./pre-dispatch-review-wait.js";
+import { isPreDispatchReviewWait, neverStartedDispatchCancellationPredicate } from "./pre-dispatch-review-wait.js";
+import { canonicalExecutionUuid } from "./execution-identity.js";
 import { preDispatchExecutionWaitRecoveryActionPredicate } from "./pre-dispatch-execution-wait.js";
 import { and, desc, eq, gt, inArray, not, or, sql } from "drizzle-orm";
 import { conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
@@ -13,10 +14,11 @@ import { unreconciledNativeExportPredicate } from "./native-runtime/native-works
 import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
 import { hasVerifiedWorkspaceRepair, workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
+import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
 
 const blockerContextKeys = ["issueId", "taskId", "source", "connectionIntentResolution",
   "interactionKind", "interactionStatus", "mutation", "interactionId"] as const;
-const blockerProfileKeys = ["adapterDispatch", "nativeExecutionInput", "nativeWorkspaceSync"] as const;
+const blockerProfileKeys = ["adapterDispatch", "nativeExecutionInput", "nativeWorkspaceSync", "remoteWorkspace", "legacyWorkspaceRecoveryMigration"] as const;
 const blockerContextColumn = sql<Record<string, unknown> | null>`case
   when ${heartbeatRuns.contextSnapshot} is null then null else (
     select coalesce(jsonb_object_agg(field.key, field.value), '{}'::jsonb)
@@ -66,6 +68,7 @@ const blockerRunFields = {
 };
 
 export async function hasPendingRunCleanup(db: Db, companyId: string, runId: string): Promise<boolean> {
+  if (await nativeManualAdmissionHoldsExecution(db, { companyId, runId })) return true;
   const [state] = await db.execute<{ pending: boolean }>(sql`SELECT
     ${heartbeatRuns.runnerProfileJson}->>'nativeWorkspaceFinalizationOwner' IS NOT NULL
     OR EXISTS (SELECT 1 FROM ${environmentLeases}
@@ -97,6 +100,17 @@ export function executionBlockerPredicate() {
   return and(
     not(conversationRecoveryActionPredicate()!),
     not(preDispatchExecutionWaitRecoveryActionPredicate()),
+    sql`not (${issueRecoveryActions.cause} = 'legacy_execution_requires_reconciliation' and exists (
+      select 1 from ${heartbeatRuns}
+      where ${heartbeatRuns.companyId} = ${issueRecoveryActions.companyId}
+        and ${heartbeatRuns.id} = ${canonicalExecutionUuid(sql`coalesce(${issueRecoveryActions.evidence}->>'runId', ${issueRecoveryActions.evidence}->>'sourceRunId')`)}
+        and ${issueRecoveryActions.sourceIssueId} = ${canonicalExecutionUuid(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`)}
+        and (${heartbeatRuns.issueId} is null or ${heartbeatRuns.issueId} = ${issueRecoveryActions.sourceIssueId})
+        and ${neverStartedDispatchCancellationPredicate()}
+        and ${heartbeatRuns.errorCode} <> 'issue_continuation_waiting_on_review'
+        and coalesce(${issueRecoveryActions.evidence}->>'workspaceRestoreFailure', '') <> 'restore_unsafe_archive'
+        and coalesce(${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema', '') <> ${LEGACY_WORKSPACE_RECOVERY_SCHEMA}
+    ))`,
     or(unreconciledNativeExportPredicate(), and(
       inArray(issueRecoveryActions.cause, [...EXECUTION_RECONCILIATION_CAUSES]),
       or(inArray(issueRecoveryActions.status, ["active", "escalated"]),

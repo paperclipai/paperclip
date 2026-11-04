@@ -152,7 +152,7 @@ export function assertChatExecutionOutput(
 
 /** A requested output document may have a descriptive key; a copied plan is not output. */
 export async function readChatOutputDocument(
-  api: Pick<RunnerApi, "get">,
+  api: { get<T>(route: string): Promise<T> },
   issueId: string,
   marker: string,
 ): Promise<ChatOutputDocument> {

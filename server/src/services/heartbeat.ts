@@ -1,3 +1,4 @@
+import { resolveProviderApiPlacement } from "./native-runtime/provider-api-placement.js";
 import { registerDeferredReceiptWork } from "./heartbeat/deferred-receipt-work.js";
 import { reconcileTaskChatRetryReceipts } from "./task-retry.js";
 import { registerIssueRecoveryWork } from "./recovery/work.js";
@@ -280,6 +281,7 @@ import {
   legacyControllerBootId,
   watchLegacyControllerLease,
 } from "./legacy-controller-lease.js";
+import { retryChatControlAdmission } from "./chat-control-admission-retry.js";
 
 
 import {
@@ -398,6 +400,7 @@ import {
   isNativeRunnerOwnershipHeld,
   NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE,
 } from "./native-runtime/native-runner-ownership.js";
+import { NativeStartupCleanupPendingError, requestNativeStartupCleanup, verifyNativeStartupCleanup, readNativeStartupCleanup } from "./native-runtime/native-startup-cleanup.js";
 import {
   emitAgentTaskRun,
   emitAgentTaskRunById,
@@ -773,6 +776,7 @@ export interface HeartbeatServiceOptions {
    */
   nativeSessionBackendFactory?: (
     execution: NativeExecutionInput,
+    context?: { recoveryPurpose: "execution" | "stop_cleanup" },
   ) => NativeSessionBackend;
   /** Test seam for observing the native-session shutdown boundary before lease destruction. */
   closeWarmNativeSessionsForRun?: (input: {
@@ -1436,6 +1440,15 @@ export function heartbeatService(
   }
 
   const runControl = createHeartbeatRunControl(db, {
+    scheduleBoundedRetry,
+    verifyStartupCleanup: async run => {
+      await verifyNativeStartupCleanup(db, run, () => envOrchestrator.releaseForRun({
+        heartbeatRunId: run.id, companyId: run.companyId, agentId: run.agentId, status: "expired",
+        cancelActiveWork: true, providerResourceDisposition: "destroy",
+      }));
+      const marker = readNativeStartupCleanup(run)!;
+      await options.pluginWorkerManager?.retireStartup?.(marker.contextId);
+    },
     getRun,
     getRunCleanupState,
     getRunExecutionWait,
@@ -1759,7 +1772,7 @@ export function heartbeatService(
           },
         });
       })().catch((error) => {
-        if (!nativeRecoveryDeadlines.has(runId)) {
+        if (!nativeRecoveryDeadlines.has(runId) || nativeRecoveryDeadlines.get(runId) === pending) {
           scheduleNativeSessionResumeDispatch(runId, new Date(Date.now() + 30_000), mode);
         }
         logger.error(
@@ -1956,6 +1969,19 @@ export function heartbeatService(
       Parameters<typeof cleanupGitHubOperationLaunchers>[0] | null = null;
     let nativeSessionResumeScheduled = false;
     let nativeOwnershipHeld = false;
+    let nativeStartupCleanupScheduled = false;
+    let nativeStartupCleanupError: NativeStartupCleanupPendingError | undefined;
+    const requestStartupCleanup = async (error: NativeStartupCleanupPendingError) => {
+      nativeStartupCleanupError = error;
+      try {
+        nativeStartupCleanupScheduled = await requestNativeStartupCleanup(db, { companyId: run.companyId, agentId: run.agentId, runId: run.id,
+          contextId: error.contextId, deadlineAtMs: error.deadlineAtMs, leaseOwner: error.leaseOwner,
+          leaseId: error.leaseId, requiresPreparationStop: error.requiresPreparationStop });
+      } catch (writeError) {
+        scheduleNativeSessionResumeDispatch(run.id, new Date(Date.now() + 30_000), "restart");
+        throw writeError;
+      }
+    };
     let instructionWorkingCopy: ReturnType<typeof createHeartbeatInstructionWorkingCopy> | null = null;
     let nativeDispatchStarted = false;
     let nativeWorkspaceFinalizeScheduled = false;
@@ -1968,7 +1994,8 @@ export function heartbeatService(
     const preserveNativeWorkspaceOnFailure = async () => {
       const failureRun = await getRun(run.id);
       if (failureRun?.runtimeMode === "native"
-        && parseObject(failureRun.runnerProfileJson?.nativeWorkspaceSync).state === "prepared") {
+        && (parseObject(failureRun.runnerProfileJson?.nativeWorkspaceSync).state === "prepared"
+          || parseObject(failureRun.runnerProfileJson?.remoteWorkspace).state === "prepared")) {
         if (!nativeRunHasNoWorkspaceAccess(failureRun)) providerResourceDispositionForRun = "stop_and_retain";
         try {
           await preserveNativeFailedWorkspace(db, failureRun, {
@@ -2054,18 +2081,21 @@ export function heartbeatService(
       }
       const runtime = await timePreparation("runtime_state", () => ensureRuntimeState(agent));
       const context = parseObject(run.contextSnapshot);
-      const authorizeFailedChatRetryExecution = () =>
-        db.transaction((tx) =>
-          authorizeFailedChatRunRetryWake(db, tx as unknown as Db, {
-            phase: "execution",
-            wakeupRequestId: run.wakeupRequestId,
-            companyId: run.companyId,
-            agentId: run.agentId,
-            issueId: readNonEmptyString(context.issueId),
-            runId: run.id,
-            contextSnapshot: context,
-          }),
-        );
+      const authorizeFailedChatRetryExecution = (stage?: "dispatching") =>
+        retryChatControlAdmission(async () => {
+          executionControl.controller.signal.throwIfAborted();
+          await controllerLease.assertOwned(stage);
+          return db.transaction((tx) =>
+            authorizeFailedChatRunRetryWake(db, tx as unknown as Db, {
+              phase: "execution",
+              wakeupRequestId: run.wakeupRequestId,
+              companyId: run.companyId,
+              agentId: run.agentId,
+              issueId: readNonEmptyString(context.issueId),
+              runId: run.id,
+              contextSnapshot: context,
+            }));
+        });
       const isFailedChatRunRetry = await authorizeFailedChatRetryExecution();
       // Never adopt a chat-execution attestation supplied in a wake payload.
       // Reviewed chat turns rebuild it from the current durable owner below.
@@ -2243,7 +2273,8 @@ export function heartbeatService(
       const defaultIsolatedWorkspacesEnabled =
         isolatedWorkspacesEnabled &&
         experimentalInstanceSettings.enableIsolatedWorkspacesByDefault;
-      const externalProvider = heartbeatExternalProvider({ run, agent });
+      const providerApiPlacement = resolveProviderApiPlacement({ run, agent });
+      const externalProvider = heartbeatExternalProvider({ run, agent }) ?? providerApiPlacement?.provider;
       const [taskWorkspaceIntentRow] = issueId && !externalProvider ? await db.select({ intent: issues.workspaceSelection }).from(issues)
         .where(and(eq(issues.id, issueId), eq(issues.companyId, agent.companyId))) : [];
       const freshWorkspace = await readFreshWorkspaceReadiness(db, run);
@@ -2711,6 +2742,7 @@ export function heartbeatService(
         task: {
           issueRef,
           issueId,
+          wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
           context,
           responsibleUserId,
           previousSessionParams,
@@ -2798,10 +2830,9 @@ export function heartbeatService(
       ): Promise<
         { dispatched: true; resultPromise: Promise<T> } | { dispatched: false }
       > => {
-        await controllerLease.assertOwned("dispatching");
         // Recheck after preparation. The final locked gate commits a dispatch
         // claim before entering adapter bootstrap or contacting a provider.
-        await authorizeFailedChatRetryExecution();
+        await authorizeFailedChatRetryExecution("dispatching");
         if (
           !(await withChatControlRecoveryGate(
             run,
@@ -2826,7 +2857,7 @@ export function heartbeatService(
           }
           return { dispatched: false };
         }
-        const enforceContinuationOwnership = Boolean(issueId && (isResolvedInteractionContinuationWakeContext(context) ||
+        const enforceContinuationOwnership = Boolean(issueId && (isFailedChatRunRetry || isResolvedInteractionContinuationWakeContext(context) ||
           typeof context.workspaceReconstructionActionId === "string" ||
           ["native_safe_replacement", "native_provider_overloaded"].includes(run.scheduledRetryReason ?? "")));
         if (issueId && enforceContinuationOwnership) {
@@ -2944,7 +2975,7 @@ export function heartbeatService(
       runtimeConfig = { ...runtimeConfig, env: gitExecutionEnv };
       for (const key of MANAGED_GITHUB_TOKEN_KEYS) secretKeys.add(key);
       context.githubAuthenticationMode = useHostGitHub ? "host" : "managed";
-      if (!useHostGitHub) {
+      if (!useHostGitHub && !providerApiPlacement) {
         const githubLaunchers = await timePreparation("github_launchers", () => prepareHeartbeatGitHubLaunchers({
           native: agent.adapterType === "paperclip_runner",
           githubConfigured: githubSelection.configured,
@@ -2966,7 +2997,7 @@ export function heartbeatService(
         runtimeConfig = { ...runtimeConfig, env: githubLaunchers.env };
         secretKeys.add("PAPERCLIP_GITHUB_BROKER_TOKEN");
       }
-      context.paperclipEnvironment = {
+      context.paperclipEnvironment = selectedEnvironment && activeEnvironmentLease ? {
         id: selectedEnvironment.id,
         name: selectedEnvironment.name,
         driver: selectedEnvironment.driver,
@@ -2993,7 +3024,7 @@ export function heartbeatService(
                   : undefined,
             }
           : {}),
-      };
+      } : { placement: providerApiPlacement };
       await db
         .update(heartbeatRuns)
         .set({
@@ -3220,8 +3251,8 @@ export function heartbeatService(
           executionWorkspace,
           persistedExecutionWorkspace,
           executionTarget,
-          environmentDriver: selectedEnvironment.driver,
-          leaseMetadata: activeEnvironmentLease.lease.metadata,
+          environmentDriver: selectedEnvironment?.driver ?? "provider_api",
+          leaseMetadata: activeEnvironmentLease?.lease.metadata ?? {},
         }));
         const adapterEnv = Object.fromEntries(
           Object.entries(parseObject(runtimeConfig.env)).filter(
@@ -3527,6 +3558,10 @@ export function heartbeatService(
         }));
       } catch (err) {
         await persistUsageCaptureFailure?.();
+        if (err instanceof NativeStartupCleanupPendingError) {
+          await requestStartupCleanup(err);
+          return;
+        }
         if (err instanceof NativeControllerDetachedForRestartError) {
           nativeSessionResumeScheduled = true;
           return;
@@ -3659,7 +3694,12 @@ export function heartbeatService(
         });
       }
     } catch (outerErr) {
-      if (
+      if (nativeStartupCleanupScheduled || nativeStartupCleanupError || outerErr instanceof NativeStartupCleanupPendingError) {
+        const pending = outerErr instanceof NativeStartupCleanupPendingError ? outerErr : nativeStartupCleanupError;
+        if (!nativeStartupCleanupScheduled && pending) await requestStartupCleanup(pending).catch(error => {
+          logger.warn({ err: error, runId: run.id }, "Native startup cleanup intent will retry through owned recovery");
+        });
+      } else if (
         nativeOwnershipHeld ||
         outerErr instanceof NativeRunnerOwnershipUnverifiedError
       ) {
@@ -3696,7 +3736,7 @@ export function heartbeatService(
         );
       } else {
         await preserveNativeWorkspaceOnFailure();
-        if (!nativeOwnershipHeld) await runCompletion.failRunSetup({
+        if (!nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) await runCompletion.failRunSetup({
           run, runId, outerErr, signal: executionControl.controller.signal,
           providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted,
           identityRedactor, readFailureReportSecrets,
@@ -3746,7 +3786,7 @@ export function heartbeatService(
           latestRun &&
           !nativeSessionResumeScheduled &&
           !nativeWorkspaceFinalizeScheduled &&
-          !nativeOwnershipHeld
+          !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError
         ) {
           latestRun = await terminalizeRunOnLeaseRelease(latestRun).catch(
             (terminalizeErr) => {
@@ -3772,7 +3812,7 @@ export function heartbeatService(
         if (
           !nativeSessionResumeScheduled &&
           !nativeWorkspaceFinalizeScheduled &&
-          !nativeOwnershipHeld
+          !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError
         ) {
           // Keep launchers during same-run recovery. At a terminal boundary all
           // operations have settled; clean before the remote lease can be stopped.
@@ -3878,7 +3918,8 @@ export function heartbeatService(
             });
           }
         }
-        if (latestRun?.status === "interrupted" && latestRun.errorCode === "server_shutdown_interrupted") {
+        if (latestRun?.status === "interrupted" && latestRun.runtimeMode === "legacy" &&
+            !latestRun.runtimeModeResolvedAt && latestRun.executionStage === "preparing") {
           latestRun = await settleInterruptedNativeBootstrap(db, { run: latestRun,
             providerDispatchStarted: legacyAdapterEntered || nativeDispatchStarted || nativeOwnershipHeld,
           }) ?? latestRun;
@@ -3895,9 +3936,12 @@ export function heartbeatService(
           }).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "cancelled")));
         }
         if (latestRun?.runtimeMode === "native" && isHeartbeatRunTerminalStatus(latestRun.status) &&
-            !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled && !nativeOwnershipHeld) {
+            !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled && !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError) {
           await settleNativeRunProcess(db, run.id).catch(error => {
             logger.warn({ err: error, runId: run.id }, "failed to release settled native process identity");
+          });
+          await acknowledgeRemoteStop(run.id, run.companyId).catch(error => {
+            logger.warn({ err: error, runId: run.id }, "failed to acknowledge Stop after native process settlement");
           });
         }
         await db.update(heartbeatRuns).set({
@@ -3932,7 +3976,7 @@ export function heartbeatService(
         caseHandoffCleanupSettled = hasStoppedLocalProcessTree(latestRun);
       }
       if (caseHandoffCleanupSettled && latestRun && !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled &&
-          !nativeOwnershipHeld && isHeartbeatRunTerminalStatus(latestRun.status)) {
+          !nativeOwnershipHeld && !nativeStartupCleanupScheduled && !nativeStartupCleanupError && isHeartbeatRunTerminalStatus(latestRun.status)) {
         const handoff = await pendingCaseHandoffForRun(db, run.id);
         if (handoff) await recordCaseHandoffExecutionReleased(db, run.id, handoff.issueId);
       }

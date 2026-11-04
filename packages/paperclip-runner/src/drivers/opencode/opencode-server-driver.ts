@@ -24,6 +24,7 @@ import { pipeline } from "node:stream/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 import { parseOpenCodeReasoningMode, type OpenCodeReasoningMode } from "./reasoning-mode.js";
+import { openCodeProviderFailure } from "./provider-failure.js";
 import { createOpenCodeCompanyObservability } from "./company-observability.js";
 import { startOpenCodePerformanceDiagnostics } from "./performance-diagnostics.js";
 import { PROVIDER_PERFORMANCE_ENV } from "../../contracts/provider-performance.js";
@@ -198,6 +199,8 @@ export interface OpenCodeServerDriverOptions {
   environment?: NodeJS.ProcessEnv;
   dynamicTools?: readonly Readonly<Record<string, unknown>>[];
   dynamicToolHandler?: DynamicToolHandler;
+  /** Internal native proxy capability: semantic calls have durable PRP ownership. */
+  durableToolRequests?: boolean;
   completionFeedback?: OpenCodeCompletionFeedback;
   onSpawn?: (meta: {
     pid: number;
@@ -1949,7 +1952,9 @@ class OpenCodeHarnessSession implements HarnessSession {
       this.#settlePendingRuntimeRequestsForTurn(turnId);
       this.#emit(
         "turn.failed",
-        { status: "failed", error: bounded(properties.error ?? properties) },
+        { status: "failed", error: { ...bounded(providerError),
+          providerFailure: openCodeProviderFailure(providerError, this.#model.split("/")[0]!,
+            Object.fromEntries(this.#runtime.sensitiveValues.map((value, index) => [`TOKEN_${index}`, value]))) ?? undefined } },
         { turnId },
       );
       this.#terminalTurns.set(turnId, canonicalJson({ status: "failed" }));
@@ -2431,6 +2436,8 @@ async function startRuntime(input: {
   const bridge = await startOpenCodeMcpBridge({
     tools: input.options.dynamicTools,
     handler: input.dispatch,
+    onDiagnostic: input.options.onDiagnostic,
+    ...(input.options.durableToolRequests ? { timeoutMs: null } : {}),
   }).catch(async (error) => {
     await removeIsolatedHome(isolatedHome).catch(() => undefined);
     throw error;
@@ -2558,7 +2565,10 @@ async function startRuntime(input: {
           enabled: true,
           oauth: false,
           headers: { Authorization: `Bearer ${bridge.secret}` },
-          timeout: 30_000,
+          // Use the same fixed one-hour MCP client ceiling as native ACPX.
+          // Runner ownership can outlive this deadline; an unanswered effect
+          // must still remain pending and block replay after client expiry.
+          timeout: input.options.durableToolRequests ? 60 * 60 * 1_000 : 30_000,
         },
         ...(assignedMcp
           ? {

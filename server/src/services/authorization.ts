@@ -1887,30 +1887,20 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
       principalType: PrincipalType,
       principalId: string,
     ): Promise<AuthorizationDecision> {
-      const configureDecision = await decidePrincipalGrant({
-        companyId,
-        principalType,
-        principalId,
-        action: input.action,
-        permissionKey: "agents:configure",
-        scope: input.scope,
-      });
-      if (configureDecision.allowed || configureDecision.reason === "deny_missing_membership") {
-        return configureDecision;
+      let denied: AuthorizationDecision | null = null;
+      for (const permissionKey of ["agents:read", "agents:configure", "agents:suggest-changes"] as const) {
+        const decision = await decidePrincipalGrant({
+          companyId,
+          principalType,
+          principalId,
+          action: input.action,
+          permissionKey,
+          scope: input.scope,
+        });
+        if (decision.allowed || decision.reason === "deny_missing_membership") return decision;
+        if (!denied || decision.reason === "deny_scope") denied = decision;
       }
-
-      const suggestDecision = await decidePrincipalGrant({
-        companyId,
-        principalType,
-        principalId,
-        action: input.action,
-        permissionKey: "agents:suggest-changes",
-        scope: input.scope,
-      });
-      if (suggestDecision.allowed || suggestDecision.reason === "deny_missing_grant") {
-        return suggestDecision;
-      }
-      return configureDecision;
+      return denied!;
     }
 
     async function decideWithProtectedChangeGrants(

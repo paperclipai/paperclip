@@ -47,7 +47,7 @@ These decisions close open questions from `SPEC.md` for V1.
 | Plugin framework | Local/self-hosted early plugin runtime is in scope; cloud marketplace and packaged public distribution remain out of scope |
 | Auth | Mode-dependent human auth (`local_trusted` implicit board in current code; authenticated mode uses sessions), API keys for agents |
 | Budget period | Monthly UTC calendar window |
-| Budget enforcement | Soft alerts + hard limit auto-pause |
+| Budget enforcement | Best-effort admission, soft alerts and asynchronous threshold auto-pause |
 | Deployment modes | Canonical model is `local_trusted` + `authenticated` with `private/public` exposure policy (see `doc/DEPLOYMENT-MODES.md`) |
 
 Low-trust agent presets are containment controls for hostile automated work, not
@@ -332,6 +332,14 @@ and expose partial failures; they are not a cross-resource transaction.
 replacement semantics, secret preservation, and revision preconditions. It uses
 the existing configuration and resource APIs, retaining their authorization
 and approval gates. Agent lifecycle commands remain separate actions.
+
+`agents:read` permits redacted configuration, configured skills, instruction
+content and history reads without write authority. `agents:configure` remains
+read/write; `agents:suggest-changes` retains reads and consented changes. Own
+configuration/history reads require no peer-read grant. Target scopes, company
+boundaries and responsible-user authority still apply. Standard agents receive
+read access by default, with a one-time read-only rollout to eligible existing
+agents. See [agent permission defaults](agent-permission-defaults.md).
 
 ## 7.3 `agent_api_keys`
 
@@ -1366,6 +1374,13 @@ Invites tab does not hide this Cloud action.
 
 ## 10.3 Agents
 
+Saving an existing agent's configuration with a healthy saved AI account checks
+current account access, installation, provider/model compatibility, and environment
+selection without allocating a computer or running a provider hello test. Use
+**Test** to verify the runtime. Unverified legacy-account adoption, task connection
+adoption, and Copilot's account-specific model checks retain their live validation.
+A configuration save confirms persistence; it does not certify runtime readiness.
+
 The Harness / Runtime configuration page offers **Upgrade runner** for existing
 legacy Claude, Codex, and Grok Build agents when the target environment selects Paperclip
 Runner by default. The action uses the normal authorized agent PATCH with
@@ -1721,12 +1736,31 @@ Scheduler must skip invocation when:
 - an existing run is active
 - hard budget limit has been hit
 
-Budget admission and accounting serialize under the company accounting lock.
-The dispatch boundary rechecks current company, agent, and project policies and
-reserves capacity before paid work starts. Accounting commits budget blocks and
-durable stop intent without waiting for provider shutdown or reconciling unrelated
-agents. An asynchronous worker cancels only work in the affected scope; committed
-stop intent survives policy changes and restart until existing stop proof succeeds.
+Paid-operation settlement and receipt ingestion use operation-scoped transactions.
+They do not acquire the company accounting mutex or update shared company/agent
+spend counters. The ledger, reservation transition and accounting acknowledgement
+commit atomically. Duplicate evidence uses stable identities; a conflicting
+receipt is not another charge. Monthly and lifetime totals read the canonical
+ledger and retained historical baselines.
+
+Admission reads current company, agent and project controls plus coherent budget
+exposure. Reservations record an operation's estimated obligation, rather than
+an exclusive claim on shared remaining capacity. Concurrent admissions may see
+the same available balance and both start. Budget enforcement is best effort,
+not a guaranteed bound on final billed spend. Manual Stop, lifecycle authority,
+permissions and provider-dispatch ownership retain their final gates.
+
+Financial changes append independent durable evaluation inputs. The existing
+worker coalesces notifications over one second and publishes budget holds,
+incidents and durable Stop intent from a consistent snapshot. Policy/control
+publication is fenced separately from settlement. Inputs arriving or committing
+later stay pending; no global sequence watermark consumes them. Limited-budget
+admission refuses relevant unevaluated inputs older than fifteen seconds.
+Unchanged idle decisions do not expire; unknown accounting retains its separate
+conservative admission restriction. Provider reporting and cancellation delays
+remain additional to evaluation lag. Cancellation delivery is asynchronous and
+scoped; committed per-run Stop survives policy changes and restart until existing
+stop proof succeeds. Budget resume cannot clear a manual hold.
 
 Accepted cumulative per-run usage checkpoints contribute observed running spend
 before the final ledger charge. Admission counts each unfinished operation's
@@ -1827,7 +1861,7 @@ for contracts, recovery behavior, Storybook, and acceptance workflows.
 ## 13.2 Enforcement Rules
 
 - soft alert default threshold: 80%
-- hard limit: at 100%, trigger:
+- at 100%, the asynchronous evaluator triggers:
   - set agent status to `paused`
   - block new checkout/invocation for that agent
   - emit high-priority activity event
@@ -2209,6 +2243,11 @@ harness/model routing and fails closed without ambient credential fallback.
 Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
+
+AI connections support concurrent runs and account tests. Admission does not
+take an account execution lock or wait for another runtime's credential cleanup.
+Private runtime homes remain independent. Credential writeback still checks the
+active grant and saved generation before an atomic update.
 
 Missing personal AI credentials detected before adapter dispatch also produce
 the inline connection card. Every missing binding must belong to the same
@@ -2637,8 +2676,17 @@ have stopped. Cleanup retains copies whose upload completion is unknown. This
 includes operations from older builds without save-attempt records. A final
 save alone does not prove that an older upload has stopped.
 
-V1 supports plain task folders, Git sources, and managed mutable repositories
-from the same project. It rejects read-only cross-project referenced folders,
+V1 supports plain task folders, Git sources, and managed mutable repositories.
+An authorized mentioned project's configured Git repositories become writable
+copies inside the task workspace, under `.paperclip-repositories/`. The copies
+retain their saved files, paths, refs and pins on subsequent turns. Preparation
+rechecks the access and trust policy of each retained source project. This does
+not grant permission to change a shared source folder or push to a repository.
+Repositories attached on a later turn are acquired before they become part of
+the next committed archive. Snapshot coverage is separate from the requested
+source recipe. New copies honor `repoRef`, then `defaultRef`, then the remote's
+default branch; an invalid ref cannot publish a partial secondary checkout.
+It rejects explicitly read-only sources,
 explicit concurrent shared writers, and custom cleanup/teardown commands on
 remote close. Manual workspace runtime commands, jobs, and services are also
 unsupported in V1 and must fail before local filesystem work. Agent tasks remain
@@ -2648,10 +2696,15 @@ must fail admission rather than fall back to a controller checkout.
 
 A reference to an authorized project with no configured workspace source does
 not attach a folder. It adds a resolution warning and preserves the task's
-workspace. A configured cross-project source remains subject to the read-only
-folder restriction. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
+workspace. A configured cross-project local folder must be imported before remote
+acquisition. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
 sources; a source-less project reference needs no folder and stays metadata-only
 when that switch is off.
+
+Task failure notices show the redacted workspace validation explanation when
+preparation fails. Existing retry permissions and execution gates still apply.
+This includes retained-folder access and trust denials. Low-trust project boundary
+denials retain their separate project-access action.
 
 An imported saved Git workspace can resume from its saved files after its old
 local repository is removed. Local repository paths remain invalid for new

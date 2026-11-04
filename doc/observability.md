@@ -45,20 +45,28 @@ Keep credential values out of logs and diagnostic reports.
 ## Budget admission, accounting, and enforcement
 
 The operator-gated `paperclip.budgets` tracer records
+`budget.admission.inspect`, `budget.admission.reconcile`,
 `budget.admission.evaluate`, `budget.admission.reserve`,
 `budget.accounting.transaction`, `budget.accounting.settlement`, `budget.accounting.lock_wait`,
 `budget.exposure.evaluate`, `budget.enforcement.deliver`,
 `budget.enforcement.scope`, `budget.cancellation.deliver`, and `budget.accounting.recover`.
-Transaction spans include commit time. Lock-wait spans cover acquisition of the
-company accounting lock. Settlement spans cover the ledger and reservation
-transaction. Enforcement spans measure asynchronous delivery; cancellation
-delivery spans start after acquiring a concurrency slot and cover the external
-Stop attempt. Both remain separate from provider inference.
+Inspection and admission spans cover read-only eligibility. Paid reservations,
+receipts and all five settlement owners avoid the company accounting mutex.
+`budget.admission.reconcile` remains a historical span name; eligibility no longer
+publishes budget transitions. `budget.accounting.lock_wait` still describes the
+legacy low-frequency configuration/control wrapper, not paid settlement.
+Transaction spans include commit time. Settlement spans cover the atomic ledger,
+reservation and owner acknowledgement. Acquisition duration is not a pure
+PostgreSQL lock-wait measurement: it can include network and Node scheduling.
+Enforcement spans cover asynchronous evaluation/delivery; cancellation delivery
+covers the external Stop attempt, separate from provider inference.
 
-The closed attribute list is `budget.policy_count` (number of applicable
-policies) and `budget.enforcement.queue_delay_ms` (time since the pending policy's
-last intent or retry timestamp). These spans contain no tool content, usage
-receipt bodies, credentials, or provider error bodies. They do not change
+The closed attribute list is `budget.policy_count` (applicable policy count),
+`budget.enforcement.queue_delay_ms` (time since pending intent/retry), and
+`budget.accounting.owner` (`run`, `decision`, `classifier`, `fast_response`,
+`browser`). The owner tag identifies the shared settlement span's emitter.
+These spans contain no prompts, usage receipt bodies, credentials or provider
+error bodies. They remain gated by the operator OTLP endpoint and do not change
 Paperclip's separate first-party Telemetry contract.
 
 ## Slack receipt reactions
@@ -205,7 +213,8 @@ diagnostic line on boot and continues without tracing — your server stays up.
 ## Scope
 
 The OpenTelemetry export carries **traces only**. Metrics and log exporters
-are out of scope and intentionally not configured here. Auto-instrumentations
+are out of scope. The SDK receives explicit empty metric-reader and log-processor
+lists so its default OTLP exporters cannot emit unrequested metrics or logs. Auto-instrumentations
 for `fs`, `dns`, and `net` are disabled by default because they are too chatty
 for this workload; everything else from
 `@opentelemetry/auto-instrumentations-node` is on (HTTP, Express, PG, etc.).
@@ -1004,10 +1013,15 @@ a new terminal run transition. The event keeps the actual observed run status,
 the adapter and the company, agent, task and run references. It uses fixed error
 text and includes no message bodies, prompts or raw run diagnostics. Working,
 scheduled-retry, resolved and user-action states do not produce this event.
-Repeated reads of the same company/task/run/intent are suppressed by a bounded
-process-local cache of the latest 1,000 reports. A server restart or cache eviction
-can report an old failure again. This task-state event can accompany a separate
-terminal run-failure report; the `failure_source` tag distinguishes them.
+Repeated reads of the same company/task/run/intent are suppressed after the SDK
+receives a successful HTTP delivery response. The process retains the latest
+1,000 confirmed reports. An SDK capture ID alone does not confirm delivery:
+processing backpressure, network errors and rate limits can discard the event.
+Unconfirmed captures wait 60 seconds before a later task read can try again;
+this pending cache also holds at most 1,000 entries and starts no background
+timer. A server restart or cache eviction can report an old failure again.
+This task-state event can accompany a separate terminal run-failure report;
+the `failure_source` tag distinguishes them.
 
 The versioned `paperclip` context supplies company and agent IDs and relative
 API paths for the saved run, events, log, and optional task. A valid HTTP(S)

@@ -56,3 +56,11 @@ Ordinary configuration updates use the root lifecycle command.
 
 The [agent lifecycle module](../../../doc/AGENT-LIFECYCLE.md) owns agent creation,
 pause, resume, and termination. Use its commands for these changes.
+
+The execution admission module owns project task-execution policy and the
+durable admission records that charge project capacity. Today it exposes only
+internal policy commands and the deletion guards that project, agent, and
+company deletion call. Settlement releases active charges but keeps each
+admission's complete project set for later retained-session resolution.
+Execution claims still belong to `services/heartbeat/queue.ts` and native
+review dispatch. See [execution admission accounting](../../../doc/DATABASE.md#execution-admission-accounting).

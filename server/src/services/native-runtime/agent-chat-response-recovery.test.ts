@@ -65,6 +65,26 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
     const input = { companyId, issueId, runId };
     return { ...input, input, agentId, userId, wakeId, prpEvent, reply };
   }
+  it("settles the exact claimed wake when recovery projects a committed native run", async () => {
+    // The provider and result are already committed. Recovery owns terminal
+    // projection because the live executor will not return to completeRun.
+    const f = await fixture(false, { succeed: false });
+    const sourceWakeId = randomUUID();
+    await db.insert(agentWakeupRequests).values({ id: sourceWakeId, companyId: f.companyId,
+      agentId: f.agentId, source: "issue", reason: "issue_assigned", status: "claimed",
+      runId: f.runId, claimedAt: new Date(), payload: { issueId: f.issueId } });
+    await db.update(heartbeatRuns).set({ wakeupRequestId: sourceWakeId }).where(eq(heartbeatRuns.id, f.runId));
+
+    await finalizeNativeRun({ db, runId: f.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, sourceWakeId));
+    expect(run).toMatchObject({ status: "succeeded", nativePhase: "committed" });
+    expect(run.finishedAt).not.toBeNull();
+    expect(wake).toMatchObject({ status: "completed", runId: f.runId });
+    expect(wake.finishedAt).not.toBeNull();
+  });
+
   const comments = (runId: string) => db.select().from(issueComments).where(eq(issueComments.createdByRunId, runId));
   const issue = async (issueId: string) => (await db.select().from(issues).where(eq(issues.id, issueId)))[0];
 

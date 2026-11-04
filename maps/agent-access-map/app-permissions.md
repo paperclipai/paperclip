@@ -83,6 +83,15 @@ Evidence: `verified` — [authenticated integration fixtures](../../server/src/_
 Verification: `passed` — deterministic local fixture; no live provider qualification.
 Gaps: Provider fixtures do not qualify live provider setup or availability.
 
+### `get-tool-connections-profile-configuration`
+
+API: `present` — `GET /api/tool-connections/{connectionId}/profile-configuration`; JSON REST. Returns saved app and eligible connection-intent profiles, including complete ordered entries and bindings. Omits summary and pending-review counts. The company-wide full profile list stays available.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_profiles`; the displayed connection and every selected profile use current management-resource authorization. Profiles that span a hidden personal account are omitted. Connection visibility alone does not grant profile visibility.
+Evidence: `verified` — [authenticated integration fixture](../../server/src/__tests__/connection-management.integration.test.ts) covers standard agent keys and run JWTs, private accounts, missing resources, and revoked authority on local PostgreSQL.
+Verification: `passed` — deterministic local fixture. [Configuration differential test](../../server/src/__tests__/connection-profile-configuration.test.ts) compares complete selected entries and bindings with the full list, including mutations and empty bindings.
+Gaps: These fixtures do not qualify live providers or hosted performance.
+
 ### `get-tool-connections-installs`
 
 API: `present` — `GET /api/tool-connections/{connectionId}/installs`; JSON REST.
@@ -304,7 +313,7 @@ Gaps: Agent invocation is denied by the stated policy. The authorized human or o
 
 API: `present` — `POST /api/tool-gateway/action-requests/{id}/decline`; JSON REST.
 Agent access: `restricted` — existing human setup or approval surface; agent can identify the saved setup and inspect the result.
-Policy: Human consent, identity confirmation, action approval, or trusted-host administration. This endpoint does not delegate human identity or self-approval to an agent.
+Policy: Human consent, identity confirmation, action approval, or trusted-host administration. This endpoint does not delegate human identity or self-approval to an agent. A distinct later direct-human comment, bound to the active source run and the same responsible person, can ask for a new review after that person's rejection. It grants no execution authority. Same-intent retries and rejection continuations retain the rejection; all current policy and approval checks still apply.
 Evidence: `source-only` — [route](../../server/src/routes/tool-gateway.ts); reviewed in the working tree based on the source commit above.
 Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
 Gaps: Agent invocation is denied by the stated policy. The authorized human or operator must perform this step; this entry does not claim delegated execution.
@@ -394,6 +403,15 @@ Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2
 Evidence: `source-only` — [route](../../server/src/routes/tool-access.ts); reviewed in the working tree based on the source commit above.
 Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
 Gaps: This individual operation has source review but no recorded HTTP verification. Provider availability and live setup remain unqualified.
+
+### `get-tool-connections-review-counts`
+
+API: `present` — `GET /api/tool-connections/{connectionId}/review-counts`; JSON REST.
+Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Policy: `tools:manage_connections`; existing connection read admission checks current company membership, resolved UUID/UID, responsible-user authority and personal account access. Authorized archived connections return zero counts.
+Evidence: `verified` — [PostgreSQL and authenticated HTTP fixtures](../../server/src/__tests__/tool-connection-review-counts-http.test.ts) exercise the assembled server and actual board session and agent JWT middleware.
+Verification: `passed` — deterministic local fixture with UID resolution, archive, foreign/missing connection, personal grant revocation and membership revocation.
+Gaps: Local fixtures do not prove deployed performance or provider availability.
 
 ### `get-tool-connections-usage`
 

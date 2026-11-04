@@ -1,3 +1,4 @@
+import { recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "./public-mcp/upload-cleanup.js";
 import type { IssueDisplayStatus } from "@paperclipai/shared";
 import { issueDisplayStatusSql } from "./issue-display-status.js";
 import { notifyStrandedAgentStatus, notifyActiveRunSilence } from "./live-run-recovery-notifications.js";
@@ -56,6 +57,7 @@ import { Buffer } from "node:buffer";
 import { isDeepStrictEqual } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
 import { isExplicitContinuationRetryClaim } from "./explicit-continuation-retry-claim.js";
+import { nativeManualAdmissionHoldsExecution } from "./native-runtime/native-runner-ownership.js";
 import { markdownToPlainText, parseMarkdown } from "chat";
 import { listExternalReviewWaits } from "./native-runtime/external-review-wait.js";
 import {
@@ -7787,14 +7789,16 @@ export function issueService(db: Db) {
       ]);
       const stale =
         !existingRun || TERMINAL_HEARTBEAT_RUN_STATUSES.has(existingRun.status);
-      if (isExplicitContinuationRetryClaim(lockedIssue, existingRun)) {
+      if (isExplicitContinuationRetryClaim(lockedIssue, existingRun) || await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+        { companyId: lockedIssue.companyId, runId: input.expectedCheckoutRunId, issueId: input.issueId })) {
         return { adopted: null, latest: lockedIssue };
       }
       if (lockedIssue.executionRunId && lockedIssue.executionRunId !== input.expectedCheckoutRunId) {
         const executionRun = await tx.select().from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, lockedIssue.executionRunId)).for("update")
           .then(rows => rows[0] ?? null);
-        if (isExplicitContinuationRetryClaim(lockedIssue, executionRun)) {
+        if (isExplicitContinuationRetryClaim(lockedIssue, executionRun) || await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+          { companyId: lockedIssue.companyId, runId: lockedIssue.executionRunId, issueId: input.issueId })) {
           return { adopted: null, latest: lockedIssue };
         }
       }
@@ -7924,7 +7928,8 @@ export function issueService(db: Db) {
         .where(eq(heartbeatRuns.id, issue.executionRunId))
         .then((rows) => rows[0] ?? null);
       if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
-      if (isExplicitContinuationRetryClaim(issue, run)) return false;
+      if (isExplicitContinuationRetryClaim(issue, run) || await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+        { companyId: issue.companyId, runId: issue.executionRunId, issueId })) return false;
 
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId });
       await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId });
@@ -7979,7 +7984,8 @@ export function issueService(db: Db) {
         .where(eq(heartbeatRuns.id, issue.checkoutRunId))
         .then((rows) => rows[0] ?? null);
       if (run && !TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status)) return false;
-      if (isExplicitContinuationRetryClaim(issue, run)) return false;
+      if (isExplicitContinuationRetryClaim(issue, run) || await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+        { companyId: issue.companyId, runId: issue.checkoutRunId, issueId })) return false;
 
       if (
         issue.executionRunId &&
@@ -7998,7 +8004,8 @@ export function issueService(db: Db) {
           !TERMINAL_HEARTBEAT_RUN_STATUSES.has(executionRun.status)
         )
           return false;
-        if (isExplicitContinuationRetryClaim(issue, executionRun)) return false;
+        if (isExplicitContinuationRetryClaim(issue, executionRun) || await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+          { companyId: issue.companyId, runId: issue.executionRunId, issueId })) return false;
       }
 
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId });
@@ -10002,11 +10009,16 @@ export function issueService(db: Db) {
             );
           }
 
+          let childReused = false;
           const createdChild = await issueService(
             tx as unknown as Db,
           ).createChild(sourceIssue.id, {
             ...nextChildInput,
             executionWorkspaceInheritanceMode: "strategy_only",
+            onDeduplicated: reason => {
+              childReused = true;
+              nextChildInput.onDeduplicated?.(reason);
+            },
           });
           const nextIds = [...existingChildIssueIds, createdChild.issue.id];
           const now = new Date();
@@ -10036,7 +10048,7 @@ export function issueService(db: Db) {
             );
           return {
             claim: updatedClaim,
-            createdIssue: createdChild.issue,
+            createdIssue: childReused ? null : createdChild.issue,
           };
         });
 
@@ -12369,6 +12381,10 @@ export function issueService(db: Db) {
           }
           const staleExecutionRunId = current.executionRunId;
           const adopted = await db.transaction(async tx => {
+            await tx.execute(sql`select ${issues.id} from ${issues} where ${issues.id} = ${id}
+              and ${issues.companyId} = ${issueCompany.companyId} for update`);
+            if (await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+              { companyId: issueCompany.companyId, runId: staleExecutionRunId, issueId: id })) return null;
             await notifyStatusCardIssueChange(tx, issueCompany.companyId);
             await notifyIssueAttentionRetentionWork(tx, { companyId: issueCompany.companyId, issueId: id });
             await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
@@ -12612,7 +12628,8 @@ export function issueService(db: Db) {
             existing.checkoutRunId,
             tx,
           );
-          if (!stale) {
+          if (!stale || await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+            { companyId: existing.companyId, runId: existing.checkoutRunId, issueId: id })) {
             throw conflict("Only checkout run can release issue", {
               issueId: existing.id,
               assigneeAgentId: existing.assigneeAgentId,
@@ -13953,7 +13970,7 @@ export function issueService(db: Db) {
         .where(eq(issueAttachments.id, id))
         .then((rows) => rows[0] ?? null),
 
-    removeAttachment: async (id: string) =>
+    removeAttachment: async (id: string, options?: { mcpCleanup?: McpAttachmentCleanup | null }) =>
       db.transaction(async (tx) => {
         const existing = await tx
           .select({
@@ -13983,6 +14000,11 @@ export function issueService(db: Db) {
         await notifyIssueRecovery(tx, { companyId: existing.companyId });
         await tx.delete(issueAttachments).where(eq(issueAttachments.id, id));
         await tx.delete(assets).where(eq(assets.id, existing.assetId));
+        if (options?.mcpCleanup?.id === existing.id && options.mcpCleanup.companyId === existing.companyId
+          && options.mcpCleanup.issueId === existing.issueId && options.mcpCleanup.provider === existing.provider
+          && options.mcpCleanup.objectKey === existing.objectKey) {
+          await recordMcpAttachmentCleanup(tx, options.mcpCleanup);
+        }
         return existing;
       }),
 
