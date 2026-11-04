@@ -13,6 +13,7 @@ import { agents, companies, completionContracts, createDb, heartbeatRuns, issues
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { issueService } from "../services/issues.js";
 import { nativeWorkspaceFinalizationWork } from "../services/native-runtime/native-workspace-finalization-work.js";
+import { attemptNativeWorkspaceFinalization } from "../services/native-runtime/native-workspace-finalizer.js";
 import { getRunExecutionTraceContext, measureRunPhase } from "../services/execution-preparation-timing.js";
 import { withNativeWorkspaceFinalizationOwnership } from "../services/native-runtime/native-workspace-finalization-ownership.js";
 import { resumeNativeWorkspaceAfterOwnerStop } from "../services/native-runtime/native-workspace-owner-recovery.js";
@@ -238,6 +239,48 @@ describe("workspace finalization scheduled lifecycle", () => {
     expect(coordinator!.nextWakeAt()).toBe(due.getTime());
     await vi.advanceTimersByTimeAsync(30_000); await flush();
     expect(await successful(binding.runId)).toHaveLength(1); await quiet();
+  });
+  it("retries another task while an older copy-back is still running", async () => {
+    const slow = await seed(); await complete(slow);
+    const fast = await seed(); await complete(fast);
+    // Both retries are overdue; the slow task is older, so it is selected first.
+    for (const [binding, ageMs] of [[slow, 120_000], [fast, 60_000]] as const) {
+      await db.update(nativeRunFinalizations).set({ phase: "retryable_failure", nextAttemptAt: new Date(Date.now() - ageMs) })
+        .where(eq(nativeRunFinalizations.runId, binding.runId));
+    }
+    let release!: () => void;
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const attempt = vi.fn(async (input: Parameters<typeof attemptNativeWorkspaceFinalization>[0]) => {
+      if (input.runId === slow.runId) await blocked;
+      return attemptNativeWorkspaceFinalization(input);
+    });
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => admitted, canReconcile: () => admitted,
+      onError: error => errors.push(error) });
+    worker = nativeWorkspaceFinalizationWork(db, { attempt, onWorkspaceSettled: settled }).register(coordinator, () => admitted);
+    try {
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(await successful(fast.runId)).toHaveLength(1);
+      }, { timeout: 15_000 });
+      expect(await successful(slow.runId)).toHaveLength(0);
+    } finally { release(); }
+    await worker.ready; await flush();
+    expect(await successful(slow.runId)).toHaveLength(1); await quiet();
+  });
+  it("orders work without a saved retry behind older overdue retries", async () => {
+    const overdue = await seed(); await complete(overdue);
+    const failedAt = new Date(Date.now() - 60 * 60_000);
+    await db.update(nativeRunFinalizations).set({ phase: "retryable_failure",
+      nextAttemptAt: new Date(failedAt.getTime() + 30_000), updatedAt: failedAt })
+      .where(eq(nativeRunFinalizations.runId, overdue.runId));
+    // A copy-back interrupted by a later restart has no saved retry deadline.
+    const interrupted = await seed(); await complete(interrupted);
+    const entries = await nativeWorkspaceFinalizationWork(db, { onWorkspaceSettled: settled }).load({ companyId });
+    const pending = entries.find(item => item.id === interrupted.runId)!;
+    expect(pending.dueAt).toBeGreaterThan(failedAt.getTime());
+    expect(pending.dueAt).toBeLessThanOrEqual(Date.now());
+    expect([...entries].sort((a, b) => a.dueAt - b.dueAt).map(item => item.id))
+      .toEqual([overdue.runId, interrupted.runId]);
   });
   it("waits quietly for the actual local owner to release", async () => {
     const binding = await seed(); await complete(binding);
