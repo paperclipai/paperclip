@@ -238,3 +238,13 @@ it.each(["Launch Checklist hit a conflict. Another skill was discussed. It is no
   o.phaseReplies[0]!.body = `The existing CTO was preserved and the new role renamed CTO 2. ${body}`;
   expect(gradeTeamConditions(o, "initial").passed).toBe(false);
 });
+
+it("invalidates contradictory current failure in a contiguous bound pronoun chain in either phase", () => {
+  const outcomes = [0, 1].map(phase => {
+    const { o } = recovered();
+    const contradiction = "Launch Checklist hit a conflict. It is now installed. It is still not installed.";
+    o.phaseReplies[phase]!.body = phase === 0 ? `The existing CTO was preserved and the new role renamed CTO 2. ${contradiction}` : contradiction;
+    return gradeTeamConditions(o, phase === 0 ? "initial" : "complete").passed;
+  });
+  expect(outcomes).toEqual([false, false]);
+});
