@@ -7,7 +7,7 @@ import { readRunCancellation } from "../run-cancellation.js";
 import { getNativeReviewAssignment } from "./native-review-participant.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
-import { normalizeAgentNameKey } from "../heartbeat/retries.js";
+import { normalizeAgentNameKey } from "../agent-name-key.js";
 
 export async function restoreNativeSessionExecution(db: Db, input: {
   issue: Pick<typeof issues.$inferSelect, "id" | "executionRunId">;

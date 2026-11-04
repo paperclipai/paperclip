@@ -1,4 +1,5 @@
 import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { normalizeAgentNameKey } from "../agent-name-key.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
@@ -368,11 +369,7 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
   };
 }
 
-export function normalizeAgentNameKey(value: string | null | undefined) {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().toLowerCase();
-  return normalized.length > 0 ? normalized : null;
-}
+export { normalizeAgentNameKey };
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
