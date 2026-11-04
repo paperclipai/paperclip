@@ -585,6 +585,10 @@ export function resolveHeartbeatRunResponse(input: {
         reasonCodes: [...final.decision.reasonCodes, "native_conversation_final_precedence"],
       } };
     }
+    if (!existingText) return {
+      text: null,
+      decision: decision("none", { commentAction: "none", reasonCodes: ["native_conversation_final_response_unavailable"] }),
+    };
   }
   if (input.existingComment && existingText) {
     return {

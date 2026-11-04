@@ -408,6 +408,9 @@ describe("resolveHeartbeatRunResponse", () => {
       expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
         existingComment: { id: "explicit", body: "The release is ready at /releases/latest." },
       })).toMatchObject({ text: "The release is ready at /releases/latest.", decision: { commentAction: "reuse" } });
+      expect(resolveHeartbeatRunResponse({ resultJson, nativeConversationFinalResponse: true,
+        finalAgentMessage: { text: "Unknown narration", sourceEventId: "unknown", channel: "unknown" },
+      })).toMatchObject({ text: null, decision: { commentAction: "none" } });
     }
   });
 
