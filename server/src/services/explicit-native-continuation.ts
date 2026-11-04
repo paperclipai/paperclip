@@ -253,6 +253,17 @@ export async function admitExplicitNativeContinuation(input: {
       sourceChecks.push({ cause: "native_continuation_requires_reconciliation", evidence: { runId: latest.id } });
     }
   }
+  if (taskRetry && !sourceChecks.some(source => (source.evidence.runId ?? source.evidence.sourceRunId) === taskRetry.sourceRunId)) {
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, taskRetry.sourceRunId),
+    )).for("update");
+    const [source] = await db.select(continuationRunFields).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, taskRetry.sourceRunId), eq(heartbeatRuns.agentId, agentId),
+    )).for("update");
+    if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
+      || adapterExecutionControls.has(source.id) || !await isFailedNativePreparation(db, source, coordinator)) return null;
+    sourceChecks.push({ cause: "legacy_execution_requires_reconciliation", evidence: { runId: source.id } });
+  }
   if (!sourceChecks.length) return null;
   if (blocker && blocker.recoveryActionId === null) return null;
   const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
@@ -444,17 +455,6 @@ export async function admitExplicitNativeContinuation(input: {
           ...leases.map(lease => lease.id)])] };
     }
     sources.push(run);
-  }
-  if (taskRetry && !sources.some(run => run.id === taskRetry.sourceRunId)) {
-    const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
-      eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, taskRetry.sourceRunId),
-    )).for("update");
-    const [source] = await db.select(continuationRunFields).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, taskRetry.sourceRunId), eq(heartbeatRuns.agentId, agentId),
-    )).for("update");
-    if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
-      || adapterExecutionControls.has(source.id) || !await isFailedNativePreparation(db, source, coordinator)) return null;
-    sources.push(source);
   }
   const nativeSources = sources.filter(run => run.runtimeMode === "native");
   const executedSources = sources.filter(run => run.runtimeMode === "native" || run.errorCode !== "execution_reconciliation_required" || run.startedAt);

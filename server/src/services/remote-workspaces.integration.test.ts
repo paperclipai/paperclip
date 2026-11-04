@@ -825,7 +825,12 @@ suite("remote workspace lifecycle with real Postgres and independent filesystem 
     const newLease = (await db.select().from(environmentLeases).where(eq(environmentLeases.id, secondLease)))[0]! as EnvironmentLease;
     const nextTarget = inherited ? { ...await target("child-sandbox"), leaseId: secondLease,
       sandboxId: newLease.providerLeaseId! } : first;
-    const continued = await prepareRemoteWorkspace({ db, storage, workspace: reused, runId: secondRun, lease: newLease, target: nextTarget });
+    const continued = await prepareRemoteWorkspace({ db, storage, workspace: reused, runId: secondRun, lease: newLease, target: nextTarget,
+      runtimeProvisionCommand: "printf 'continued effect\\n' >> continued-provision.txt" });
+    expect(await fs.readFile(path.join(continued.remoteRoot, "continued-provision.txt"), "utf8")).toBe("continued effect\n");
+    const [provisioned] = await db.select().from(workspaceOperations).where(and(eq(workspaceOperations.heartbeatRunId, secondRun),
+      eq(workspaceOperations.phase, "remote_workspace_provision")));
+    expect(provisioned).toMatchObject({ issueId: secondIssue, status: "succeeded" });
     expect(await fs.readFile(path.join(continued.remoteRoot, "shared-result.txt"), "utf8")).toBe("from the first task\n");
     await fs.appendFile(path.join(continued.remoteRoot, "shared-result.txt"), "from the child task\n");
     const childSaved = await saveRemoteWorkspace({ db, storage, workspace: continued.workspace, runId: secondRun,

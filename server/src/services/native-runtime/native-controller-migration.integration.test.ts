@@ -14,12 +14,13 @@ import { resolveNativeControllerRecovery } from "./native-controller-recovery.js
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 import { nativeSha256 } from "./canonical.js";
+import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
 import { legacyNativeControllerArchive } from "./native-controller-archive.js";
 import { restoreDurableNativeHarnessBackup } from "./native-harness-backup-storage.js";
 
-describeEmbeddedPostgres.each(["import", "archive", "success", "batch"])("offline native controller migration (%s)", scenario => {
+describeEmbeddedPostgres.each(["import", "archive", "success", "batch", "durable_failed"])("offline native controller migration (%s)", scenario => {
   const environment = nativeRestartFixture();
   afterEach(() => vi.unstubAllEnvs());
   async function fixture(commandCount = 1) {
@@ -155,11 +156,57 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch"])("offlin
       await f.db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
       expect(await migrateNativeControllers(f.db, { writersStopped: true, signal: AbortSignal.timeout(30_000) }))
         .toMatchObject({ imported: 1 });
+      const rows = await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+      const cipher = createLocalEncryptedCipher("read");
+      for (const row of rows) expect(JSON.parse(cipher.decrypt(row.material))).toEqual({
+        ...binding, part: row.part, contents: checkpoint.records.get(row.part),
+      });
       const restored = await loadNativeRunnerCheckpoint(f.db, binding);
       expect(restored?.records).toEqual(checkpoint.records);
       expect(await readFile(f.file, "utf8")).toBe(f.source);
     } finally { f.db.$client.options.debug = previousDebug; }
   }, 60_000);
+  if (scenario === "durable_failed") it("preserves a failed durable checkpoint without inventing a missing session snapshot", async () => {
+    const f = await fixture();
+    const binding = { companyId: f.companyId, issueId: f.issueId, runId: f.runId };
+    const checkpoint = captureLegacyDurablePrpCheckpoint(f.source, { runId: f.runId,
+      runnerInstanceId: f.native.runnerInstanceId, normalizedSessionId: f.native.normalizedSessionId },
+    { version: "migration-fixture", digest: `sha256:${"a".repeat(64)}` });
+    await f.db.transaction(tx => insertMigratedNativeRunnerCheckpoint(tx, binding, checkpoint));
+    await f.db.update(heartbeatRuns).set({ processPid: 12345, runnerProfileJson: { ...f.profile, sessionCheckpoint: null } })
+      .where(eq(heartbeatRuns.id, f.runId));
+    const options = { writersStopped: true as const, signal: AbortSignal.timeout(30_000) };
+    await f.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
+    await expect(migrateNativeControllers(f.db, options)).rejects.toThrow("stale_supervisor_snapshot");
+    await f.db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, f.runId));
+    const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+    const [owner] = await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+    const rows = await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+    const foreign = JSON.parse(f.source);
+    foreign.identity.normalizedSessionId = randomUUID();
+    const foreignCheckpoint = captureLegacyDurablePrpCheckpoint(JSON.stringify(foreign), { runId: f.runId,
+      runnerInstanceId: f.native.runnerInstanceId, normalizedSessionId: foreign.identity.normalizedSessionId },
+    { version: "migration-fixture", digest: `sha256:${"a".repeat(64)}` });
+    await f.db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+    await f.db.transaction(tx => insertMigratedNativeRunnerCheckpoint(tx, binding, foreignCheckpoint));
+    expect(await hasLocalNativeControllerObligations(f.db)).toBe(true);
+    await expect(migrateNativeControllers(f.db, options)).rejects.toThrow("stale_supervisor_snapshot");
+    await f.db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+    await f.db.insert(nativeRunnerCheckpoints).values(rows);
+    expect(await migrateNativeControllers(f.db, options)).toMatchObject({ preservedFailed: 1, imported: 0 });
+    expect(await hasLocalNativeControllerObligations(f.db)).toBe(false);
+    expect(await migrateNativeControllers(f.db, options)).toMatchObject({ preservedFailed: 1, imported: 0 });
+    expect(await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId))).toEqual(rows);
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0]).toEqual(run);
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0]).toEqual(owner);
+    expect((await f.db.select().from(agentTaskSessions).where(eq(agentTaskSessions.id, f.session.id)))[0].lastRunId).toBe(f.runId);
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.queuedId)))[0].status).toBe("queued");
+    await rm(f.paperclipHome, { recursive: true, force: true });
+    expect((await loadNativeRunnerCheckpoint(f.db, binding))?.records).toEqual(checkpoint.records);
+    const recovery = await resolveNativeControllerRecovery(f.db, { companyId: f.companyId, agentId: f.agentId,
+      issueId: f.issueId, normalizedSessionId: f.native.normalizedSessionId, currentRunId: f.queuedId });
+    expect(recovery.kind).not.toBe("recoverable");
+  });
   if (scenario === "archive") it("preserves an already-failed legacy controller without inventing executable recovery authority", async () => {
     const f = await fixture();
     await rm(join(f.paths.root, "provider-pack-authority.json"));

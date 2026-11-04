@@ -2997,6 +2997,20 @@
       "when": 1793760539457,
       "tag": "0429_high_freak",
       "breakpoints": true
+    },
+    {
+      "idx": 430,
+      "version": "7",
+      "when": 1793797974795,
+      "tag": "0430_regular_red_skull",
+      "breakpoints": true
+    },
+    {
+      "idx": 431,
+      "version": "7",
+      "when": 1793798006496,
+      "tag": "0431_magenta_vanisher",
+      "breakpoints": true
     }
   ]
 }

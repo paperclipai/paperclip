@@ -4,7 +4,7 @@ import { setImmediate as immediate } from "node:timers/promises";
 import { setTimeout as realTimeout, clearTimeout as clearRealTimeout } from "node:timers";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { budgetService } from "../services/budgets.js";
+import { budgetService, flushBudgetEvaluationWork } from "../services/budgets.js";
 import { configureAgentLifecycle, createAgentLifecycle } from "../services/agent-lifecycle.js";
 import { accessService } from "../services/access.js";
 import { PersistedExecutionWaitRefusal, writeDeferredExecutionWait } from "../services/deferred-execution-wait.js";
@@ -275,6 +275,7 @@ describe("deferred receipt durable dispatch", () => {
       await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agent.id, projectId,
         provider: "test", model: "receipt-proof", costCents: 200, occurredAt: new Date() });
       await budgets.upsertPolicy(f.companyId, policy, f.actorId);
+      await flushBudgetEvaluationWork(db, { companyId: f.companyId });
     } else await lifecycle.pauseAgent(f.agent.id);
     await lifecycleWorker.process(f.agent.id);
     await heartbeat.registerDeferredReceiptWork(coordinator, () => !drain).ready;
@@ -313,8 +314,10 @@ describe("deferred receipt durable dispatch", () => {
     const { f, lifecycle, budgets, policy, lifecycleWorker, request, read } = await blockedRetry(gate);
     // Keep the clock advancing with wall time through gate release and actual
     // child-process exit. Accelerate only after that execution has settled.
-    if (gate !== "paused agent") await budgets.upsertPolicy(f.companyId, { ...policy, amount: 1000 }, f.actorId);
-    else await lifecycle.resumeAgent(f.agent.id);
+    if (gate !== "paused agent") {
+      await budgets.upsertPolicy(f.companyId, { ...policy, amount: 1000 }, f.actorId);
+      await flushBudgetEvaluationWork(db, { companyId: f.companyId });
+    } else await lifecycle.resumeAgent(f.agent.id);
     await lifecycleWorker.process(f.agent.id);
     let runId: string | null = null;
     await waitForReal(async () => {

@@ -282,6 +282,18 @@ async function callTerminalTool(promptBody, signal) {
   const first = await call();
   if (String(prompt.message ?? prompt.task?.prompt ?? "").includes("completion-feedback")) {
     const outcomes = [first];
+    if (first.result?.isError && String(prompt.message ?? prompt.task?.prompt ?? "").includes("current-wake-completion-feedback")) {
+      let cursor;
+      for (let pageIndex = 0; pageIndex < 8; pageIndex++) {
+        const response = await mcpRequest("tools/call", {
+          name: "paperclip_read_current_wake_comments", arguments: { cursor },
+        });
+        if (response.result?.isError) throw new Error("Current-wake fixture reader was rejected");
+        const page = JSON.parse(response.result.content[0].text);
+        if (page.complete) break;
+        cursor = page.nextCursor;
+      }
+    }
     if (first.result?.isError) outcomes.push(await call());
     await writeFile(join(process.env.XDG_DATA_HOME, "fake-completion-feedback.json"), JSON.stringify(outcomes));
     return outcomes.at(-1);
@@ -507,7 +519,7 @@ const server = createServer(async (request, response) => {
           emit({ type: "session.idle", properties: { sessionID: session.id } });
           return;
         }
-        await callFirstPaperclipTool();
+        if (!String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").includes("current-wake-completion-feedback")) await callFirstPaperclipTool();
         if (String(parsedPrompt.message ?? "").includes("managed-github-operation")) {
           const result = await new Promise(resolve => {
             execFile("gh", ["api", "user"], { timeout: 5000 }, (error, stdout, stderr) => {

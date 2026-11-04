@@ -352,8 +352,32 @@ export function restoreRemoteWorkspaceArchive(input: { archivePath: string; targ
   return workspaceArchive({ ...input, kind: "restore" });
 }
 
+export function remoteWorkspaceCaptureFailureMessage(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const failure = error as { message?: unknown; code?: unknown; stderr?: unknown };
+  const diskFull = "remote_workspace_sandbox_disk_full: the sandbox disk is full; free space in the sandbox before saving the workspace";
+  const validation = [
+    "remote_workspace_archive_changed", "remote_workspace_archive_unsupported_filename",
+    "remote_workspace_archive_unsafe_git_link", "remote_workspace_archive_unsafe_symlink",
+    "remote_workspace_archive_unsupported_entry", "remote_workspace_archive_source_missing",
+    "remote_workspace_archive_source_invalid", "remote_workspace_archive_credential_in_git_remote",
+    "remote_workspace_archive_unsupported_git_setting", "remote_workspace_archive_manifest_too_large",
+    "remote_workspace_archive_git_operation_in_progress: finish or abort the Git operation before saving the workspace",
+    diskFull,
+  ];
+  if (typeof failure.message === "string" && validation.includes(failure.message)) return failure.message;
+  const childText = (typeof failure.stderr === "string" ? failure.stderr : "")
+    + (typeof failure.message === "string" ? failure.message : "");
+  if (failure.code === "ENOSPC" || failure.code === "EDQUOT" || /No space left on device|Disk quota exceeded/i.test(childText)) return diskFull;
+  for (const code of ["EACCES", "EPERM", "ENOENT", "ENOTDIR", "EISDIR", "ELOOP", "EMFILE", "ENFILE", "EIO", "EROFS", "EEXIST"]) {
+    const message = `remote_workspace_archive_fs_${code.toLowerCase()}`;
+    if (failure.code === code || failure.message === message) return message;
+  }
+  return null;
+}
+
 export function remoteWorkspaceArchiveScript(): string {
   // tsx's function-name preservation helper may appear in Function#toString.
   const source = workspaceArchive.toString().replaceAll("__vite_ssr_dynamic_import__", "import");
-  return `const __name = (value) => value;\nconst archive = ${source};\nconst [kind, first, second, digest] = process.argv.slice(2);\narchive(kind === 'capture' ? {kind,cwd:first,archivePath:second} : {kind,archivePath:first,targetDir:second,expectedManifestDigest:digest}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{process.stderr.write(error.message);process.exitCode=1;});\n`;
+  return `const __name = (value) => value;\nconst captureFailure = ${remoteWorkspaceCaptureFailureMessage.toString()};\nconst archive = ${source};\nconst [kind, first, second, digest] = process.argv.slice(2);\narchive(kind === 'capture' ? {kind,cwd:first,archivePath:second} : {kind,archivePath:first,targetDir:second,expectedManifestDigest:digest}).then(value=>process.stdout.write(JSON.stringify(value))).catch(error=>{process.stderr.write(kind === 'capture' ? captureFailure(error) ?? 'remote_workspace_archive_failed' : error.message);process.exitCode=1;});\n`;
 }

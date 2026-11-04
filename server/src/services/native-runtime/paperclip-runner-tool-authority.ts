@@ -1,3 +1,4 @@
+import { budgetServiceInTransaction } from "../budgets.js";
 import { DOWNLOAD_ARTIFACT, DOWNLOAD_ARTIFACT_DEFINITION, downloadArtifactSchema, createArtifactInstaller, type ArtifactInstaller } from "./artifact-transfer.js";
 import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
 import { nativeRunKeyScope, nativeSkillTestToolAllowed, assertNativeSkillTestTool } from "./native-skill-test-scope.js";
@@ -1500,8 +1501,8 @@ export class PaperclipRunnerToolAuthority {
       throw new Error("paperclip_runner_tool_binding_not_authorized");
     }
     const [company] = await this.db.select().from(companies).where(eq(companies.id, this.binding.companyId));
-    if (company?.status !== "active" || (company.budgetMonthlyCents > 0 && company.spentMonthlyCents >= company.budgetMonthlyCents)
-      || (row.actor.budgetMonthlyCents > 0 && row.actor.spentMonthlyCents >= row.actor.budgetMonthlyCents)) throw forbidden("Company or budget authority unavailable");
+    if (company?.status !== "active"
+      || await budgetServiceInTransaction(this.db).getInvocationBlock(this.binding.companyId, this.binding.agentId, { issueId: this.binding.issueId })) throw forbidden("Company or budget authority unavailable");
     if (this.binding.nativeReview) {
       const admitted = readNativeReviewAssignmentContext(row.run.contextSnapshot);
       if (!admitted || admitted.nativeReviewInteractionId !== this.binding.nativeReview.nativeReviewInteractionId

@@ -14,7 +14,7 @@ function encryptParts(binding: Binding, records: ReadonlyMap<string, string>) {
   const cipher = createLocalEncryptedCipher("write");
   return [...records].map(([part, contents]) => ({
     companyId: binding.companyId, issueId: binding.issueId, runId: binding.runId, part,
-    material: cipher.encrypt(JSON.stringify({ ...binding, part, contents })),
+    material: cipher.encrypt(JSON.stringify({ companyId: binding.companyId, issueId: binding.issueId, runId: binding.runId, part, contents })),
   }));
 }
 

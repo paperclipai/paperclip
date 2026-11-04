@@ -11,6 +11,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, budgetPolicies, companies, costEvents, createDb, heartbeatRuns, runUsageReceipts, type Db } from "@paperclipai/db";
 import { type PrpEvent } from "../../vendor/paperclip-runner/index.js";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { flushBudgetEvaluationWork } from "../budgets.js";
 import { accountRunCost } from "../run-cost-accounting.js";
 import { usageReceiptSpoolPath, type UsageReceiptEnvelope } from "../usage-receipts.js";
 import { createNativeUsageContinuationDelivery, createNativeUsageDelivery } from "./native-usage-delivery.js";
@@ -89,7 +90,7 @@ describe("producer-owned native usage", () => {
   });
 
   it.each(["tokens", "cost", "incomplete", "unpriceable", "basis"])(
-    "holds a differing finalized source tail before acknowledgement: %s", async change => {
+    "retains a differing finalized source tail as unaccepted durable reconciliation debt: %s", async change => {
       const { input, source } = await finalizedSource();
       const continuation = await createNativeUsageContinuationDelivery(db, source);
       const late = event(input, 3, "usage.reported");
@@ -101,7 +102,13 @@ describe("producer-owned native usage", () => {
       };
       await expect(continuation.capture(late)).rejects.toThrow("native_usage_after_finalization_requires_reconciliation");
       await expect(continuation.capture(late)).rejects.toThrow("native_usage_after_finalization_requires_reconciliation");
-      expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, input.runId))).toHaveLength(2);
+      expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, input.runId))).toHaveLength(3);
+      const [pending] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId));
+      expect(pending.usageJson).toMatchObject({ accountingLateReceiptPending: true });
+      // Loading the durable journal on restart cannot turn rejected evidence
+      // into an acknowledged producer delivery.
+      const restarted = await createNativeUsageContinuationDelivery(db, source);
+      await expect(restarted.capture(late)).rejects.toThrow("native_usage_after_finalization_requires_reconciliation");
       expect((await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId)))[0].costCents).toBe(25);
     });
 
@@ -214,7 +221,9 @@ describe("producer-owned native usage", () => {
       const retainedLate = producerState().outbox.find(report => report.eventType === "usage.reported");
       expect(retainedLate).toBeDefined();
       expect(retainedLate!.envelope.payload).toMatchObject({ runId: input.runId, sourceInstanceId: input.runnerInstanceId });
-      expect((await receipts()).filter(row => (row.receiptJson.producerEvent as Record<string, unknown>)?.eventType === "usage.reported")).toHaveLength(1);
+      expect((await receipts()).filter(row => (row.receiptJson.producerEvent as Record<string, unknown>)?.eventType === "usage.reported")).toHaveLength(2);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.runId)))[0].usageJson)
+        .toMatchObject({ accountingLateReceiptPending: true });
       expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, input.runId))).toHaveLength(1);
       expect(existsSync(usageReceiptSpoolPath())).toBe(false);
     } finally {
@@ -233,6 +242,7 @@ describe("producer-owned native usage", () => {
     await db.insert(budgetPolicies).values({ companyId: input.companyId, scopeType: "agent", scopeId: input.agentId,
       metric: "billed_cents", windowKind: "lifetime", amount: 10, notifyEnabled: false });
     await first.capture(event(input, 1, "usage.reported"));
+    await flushBudgetEvaluationWork(db, { companyId: input.companyId });
     const [agent] = await db.select().from(agents).where(eq(agents.id, input.agentId));
     expect(agent.lifecycleHolds).toContain("budget");
     const replacement = { ...input, runnerInstanceId: randomUUID() };
