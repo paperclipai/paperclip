@@ -28,3 +28,10 @@ it("actual company act admits its safe question before private human entry",asyn
  }}},refreshIssue:async()=>{},issue:()=>({id:"source",companyId:"company",conversationState:"waiting"}),allRuns:async()=>[run]} as unknown as ChatCatalogContext;
  await expect(companySecretExternalCases[0]!.act!(ctx,{currentPersonId:"person"})).rejects.toThrow("NEXT_REAL_HUMAN_PHASE");expect(reached).toBe(true);
 });
+it("accepts Done and completed-setup Yes without repeating the already-bound consumer",()=>{
+ for(const label of ["Done","Yes"]){const row=question();row.payload.questionSet!.questions[0]!.options![0]!.label=label;expect(companySecretQuestionHandoff(row,binding)).toMatchObject({optionId:"yes"});}
+});
+it("rejects prospective Yes and negative or other-owner completion choices",()=>{
+ const prospective=question();prospective.payload.questionSet!.questions[0]!.prompt="Would you like me to configure this?";prospective.payload.questionSet!.questions[0]!.options![0]!.label="Yes";expect(companySecretQuestionHandoff(prospective,binding)).toBeUndefined();
+ for(const label of ["Not done","I didn't save it","I haven't added it","Done for Riley"]){const row=question();row.payload.questionSet!.questions[0]!.options![0]!.label=label;expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();}
+});
