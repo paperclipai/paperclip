@@ -102,6 +102,8 @@ interface AuthoredSkillInspection { companyId: string; skillId: string; versionI
 export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Record<string, unknown>, o: InternalObservation): Promise<void> {
   const remaining = () => remainingIdentityObservationBudget(ctx);
   remaining();
+  const prefix = ctx.input.fixtures.company.issuePrefix;
+  if (typeof prefix !== "string" || !prefix.trim()) throw new Error("Authored skill inspection requires its actual company prefix");
   const observed = skillsObservation(o);
   const authored = observed?.skills.filter(skill => observed.activity.some(event => event.action === "company.skill_created" && event.entityId === skill.id && event.agentId === observed.leadId)) ?? [];
   const skill = authored[0], version = skill && observed?.versions[skill.id]?.find(row => row.id === skill.currentVersionId);
@@ -112,7 +114,7 @@ export async function inspectAuthoredSkill(ctx: ChatCatalogContext, state: Recor
   await ctx.input.page.getByRole("link", { name: "My Skills", exact: true }).first().click({ timeout: remaining() });
   const card = ctx.input.page.getByRole("button").filter({ has: ctx.input.page.getByText(skill.name, { exact: true }) }).first();
   await expect(card).toBeVisible({ timeout: remaining() }); await card.click({ timeout: remaining() });
-  const companyPath = `/${encodeURIComponent(ctx.input.fixtures.company.issuePrefix)}`;
+  const companyPath = `/${encodeURIComponent(prefix)}`;
   const studioRoute = `${companyPath}${skillStudioRoute(skill.id)}`;
   const detailRoute = `${companyPath}${skillRoute(skill, observed.skills)}`;
   const openSavedEditor = async () => {

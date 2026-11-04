@@ -83,3 +83,9 @@ it("inspects real rich-text blocks without applying Markdown marker assumptions 
 });
 
 it("retains exact direct Studio card navigation when the UI uses it", async()=>{ const f=fixture();f.ui.directStudio=true;await inspectAuthoredSkill(f.ctx,f.state,f.o);expect(f.events).toEqual(["Skills","My Skills","open-skill","reload","return-chat"]);expect(f.state.authoredSkillInspection).toMatchObject({readbackMatched:true,editorSurface:"studio"}); });
+
+it.each([undefined, null, ""])("rejects missing company prefix %s before any UI navigation", async prefix => {
+ const f=fixture();Object.assign(f.ctx.input.fixtures.company,{issuePrefix:prefix});
+ await expect(inspectAuthoredSkill(f.ctx,f.state,f.o)).rejects.toThrow("company prefix");
+ expect(f.events).toEqual([]);expect(f.state.authoredSkillInspection).toBeUndefined();
+});
