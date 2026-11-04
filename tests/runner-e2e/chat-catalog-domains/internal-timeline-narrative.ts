@@ -85,7 +85,7 @@ export function truthfulTimelineAccount(input: {
         resolvedPronouns.add(at + lead.length);
         return lead + owner;
       });
-    const paragraph = { text, owner, start: offset, end: offset + text.length };
+    const paragraph = { text, owner, namedWorkerHeading: owners.length > 0, start: offset, end: offset + text.length };
     offset = paragraph.end + 2;
     return paragraph;
   });
@@ -93,7 +93,7 @@ export function truthfulTimelineAccount(input: {
   // Search milestone clauses, not the first occurrence of a worker or outcome.
   // A summary or heading may mention the repair before the ordered account.
   const clauses = [...body.matchAll(new RegExp(`${withinClause}+(?:[!?]|\\.(?=\\s|$)|(?=\\n|$))`, "g"))]
-    .map(match => { const paragraph = paragraphs.find(row => row.start <= match.index && row.end > match.index); return { text: match[0], at: match.index, owner: paragraph?.owner, paragraphStart: paragraph?.start }; });
+    .map(match => { const paragraph = paragraphs.find(row => row.start <= match.index && row.end > match.index); return { text: match[0], at: match.index, owner: paragraph?.owner, namedWorkerHeading: paragraph?.namedWorkerHeading, paragraphStart: paragraph?.start }; });
   // A command noun can have ordinary modifiers, but never absorb a new event,
   // actor, negation or clause boundary while connecting this pause to failure.
   const commandBoundaries = [
@@ -108,7 +108,7 @@ export function truthfulTimelineAccount(input: {
 
   const failureOutcome = /\b(?:fail(?:ed|ure|ing)?|exit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*1)\b/gi;
   const commandIsSubject = new RegExp(`^\\s*(?:(?:then|next|later|finally)\\s+)?(?:(?:the|a|an)\\s+)?${commandSubject}\\b`, "i");
-  const failures = clauses.flatMap(({ text, at, owner }) => (mentions(text, firstWorker) || owner === firstWorker && commandIsSubject.test(text) && !namesOtherActor(text.replace(commandIsSubject, ""), firstWorker))
+  const failures = clauses.flatMap(({ text, at, owner, namedWorkerHeading }) => (mentions(text, firstWorker) || (owner === firstWorker || !namedWorkerHeading) && commandIsSubject.test(text) && !namesOtherActor(text.replace(commandIsSubject, ""), firstWorker))
     && new RegExp(`\\b${commandSubject}\\b`, "i").test(text)
     ? [...text.matchAll(failureOutcome)].map(match => ({ at: at + match.index, end: at + match.index + match[0].length, clauseAt: at })) : []);
   const handoffs = clauses.flatMap(({ text, at }) => handoffMatches(text).map(match => ({ at: at + match.index })));
