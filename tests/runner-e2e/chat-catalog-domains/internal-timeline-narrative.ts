@@ -41,7 +41,10 @@ export function truthfulTimelineAccount(input: {
   const commandSubject = `(?:${commandModifier}[ \\t]+){0,3}(?:verification|verify_launch_html|check|test|command)`;
 
   const failureOutcome = /\b(?:fail(?:ed|ure|ing)?|exit(?:ed)?(?:\s+with)?(?:\s+(?:code|status))?\s*[:=]?\s*1)\b/gi;
-  const failures = clauses.flatMap(({ text, at, owner }) => (mentions(text, firstWorker) || owner === firstWorker)
+  // Heading ownership fills an omitted actor only when the command itself is
+  // the clause subject. It cannot override an explicit different actor.
+  const commandIsSubject = new RegExp(`^\\s*(?:(?:the|a|an)\\s+)?${commandSubject}\\b`, "i");
+  const failures = clauses.flatMap(({ text, at, owner }) => (mentions(text, firstWorker) || owner === firstWorker && commandIsSubject.test(text))
     && new RegExp(`\\b${commandSubject}\\b`, "i").test(text)
     ? [...text.matchAll(failureOutcome)].map(match => ({ at: at + match.index, end: at + match.index + match[0].length, clauseAt: at })) : []);
   const humanActors = ["you", "human operator", "board member", "human", "person", "user", "operator", "board", input.personName].filter(Boolean).map(name => escape(name!)).join("|");

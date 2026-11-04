@@ -23,3 +23,7 @@ it.each([
 it("does not carry a section owner through an unrelated paragraph", () => {
   expect(grade(account.replace("The verification", "\n\nThe verification"))).toBe(false);
 });
+
+it("does not give a heading credit for another actor's command", () => {
+  expect(grade(account.replace("The verification command failed", "The human operator ran verification and it failed"))).toBe(false);
+});
