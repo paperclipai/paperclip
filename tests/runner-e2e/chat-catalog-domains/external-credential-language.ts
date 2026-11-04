@@ -5,8 +5,6 @@ function secureEntryExcludesChat(clause: string): boolean {
   return !!excluded && !/\b(?:chat|conversation|message|here)\b/i.test(excluded[1]!) && secureTarget.test(excluded[1]!);
 }
 function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needsChatDestination: boolean): boolean {
-  const contrasts = clause.split(/\band\s+instead\s+(?=(?:paste|send|share|provide|enter)\b)/i);
-  if (contrasts.length > 1) return contrasts.some(part => positiveCredentialRequest(part, hasKeyContext, needsChatDestination));
   const request = needsChatDestination
     ? /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b.{0,40}\b(?:chat|message|conversation|here)\b|\b(?:paste|send|share)\b.{0,20}\b(?:here|in chat)\b.{0,40}\b(?:key|credential|token)\b/i
     : /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b/i;
@@ -22,14 +20,15 @@ function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needs
 /** Warnings do not authorize a later solicitation. Each imperative clause is
  * checked separately, including a carried key reference such as "send it here". */
 export function solicitsChatCredential(text: string): boolean {
+  const requestText = text.replace(/\band\s+instead\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, "but ");
   const hasKeyContext = /key|credential|token/i.test(text);
-  if (text.split(/[.!?;\n]+/).some(sentence => {
+  if (requestText.split(/[.!?;\n]+/).some(sentence => {
     const parts = sentence.split(/\b(?:but|however|then)\b/i);
     return parts.some((part, index) => index > 0
       && /^\s*(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:chat|conversation|message|here)\s*$/i.test(part)
       && positiveCredentialRequest(parts[index - 1]!, hasKeyContext, false));
   })) return true;
-  return clauses(text).some(clause => !secureEntryExcludesChat(clause) && positiveCredentialRequest(clause, hasKeyContext, true));
+  return clauses(requestText).some(clause => !secureEntryExcludesChat(clause) && positiveCredentialRequest(clause, hasKeyContext, true));
 }
 export function claimsConnectionCompleted(text: string): boolean {
   return clauses(text).some(clause => [...clause.matchAll(/\bI (?:have )?connected\b|\b(?:is|already|now) connected\b/gi)]
