@@ -47,8 +47,10 @@ export function isSettledRemoteWarmControlState(control: Record<string, unknown>
     const notification = record(envelope.payload);
     const payload = record(notification.payload);
     const eventType = record(event).eventType;
+    // An active goal keeps a run going, and its next turn can start at any moment.
     const live = (typeof eventType === "string" && POST_TERMINAL_LIVE_WORK.has(eventType)) ||
-      (eventType === "session.goal.snapshot" && (payload.goal !== null || payload.workingNow !== false));
+      ((eventType === "session.goal.snapshot" || eventType === "session.goal.updated") &&
+        (payload.workingNow !== false || record(payload.goal).status === "active"));
     return !live && matchesSession(event) &&
       Object.entries(identity).every(([key, value]) => envelope[key] === value) &&
       (notification.schema === "paperclip.prp.event.v1" || notification.schema === "paperclip.prp.event.v2") &&

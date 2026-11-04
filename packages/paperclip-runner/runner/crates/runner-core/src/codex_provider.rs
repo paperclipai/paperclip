@@ -4653,7 +4653,7 @@ done
 
     #[cfg(unix)]
     #[test]
-    fn warm_attachment_ignores_an_unknown_notification_about_the_completed_turn() {
+    fn warm_attachment_ignores_an_unknown_notification_that_names_no_other_turn() {
         let mut provider = completion_tail_provider();
         provider
             .restore_completed_turn_authority(true, Some(1), Some("reader-tail-1"))
@@ -4664,13 +4664,13 @@ done
             .push_back(BufferedProviderMessage {
                 value: json!({
                     "method": "a/future/notification",
-                    "params": {"threadId": "reader-tail-thread", "turnId": "reader-tail-1"}
+                    "params": {"threadId": "reader-tail-thread"}
                 }),
                 trace_frame_id: None,
             });
         let (_, result) = provider.drain_completed_turn_tail_for_warm_attachment();
         provider.shutdown().unwrap();
-        result.expect("a notification about a finished turn is history");
+        result.expect("a notification that starts nothing is history");
     }
 
     #[cfg(unix)]

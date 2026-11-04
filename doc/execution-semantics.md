@@ -1649,8 +1649,8 @@ future execution until Resume, and missing stop proof still blocks continuation.
 ### Session settlement after a run
 
 Attaching a later run to a session asks whether anything is live or waiting: an
-active or ambiguous turn, an unanswered tool or runtime request, or a session that
-needs accounting reconciliation. Events recorded after a run's terminal describe the
+active or ambiguous turn, an active goal, an unanswered tool or runtime request, or
+a session that needs accounting reconciliation. Events recorded after a run's terminal describe the
 past. Refusing the session cannot undo them, so they never block attachment. The
 Runner keeps its pending events and commits them under the prior authority before it
 rotates. Core accepts any authenticated event after the terminal, except one that

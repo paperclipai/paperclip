@@ -58,6 +58,20 @@ describe("settled remote warm control evidence", () => {
       expect(isSettledRemoteWarmControlState(state([terminal, lateNotice, live]), identity)).toBe(false);
     });
 
+  it("reads goal state from both goal events", () => {
+    const goalEvent = (eventType: string, payload: Record<string, unknown>) =>
+      ({ eventType, envelope: { ...identity, payload: { ...notification, eventType, payload: { ...goal, ...payload } } } });
+    for (const eventType of ["session.goal.snapshot", "session.goal.updated"]) {
+      const settled = (payload: Record<string, unknown>) => isSettledRemoteWarmControlState(state([terminal, goalEvent(eventType, payload)]), identity);
+      expect(settled({ goal: { status: "active" } })).toBe(false);
+      expect(settled({ goal: { status: "paused" }, workingNow: true })).toBe(false);
+      expect(settled({ goal: null, workingNow: undefined })).toBe(false);
+      expect(settled({ goal: { status: "paused" } })).toBe(true);
+      expect(settled({ goal: { status: "complete" } })).toBe(true);
+      expect(settled({})).toBe(true);
+    }
+  });
+
   it("summarizes post-terminal events for the next run's log", () => {
     expect(summarizePostTerminalEvents(state([terminal]))).toBeNull();
     expect(summarizePostTerminalEvents(state([terminal, lateNotice, lateNotice, snapshot])))

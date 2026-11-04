@@ -2960,6 +2960,15 @@ impl CodexCommandExecutor {
         if next_state.tool_bridge.pending_calls().next().is_some() {
             blockers.push("durable_pending_tool_calls");
         }
+        // An active goal keeps the run going, and the provider can start its next
+        // turn at any moment even when no turn is running.
+        let goal_active = next_state
+            .goal
+            .as_ref()
+            .is_some_and(|goal| goal.status == "active" || goal.working_now);
+        if goal_continues_after_turn(&next_state, goal_active) {
+            blockers.push("durable_active_goal");
+        }
         if !blockers.is_empty() {
             return Err(DurableRunnerError::invalid(format!(
                 "run.attach requires a settled Codex provider session: {}",
@@ -5981,6 +5990,40 @@ mod tests {
     }
 
     #[test]
+    fn stopped_checkpoint_rebinding_retains_undelivered_facts_for_the_prior_authority() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-provider-retained-facts-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let mut state = opencode_result_state();
+        state.config.provider = "codex".to_owned();
+        state.config.driver = "codex_app_server".to_owned();
+        state.config.command = PathBuf::from("must-not-start-during-attachment");
+        state.config.model = None;
+        state.active_provider_turn_id = None;
+        state.provider_process_generation = 1;
+        state.lifecycle = "prepared".to_owned();
+        state
+            .push_event(NormalizedProviderEvent {
+                event_type: "run.result.proposed".to_owned(),
+                priority: EventPriority::P0,
+                payload: json!({}),
+            })
+            .unwrap();
+        let writer = CodexCommandExecutor::new(&directory);
+        writer.persist_state(&state).unwrap();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        executor.restore().unwrap();
+        executor.attach_run(&json!({})).unwrap();
+        let rebound = executor.state.as_ref().unwrap();
+        assert_eq!(rebound.pending_events.len(), 1);
+        assert_eq!(rebound.pending_events[0].event_type, "run.result.proposed");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn stopped_checkpoint_rebinding_keeps_unsettled_and_missing_process_fences() {
         let mut settled = opencode_result_state();
         settled.config.provider = "codex".to_owned();
@@ -5995,8 +6038,7 @@ mod tests {
             "session_open",
             "active",
             "ambiguous",
-            "pending",
-            "queued",
+            "goal",
             "thread_missing",
             "generation_missing",
             "profile_changed",
@@ -6007,18 +6049,20 @@ mod tests {
                 "closed" | "session_open" => state.lifecycle = change.to_owned(),
                 "active" => state.active_provider_turn_id = Some("still-active".to_owned()),
                 "ambiguous" => state.ambiguous_turn_start_pending = true,
-                "pending" | "queued" => {
-                    let event = PolledEvent {
-                        executor_event_id: "undelivered-result".to_owned(),
-                        event_type: "run.result.proposed".to_owned(),
-                        priority: EventPriority::P0,
-                        payload: json!({}),
-                    };
-                    if change == "pending" {
-                        state.pending_events.push_back(event);
-                    } else {
-                        state.queued_events.push_back(event);
-                    }
+                "goal" => {
+                    state.goal = Some(SessionGoalSnapshot {
+                        objective: "Keep working.".to_owned(),
+                        status: "active".to_owned(),
+                        token_budget: None,
+                        tokens_used: 0,
+                        elapsed_seconds: 0,
+                        iterations: 0,
+                        last_reason: None,
+                        created_at: None,
+                        updated_at: None,
+                        completed_at: None,
+                        working_now: false,
+                    })
                 }
                 "thread_missing" => state.thread_id = None,
                 "generation_missing" => state.provider_process_generation = 0,
