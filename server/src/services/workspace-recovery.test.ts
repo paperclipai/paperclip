@@ -70,6 +70,7 @@ import * as activity from "./activity-log.js";
 import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
 import { registerWorkspaceRecoveryWork } from "./workspace-recovery-work.js";
 import { heartbeatService } from "./heartbeat.js";
+import * as heartbeatServices from "./heartbeat.js";
 import { hasVerifiedWorkspaceRepair, readWorkspaceRecovery } from "./workspace-recovery-receipt.js";
 import { claimNativeSessionResumptions } from "./native-runtime/native-finalization-reconciler.js";
 import { executionWorkspaces } from "@paperclipai/db";
@@ -1012,18 +1013,24 @@ describe("automatic retained workspace recovery", () => {
       };
       const heartbeat = heartbeatService(db, { environmentRuntime: runtime, nativeSessionBackendFactory: backendFactory });
       ownedHeartbeat = heartbeat;
-      const receipt = (await request(boardRecoveryApp()).post(`/api/issues/${f.issueId}/retry`)
-        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
-      await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId);
-      const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
-        sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`));
-      expect(successors).toHaveLength(1);
       if (unavailableCatalog) {
         const repoUrl = "https://github.com/example/revoked.git";
         await db.insert(executionWorkspaceRepositories).values({ companyId: f.companyId, executionWorkspaceId: f.workspaceId,
           requestedByIssueId: f.issueId, repositoryIdentity: repoUrl, repoUrl, catalogRepositoryId: "revoked-before-dispatch",
           relativePath: taskRepositoryRelativePath(repoUrl), requestKey: randomUUID(), state: "ready", pinnedCommit: f.commit });
       }
+      // The HTTP route also nudges Retry asynchronously. Give it the same real
+      // heartbeat facade so either dispatcher uses this test's provider boundary.
+      const routeHeartbeat = vi.spyOn(heartbeatServices, "heartbeatService").mockReturnValue(heartbeat);
+      let app: ReturnType<typeof boardRecoveryApp>;
+      try { app = boardRecoveryApp(); }
+      finally { routeHeartbeat.mockRestore(); }
+      const receipt = (await request(app).post(`/api/issues/${f.issueId}/retry`)
+        .send({ observedRunId: f.runId, idempotencyKey: randomUUID() }).expect(202)).body;
+      await heartbeat.resumeTaskRetry(f.companyId, receipt.requestId);
+      const successors = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, f.companyId),
+        sql`${heartbeatRuns.contextSnapshot}->>'taskRetryRequestId' = ${receipt.requestId}`));
+      expect(successors).toHaveLength(1);
       await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(and(
         eq(heartbeatRuns.companyId, f.companyId), eq(heartbeatRuns.status, "running")));
       await heartbeat.resumeQueuedRuns(); await heartbeat.drainActiveRunExecutions();
