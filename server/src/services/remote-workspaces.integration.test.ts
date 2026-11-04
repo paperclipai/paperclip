@@ -38,19 +38,30 @@ import { issueService } from "./issues.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { resolveRemoteWorkspaceSource } from "./heartbeat/remote-workspace-source.js";
 import { toExecutionWorkspace } from "./execution-workspaces.js";
+import { recoveryPostgresSupport, startRecoveryPostgres } from "../__tests__/helpers/recovery-postgres.js";
 
 const exec = promisify(execFile);
-const databaseUrl = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_DATABASE_URL;
+let databaseUrl = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_DATABASE_URL;
 if (databaseUrl && !/^remote_workspace_[a-z_]*test$/.test(new URL(databaseUrl).pathname.slice(1))) throw new Error("Disposable workspace database required");
-const suite = databaseUrl ? describe : describe.skip;
+const suite = databaseUrl || recoveryPostgresSupport.supported ? describe : describe.skip;
 const s3Bucket = process.env.PAPERCLIP_REMOTE_WORKSPACE_TEST_S3_BUCKET;
 if (s3Bucket && !s3Bucket.startsWith("paperclip-workspace-")) throw new Error("Disposable workspace S3 bucket required");
 
 suite("remote workspace lifecycle with real Postgres and independent filesystem execution", () => {
   let db: ReturnType<typeof createDb>, root: string, storage: StorageService;
+  let temporary: Awaited<ReturnType<typeof startRecoveryPostgres>> | undefined;
   let ids: { company: string; agent: string; issue: string; run: string; environment: string; lease: string };
-  beforeAll(async () => { await applyPendingMigrations(databaseUrl!); db = createDb(databaseUrl!); }, 120_000);
-  afterAll(async () => { await closeRegisteredClients(databaseUrl!); });
+  beforeAll(async () => {
+    if (!databaseUrl) {
+      temporary = await startRecoveryPostgres("remote-workspace-lifecycle-");
+      databaseUrl = temporary.connectionString;
+    }
+    await applyPendingMigrations(databaseUrl); db = createDb(databaseUrl);
+  }, 120_000);
+  afterAll(async () => {
+    try { if (databaseUrl) await closeRegisteredClients(databaseUrl); }
+    finally { await temporary?.cleanup(); }
+  });
   beforeEach(async () => {
     vi.stubEnv("DATABASE_URL", databaseUrl!); vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "62".repeat(32));
     root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pc-remote-workspace-lifecycle-")));
