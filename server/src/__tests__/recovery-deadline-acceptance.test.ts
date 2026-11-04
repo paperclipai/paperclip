@@ -1,3 +1,8 @@
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import { readIdleQuotaSchedule } from "../services/heartbeat/idle-quota-schedule.js";
+import { registerDeadlineWork } from "../services/deadline-work.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
+import { taskWatchdogService } from "../services/task-watchdogs.js";
 import { processAdapter } from "../adapters/process/index.js";
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.js";
 import { issueService } from "../services/issues.js";
@@ -30,6 +35,8 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator> | undefined;
   let worker: ReturnType<ReturnType<typeof heartbeatService>["registerRunDispatchWork"]> | undefined;
   let owners: IdleDeadlineOwners;
+  let monitorWorker: ReturnType<typeof registerDeadlineWork> | undefined;
+  let recoveryWorker: ReturnType<ReturnType<typeof heartbeatService>["registerIssueStateRecoveryWork"]> | undefined;
   let draining = false;
   let holdStartedAt: Date;
   let holdExpiresAt: Date;
@@ -63,6 +70,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     holdStartedAt = new Date(Date.now() - 1000); holdExpiresAt = new Date(Date.now() + 300_000);
   });
   afterEach(async () => {
+    await monitorWorker?.stop(); await recoveryWorker?.stop();
     await worker?.stop(); await coordinator?.stop();
     await heartbeat.drainActiveRunExecutions();
     const auditRuns = await db.select({ id: heartbeatRuns.id, status: heartbeatRuns.status, retryOfRunId: heartbeatRuns.retryOfRunId,
@@ -73,7 +81,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     const auditWakes = await db.select({ id: agentWakeupRequests.id, runId: agentWakeupRequests.runId,
       reason: agentWakeupRequests.reason, source: agentWakeupRequests.source, status: agentWakeupRequests.status }).from(agentWakeupRequests);
     process.stderr.write(`recovery teardown causal audit ${JSON.stringify({ runs: auditRuns, wakes: auditWakes })}\n`);
-    worker = undefined; coordinator = undefined;
+    worker = undefined; coordinator = undefined; monitorWorker = undefined; recoveryWorker = undefined;
     vi.useRealTimers();
     expect(errors).toEqual([]);
   });
@@ -93,7 +101,7 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
       expect(idleWorkSnapshot().active).toBe(0);
     }, { timeout: 5_000 });
   }
-  async function fixture() {
+  async function fixture(options: { retainedSourceLock?: boolean; quotaResetAt?: Date } = {}) {
     const companyId = randomUUID();
     await db.insert(authUsers).values({ id: "recovery-test-user", name: "Recovery test owner", email: "recovery-owner@example.test",
       createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
@@ -110,10 +118,13 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     ]);
     const [issue] = await db.insert(issues).values({ companyId, title: "Retry producer acceptance", status: "in_progress", assigneeAgentId: agent.id }).returning();
     const [source] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId: issue.id,
-      status: "failed", responsibleUserId: "recovery-test-user", errorCode: "codex_transient_upstream", finishedAt: new Date(),
-      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } }, contextSnapshot: { issueId: issue.id },
+      status: "failed", responsibleUserId: "recovery-test-user", errorCode: options.quotaResetAt ? "provider_quota" : "codex_transient_upstream", finishedAt: new Date(),
+      resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false }, ...(options.quotaResetAt ? {
+        errorFamily: "provider_quota", retryNotBefore: options.quotaResetAt.toISOString(), providerQuotaRetryNotBefore: options.quotaResetAt.toISOString(),
+      } : {}) }, contextSnapshot: { issueId: issue.id },
     }).returning();
-    await db.update(issues).set({ executionRunId: source.id, checkoutRunId: source.id }).where(eq(issues.id, issue.id));
+    if (options.retainedSourceLock !== false)
+      await db.update(issues).set({ executionRunId: source.id, checkoutRunId: source.id }).where(eq(issues.id, issue.id));
     return { companyId, agent, issue, source };
   }
   async function schedule(sourceId: string, delayMs = 600_000) {
@@ -124,12 +135,18 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
   const run = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]);
   async function proof() {
     const at = Date.now();
-    return readIdleSleepSafety(db, () => ({ ownerId, draining: true, startedAt: holdStartedAt,
+    const before = { local: idleWorkSnapshot(), retry: worker?.retries.reconciliationSnapshot(),
+      monitor: monitorWorker?.reconciliationSnapshot(), watchdog: recoveryWorker?.watchdogs.reconciliationSnapshot(), next: coordinator?.nextWakeAt() };
+    const report = await readIdleSleepSafety(db, () => ({ ownerId, draining: true, startedAt: holdStartedAt,
       expiresAt: holdExpiresAt, activeRuns: 0, pendingWakes: 0 }), () => at, ownerId,
     // This is a domain/DB proof test, not filesystem or deployed host qualification.
     async () => "none", undefined, undefined, true, true,
     { deadlineCapability: { deadlineCatalog: "domain_deadlines_v1" } as VerifiedIdleCapabilities, deadlineOwners: owners,
       collectDiagnostics: true });
+    const after = { local: idleWorkSnapshot(), retry: worker?.retries.reconciliationSnapshot(),
+      monitor: monitorWorker?.reconciliationSnapshot(), watchdog: recoveryWorker?.watchdogs.reconciliationSnapshot(), next: coordinator?.nextWakeAt() };
+    process.stderr.write(`proof revision audit ${JSON.stringify({ at, before, after, result: report.backgroundWork })}\n`);
+    return report;
   }
   async function finish(id: string) {
     await vi.waitFor(async () => expect(["running", "succeeded"]).toContain((await run(id))?.status), { timeout: 15_000 });
@@ -217,4 +234,93 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
     expect(resumed.scheduledWake?.nextWakeAt).toBe(scheduled.dueAt.toISOString());
     await heartbeat.cancelRun(scheduled.run.id, "fixture cleanup", { suppressImmediateRecovery: true });
   }, 20_000);
+
+  it("the quota recovery producer saves an exact future monitor inspected by its registered owner", async () => {
+    const reset = new Date(Date.now() + 600_000);
+    const f = await fixture({ retainedSourceLock: false, quotaResetAt: reset });
+    await start(); await settled();
+    monitorWorker = registerDeadlineWork(coordinator!, DELIVERY_QUEUES.issueMonitors, {
+      retryMs: 1000, canRun: () => !draining,
+      run: signal => heartbeat.tickIssueMonitors(new Date(), () => !signal.aborted && !draining),
+      next: () => heartbeat.nextIssueMonitorAt(),
+    });
+    owners.quota = bindIdleDeadlineOwner(monitorWorker.reconciliationSnapshot, readIdleQuotaSchedule,
+      snapshot => ({ issueWaits: snapshot.issueWaits }));
+    await monitorWorker.ready;
+    const result = await heartbeat.reconcileStrandedAssignedIssues({ companyId: f.companyId, issueId: f.issue.id });
+    expect(result.providerQuotaMonitored).toBe(1);
+    await vi.waitFor(() => expect(monitorWorker!.reconciliationSnapshot().reconciled).toBe(true));
+    const [saved] = await db.select({ policy: issues.executionPolicy, at: issues.monitorNextCheckAt }).from(issues).where(eq(issues.id, f.issue.id));
+    expect(saved.at).toEqual(reset);
+    expect(saved.policy?.monitor).toMatchObject({ serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: f.source.id });
+    // The producer also wakes queued-run reconciliation. A ready monitor is
+    // not proof that its admitted coalesced sibling has released its hold.
+    await settled();
+    const report = await proof();
+    expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
+    expect(report.scheduledWake?.nextWakeAt).toBe(reset.toISOString());
+    await issueService(db).update(f.issue.id, { status: "done", actorUserId: "recovery-test-user", companyGuard: f.companyId });
+    await vi.waitFor(() => expect(monitorWorker!.reconciliationSnapshot().reconciled).toBe(true));
+    await settled();
+    const [completed] = await db.select({ status: issues.status, policy: issues.executionPolicy, at: issues.monitorNextCheckAt,
+      claim: issues.monitorWakeRequestedAt, execution: issues.executionRunId, checkout: issues.checkoutRunId, state: issues.executionState })
+      .from(issues).where(eq(issues.id, f.issue.id));
+    process.stderr.write(`quota completed history audit ${JSON.stringify(completed)}\n`);
+    expect(completed).toMatchObject({ status: "done", at: reset, claim: null, execution: null, checkout: null, state: { status: "idle" } });
+    expect(completed.policy?.monitor).toMatchObject({ serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME, externalRef: f.source.id });
+    const final = await proof();
+    expect(final.backgroundWork, JSON.stringify(final.diagnostics)).toBe("none");
+    expect(final.scheduledWake).toBeUndefined();
+    const afterReset = await readIdleQuotaSchedule(db, reset.getTime() + 1, monitorWorker!.reconciliationSnapshot);
+    expect(afterReset).toMatchObject({ blocked: false, deadlines: [] });
+    // Fault states stay blocked independently of the global run/wake checks.
+    for (const kind of ["run", "wake"] as const) {
+      const rollback = new Error(`terminal quota ${kind} rollback`);
+      await expect(db.transaction(async tx => {
+        if (kind === "run") await tx.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+          scopeKind: "issue", issueId: f.issue.id, status: "queued", contextSnapshot: { issueId: f.issue.id } });
+        else await tx.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agent.id,
+          source: "automation", status: "queued", payload: { issueId: f.issue.id } });
+        expect((await readIdleQuotaSchedule(tx, Date.now(), monitorWorker!.reconciliationSnapshot)).blocked).toBe(true);
+        throw rollback;
+      })).rejects.toThrow(rollback.message);
+    }
+  }, 20_000);
+
+  it("reconciles a configured watchdog through real review completion and retains quiet reviewed history", async () => {
+    const f = await fixture({ retainedSourceLock: false });
+    await issueService(db).update(f.issue.id, { status: "done", actorUserId: "recovery-test-user", companyGuard: f.companyId });
+    await start(); await settled();
+    const configuration = await taskWatchdogService(db).upsertForIssue(f.companyId, f.issue.id, { agentId: f.agent.id });
+    const registeredAt = Date.now();
+    recoveryWorker = heartbeat.registerIssueStateRecoveryWork(coordinator!, () => !draining);
+    owners.watchdogs = bindIdleDeadlineOwner(recoveryWorker.watchdogs.reconciliationSnapshot, heartbeat.readIdleWatchdogSchedule,
+      () => ({ coverage: { kind: "watchdogs" } }));
+    await recoveryWorker.ready;
+    await vi.waitFor(async () => {
+      await heartbeat.drainActiveRunExecutions();
+      const current = await taskWatchdogService(db).getActiveForIssue(f.companyId, f.issue.id);
+      expect(current?.watchdogIssueId).toBeTruthy();
+      const [review] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, current!.watchdogIssueId!));
+      expect(review.status).toBe("done");
+    }, { timeout: 15_000 });
+    const pending = recoveryWorker.watchdogs.reconciliationSnapshot();
+    process.stderr.write(`watchdog review settlement audit ${JSON.stringify({ registeredAt, now: Date.now(), pending,
+      next: coordinator!.nextWakeAt(), local: idleWorkSnapshot() })}\n`);
+    if (!pending.reconciled) expect((await proof()).backgroundWork).not.toBe("none");
+    // Company invalidations are intentionally throttled by the existing 30s
+    // scoped reconstruction duty. It must finish, not be exported as a timer
+    // certificate or confused with the separate 15s first-run grace.
+    await vi.waitFor(() => {
+      expect(recoveryWorker!.watchdogs.reconciliationSnapshot().reconciled).toBe(true);
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: Math.max(0, registeredAt + 35_000 - Date.now()) + 5_000 });
+    const report = await proof();
+    expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
+    const retained = await taskWatchdogService(db).getActiveForIssue(f.companyId, f.issue.id);
+    expect(retained?.id).toBe(configuration.watchdog.id);
+    expect(retained?.lastReviewedFingerprint).toBeTruthy();
+    expect((await proof()).scheduledWake).toBeUndefined();
+  }, 50_000);
+
 });

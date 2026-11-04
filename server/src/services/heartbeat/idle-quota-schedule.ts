@@ -1,6 +1,7 @@
-import { agents, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { finishedIdleRun, finishedIdleWake } from "../idle-work-proof.js";
+import { agents, agentWakeupRequests, companies, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME, issueExecutionMonitorPolicySchema, issueExecutionPolicySchema } from "@paperclipai/shared";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import type { DeadlineReconciliationSnapshot } from "../deadline-reconciliation.js";
 import { idleDeadlineRowLimit, isFutureIdleDeadline, type IdleDeadlineSnapshot, type IdleIssueWait } from "../idle-deadline-types.js";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
@@ -36,12 +37,29 @@ export async function readIdleQuotaSchedule(tx: Pick<Db, "select">, now: number,
   state.push(rows);
   if (rows.length > idleDeadlineRowLimit) return blocked();
   const deadlines: number[] = [], issueWaits: IdleIssueWait[] = [];
+  const terminal: { issueId: string; companyId: string; sourceId: string }[] = [];
   for (const { issue, source, target, company } of rows) {
     const policy = issueExecutionMonitorPolicySchema.safeParse(issue.executionPolicy?.monitor);
     const execution = parseIssueExecutionState(issue.executionState);
     const participant = execution?.status === "pending" ? execution.currentParticipant : null;
     const parsedPolicy = issueExecutionPolicySchema.safeParse(issue.executionPolicy);
     if (!parsedPolicy.success || (issue.executionState !== null && !execution)) return blocked();
+    if (["done", "cancelled"].includes(issue.status)) {
+      // Status disarms the scheduler; normal completion intentionally retains
+      // its policy and timestamp. A terminal label alone is not settlement.
+      if (!policy.success || issue.monitorWakeRequestedAt || issue.executionRunId || issue.checkoutRunId || issue.conversationAgentId
+        || (execution && (execution.status !== "idle" || execution.currentStageId !== null
+          || execution.currentStageType !== null || execution.currentStageIndex !== null || execution.currentParticipant !== null))
+        || !Number.isSafeInteger(issue.monitorAttemptCount) || issue.monitorAttemptCount < 0
+        || (issue.monitorNextCheckAt !== null && (!Number.isFinite(issue.monitorNextCheckAt.getTime())
+          || issue.monitorNextCheckAt.getTime() !== Date.parse(policy.data.nextCheckAt)))
+        || !source || policy.data.externalRef !== source.id || source.companyId !== issue.companyId
+        || source.contextSnapshot?.issueId !== issue.id || source.runtimeMode === "native"
+        || !["failed", "timed_out", "interrupted", "cancelled"].includes(source.status) || !source.finishedAt || source.costAccountingPending)
+        return blocked();
+      terminal.push({ issueId: issue.id, companyId: issue.companyId, sourceId: source.id });
+      continue;
+    }
     if (issue.status === "in_progress" && execution && execution.status !== "idle") return blocked();
     if (issue.status === "in_review") {
       const stage = parsedPolicy.data.stages.find(stage => stage.id === execution?.currentStageId);
@@ -63,6 +81,32 @@ export async function readIdleQuotaSchedule(tx: Pick<Db, "select">, now: number,
       || source.costAccountingPending || !target || target.id !== source.agentId || target.companyId !== issue.companyId
       || !["idle", "active", "error"].includes(target.status) || !company || company.status !== "active") return blocked();
     deadlines.push(at); issueWaits.push({ kind: "provider_quota", issueId: issue.id, sourceRunId: source.id, targetAgentId: source.agentId, reviewer: issue.status === "in_review" });
+  }
+  if (terminal.length) {
+    const ids = terminal.map(row => row.issueId), companyIds = [...new Set(terminal.map(row => row.companyId))];
+    const sourceIds = terminal.map(row => row.sourceId);
+    // Batch the absence proof instead of one history scan per retained task.
+    const pendingRuns = await tx.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+      inArray(heartbeatRuns.companyId, companyIds),
+      or(inArray(heartbeatRuns.issueId, ids), inArray(heartbeatRuns.nativeIssueId, ids), inArray(heartbeatRuns.id, sourceIds),
+        inArray(sql`${heartbeatRuns.contextSnapshot}->>'issueId'`, ids), inArray(sql`${heartbeatRuns.contextSnapshot}->>'taskId'`, ids)),
+      sql`(${sql.raw(finishedIdleRun("heartbeat_runs"))}) IS NOT TRUE`,
+    )).limit(1);
+    const pendingWakes = await tx.select({ id: agentWakeupRequests.id }).from(agentWakeupRequests).where(and(
+      inArray(agentWakeupRequests.companyId, companyIds),
+      or(inArray(sql`${agentWakeupRequests.payload}->>'issueId'`, ids), inArray(sql`${agentWakeupRequests.payload}->>'taskId'`, ids),
+        inArray(sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'issueId'`, ids),
+        inArray(sql`${agentWakeupRequests.payload}->'_paperclipWakeContext'->>'taskId'`, ids),
+        sql`${agentWakeupRequests.runId} IN (SELECT r.id FROM heartbeat_runs r
+          WHERE r.company_id = ${agentWakeupRequests.companyId} AND (r.issue_id IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})
+            OR r.native_issue_id IN (${sql.join(ids.map(id => sql`${id}::uuid`), sql`, `)})
+            OR r.id IN (${sql.join(sourceIds.map(id => sql`${id}::uuid`), sql`, `)})
+            OR r.context_snapshot->>'issueId' IN (${sql.join(ids.map(id => sql`${id}`), sql`, `)})
+            OR r.context_snapshot->>'taskId' IN (${sql.join(ids.map(id => sql`${id}`), sql`, `)})))`),
+      sql`(${sql.raw(finishedIdleWake("agent_wakeup_requests"))}) IS NOT TRUE`,
+    )).limit(1);
+    state.push({ pendingRuns, pendingWakes });
+    if (pendingRuns.length || pendingWakes.length) return blocked();
   }
   const after = owner();
   if (!after.reconciled || before.revision !== after.revision) return blocked();

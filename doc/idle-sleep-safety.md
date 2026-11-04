@@ -684,3 +684,11 @@ remain work. Watchdog inspection reuses its subtree classifier; stopped or
 incomplete subtrees remain work. First-run grace remains exactly 15 seconds
 from issue creation. Cloud may refuse sleep when a real deadline is too near;
 inspection never extends that deadline to make sleep eligible.
+
+A completed or cancelled legacy quota task can retain its reserved monitor policy
+and timestamp as history. The scheduler's terminal-status exclusion disarms that
+schedule; inspection does not clear or postpone it. The quota owner additionally
+requires a valid settled legacy source, idle execution state, no monitor claim or
+execution lock, and no linked unfinished run or wake before treating it as
+passive. A live task's due monitor remains work. Source uncertainty and unrelated
+accounting/resource obligations retain their independent checks.
