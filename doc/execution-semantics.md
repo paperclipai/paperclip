@@ -1627,7 +1627,17 @@ Exhaustion gives the board a manual reconciliation action and stops retry
 deadlines. It preserves execution and checkout bindings, the provider PID and
 checkpoint, and does not request environment settlement or file preservation:
 none of those facts prove the old provider stopped. Live leases stay read-only
-until their own deadline. The run log records a changed hold reason once instead
+until their own deadline. Stale-lock sweeps, terminal checkout cleanup, stale
+adoption and queue release share this manual ownership hold. Terminal status
+alone cannot clear it; the existing receipt contract must confirm every exact
+remote lease stopped before ordinary cleanup and checkout can progress. Missing
+lease records do not establish termination. An explicit Stop can still reserve
+and fence this exact held execution through the existing audited cancellation
+path. The hold survives that Stop's intent and acknowledgement until remote
+termination is confirmed. Normal Retry can register the exact source's existing
+stop-and-preserve recovery. It waits for verified termination and file recovery
+before admitting one continuation from the preserved workspace. The run log
+records a changed hold reason once instead
 of repeating the same warning on every sweep. A historical provider-budget-exhausted retry can
 release its task lock only after the same admission, controller fence and exact
 remote authority checks pass. Existing terminal recovery then preserves the

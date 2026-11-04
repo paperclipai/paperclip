@@ -127,7 +127,7 @@ import {
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { parseObject } from "../../adapters/utils.js";
-import { isNativeRunnerOwnershipHeld, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
+import { isNativeRunnerOwnershipHeld, nativeManualAdmissionOwnerColumns, nativeRunnerOwnershipNotHeldCondition } from "../native-runtime/native-runner-ownership.js";
 import { readNativeStartupCleanup, acknowledgeNativeStartupCleanup } from "../native-runtime/native-startup-cleanup.js";
 import {
   withCurrentBudgetEnforcement,
@@ -1313,7 +1313,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const pendingNativeRetry =
       run.runtimeMode === "native" && run.status === "failed" && Boolean(run.nativeIssueId) && (
         caseHandoffRetryClaimed || Boolean(options.cancellationRequestId) || await db
-          .select({ phase: nativeRunFinalizations.phase, failureCode: nativeRunFinalizations.failureCode })
+          .select(nativeManualAdmissionOwnerColumns)
           .from(nativeRunFinalizations)
           .where(
             and(

@@ -149,6 +149,9 @@ attempts. Permanent ineligibility or policy exhaustion records the terminal
 automatic recovery disposition and board action without releasing the retained
 execution binding, provider, or checkpoint. These settled holds schedule no
 further retry. Repeated blocked visits record only a changed hold reason.
+The same durable hold prevents background stale-lock cleanup and queue release
+from clearing either task binding until the remote termination receipt contract
+is satisfied. A terminal heartbeat status is not a provider-stop receipt.
 Undated retries sort first. A failed candidate cannot discard earlier committed
 claims. Queued waiters do not block the original execution owner from recovery;
 they still wait for that owner to settle before normal queue promotion.

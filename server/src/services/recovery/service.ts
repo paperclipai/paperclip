@@ -92,6 +92,7 @@ import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
 import {
   isNativeRunnerOwnershipHeld,
+  nativeManualAdmissionHoldsExecution,
   nativeRunnerOwnershipNotHeldCondition,
 } from "../native-runtime/native-runner-ownership.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
@@ -6499,6 +6500,13 @@ export function recoveryService(
       }
 
       const updated = await db.transaction(async tx => {
+        const [locked] = await tx.select({ id: issues.id, checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+          .from(issues).where(and(eq(issues.companyId, issue.companyId), eq(issues.id, issue.id))).for("update");
+        if (!locked || locked.checkoutRunId !== issue.checkoutRunId || locked.executionRunId !== issue.executionRunId) return null;
+        for (const runId of new Set([locked.checkoutRunId, locked.executionRunId])) {
+          if (runId && await nativeManualAdmissionHoldsExecution(tx as unknown as Db,
+            { companyId: issue.companyId, runId, issueId: issue.id })) return null;
+        }
         await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
         await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
         return tx

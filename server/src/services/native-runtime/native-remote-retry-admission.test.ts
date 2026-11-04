@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, companies, completionContracts, databaseWorkPending, reconcileDatabaseWork, heartbeatRunEvents, heartbeatRuns, issues, issueRelations,
-  issueTreeHolds, issueTreeHoldMembers, issueRecoveryActions, nativeRunFinalizations, nativeRunnerCheckpoints } from "@paperclipai/db";
+import { agents, companies, completionContracts, databaseWorkPending, environmentLeases, reconcileDatabaseWork, heartbeatRunEvents, heartbeatRuns, issues, issueRelations,
+  issueTreeHolds, issueTreeHoldMembers, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, nativeRunnerCheckpoints } from "@paperclipai/db";
 import { expect, it, vi } from "vitest";
 import type { NativeExecutionInputV1 } from "@paperclipai/paperclip-runner";
 
@@ -16,10 +16,21 @@ import { describeEmbeddedPostgres, nativeRestartFixture, remotePreparedWorkspace
 import { nativeRunnerCheckpointWriter } from "./native-runner-checkpoint.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 import { claimNativeSessionResumptions } from "./native-finalization-reconciler.js";
-import { executePaperclipNativeSession } from "./native-session-executor.js";
+import { cancelNativeSession, executePaperclipNativeSession } from "./native-session-executor.js";
 import { buildNativeCompletionContract } from "./completion-contracts.js";
 import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "./native-restart-recovery.js";
 import { readSystemRecovery, SYSTEM_RECOVERY_MAX_RETRIES } from "../system-recovery-state.js";
+import { recoveryService } from "../recovery/service.js";
+import { issueService } from "../issues.js";
+import { hasPendingRunCleanup } from "../execution-blocker.js";
+import { createPostgresWakeQueueAdapter } from "../../modules/wake-queue/adapters/postgres.js";
+import { nativeManualAdmissionHoldsExecution } from "./native-runner-ownership.js";
+import { remoteTerminationReceipt } from "../remote-execution-termination.js";
+import { releaseSettledNativeRunProcess } from "../native-local-process-stop.js";
+import { createHeartbeatQueue } from "../heartbeat/queue.js";
+import { createHeartbeatQueueTestDependencies } from "../../__tests__/helpers/heartbeat-queue.js";
+import { instanceSettingsService } from "../instance-settings.js";
+import { claimCancellationRequest } from "./native-cancellation-request.js";
 
 describeEmbeddedPostgres("remote native retry execution admission", () => {
   const environment = nativeRestartFixture();
@@ -71,6 +82,153 @@ describeEmbeddedPostgres("remote native retry execution admission", () => {
       .where(eq(issues.id, fixture.issueId));
     return { ...fixture, companyId, agentId, checkpoint };
   }
+
+  async function manuallyHeldRemoteRun() {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(issues).set({ executionRunId: f.runId, checkoutRunId: f.runId }).where(eq(issues.id, f.issueId));
+    await f.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
+      status: "succeeded", createdAt: new Date(Date.now() + 1_000) });
+    await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+      restartKind: "hard", runIds: [f.runId] });
+    return f;
+  }
+
+  it.each(["background sweep", "terminal cleanup", "pending cleanup", "queue release", "agent release"] as const)
+  ("preserves a manual native execution hold through %s", async entry => {
+    const f = await manuallyHeldRemoteRun();
+    const [before] = await f.db.select().from(issues).where(eq(issues.id, f.issueId));
+    if (entry === "background sweep") expect(await recoveryService(f.db, { enqueueWakeup: vi.fn() })
+      .sweepStaleIssueLocks({ companyId: f.companyId, issueId: f.issueId })).toMatchObject({ cleared: 0 });
+    if (entry === "terminal cleanup") {
+      await expect(issueService(f.db).assertCheckoutOwner(f.issueId, f.agentId, randomUUID()))
+        .rejects.toMatchObject({ status: 409 });
+    }
+    if (entry === "agent release") await expect(issueService(f.db).release(f.issueId, f.agentId, randomUUID()))
+      .rejects.toMatchObject({ status: 409 });
+    if (entry === "pending cleanup") expect(await hasPendingRunCleanup(f.db, f.companyId, f.runId)).toBe(true);
+    if (entry === "queue release") await createPostgresWakeQueueAdapter(f.db, {
+      resolveResponsibleUserId: async () => "operator", getRoutineEnv: async () => ({ routineId: null, env: null, responsibleUserId: null }),
+      resolveSessionBeforeForWakeup: async () => null,
+    }).withIssueExecutionLock({ companyId: f.companyId, runId: f.runId, now: new Date() },
+      async () => ({ outcome: { kind: "released" }, postCommitEffects: [] }));
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toEqual(before);
+    expect((await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0])
+      .toMatchObject({ processPid: 1386, runnerProfileJson: { sessionCheckpoint: f.checkpoint } });
+  });
+
+  it.each(["execution", "checkout"] as const)("preserves a manual hold referenced only by the %s binding", async pointer => {
+    const f = await manuallyHeldRemoteRun();
+    await f.db.update(issues).set(pointer === "execution" ? { checkoutRunId: null } : { executionRunId: null })
+      .where(eq(issues.id, f.issueId));
+    expect(await recoveryService(f.db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks({ companyId: f.companyId, issueId: f.issueId }))
+      .toMatchObject({ cleared: 0 });
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+      .toMatchObject(pointer === "execution" ? { executionRunId: f.runId, checkoutRunId: null } : { executionRunId: null, checkoutRunId: f.runId });
+  });
+
+  it("rechecks a newly committed manual hold under the issue lock before background cleanup", async () => {
+    const f = await failedRemoteRun("remote");
+    await f.db.update(issues).set({ executionRunId: f.runId, checkoutRunId: f.runId }).where(eq(issues.id, f.issueId));
+    await f.db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId,
+      status: "succeeded", createdAt: new Date(Date.now() + 1_000) });
+    const transaction = f.db.transaction.bind(f.db);
+    const interception = vi.spyOn(f.db, "transaction").mockImplementationOnce((async (callback, options) => {
+      expect(await claimNativeRestartRecoveries({ db: f.db, controller: environment.current.successor,
+        restartKind: "hard", runIds: [f.runId] })).toMatchObject([{ kind: "blocked", reason: "native_retry_source_superseded" }]);
+      return transaction(callback, options);
+    }) as typeof f.db.transaction);
+    try {
+      expect(await recoveryService(f.db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks({ companyId: f.companyId, issueId: f.issueId }))
+        .toMatchObject({ cleared: 0 });
+      expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+        .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
+    } finally { interception.mockRestore(); }
+  });
+
+  it("defers a new wake behind the manual owner without clearing it or dispatching", async () => {
+    const f = await manuallyHeldRemoteRun();
+    await f.db.delete(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issueId));
+    const [agent] = await f.db.select().from(agents).where(eq(agents.id, f.agentId));
+    const dependencies = createHeartbeatQueueTestDependencies(f.db);
+    dependencies.getAgent.mockResolvedValue(agent);
+    dependencies.instanceSettings.getExperimental.mockImplementation(() => instanceSettingsService(f.db).getExperimental());
+    dependencies.wakeQueue.admitWakeBehindIssueExecution.mockResolvedValue({ kind: "deferred" });
+    await createHeartbeatQueue(f.db, dependencies).enqueueWakeup(f.agentId, { source: "assignment", reason: "issue_assigned",
+      requestedByActorType: "system", payload: { issueId: f.issueId }, contextSnapshot: { issueId: f.issueId } });
+    expect(dependencies.executeRun).not.toHaveBeenCalled();
+    expect(dependencies.wakeQueue.admitWakeBehindIssueExecution).toHaveBeenCalledOnce();
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+      .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
+  });
+
+  it("retains the hold until every exact remote lease is confirmed stopped, then permits ordinary checkout", async () => {
+    const f = await manuallyHeldRemoteRun();
+    const scope = { companyId: f.companyId, runId: f.runId, issueId: f.issueId };
+    expect(await nativeManualAdmissionHoldsExecution(f.db, scope)).toBe(true);
+    expect(await nativeManualAdmissionHoldsExecution(f.db, { ...scope, companyId: randomUUID() })).toBe(false);
+    expect(await nativeManualAdmissionHoldsExecution(f.db, { ...scope, runId: randomUUID() })).toBe(false);
+    expect(await nativeManualAdmissionHoldsExecution(f.db, { ...scope, issueId: randomUUID() })).toBe(false);
+    const leases = await f.db.insert(environmentLeases).values([1, 2].map(index => ({ companyId: f.companyId,
+      issueId: f.issueId, heartbeatRunId: f.runId, provider: "daytona", providerLeaseId: `fixture-${index}-${randomUUID()}`,
+      status: "released", releasedAt: new Date(), cleanupStatus: "success", metadata: {},
+    }))).returning();
+    expect(await nativeManualAdmissionHoldsExecution(f.db, scope)).toBe(true);
+    for (let index = 0; index < leases.length; index += 1) {
+      const lease = leases[index];
+      await f.db.update(environmentLeases).set({ metadata: { remoteExecutionTermination: remoteTerminationReceipt(lease,
+        { providerLeaseId: lease.providerLeaseId, state: "stopped" }) } }).where(eq(environmentLeases.id, lease.id));
+      expect(await nativeManualAdmissionHoldsExecution(f.db, scope)).toBe(index < leases.length - 1);
+    }
+    expect(await releaseSettledNativeRunProcess(f.db, f.runId)).toBe("released");
+    expect(await hasPendingRunCleanup(f.db, f.companyId, f.runId)).toBe(false);
+    expect(await recoveryService(f.db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks({ companyId: f.companyId, issueId: f.issueId }))
+      .toMatchObject({ cleared: 1 });
+    const actorRunId = randomUUID();
+    await f.db.insert(heartbeatRuns).values({ id: actorRunId, companyId: f.companyId, agentId: f.agentId,
+      status: "running", invocationSource: "manual", contextSnapshot: { issueId: f.issueId } });
+    expect(await issueService(f.db).assertCheckoutOwner(f.issueId, f.agentId, actorRunId))
+      .toMatchObject({ executionRunId: actorRunId, checkoutRunId: actorRunId });
+  });
+
+  it.each(["ordinary terminal", "accepted result"] as const)("does not preserve unrelated %s ownership", async state => {
+    const f = await manuallyHeldRemoteRun();
+    if (state === "ordinary terminal") await f.db.update(nativeRunFinalizations).set({ failureDetail: null })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    else {
+      const [run] = await f.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const [result] = await f.db.insert(nativeRunResults).values({ companyId: f.companyId, issueId: f.issueId,
+        runId: f.runId, completionContractId: run.completionContractId!, serverFingerprint: randomUUID(),
+        canonicalSha256: "a".repeat(64), schemaStatus: "accepted", resultJson: {} }).returning();
+      await f.db.update(nativeRunFinalizations).set({ resultId: result.id }).where(eq(nativeRunFinalizations.runId, f.runId));
+    }
+    expect(await nativeManualAdmissionHoldsExecution(f.db, { companyId: f.companyId, runId: f.runId, issueId: f.issueId })).toBe(false);
+    expect(await recoveryService(f.db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks({ companyId: f.companyId, issueId: f.issueId }))
+      .toMatchObject({ cleared: 1 });
+  });
+
+  it("admits an explicit correlated Stop for the preserved manual execution", async () => {
+    const f = await manuallyHeldRemoteRun();
+    const requestId = randomUUID();
+    expect(await claimCancellationRequest(f.db, f.runId, f.companyId, requestId, "operator"))
+      .toMatchObject({ resultJson: { startupCancellation: { cancellationRequestId: requestId, retryCancellation: true } } });
+    const stop = await cancelNativeSession(f.runId, "Operator Stop", { db: f.db, scope: "run", cancellationRequestId: requestId });
+    expect(stop).toMatchObject({ dispatched: false, auditId: expect.any(String) });
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ phase: "terminal_failure", failureCode: "native_retry_cancelled" });
+    expect(await nativeManualAdmissionHoldsExecution(f.db, { companyId: f.companyId, runId: f.runId, issueId: f.issueId })).toBe(true);
+    expect(await recoveryService(f.db, { enqueueWakeup: vi.fn() }).sweepStaleIssueLocks({ companyId: f.companyId, issueId: f.issueId }))
+      .toMatchObject({ cleared: 0 });
+    expect(await cancelNativeSession(f.runId, "Repeat Operator Stop", { db: f.db, scope: "run", cancellationRequestId: requestId }))
+      .toMatchObject({ auditId: stop.auditId });
+    await f.db.update(nativeRunFinalizations).set({ failureCode: "native_restart_recovery_blocked" })
+      .where(eq(nativeRunFinalizations.runId, f.runId));
+    expect(await cancelNativeSession(f.runId, "Resume recorded Stop", { db: f.db, scope: "run", cancellationRequestId: requestId }))
+      .toMatchObject({ auditId: stop.auditId });
+    expect((await f.db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId)))[0])
+      .toMatchObject({ failureCode: "native_retry_cancelled" });
+    expect((await f.db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+      .toMatchObject({ executionRunId: f.runId, checkoutRunId: f.runId });
+  });
 
   it.each(["classic", "remote"] as const)("reclaims the exact failed %s execution before remote inspection", async storage => {
     const fixture = await failedRemoteRun(storage);
