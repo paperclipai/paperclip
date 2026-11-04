@@ -191,6 +191,9 @@ Postgres. Each controller has an independent compiled build and cache. The copie
 app retains the checkout's `cli/` and `packages/` dependency links, including the
 development Runner vendor entry. Shared workspace dependencies mean this is
 not released-container or Railway evidence.
+The warm lane selects providers through the production managed warm-session
+capability and explicitly sets the agent policy to warm. The per-turn lane
+retains every registered provider's per-turn policy.
 The read-only recovery observer captures the live predecessor's identity just
 before handoff, then requires a new controller generation, authenticated Runner
 attachment, and new canonical events for the original execution. No fixture

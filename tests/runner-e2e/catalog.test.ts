@@ -33,6 +33,24 @@ import {
 } from "./selectors.js";
 
 describe("runner E2E catalog", () => {
+  it("uses effective warm agent policy only for supported rolling warm providers", () => {
+    const warm = runnerMatrix.filter(cell => cell.suite.id === "rolling-web-deployment-warm");
+    const perTurn = runnerMatrix.filter(cell => cell.suite.id === "rolling-web-deployment");
+    expect(warm.some(cell => cell.profile.id === "runner-codex")).toBe(true);
+    expect(warm.some(cell => ["runner-opencode", "runner-acpx-claude", "runner-acpx-grok"].includes(cell.profile.id))).toBe(false);
+    expect(perTurn.length).toBeGreaterThan(warm.length);
+    for (const cell of [...warm, ...perTurn]) {
+      const secretRefs = Object.fromEntries([cell.profile.credential, "DAYTONA_API_KEY"].map(key => [key,
+        { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const }]));
+      const input = { executionId: cell.id, secretRefs, daytonaImage: `fixture@sha256:${"a".repeat(64)}` };
+      const agent = cell.profile.buildAgent({ ...input, environmentId: "env-1", environmentFixtureId: "daytona", workspacePath: "/workspace" });
+      const environment = cell.environment.buildEnvironment(input);
+      const expected = cell.suite.id === "rolling-web-deployment-warm" ? "warm" : "per_turn";
+      expect(agent.adapterConfig).toMatchObject({ lifecycleMode: expected });
+      expect(environment.config).toMatchObject({ runnerLifecycleMode: expected, reuseLease: expected === "warm" });
+      expect(cell.suite.expectedMatrixSize).toBe(cell.suite.profiles.length * cell.suite.tasks.length);
+    }
+  });
   it("keeps verified artifact transfer a single explicit Daytona run", () => {
     const id = "api-artifact-transfer.runner-codex.daytona.verified-artifact-copy";
     const cells = selectRunnerExecutions(parseRunnerSelectors(["--id", id]));
@@ -312,11 +330,11 @@ describe("runner E2E catalog", () => {
     expect(localIntegrityTasks).toHaveLength(2);
     expect(openRouterBreadthTasks).toHaveLength(3);
     expect(runnerSuites.map((suite) => suite.expectedMatrixSize)).toEqual([
-      1, 9, 9, 9, 9, 4, 2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 20, 2, 1, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
+      1, 9, 2, 9, 9, 4, 2, 1, 3, 2, 2, 4, 4, 4, 4, 4, 4, 8, 10, 6, 63, 12, 6, 4, 2, 4, 2, 30, 3, 16, 16, 20, 2, 1, 6, 8, 46, 2, 23, 15, 52, 6, 6, 20, 26, 52, 5, 28, 18, 2, 6, 6, 13, 10, 4, 48, 16, 10, 2, 1, 1, 4, 116, 2, 1, 2,
 
     ]);
-    expect(validateRunnerCatalog()).toHaveLength(837);
-    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(837);
+    expect(validateRunnerCatalog()).toHaveLength(830);
+    expect(new Set(runnerMatrix.map((entry) => entry.id)).size).toBe(830);
     expect(
       runnerMatrix.filter((entry) => entry.suite.id === "core-compatibility"),
     ).toHaveLength(48);

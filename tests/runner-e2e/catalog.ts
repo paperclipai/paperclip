@@ -1,4 +1,5 @@
 import { ROLLING_WEB_DEPLOYMENT_SUITE, ROLLING_WEB_DEPLOYMENT_WARM_SUITE } from "./controller-rolling-deployment.js";
+import { supportsManagedNativeWarmSession } from "../../server/src/services/native-runtime/native-warm-capability.js";
 import { FEEDBACK_PERSISTENCE_SUITE, feedbackPersistenceTask, feedbackPersistenceDigest } from "./feedback-persistence.js";
 import { followupStopTask, followupStopDigest } from "./followup-stop-resume.js";
 import { finalizationRecoveryTask, finalizationRecoveryDigest } from "./finalization-recovery.js";
@@ -1252,15 +1253,24 @@ const rollingDeploymentProfiles = [...runnerProfiles, ...extendedHarnessProfiles
       return { ...agent, adapterConfig };
     } };
   });
+const rollingWarmDeploymentProfiles = rollingDeploymentProfiles.filter(profile => {
+  const backend = profile.provider === "codex" ? "codex_app_server" : profile.provider === "opencode" ? "opencode_server" : "acpx_runtime";
+  return supportsManagedNativeWarmSession({ backend, acpxAgent: "acpxAgent" in profile ? profile.acpxAgent : undefined },
+    profile.credential === "COPILOT_GITHUB_TOKEN" ? { provider: "github", method: "api_key" } : undefined);
+}).map(profile => ({ ...profile, buildAgent(input: AgentFixtureBuildInput) {
+  const agent = profile.buildAgent(input);
+  return { ...agent, adapterConfig: { ...(agent.adapterConfig as Record<string, unknown>), lifecycleMode: "warm" } };
+} }));
+
 const rollingDeploymentSuites: RunnerSuiteFixture[] = [
   { id: ROLLING_WEB_DEPLOYMENT_SUITE, environment: runnerEnvironments.find(environment => environment.id === "daytona")! },
   { id: ROLLING_WEB_DEPLOYMENT_WARM_SUITE, environment: daytonaControllerOutageEnvironment },
 ].map(({ id, environment }) => ({
   ...remoteWorkspaceStorageSuite, id, label: `Rolling control-plane web deployment (${environment.configurationKey ? "warm" : "per-turn"})`,
   description: "Overlap independent ephemeral web servers while a remote execution stays active; keep ordinary reads, saves, files and a later native continuation working.",
-  profiles: rollingDeploymentProfiles, environments: [environment],
-  expectedMatrixSize: rollingDeploymentProfiles.length * remoteWorkspaceStorageSuite.tasks.length,
-  definitionMetadata: { ...remoteWorkspaceStorageSuite.definitionMetadata, version: 4, controllerDowntimeMs: 0,
+  profiles: id === ROLLING_WEB_DEPLOYMENT_WARM_SUITE ? rollingWarmDeploymentProfiles : rollingDeploymentProfiles, environments: [environment],
+  expectedMatrixSize: (id === ROLLING_WEB_DEPLOYMENT_WARM_SUITE ? rollingWarmDeploymentProfiles : rollingDeploymentProfiles).length * remoteWorkspaceStorageSuite.tasks.length,
+  definitionMetadata: { ...remoteWorkspaceStorageSuite.definitionMetadata, version: 5, controllerDowntimeMs: 0,
     activeWorkBoundary: "foreground-180-second-cli-reliability-soak-and-live-owner-recheck",
     workspaceFileSource: environment.configurationKey ? "live" : "saved-exact-snapshot-after-per-turn-retirement",
     lifecycleCoverage: environment.configurationKey ? "warm-reusable" : "per-turn-disposable", providerCoverage: "registered-native-daytona-profiles",

@@ -57,7 +57,7 @@ describe("rolling controller qualification", () => {
     const [outage] = selectRunnerExecutions(parseRunnerSelectors(["--suite", "remote-workspace-storage"]));
     expect(controllerOutageForExecution(outage!, {})).toEqual({ signal: "SIGKILL", holdMs: 300_000 });
   });
-  it("requires both lifecycle modes for every production-qualified native sandbox profile", () => {
+  it("covers every qualified native profile per turn and each supported warm profile", () => {
     const executions = ["rolling-web-deployment", "rolling-web-deployment-warm"]
       .flatMap(suite => selectRunnerExecutions(parseRunnerSelectors(["--suite", suite])));
     const native = [...runnerProfiles, ...extendedHarnessProfiles, kimiRunnerProfile]
@@ -74,12 +74,14 @@ describe("rolling controller qualification", () => {
         && (!profile.qualificationCandidate || QUALIFIED_ACPX_PROFILES[profile.qualificationCandidate].qualificationStatus !== "pending"))
       .map(kind));
     expect(new Set(native.map(kind))).toEqual(registeredKinds);
+    const warmIds = new Set(runnerSuites.find(suite => suite.id === "rolling-web-deployment-warm")!.profiles.map(profile => profile.id));
     for (const profile of native) {
       const cells = executions.filter(execution => execution.profile.id === profile.id);
-      expect(cells).toHaveLength(2);
+      expect(cells.filter(cell => cell.suite.id === "rolling-web-deployment")).toHaveLength(1);
+      expect(cells).toHaveLength(warmIds.has(profile.id) ? 2 : 1);
       expect(cells.every(cell => !cell.profile.qualificationCandidate)).toBe(true);
       expect(new Set(cells.map(cell => cell.environment.configurationKey ?? "per_turn")))
-        .toEqual(new Set(["per_turn", "warm-controller-outage-v1"]));
+        .toEqual(new Set(warmIds.has(profile.id) ? ["per_turn", "warm-controller-outage-v1"] : ["per_turn"]));
     }
     expect(executions.every(execution => execution.suite.definitionMetadata?.retainedControllerContinuation === true)).toBe(true);
   });
