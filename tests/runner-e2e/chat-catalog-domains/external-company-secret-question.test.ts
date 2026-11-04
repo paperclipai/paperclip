@@ -29,7 +29,7 @@ it("actual company act admits its safe question before private human entry",asyn
  await expect(companySecretExternalCases[0]!.act!(ctx,{currentPersonId:"person"})).rejects.toThrow("NEXT_REAL_HUMAN_PHASE");expect(reached).toBe(true);
 });
 it("accepts Done and completed-setup Yes without repeating the already-bound consumer",()=>{
- for(const label of ["Done","Yes"]){const row=question();row.payload.questionSet!.questions[0]!.options![0]!.label=label;expect(companySecretQuestionHandoff(row,binding)).toMatchObject({optionId:"yes"});}
+ for(const label of ["Done","Yes","Done, ready to continue","Done for deployment"]){const row=question();row.payload.questionSet!.questions[0]!.options![0]!.label=label;expect(companySecretQuestionHandoff(row,binding)).toMatchObject({optionId:"yes"});}
 });
 it("rejects prospective Yes and negative or other-owner completion choices",()=>{
  const prospective=question();prospective.payload.questionSet!.questions[0]!.prompt="Would you like me to configure this?";prospective.payload.questionSet!.questions[0]!.options![0]!.label="Yes";expect(companySecretQuestionHandoff(prospective,binding)).toBeUndefined();

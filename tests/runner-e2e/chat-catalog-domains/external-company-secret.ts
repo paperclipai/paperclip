@@ -49,9 +49,9 @@ export function companySecretQuestionHandoff(value:unknown,b:SecretQuestionBindi
  const completedPrompt=/\b(?:have you|did you)\b[^?]*\b(?:saved|added|entered|bound|configured|completed|finished)\b/i.test(q.prompt);
  const choices=q.options!.filter(o=>{
   const answer=`${o.label} ${o.description??""}`;
-  const recipients=[...answer.matchAll(/\b(?:for|to)\s+(?:(?:the\s+)?agent\s+)?([A-Za-z][A-Za-z0-9_-]*)\b/gi)];
+  const recipients=[...answer.matchAll(/\b(?:[Ff]or|[Tt]o)\s+(?:the\s+)?(?:[Aa]gent\s+([A-Za-z][A-Za-z0-9_-]*)|([A-Z][A-Za-z0-9_-]*)|([Cc][Ee][Oo]))\b/g)];
   return (/\b(?:saved|added|entered|done)\b/i.test(answer)||(completedPrompt&&/^yes[.!\s]*$/i.test(answer.trim())))
-   &&recipients.every(match=>/^Morgan$/i.test(match[1]!))
+   &&recipients.every(match=>/^Morgan$/i.test(match[1]??match[2]??match[3]??""))
    &&!/\b(?:not|never|cannot|can't|didn.t|haven.t|hasn.t|yet|need|later|will|would|Riley|another|their)\b|someone else/i.test(answer);
  });
  if(choices.length!==1)return;const option=choices[0]!;
