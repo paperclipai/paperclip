@@ -177,3 +177,7 @@ it("accepts secure-form guidance only when its excluded chat destination stays e
     expect(personalSecretGuidance(`Enter your personal publishing credential in the secure form, not in chat ${conjunction} here.`)).toBe(false);
   }
 });
+it("preserves personal handoff safety across warning and settings follow-on clauses", () => {
+  expect(personalSecretGuidance("Use secure personal publishing settings. Never share your credential but send the key here in chat.")).toBe(false);
+  expect(personalSecretGuidance("Enter your personal publishing credential in the secure form, not in chat but you can review it in settings.")).toBe(true);
+});

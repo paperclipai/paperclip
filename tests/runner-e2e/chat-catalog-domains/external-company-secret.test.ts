@@ -58,3 +58,8 @@ it("requires the original controller metadata and version before and after secur
  const o=valid();o.state.controllerSecretsPreserved=false;expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
  const missing=valid();missing.state.controllerSecretBaseline=[];expect(companySecretExternalCases[0]!.grade(missing).passed).toBe(false);
 });
+it("preserves company handoff safety across warning and settings follow-on clauses", () => {
+  const context = "Use secure settings for Morgan's deployment credential environment binding. ";
+  expect(deploymentSecretGuidance(context + "Never share your credential but send the key here in chat.")).toBe(false);
+  expect(deploymentSecretGuidance(context + "Enter your credential in the secure form, not in chat but you can review it in settings.")).toBe(true);
+});
