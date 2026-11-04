@@ -6668,6 +6668,7 @@ function leaseDb(
                 : [];
       const query = {
         then: Promise.resolve(rows).then.bind(Promise.resolve(rows)),
+        leftJoin: () => query,
         where: () => query,
         orderBy: () => query,
         for: () => query,
