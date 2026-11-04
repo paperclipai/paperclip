@@ -239,6 +239,14 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await accountingIntegrityService(db).inspect(owner.companyId)).findings.filter(finding => finding.entityId === owner.runId)).toEqual([]);
   });
 
+  it("keeps late increment totals through a heartbeat metadata write", async () => {
+    const owner = await seed({ usageJson: { accountingReceiptOwner: "native_producer", accountingLateDeltas: { inputTokens: 10, units: "100000000" } } });
+    await db.update(heartbeatRuns).set({ usageJson: usageReceipts.preserveAcceptedRunUsageProjectionSql({ accountingLateDeltas: null, note: "completion" }) })
+      .where(eq(heartbeatRuns.id, owner.runId));
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.runId));
+    expect(run.usageJson).toMatchObject({ note: "completion", accountingLateDeltas: { inputTokens: 10, units: "100000000" } });
+  });
+
   it("clears an older growth receipt that a newer cumulative receipt already covers", async () => {
     const sourceId = randomUUID();
     const owner = await seed({ usageJson: { accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0 } });

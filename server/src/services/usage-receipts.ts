@@ -725,7 +725,7 @@ const producerAccountingProjectionFields = [
   "accountingReceiptOwner", "accountingReceiptSourceId", "accountingReceiptSequence", "accountingReceiptReady",
   "accountingReceiptId", "accountingReceiptReceivedAt", "accountingCaptureFailed", "accountingReceiptSourceFences",
   "accountingSourceReceiptPending", "accountingLateReceiptPending", "accountingLateReceiptId",
-  "accountingLateReceiptAttemptedId", "accountingReconciledReceiptId", "accountingLateReceiptDebts",
+  "accountingLateReceiptAttemptedId", "accountingReconciledReceiptId", "accountingLateReceiptDebts", "accountingLateDeltas",
   "accountingReconciledReceiptSourceId", "accountingReconciledReceiptSequence",
   "inputTokens", "outputTokens", "cachedInputTokens", "cacheWriteTokens",
   "provider", "biller", "model", "billingType", "usageSource", "providerRequestId", "usageByModel",
