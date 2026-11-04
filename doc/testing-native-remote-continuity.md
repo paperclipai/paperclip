@@ -559,5 +559,7 @@ pnpm --filter @paperclipai/server exec vitest run \
 
 Controls cover foreign companies, allocations and workspaces; live or unaccounted
 owners; changed controllers, reassignment and competing leases; workspace-lock
-and cancellation races; and unconfirmed close. These local checks do not identify
+and cancellation races; unconfirmed close; and controller, Stop and writer
+changes inside awaited close. The latter must prevent parent backend invocation
+even when the old listener has closed. These local checks do not identify
 a hosted conflicting PID or prove a hosted provider Stop or recovery.

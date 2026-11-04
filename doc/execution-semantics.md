@@ -2621,6 +2621,9 @@ allocation, workspace and directory must match. The prior run must be committed
 and accounted, with its original controller generation and a clean released or
 expired lease. Retirement saves the prior session through its own checkpoint and
 file-collection callbacks and waits for close before the new listener binds.
+After close, admission rechecks the canonical native claim, task, workspace and
+leases before staging files or invoking the new backend. Ownership loss, Stop
+or a changed writer during retirement cannot authorize the new execution.
 The new task keeps its own logical session and authority.
 
 Active owners, a changed controller or writer, missing canonical proof and failed

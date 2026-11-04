@@ -1991,6 +1991,7 @@ async function retireSupersededWarmNativeSessions(
         discardUnsettledSession: logicalOwner && entry.normalizedSessionId !== nextSessionId,
       });
       forgetWarmNativeSession(scope, entry);
+      if (!logicalOwner) await assertNativeWarmIngressRetirement(ingress!.db, ingress!.claim, priorIngress!);
     } finally {
       // A failed close retains the owner and prevents launch. A later attempt
       // must retry retirement, never adopt this partially closed transport.

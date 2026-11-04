@@ -10010,7 +10010,7 @@ describe("native warm session supervision", () => {
       expect(state.execute).toHaveBeenCalledTimes(2);
     });
 
-    it.each(["completed", "different-allocation", "foreign-company", "different-workspace", "live-owner", "unaccounted-owner", "changed-controller", "forged-allocation", "foreign-writer", "foreign-active-lease", "reassigned-child", "parent-already-started", "writer-lock-race", "stop-after-claim", "retirement-fails", "foreign-logical-session", "stopped-parent"] as const)("retires the completed child listener before a different parent task uses the same sandbox: %s", async scenario => {
+    it.each(["completed", "different-allocation", "foreign-company", "different-workspace", "live-owner", "unaccounted-owner", "changed-controller", "forged-allocation", "foreign-writer", "foreign-active-lease", "reassigned-child", "parent-already-started", "writer-lock-race", "stop-after-claim", "controller-change-during-close", "stop-during-close", "writer-change-during-close", "retirement-fails", "foreign-logical-session", "stopped-parent"] as const)("retires the completed child listener before a different parent task uses the same sandbox: %s", async scenario => {
       const { createServer } = await import("node:net");
       const { createNativeWarmIngressFixture } = await import("../../__tests__/helpers/native-warm-ingress-fixture.js");
       const { eq } = await import("drizzle-orm");
@@ -10023,8 +10023,20 @@ describe("native warm session supervision", () => {
       let failClose = scenario === "retirement-fails";
       let unlockWriter: (() => void) | undefined;
       let writerTransaction: Promise<void> | undefined;
+      let incomingRunId: string | undefined;
       const close = vi.fn(async () => {
         if (failClose) throw new Error("owned close is unconfirmed");
+        if (scenario === "controller-change-during-close" && incomingRunId) await f.db.update(nativeRunFinalizations)
+          .set({ leaseOwner: "replacement-owner", controllerBootId: "replacement-controller", controllerGeneration: 999 })
+          .where(eq(nativeRunFinalizations.runId, incomingRunId));
+        if (scenario === "stop-during-close" && incomingRunId) await f.db.update(heartbeatRuns)
+          .set({ status: "cancelled" }).where(eq(heartbeatRuns.id, incomingRunId));
+        if (scenario === "writer-change-during-close" && incomingRunId) {
+          const [workspace] = await f.db.select().from(tables.executionWorkspaces).where(eq(tables.executionWorkspaces.id, f.workspaceId));
+          await f.db.update(tables.executionWorkspaces).set({ metadata: { ...workspace.metadata,
+            remoteWorkspace: { ...(workspace.metadata!.remoteWorkspace as Record<string, unknown>), writerRunId: randomUUID() } } })
+            .where(eq(tables.executionWorkspaces.id, f.workspaceId));
+        }
         if (listener.listening) await new Promise<void>((resolve, reject) => listener.close(error => error ? reject(error) : resolve()));
       });
       state.execute.mockReset().mockImplementationOnce(async options => {
@@ -10057,6 +10069,7 @@ describe("native warm session supervision", () => {
             name: "Other workspace", mode: "shared_workspace", strategyType: "project_primary", providerType: "cloud_sandbox", cwd: child.execution.workspace.cwd });
         }
         const parent = await f.admit(options);
+        incomingRunId = parent.runId;
         if (scenario === "live-owner") await f.db.update(heartbeatRuns).set({ status: "running", nativePhase: "observed", finishedAt: null }).where(eq(heartbeatRuns.id, child.runId));
         if (scenario === "unaccounted-owner") await f.db.update(heartbeatRuns).set({ costAccountingPending: true }).where(eq(heartbeatRuns.id, child.runId));
         if (scenario === "changed-controller") await f.db.update(nativeRunFinalizations).set({ controllerBootId: "foreign-controller" }).where(eq(nativeRunFinalizations.runId, child.runId));
@@ -10113,8 +10126,8 @@ describe("native warm session supervision", () => {
           expect(admittedParent.existingSession).toBeUndefined();
         } else {
           await expect(start).rejects.toThrow();
-          expect(close).toHaveBeenCalledTimes(scenario === "retirement-fails" ? 1 : 0);
-          expect(listener.listening).toBe(true);
+          expect(close).toHaveBeenCalledTimes(["retirement-fails", "controller-change-during-close", "stop-during-close", "writer-change-during-close"].includes(scenario) ? 1 : 0);
+          expect(listener.listening).toBe(!["controller-change-during-close", "stop-during-close", "writer-change-during-close"].includes(scenario));
           expect(state.execute).toHaveBeenCalledOnce();
         }
         await outcome;
