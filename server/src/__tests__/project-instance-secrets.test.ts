@@ -453,7 +453,7 @@ const support = await getEmbeddedPostgresTestSupport();
   },
 );
 describe("project instance secret patches", () => {
-  it("requires a config row unless the plugin has a managed grant", async () => {
+  it.skipIf(!support.supported)("requires a config row unless the plugin has a managed grant", async () => {
     const root = await mkdtemp(path.join(tmpdir(), "instance-secrets-managed-"));
     const packagePath = path.join(root, "sandbox-providers/daytona");
     await mkdir(packagePath, { recursive: true });

@@ -1,5 +1,5 @@
 import { projectInstanceSecretService } from "./project-instance-secrets.js";
-import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { companies, pluginCompanySettings, pluginConfig, plugins, projects, type Db } from "@paperclipai/db";
 import { logger } from "../middleware/logger.js";
 import { pluginLifecycleInbox } from "./plugin-lifecycle-inbox.js";
@@ -30,6 +30,16 @@ export function registerPluginLifecycleDelivery(
   async function managedPlugins() {
     const ready = await db.select().from(plugins).where(eq(plugins.status, "ready"));
     return ready.filter(plugin => managedPluginWorkerEnvGrant(plugin).length > 0);
+  }
+  async function enabledManagedPlugins() {
+    const managed = await managedPlugins();
+    if (!managed.length) return managed;
+    const enabled = await db.select({ pluginId: plugins.id }).from(plugins)
+      .innerJoin(companies, sql`true`)
+      .leftJoin(pluginCompanySettings, and(eq(pluginCompanySettings.pluginId, plugins.id), eq(pluginCompanySettings.companyId, companies.id)))
+      .where(and(inArray(plugins.id, managed.map(plugin => plugin.id)), or(isNull(pluginCompanySettings.enabled), eq(pluginCompanySettings.enabled, true))));
+    const enabledIds = new Set(enabled.map(row => row.pluginId));
+    return managed.filter(plugin => enabledIds.has(plugin.id));
   }
   async function deliveryTargets() {
     const configured = await db.select({ plugin: plugins, companyId: pluginConfig.companyId })
@@ -154,7 +164,7 @@ export function registerPluginLifecycleDelivery(
         .innerJoin(pluginConfig, eq(pluginConfig.pluginId, plugins.id))
         .leftJoin(pluginCompanySettings, and(eq(pluginCompanySettings.pluginId, plugins.id), eq(pluginCompanySettings.companyId, pluginConfig.companyId)))
         .where(and(eq(plugins.status, "ready"), or(isNull(pluginCompanySettings.enabled), eq(pluginCompanySettings.enabled, true))));
-      const installed = [...configured, ...(await managedPlugins()).map(plugin => ({ manifest: plugin.manifestJson }))];
+      const installed = [...configured, ...(await enabledManagedPlugins()).map(plugin => ({ manifest: plugin.manifestJson }))];
       if (disposed) return;
       const wanted = installed.some(plugin => plugin.manifest.resourceLifecycle?.includes("agent_runtime") && plugin.manifest.capabilities?.includes("events.subscribe"));
       if (wanted) listening ??= await db.$client.listen("paperclip_plugin_lifecycle", wake, wake);

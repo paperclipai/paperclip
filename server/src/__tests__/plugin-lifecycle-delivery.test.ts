@@ -95,14 +95,26 @@ describePostgres("durable plugin lifecycle delivery", () => {
       d.worker.dispose();
     });
   });
-  it("listens for runtime events for a plugin with a managed grant and no config row", async () => {
+  it("listens for a plugin with a managed grant and no config row until the last company disables it", async () => {
     await withManagedGrant(async packagePath => {
       await db.delete(plugins);
-      await db.insert(plugins).values({ id: randomUUID(), pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready", packagePath,
+      const managedId = randomUUID();
+      await db.insert(plugins).values({ id: managedId, pluginKey: "paperclip.daytona-sandbox-provider", packageName: "managed", version: "1.0.0", status: "ready", packagePath,
         manifestJson: { resourceLifecycle: ["agent_runtime"], capabilities: ["events.subscribe"] } as never });
+      const subscription = { unlisten: vi.fn(), state: {} };
+      vi.mocked(db.$client.listen).mockResolvedValueOnce(subscription as never);
       const d = delivery();
       await d.worker.ready;
       expect(db.$client.listen).toHaveBeenCalledWith("paperclip_plugin_lifecycle", expect.any(Function), expect.any(Function));
+      const companyRows = await db.select({ id: companies.id }).from(companies);
+      const [lastCompany, ...others] = companyRows;
+      for (const company of others) await db.insert(pluginCompanySettings).values({ pluginId: managedId, companyId: company.id, enabled: false });
+      d.applied();
+      await d.run();
+      expect(subscription.unlisten).not.toHaveBeenCalled();
+      await db.insert(pluginCompanySettings).values({ pluginId: managedId, companyId: lastCompany.id, enabled: false });
+      d.applied();
+      await vi.waitFor(() => expect(subscription.unlisten).toHaveBeenCalledTimes(1));
       d.worker.dispose();
     });
   });
