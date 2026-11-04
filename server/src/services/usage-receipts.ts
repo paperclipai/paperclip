@@ -348,6 +348,7 @@ export async function reconcileLateRunUsageReceiptInTransaction(tx: Db, run: typ
     && receipt.usageBasis !== "session_cumulative" && events.length === 1 && receipt.model === events[0].event.model
     && receipt.provider === events[0].event.provider && biller === events[0].event.biller && billingType === events[0].event.billingType
     && receiptTokenKeys.every(key => (receipt.usage?.[key] ?? 0) <= Number(previous[key] ?? 0))) {
+    await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: events[0].event.projectId });
     await updateDebtState(true, false);
     if (Object.keys(debts).length === 0) await notifyDeliveryWork(tx, DELIVERY_QUEUES.strandedAgentStatus,
       JSON.stringify({ companyId: run.companyId, agentId: run.agentId }));

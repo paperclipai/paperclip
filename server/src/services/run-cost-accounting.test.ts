@@ -227,7 +227,11 @@ const support = await getEmbeddedPostgresTestSupport();
     await accountRunCost(db, owner.runId);
     await persistUsageReceipt(db, receipt(owner, sourceId, 2, 1.2, 120));
     await persistUsageReceipt(db, receipt(owner, sourceId, 3, 1.4, 140));
-    for (let attempt = 0; attempt < 3; attempt++) await accountRunCost(db, owner.runId);
+    await accountRunCost(db, owner.runId);
+    // Clearing the remaining debt must wake budgets that the debt was holding.
+    await db.delete(budgetEvaluationWork).where(eq(budgetEvaluationWork.companyId, owner.companyId));
+    await accountRunCost(db, owner.runId);
+    expect((await db.select().from(budgetEvaluationWork).where(eq(budgetEvaluationWork.companyId, owner.companyId))).length).toBeGreaterThan(0);
     const charges = await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, owner.runId));
     expect(charges.reduce((sum, charge) => sum + charge.inputTokens, 0)).toBe(140);
     expect(charges.reduce((sum, charge) => sum + charge.costCents, 0)).toBeCloseTo(140);
