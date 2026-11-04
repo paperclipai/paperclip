@@ -279,7 +279,8 @@ export async function captureRemoteWorkspaceArchive(input: {
 }
 
 export async function restoreRemoteWorkspaceDirectory(input: {
-  target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string;
+  target: RemoteWorkspaceTarget; remoteCwd: string; archivePath: string; manifestDigest: string; restorationIdentity: string; allowEmptyRoot?: boolean;
+  allocationFiles?: Array<{ relativePath: string; sha256: string }>;
 }) {
   if (!/^[a-f0-9]{64}$/.test(input.restorationIdentity)) throw new Error("remote_workspace_restore_identity_invalid");
   const id = input.restorationIdentity;
@@ -292,25 +293,54 @@ export async function restoreRemoteWorkspaceDirectory(input: {
   }]);
   // Publish the restored folder and its identity together. A lost successful
   // reply can then adopt the same files without repeating a destructive restore.
-  const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process');
-  (async()=>{const [helper,archive,root,digest,identity]=process.argv.slice(1);
-   if(!/^[a-f0-9]{64}$/.test(identity))throw Error('invalid_identity');
-   const prior=await fs.lstat(root).catch(e=>{if(e.code==='ENOENT')return null;throw e});
-   if(prior){
-    if(!prior.isDirectory()||prior.isSymbolicLink()||await fs.realpath(root)!==root)throw Error('unsafe_root');
-    const runtime=path.join(root,'.paperclip-runtime'),marker=path.join(runtime,'workspace-restored.json');
-    const dir=await fs.lstat(runtime);if(!dir.isDirectory()||dir.isSymbolicLink())throw Error('unsafe_receipt');
-    const file=await fs.lstat(marker);if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384)throw Error('unsafe_receipt');
+  const restore = String.raw`const fs=require('node:fs/promises'),path=require('node:path'),cp=require('node:child_process'),crypto=require('node:crypto');
+  (async()=>{const [helper,archive,root,digest,identity,allowEmpty,rawFiles]=process.argv.slice(1),files=JSON.parse(rawFiles);
+   if(!/^[a-f0-9]{64}$/.test(identity)||!Array.isArray(files)||files.length>8)throw Error('invalid_identity');
+   for(const file of files)if(!/^\.paperclip-runtime\/[a-zA-Z0-9_-]+\.json$/.test(file.relativePath)
+     ||file.relativePath==='.paperclip-runtime/workspace-restored.json'||!/^[a-f0-9]{64}$/.test(file.sha256))throw Error('invalid_allocation');
+   if(new Set(files.map(file=>file.relativePath)).size!==files.length)throw Error('invalid_allocation');
+   const stat=async p=>fs.lstat(p).catch(e=>{if(e.code==='ENOENT')return null;throw e});
+   const directory=async p=>{const s=await fs.lstat(p);if(!s.isDirectory()||s.isSymbolicLink()||await fs.realpath(p)!==p)throw Error('unsafe_root')};
+   const allocation=async p=>{
+    await directory(p);const names=await fs.readdir(p);
+    if(names.length===0&&files.length===0)return [];
+    if(names.length!==1||names[0]!=='.paperclip-runtime'||!files.length)throw Error('occupied_root');
+    const runtime=path.join(p,'.paperclip-runtime');await directory(runtime);
+    const contents=await fs.readdir(runtime),expected=files.map(file=>path.basename(file.relativePath));
+    if(contents.length!==expected.length||contents.some(name=>!expected.includes(name)))throw Error('occupied_root');
+    return Promise.all(files.map(async file=>{const name=path.join(p,file.relativePath),s=await fs.lstat(name);
+     if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||s.size>16384)throw Error('unsafe_allocation');
+     const content=await fs.readFile(name);if(crypto.createHash('sha256').update(content).digest('hex')!==file.sha256)throw Error('allocation_changed');
+     return {name:path.basename(name),content};}));
+   };
+   const parked=root+'.allocation-'+identity;
+   if(await stat(parked)){if(allowEmpty!=='true')throw Error('unexpected_allocation');await allocation(parked);if(!await stat(root))await fs.rename(parked,root);}
+   const prior=await stat(root);if(prior)await directory(root);
+   const marker=path.join(root,'.paperclip-runtime','workspace-restored.json');
+   if(prior&&await stat(marker)){
+    await directory(path.dirname(marker));const file=await fs.lstat(marker);
+    if(!file.isFile()||file.isSymbolicLink()||file.nlink!==1||file.size>16384)throw Error('unsafe_receipt');
     const receipt=JSON.parse(await fs.readFile(marker,'utf8'));
-    if(receipt.identity!==identity||receipt.manifestDigest!==digest)throw Error('workspace_owner_changed');return;
+    if(receipt.identity!==identity||receipt.manifestDigest!==digest)throw Error('workspace_owner_changed');
+    if(await stat(parked)){await allocation(parked);await fs.rm(parked,{recursive:true});}return;
    }
+   if(prior&&allowEmpty!=='true')throw Error('occupied_root');
+   const retained=prior?await allocation(root):[];
+   if(!prior&&files.length)throw Error('allocation_missing');
    const staged=await fs.mkdtemp(root+'.restoring-');
-   await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',archive,staged,digest],{maxBuffer:1048576});
-   const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
-   await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify({identity,manifestDigest:digest}),{flag:'wx',mode:0o600});
-   if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');await fs.rename(staged,root);
+   try{
+    await require('node:util').promisify(cp.execFile)(process.execPath,[helper,'restore',archive,staged,digest],{maxBuffer:1048576});
+    const runtime=path.join(staged,'.paperclip-runtime');await fs.mkdir(runtime,{mode:0o700});
+    for(const file of retained)await fs.writeFile(path.join(runtime,file.name),file.content,{flag:'wx',mode:0o600});
+    await fs.writeFile(path.join(runtime,'workspace-restored.json'),JSON.stringify({identity,manifestDigest:digest}),{flag:'wx',mode:0o600});
+    if(await fs.realpath(path.dirname(root))!==path.dirname(root))throw Error('unsafe_root');
+    if(prior){await allocation(root);if(await stat(parked))throw Error('occupied_parking');await fs.rename(root,parked);}
+    try{await fs.rename(staged,root);}catch(e){if(prior&&!await stat(root))await fs.rename(parked,root);throw e;}
+    if(prior){await allocation(parked);await fs.rm(parked,{recursive:true});}
+   }finally{await fs.rm(staged,{recursive:true,force:true});}
   })().catch(()=>{process.stderr.write('remote_workspace_restore_failed');process.exitCode=1});`;
-  await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd, input.manifestDigest, input.restorationIdentity]);
+  await command(input.target, "restore", ["-e", restore, staged.helper, staged.archive, input.remoteCwd,
+    input.manifestDigest, input.restorationIdentity, String(input.allowEmptyRoot === true), JSON.stringify(input.allocationFiles ?? [])]);
   // Publish the restored location before cleanup can fail, stall, or lose its
   // reply. The owner journals this receipt and then reclaims disposable staging.
   return { operationId, stagingRoot: parent, cleanupPending: true };

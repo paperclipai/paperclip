@@ -6,6 +6,8 @@ import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provid
 import { legacyControllerBootId } from "../legacy-controller-lease.js";
 
 type Binding = { companyId: string; issueId: string; runId: string };
+export const NATIVE_CHECKPOINT_HEADER_INSPECTION_MAX_BYTES = 1024 * 1024;
+export const NATIVE_CHECKPOINT_INSPECTION_TOTAL_MAX_BYTES = 8 * 1024 * 1024;
 export type NativeRunnerCheckpointOwner = Binding & { bootId: string; leaseOwner: string; generation: number; authorityRunId: string };
 function encryptParts(binding: Binding, records: ReadonlyMap<string, string>) {
   if (!records.size) return [];
@@ -14,6 +16,23 @@ function encryptParts(binding: Binding, records: ReadonlyMap<string, string>) {
     companyId: binding.companyId, issueId: binding.issueId, runId: binding.runId, part,
     material: cipher.encrypt(JSON.stringify({ ...binding, part, contents })),
   }));
+}
+
+export async function insertMigratedNativeRunnerCheckpoint(tx: CheckpointTransaction, binding: Binding, checkpoint: DurablePrpCheckpoint) {
+  if (checkpoint.runId !== binding.runId) throw new Error("native_runner_checkpoint_binding_mismatch");
+  let batch: ReturnType<typeof encryptParts> = [];
+  let batchBytes = 0;
+  for (const part of encryptParts(binding, checkpoint.records)) {
+    const bytes = Buffer.byteLength(JSON.stringify(part));
+    if (batch.length && (batch.length >= 64 || batchBytes + bytes > 512 * 1024)) {
+      await tx.insert(nativeRunnerCheckpoints).values(batch);
+      batch = [];
+      batchBytes = 0;
+    }
+    batch.push(part);
+    batchBytes += bytes;
+  }
+  if (batch.length) await tx.insert(nativeRunnerCheckpoints).values(batch);
 }
 
 function decryptPart(cipher: ReturnType<typeof createLocalEncryptedCipher>, binding: Binding,

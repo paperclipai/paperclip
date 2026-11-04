@@ -52,11 +52,22 @@ with an unknown operation and null target. That path requires its complete file
 result wrapper: the file path must name the exact materialized skill directory.
 Both the saved assignment entry and the admitted native execution input must
 bind that runtime name to the same canonical key and immutable created version.
-The native read must remain read-only, successful, paired by call/turn/runner,
+The file read must remain read-only, successful, paired by call/turn/runner,
 untruncated and byte-complete, and its content must contain the full procedure.
 A targetless filesystem read without this bound file wrapper cannot qualify. Discovery,
 shell output, model prose, failed or truncated reads, foreign run receipts and
 marker-only output cannot pass.
+
+Core's native OpenCode proxy forwards its built-in `skill` loader without an
+operation. Core records that receipt as `unknown` with a false read-only hint.
+This closed loader path requires the actual OpenCode run, runner, native session,
+turn, item and paired call. Both assignment records and the admitted version map
+must bind the exact immutable skill and materialized directory. Its complete
+`skill_content` wrapper and heading must name that skill. The saved procedure
+body must match exactly. The local base-directory path must be absolute and name
+that bound runtime directory without traversal or URI encodings, and `skill_files`
+must be empty. The receipt must be successful, untruncated and byte-complete.
+Other unknown operations, raw dynamic calls and unbound loaders still fail.
 
 The first-party `paperclip_read_assigned_skill` tool can also supply the read.
 Its complete `inputText` result must contain the exact canonical skill key,

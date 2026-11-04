@@ -13,7 +13,7 @@ import { createHeartbeatRunState } from "./run-state.js";
 import type { HotRestartIntent } from "../hot-restart.js";
 import type { NativeRestartRecoveryClaim, NativeRestartRecoveryDisposition } from "../native-runtime/index.js";
 import { NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE } from "../native-runtime/native-runner-ownership.js";
-import { claimNativeRestartRecoveries, currentNativeControllerIdentity } from "../native-runtime/native-restart-recovery.js";
+import { claimNativeRestartRecoveries, currentNativeControllerIdentity, NATIVE_RESTART_RECOVERY_FAILED } from "../native-runtime/native-restart-recovery.js";
 import { startNativeSessionExecutionLeaseRenewal } from "../native-runtime/native-execution-lease.js";
 import { allowLegacyShutdownWorkspaceCleanup, beginLegacyShutdownWorkspaceSettlement, finishLegacyShutdownWorkspaceSettlement, maintainLegacyShutdownWorkspaceSettlement, legacyShutdownWorkspaceResourceProtected, sweepLegacyShutdownWorkspaceSettlements } from "../legacy-shutdown-workspace-settlement.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../adapter-execution-control.js";
@@ -1201,6 +1201,29 @@ describePostgres("heartbeat recovery module ownership", () => {
       await db.delete(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id));
       await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
     }
+  });
+
+  it.each(["getRun", "appendRunEvent"] as const)("dispatches committed claims when recording a transition fails in %s", async failing => {
+    const deps = callbacks(db);
+    const deferred = { kind: "awaiting_evidence" as const, runId: randomUUID(), reason: NATIVE_RESTART_RECOVERY_FAILED,
+      retryAt: new Date(Date.now() + 30_000) };
+    const claim: NativeRestartRecoveryClaim = { kind: "bootstrap_incomplete", runId: randomUUID(), leaseOwner: "claimed-owner",
+      controllerGeneration: 1, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null };
+    native.claims.mockResolvedValueOnce([deferred, claim]);
+    if (failing === "getRun") deps.getRun.mockRejectedValue(new Error("run read failed"));
+    else {
+      deps.getRun.mockImplementation(async id => ({ id }) as unknown as Awaited<ReturnType<HeartbeatRecoveryDependencies["getRun"]>>);
+      deps.appendRunEvent.mockRejectedValue(new Error("event write failed"));
+    }
+    const result = await createHeartbeatRecovery(db, deps).recoverNativeRunsAfterRestart();
+    expect(result.claims).toEqual([claim]);
+    expect(result.awaitingEvidenceRunIds).toEqual([deferred.runId]);
+    expect(deps.executeRun).toHaveBeenCalledExactlyOnceWith(claim.runId, { nativeLeaseOwner: claim.leaseOwner, nativeRestartRecovery: claim });
+    if (failing === "appendRunEvent") {
+      expect(deps.appendRunEvent).toHaveBeenCalledWith(expect.objectContaining({ id: deferred.runId }), expect.objectContaining({
+        level: "warn", payload: expect.objectContaining({ reason: NATIVE_RESTART_RECOVERY_FAILED }) }));
+    }
+    await Promise.all([...deps.activeRunExecutionPromises]);
   });
 
   it("does not claim or execute recovery when persisted finalization fails", async () => {

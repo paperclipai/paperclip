@@ -1,3 +1,5 @@
+import { workspaceAllocationFiles } from "./remote-workspace-allocation.js";
+import { readNativeWorkspaceMigration } from "./native-runtime/native-workspace-migration.js";
 import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, statfs } from "node:fs/promises";
@@ -73,28 +75,22 @@ export function shouldUseRemoteWorkspaces(input: {
   return configuredRemoteWorkspacePersistence() !== null;
 }
 
-/** Deployment profile admission belongs beside workspace authority. A warm
- * remote controller may replace its local projection; host-owned execution
- * cannot make that promise. External conversation providers own no task disk. */
 export function assertEphemeralWorkspaceExecution(input: {
   externalConversation: boolean; adapterType: string;
   pluginTaskWorkspace: boolean; remoteAuthority: boolean;
 }) {
   if (process.env.PAPERCLIP_EPHEMERAL_SERVER !== "true" || input.externalConversation) return;
   // Runtime selection has not promoted a fresh run yet. Validate storage here;
-  // the runtime selector separately admits only its resolved warm native policy.
   if (input.adapterType !== "paperclip_runner"
     || (!input.pluginTaskWorkspace && !input.remoteAuthority)) {
-    throw unprocessable("Volume-free servers require warm Paperclip Runner execution with remote workspace storage.",
+    throw unprocessable("Volume-free servers require native Paperclip Runner execution with remote workspace storage.",
       { code: "ephemeral_execution_configuration_required" });
   }
 }
 
-/** The runtime selector calls this after environment, credentials and saved
- * execution policy have resolved. Raw agent settings are not lifecycle authority. */
-export function assertEphemeralNativeLifecycle(mode: "warm" | "per_turn" | undefined) {
-  if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && mode !== "warm") {
-    throw unprocessable("Volume-free servers require warm Paperclip Runner execution with remote workspace storage.",
+export function assertEphemeralNativeRuntime(native: boolean) {
+  if (process.env.PAPERCLIP_EPHEMERAL_SERVER === "true" && !native) {
+    throw unprocessable("Volume-free servers require native Paperclip Runner execution with remote workspace storage.",
       { code: "ephemeral_execution_configuration_required" });
   }
 }
@@ -327,8 +323,22 @@ function isSavedWorkspaceRepository(workspace: Workspace, authority: RemoteWorks
     && (saved.readOnly ?? false) === (repository.readOnly ?? false));
 }
 
+function publishedWorkspaceDirectory(workspace: Workspace & Pick<typeof executionWorkspaces.$inferSelect, "providerRef">,
+  authority: RemoteWorkspaceAuthority) {
+  const publishedRoot = authority.snapshotId && (authority.location?.remoteCwd ?? workspace.providerRef);
+  if (!publishedRoot) return null;
+  const directory = path.posix.basename(publishedRoot);
+  const suffix = directory.slice(workspace.id.length);
+  if (!path.posix.isAbsolute(publishedRoot) || path.posix.basename(path.posix.dirname(publishedRoot)) !== ".paperclip-workspaces"
+    || !directory.startsWith(workspace.id) || (suffix !== "" && !/^-[1-9][0-9]*-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(suffix))) {
+    throw new Error("remote_workspace_published_path_invalid");
+  }
+  return directory;
+}
+
 export async function prepareRemoteWorkspace(input: {
-  db: Db; workspace: Workspace; runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
+  db: Db; workspace: Workspace & Pick<typeof executionWorkspaces.$inferSelect, "providerRef">;
+  runId: string; lease: EnvironmentLease; target: AdapterExecutionTarget | null;
   source?: RemoteWorkspaceSource; assertOwned?: () => Promise<void>;
   provisionCommand?: string | null; runtimeProvisionCommand?: string | null; storage?: StorageService;
 }) {
@@ -344,7 +354,11 @@ export async function prepareRemoteWorkspace(input: {
   const sameAllocation = initial.location?.providerLeaseId === input.lease.providerLeaseId
     && initial.location?.environmentId === input.lease.environmentId;
   if (initial.location && !sameAllocation && initial.dirty) throw conflict("The prior workspace has unsaved work; recover it before replacing its allocation.");
-  const remoteRoot = sameAllocation ? initial.location!.remoteCwd : path.posix.join(target.remoteCwd, ".paperclip-workspaces", input.workspace.id);
+  const migration = input.workspace.metadata?.nativeWorkspaceMigration
+    ? await readNativeWorkspaceMigration(input.db, input.workspace) : null;
+  if (migration && migration.remoteCwd !== target.remoteCwd) throw new Error("native_workspace_migration_target_changed");
+  const remoteRoot = sameAllocation ? initial.location!.remoteCwd : migration?.remoteCwd ?? path.posix.join(target.remoteCwd, ".paperclip-workspaces",
+    publishedWorkspaceDirectory(input.workspace, initial) ?? `${input.workspace.id}-${initial.epoch}-${input.lease.id}`);
   const preparationIdentity = createHash("sha256").update(JSON.stringify([input.workspace.companyId, input.workspace.id,
     input.runId, initial.epoch, input.lease.id, input.lease.providerLeaseId, remoteRoot, initial.source])).digest("hex");
   let restoredExport: Awaited<ReturnType<typeof restoreRemoteWorkspaceDirectory>> | null = null;
@@ -360,7 +374,8 @@ export async function prepareRemoteWorkspace(input: {
         const archivePath = path.join(scratch, "workspace.pcws");
         await loadWorkspaceSnapshotArchive({ storage: input.storage ?? getStorageService(), reference: snapshot, targetPath: archivePath });
         restoredExport = await restoreRemoteWorkspaceDirectory({ target, remoteCwd: remoteRoot, archivePath, manifestDigest: snapshot.manifestDigest,
-          restorationIdentity: preparationIdentity });
+          restorationIdentity: preparationIdentity, allowEmptyRoot: migration !== null,
+          allocationFiles: migration ? workspaceAllocationFiles(input.lease, remoteRoot) : [] });
       } finally { await rm(scratch, { recursive: true, force: true }); }
     } else {
       try {

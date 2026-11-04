@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -2730,6 +2731,28 @@ describe("effective run session config freshness", () => {
     expect(after.fingerprints.sessionFingerprint.canonicalJson).not.toContain("/replacement-controller");
     expect(freshness(await metadata("/replacement-controller", "sha256:entry-v2")).changedCategories).toContain("instructions");
     expect(freshness(await metadata("/replacement-controller", "sha256:entry-v1", "skill-version-2")).changedCategories).toContain("runtimeSkills");
+  });
+
+  it("retains a legacy managed-instruction session after verified import removes the old home", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "legacy-instruction-session-"));
+    const body = "Preserve this exact agent identity and instructions.\n";
+    await fs.writeFile(path.join(root, "AGENTS.md"), body);
+    const config = { model: "gpt-5.4-mini", instructionsBundleMode: "managed", instructionsRootPath: root,
+      instructionsFilePath: path.join(root, "AGENTS.md"), instructionsEntryFile: "AGENTS.md" };
+    const before = await buildSessionConfigMetadata({ adapterType: "paperclip_runner", effectiveAdapterConfig: config });
+    await fs.rm(root, { recursive: true });
+    const managedInstructions = { entryFile: "AGENTS.md", contentHash: "sha256:" + createHash("sha256").update(body).digest("hex") };
+    const metadata = (contentHash = managedInstructions.contentHash, model = config.model, retainManagedInstructionPaths = false) =>
+      buildSessionConfigMetadata({ adapterType: "paperclip_runner", effectiveAdapterConfig: { ...config, model },
+        managedInstructions: { ...managedInstructions, contentHash }, retainManagedInstructionPaths });
+    const after = await metadata();
+    const decide = (current: SessionConfigMetadata, compatible: SessionConfigMetadata[] = []) => resolveTaskSessionConfigFreshness({
+      hasTaskSession: true, configuredModel: config.model, taskSessionParams: sessionParamsWithConfigMetadata(before),
+      configMetadata: current, compatibleConfigMetadata: compatible });
+    expect(decide(after)).toMatchObject({ reset: true, changedCategories: ["adapterConfig"] });
+    expect(decide(after, [await metadata(undefined, undefined, true)]).reset).toBe(false);
+    expect(decide(await metadata("sha256:changed"), [await metadata("sha256:changed", undefined, true)]).reset).toBe(true);
+    expect(decide(await metadata(undefined, "different-model"), [await metadata(undefined, "different-model", true)]).reset).toBe(true);
   });
 
   it("does not read unbounded legacy instructions paths for config fingerprints", async () => {
