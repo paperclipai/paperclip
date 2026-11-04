@@ -182,15 +182,21 @@ async function terminalWriterSaveHolder(tx: Transaction, companyId: string, writ
   const [writerIssue] = await tx.select({ id: issues.id, identifier: issues.identifier }).from(issues)
     .where(and(eq(issues.companyId, companyId), eq(issues.id, canonicalExecutionUuid(sql`${writerIssueId}::text`))));
   if (!writerIssue) return null;
+  // Superseded or resolved actions do not describe the current save.
   const actions = await tx.select({ evidence: issueRecoveryActions.evidence, updatedAt: issueRecoveryActions.updatedAt })
     .from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId),
-      eq(issueRecoveryActions.sourceIssueId, writerIssue.id), sql`${issueRecoveryActions.evidence}->>'runId' = ${writerRunId}`));
+      eq(issueRecoveryActions.sourceIssueId, writerIssue.id), inArray(issueRecoveryActions.status, ["active", "escalated"]),
+      sql`${issueRecoveryActions.evidence}->>'runId' = ${writerRunId}`));
   let lastActivityAt = prior.finishedAt ?? prior.createdAt;
   for (const action of actions) {
     const recovery = readSystemRecovery(action.evidence);
     if (!recovery || recovery.sourceRunId !== writerRunId) continue;
     if (recovery.state === "exhausted") return null;
-    if (recovery.state !== "complete" && action.updatedAt > lastActivityAt) lastActivityAt = action.updatedAt;
+    if (recovery.state === "complete") continue;
+    // The recovery worker's beacon advances while a long save runs; the row timestamp does not.
+    const beacon = action.evidence.systemRecoveryActiveAt;
+    const progressAt = Math.max(action.updatedAt.getTime(), typeof beacon === "number" && Number.isFinite(beacon) ? beacon : 0);
+    if (progressAt > lastActivityAt.getTime()) lastActivityAt = new Date(progressAt);
   }
   return { runId: writerRunId, agentId: prior.agentId, issueId: writerIssue.id,
     issueIdentifier: writerIssue.identifier, lastActivityAt, saving: true };

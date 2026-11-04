@@ -27,8 +27,9 @@ describe.skipIf(!support.supported)("retained workspace recovery ownership", () 
   // for that save. The waiting run must not make the recovery report a changed binding.
   it.each([
     { successor: "waiting_for_writer", expected: true },
+    { successor: "due_while_waiting_for_writer", expected: true },
     { successor: "waiting_for_other_holder", expected: false },
-    { successor: "queued", expected: false },
+    { successor: "unrelated_queued_run", expected: false },
     { successor: "none", expected: true },
   ] as const)("claims a verified stopped owner when the task successor is $successor", async ({ successor, expected }) => {
     const [company] = await db.insert(companies).values({ name: "Ownership", issuePrefix: `O${randomUUID().slice(0, 6)}` }).returning();
@@ -50,8 +51,9 @@ describe.skipIf(!support.supported)("retained workspace recovery ownership", () 
         resultJson: { workspaceBusy: { holderRunId: successor === "waiting_for_other_holder" ? randomUUID() : writer.id } },
       }).returning();
       const [next] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, issueId: issue.id,
-        status: successor === "queued" ? "queued" : "scheduled_retry", retryOfRunId: deferred.id,
-        scheduledRetryReason: "workspace_busy", scheduledRetryAttempt: 1 }).returning();
+        status: successor === "waiting_for_writer" || successor === "waiting_for_other_holder" ? "scheduled_retry" : "queued",
+        retryOfRunId: deferred.id, scheduledRetryAttempt: 1,
+        scheduledRetryReason: successor === "unrelated_queued_run" ? null : "workspace_busy" }).returning();
       await db.update(issues).set({ executionRunId: next.id }).where(eq(issues.id, issue.id));
     }
     vi.spyOn(platformProof, "requestWorkspaceWorkerStopProof").mockResolvedValue({ status: "verified", proof: {

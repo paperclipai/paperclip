@@ -76,14 +76,15 @@ function readOwner(value: unknown): Owner | null {
 }
 
 /**
- * Returns the run id when it is a scheduled workspace_busy retry that waits for
- * this exact writer. Such a successor has not started work, and the writer's
- * remote workspace fence stays in place until this recovery saves the files.
+ * Returns the run id when it is a workspace_busy retry that waits for this exact
+ * writer. It may come due during the save; the writer's remote workspace fence
+ * still keeps it from writing until this recovery saves the files.
  */
 async function workspaceSaveWaiter(db: Db, companyId: string, runId: string, writerRunId: string) {
   const [waiting] = await db.select({ id: heartbeatRuns.id, retryOfRunId: heartbeatRuns.retryOfRunId }).from(heartbeatRuns)
     .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, runId),
-      eq(heartbeatRuns.status, "scheduled_retry"), eq(heartbeatRuns.scheduledRetryReason, WORKSPACE_BUSY_RETRY_REASON)));
+      inArray(heartbeatRuns.status, ["scheduled_retry", "queued", "running"]),
+      eq(heartbeatRuns.scheduledRetryReason, WORKSPACE_BUSY_RETRY_REASON)));
   if (!waiting?.retryOfRunId) return undefined;
   const [deferred] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, waiting.retryOfRunId),

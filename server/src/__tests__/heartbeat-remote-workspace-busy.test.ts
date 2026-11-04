@@ -116,11 +116,14 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
   // A failed writer's final save runs after the run is terminal (system workspace
   // recovery). An immediate continuation must wait for that save instead of
   // failing setup and stranding the task.
+  const hours = (count: number) => count * 60 * 60_000;
   it.each([
-    { name: "a recently failed writer whose save is still pending", finishedAgoMs: 0, recovery: null, expected: "deferred" },
-    { name: "a failed writer whose recovery is actively saving", finishedAgoMs: 2 * 60 * 60_000, recovery: "running", expected: "deferred" },
+    { name: "a recently failed writer whose save completes", finishedAgoMs: 0, recovery: null, expected: "continued" },
+    { name: "a failed writer whose recovery is actively saving", finishedAgoMs: hours(2), recovery: "running", expected: "deferred" },
+    { name: "a failed writer whose long save reports only its beacon", finishedAgoMs: hours(2), recovery: "beacon", expected: "deferred" },
+    { name: "a failed writer whose earlier recovery was superseded", finishedAgoMs: 0, recovery: "superseded", expected: "deferred" },
     { name: "a failed writer whose recovery is exhausted", finishedAgoMs: 0, recovery: "exhausted", expected: "failed" },
-    { name: "a failed writer silent past the holder cutoff", finishedAgoMs: 2 * 60 * 60_000, recovery: null, expected: "failed" },
+    { name: "a failed writer silent past the holder cutoff", finishedAgoMs: hours(2), recovery: null, expected: "failed" },
   ] as const)("handles $name", async ({ finishedAgoMs, recovery, expected }) => {
     const userId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Workspace owner", email: `${userId}@example.test`,
@@ -148,21 +151,31 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
       cwd: `/workspaces/${randomUUID()}`, metadata: { remoteWorkspace: authority } }).returning();
     await db.update(issues).set({ executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
-    if (recovery) await db.insert(issueRecoveryActions).values({ companyId: company.id, sourceIssueId: issue.id,
-      kind: "active_run_watchdog", status: recovery === "exhausted" ? "escalated" : "active", cause: "run_failed",
-      fingerprint: `save-${writer.id}`, nextAction: "preserve_files", updatedAt: new Date(),
-      evidence: { runId: writer.id, systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1,
-        sourceRunId: writer.id, revision: 2, generationId: randomUUID(), intentId: null, phase: "preserve_files",
-        state: recovery, attemptId: null, attempts: 1, retriesUsed: recovery === "exhausted" ? 5 : 0,
-        firstFailureAt: null, nextAttemptAt: null, deadlineAt: null, providerCooldownAt: null, failure: null,
-        preservationOperationIds: [], freshAttemptRunId: null } } });
+    const recoveryAction = (state: "running" | "exhausted", status: string, updatedAt: Date, extra: Record<string, unknown> = {}) =>
+      db.insert(issueRecoveryActions).values({ companyId: company.id, sourceIssueId: issue.id,
+        kind: "active_run_watchdog", status, cause: "run_failed", fingerprint: `save-${randomUUID()}`,
+        nextAction: "preserve_files", updatedAt,
+        evidence: { runId: writer.id, ...extra, systemRecovery: { schema: "paperclip.system-recovery.v1", policyVersion: 1,
+          sourceRunId: writer.id, revision: 2, generationId: randomUUID(), intentId: null, phase: "preserve_files",
+          state, attemptId: null, attempts: 1, retriesUsed: state === "exhausted" ? 5 : 0,
+          firstFailureAt: null, nextAttemptAt: null, deadlineAt: null, providerCooldownAt: null, failure: null,
+          preservationOperationIds: [], freshAttemptRunId: null } } });
+    if (recovery === "running") await recoveryAction("running", "active", new Date());
+    if (recovery === "beacon") await recoveryAction("running", "active", finishedAt, { systemRecoveryActiveAt: Date.now() });
+    if (recovery === "exhausted") await recoveryAction("exhausted", "escalated", new Date());
+    if (recovery === "superseded") {
+      await recoveryAction("exhausted", "cancelled", new Date());
+      await recoveryAction("running", "active", new Date());
+    }
     const run = await heartbeat.wakeup(agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",
       requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id } });
     expect(run).not.toBeNull();
     await heartbeat.drainActiveRunExecutions();
     const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
     const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, run!.id));
-    if (expected === "deferred") {
+    const readAuthority = async () => readRemoteWorkspaceAuthority((await db.select().from(executionWorkspaces)
+      .where(eq(executionWorkspaces.id, workspace.id)))[0].metadata);
+    if (expected !== "failed") {
       expect(settled).toMatchObject({ status: "cancelled", errorCode: "workspace_busy",
         error: expect.stringContaining("is still saving its work"),
         resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
@@ -172,7 +185,18 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
       const [waiting] = await db.select().from(issues).where(eq(issues.id, issue.id));
       expect(waiting).toMatchObject({ executionRunId: retries[0].id });
       expect(waiting.status).not.toBe("blocked");
-      await heartbeat.cancelRun(retries[0].id);
+      expect((await db.select().from(environmentLeases)).filter(lease => lease.heartbeatRunId === run!.id)).toEqual([]);
+      expect(await readAuthority()).toEqual(authority);
+      if (expected === "deferred") { await heartbeat.cancelRun(retries[0].id); return; }
+      // Recovery saves the files and releases the writer; the waiting retry then claims the workspace.
+      const saved = { ...authority, writerRunId: null, dirty: false };
+      await db.update(executionWorkspaces).set({ metadata: { remoteWorkspace: saved } }).where(eq(executionWorkspaces.id, workspace.id));
+      expect((await heartbeat.promoteDueScheduledRetries(new Date(Date.now() + 5 * 60_000))).runIds).toContain(retries[0].id);
+      await heartbeat.resumeQueuedRuns();
+      await heartbeat.drainActiveRunExecutions();
+      expect(await readAuthority()).toEqual({ ...saved, epoch: authority.epoch + 1, writerRunId: retries[0].id });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, retries[0].id))).toEqual([]);
+      return;
     } else {
       expect(settled).toMatchObject({ status: "failed", errorCode: "setup_failed",
         error: "The workspace still has an unfinished writer or save operation." });
