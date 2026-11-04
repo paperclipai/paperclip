@@ -276,6 +276,14 @@ still checks the exact current binding and snapshot after provider settlement.
 
 The work is complete and terminal.
 
+An authorized agent working on another task may add evidence or request a
+follow-up on a completed task. That control-plane request does not restore the
+completed task's closed workspace under the caller's run identity. When the
+follow-up is admitted, its own executor restores the task's selected workspace
+if task completion closed it. Workspace execution, company, project, and source
+access checks still apply under that executor. An archive for another reason
+does not become eligible for restoration through this path.
+
 ### `cancelled`
 
 The work will not continue and is terminal.
@@ -2212,6 +2220,11 @@ unknown, and they do not gain automatic replay eligibility.
 Admission validates the persisted comment's author, task, and time against every
 held predecessor. Retry validates the selected failed run's company, task, and
 agent and preserves that run's identity through admission and history loading.
+When preparation failed before a source recovery-action row was created, the
+admitted Retry receipt saves its continuation authorization. Existing action
+records remain the authority when present. Dispatch checks the exact receipt,
+successor, source run, and user. A caller-provided continuation object does not
+establish authority.
 Duplicate Retry requests adopt the same successor. Only a validated, unconsumed human queue receipt can authorize saved-message continuation after a native failure; arbitrary historical input, an agent-authored comment, or a generic
 system wake cannot release a hold. The source task keeps its assignee. Process
 ownership, active controllers, cleanup leases, pause, approval, budget, and normal
