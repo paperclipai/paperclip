@@ -161,6 +161,53 @@ describe("remote workspace transport safety with real sandbox commands", () => {
     } finally { await captured.cleanup(); }
   });
 
+  it.each(["owned", "changed", "unrelated", "symlink", "interrupted"])("preserves only verified allocation files during a migrated restore: %s", async scenario => {
+    await fs.writeFile(path.join(workspace, "saved.txt"), "retained user work");
+    const { remote, execute } = target();
+    const captured = await captureRemoteWorkspaceArchive({ target: remote, remoteCwd: workspace, operationId: randomUUID() });
+    try {
+      const root = path.join(scratch, "allocated"), relativePath = ".paperclip-runtime/reusable-sandbox-lease.json";
+      const bytes = JSON.stringify({ version: 1, token: "exact-allocation-token", provider: "daytona" });
+      await fs.mkdir(path.join(root, ".paperclip-runtime"), { recursive: true });
+      const sentinel = path.join(root, relativePath);
+      await fs.writeFile(sentinel, bytes);
+      const input = { target: remote, remoteCwd: root, archivePath: captured.archivePath, manifestDigest: captured.manifestDigest,
+        restorationIdentity: "d".repeat(64), allowEmptyRoot: true,
+        allocationFiles: [{ relativePath, sha256: createHash("sha256").update(bytes).digest("hex") }] };
+      if (scenario === "changed") await fs.writeFile(sentinel, "foreign marker");
+      if (scenario === "unrelated") await fs.writeFile(path.join(root, ".paperclip-runtime", "unrelated.txt"), "keep");
+      if (scenario === "symlink") {
+        const outside = path.join(scratch, "outside-marker"); await fs.writeFile(outside, bytes);
+        await fs.unlink(sentinel); await fs.symlink(outside, sentinel);
+      }
+      if (["changed", "unrelated", "symlink"].includes(scenario)) {
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow();
+        expect(await fs.readFile(sentinel, "utf8")).toBe(scenario === "changed" ? "foreign marker" : bytes);
+        expect(await fs.lstat(path.join(root, "saved.txt")).catch(() => null)).toBeNull();
+        return;
+      }
+      if (scenario === "interrupted") {
+        const run = execute.getMockImplementation()!; let interrupt = true;
+        execute.mockImplementation(async command => {
+          if (interrupt && command.args?.[1]?.includes("remote_workspace_restore_failed")) {
+            interrupt = false;
+            return run({ ...command, args: command.args.map((arg, index) => index === 1
+              ? arg.replace("try{await fs.rename(staged,root);}", "throw Error('interrupted');try{await fs.rename(staged,root);}") : arg) });
+          }
+          return run(command);
+        });
+        await expect(restoreRemoteWorkspaceDirectory(input)).rejects.toThrow();
+        expect(await fs.readFile(path.join(root + ".allocation-" + input.restorationIdentity, relativePath), "utf8")).toBe(bytes);
+      }
+      await restoreRemoteWorkspaceDirectory(input);
+      expect(await fs.readFile(sentinel, "utf8")).toBe(bytes);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("retained user work");
+      await fs.writeFile(path.join(root, "saved.txt"), "later user edits");
+      await restoreRemoteWorkspaceDirectory(input);
+      expect(await fs.readFile(path.join(root, "saved.txt"), "utf8")).toBe("later user edits");
+    } finally { await captured.cleanup(); }
+  });
+
   it("keeps a completed restore available when the staging cleanup reply is lost", async () => {
     await fs.writeFile(path.join(workspace, "saved.txt"), "durable synthetic files\n");
     const { remote, execute } = target();

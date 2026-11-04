@@ -661,3 +661,9 @@ run-attributed tool receipts on local and Daytona execution. Its four native
 Claude/Codex cells are explicit-only. Remote registrations remain unqualified
 until retained live attempts prove them. It uses the normal Product E2E report
 and keeps synthetic feedback distinct from actionable product findings.
+# Legacy workspace preservation
+
+The explicit [legacy workspace migration Product E2E suites](../tests/runner-e2e/README.md#legacy-workspace-migration)
+verify a retained session through the production offline migration and an empty
+replacement controller. They complement the rolling deployment suites and do
+not claim uninterrupted service during initial enrollment.

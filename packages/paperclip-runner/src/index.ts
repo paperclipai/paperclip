@@ -46,6 +46,7 @@ export {
   type DurablePrpControlPlaneOptions,
   type DurablePrpCheckpoint,
   decodeDurablePrpCheckpoint,
+  captureLegacyDurablePrpCheckpoint,
   inspectDurablePrpCheckpointHeader,
   type PrpWireConnection,
   type PrpWireAttachment,
