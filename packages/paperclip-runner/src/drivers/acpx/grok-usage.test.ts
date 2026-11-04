@@ -21,10 +21,27 @@ describe("Grok terminal prompt usage", () => {
 
   it.each([
     { usageIsIncomplete: true }, { usageIsIncomplete: "false" }, { cachedReadTokens: 505796 },
-    { inputTokens: -1 }, { outputTokens: 1.5 }, { reasoningTokens: 5764 }, { totalTokens: 1 },
+    { inputTokens: -1 }, { outputTokens: 1.5 }, { reasoningTokens: -1 }, { reasoningTokens: 1.5 }, { totalTokens: 1 },
     { modelCalls: undefined }, { inputTokens: Number.MAX_SAFE_INTEGER + 1 },
   ])("refuses incomplete or invalid token authority: %j", patch => {
     expect(grokPromptUsage({ ...meta, usage: { ...usage, ...patch } }, "session-1")).toBeNull();
+  });
+
+  it("settles a real Grok prompt whose reasoning counter exceeds its output counter", () => {
+    const collector = createGrokPromptUsageCollector();
+    collector.begin("runner-1", "session-1");
+    collector.observe("outbound", request);
+    collector.observe("inbound", { ...response, result: { _meta: { ...meta, usage: {
+      inputTokens: 517350, outputTokens: 7969, totalTokens: 525319, cachedReadTokens: 458624,
+      cacheCreationTokens: 0, reasoningTokens: 9859, modelCalls: 15, costUsdTicks: 4537320000,
+    } } } });
+    const state = { lastRequestId: "runner-1", terminalPromptUsage: collector.snapshot() };
+    expect(persistedAcpxTurnUsage({}, state, "runner-1")).toEqual({
+      type: "status", tag: "usage_update", text: "terminal prompt usage",
+      cost: { amount: 0.453732, currency: "USD", basis: "turn" },
+      breakdown: { inputTokens: 58726, outputTokens: 7969, totalTokens: 525319,
+        cachedReadTokens: 458624, cachedWriteTokens: 0, thoughtTokens: 0 },
+    });
   });
 
   it.each([{ costUsdTicks: undefined }, { costUsdTicks: -1 }, { costIsPartial: true }, { costIsPartial: "false" }])(

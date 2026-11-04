@@ -16,8 +16,7 @@ export function grokPromptUsage(metaValue: unknown, sessionId: string): Omit<Ter
   const { inputTokens, outputTokens, totalTokens, cachedReadTokens, cacheCreationTokens, reasoningTokens, modelCalls } = usage;
   if (![inputTokens, outputTokens, totalTokens, cachedReadTokens, cacheCreationTokens, reasoningTokens, modelCalls].every(integer)
     || Number(inputTokens) + Number(outputTokens) !== totalTokens
-    || Number(cachedReadTokens) + Number(cacheCreationTokens) > Number(inputTokens)
-    || Number(reasoningTokens) > Number(outputTokens)) return null;
+    || Number(cachedReadTokens) + Number(cacheCreationTokens) > Number(inputTokens)) return null;
   const costKnown = integer(usage.costUsdTicks) && (usage.costIsPartial === undefined || usage.costIsPartial === false);
   return {
     promptId: meta.promptId,

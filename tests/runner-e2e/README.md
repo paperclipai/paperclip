@@ -2188,6 +2188,12 @@ an API-key pass must not be reported as subscription evidence. See
 [`doc/grok-native-runner.md`](../../doc/grok-native-runner.md) for installation,
 credential boundaries and repetition requirements.
 
+Grok accounting uses the complete prompt ledger bound to the matching ACP
+response. Its reasoning counter can exceed its output counter; it is not a
+validation bound or an extra term in the ledger's input-plus-output total.
+Reported cost remains authoritative. See the upstream
+[`UsageTotals` ledger](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-chat-state/src/usage.rs).
+
 ### Kimi Code qualification
 
 `kimi-qualification` is a separate explicit-only candidate suite for maintained
