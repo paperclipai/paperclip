@@ -44,6 +44,7 @@ import { extractRemoteMcpPending } from "./remote-mcp-pending.js";
 import { logger } from "../middleware/logger.js";
 import { getAppDefinitionForApplicationKey, isConnectorFeatureEnabled } from "@paperclipai/shared";
 import { instanceSettingsService } from "./instance-settings.js";
+import { redactSensitiveText } from "../redaction.js";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -140,6 +141,7 @@ import {
   readMcpHttpResponse,
   McpHttpResponseError,
   McpHttpInitializationError,
+  type McpHttpResponseProgress,
   mcpHttpRequestHeaders,
   parseMcpHttpResponseBody,
 } from "./mcp-http.js";
@@ -153,6 +155,7 @@ import { assertGmailArchiveToolArgumentsSupported, gmailArchiveToolDescription }
 import { parseRemoteHttpEndpoint } from "./remote-http-endpoint-guard.js";
 import {
   guardedRemoteHttpFetch,
+  DEFAULT_REMOTE_HTTP_RESPONSE_TIMEOUT_MS,
   type GuardedRemoteHttpFetchOptions,
 } from "./remote-http-fetch.js";
 import {
@@ -487,7 +490,32 @@ type RemoteHttpExecutionAudit = {
     bodySizeBytes: number;
     upstreamRequestId: string | null;
   };
+  failureKind?: "invocation_timeout" | "transport_failure" | "protocol_failure";
+  error?: RemoteHttpErrorEvidence;
+  deadline?: { timeoutMs: number; aborted: boolean };
+  stream?: McpHttpResponseProgress;
 };
+
+type RemoteHttpErrorEvidence = {
+  name: string | null;
+  message: string;
+  code: string | null;
+  stack: string | null;
+  cause: RemoteHttpErrorEvidence | null;
+};
+
+function remoteHttpErrorEvidence(error: unknown, seen = new Set<unknown>()): RemoteHttpErrorEvidence {
+  if (seen.has(error)) return { name: null, message: "[Circular cause]", code: null, stack: null, cause: null };
+  const record = asRecord(error);
+  seen.add(error);
+  return {
+    name: typeof record?.name === "string" ? redactSensitiveText(record.name) : null,
+    message: redactSensitiveText(typeof record?.message === "string" ? record.message : String(error)),
+    code: typeof record?.code === "string" ? redactSensitiveText(record.code) : null,
+    stack: typeof record?.stack === "string" ? redactSensitiveText(record.stack) : null,
+    cause: record?.cause == null ? null : remoteHttpErrorEvidence(record.cause, seen),
+  };
+}
 
 type LocalStdioRuntimeTemplate = {
   templateId: string;
@@ -6193,6 +6221,7 @@ export function createToolGatewayService(
     // and connections whose stored grant/catalog predates scope reduction.
     assertGoogleChatToolArgumentsSupported(connection, entry.toolName, parameters);
     assertGmailArchiveToolArgumentsSupported(connection, entry.toolName, parameters);
+    if (useDefaultTimeout) ms = DEFAULT_REMOTE_HTTP_RESPONSE_TIMEOUT_MS;
     if (useDefaultTimeout && isRailwayConnection(connection) && entry.toolName === `${RAILWAY_TOOL_PREFIX}run-command`) {
       ms = railwayCommandBudgetMs(parameters);
     }
@@ -6480,6 +6509,7 @@ export function createToolGatewayService(
       const body = response.ok
         ? JSON.stringify(await readMcpHttpResponse(response, requestId, {
             maxBytes: MAX_REMOTE_MCP_RESPONSE_BYTES,
+            onProgress: (progress) => { execution.stream = progress; },
             onRequest: async (message) => {
               const pending = extractRemoteMcpPending(message);
               if (pending) {
@@ -6607,7 +6637,22 @@ export function createToolGatewayService(
       );
       return { result, headerSummary, execution };
     } catch (error) {
+      execution.error = remoteHttpErrorEvidence(error);
+      execution.deadline = { timeoutMs: ms, aborted: controller.signal.aborted };
+      if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+        if (mcpSession) forgetMcpHttpSession(mcpSession);
+        execution.failureKind = "invocation_timeout";
+        await markCallHealth(
+          "degraded",
+          "Remote MCP tool call timed out; transport remains viable.",
+        );
+        throw new ToolGatewayHttpError(504, "Remote MCP tool call timed out", "tool_timeout", {
+          connectionId: connection.id, catalogEntryId: entry.id, execution, failureKind: "invocation_timeout",
+        });
+      }
       if (error instanceof McpHttpResponseError) {
+        execution.failureKind = "protocol_failure";
+        if (execution.response && error.responseBytes != null) execution.response.bodySizeBytes = error.responseBytes;
         const failure = error.reason === "too_large" ? responseTooLargeError()
           : error.reason === "malformed_response" ? malformedRemoteMcpResponse()
           : new ToolGatewayHttpError(502, "Remote MCP server returned invalid JSON", "mcp_remote_invalid_json");
@@ -6635,21 +6680,11 @@ export function createToolGatewayService(
           },
         );
       }
-      if (error instanceof Error && error.name === "AbortError") {
-        if (mcpSession) forgetMcpHttpSession(mcpSession);
-        throw new ToolGatewayHttpError(
-          504,
-          "Remote MCP tool call timed out",
-          "tool_timeout",
-          {
-            connectionId: connection.id,
-            catalogEntryId: entry.id,
-            execution,
-          },
-        );
-      }
+      execution.failureKind = "transport_failure";
       if (error instanceof McpHttpInitializationError && (error.status === 401 || error.status === 403)) {
         await markCallHealth("error", "Remote MCP session authorization failed.");
+      } else {
+        await markCallHealth("error", "Remote MCP tool call failed.");
       }
       if (mcpSession) forgetMcpHttpSession(mcpSession);
       throw new ToolGatewayHttpError(

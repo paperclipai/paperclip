@@ -175,13 +175,27 @@ export function parseMcpHttpResponseBody(bodyText: string, contentType: string |
   throw new SyntaxError("MCP SSE response contained no data events");
 }
 
+export type McpHttpResponseProgress = {
+  bytesReceived: number;
+  chunksReceived: number;
+  eventsReceived: number;
+  matchedResponse: boolean;
+  ended: boolean;
+};
+
 /** Read until the response for this request arrives, without waiting for an SSE
  * connection to close. Notifications and responses for other IDs are ignored. */
 export async function readMcpHttpResponse(
   response: Response,
   requestId: string | number,
-  options: { maxBytes?: number; onRequest?: (message: Record<string, unknown>) => Promise<void> } = {},
+  options: {
+    maxBytes?: number;
+    onRequest?: (message: Record<string, unknown>) => Promise<void>;
+    onProgress?: (progress: McpHttpResponseProgress) => void;
+  } = {},
 ): Promise<unknown> {
+  const progress: McpHttpResponseProgress = { bytesReceived: 0, chunksReceived: 0, eventsReceived: 0, matchedResponse: false, ended: false };
+  options.onProgress?.(progress);
   const maxBytes = options.maxBytes ?? 8 * 1024 * 1024;
   const isStream = response.headers.get("content-type")?.toLowerCase().includes("text/event-stream");
   const reader = response.body?.getReader();
@@ -204,20 +218,27 @@ export async function readMcpHttpResponse(
   const inspect = async (message: unknown): Promise<unknown | undefined> => {
     if (!message || typeof message !== "object") return undefined;
     const record = message as Record<string, unknown>;
-    if (record.id === requestId && ("result" in record || "error" in record)) return record;
+    if (record.id === requestId && ("result" in record || "error" in record)) {
+      progress.matchedResponse = true;
+      return record;
+    }
     if ("method" in record && "id" in record) await options.onRequest?.(record);
     return undefined;
   };
   const event = async (value: string) => {
     const data = value.split("\n").filter((line) => line.startsWith("data:")).map((line) => line.slice(5).replace(/^ /, "")).join("\n");
     if (!data) return undefined;
+    progress.eventsReceived += 1;
     return inspect(parse(data));
   };
   try {
     while (true) {
       const { value, done } = await reader.read();
       bytes += value?.byteLength ?? 0;
-      if (bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit");
+      progress.bytesReceived = bytes;
+      if (value) progress.chunksReceived += 1;
+      progress.ended = done;
+      if (bytes > maxBytes) throw new McpHttpResponseError("too_large", "MCP response exceeded the size limit", { maxBytes, responseBytes: bytes });
       buffer += decoder.decode(value, { stream: !done });
       if (isStream) {
         // Normalize CRLF after concatenating chunks, including split CR/LF pairs.

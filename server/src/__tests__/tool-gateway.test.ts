@@ -4439,6 +4439,84 @@ rl.on("line", (line) => {
     }
   });
 
+  for (const scenario of ["slow success", "default deadline", "explicit deadline", "peer reset", "cyclic peer reset", "primitive peer reset"] as const) {
+    it(`records remote SSE ${scenario} without confusing a call deadline with a broken transport`, async () => {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const { connection } = await createRemoteMcpTool(db, company.id);
+      await allowAllToolsForAgent(db, company.id, agent.id);
+      const reading = Promise.withResolvers<void>();
+      let bodyController!: ReadableStreamDefaultController<Uint8Array>;
+      let requestId!: string;
+      let signal!: AbortSignal;
+      const progress = 'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"progress":1}}\n\n';
+      const cause = Object.assign(new Error("peer failure Authorization: Bearer fixture-private-value"), { code: "ECONNRESET" });
+      const failure = Object.assign(new Error("aborted", { cause }), { code: "ECONNRESET" });
+      if (scenario === "cyclic peer reset") Object.assign(cause, { cause: failure });
+      const gateway = createTestToolGatewayService(db, {
+        remoteHttpRequest: async (_url, init) => {
+          requestId = JSON.parse(String(init.body)).id;
+          signal = init.signal!;
+          const body = new ReadableStream<Uint8Array>({
+            start(controller) {
+              bodyController = controller;
+              controller.enqueue(new TextEncoder().encode(progress));
+              init.signal!.addEventListener("abort", () => controller.error(failure), { once: true });
+            },
+            pull() { reading.resolve(); },
+          }, { highWaterMark: 0 });
+          return new Response(body, { headers: { "content-type": "text/event-stream", "x-request-id": "sse-request" } });
+        },
+      });
+      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+      const tool = (await gateway.listToolsForSession(session.token)).find((entry) => entry.providerType === "mcp_remote_http")!;
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const call = gateway.executeTool({
+        sessionToken: session.token, tool: tool.name, parameters: { key: "a", value: "b" },
+        ...(scenario === "explicit deadline" ? { timeoutMs: 1500 } : {}),
+      }).then((value) => ({ value, error: null }), (error: unknown) => ({ value: null, error }));
+      try {
+        await reading.promise;
+        if (scenario.includes("peer reset")) bodyController.error(scenario === "primitive peer reset" ? "peer reset" : failure);
+        else await vi.advanceTimersByTimeAsync(scenario === "slow success" ? 12_000 : scenario === "explicit deadline" ? 1500 : 30_000);
+        if (scenario === "slow success") {
+          expect(signal.aborted).toBe(false);
+          bodyController.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ jsonrpc: "2.0", id: requestId, result: { content: [{ type: "text", text: "completed after twelve seconds" }] } })}\n\n`));
+        }
+        const result = await call;
+        const [event] = await db.select().from(toolCallEvents).where(eq(toolCallEvents.eventType, scenario === "slow success" ? "call_completed" : "call_failed"));
+        const [stored] = await db.select().from(toolConnections).where(eq(toolConnections.id, connection.id));
+        if (scenario === "slow success") {
+          expect(result.error).toBeNull();
+          expect(JSON.stringify(result.value)).toContain("completed after twelve seconds");
+          expect(stored.healthStatus).toBe("ok");
+          expect(event.metadata).toMatchObject({ execution: { stream: { eventsReceived: 2, matchedResponse: true, ended: false } } });
+        } else {
+          const timeout = scenario === "default deadline" || scenario === "explicit deadline";
+          expectGatewayError(result.error, timeout ? 504 : 502, timeout ? "tool_timeout" : "mcp_remote_fetch_failed");
+          expect(stored.healthStatus).toBe(timeout ? "degraded" : "error");
+          expect(event.metadata).toMatchObject({ execution: {
+            failureKind: timeout ? "invocation_timeout" : "transport_failure",
+            deadline: { timeoutMs: scenario === "explicit deadline" ? 1500 : 30_000, aborted: timeout },
+            error: scenario === "primitive peer reset"
+              ? { name: null, message: "peer reset", code: null, cause: null }
+              : { name: "Error", message: "aborted", code: "ECONNRESET", cause: { name: "Error", code: "ECONNRESET" } },
+            response: { httpStatus: 200, contentType: "text/event-stream", upstreamRequestId: "sse-request" },
+            stream: { bytesReceived: Buffer.byteLength(progress), chunksReceived: 1, eventsReceived: 1, matchedResponse: false, ended: false },
+          } });
+          expect(JSON.stringify(event.metadata)).not.toContain("fixture-private-value");
+          if (scenario !== "primitive peer reset") expect(JSON.stringify(event.metadata)).toContain("peer failure");
+          if (scenario === "cyclic peer reset") expect(JSON.stringify(event.metadata)).toContain("[Circular cause]");
+        }
+      } finally {
+        vi.useRealTimers();
+        bodyController.error(new Error("fixture cleanup"));
+        await call;
+      }
+    });
+  }
+
   const remoteFailureCases = [
     {
       name: "HTTP status",
