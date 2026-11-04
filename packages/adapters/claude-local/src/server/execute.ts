@@ -97,7 +97,7 @@ import { prepareCompatibleClaudeCommand } from "./sandbox-cli-version.js";
 import { resolveClaudeDesiredSkillNames } from "./skills.js";
 import { isBedrockModelId } from "./models.js";
 import { prepareClaudePromptBundle } from "./prompt-cache.js";
-import { probeTranscript } from "./transcript-probe.js";
+import { probeTranscript, resolveTranscriptConfigDir } from "./transcript-probe.js";
 import { buildClaudeExecutionPermissionArgs, claudeSandboxPermissionEnv } from "./permissions.js";
 import { resolveClaudeModel, SANDBOX_INSTALL_COMMAND } from "../index.js";
 import {
@@ -807,11 +807,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     hasMatchingExecutionTarget;
   let sessionId = canResumeSession ? runtimeSessionId : null;
   const localClaudeEnv = { ...process.env, ...env };
-  const localClaudeConfigDir = localClaudeEnv.CLAUDE_CONFIG_DIR?.trim()
-    ? path.resolve(effectiveExecutionCwd, localClaudeEnv.CLAUDE_CONFIG_DIR)
-    : localClaudeEnv.HOME?.trim()
-      ? path.resolve(effectiveExecutionCwd, localClaudeEnv.HOME, ".claude")
-      : resolveSharedClaudeConfigDir(localClaudeEnv);
+  const localClaudeConfigDir = resolveTranscriptConfigDir(localClaudeEnv, effectiveExecutionCwd);
   if (sessionId && !executionTargetIsRemote) {
     const transcriptAvailable = await hasLocalClaudeSessionTranscript({
       configDir: localClaudeConfigDir,

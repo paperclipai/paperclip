@@ -1,4 +1,19 @@
 import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+
+export function resolveTranscriptConfigDir(
+  env: NodeJS.ProcessEnv,
+  cwd: string,
+  platform: NodeJS.Platform = process.platform,
+  fallbackHome: string = os.homedir(),
+): string {
+  const paths = platform === "win32" ? path.win32 : path.posix;
+  const config = env.CLAUDE_CONFIG_DIR?.trim();
+  if (config) return paths.resolve(cwd, config);
+  const home = env.HOME?.trim() || (platform === "win32" ? env.USERPROFILE?.trim() : undefined) || fallbackHome;
+  return paths.resolve(cwd, home, ".claude");
+}
 
 export function createTranscriptProbe(
   inspect: (file: string) => Promise<boolean | null>,

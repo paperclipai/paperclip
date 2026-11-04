@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { createTranscriptProbe } from "./transcript-probe.js";
+import { createTranscriptProbe, resolveTranscriptConfigDir } from "./transcript-probe.js";
 
 describe("transcript probe", () => {
+  it("uses the child Windows profile when HOME and CLAUDE_CONFIG_DIR are absent", () => {
+    expect(resolveTranscriptConfigDir({ USERPROFILE: "C:\\Users\\agent" }, "C:\\work", "win32", "C:\\Users\\server"))
+      .toBe("C:\\Users\\agent\\.claude");
+  });
   it("bounds stalled filesystem work and shares a pending probe", async () => {
     vi.useFakeTimers();
     try {
