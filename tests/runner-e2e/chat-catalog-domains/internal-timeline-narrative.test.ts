@@ -66,3 +66,28 @@ it.each([
 ])("keeps attribution required in timestamped milestones: %s", reply => {
   expect(grade(reply)).toBe(false);
 });
+
+it("keeps wrapped conditional context without hiding an asserted native failure", () => {
+  expect(grade(account + "\n\nIf a\nnative run failed\nit would be recorded; both native runs succeeded.")).toBe(true);
+  expect(grade(account + "\n\nA\nnative run failed\nbefore repair.")).toBe(false);
+});
+it.each([
+  "The human reassigned the task to Riley.",
+  "The human operator reassigned the task to Riley.",
+  "You reassigned the task to Riley after the failure.",
+])("uses the same validated human handoff for the following pronoun: %s", handoff => {
+  expect(grade(account.replace("You reassigned the task to Riley.", handoff))).toBe(true);
+});
+it.each([
+  "The verification command run by Avery failed",
+  "The verification command Avery ran failed",
+  "The verification command the engineer ran failed",
+])("does not give a heading another runner's command: %s", command => {
+  expect(grade(account.replace("The verification command failed", command))).toBe(false);
+});
+it.each(["2:51:50 PM —", "14:51:50:", "14:51:50"])("reads an equivalent display clock %s", clock => {
+  expect(grade(timestampedAccount.replace("14:51:50 —", clock))).toBe(true);
+});
+it.each(["## Repair (Riley)\n\n", "**Repair (Riley)** "])("reads an adjacent heading layout %s", heading => {
+  expect(grade(account.replace("**Repair (Riley)**\n", heading))).toBe(true);
+});
