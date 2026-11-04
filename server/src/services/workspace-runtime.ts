@@ -3589,28 +3589,43 @@ export async function realizeExecutionWorkspace(input: {
     return { validation, branchName, warnings: [] };
   }
 
-  const existingWorktree = await directoryExists(worktreePath);
-  if (existingWorktree) {
+  if (await directoryExists(worktreePath)) {
     const reusable = await validateReusableWorktree(worktreePath);
     if (reusable.validation?.valid) {
       return await reuseExistingWorktree(worktreePath, reusable.branchName, reusable.warnings);
     }
     const validation = reusable.validation;
-    const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
-    if (requestedExistingBranch) {
-      throw new WorkspaceRuntimeValidationFailure(
-        `Workspace strategy pins existing branch "${requestedExistingBranch}", but the worktree path "${worktreePath}" already exists and is not a reusable checkout of that branch${reason}. Repair or remove that worktree, then retry; exact-branch realization never reconciles it onto another branch.`,
-        {
-          workspaceValidation: {
-            reason: "existing_branch_worktree_not_reusable",
-            reasonCode: validation && !validation.valid ? validation.reasonCode : null,
-            requestedExistingBranch,
-            worktreePath,
+    if (validation && !validation.valid && validation.reasonCode === "not_registered") {
+      await fs.rm(worktreePath, { recursive: true, force: true });
+      if (input.recorder) {
+        await input.recorder.recordOperation({
+          phase: "worktree_prepare",
+          cwd: repoRoot,
+          metadata: { repoRoot, worktreePath, branchName, cleanupAction: "remove_unregistered_worktree_directory" },
+          run: async () => ({
+            status: "succeeded",
+            exitCode: 0,
+            system: `Removed unregistered worktree directory ${worktreePath}\n`,
+          }),
+        });
+      }
+    } else {
+      const reason = validation && !validation.valid ? ` (${validation.reason})` : "";
+      if (requestedExistingBranch) {
+        throw new WorkspaceRuntimeValidationFailure(
+          `Workspace strategy pins existing branch "${requestedExistingBranch}", but the worktree path "${worktreePath}" already exists and is not a reusable checkout of that branch${reason}. Repair or remove that worktree, then retry; exact-branch realization never reconciles it onto another branch.`,
+          {
+            workspaceValidation: {
+              reason: "existing_branch_worktree_not_reusable",
+              reasonCode: validation && !validation.valid ? validation.reasonCode : null,
+              requestedExistingBranch,
+              worktreePath,
+            },
           },
-        },
-      );
+        );
+      }
+      throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
     }
-    throw new Error(`Configured worktree path "${worktreePath}" already exists and is not a reusable git worktree${reason}.`);
   }
 
   const registeredBranchWorktree = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);

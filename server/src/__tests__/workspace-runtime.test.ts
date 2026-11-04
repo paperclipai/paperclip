@@ -1455,40 +1455,50 @@ process.stderr.write(${JSON.stringify(stderr)}, () => { process.exitCode = ${cod
     expect(error.defaultBranch).toBeNull();
   });
 
-  it("rejects reusing an empty directory that only looks like a worktree because it sits inside the repo", async () => {
+  it("recreates a managed worktree whose directory exists but git no longer registers it", async () => {
     const repoRoot = await createTempRepo();
     const branchName = "PAP-447-add-worktree-support";
-    const poisonedPath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
-    await fs.mkdir(poisonedPath, { recursive: true });
+    const stalePath = path.join(repoRoot, ".paperclip", "worktrees", branchName);
+    await execFileAsync("git", ["worktree", "add", "-b", branchName, stalePath, "HEAD"], { cwd: repoRoot });
+    await fs.writeFile(path.join(stalePath, "committed.txt"), "kept\n");
+    await execFileAsync("git", ["add", "committed.txt"], { cwd: stalePath });
+    await execFileAsync("git", ["commit", "-m", "task work"], { cwd: stalePath });
+    await fs.writeFile(path.join(stalePath, "uncommitted.txt"), "lost\n");
+    await fs.rm(path.join(repoRoot, ".git", "worktrees"), { recursive: true, force: true });
 
-    await expect(
-      realizeExecutionWorkspace({
-        base: {
-          baseCwd: repoRoot,
-          source: "project_primary",
-          projectId: "project-1",
-          workspaceId: "workspace-1",
-          repoUrl: null,
-          repoRef: "HEAD",
+    const realized = await realizeExecutionWorkspace({
+      base: {
+        baseCwd: repoRoot,
+        source: "project_primary",
+        projectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: null,
+        repoRef: "HEAD",
+      },
+      config: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          branchTemplate: "{{issue.identifier}}-{{slug}}",
         },
-        config: {
-          workspaceStrategy: {
-            type: "git_worktree",
-            branchTemplate: "{{issue.identifier}}-{{slug}}",
-          },
-        },
-        issue: {
-          id: "issue-1",
-          identifier: "PAP-447",
-          title: "Add Worktree Support",
-        },
-        agent: {
-          id: "agent-1",
-          name: "Codex Coder",
-          companyId: "company-1",
-        },
-      }),
-    ).rejects.toThrow(/not a reusable git worktree \(path is not registered in `git worktree list`\)\./);
+      },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-447",
+        title: "Add Worktree Support",
+      },
+      agent: {
+        id: "agent-1",
+        name: "Codex Coder",
+        companyId: "company-1",
+      },
+    });
+
+    expect(await fs.realpath(realized.worktreePath!)).toBe(await fs.realpath(stalePath));
+    expect(realized.branchName).toBe(branchName);
+    await expect(fs.readFile(path.join(stalePath, "committed.txt"), "utf8")).resolves.toBe("kept\n");
+    await expect(fs.access(path.join(stalePath, "uncommitted.txt"))).rejects.toThrow();
+    const { stdout } = await execFileAsync("git", ["worktree", "list", "--porcelain"], { cwd: repoRoot });
+    expect(stdout).toContain(await fs.realpath(stalePath));
   });
 
   it("reuses the current linked worktree instead of nesting another worktree inside it", async () => {
