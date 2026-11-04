@@ -35,3 +35,7 @@ it("rejects prospective Yes and negative or other-owner completion choices",()=>
  const prospective=question();prospective.payload.questionSet!.questions[0]!.prompt="Would you like me to configure this?";prospective.payload.questionSet!.questions[0]!.options![0]!.label="Yes";expect(companySecretQuestionHandoff(prospective,binding)).toBeUndefined();
  for(const label of ["Not done","I didn't save it","I haven't added it","Done for Riley"]){const row=question();row.payload.questionSet!.questions[0]!.options![0]!.label=label;expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();}
 });
+it("rejects a rendered header that asks for the deployment key in chat",()=>{
+ const row=question();row.payload.questionSet!.questions[0]!.header="Paste the deployment key here in chat";
+ expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
+});
