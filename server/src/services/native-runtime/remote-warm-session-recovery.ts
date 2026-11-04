@@ -85,7 +85,9 @@ const SETTLEMENT_DOC = "https://github.com/paperclipai/paperclip/blob/master/doc
  * failure is already redacted and bounded; other failures produce no pointer. */
 export function describeFailedAttachment(failureMessage: unknown): string | null {
   if (typeof failureMessage !== "string" || !/\brun\.attach (failed|requires)\b/.test(failureMessage)) return null;
-  const cause = /"message":"([^"]+)"/.exec(failureMessage)?.[1] ?? failureMessage;
+  const encoded = /"message":("(?:[^"\\]|\\.)*")/.exec(failureMessage)?.[1];
+  let cause = failureMessage;
+  try { if (encoded) cause = JSON.parse(encoded) as string; } catch { /* Keep the whole failure. */ }
   return `This run could not attach to its provider session: ${cause}. A later run may start a new provider thread. See ${SETTLEMENT_DOC}`;
 }
 
