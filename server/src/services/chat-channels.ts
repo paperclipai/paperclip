@@ -1,4 +1,6 @@
 import { githubReviewCheckService } from "./chat-github-checks.js";
+import { createSlackCloudEventIngress } from "./chat-channels/slack/cloud-ingress.js";
+import { createSlackCloudEnrollment } from "./chat-channels/slack/cloud-enrollment.js";
 import { leasedChatProvider } from "./chat-channels/runtime/receiver-policy.js";
 import { chatReceiverSchedule } from "./chat-channels/runtime/receiver-schedule.js";
 import { registerChatReceiverWork } from "./chat-channels/runtime/receiver-work.js";
@@ -842,6 +844,10 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   const withCredentialMutationLease = chatCredentialMutationLease(db, options);
+  const unregisterSlackCloudIngress = createSlackCloudEventIngress(db, {
+    withCredentialMutationLease, resolveCredentials, runtimeGeneration: endpoint => runtimeGeneration(endpoint.setup),
+    handleWebhook: (publicId, provider, request, generation) => handleWebhook(publicId, provider, request, { slackCloudGeneration: generation }),
+  });
   const { list, get, create, update } = createChatEndpoints(db, {
     endpointRecord, CAPABILITIES, PROVIDER_LABELS, withCredentialMutationLease,
     getPublicBaseUrl, getWebhookPublicBaseUrl,
@@ -2936,10 +2942,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       githubIngressActionId: string;
       githubIngressFence: LifecycleRuntimeFence;
       superseded?: boolean;
-    },
+    } | { slackCloudGeneration: number },
   ) {
     const serviceReceivedAtMs = Date.now();
-    const githubScope = createGitHubWebhookScope(provider, internalContext, options.githubWebhookResponseBudgetMs, GITHUB_WEBHOOK_RESPONSE_BUDGET_MS);
+    const slackCloudGeneration = internalContext && "slackCloudGeneration" in internalContext ? internalContext.slackCloudGeneration : undefined;
+    const githubScope = createGitHubWebhookScope(provider, internalContext && "githubIngressActionId" in internalContext ? internalContext : undefined, options.githubWebhookResponseBudgetMs, GITHUB_WEBHOOK_RESPONSE_BUDGET_MS);
     const { replayingDurableGitHubIngress, ignoreSupersededIngress, matchesGitHubIngressFence, githubResponseDeadlineAt } = githubScope;
     const endpoint = await db
       .select()
@@ -2962,6 +2969,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       throw notFound("Chat endpoint not found");
     }
     recordChatWebhookStage("endpoint_resolved", endpoint.id);
+    if (provider === "slack" && slackCloudGeneration !== undefined && runtimeGeneration(endpoint.setup) !== slackCloudGeneration)
+      return new Response("superseded", { status: 200 });
     // A pause is a durable ingress fence. Providers generally retry non-2xx
     // webhooks, so acknowledge late callbacks without recreating a runtime or
     // admitting any Paperclip mutation.
@@ -2998,6 +3007,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
         code: "chat_endpoint_runtime_superseded",
       });
     }
+    if (provider === "slack" && slackCloudGeneration !== undefined && runtimeContext.generation !== slackCloudGeneration)
+      return new Response("superseded", { status: 200 });
     // runtimeFor can return a newer instance than the leased preflight saw.
     // Keep the exact staged epoch; callbacks on a matching instance retain
     // their normal transactional fences if a pause wins after this check.
@@ -3404,6 +3415,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   }
 
   const { configure, configureWithCredentialLease, runtimeConfig } = createChatConfiguration(db, {
+    onConfigurationSettled: createSlackCloudEnrollment(db, { resolveCredentials, runtimeGeneration }),
     endpointRecord, get, withCredentialMutationLease, getWebhookPublicBaseUrl, invalidateRuntime,
     nativeBotIdentityMatches, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict,
     legacyGitHubLabelsMatchVerifiedCredentials, normalizedCredentials, verifyCredentials,
@@ -3611,6 +3623,7 @@ return {
       unregisterSlackTaskAuthority();
       voice.unregisterAgentTools();
       unregisterGitHubCloudIngress();
+      unregisterSlackCloudIngress();
       unregisterCommittedResponseAuthority();
       await Promise.allSettled([...publicationEndpointTasks.values()]);
       await Promise.allSettled([...backgroundMessageTasks]);

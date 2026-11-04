@@ -2,6 +2,7 @@ import { notifyExternalObjectRefresh } from "./external-object-refresh-notificat
 import { notifyGitHubCredentialChange } from "./github-connection-notifications.js";
 import { notifyToolConnectionHealth } from "./tool-connection-health-notifications.js";
 import { dispatchGitHubBotCloudEvent } from "./chat-github-cloud-ingress.js";
+import { dispatchSlackCloudEvent } from "./chat-channels/slack/cloud-ingress.js";
 import { chatEndpoints } from "@paperclipai/db";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
@@ -504,7 +505,9 @@ export function githubConnectionEventService(
       return { leased: 0, processed: 0, duplicate: 0, ignored: 0, failed: 0 };
     }
     const bindings = await activeBindings();
-    const bots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`, sql`${chatEndpoints.status} not in ('archived', 'disabled')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
+    const githubBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`, sql`${chatEndpoints.status} not in ('archived', 'disabled')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
+    const slackBots = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "slack"), sql`${chatEndpoints.setup}->'slackCloudEvents' is not null`, sql`${chatEndpoints.status} in ('active','verifying','attention')`, sql`exists (select 1 from companies where id = ${chatEndpoints.companyId} and status <> 'archived')`));
+    const bots = [...githubBots, ...slackBots];
     let identity: { subject: string; companyId: string } | null = bindings[0] ?? (bots[0] ? { subject: "github-bot-events", companyId: bots[0].companyId } : null);
     const hasConsumer = bindings.length > 0 || bots.length > 0;
     if (!identity) {
@@ -517,7 +520,7 @@ export function githubConnectionEventService(
       if (grant && subject) identity = { subject, companyId: grant.companyId };
     }
     if (!identity) {
-      const [history] = await db.select().from(chatEndpoints).where(and(eq(chatEndpoints.provider, "github"), sql`${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null`)).limit(1);
+      const [history] = await db.select().from(chatEndpoints).where(sql`(${chatEndpoints.provider} = 'github' AND ${chatEndpoints.setup}->'github'->>'cloudRegistrationId' is not null) OR (${chatEndpoints.provider} = 'slack' AND ${chatEndpoints.setup}->'slackCloudEvents' is not null)`).limit(1);
       if (history) identity = { subject: "github-bot-events", companyId: history.companyId };
     }
     if (!identity) {
@@ -543,6 +546,11 @@ export function githubConnectionEventService(
     };
     const acknowledge: string[] = [];
     for (const event of lease.events) {
+      if (event.provider === "slack") {
+        try { await dispatchSlackCloudEvent(db, event); acknowledge.push(event.id); result.processed += 1; }
+        catch { result.failed += 1; }
+        continue;
+      }
       if (event.payload.githubApp !== undefined) {
         try { await dispatchGitHubBotCloudEvent(db, event); acknowledge.push(event.id); result.processed += 1; }
         catch { result.failed += 1; }

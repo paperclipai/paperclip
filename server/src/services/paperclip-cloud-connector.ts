@@ -35,8 +35,8 @@ export const GMAIL_CONNECTOR_SCOPES = [
 export { GOOGLE_WORKSPACE_CONNECTOR_PROFILES };
 
 export type PaperclipCloudConnectorEnvironment = "development" | "test" | "staging" | "production";
-export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app";
-export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot";
+export type PaperclipCloudConnectorOperation = "status" | "session" | "claim" | "refresh" | "revoke" | "webhook-bind" | "event-lease" | "event-ack" | "github-app" | "slack-events";
+export type PaperclipCloudConnectorProfileId = GoogleWorkspaceConnectorProfileId | GitHubConnectorProfileId | AsanaConnectorProfileId | "slack.manager" | "github.bot" | "slack.events.v1";
 export type PaperclipCloudConnectorProvider = "google" | "github" | "asana" | "slack";
 
 export type PaperclipCloudConnectorConfig = {
@@ -75,7 +75,7 @@ export type SealedConnectorEvents = {
   leaseId: string;
   events: Array<{
     id: string;
-    provider: "github";
+    provider: "github" | "slack";
     event: string;
     action: string | null;
     installationId: string | null;
@@ -115,10 +115,13 @@ type ConnectorResponse = {
   events?: unknown;
   acknowledged?: unknown;
   githubApps?: { version: number };
+  slackEvents?: { version: number };
+  enrollment?: unknown;
   eventWakeVersion?: unknown;
 };
 
 const ENDPOINTS: Record<PaperclipCloudConnectorOperation, string> = {
+  "slack-events": "/v1/connector/slack-events",
   "github-app": "/v1/connector/github-apps",
   status: "/v1/connector/instance-status",
   session: "/v1/connector/sessions",
@@ -280,7 +283,7 @@ export function createPaperclipCloudConnector(input: {
   async function call(
     operation: PaperclipCloudConnectorOperation,
     claims: { subject: string; companyId: string; profile?: PaperclipCloudConnectorProfileId; scopes?: string[]; returnUri?: string; returnState?: string; claimId?: string; redemptionId?: string; eventWakeVersion?: 0 | 1 },
-    secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement"; value: string },
+    secret?: { field: "refreshToken" | "token" | "binding" | "acknowledgement" | "enrollment"; value: string },
   ): Promise<ConnectorResponse> {
     const endpoint = new URL(ENDPOINTS[operation], `${config.baseUrl}/`).toString();
     const issuedAt = Math.floor(now() / 1000);
@@ -381,6 +384,14 @@ export function createPaperclipCloudConnector(input: {
 
   return {
     eventWakeVersion: () => eventWakeVersion,
+    async slackEventsAvailable() {
+      const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
+      return response.active === true && response.slackEvents?.version === 1;
+    },
+    async slackEventEnrollment(values: { subject: string; companyId: string; enrollment: Record<string, unknown> }) {
+      const response = await call("slack-events", values, { field: "enrollment", value: JSON.stringify(values.enrollment) });
+      return response.enrollment;
+    },
     async githubAppsAvailable() {
       const response = await call("status", { subject: "instance-capabilities", companyId: "instance-capabilities" });
       return response.active === true && response.githubApps?.version === 2;
@@ -550,6 +561,16 @@ export function createPaperclipCloudConnector(input: {
             if (!isRecord(delivery) || delivery.v !== 1 || delivery.instanceId !== config.instanceId || delivery.environment !== config.environment
               || delivery.registrationId !== packet.registrationId) throw badEnvelope();
             event.payload = { githubApp: delivery };
+          }
+          if (event.provider === "slack") {
+            const packet = event.payload.slackEvent;
+            if (!isRecord(packet) || typeof packet.bindingId !== "string" || packet.sealed === undefined) throw badEnvelope();
+            const sealed = parseEnvelope(packet.sealed, "events", "slack", "slack.events.v1");
+            const delivery = decryptEnvelope(sealed, sealKey, config.instanceId, config.environment, "slack", "slack.events.v1", []);
+            if (!isRecord(delivery) || delivery.version !== 1 || delivery.instanceId !== config.instanceId
+              || delivery.environment !== config.environment || delivery.bindingId !== packet.bindingId
+              || delivery.acceptedAt !== event.createdAt) throw badEnvelope();
+            event.payload = { slackEvent: delivery };
           }
           events.push(event);
         } catch {
@@ -737,7 +758,7 @@ function unsealEvents(
     if (parsed.v !== 1 || parsed.instanceId !== instanceId || parsed.environment !== environment
       || typeof parsed.leaseId !== "string" || !Array.isArray(parsed.events)) throw badEnvelope();
     for (const event of parsed.events) {
-      if (!isRecord(event) || typeof event.id !== "string" || event.provider !== "github"
+      if (!isRecord(event) || typeof event.id !== "string" || !["github", "slack"].includes(event.provider)
         || typeof event.event !== "string" || !isRecord(event.payload) || !Array.isArray(event.bindingIds)
         || !event.bindingIds.every((id) => typeof id === "string")) throw badEnvelope();
     }

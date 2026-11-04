@@ -100,6 +100,7 @@ type ChatConfigurationOptions = Pick<ReturnType<typeof createChatCredentials>, "
   githubWizard: Pick<ReturnType<typeof createGitHubAppSetup>["githubWizard"], "repairCloud">;
   nativeBotIdentityClaimBarrier?: () => Promise<void>;
   allowLocalVoiceBoard?: boolean;
+  onConfigurationSettled?: (endpointId: string, actorUserId: string | null | undefined, lease: CredentialMutationLeaseGuard) => Promise<void>;
 };
 export function createChatConfiguration(db: Db, options: ChatConfigurationOptions) {
   const { endpointRecord, get, withCredentialMutationLease, getWebhookPublicBaseUrl, invalidateRuntime, nativeBotIdentityMatches, assertNativeBotIdentityAvailable, isNativeBotIdentityUniqueViolation, nativeBotIdentityConflict, legacyGitHubLabelsMatchVerifiedCredentials, normalizedCredentials, verifyCredentials, persistCredentials, clearCredentials, resolveCredentials, prepareProviderInventory, reconcileProviderResourceRows, reconcileDiscordCommands, runtimeFor, runtimeContextForRecord, stageTelegramMaintenance, processTelegramMaintenance, recordTelegramStopSubscription, fetchImpl, redactError, runtimeGeneration, leasedChatProvider, PROVIDER_LABELS, SUPPLIED_CREDENTIAL_KEYS, PROVIDER_CREDENTIAL_CHECK_TIMEOUT_MS, isSupportedTelegramWebhookBaseUrl } = options;
@@ -166,6 +167,18 @@ export function createChatConfiguration(db: Db, options: ChatConfigurationOption
   }
 
   async function configureWithCredentialLease(
+    endpointId: string,
+    input: ConfigureChatEndpointInput,
+    credentialLease: CredentialMutationLeaseGuard,
+    actorUserId?: string | null,
+    managementContext?: ConnectionManagementContext,
+  ) {
+    const result = await configureWithCredentialLeaseImpl(endpointId, input, credentialLease, actorUserId, managementContext);
+    await options.onConfigurationSettled?.(endpointId, actorUserId, credentialLease);
+    return result;
+  }
+
+  async function configureWithCredentialLeaseImpl(
     endpointId: string,
     input: ConfigureChatEndpointInput,
     credentialLease: CredentialMutationLeaseGuard,
