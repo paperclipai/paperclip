@@ -74,6 +74,7 @@ import {
 } from "./native-board-response-wait.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
+import { transitionHeartbeatRunStatus, type HeartbeatRunStatusPatch } from "../heartbeat-run-lifecycle.js";
 import { isPublishedGitHubReviewCompletionContinuation, readPublishedGitHubReviewCompletionContinuation, resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import {
   authorizeNativeChatReviewPresentation,
@@ -436,20 +437,10 @@ async function recordRetryableFailure(input: {
     if (projectsTerminalStatus) await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (projectsTerminalStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (projectsTerminalStatus) await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
-    const [updatedRun] = await tx
-      .update(heartbeatRuns)
-      .set({
+    const runPatch: HeartbeatRunStatusPatch = {
         executionStatusDeliveryId: randomUUID(),
-        ...(projectsTerminalStatus
-          ? {
               // Stop can win after the failure's admission snapshot. The
               // UPDATE locks and evaluates the current row, not that snapshot.
-              status: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.status}
-                else ${input.failureScope === "workspace" ? "failed" : exhaustedRunStatus} end`,
-              finishedAt: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.finishedAt}
-                else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
-            }
-          : {}),
         nativePhase: phase,
         nativePhaseUpdatedAt: now,
         // Preserve concurrent cancellation and accounting receipts while
@@ -461,9 +452,22 @@ async function recordRetryableFailure(input: {
           nextAttemptAt: supersededByNewerRun || exhausted ? null : nextAttemptAt.toISOString(),
         })}::jsonb`,
         updatedAt: now,
-      })
-      .where(eq(heartbeatRuns.id, input.run.id))
-      .returning();
+      };
+    const updatedRun = projectsTerminalStatus
+      ? (await transitionHeartbeatRunStatus(tx, input.run.id, {
+          toStatus: currentRun.status === "cancelled"
+            ? "cancelled"
+            : input.failureScope === "workspace"
+              ? "failed"
+              : exhaustedRunStatus,
+          patch: {
+            ...runPatch,
+            finishedAt: currentRun.status === "cancelled"
+              ? currentRun.finishedAt
+              : (currentRun.finishedAt ?? now),
+          },
+        }))?.run
+      : (await tx.update(heartbeatRuns).set(runPatch).where(eq(heartbeatRuns.id, input.run.id)).returning())[0];
     if (projectsTerminalStatus && updatedRun) await settleNativeTerminalWake(tx as unknown as Db, updatedRun);
     if (projectsTerminalStatus) terminalRunToEmit = updatedRun ?? null;
     if (supersededByNewerRun) {
@@ -1645,31 +1649,17 @@ export async function finalizeNativeRun(input: {
           isNull(heartbeatRuns.finishedAt),
         ] : []),
       );
-      const projectRun = (tx: Db) => tx
-        .update(heartbeatRuns)
-        .set({
-          executionStatusDeliveryId: sql`case when ${projectionChanged}
-            then ${randomUUID()}::uuid else ${heartbeatRuns.executionStatusDeliveryId} end`,
-          ...(input.projectRunStatus
-            ? {
-                status: projectedRunStatus,
-                finishedAt: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.finishedAt}
-                  when ${heartbeatRuns.status} is distinct from ${projectedStatus} then ${now.toISOString()}::timestamptz else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
-              }
-            : {}),
-          nativePhase: finalizationPhase,
-          nativePhaseUpdatedAt: now,
-          ...(clearExecutionFailure || providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
-          resultJson: projectedResult,
-          updatedAt: now,
-        })
-        .where(eq(heartbeatRuns.id, run.id))
-        .returning();
+      const runPatch: HeartbeatRunStatusPatch = {
+        executionStatusDeliveryId: sql`case when ${projectionChanged}
+          then ${randomUUID()}::uuid else ${heartbeatRuns.executionStatusDeliveryId} end`,
+        nativePhase: finalizationPhase,
+        nativePhaseUpdatedAt: now,
+        ...(clearExecutionFailure || providerFailure ? { error: projectedError, errorCode: projectedErrorCode } : {}),
+        resultJson: projectedResult,
+        updatedAt: now,
+      };
       const projection = await input.db.transaction(async transaction => {
         const tx = transaction as unknown as Db;
-
-
-
         const [before] = await tx.select({ status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
           nativePhase: heartbeatRuns.nativePhase, finishedAt: heartbeatRuns.finishedAt })
           .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
@@ -1686,7 +1676,19 @@ export async function finalizeNativeRun(input: {
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
         await notifyExecutionRunWork(tx, { companyId: run.companyId });
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
-        const [after] = await projectRun(tx);
+        const after = input.projectRunStatus
+          ? (await transitionHeartbeatRunStatus(tx, run.id, {
+              toStatus: before.status === "cancelled" ? "cancelled" : projectedStatus,
+              patch: {
+                ...runPatch,
+                finishedAt: before.status === "cancelled"
+                  ? before.finishedAt
+                  : before.status !== projectedStatus
+                    ? now
+                    : (before.finishedAt ?? now),
+              },
+            }))?.run
+          : (await tx.update(heartbeatRuns).set(runPatch).where(eq(heartbeatRuns.id, run.id)).returning())[0];
         if (after && input.projectRunStatus) await settleNativeTerminalWake(tx, after);
         return after ? { before, after } : null;
       });

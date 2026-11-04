@@ -2,15 +2,15 @@ import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js"
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
 import { agentWakeupRequests, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { and, eq } from "drizzle-orm";
-import type { PgUpdateSetSource } from "drizzle-orm/pg-core";
 import { claimNativeReviewExecutionLock, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { transitionHeartbeatRunStatus, type HeartbeatRunStatusPatch } from "../heartbeat-run-lifecycle.js";
 
 /** The run, wake, and issue lock form one reviewer admission claim. */
 export async function claimQueuedNativeReviewRun(db: Db, input: {
   run: typeof heartbeatRuns.$inferSelect;
   agentNameKey: string | null;
   claimedAt: Date;
-  claimValues: PgUpdateSetSource<typeof heartbeatRuns>;
+  claimValues: HeartbeatRunStatusPatch;
 }): Promise<typeof heartbeatRuns.$inferSelect | null> {
   const context = input.run.contextSnapshot as Record<string, unknown> | null;
   const issueId = context?.issueId;
@@ -42,10 +42,14 @@ export async function claimQueuedNativeReviewRun(db: Db, input: {
     });
     if (!locked) return null;
     await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
-    const [claimed] = await tx.update(heartbeatRuns).set({
-      ...input.claimValues, status: "running", startedAt: run.startedAt ?? input.claimedAt,
-      updatedAt: input.claimedAt,
-    }).where(eq(heartbeatRuns.id, run.id)).returning();
+    const claimed = (await transitionHeartbeatRunStatus(tx, run.id, {
+      toStatus: "running",
+      patch: {
+        ...input.claimValues,
+        startedAt: run.startedAt ?? input.claimedAt,
+        updatedAt: input.claimedAt,
+      },
+    }))?.run ?? null;
     if (run.wakeupRequestId) await tx.update(agentWakeupRequests).set({
       status: "claimed", claimedAt: input.claimedAt, updatedAt: input.claimedAt,
     }).where(eq(agentWakeupRequests.id, run.wakeupRequestId));

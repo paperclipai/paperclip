@@ -22,6 +22,7 @@ import { isSupersededConversationRun } from "./agent-conversations.js";
 import { issueService } from "./issues.js";
 import { isInterruptedNativePreparation, isInterruptedNativePreparationCandidate } from "./cancelled-native-startup.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
+import { transitionHeartbeatRunStatus, type HeartbeatRunValuesPatch } from "./heartbeat-run-lifecycle.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
 export const LEGACY_RECOVERY_CAUSE = "legacy_execution_requires_reconciliation";
@@ -98,7 +99,7 @@ export async function terminalizeLegacyExecution(input: {
   db: Db;
   run: Run;
   status: string;
-  patch?: Partial<typeof heartbeatRuns.$inferInsert>;
+  patch?: HeartbeatRunValuesPatch;
   fromStatuses?: string[];
   reconcileIfNeeded?: boolean;
   writeConditions?: SQL[];
@@ -141,24 +142,20 @@ export async function terminalizeLegacyExecution(input: {
     if (issueId) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: current.companyId, issueId });
     await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
     await notifyExecutionRunWork(tx, { companyId: current.companyId });
-    let [updated] = await tx
-      .update(heartbeatRuns)
-      .set({
-        status: input.recordRestoreFailureOnly ? current.status : status,
+    let updated = (await transitionHeartbeatRunStatus(tx, run.id, {
+      toStatus: input.recordRestoreFailureOnly ? current.status : status,
+      patch: {
         ...patch,
         executionStatusDeliveryId: input.recordRestoreFailureOnly || current.status !== status || Object.keys(patch ?? {}).length > 0
           ? randomUUID() : current.executionStatusDeliveryId,
         updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(heartbeatRuns.id, run.id),
-          eq(heartbeatRuns.companyId, run.companyId),
-          eq(heartbeatRuns.status, current.status),
-          ...(input.writeConditions ?? []),
-        ),
-      )
-      .returning();
+      },
+      where: and(
+        eq(heartbeatRuns.companyId, run.companyId),
+        eq(heartbeatRuns.status, current.status),
+        ...(input.writeConditions ?? []),
+      ),
+    }))?.run ?? null;
     if (!updated) return null;
     const retainedLeaseIds = await preserveLegacyWorkspaceRestoreSources(tx as unknown as Db,
       input.recordRestoreFailureOnly ? { ...updated, status: "failed" } : updated, input.workspaceRestoreSource);

@@ -17,6 +17,7 @@ import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
+import { transitionHeartbeatRunStatus } from "../heartbeat-run-lifecycle.js";
 import { nativeRunnerOwnershipNotHeldCondition } from "./native-runner-ownership.js";
 
 
@@ -173,11 +174,10 @@ export async function projectCommittedRun(input: {
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     await notifyExecutionRunWork(tx, { companyId: input.run.companyId });
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
-    const [after] = await tx
-      .update(heartbeatRuns)
-      .set({
+    const after = (await transitionHeartbeatRunStatus(tx, input.run.id, {
+      toStatus: projectedStatus,
+      patch: {
         executionStatusDeliveryId: randomUUID(),
-        status: projectedStatus,
         finishedAt: before.finishedAt ?? now,
         nativePhase: "committed",
         nativePhaseUpdatedAt: now,
@@ -185,18 +185,15 @@ export async function projectCommittedRun(input: {
           ? {
               error: null,
               errorCode: null,
-
-
-
               resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
                 || ${recoveredExecutionFailureMetadata()}
                 || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)`,
             }
           : { resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)` }),
         updatedAt: now,
-      })
-      .where(needsRepair)
-      .returning();
+      },
+      where: needsRepair,
+    }))?.run;
     if (after) await settleNativeTerminalWake(tx, after);
     return after ? { before, after } : null;
   });

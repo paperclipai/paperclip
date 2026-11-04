@@ -233,6 +233,7 @@ import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeW
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
 import { persistActivity, publishActivity } from "../activity-log.js";
+import { transitionHeartbeatRunStatus, type HeartbeatRunStatusPatch } from "../heartbeat-run-lifecycle.js";
 import { commitNativeStatusDecision } from "./status-decision-committer.js";
 import { resolvePaperclipInstanceRoot } from "../../home-paths.js";
 import { documentService } from "../documents.js";
@@ -8073,22 +8074,19 @@ async function performNativeCancellation(
             (effect) => effect.kind === "accept_replacement_turn",
           )
         ) {
-          await tx
-            .update(heartbeatRuns)
-            .set({
-              status: "running",
+          await transitionHeartbeatRunStatus(tx, runId, {
+            toStatus: "running",
+            patch: {
               continuationAttempt: sql`${heartbeatRuns.continuationAttempt} + 1`,
               nextAction: "Accept a replacement native turn on the existing run.",
               updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(heartbeatRuns.id, runId),
-                eq(heartbeatRuns.companyId, cancellationContext.companyId),
-                eq(heartbeatRuns.agentId, cancellationContext.agentId),
-                eq(heartbeatRuns.nativeIssueId, cancellationContext.issueId),
-              ),
-            );
+            },
+            where: and(
+              eq(heartbeatRuns.companyId, cancellationContext.companyId),
+              eq(heartbeatRuns.agentId, cancellationContext.agentId),
+              eq(heartbeatRuns.nativeIssueId, cancellationContext.issueId),
+            ),
+          });
         }
         const activity = await persistActivity(tx as unknown as Db, {
           companyId: cancellationContext.companyId,
@@ -10619,18 +10617,9 @@ async function executePaperclipNativeSessionWithinScope(
         if (!ownershipUnverified) await notifyInstructionCollection(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
         if (!ownershipUnverified) await notifyCancelledWorkspacePreservation(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
         if (!ownershipUnverified) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId });
-        let [updatedRun] = await tx
-          .update(heartbeatRuns)
-          .set({
+        const runPatch = {
             // An authentication timeout does not prove the retained runner or
             // its provider stopped. Preserve physical ownership until verified.
-            ...(!ownershipUnverified
-              ? {
-                  status: "failed",
-                  executionStatusDeliveryId: randomUUID(),
-                  finishedAt: now,
-                }
-              : {}),
             nativePhase: phase,
             nativePhaseUpdatedAt: now,
             error: message,
@@ -10641,9 +10630,21 @@ async function executePaperclipNativeSessionWithinScope(
               ? NATIVE_OWNERSHIP_UNVERIFIED_ERROR_CODE
               : sourceFailureCode,
             updatedAt: now,
-          })
-          .where(eq(heartbeatRuns.id, input.execution.binding.runId))
-          .returning();
+          } satisfies HeartbeatRunStatusPatch;
+        let updatedRun: typeof heartbeatRuns.$inferSelect | undefined;
+        if (ownershipUnverified) {
+          [updatedRun] = await tx
+            .update(heartbeatRuns)
+            .set(runPatch)
+            .where(eq(heartbeatRuns.id, input.execution.binding.runId))
+            .returning();
+        } else {
+          const failed = await transitionHeartbeatRunStatus(tx, input.execution.binding.runId, {
+            toStatus: "failed",
+            patch: { ...runPatch, executionStatusDeliveryId: randomUUID(), finishedAt: now },
+          });
+          updatedRun = failed?.run;
+        }
         if (updatedRun && exhausted && !ownershipUnverified && !updated.resultId) {
           updatedRun = await preserveNativeFailedWorkspace(tx as unknown as Db, updatedRun) ?? updatedRun;
         }

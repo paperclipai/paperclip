@@ -41,6 +41,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
+import { transitionHeartbeatRunStatus } from "../heartbeat-run-lifecycle.js";
 import { resumeNativeWorkspaceFinalization, recordNativeWorkspaceFinalizationFailure } from "./native-workspace-finalizer.js";
 import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
 import {
@@ -275,17 +276,19 @@ export async function claimNativeSessionResumptions(input: {
         await notifyInstructionCollection(tx, { companyId: row.run.companyId, runId: row.run.id });
         await notifyCancelledWorkspacePreservation(tx, { companyId: row.run.companyId, runId: row.run.id });
         await notifyUnsafeWorkspaceExportRunChange(tx, row.run);
-        const [updatedRun] = await tx.update(heartbeatRuns).set({
-          status: "failed",
-          finishedAt: now,
-          nativePhase: "terminal_failure",
-          nativePhaseUpdatedAt: now,
-          errorCode: failureCode,
-          error: typeof failureDetail.message === "string"
-            ? failureDetail.message
-            : "Persisted native session state is ambiguous and cannot be resumed safely",
-          updatedAt: now,
-        }).where(eq(heartbeatRuns.id, row.run.id)).returning();
+        const updatedRun = (await transitionHeartbeatRunStatus(tx, row.run.id, {
+          toStatus: "failed",
+          patch: {
+            finishedAt: now,
+            nativePhase: "terminal_failure",
+            nativePhaseUpdatedAt: now,
+            errorCode: failureCode,
+            error: typeof failureDetail.message === "string"
+              ? failureDetail.message
+              : "Persisted native session state is ambiguous and cannot be resumed safely",
+            updatedAt: now,
+          },
+        }))?.run ?? null;
         // Only a genuine transition into "failed" is a new terminal failure.
         // A candidate that is already "failed" (the filter above admits
         // both "running" and "failed") must not send a second Sentry event,
@@ -336,15 +339,17 @@ export async function claimNativeSessionResumptions(input: {
         eq(nativeRunFinalizations.phase, row.coordinator.phase),
       )).returning({ runId: nativeRunFinalizations.runId }).then((rows) => rows[0] ?? null);
       if (!updated) return false;
-      await tx.update(heartbeatRuns).set({
-        status: "running",
-        finishedAt: null,
-        error: null,
-        errorCode: null,
-        nativePhase: "observed",
-        nativePhaseUpdatedAt: now,
-        updatedAt: now,
-      }).where(eq(heartbeatRuns.id, row.run.id));
+      await transitionHeartbeatRunStatus(tx, row.run.id, {
+        toStatus: "running",
+        patch: {
+          finishedAt: null,
+          error: null,
+          errorCode: null,
+          nativePhase: "observed",
+          nativePhaseUpdatedAt: now,
+          updatedAt: now,
+        },
+      });
       await notifyStatusCardIssueChange(tx, run.companyId);
       await tx.update(issues).set({
         executionRunId: run.id,

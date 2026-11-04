@@ -8,6 +8,7 @@ import { and, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
 import { environmentLeases, environments, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, nativeRunResults, type Db } from "@paperclipai/db";
 import { conflict } from "../../errors.js";
 import { persistActivity, publishActivity } from "../activity-log.js";
+import { transitionHeartbeatRunStatus } from "../heartbeat-run-lifecycle.js";
 import { hasRemoteTerminationReceipt, remoteTerminationReceipt } from "../remote-execution-termination.js";
 import { NATIVE_WORKSPACE_EXPORT_RESUME_KEY, readNativeWorkspaceExportResume, settleNativeWorkspaceExportResume } from "./native-workspace-export-resume.js";
 import { withNativeWorkspaceFinalizationOwnership } from "./native-workspace-finalization-ownership.js";
@@ -139,9 +140,18 @@ export async function retryNativeWorkspaceExport(input: {
         await notifyNativeFinalizationWork(tx, { companyId: current.run.companyId, runId: current.run.id });
         await tx.update(nativeRunFinalizations).set({ phase: "result_accepted", failureCode: null, nextAttemptAt: null,
           failureDetail: { ...current.coordinator.failureDetail, workspaceFinalizeAttempt: 0, workspaceExportRetry: retry }, updatedAt: now }).where(eq(nativeRunFinalizations.runId, current.run.id));
-        await tx.update(heartbeatRuns).set({ status: "running", finishedAt: null, error: null, errorCode: null,
-          nativePhase: "result_accepted", nativePhaseUpdatedAt: now,
-          resultJson: { ...current.run.resultJson, workspaceExportRetry: retry, finalizationPhase: "result_accepted", failureCode: null, originalFailureCode: null, nextAttemptAt: null }, updatedAt: now }).where(eq(heartbeatRuns.id, current.run.id));
+        await transitionHeartbeatRunStatus(tx, current.run.id, {
+          toStatus: "running",
+          patch: {
+            finishedAt: null,
+            error: null,
+            errorCode: null,
+            nativePhase: "result_accepted",
+            nativePhaseUpdatedAt: now,
+            resultJson: { ...current.run.resultJson, workspaceExportRetry: retry, finalizationPhase: "result_accepted", failureCode: null, originalFailureCode: null, nextAttemptAt: null },
+            updatedAt: now,
+          },
+        });
         await notifyStatusCardIssueChange(tx, current.run.companyId);
         await tx.update(issues).set({ executionRunId: current.run.id, updatedAt: now }).where(eq(issues.id, current.issue.id));
         // Reclaim the same lease only for control-plane copyback. The normal

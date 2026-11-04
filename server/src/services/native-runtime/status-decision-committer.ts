@@ -81,6 +81,7 @@ import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { materializeNativeProviderCapacityRetry } from "./native-provider-capacity-retry.js";
 import { NATIVE_PROVIDER_OVERLOADED_CODE } from "./native-provider-failure.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
+import { transitionHeartbeatRunStatus } from "../heartbeat-run-lifecycle.js";
 
 export class NativeStatusRaceError extends Error {
   readonly code = "native_status_race" as const;
@@ -1015,24 +1016,15 @@ async function materializeDecisionEffect(input: {
     };
   }
   if (effect.kind === "accept_replacement_turn") {
-    const [run] = await input.tx
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
+    const run = (await transitionHeartbeatRunStatus(input.tx, input.runId, {
+      toStatus: "running",
+      patch: {
         continuationAttempt: sql`${heartbeatRuns.continuationAttempt} + 1`,
         nextAction: "Accept a replacement native turn on the existing run.",
         updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(heartbeatRuns.id, input.runId),
-          eq(heartbeatRuns.companyId, input.companyId),
-        ),
-      )
-      .returning({
-        id: heartbeatRuns.id,
-        continuationAttempt: heartbeatRuns.continuationAttempt,
-      });
+      },
+      where: eq(heartbeatRuns.companyId, input.companyId),
+    }))?.run ?? null;
     if (!run) throw new Error("native_replacement_turn_not_accepted");
     return {
       effectKind: effect.kind,
@@ -1107,20 +1099,14 @@ async function materializeDecisionEffect(input: {
     await notifyCancelledWorkspacePreservation(input.tx, { companyId: input.companyId, runId: input.runId });
     await notifyUnsafeWorkspaceExportRecovery(input.tx, { companyId: input.companyId, issueId: input.issue.id });
     await notifyDeliveryWork(input.tx, DELIVERY_QUEUES.accounting, input.companyId);
-    const [run] = await input.tx
-      .update(heartbeatRuns)
-      .set({
-        status: "cancelled",
+    const run = (await transitionHeartbeatRunStatus(input.tx, input.runId, {
+      toStatus: "cancelled",
+      patch: {
         finishedAt: new Date(),
         updatedAt: new Date(),
-      })
-      .where(
-        and(
-          eq(heartbeatRuns.id, input.runId),
-          eq(heartbeatRuns.companyId, input.companyId),
-        ),
-      )
-      .returning();
+      },
+      where: eq(heartbeatRuns.companyId, input.companyId),
+    }))?.run ?? null;
     if (!run) throw new Error("native_continuation_cancellation_run_missing");
     input.terminalRunsToEmit?.push(run);
     return {

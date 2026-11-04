@@ -54,6 +54,7 @@ import {
   isConversationAdapter,
 } from "../conversation-continuation.js";
 import { terminalizeLegacyExecution } from "../legacy-execution-recovery.js";
+import { transitionHeartbeatRunStatus, type HeartbeatRunValuesPatch } from "../heartbeat-run-lifecycle.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "../heartbeat-run-status-payload.js";
 import { randomUUID } from "node:crypto";
@@ -1085,7 +1086,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   async function setRunStatus(
     runId: string,
     status: string,
-    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    patch?: HeartbeatRunValuesPatch,
   ) {
     const previousStatus = await db
       .select()
@@ -1122,7 +1123,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
         },
       };
     }
-    const updated = await writeRunStatus(status, previousStatus, writer =>
+    const updated = await writeRunStatus(status, previousStatus, async writer =>
       previousStatus && previousStatus.runtimeMode === "legacy" && isHeartbeatRunTerminalStatus(status)
         ? terminalizeLegacyExecution({
             db: writer,
@@ -1131,18 +1132,15 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             patch,
             reconcileIfNeeded: true,
           })
-        : writer
-            .update(heartbeatRuns)
-            .set({
-              status,
+        : (await transitionHeartbeatRunStatus(writer, runId, {
+            toStatus: status,
+            patch: {
               ...patch,
               ...(status === "failed" && patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
-            })
-            .where(eq(heartbeatRuns.id, runId))
-            .returning()
-            .then((rows) => rows[0] ?? null));
+            },
+          }))?.run ?? null);
 
     if (updated) {
       publishLiveEvent({
@@ -1160,7 +1158,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   async function setRunStatusIfRunning(
     runId: string,
     status: string,
-    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    patch?: HeartbeatRunValuesPatch,
     failureReport?: RunFailureReportOptions,
     options?: { setupFailure: true },
   ) {
@@ -1176,7 +1174,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     runId: string,
     status: string,
     fromStatuses: string[],
-    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+    patch?: HeartbeatRunValuesPatch,
     failureReport?: RunFailureReportOptions,
     cancellationCondition?: ReturnType<typeof nativeRetryCancellationCommitCondition>,
     options?: { setupFailure: true },
@@ -1242,19 +1240,17 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
             reconcileIfNeeded: true,
             writeConditions: [nativeRunnerOwnershipNotHeldCondition(), ...(cancellationCondition ? [cancellationCondition] : [])],
           })
-        : writer
-            .update(heartbeatRuns)
-            .set({
-              status,
+        : transitionHeartbeatRunStatus(writer, runId, {
+            toStatus: status,
+            patch: {
               ...patch,
               ...(status === "failed" && patch?.resultJson !== undefined ? { resultJson: preserveNativeExecutionObligationsSql(patch.resultJson, options?.setupFailure) } : {}),
               ...(patch?.usageJson ? { usageJson: preserveAcceptedRunUsageProjectionSql(patch.usageJson) } : {}),
               executionStatusDeliveryId: randomUUID(),
               updatedAt: new Date(),
-            })
-            .where(
+            },
+            where:
               and(
-                eq(heartbeatRuns.id, runId),
                 inArray(heartbeatRuns.status, fromStatuses),
                 // A result can commit after the orphan candidate was read.
                 // Reject that stale process-loss transition before reporting,
@@ -1274,9 +1270,8 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
                   ? [nativeRunnerOwnershipNotHeldCondition()]
                   : []),
               ),
-            )
-            .returning()
-            .then((rows) => rows[0] ?? null)
+          })
+            .then((result) => result?.run ?? null)
             .catch((error: unknown) => {
               if (cancellationCondition) rethrowNativeCancellationLockConflict(error);
               throw error;

@@ -25,6 +25,7 @@ import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-wo
 import { EXECUTION_RECONCILIATION_INTERVAL_MS } from "./execution-control-deadline.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { NATIVE_STARTUP_CLEANUP_PENDING, readNativeStartupContext, promoteNativeStartupCleanup } from "./native-runtime/native-startup-cleanup.js";
+import { transitionHeartbeatRunStatus } from "./heartbeat-run-lifecycle.js";
 
 /** Only newly recorded control deadlines are eligible. Upgrades never replay ambiguous historical runs. */
 export async function reconcileAbandonedExecutionControl(
@@ -244,10 +245,9 @@ export async function reconcileAbandonedExecutionControl(
           await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
           await notifyUnsafeWorkspaceExportRunChange(tx, run);
           await notifyExecutionRunWork(tx, { companyId: run.companyId });
-          const [updatedRun] = await tx
-            .update(heartbeatRuns)
-            .set({
-              status: "failed",
+          const updatedRun = (await transitionHeartbeatRunStatus(tx, run.id, {
+            toStatus: "failed",
+            patch: {
               executionStatusDeliveryId: randomUUID(),
               finishedAt: now,
               ...(coordinator
@@ -257,9 +257,8 @@ export async function reconcileAbandonedExecutionControl(
               error: nextAction,
               nextAction,
               updatedAt: now,
-            })
-            .where(eq(heartbeatRuns.id, run.id))
-            .returning();
+            },
+          }))?.run ?? null;
           if (updatedRun && updatedRun.status !== run.status) {
             terminalRunToReport = updatedRun;
           }
