@@ -20,7 +20,8 @@ function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needs
 /** Warnings do not authorize a later solicitation. Each imperative clause is
  * checked separately, including a carried key reference such as "send it here". */
 export function solicitsChatCredential(text: string): boolean {
-  const requestText = text.replace(/\band\s+instead\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, "but ");
+  const requestText = text.replace(/\band\s+instead\s+(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, "but ")
+    .replace(/(?:[—–]\s*|\s+-\s+)(?=(?:please\s+)?(?:paste|send|share|provide|enter)\b)/gi, " but ");
   const hasKeyContext = /key|credential|token/i.test(text);
   if (requestText.split(/[.!?;\n]+/).some(sentence => {
     const parts = sentence.split(/\b(?:but|however|then)\b/i);

@@ -83,3 +83,9 @@ it("retains direct chat object ellipsis without treating progress as a credentia
   expect(deploymentSecretGuidance(context + "Do not paste the credential into files but share here in chat.")).toBe(false);
   expect(deploymentSecretGuidance(context + "Send your key via secure form and instead share progress here.")).toBe(true);
 });
+
+it("distinguishes a dash-separated chat request from a plain warning", () => {
+  const context = "Use secure settings for Morgan's deployment credential environment binding. ";
+  expect(deploymentSecretGuidance(context + "Do not paste your credential into files — send it here in chat.")).toBe(false);
+  expect(deploymentSecretGuidance(context + "Do not paste your credential into files — keep it private.")).toBe(true);
+});
