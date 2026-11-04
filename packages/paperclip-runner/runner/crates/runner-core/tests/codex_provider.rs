@@ -4160,6 +4160,135 @@ fn durable_backend_rejects_new_work_in_a_completed_turn_tail() {
 }
 
 #[test]
+fn durable_backend_attaches_after_a_settled_resume_usage_snapshot() {
+    let directory = temporary_directory("durable-snapshot-attach");
+    let config = provider_config(
+        &directory,
+        &[
+            "--durable-turn-ids",
+            "--resume-usage-snapshot",
+            "--cumulative-accounting-usage",
+        ],
+    );
+    let runner_config = durable_config(&directory);
+    let mut first = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    first
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({
+                "provider": config,
+                "authorizedTools": task_context_tool_set(),
+                "completionContract": {
+                    "revision": "sha256:snapshot-attach-contract",
+                    "criterionIds": ["criterion_snapshot_attach"]
+                },
+            }),
+        ))
+        .expect("prepare the durable provider");
+    first
+        .execute(&command("open", 2, "session.open", json!({})))
+        .expect("open the durable provider session");
+    first
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Settle before the session restarts."}),
+        ))
+        .expect("start the provider turn");
+
+    let mut saw_terminal = false;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let events = poll_and_ack(&mut first).expect("drain the settled provider turn");
+        saw_terminal |= events
+            .iter()
+            .any(|event| event.event_type == "run.terminal");
+        if saw_terminal && events.is_empty() {
+            break;
+        }
+        if events.is_empty() {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    assert!(saw_terminal, "the first run must settle before attachment");
+    first.shutdown().expect("stop the first provider process");
+    drop(first);
+
+    // Codex replays the settled turn's cumulative usage on thread/resume, so
+    // the restored process reports it before the new run attaches.
+    let mut rotated = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    let attached = rotated
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .expect("attach with the settled turn's usage replay pending");
+    assert!(attached
+        .events
+        .iter()
+        .any(|(event_type, _, _)| event_type == "run.attached"));
+    let retained = rotated
+        .retained_events()
+        .expect("inspect the retained queue");
+    assert!(
+        retained
+            .iter()
+            .any(|event| event.payload["code"] == "codex_resume_usage_snapshot"),
+        "a pending fact stays in the retained FIFO instead of blocking or vanishing"
+    );
+    assert!(!retained
+        .iter()
+        .any(|event| event.event_type == "session.resumed"));
+    rotated.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn attachment_names_live_work_that_blocks_it() {
+    let directory = temporary_directory("durable-live-attach");
+    let config = provider_config(&directory, &["--durable-turn-ids", "--hold-turn"]);
+    let runner_config = durable_config(&directory);
+    let mut executor = CodexCommandExecutor::with_runner_config(&directory, &runner_config);
+    executor
+        .execute(&command(
+            "prepare",
+            1,
+            "run.prepare",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .unwrap();
+    executor
+        .execute(&command("open", 2, "session.open", json!({})))
+        .unwrap();
+    executor
+        .execute(&command(
+            "turn",
+            3,
+            "turn.start",
+            json!({"text": "Stay active."}),
+        ))
+        .unwrap();
+    let error = executor
+        .execute(&command(
+            "attach",
+            4,
+            "run.attach",
+            json!({"provider": config, "authorizedTools": task_context_tool_set()}),
+        ))
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("run.attach requires a settled Codex provider session: active_turn"));
+    executor.shutdown().unwrap();
+    fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
 fn durable_backend_attaches_after_a_settled_restore_notice() {
     let directory = temporary_directory("durable-settled-attach");
     let config = provider_config(&directory, &["--durable-turn-ids"]);
