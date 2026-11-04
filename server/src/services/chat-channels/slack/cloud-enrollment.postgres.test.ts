@@ -122,6 +122,7 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("ordinary Slack enrollment produce
       } });
     await dispatchSlackCloudEvent(db, event);
     expect(onMessage).toHaveBeenCalledOnce();
+    expect(onMessage).toHaveBeenCalledWith(expect.objectContaining({ message: expect.objectContaining({ author: expect.objectContaining({ userId: "UOPERATOR", userName: "Operator" }) }) }));
     expect(transport).toHaveBeenCalled();
     expect(await connector.acknowledgeEvents({ subject: "actor", companyId, leaseId: leased!.leaseId, deliveryIds: [event.id] })).toBe(1);
     expect(await connector.leaseEvents({ subject: "actor", companyId, eventWakeVersion: 1 })).toBeNull();

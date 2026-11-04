@@ -37,7 +37,7 @@ export function stubSlackFixtureTransport(adapter: unknown) {
     if (url.pathname.endsWith("/users.info")) data = { ok: true, user: { id: "UOPERATOR", name: "operator", is_bot: false, profile: { display_name: "Operator" } } };
     else if (url.pathname.endsWith("/conversations.info")) data = { ok: true, channel: { id: "CTEST", name: "fixture" } };
     else throw new Error(`Unexpected Slack fixture API method ${url.pathname}`);
-    return { data, status: 200, statusText: "OK", headers: {}, config };
+    return { data, status: 200, statusText: "OK", headers: {}, config, request: { path: url.pathname } };
   });
   client.axios.defaults.adapter = transport;
   return transport;
