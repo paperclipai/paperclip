@@ -16,6 +16,7 @@ import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
 import { retryIdempotentDatabaseOperation } from "../database-retry.js";
 import { workspaceRecoveryDisplay } from "./workspace-recovery-receipt.js";
 import { readTaskDrain } from "./task-admission.js";
+import { nativeRetryCancellationEligible } from "./native-runtime/native-cancellation-request.js";
 const text = (v: unknown) => (typeof v === "string" ? v : null);
 const executionRunColumns = {
   id: heartbeatRuns.id,
@@ -223,6 +224,11 @@ export function projectExecution(
   const detail = coordinator?.failureDetail ?? {};
   const successorRunId = text(detail.successorRunId);
   const projection: ExecutionProjection = {
+    canStop: run.runtimeMode === "native" && run.status === "failed" && !!run.nativeIssueId
+      && coordinator?.runId === run.id && coordinator.issueId === run.nativeIssueId && coordinator.resultId === null
+      && coordinator.phase === "retryable_failure"
+      && nativeRetryCancellationEligible({ runId: run.id, companyId: coordinator.companyId,
+        issueId: run.nativeIssueId, resultJson: null }, coordinator),
     phase: "queued",
     label: "Queued",
     cause: run.errorCode ?? coordinator?.failureCode ?? null,

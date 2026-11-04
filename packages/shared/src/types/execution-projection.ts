@@ -28,6 +28,7 @@ export interface ExecutionBlocker {
 
 /** Presentation of existing execution records, not a second task status machine. */
 export interface ExecutionProjection {
+  canStop?: boolean;
   phase:
     | "working"
     | "waiting_for_provider"

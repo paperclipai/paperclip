@@ -2806,6 +2806,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   const cancelRun = useMutation({
     mutationFn: () => heartbeatsApi.cancel(run.id),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(run.id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.heartbeats(run.companyId, run.agentId) });
     },
   });
@@ -2930,7 +2931,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
           <div className="flex-1 p-4 space-y-3">
             <div className="flex items-center gap-2">
               <StatusBadge status={run.status} />
-              {(run.status === "running" || run.status === "queued") && (
+              {(run.status === "running" || run.status === "queued" || (run.status === "failed" && run.execution?.canStop === true)) && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -2938,7 +2939,7 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                   onClick={() => cancelRun.mutate()}
                   disabled={cancelRun.isPending}
                 >
-                  {cancelRun.isPending ? "Cancelling…" : "Cancel"}
+                  {run.status === "failed" ? cancelRun.isPending ? "Stopping…" : "Stop" : cancelRun.isPending ? "Cancelling…" : "Cancel"}
                 </Button>
               )}
               {canResumeLostRun && (
@@ -2996,6 +2997,11 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
                 <span className="text-foreground">
                   {responsibleUserName ?? responsibleUserLabel(null)}
                 </span>
+              </div>
+            )}
+            {cancelRun.error && (
+              <div className="text-xs text-destructive" role="alert">
+                {cancelRun.error instanceof Error ? cancelRun.error.message : "Failed to stop run"}
               </div>
             )}
             {resumeRun.isError && ( // query-error-ok: mutation result, not a query

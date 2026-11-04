@@ -3304,3 +3304,15 @@ checkpoints publish the metadata without a separate migration write. Disk-free
 rollback requires a server that reads this envelope and the supported settled
 warm journal, including its PRP v2 idle goal suffix. Earlier local-only readers
 and readers lacking that suffix handling remain outside that rollback contract.
+
+### Stop a failed native retry
+
+A failed native run can still own a scheduled same-run bootstrap retry. The
+ordinary run detail offers Stop when the server's batched execution projection
+sets `canStop`: the native run is failed, its matching coordinator is retryable,
+and no result has been accepted. Unknown, legacy and accepted-result states
+remain ineligible. This presentation hint grants no permission; the existing
+company, actor and locked cancellation checks remain authoritative. A changed
+retry can reject Stop, which the run detail displays without claiming cleanup.
+A successful request refreshes the selected run and its history. Stop does not
+resume the provider or change a manual task hold.
