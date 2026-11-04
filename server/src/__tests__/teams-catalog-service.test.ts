@@ -1,7 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFile } from "node:fs/promises";
 import { parseFrontmatterMarkdown } from "@paperclipai/shared/frontmatter";
+import { executeRunnerApi } from "../services/native-runtime/runner-api-client.js";
 import type { CatalogTeam } from "@paperclipai/shared";
+
+const companyPrefix = vi.hoisted(() => vi.fn());
+const testDb = { select: () => ({ from: () => ({ where: () => ({ limit: companyPrefix }) }) }) };
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
@@ -64,6 +68,7 @@ function agentWithCatalogTeam(originHash: string | null, extra: Record<string, u
 describe("teamsCatalogService", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    companyPrefix.mockResolvedValue([{ issuePrefix: "ACME" }]);
     mockAgentService.getById.mockResolvedValue({
       id: "manager-1",
       companyId: "company-1",
@@ -102,7 +107,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("builds an inline portability source with catalog skill keys and target-manager reparenting", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     const prepared = await svc.prepareCatalogTeamSource("company-1", "core-exec-team", {
       targetManagerAgentId: "manager-1",
@@ -119,7 +124,7 @@ describe("teamsCatalogService", () => {
   it.each(["core-exec-team", "product-engineering", "product-design", "content-machine"])(
     "preserves %s role files and canonical skill references through catalog import",
     async (teamRef) => {
-      const svc = teamsCatalogService({} as any);
+      const svc = teamsCatalogService(testDb as any);
       const prepared = await svc.prepareCatalogTeamSource("company-1", teamRef);
       expect(prepared.errors).toEqual([]);
       for (const slug of prepared.team.agentSlugs) {
@@ -153,7 +158,7 @@ describe("teamsCatalogService", () => {
     mockAgentService.list.mockResolvedValue([
       { id: "manager-1", companyId: "company-1", name: "CEO" },
     ]);
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     const prepared = await svc.prepareCatalogTeamSource("company-1", "core-exec-team", {
       targetManagerSlug: "ceo",
@@ -165,7 +170,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("preserves package-declared Paperclip sidecar permissions while adding generated catalog provenance", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     const prepared = await svc.prepareCatalogTeamSource("company-1", "product-engineering");
 
@@ -176,7 +181,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("preserves package sidecar permissions when generated target-manager metadata is merged onto the same root agent", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     const prepared = await svc.prepareCatalogTeamSource("company-1", "product-engineering", {
       targetManagerAgentId: "manager-1",
@@ -191,7 +196,7 @@ describe("teamsCatalogService", () => {
 
   it("rejects missing target-manager slugs instead of emitting unresolved reparent metadata", async () => {
     mockAgentService.list.mockResolvedValue([]);
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     await expect(
       svc.prepareCatalogTeamSource("company-1", "core-exec-team", {
@@ -201,7 +206,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("previews through company portability in agent-safe mode", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     const preview = await svc.previewCatalogTeamImport("company-1", "content-machine");
 
@@ -223,7 +228,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("forces catalog previews to exclude company metadata even when requested", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     await svc.previewCatalogTeamImport("company-1", "content-machine", {
       include: { company: true, agents: false },
@@ -254,7 +259,7 @@ describe("teamsCatalogService", () => {
       warnings: [],
       errors: ["Safe import does not allow process adapter type."],
     });
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     await expect(svc.installCatalogTeam("company-1", "core-exec-team")).rejects.toMatchObject({ status: 422 });
 
@@ -264,7 +269,7 @@ describe("teamsCatalogService", () => {
 
   it("does not install catalog skills when bundle import fails", async () => {
     mockCompanyPortabilityService.importBundle.mockRejectedValueOnce(new Error("import failed"));
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     await expect(svc.installCatalogTeam("company-1", "core-exec-team")).rejects.toThrow("import failed");
 
@@ -272,9 +277,39 @@ describe("teamsCatalogService", () => {
     expect(mockCompanySkillService.importFromSource).not.toHaveBeenCalled();
   });
 
+  it("rejects a missing company before importing resources", async () => {
+    companyPrefix.mockResolvedValueOnce([]);
+    await expect(teamsCatalogService(testDb as any).installCatalogTeam("company-1", "core-exec-team")).rejects.toMatchObject({ status: 404 });
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
+  });
+
+  it("returns scoped saved-resource links while preserving warnings and skipped-resource semantics", async () => {
+    mockCompanyPortabilityService.importBundle.mockResolvedValueOnce({
+      company: { id: "company-1", name: "Paperclip", action: "unchanged" },
+      agents: [{ id: "saved-agent", name: "CTO 2", slug: "cto", action: "created" }, { id: null, name: "Skipped", slug: "skipped", action: "skipped" }],
+      projects: [{ id: "saved-project", name: "Engineering", slug: "engineering", action: "updated" }],
+      routines: [{ id: "saved-routine", title: "Weekly sync", slug: "weekly", action: "created" }],
+      envInputs: [], warnings: ["required skill unavailable"],
+    });
+    const result = await teamsCatalogService(testDb as any).installCatalogTeam("company-1", "core-exec-team");
+    expect(result.resourceLinks).toEqual([
+      { kind: "agent", id: "saved-agent", name: "CTO 2", href: "/ACME/agents/saved-agent" },
+      { kind: "project", id: "saved-project", name: "Engineering", href: "/ACME/projects/saved-project" },
+      { kind: "routine", id: "saved-routine", name: "Weekly sync", href: "/ACME/routines/saved-routine" },
+    ]);
+    const wire = await executeRunnerApi({ operationId: "POST /api/companies/{companyId}/teams/catalog/{catalogId}/install",
+      pathParams: { catalogId: "core-exec-team" }, body: {} },
+    { companyId: "company-1", issueId: "issue-1", issueIdentifier: "ACME-1", runId: "run-1", workMode: "standard" },
+    { apiUrl: "http://fixture.invalid", token: "private-test-token", fetch: async () => Response.json(result),
+      readFile: async () => { throw new Error("not used"); }, saveResponse: async () => { throw new Error("unexpected artifact"); } });
+    expect(wire).toMatchObject({ ok: true, data: { resourceLinks: result.resourceLinks, warnings: result.warnings } });
+    expect(result.warnings).toContain("required skill unavailable");
+    expect(result.portabilityImport.agents[1].id).toBeNull();
+  });
+
   it("surfaces post-import catalog skill install failures as warnings", async () => {
     mockCompanySkillService.installFromCatalog.mockRejectedValueOnce(new Error("catalog unavailable"));
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     const result = await svc.installCatalogTeam("company-1", "core-exec-team");
 
@@ -287,7 +322,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("injects safe claude_local adapter defaults for every bundled agent when no overrides are supplied", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     await svc.installCatalogTeam("company-1", "core-exec-team");
 
@@ -303,7 +338,7 @@ describe("teamsCatalogService", () => {
     const previousDefault = process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE;
     process.env.PAPERCLIP_TEAMS_CATALOG_DEFAULT_ADAPTER_TYPE = "opencode_local";
     try {
-      const svc = teamsCatalogService({} as any);
+      const svc = teamsCatalogService(testDb as any);
 
       await svc.installCatalogTeam("company-1", "core-exec-team");
 
@@ -323,7 +358,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("supplies safe adapter defaults for product-design and product-engineering installs", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     await svc.installCatalogTeam("company-1", "product-design");
     const [designInput] = mockCompanyPortabilityService.importBundle.mock.calls.at(-1)!;
@@ -341,7 +376,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("never sends a forbidden process adapter type from the default catalog path", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     await svc.installCatalogTeam("company-1", "core-exec-team");
 
@@ -353,7 +388,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("preserves an explicit caller adapter override for the affected slug", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     const callerOverrides = {
       cto: { adapterType: "opencode_local", adapterConfig: { model: "anthropic/claude-opus-4" } },
@@ -375,7 +410,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("omits the default-adapter warning when every agent has an explicit override", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     const result = await svc.installCatalogTeam("company-1", "core-exec-team", {
       adapterOverrides: {
@@ -391,7 +426,7 @@ describe("teamsCatalogService", () => {
   });
 
   it("passes install secretValues through to company portability import", async () => {
-    const svc = teamsCatalogService({} as any);
+    const svc = teamsCatalogService(testDb as any);
 
     await svc.installCatalogTeam("company-1", "core-exec-team", {
       secretValues: { "agent:ceo:OPENAI_API_KEY": "sk-imported" },
@@ -430,7 +465,7 @@ describe("teamsCatalogService", () => {
         agentWithCatalogTeam("sha256:stale-hash"),
         { id: "no-provenance", companyId: "company-1", metadata: null },
       ]);
-      const svc = teamsCatalogService({} as any);
+      const svc = teamsCatalogService(testDb as any);
 
       const installed = await svc.listInstalledCatalogTeams("company-1");
 
@@ -449,7 +484,7 @@ describe("teamsCatalogService", () => {
 
     it("marks a team up to date when the installed originHash matches the catalog hash", async () => {
       mockAgentService.list.mockResolvedValue([agentWithCatalogTeam(CORE_EXEC_TEAM_HASH)]);
-      const svc = teamsCatalogService({} as any);
+      const svc = teamsCatalogService(testDb as any);
 
       const installed = await svc.listInstalledCatalogTeams("company-1");
 
@@ -465,7 +500,7 @@ describe("teamsCatalogService", () => {
           metadata: { paperclip: { catalogTeam: { catalogId: "paperclipai:bundled:gone:removed", originHash: "sha256:x" } } },
         },
       ]);
-      const svc = teamsCatalogService({} as any);
+      const svc = teamsCatalogService(testDb as any);
 
       const installed = await svc.listInstalledCatalogTeams("company-1");
 
@@ -476,7 +511,7 @@ describe("teamsCatalogService", () => {
 
     it("returns an empty list when no agents carry catalog-team provenance", async () => {
       mockAgentService.list.mockResolvedValue([{ id: "a", companyId: "company-1", metadata: {} }]);
-      const svc = teamsCatalogService({} as any);
+      const svc = teamsCatalogService(testDb as any);
 
       expect(await svc.listInstalledCatalogTeams("company-1")).toEqual([]);
     });
