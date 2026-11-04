@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { contract, selectCases, inspectSelection, filterCatalog, projectResults, verifyPublication, standingPlanCases, protocolTestOpsFailure,
   captureManualJobRunContext, parseOfficialJobRunContext, payloadFromSanitizedRun } from "./runner-protocol-testops.mjs";
 import { testopsClient } from "../../../tests/runner-e2e/chat-feature-testops-api.mjs";
+import { sanitizeProtocolEvalRuns } from "./runner-protocol-eval-campaign.mjs";
 
 const context = { runId: "123", workflowSha: "a".repeat(40), sourceSha: "a".repeat(40), evalsSha: "b".repeat(40),
   allureJobRunId: "7", jobId: 9, launchId: 11, accountingMode: "legacy" };
@@ -51,16 +52,23 @@ test("binds sanitized structured records without reading or forwarding private r
   }
 });
 
-test("exports closed TestOps files from structured records under a controlled context", async () => {
+test("exports the production sanitizer output as closed TestOps files under a controlled context", async () => {
   const root = await mkdtemp(join(tmpdir(), "runner-testops-structured-"));
   try {
     const { cell, score, artifact, campaign } = sanitizedRun();
-    const run = join(root, "runs", cell.finalAttemptId);
+    const run = join(root, "raw-runs", cell.finalAttemptId);
     await mkdir(run, { recursive: true });
+    delete artifact.publication;
+    artifact.providerSessionId = "PRIVATE-SECRET";
     for (const [name, data] of [["selection.json", selectCases(planned.slice(0, 1), { ...context, accountingMode: "controlled" })], ["campaign.json", campaign],
-      [`runs/${cell.finalAttemptId}/score.json`, score], [`runs/${cell.finalAttemptId}/artifact.json`, artifact]]) {
+      [`raw-runs/${cell.finalAttemptId}/score.json`, score], [`raw-runs/${cell.finalAttemptId}/artifact.json`, artifact],
+      [`raw-runs/${cell.finalAttemptId}/case.json`, { id: cell.caseId, checks: score.checks }],
+      [`raw-runs/${cell.finalAttemptId}/config.json`, { schema: "paperclip-runner/eval-config/v1", id: "config",
+        model: contract.model, provider: contract.provider, driver: contract.driver }]]) {
       await writeFile(join(root, name), JSON.stringify(data));
     }
+    const sanitize = () => sanitizeProtocolEvalRuns({ runsRoot: join(root, "raw-runs"), publicRunsRoot: join(root, "runs") });
+    await sanitize();
     const execute = output => spawnSync(process.execPath, [fileURLToPath(new URL("./runner-protocol-testops.mjs", import.meta.url)),
       "export-runs", join(root, "selection.json"), join(root, "campaign.json"), join(root, "runs"), join(root, output)], {
       encoding: "utf8", env: { PATH: process.env.PATH, PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST: "private-manifest" } });
@@ -74,6 +82,7 @@ test("exports closed TestOps files from structured records under a controlled co
     assert.equal(JSON.parse(values.find(value => JSON.parse(value).status)).status, "passed");
     score.checks[0].passed = false;
     await writeFile(join(run, "score.json"), JSON.stringify(score));
+    await sanitize();
     const failed = execute("failed");
     assert.equal(failed.status, 1);
     assert.match(failed.stderr, /runner_testops_unsupported_pass/);
