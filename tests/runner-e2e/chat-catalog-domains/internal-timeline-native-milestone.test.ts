@@ -205,7 +205,7 @@ it("admits the selected live timeline metadata without invoking fixture callback
   const spies = callbacks.map(key => vi.spyOn(implementation, key));
   try {
     expect(await validateChatCatalogConsistency([descriptor])).toEqual({ descriptorCount: 1, fixtureCallbacksInvoked: 0 });
-    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v4");
+    expect(descriptor.oracleVersion).toBe("paperclip.chat-catalog.work-timeline.v5");
     expect(descriptor.sourceFiles).toEqual(implementation.sourceFiles);
     expect(descriptor).toMatchObject({ expectedRunCount: 3, minimumRunCount: 3, attemptTimeoutMs: 720000 });
     for (const spy of spies) expect(spy).not.toHaveBeenCalled();

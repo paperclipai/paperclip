@@ -48,3 +48,21 @@ it("does not treat a weekday in a command result as an actor", () => {
 it("retains the safely resolved subject across consecutive pronouns", () => {
   expect(grade(account.replace("He added", "He preserved the heading. He added"))).toBe(true);
 });
+
+const timestampedAccount = `**Initial build (Morgan)**
+- 14:51:50 — Verification ran on saved bytes and returned exit 1.
+- 14:52:04 — Morgan reported the failure and paused the task blocked.
+
+**Repair (Riley)**
+- 14:52:05 — You reassigned the task to Riley with the brief "complete only on real success."
+- 14:52:27 — Riley added the label and verification returned exit 0.`;
+it("reads timestamped milestone bullets and a handoff ending in a quoted sentence", () => {
+  expect(grade(timestampedAccount)).toBe(true);
+});
+it.each([
+  timestampedAccount.replace(/- 14:52:05[^\n]+\n/, ""),
+  timestampedAccount.replace("You reassigned", "Morgan reassigned"),
+  timestampedAccount.replace("Riley added", "Morgan added"),
+])("keeps attribution required in timestamped milestones: %s", reply => {
+  expect(grade(reply)).toBe(false);
+});
