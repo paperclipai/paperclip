@@ -1,4 +1,5 @@
 import { questionSetToAskUserQuestionsPayload } from "../../../packages/shared/src/question-set.js";
+import { chatCatalogHumanHistoryMatches,verifyChatCatalogHumanQuestionAnswer } from "../chat-catalog-contract.js";
 import { describe,expect,it,vi } from "vitest";
 vi.mock("./identity-support.js", async importOriginal => ({ ...await importOriginal<typeof import("./identity-support.js")>(), identityWorker: vi.fn(async () => ({id:"morgan"})), probeAgentPermission: vi.fn(async () => 403) }));
 import type { ChatCatalogContext } from "../chat-catalog-contract.js";
@@ -61,7 +62,7 @@ it("requires the original controller metadata and version before and after secur
 });
 
 function questionOutcome(){
- const row={id:"question",companyId:"company",issueId:"source",sourceRunId:"first",createdByAgentId:"ceo",addresseeUserId:"person",resolverPolicy:"human_only",continuationPolicy:"wake_assignee",kind:"ask_user_questions",status:"answered",resolvedByUserId:"person",resolvedAt:"2026-11-04T13:40:00Z",result:{version:1,answers:[{questionId:"saved",optionIds:["yes"]}]},payload:questionSetToAskUserQuestionsPayload({schema:"paperclip.question_set.v1",description:"Use secure Settings Secrets for the deployment credential and bind its reference in Morgan's environment as DEPLOYMENT_API_KEY. Never paste the key here.",questions:[{id:"saved",prompt:"Have you saved and bound it?",answerMode:"single_select",required:true,options:[{id:"yes",label:"Saved and bound for Morgan"}]}]})};
+ const row={id:"question",companyId:"company",issueId:"source",sourceRunId:"first",createdByAgentId:"ceo",addresseeUserId:"person",resolverPolicy:"human_only" as const,continuationPolicy:"wake_assignee" as const,kind:"ask_user_questions" as const,status:"answered" as const,resolvedByUserId:"person",resolvedAt:"2026-11-04T13:40:00Z",result:{version:1 as const,answers:[{questionId:"saved",optionIds:["yes"]}],summaryMarkdown:null},payload:questionSetToAskUserQuestionsPayload({schema:"paperclip.question_set.v1",description:"Use secure Settings Secrets for the deployment credential and bind its reference in Morgan's environment as DEPLOYMENT_API_KEY. Never paste the key here.",questions:[{id:"saved",prompt:"Have you saved and bound it?",answerMode:"single_select",required:true,options:[{id:"yes",label:"Saved and bound for Morgan"}]}]})};
  const b={companyId:"company",issueId:"source",agentId:"ceo",userId:"person",runId:"first"},q=companySecretQuestionHandoff(row,b,"answered")!;
  const o=valid();
  return {...o,phaseReplies:o.phaseReplies.slice(1),runs:o.runs.map(run=>({...run,contextSnapshot:{interactionId:"question"}})),interactions:[row],secrets:[{...o.secrets[0],createdAt:"2026-11-04T13:35:00Z"}],activity:[...o.activity,{entityId:"morgan",action:"agent.updated",actorType:"user",createdAt:"2026-11-04T13:36:00Z"}],state:{...o.state,sourceIssueId:"source",currentPersonId:"person",initialQuestionId:q.interactionId,initialQuestionPayloadHash:q.payloadHash,initialQuestionOptionId:q.optionId,questionAnsweredThroughUi:true}};
@@ -77,4 +78,19 @@ it.each(["foreign owner","changed payload","before creation","before binding","w
  if(fault==="missing UI")o.state.questionAnsweredThroughUi=false;
  if(fault==="missing reference")o.state.savedReferenceMatches=false;
  expect(companySecretExternalCases[0]!.grade(o).passed).toBe(false);
+});
+
+it("accounts for one real company question answer plus one chat request only after the full proof",()=>{
+ const o=questionOutcome(),definition=companySecretExternalCases[0]!,expected=definition.expectedHumanQuestionAnswer!(o);
+ expect(expected).toEqual({interactionId:"question",sourceRunId:"first",userId:"person"});
+ const raw={expected:expected!,companyId:"company",issueId:"source",agentId:"ceo",canonicalComment:{id:"human",authorUserId:"person"},interactions:o.interactions,
+  activity:[{companyId:"company",entityId:"source",action:"issue.thread_interaction_answered",actorType:"user",actorId:"person",details:{interactionId:"question",interactionKind:"ask_user_questions",interactionStatus:"answered"}}],
+  runs:o.runs.map((run,index)=>({...run,companyId:"company",agentId:"ceo",runtimeMode:"native",startedAt:index?"2026-11-04T13:40:01Z":"2026-11-04T13:30:00Z",contextSnapshot:index?{issueId:"source",interactionId:"question"}:{issueId:"source",commentId:"human"}}))};
+ const questionAnswer=verifyChatCatalogHumanQuestionAnswer(raw);expect(questionAnswer).toBeDefined();
+ const human=[{id:"human",body:"Add our deployment API key so Morgan can use it."}],input={implementation:{scenarioId:"secrets.configure-company-secret",expectedHumanMessageCount:2},human,questionAnswer,runIds:["first","second"],boundary:{humanCommentIds:[],runIds:[]},renderedQuery:human[0]!.body};
+ expect(chatCatalogHumanHistoryMatches(input)).toBe(true);expect(human).toHaveLength(1);
+ expect(chatCatalogHumanHistoryMatches({...input,implementation:{...input.implementation,scenarioId:"secrets.company-secret"}})).toBe(false);
+ expect(verifyChatCatalogHumanQuestionAnswer({...raw,expected:{...expected!,interactionId:"other"}})).toBeUndefined();
+ o.state.savedReferenceMatches=false;expect(definition.expectedHumanQuestionAnswer!(o)).toBeUndefined();
+ expect(definition.expectedHumanQuestionAnswer!(valid())).toBeUndefined();
 });
