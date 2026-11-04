@@ -360,7 +360,7 @@ export const appReviewExternalCases = [
     gradeAppReview,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.app-review.v5",
+      oracleVersion: "paperclip.chat-catalog.app-review.v6",
       queryAttachments: [{ stateKey: "factualContextAttachment", filename: "launch-update.md" }],
       expectedRunCount: 6,
       minimumRunCount: 6,
