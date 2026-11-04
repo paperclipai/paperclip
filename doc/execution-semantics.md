@@ -1700,12 +1700,23 @@ status. Missing historical receipts and later status decisions preserve the
 current status. A missing receipt is a status-provenance limit, not evidence of
 connector revocation. A yielded published review remains a wait; recovery never
 converts it to completed work or queues another provider turn.
+GitHub response maintenance recognizes this committed no-publication wait while
+the task status remains unproven. It preserves the published assessment and
+requires the same succeeded native run, yielded response-wake result and
+server-committed presentation proof. Failed, missing or malformed presentation
+does not qualify. In Review status selectors retain their separate status gate.
 
 The old export recovery notice settles separately after its accepted result,
 preservation receipts, finalization, status effects and run projection settle
 and old Runner ownership is absent. This closes only that source action. Newer
 authorized work may own the task and workspace by then; closing the old notice
 does not change that work, its status, execution owner, files or result.
+Explicit export Retry uses its own settlement proof. Its unchanged request must
+bind the same accepted result, source run and retained lease in both action and
+run records. The saved source and successful native copyback barrier must agree.
+A generic resume wake policy cannot substitute for either this proof or normal
+Recover preservation receipts. Both paths wait for old effects and projection
+to settle before closing the notice, without releasing physical resources.
 
 An ACPX sidecar transport failure carries its redacted cause and code in the
 terminal event's structured `error` field. The session facade must retain that

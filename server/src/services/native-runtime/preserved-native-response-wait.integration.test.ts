@@ -34,6 +34,7 @@ import { reconcileNativeFinalizations } from "./native-finalization-reconciler.j
 import { recordNativeWorkAssessment } from "./work-assessments.js";
 import { classifyNativeEvidence } from "./evidence-classifier.js";
 import { NATIVE_STATUS_ARBITER_POLICY_VERSION } from "./status-arbiter.js";
+import { retryNativeWorkspaceExport } from "./native-workspace-export-retry.js";
 
 const targets = vi.hoisted(() => new Map<string, AdapterSandboxExecutionTarget>());
 const commitRace = vi.hoisted(() => ({ before: null as null | ((input:
@@ -81,7 +82,7 @@ describe("preserved native response wait", () => {
     | "owner_changed" | "newer_cancelled" | "newer_active" | "incomplete_preservation" | "missing_receipt"
     | "defer_notice" | "http_reconcile" | "existing_assessment" | "commit_stop" | "commit_status" | "commit_identity"
     | "commit_newer" | "commit_principal" | "commit_preservation" | "commit_head" | "commit_cancelled"
-    | "saved_retry" | "saved_chat_retry";
+    | "saved_retry" | "saved_chat_retry" | "export_retry" | "export_retry_defer";
   async function recovered(scenario: Scenario = "valid") {
     const f = await seedBoundChatAuthorization(db);
     const prefix = `PW${randomUUID().slice(0, 6)}`;
@@ -188,6 +189,24 @@ describe("preserved native response wait", () => {
       resolveCapabilities: async () => classifyEnvironmentCapabilities({ verifiedMethods: [], declared: null, narrowing: null }),
       retryPendingSandboxTeardown: vi.fn(async () => ({ providerLeaseId, state: "stopped" as const })) }] });
     const input = { ...f.binding, actionId: action.id, db, environmentRuntime: runtime };
+    if (scenario === "export_retry" || scenario === "export_retry_defer") {
+      expect(await retryNativeWorkspaceExport({ ...input, actorId: f.userId,
+        repairNote: "The retained transport is available for exact saved-file export." }))
+        .toMatchObject({ runId: f.runId, resultId: accepted.id, leaseId: lease.id, status: "queued" });
+      const finalized = (await reconcileNativeFinalizations(db, [f.runId], { environmentRuntime: runtime,
+        skipNativeRecoveryNotices: scenario === "export_retry_defer" }))
+        .find(value => value.runId === f.runId);
+      expect(finalized?.phase).toBe("committed");
+      expect(await readFile(path.join(host, "review.txt"), "utf8")).toBe("Original reviewed work\n");
+      expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_review");
+      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.runId))).toEqual([accepted]);
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(chatActions).where(eq(chatActions.companyId, f.companyId))).toHaveLength(1);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id)))[0].status)
+        .toBe(scenario === "export_retry_defer" ? "active" : "resolved");
+      return { ...f, actionId: action.id };
+    }
     let replayRecovery: (() => Promise<void>) | undefined;
     if (scenario === "http_reconcile") {
       const [{ default: express }, { default: request }, { issueRoutes }, { errorHandler }] = await Promise.all([
@@ -389,6 +408,73 @@ describe("preserved native response wait", () => {
     expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0].status).toBe("in_review");
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId)))[0].status).toBe("resolved");
   }, 60_000);
+
+  it("settles an explicit export Retry after its own verified export and committed result", async () => {
+    await recovered("export_retry");
+  }, 60_000);
+
+  it.each(["missing_receipt", "mismatched_request", "mismatched_result", "mismatched_allocation", "unfinalized",
+    "foreign_barrier", "unsupported_schema", "pending_effect", "unknown_owner"] as const)(
+    "holds explicit export Retry bookkeeping with %s", async scenario => {
+      const f = await recovered("export_retry_defer");
+      expect(await pendingNativeRecoveryNotices(db, f.binding)).toHaveLength(1);
+      const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      const retry = action.evidence.workspaceExportRetry as Record<string, unknown>;
+      const source = run.runnerProfileJson!.nativeWorkspaceSync as Record<string, unknown>;
+      if (["missing_receipt", "mismatched_request", "mismatched_result"].includes(scenario)) {
+        const value = scenario === "missing_receipt" ? null : { ...retry,
+          ...(scenario === "mismatched_request" ? { requestId: randomUUID() } : { resultId: randomUUID() }) };
+        await db.update(issueRecoveryActions).set({ evidence: { ...action.evidence, workspaceExportRetry: value } })
+          .where(eq(issueRecoveryActions.id, action.id));
+        if (scenario === "mismatched_result") await db.update(heartbeatRuns).set({ resultJson: { ...run.resultJson, workspaceExportRetry: value } })
+          .where(eq(heartbeatRuns.id, f.runId));
+      }
+      if (["mismatched_allocation", "unfinalized", "unsupported_schema", "unknown_owner"].includes(scenario))
+        await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run.runnerProfileJson, nativeWorkspaceSync: { ...source,
+          ...(scenario === "mismatched_allocation" ? { providerLeaseId: randomUUID() } : {}),
+          ...(scenario === "unfinalized" ? { state: "prepared" } : {}),
+          ...(scenario === "unsupported_schema" ? { schema: "unsupported" } : {}),
+        }, ...(scenario === "unknown_owner" ? { nativeWorkspaceFinalizationOwner: { ownerId: randomUUID() } } : {}) } })
+          .where(eq(heartbeatRuns.id, f.runId));
+      if (scenario === "foreign_barrier") await db.update(workspaceOperations).set({ issueId: f.otherIssueId })
+        .where(and(eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "workspace_finalize")));
+      if (scenario === "unsupported_schema") {
+        const operations = await db.select().from(workspaceOperations).where(and(
+          eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "workspace_finalize")));
+        for (const operation of operations) await db.update(workspaceOperations).set({ metadata: { ...operation.metadata,
+          workspaceSync: { ...operation.metadata?.workspaceSync as Record<string, unknown>, schema: "unsupported" } } })
+          .where(eq(workspaceOperations.id, operation.id));
+      }
+      if (scenario === "pending_effect") {
+        const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.runId));
+        await db.insert(statusDecisionEffects).values({ companyId: f.companyId, issueId: f.issueId, decisionId: coordinator.decisionId!,
+          ordinal: 0, effectKind: "release_checkout", targetType: "issue", targetId: f.issueId,
+          idempotencyKey: randomUUID(), payload: {}, deliveryState: "pending" });
+      }
+      const [before] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId));
+      expect(await pendingNativeRecoveryNotices(db, f.binding)).toHaveLength(0);
+      await resolveCommittedNativeRecoveryNotices(db, f.binding);
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId)))[0]).toEqual(before);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toHaveLength(0);
+    }, 60_000);
+
+  it.each(["paperclip.native-workspace-sync/v1", "paperclip.native-workspace-sync/v2"])(
+    "recognizes the existing finalized export receipt schema %s", async schema => {
+      const f = await recovered("export_retry_defer");
+      const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId));
+      await db.update(heartbeatRuns).set({ runnerProfileJson: { ...run.runnerProfileJson,
+        nativeWorkspaceSync: { ...run.runnerProfileJson!.nativeWorkspaceSync as Record<string, unknown>, schema } } })
+        .where(eq(heartbeatRuns.id, f.runId));
+      const operations = await db.select().from(workspaceOperations).where(and(
+        eq(workspaceOperations.heartbeatRunId, f.runId), eq(workspaceOperations.phase, "workspace_finalize")));
+      for (const operation of operations) await db.update(workspaceOperations).set({ metadata: { ...operation.metadata,
+        workspaceSync: { ...operation.metadata?.workspaceSync as Record<string, unknown>, schema } } })
+        .where(eq(workspaceOperations.id, operation.id));
+      expect(await pendingNativeRecoveryNotices(db, f.binding)).toHaveLength(1);
+      await resolveCommittedNativeRecoveryNotices(db, f.binding);
+      expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, f.actionId)))[0].status).toBe("resolved");
+    }, 60_000);
 
   it.each(["saved_retry", "saved_chat_retry"] as const)("settles the same wait after ordinary Recover folds %s", async scenario => {
     const f = await recovered(scenario);
