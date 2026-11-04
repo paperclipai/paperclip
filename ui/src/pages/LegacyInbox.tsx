@@ -2671,10 +2671,7 @@ export function Inbox() {
                   const isLive = liveIssueIds.has(issue.id);
                   const loadedSubtreeLiveCount = subtreeLiveCounts.get(issue.id) ?? 0;
                   const liveDescendantCount = resolveIssueLiveDescendantCount(issue, loadedSubtreeLiveCount);
-                  const blockerAttention = resolveInboxIssueBlockerAttention(issue, {
-                    isLive,
-                    loadedSubtreeLiveCount,
-                  });
+                  const blockerAttention = resolveInboxIssueBlockerAttention(issue);
                   const showStatus = visibleIssueColumnSet.has("status") && availableIssueColumnSet.has("status");
                   const showSubtreeLiveChip = !(
                     showStatus

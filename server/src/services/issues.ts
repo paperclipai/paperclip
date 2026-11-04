@@ -8469,7 +8469,14 @@ export function issueService(db: Db) {
         reviewAttentionByIssueId,
         blockedInboxAttentionByIssueId,
       ] = await Promise.all([
-        filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueBlockerAttention>()) : listIssueBlockerAttentionMap(db, companyId, withRuns),
+        // Summary counts describe navigation activity, including review runs.
+        // Inbox coverage needs the business graph's authoritative classification.
+        filters?.listProjection === "index" && !includeLiveDescendantSummary
+          ? Promise.resolve(new Map<string, IssueBlockerAttention>())
+          : listIssueBlockerAttentionMap(db, companyId,
+              filters?.listProjection === "index"
+                ? withRuns.filter((row) => row.status === "blocked")
+                : withRuns),
         filters?.listProjection === "index" ? Promise.resolve(new Map<string, IssueReviewAttention>()) : listIssueReviewAttentionMap(db, companyId, withRuns),
         includeBlockedInboxAttention
           ? listIssueBlockedInboxAttentionMap(db, companyId, withRuns)
