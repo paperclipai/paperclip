@@ -132,6 +132,17 @@ describe("automatic retained workspace recovery", () => {
     // Keep all history within each test until its assertions have completed.
     const companyIds = [...fixtureCompanyIds]; fixtureCompanyIds.clear();
     if (!companyIds.length) return;
+    // Stop global queue sweeps from revisiting deferred input after this
+    // fixture's recovery actions and lease bindings are removed below.
+    await db.update(agents).set({ status: "paused" }).where(inArray(agents.companyId, companyIds));
+    await db.update(agentWakeupRequests).set({ status: "cancelled", finishedAt: new Date() }).where(and(
+      inArray(agentWakeupRequests.companyId, companyIds),
+      inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution"])));
+    await heartbeatService(db).drainActiveRunExecutions();
+    // Admission tests leave synthetic queue blockers. Retire them only after
+    // assertions so they cannot trip the next test's instance-wide drain fence.
+    await db.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() }).where(and(
+      inArray(heartbeatRuns.companyId, companyIds), inArray(heartbeatRuns.status, ["queued", "running"])));
     const leases = await db.select({ id: environmentLeases.id }).from(environmentLeases)
       .where(inArray(environmentLeases.companyId, companyIds));
     for (const lease of leases) targets.delete(lease.id);
