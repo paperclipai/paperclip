@@ -12,6 +12,15 @@ const providerId = z.string().min(1);
 const runnerIdentity = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/);
 const durableIdentity = z.object({ runnerInstanceId: runnerIdentity, environmentLeaseId: runnerIdentity,
   runId: runnerIdentity, normalizedSessionId: runnerIdentity, turnId: runnerIdentity, itemId: runnerIdentity }).strict();
+/** Immutable completed-turn source; its creation never claims the live Runner stopped. */
+export const environmentTaskColdCheckpointSchema = z.object({
+  schema: z.literal("paperclip.runner.cold-checkpoint.v1"), sourceId: providerId.max(1024),
+  sha256: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  runnerStateSha256: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  identity: durableIdentity, providerSessionId: z.string().min(1).max(1024),
+}).strict();
+export type PluginEnvironmentTaskColdCheckpoint = z.infer<typeof environmentTaskColdCheckpointSchema>;
+
 const identifier = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,95}$/);
 const secureUrl = z.string().url().refine(value => {
   const url = new URL(value);
@@ -64,7 +73,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("copilot_metadata"), token: credentialValue, model: z.string().min(1).max(1024).optional() }).strict(),
   z.object({ kind: z.literal("prepare"), requirements: environmentRunnerLaunchRequirementsSchema,
     githubBroker: githubBroker.optional(),
-    recovery: preparedLaunch.optional(), resumeFrom: providerId.optional(),
+    recovery: preparedLaunch.optional(), resumeFrom: providerId.optional(), resumeCheckpoint: environmentTaskColdCheckpointSchema.optional(),
     priorIdentity: durableIdentity.optional(), accountIdentity: z.string().min(1).max(1024).optional(),
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
   }).strict(),
@@ -82,6 +91,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     bootstrapTicket: z.string().min(1).max(65_536),
     /** Opaque prior provider task; Core authorizes the saved session before supplying it. */
     resumeFrom: z.string().min(1).optional(),
+    resumeCheckpoint: environmentTaskColdCheckpointSchema.optional(),
     preparedLaunchId: providerId.max(1024).optional(),
     /** Require the externally installed account to match this Core-selected credential revision. */
     credentialIdentity: z.string().min(1).max(1024).optional(),
@@ -107,9 +117,10 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
     path: taskFilePath, maxBytes: z.number().int().positive().max(MAX_ENVIRONMENT_TASK_FILE_BYTES),
     projectIds: z.array(z.string().uuid()).max(64).refine(ids => new Set(ids).size === ids.length, "Duplicate project IDs"),
   }).strict(),
-  z.object({ kind: z.literal("read_state"), identity: durableIdentity, resumeFrom: providerId.optional() }).strict(),
+  z.object({ kind: z.literal("read_state"), identity: durableIdentity, resumeFrom: providerId.optional(), resumeCheckpoint: environmentTaskColdCheckpointSchema.optional() }).strict(),
+  z.object({ kind: z.literal("checkpoint"), identity: durableIdentity, providerSessionId: z.string().min(1).max(1024) }).strict(),
   z.object({ kind: z.literal("archive_state"), priorIdentity: durableIdentity,
-    archiveKey: z.string().regex(/^[a-f0-9]{24}$/), resumeFrom: providerId }).strict(),
+    archiveKey: z.string().regex(/^[a-f0-9]{24}$/), resumeFrom: providerId, resumeCheckpoint: environmentTaskColdCheckpointSchema.optional() }).strict(),
   z.object({ kind: z.literal("credentials"), accountIdentity: z.string().min(1).max(1024) }).strict(),
   z.object({ kind: z.literal("status") }).strict(),
   z.object({ kind: z.literal("connection") }).strict(),
@@ -118,6 +129,7 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
 ]);
 
 export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("checkpoint"), taskId: providerId, checkpoint: environmentTaskColdCheckpointSchema }).strict(),
   z.object({ kind: z.literal("accepted"), taskId: providerId }).strict(),
   z.object({ kind: z.literal("copilot_metadata"), taskId: providerId, metadata: z.record(z.string(), z.unknown()),
     executionStopped: z.literal(true) }).strict(),
@@ -135,6 +147,7 @@ export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("description"), taskId: providerId,
     runner: z.object({ version: z.string().min(1), digest: z.string().regex(/^sha256:[a-f0-9]{64}$/) }).strict(),
     warmTaskVersion: z.literal(1).optional(),
+    warmCheckpointVersion: z.literal(1).optional(),
     launchPreparationVersion: z.literal(1).optional(),
     executionContextVersion: z.literal(1).optional(),
     freshWorkspaceVersion: z.literal(1).optional(),
@@ -201,7 +214,7 @@ export interface PluginEnvironmentTaskParams extends Omit<PluginEnvironmentDrive
 /** An accepted stop is not proof of process termination. */
 export function parseEnvironmentTaskResult(operation: PluginEnvironmentTaskOperation, taskId: string, value: unknown): PluginEnvironmentTaskResult {
   const result = environmentTaskResultSchema.parse(value);
-  const expected = operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "copilot_metadata"].includes(operation.kind) ? operation.kind : "accepted";
+  const expected = operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "copilot_metadata", "checkpoint"].includes(operation.kind) ? operation.kind : "accepted";
   if (result.taskId !== taskId || result.kind !== expected) throw new Error("Invalid plugin-provided Runner execution response");
   return result;
 }

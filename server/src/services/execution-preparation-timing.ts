@@ -34,7 +34,7 @@ type PreparationPhase = "environment_selection" | "execution_configuration" | "s
   | "github_access" | "wake_binding" | "backend_setup" | "connector_assignments"
   | "assigned_mcp" | "tool_authority" | "companion_selection" | "runner_binary"
   | "github_stop" | "coordinator_release" | "instruction_checkpoint"
-  | "instruction_changes" | "warm_release" | "instruction_collection";
+  | "instruction_changes" | "warm_checkpoint" | "warm_release" | "instruction_collection";
 
 export type ExecutionPhase =
   | "skills.inventory" | "skills.inventory.wait" | "skills.inventory.bundled" | "skills.inventory.releases"

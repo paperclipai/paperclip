@@ -147,6 +147,7 @@ export const defaultCapabilityRunnerdBinary =
   runner.defaultCapabilityRunnerdBinary;
 export const runnerBinaryTarget = runner.runnerBinaryTarget;
 export const coldAdmissionTimeoutMs = runner.coldAdmissionTimeoutMs;
+export const assertColdCheckpointRunnerState = runner.assertColdCheckpointRunnerState;
 export const executeNativeSession = runner.executeNativeSession;
 export const applyNativeSessionGoalControl =
   runner.applyNativeSessionGoalControl;

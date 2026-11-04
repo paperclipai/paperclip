@@ -1,11 +1,12 @@
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
-import { environmentTaskOperationSchema, environmentTaskResultSchema, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential } from "@paperclipai/plugin-sdk";
+import { environmentTaskOperationSchema, environmentTaskResultSchema, type PluginEnvironmentTaskOperation, type PluginEnvironmentTaskResult, type PluginEnvironmentTaskCredential, type PluginEnvironmentTaskColdCheckpoint } from "@paperclipai/plugin-sdk";
 import type { RunnerIngressEndpoint } from "@paperclipai/adapter-utils/runner-connectivity";
 import { RUNNER_PRP_PROTOCOL_MIN, RUNNER_PRP_PROTOCOL_MAX, type RunnerProcessHandle, type RunnerProcessLaunchSpec,
   type DurablePrpControlPlane, type RunnerExecutionDriver, type RunnerLaunchPreparer, type DurableRecoveryIdentity } from "../../vendor/paperclip-runner/index.js";
 import { connectRunnerPrpIngress } from "../../realtime/runner-prp-outbound.js";
+import { isSettledRemoteWarmControlState } from "./remote-warm-session-recovery.js";
 import type { NativeExecutionContext } from "./native-execution-context.js";
 
 export async function verifyPluginRunnerTaskReattachment(
@@ -43,11 +44,14 @@ export function createPluginRunnerTaskOwner(input: {
   onDispatched?: () => Promise<void> | void;
   pollMs?: number;
   warmTaskVersion?: 1;
+  warmCheckpointVersion?: 1;
+  resumeCheckpoint?: PluginEnvironmentTaskColdCheckpoint;
   githubBroker?: { url: string; token: string };
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
   const pollMs = input.pollMs ?? 500;
   let registrationGeneration = 0;
+  let activeAuthority: DurablePrpControlPlane | undefined;
   let activeOutbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
   let preparedLaunchId: string | undefined;
   let preparedIdentity: DurableRecoveryIdentity | undefined = input.adoptIdentity;
@@ -73,7 +77,7 @@ export function createPluginRunnerTaskOwner(input: {
       submit: "execution.plugin_submit", connection: "execution.plugin_connection" } as const)[operation.kind as "prepare" | "check_project_auth" | "submit" | "connection"];
     const result = environmentTaskResultSchema.parse(await (phase
       ? measureRunPhase(phase, () => input.task(operation)) : input.task(operation)));
-    if (result.kind !== (operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials"].includes(operation.kind) ? operation.kind : "accepted")) {
+    if (result.kind !== (operation.kind === "read_file" ? "file" : operation.kind === "describe" ? "description" : operation.kind === "prepare" ? "prepared" : operation.kind === "check_project_auth" ? "project_auth" : ["read_state", "archive_state"].includes(operation.kind) ? "state" : ["status", "connection", "credentials", "checkpoint"].includes(operation.kind) ? operation.kind : "accepted")) {
       throw new Error("Plugin Runner returned an invalid operation result");
     }
     return result;
@@ -125,7 +129,7 @@ export function createPluginRunnerTaskOwner(input: {
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
-      ...(input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
+      ...(input.resumeFrom ? { resumeFrom: input.resumeFrom, ...(input.resumeCheckpoint ? { resumeCheckpoint: input.resumeCheckpoint } : {}) } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(launched && preparedIdentity && requirements.identity.runId !== preparedIdentity.runId
         ? { priorIdentity: preparedIdentity } : {}),
@@ -142,7 +146,7 @@ export function createPluginRunnerTaskOwner(input: {
     const identity = submitted ? preparedIdentity : input.priorIdentity ?? preparedIdentity;
     if (!identity) throw new Error("Plugin Runner state identity unavailable");
     const result = await call({ kind: "read_state", identity,
-      ...(!submitted && input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
+      ...(!submitted && input.resumeFrom ? { resumeFrom: input.resumeFrom, ...(input.resumeCheckpoint ? { resumeCheckpoint: input.resumeCheckpoint } : {}) } : {}),
     });
     if (result.kind !== "state") throw new Error("Plugin Runner state unavailable");
     return result.state;
@@ -184,7 +188,7 @@ export function createPluginRunnerTaskOwner(input: {
     }
     const operation = environmentTaskOperationSchema.parse({
       kind: "submit", preparedLaunchId, projectIds: [...input.projectIds], bootstrapTicket: native.ticket,
-      ...(input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
+      ...(input.resumeFrom ? { resumeFrom: input.resumeFrom, ...(input.resumeCheckpoint ? { resumeCheckpoint: input.resumeCheckpoint } : {}) } : {}),
       ...(input.credentialIdentity ? { credentialIdentity: input.credentialIdentity } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(input.credential ? { credential: input.credential } : {}),
@@ -257,6 +261,7 @@ export function createPluginRunnerTaskOwner(input: {
   };
   const registration = async (authority: DurablePrpControlPlane, runId: string, signal?: AbortSignal) => {
     const generation = ++registrationGeneration;
+    activeAuthority = authority;
     let registrationReleased = false;
     let outbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
     let activation: Promise<void> | null = null;
@@ -317,12 +322,14 @@ export function createPluginRunnerTaskOwner(input: {
     };
   };
   const driver: RunnerExecutionDriver = {
+    ...(input.resumeCheckpoint ? { resumeColdCheckpoint: input.resumeCheckpoint } : {}),
     prepareLaunch, authorizeRunnerAdoption, readRunnerState, runnerProcessLauncher: launcher,
     // The provider resolves the authorized retained task before each state operation.
     prepareExternalRunnerState: async () => {},
     archiveExternalRunnerState: async archive => {
       if (!input.resumeFrom) throw new Error("Plugin Runner archive requires a retained task");
-      const result = await call({ kind: "archive_state", ...archive, resumeFrom: input.resumeFrom });
+      const result = await call({ kind: "archive_state", ...archive, resumeFrom: input.resumeFrom,
+        ...(input.resumeCheckpoint ? { resumeCheckpoint: input.resumeCheckpoint } : {}) });
       if (result.kind !== "state") throw new Error("Plugin Runner archived state unavailable");
       return result.state;
     },
@@ -348,7 +355,24 @@ export function createPluginRunnerTaskOwner(input: {
         createHash("sha256").update(bytes).digest("hex") !== result.sha256) throw new Error("Plugin Runner file integrity check failed");
     return bytes;
   };
-  return { launcher, registration, driver, readWorkspaceFile,
+  const checkpointWarmTurn = async (providerSessionId: string) => {
+    if (input.warmCheckpointVersion !== 1 || input.harness !== "codex") return;
+    if (!submitted || !preparedIdentity || released || stopRequested || stoppedState || detached) {
+      throw new Error("Plugin Runner cold checkpoint owner unavailable");
+    }
+    const identity = { ...preparedIdentity };
+    if (!activeAuthority || !isSettledRemoteWarmControlState(activeAuthority.store.state as unknown as Record<string, unknown>, identity)) {
+      throw new Error("Plugin Runner cold checkpoint journal unsettled");
+    }
+    const result = await call({ kind: "checkpoint", identity, providerSessionId });
+    if (released || stopRequested || stoppedState || detached || result.kind !== "checkpoint" ||
+        result.checkpoint.providerSessionId !== providerSessionId ||
+        Object.entries(identity).some(([key, value]) => result.checkpoint.identity[key as keyof DurableRecoveryIdentity] !== value)) {
+      throw new Error("Plugin Runner cold checkpoint identity mismatch");
+    }
+  };
+  return { launcher, registration, driver, readWorkspaceFile, checkpointWarmTurn,
+    get warmCheckpointEnabled() { return input.warmCheckpointVersion === 1 && input.harness === "codex"; },
     // This is a lease-bound Launcher receipt, not a terminal phase or a sent
     // stop request. Completion also proves credential/writeback obligations ran.
     isRetired: () => stoppedState?.executionStopped === true && completed && !detached,

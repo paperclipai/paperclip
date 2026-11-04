@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { executionWorkspaces, environmentLeases, type Db } from "@paperclipai/db";
 import { environmentTaskOperationSchema, parseEnvironmentTaskResult } from "@paperclipai/plugin-sdk";
-import { executeEnvironmentTask, settleDispatchedEnvironmentTask } from "../services/environment-task-runtime.js";
+import { executeEnvironmentTask, settleDispatchedEnvironmentTask, resolvePluginTaskColdCheckpoint } from "../services/environment-task-runtime.js";
 import { NativeExecutionContext } from "../services/native-runtime/native-execution-context.js";
 
 const state = vi.hoisted(() => ({ plugin: {} as any, release: vi.fn(), identity: vi.fn(), config: vi.fn() }));
@@ -531,5 +531,53 @@ describe("plugin-provided Runner execution", () => {
     expect(environmentTaskOperationSchema.safeParse({ ...submit, runner: { ...submit.runner, unknownField: true } }).success).toBe(false);
     expect(() => parseEnvironmentTaskResult({ kind: "status" }, "attempt-1", { kind: "accepted", taskId: "attempt-1" })).toThrow();
     expect(parseEnvironmentTaskResult(submit, "attempt-1", { kind: "accepted", taskId: "attempt-1" }).kind).toBe("accepted");
+  });
+});
+
+
+describe("hosted completed-turn cold checkpoint ownership", () => {
+  const identity = { runnerInstanceId: "runner", environmentLeaseId: leaseId, runId: "run",
+    normalizedSessionId: "session", turnId: "turn", itemId: "item" };
+  const checkpoint = { schema: "paperclip.runner.cold-checkpoint.v1" as const, sourceId: "immutable-source",
+    sha256: `sha256:${"a".repeat(64)}`, runnerStateSha256: `sha256:${"b".repeat(64)}`, identity, providerSessionId: "thread" };
+  it.each(["valid", "disabled", "foreign", "failure", "stale-result", "stopped-during-copy"])("keeps only a current verified receipt: %s", async mode => {
+    vi.stubEnv("PAPERCLIP_HOSTED_WARM_CHECKPOINT", mode === "disabled" ? "" : "1");
+    const value = row();
+    Object.assign(value.lease.metadata, { runnerTaskIdentity: submit.runner, runnerTaskLifecyclePolicy: { mode: "warm" },
+      runnerTaskColdCheckpoint: { ...checkpoint, sourceId: "previous-source" } });
+    const store = database(value);
+    store.query.limit = async () => [value];
+    const workers = worker({ kind: "checkpoint", taskId: "attempt-1", checkpoint });
+    workers.call.mockImplementation(async () => {
+      if (mode === "failure") throw new Error("checkpoint storage unavailable");
+      if (mode === "stopped-during-copy") value.run!.status = "cancelled";
+      return { kind: "checkpoint", taskId: "attempt-1", checkpoint: { ...checkpoint,
+        ...(mode === "stale-result" ? { identity: { ...identity, turnId: "prior-turn" } } : {}) } };
+    });
+    const operation = { kind: "checkpoint" as const, identity: { ...identity,
+      ...(mode === "foreign" ? { runId: "other-run" } : {}) }, providerSessionId: "thread" };
+    try {
+      const run = executeEnvironmentTask(store.db, workers as never, { companyId: "company", leaseId, operation });
+      if (mode === "valid") await expect(run).resolves.toMatchObject({ checkpoint });
+      else await expect(run).rejects.toThrow();
+      if (["disabled", "foreign"].includes(mode)) { expect(workers.call).not.toHaveBeenCalled(); expect(store.sets).toHaveLength(0); }
+      else {
+        expect(new PgDialect().sqlToQuery(store.sets[0].metadata as never).sql).toContain("- 'runnerTaskColdCheckpoint'");
+        expect(store.sets).toHaveLength(mode === "valid" ? 2 : 1);
+      }
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it.each(["valid", "foreign", "ambiguous", "malformed"])("pins persisted sources even with issuance disabled: %s", async mode => {
+    vi.stubEnv("PAPERCLIP_HOSTED_WARM_CHECKPOINT", "");
+    const proof = { ...checkpoint, ...(mode === "foreign" ? { identity: { ...identity, runId: "foreign" } } : {}),
+      ...(mode === "malformed" ? { sha256: "changed" } : {}) };
+    const rows = [{ metadata: { runnerTaskColdCheckpoint: proof } }];
+    const query: any = { from: () => query, where: () => query, limit: async () => mode === "ambiguous" ? [...rows, ...rows] : rows };
+    const db = { select: () => query } as unknown as Db;
+    try {
+      const selected = resolvePluginTaskColdCheckpoint(db, { companyId: "company", resumeFrom: "task", priorIdentity: identity });
+      if (mode === "valid") await expect(selected).resolves.toEqual(checkpoint);
+      else await expect(selected).rejects.toThrow();
+    } finally { vi.unstubAllEnvs(); }
   });
 });

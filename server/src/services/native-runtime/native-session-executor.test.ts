@@ -73,6 +73,7 @@ import {
   type PrpEvent,
 } from "@paperclipai/paperclip-runner";
 import { existsSync } from "node:fs";
+import { coldCheckpointStateDigest } from "@paperclipai/paperclip-runner";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
@@ -444,6 +445,7 @@ import {
 import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 
 beforeEach(() => {
+  vi.spyOn(environmentTaskRuntime, "resolvePluginTaskColdCheckpoint").mockResolvedValue(undefined);
   state.localRuntimeApiUrl.mockReset().mockReturnValue("http://127.0.0.1:43219");
   // These transport-wiring fixtures use a partial Db double and synthetic IDs.
   // The real selector/bootstrap proof is exercised with Postgres by the durable
@@ -14302,7 +14304,7 @@ describe("runnerd provider runtime wiring", () => {
       || request.args.includes("paperclip-runner-claim-unstarted-session"))).toBe(false);
   });
 
-  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-late-notice", "local-receipt-late-work", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory"].filter(mode => policy === "per_turn" || !mode.startsWith("resumed")).map(mode => [provider, policy, mode] as const))))(
+  it.each(["claude", "codex"].flatMap(provider => (["per_turn", "warm"] as const).flatMap(policy => ["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-late-notice", "local-receipt-late-work", "local-receipt-missing-terminal", "local-receipt-pending-command", "quarantined", "empty-runner", "empty-runner-quarantined", "nonempty-runner", "wrong-identity", "active", "foreign-scope", "no-stop-proof", "not-suspended", "pending-outbox", "pending-command", "missing-terminal", "ambiguous", "contradictory", "cold-ready", "cold-corrupt"].filter(mode => (!mode.startsWith("cold-") || provider === "codex" && policy === "warm") && (policy === "per_turn" || !mode.startsWith("resumed"))).map(mode => [provider, policy, mode] as const))))(
     "recovers a blocked %s %s plugin checkpoint on a replacement lease: %s", async (provider, policy, mode) => {
       const { permissionPolicy: _permissionPolicy, ...claudeProfile } = QUALIFIED_ACPX_PROFILES.claude;
       const first = { ...scopedNativeExecution(`plugin-${provider}-${policy}-${mode}`),
@@ -14355,12 +14357,22 @@ describe("runnerd provider runtime wiring", () => {
         if (mode === "no-stop-proof") throw new Error("Plugin Runner retained session is not authorized");
         return "old-task";
       });
+      const coldState = { ...durableRunnerState(identity, "ready"), outbox: [], pendingTerminalDelivery: null };
+      const coldCheckpoint = { schema: "paperclip.runner.cold-checkpoint.v1" as const, sourceId: "immutable-source",
+        sha256: `sha256:${"a".repeat(64)}`, runnerStateSha256: coldCheckpointStateDigest(coldState), identity,
+        providerSessionId: "original-provider-history" };
+      if (mode.startsWith("cold-")) vi.mocked(environmentTaskRuntime.resolvePluginTaskColdCheckpoint).mockResolvedValue(coldCheckpoint);
       let timedOut = false;
       const task = vi.fn(async (operation: any) => {
         environmentTaskOperationSchema.parse(operation);
         if (mode === "resumed-timeout" && operation.kind === "read_state" && !timedOut) {
           timedOut = true;
           throw new Error("fixture_remote_state_timeout");
+        }
+        if (operation.kind === "read_state" && mode.startsWith("cold-")) {
+          expect(operation.resumeCheckpoint).toEqual(coldCheckpoint);
+          return { kind: "state", taskId: "replacement-task", state: { ...coldState,
+            ...(mode === "cold-corrupt" ? { diagnostics: ["changed-after-capture"] } : {}) } };
         }
         if (operation.kind === "read_state") return { kind: "state", taskId: "replacement-task", state: {
           ...durableRunnerState(identity, mode === "not-suspended" ? "ready" : "suspended"),
@@ -14396,17 +14408,18 @@ describe("runnerd provider runtime wiring", () => {
           expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
         }
         const backend = throughExecutor ? executePaperclipNativeSession({ ...launch, useRunnerd: true }) : createRunnerdBackend(launch);
-        if (["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-late-notice", "quarantined", "empty-runner", "empty-runner-quarantined"].includes(mode)) {
+        if (["canonical", "resumed", "resumed-timeout", "local-receipt", "local-receipt-late-notice", "quarantined", "empty-runner", "empty-runner-quarantined", "cold-ready"].includes(mode)) {
           await expect(backend).resolves.toBeDefined();
           expect(state.createBackend).toHaveBeenCalledOnce();
           expect(owner).toHaveBeenCalledWith(expect.objectContaining({ priorIdentity: identity,
             ...(!mode.startsWith("resumed") ? { resumeFrom: "old-task" } : {}) }));
           if (!mode.startsWith("resumed")) expect(resume).toHaveBeenCalledWith(db, expect.objectContaining({ leaseId: "replacement-lease", priorIdentity: identity, inspectCheckpoint: true }));
           else expect(task).toHaveBeenCalledWith({ kind: "read_state", identity });
-          expect(JSON.parse(await readFile(join(scoped, "plugin-runner-state.json"), "utf8"))).toMatchObject({ ...identity, lifecycle: "suspended" });
+          expect(JSON.parse(await readFile(join(scoped, "plugin-runner-state.json"), "utf8"))).toMatchObject({ ...identity, lifecycle: mode === "cold-ready" ? "ready" : "suspended" });
           expect(await readFile(join(scoped, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
         } else {
           await expect(backend).rejects.toThrow({
+            "cold-corrupt": "native_runner_cold_checkpoint_integrity_mismatch",
             "local-receipt-late-work": "plugin_checkpoint_recovery_unproven: journal_not_settled",
             "local-receipt-missing-terminal": "plugin_checkpoint_recovery_unproven: journal_not_settled",
             "local-receipt-pending-command": "plugin_checkpoint_recovery_unproven: journal_not_settled",
@@ -14513,7 +14526,7 @@ describe("runnerd provider runtime wiring", () => {
     const driver = { prepareLaunch: vi.fn(), runnerProcessLauncher: launcher, controlPlaneRegistration: registration };
     state.toolAuthorityDefinitions.mockImplementation(async binding => binding.readRemoteTaskFile ? [{ name: "register_deliverable" }] as never : []);
     const readWorkspaceFile = vi.fn(async () => Buffer.from("proof"));
-    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, isRetired: () => false, rebind:vi.fn() });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockReturnValue({ launcher, registration, driver, readWorkspaceFile, checkpointWarmTurn: vi.fn(), warmCheckpointEnabled: false, isRetired: () => false, rebind:vi.fn() });
     const task = vi.fn(async (operation: unknown) => {
       environmentTaskOperationSchema.parse(operation);
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, ...(kind === "codex" ? { workspaceFileReadVersion: 1 } : {}), taskId: "task", runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
@@ -14569,18 +14582,61 @@ describe("runnerd provider runtime wiring", () => {
     } finally { owner.mockRestore(); }
   });
 
-  it.each(["codex", "fresh", "missing-capability", "missing-account", "acpx", "installed-codex", "installed-claude"] as const)("negotiates task-only execution: %s", async mode => {
+  it.each(["success", "checkpoint-fails", "provider-fails", "disabled"])("checkpoints successful hosted warm turns before release: %s", async mode => {
+    const current = { ...scopedNativeExecution(`plugin-cold-checkpoint-${mode}`),
+      schema: "paperclip.native-execution-input.v5" as const, executionMode: "default" as const,
+      provider: { kind: "codex" as const, model: null, approvalPolicy: "never" as const },
+      planningContext: null, runtimeContext: nativeRuntimeContextFixture(),
+      session: { ...execution.session, normalizedSessionId: `checkpoint-${mode}`,
+        lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } };
+    const home = await mkdtemp(join(tmpdir(), "plugin-checkpoint-account-"));
+    await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
+    const session = { close: vi.fn(async () => {}), snapshot: vi.fn(async () => ({ sessionId: "native-thread", providerSessionId: "account-session", identity: { sessionId: current.session.normalizedSessionId } })) };
+    const checkpoint = vi.fn(async () => { if (mode === "checkpoint-fails") throw new Error("fixture checkpoint failed"); });
+    const createOwner = pluginTaskRuntime.createPluginRunnerTaskOwner;
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner").mockImplementation(input => ({
+      ...createOwner(input), warmCheckpointEnabled: mode !== "disabled", checkpointWarmTurn: checkpoint,
+    }));
+    const task = vi.fn(async () => ({ kind: "description", taskId: "task", launchPreparationVersion: 1,
+      projectAuthCheckVersion: 1, warmTaskVersion: 1, warmCheckpointVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } }));
+    const logs: string[] = [];
+    state.execute.mockReset().mockImplementationOnce(async options => {
+      await options.onSession(session);
+      return { result: { summary: "done" }, terminal: { runTerminalState: mode === "provider-fails" ? "failed" : "succeeded" },
+        turnId: "turn", normalizedSessionId: current.session.normalizedSessionId, providerSessionId: "account-session",
+        driverKind: "codex_app_server", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1, usage: null };
+    });
+    try {
+      const result = await executePaperclipNativeSession({ db: leaseDb(current), execution: current,
+        runnerInstanceId: "runner", useRunnerd: true, runnerIngressAuthorized: true, managedAiCredentialHome: home,
+        managedAiCredentialIdentity: "revision", managedAiAccountIdentity: "account", onLog: async (_stream, value) => { logs.push(value); },
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", leaseId: "lease", remoteCwd: ".", runnerTask: task } });
+      expect(result.exitCode).toBe(mode === "provider-fails" ? 1 : 0);
+      if (["disabled", "provider-fails"].includes(mode)) {
+        expect(checkpoint).not.toHaveBeenCalled();
+        expect(session.snapshot).not.toHaveBeenCalled();
+      } else {
+        expect(checkpoint).toHaveBeenCalledExactlyOnceWith("native-thread");
+        expect(session.close).not.toHaveBeenCalled();
+      }
+      if (mode === "checkpoint-fails") expect(logs.join("")).toContain("no verified cold checkpoint");
+    } finally { owner.mockRestore(); await rm(home, { recursive: true, force: true }); }
+  });
+
+  it.each(["codex", "fresh", "missing-capability", "missing-account", "acpx", "installed-codex", "installed-claude", "checkpoint-on", "checkpoint-off", "checkpoint-acpx"] as const)("negotiates task-only execution: %s", async mode => {
     const current = scopedNativeExecution(`plugin-warm-${mode}`);
+    vi.stubEnv("PAPERCLIP_HOSTED_WARM_CHECKPOINT", mode === "checkpoint-on" || mode === "checkpoint-acpx" ? "1" : "");
     const installed = mode.startsWith("installed-");
     current.session.lifecyclePolicy = installed ? {mode:"per_turn",idleTimeoutMs:null} : {mode:"warm",idleTimeoutMs:300000};
-    if(mode==="acpx" || mode==="installed-claude") current.provider={kind:"acpx",agent:"claude",model:"fixture",permissionMode:"deny-all"} as never;
+    if(mode==="acpx" || mode==="installed-claude" || mode==="checkpoint-acpx") current.provider={kind:"acpx",agent:"claude",model:"fixture",permissionMode:"deny-all"} as never;
     const home=await mkdtemp(join(tmpdir(),"plugin-warm-account-"));
     await writeFile(join(home,"auth.json"),JSON.stringify({OPENAI_API_KEY:"synthetic-fixture"}),{mode:0o600});
     const owner=vi.spyOn(pluginTaskRuntime,"createPluginRunnerTaskOwner");
     const task=vi.fn(async(operation:any)=> operation.kind === "stop" || operation.kind === "complete" ? {kind:"accepted",taskId:"warm-task"}
       : operation.kind === "status" ? {kind:"status",taskId:"warm-task",phase:"completed",executionStopped:true}
       : {kind:"description",taskId:"warm-task",launchPreparationVersion:1,projectAuthCheckVersion:1,
-      ...(mode!=="missing-capability" ? {warmTaskVersion:1}:{}),runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`}});
+      ...(mode!=="missing-capability" ? {warmTaskVersion:1,warmCheckpointVersion:1}:{}),runner:{version:"fixture",digest:`sha256:${"a".repeat(64)}`}});
     state.createBackend.mockClear();state.createTransport.mockClear();
     try {
       const backend=createRunnerdBackend({db:leaseDb(current),execution:current,runnerInstanceId:"runner",runnerIngressAuthorized:true,
@@ -14594,7 +14650,8 @@ describe("runnerd provider runtime wiring", () => {
       expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({lifecyclePolicy:current.session.lifecyclePolicy});
       expect(owner.mock.calls.at(-1)![0]).toMatchObject({warmTaskVersion:1,onCredentials:undefined});
       expect(owner.mock.calls.at(-1)![0].accountIdentity).toBe(installed ? undefined : "account");
-    } finally {owner.mockRestore();await rm(home,{recursive:true,force:true});}
+      expect(owner.mock.calls.at(-1)![0].warmCheckpointVersion).toBe(mode === "checkpoint-on" ? 1 : undefined);
+    } finally {owner.mockRestore();vi.unstubAllEnvs();await rm(home,{recursive:true,force:true});}
   });
 
   it.each((["codex", "claude"] as const).flatMap(provider => [true, false].map(reuseProcess => [provider, reuseProcess] as const)))("reconnects task-only %s warm recovery under the saved identity before reuse or retirement: %s", async (provider, reuseProcess) => {
