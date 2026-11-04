@@ -15,10 +15,12 @@ import type {
   PersistedNativeSession,
 } from "./contracts/native-session-backend.js";
 import {
+  NativeProviderStateIncompatibleError,
   NativeSessionCloseUnrecoverableError,
   NativeSessionCleanupQuarantinedError,
   NativeSessionProtocolIntegrityError,
 } from "./contracts/native-session-backend.js";
+import { PROVIDER_STATE_INCOMPATIBLE } from "./contracts/harness-driver.js";
 import type {
   PrpEvent,
   PrpStructuredRunResult,
@@ -5940,6 +5942,40 @@ describe("executeNativeSession recovery", () => {
     expect(openRun).not.toHaveBeenCalled();
     expect(completeRun).not.toHaveBeenCalled();
     expect(openSession).not.toHaveBeenCalled();
+  });
+
+  it("types a runner-proven incompatible session when same-session recovery is required", async () => {
+    for (const providerRecoveryPolicy of ["same_session_only", "allow_replacement_after_governed_wait"] as const) {
+      const checkpoint: PersistedNativeSession = {
+        backendKind: "mock", sessionId: "driver-incompatible", identity,
+        providerSessionId: "provider-incompatible", providerRecoveryPolicy,
+        cursor: "0", activeTurnId: null, pendingRuntimeRequests: [], lineage: [],
+      };
+      const openRun = vi.fn(async () => undefined);
+      const openSession = vi.fn();
+      const openReplacementSession = vi.fn();
+      const backend: NativeSessionBackend = {
+        descriptor: async () => ({ kind: "mock", name: "incompatible", version: "1",
+          capabilities: { resume: true, typedEvents: true, steering: false, interruption: true } }),
+        openSession, openReplacementSession,
+        recoverSession: async () => ({ recovered: false, reason: "saved launch profile changed",
+          failureClass: PROVIDER_STATE_INCOMPATIBLE }),
+      };
+      const port: ControlPlanePort = {
+        openRun, appendEvent: vi.fn(), completeRun: vi.fn(),
+        loadSessionCheckpoint: async () => structuredClone(checkpoint),
+        replayEvents: async () => ({ events: [], highestContiguousSourceSeq: 0 }),
+      };
+      const failure = await executeNativeSession({
+        input, backend, controlPlane: port,
+        runnerInstanceId: "runner-recovery", controlPlaneInstanceId: "control-recovery",
+      }).catch((error: unknown) => error);
+      expect(failure, providerRecoveryPolicy).toBeInstanceOf(NativeProviderStateIncompatibleError);
+      expect((failure as Error).message).toBe("native_session_recovery_failed: saved launch profile changed");
+      expect(openRun).not.toHaveBeenCalled();
+      expect(openSession).not.toHaveBeenCalled();
+      expect(openReplacementSession).not.toHaveBeenCalled();
+    }
   });
 
   it("bounds paginated recovery replay with one signal and observes a late rejection", async () => {

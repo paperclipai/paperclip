@@ -310,7 +310,7 @@ describePostgres("heartbeat recovery module ownership", () => {
     } finally { try { await f.cleanup(); } finally { await child.stop(); } }
   });
 
-  async function remoteRetryFixture(pid: number, target: "workspace" | "plugin_task" = "workspace") {
+  async function remoteRetryFixture(pid: number, target: "workspace" | "remote_workspace" | "plugin_task" = "workspace") {
     const fixture = await nativeProcessFixture(pid, "remote", "failed");
     const sessionId = randomUUID();
     const [lease] = await db.insert(environmentLeases).values({ companyId: fixture.run.companyId,
@@ -319,13 +319,17 @@ describePostgres("heartbeat recovery module ownership", () => {
     }).returning();
     await db.update(agents).set({ adapterType: "paperclip_runner" }).where(eq(agents.id, fixture.run.agentId));
     await db.update(issues).set({ executionRunId: fixture.run.id }).where(eq(issues.id, fixture.run.issueId!));
-    await db.update(heartbeatRuns).set({ nativeSessionId: sessionId, runnerProfileJson: {
+    await db.update(heartbeatRuns).set({ nativeSessionId: sessionId,
+      ...(target === "remote_workspace" ? { processGroupId: null } : {}), runnerProfileJson: {
       sessionCheckpoint: { identity: { runId: fixture.run.id, companyId: fixture.run.companyId,
         issueId: fixture.run.issueId, agentId: fixture.run.agentId, sessionId }, providerSessionId: "existing-provider" },
       ...(target === "workspace" ? { nativeWorkspaceSync: { schema: "paperclip.native-workspace-sync/v3", state: "prepared",
         workspaceId: randomUUID(), leaseId: lease.id, providerLeaseId: lease.providerLeaseId, remoteCwd: "/work",
         descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null,
         resourceDisposition: "keep_running" } } : {}),
+      ...(target === "remote_workspace" ? { remoteWorkspace: { schema: "paperclip.remote-workspace-run.v1",
+        workspaceId: randomUUID(), epoch: 3, leaseId: lease.id, providerLeaseId: lease.providerLeaseId,
+        remoteCwd: "/work", state: "prepared", snapshotId: randomUUID() } } : {}),
     } }).where(eq(heartbeatRuns.id, fixture.run.id));
     await db.insert(nativeRunnerCheckpoints).values({ runId: fixture.run.id, companyId: fixture.run.companyId,
       issueId: fixture.run.issueId!, part: "opaque-checkpoint-record", material: { fixture: true } });
@@ -335,9 +339,12 @@ describePostgres("heartbeat recovery module ownership", () => {
     return { ...fixture, lease };
   }
 
-  it.each(["failed", "running"] as const)("routes a due remote %s retry through verified recovery without local PID inspection", async status => {
+  it.each((["workspace", "remote_workspace"] as const).flatMap(target =>
+    (["failed", "running"] as const).map(status => ({ target, status })),
+  ))("routes a due $target $status retry through verified recovery without local PID inspection", async ({ target, status }) => {
     const child = await ownedProcess();
-    const f = await remoteRetryFixture(child.pid);
+    const f = await remoteRetryFixture(child.pid, target);
+    const processGroupId = target === "remote_workspace" ? null : child.pid;
     const originalKill = process.kill.bind(process);
     const kill = vi.spyOn(process, "kill").mockImplementation(originalKill);
     try {
@@ -351,7 +358,7 @@ describePostgres("heartbeat recovery module ownership", () => {
           remote: { providerLeaseId: f.lease.providerLeaseId, remoteCwd: "/work" } }),
       }));
       expect(native.claims).toHaveBeenCalledWith(expect.objectContaining({ runIds: [f.run.id] }));
-      expect(await f.current()).toMatchObject({ status: "running", processPid: child.pid, processGroupId: child.pid });
+      expect(await f.current()).toMatchObject({ status: "running", processPid: child.pid, processGroupId });
       expect(kill.mock.calls.filter(([pid]) => Math.abs(pid as number) === child.pid)).toEqual([]);
       expect(await hasNativeLocalProcessStop(db, f.run.companyId, f.run.id)).toBe(false);
       await recovery.reapOrphanedRuns();
@@ -378,10 +385,13 @@ describePostgres("heartbeat recovery module ownership", () => {
     } finally { try { await f.cleanup(); } finally { await child.stop(); } }
   });
 
-  it.each(["future_retry", "live_owner", "missing_checkpoint", "active_execution"] as const)(
-    "does not execute a remote retry without current authority: %s", async condition => {
+  it.each((["workspace", "remote_workspace"] as const).flatMap(target =>
+    (["future_retry", "live_owner", "missing_checkpoint", "active_execution"] as const).map(condition => ({ target, condition })),
+  ))(
+    "does not execute a $target retry without current authority: $condition", async ({ target, condition }) => {
       const child = await ownedProcess();
-      const f = await remoteRetryFixture(child.pid);
+      const f = await remoteRetryFixture(child.pid, target);
+      const processGroupId = target === "remote_workspace" ? null : child.pid;
       try {
         if (condition === "future_retry") await db.update(nativeRunFinalizations)
           .set({ nextAttemptAt: new Date(Date.now() + 60_000) }).where(eq(nativeRunFinalizations.runId, f.run.id));
@@ -397,7 +407,7 @@ describePostgres("heartbeat recovery module ownership", () => {
         await createHeartbeatRecovery(db, f.deps).reapOrphanedRuns();
         expect(f.deps.executeRun).not.toHaveBeenCalled();
         expect(f.deps.terminateHeartbeatRunProcess).not.toHaveBeenCalled();
-        expect(await f.current()).toMatchObject({ processPid: child.pid, processGroupId: child.pid });
+        expect(await f.current()).toMatchObject({ processPid: child.pid, processGroupId });
         if (condition === "future_retry") expect(native.claims).not.toHaveBeenCalled();
         if (condition === "missing_checkpoint") {
           const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id));

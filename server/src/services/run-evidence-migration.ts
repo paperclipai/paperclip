@@ -9,6 +9,7 @@ import {
   providerTraceRecords,
   type Db,
 } from "@paperclipai/db";
+import { offlineMigrationExecutionWhere } from "./offline-migration-execution.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { createObjectByteJournal } from "./object-byte-journal.js";
 import {
@@ -63,7 +64,7 @@ export async function migrateRunEvidence(
   async function assertNoActiveRuns() {
     options.signal?.throwIfAborted();
     const [active] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
-      .where(inArray(heartbeatRuns.status, ["queued", "running"])).limit(1);
+      .where(offlineMigrationExecutionWhere()).limit(1);
     if (active) throw new Error("active_execution_requires_drain");
   }
   if (preserveHistoricalFiles) {

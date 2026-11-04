@@ -572,7 +572,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function resumeRemoteStopComments(run: NonNullable<Awaited<ReturnType<typeof getRunExecutionWait>>>, requestId?: string) {
     if (!isHeartbeatRunTerminalStatus(run.status) || adapterExecutionControls.has(run.id)) return;
     let interruptedPreparation = false;
-    if (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") {
+    if (run.status === "interrupted" && run.runtimeMode === "legacy" &&
+        !run.runtimeModeResolvedAt && run.executionStage === "preparing") {
       const current = await getRun(run.id, { includeExecutionEvidence: true });
       if (current && await isInterruptedNativePreparation(db, current)) {
         const settled = await settleInterruptedNativeBootstrap(db, { run: current, providerDispatchStarted: false });
