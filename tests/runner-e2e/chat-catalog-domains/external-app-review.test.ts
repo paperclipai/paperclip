@@ -362,3 +362,18 @@ it.each(["no human approval", "wrong human", "successful invocation", "successfu
     expect(gradeAppReview(o).passed).toBe(false);
   },
 );
+
+it("accepts the measured whole declined reply with bold negation while still requiring every later phase", () => {
+  const reply = `The launch page update was **not** applied: the approval card for the "Synthetic Launch Notes" write was declined, so the page still reads "Controlled launch page."
+
+The update I attempted contained:
+- Public launch: **November 8, 2030**
+
+Do you want me to retry (you'll need to approve the card) or change the content first?`;
+  expect(reviewOutcomeReply(reply, "rejected")).toBe(true);
+  const o = valid();
+  o.phaseReplies[0]!.body = reply;
+  expect(gradeAppReview(o).passed).toBe(true);
+  o.state.phases = o.state.phases.slice(0, 1);
+  expect(gradeAppReview(o).passed).toBe(false);
+});
