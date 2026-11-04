@@ -34,9 +34,15 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
   const runnerBinary = join(runnerWorkspace, "target/release/paperclip-runnerd");
   const fakeProvider = join(runnerWorkspace, "target/release/fake-codex-app-server");
 
+  let proxyBytes: Buffer;
   beforeAll(() => {
-    execFileSync(process.execPath, [resolve(runnerWorkspace, "../scripts/build-verified-provider-entrypoints.mjs")],
-      { cwd: resolve(runnerWorkspace, ".."), stdio: "pipe", timeout: 30_000 });
+    // Keep this fixture independent of concurrently built shared dist artifacts.
+    proxyBytes = execFileSync(process.execPath, ["--input-type=module", "-e", `
+      import { bundleVerifiedProviderEntrypoints } from "./scripts/build-verified-provider-entrypoints.mjs";
+      const entries = await bundleVerifiedProviderEntrypoints({ write: false });
+      const proxy = entries.find(({ entrypoint }) => entrypoint.name === "opencode-app-server-proxy");
+      process.stdout.write(proxy.verifiedResult.outputFiles[0].contents);
+    `], { cwd: resolve(runnerWorkspace, ".."), timeout: 30_000, maxBuffer: 16 * 1024 * 1024 });
     execFileSync("cargo", ["build", "--release", "--locked", "-p", "paperclip-runner-core",
       "--bin", "paperclip-runnerd", "--bin", "fake-codex-app-server"],
     { cwd: runnerWorkspace, stdio: "ignore", timeout: 600_000 });
@@ -85,20 +91,23 @@ describeEmbeddedPostgres("native ingress bootstrap retry through the real Runner
         identity: { kind: provider } }, normalizedSessionId: native.normalizedSessionId }));
     const digest = (file: string) => `sha256:${createHash("sha256").update(readFileSync(file)).digest("hex")}`;
     const opencode = join(runtimeRoot, "fake-opencode-ingress");
-    const providerNode = provider === "opencode" && process.platform === "linux"
+    const providerNode = provider === "opencode"
       ? join(runtimeRoot, "node") : process.execPath;
     const providerCalls = join(sandbox, "provider-calls.log");
     if (provider === "opencode") {
-      if (process.platform === "linux") {
-        await copyFile(process.execPath, providerNode);
-        await chmod(providerNode, 0o500);
-      }
+      // Remote admission must not refer to the controller host's Node path.
+      await copyFile(process.execPath, providerNode);
+      await chmod(providerNode, 0o500);
       const script = resolve(runnerWorkspace, "../test/fixtures/fake-opencode-server.mjs");
       execFileSync("cc", ["-x", "c", "-o", opencode, "-"], { input:
         `#include <unistd.h>\n#include <stdlib.h>\n#include <stdio.h>\nint main(int argc, char **argv) { FILE *log = fopen(${JSON.stringify(providerCalls)}, "a"); if (!log) return 126; fputs("process-start\\n", log); fclose(log); char **args = calloc(argc + 2, sizeof(char *)); args[0] = ${JSON.stringify(providerNode)}; args[1] = ${JSON.stringify(script)}; for (int i = 1; i < argc; i++) args[i + 1] = argv[i]; execv(args[0], args); return 127; }` });
       await chmod(opencode, 0o755);
     }
-    const proxy = resolve(runnerWorkspace, "../dist/cli/opencode-app-server-proxy.cjs");
+    const proxy = join(sandbox, "opencode-app-server-proxy.cjs");
+    if (provider === "opencode") {
+      await writeFile(proxy, proxyBytes, { mode: 0o600 });
+      expect((await stat(proxy)).mode & 0o022).toBe(0);
+    }
     const identity = { runnerInstanceId: native.runnerInstanceId, environmentLeaseId: runId, runId,
       normalizedSessionId: native.normalizedSessionId, turnId: `turn-${runId}`, itemId: `item-${runId}` };
     const assertSealedSkills = async () => {
