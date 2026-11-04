@@ -46,13 +46,20 @@ export async function preserveRemoteWorkspacePreparationFailure(db: Db, lease: W
 
 export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease): Promise<boolean> {
   if (!lease.heartbeatRunId || !lease.provider || lease.provider === "local" || !lease.providerLeaseId) return false;
-  if (await preparedRemoteWorkspaceSource(db, lease)) return true;
   const input = sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'`;
   const [run] = await db.select({
     id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
     issueId: heartbeatRuns.issueId, nativeIssueId: heartbeatRuns.nativeIssueId,
     runtimeMode: heartbeatRuns.runtimeMode, driverKind: heartbeatRuns.driverKind,
     reference: sql<unknown>`${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync'`,
+    observedRemoteWorkspace: sql<boolean>`${heartbeatRuns.status} = 'failed'
+      and ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace' is not null
+      and ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace' <> 'null'::jsonb
+      and exists (select 1 from ${nativeRunFinalizations}
+        where ${nativeRunFinalizations.companyId} = ${heartbeatRuns.companyId}
+          and ${nativeRunFinalizations.runId} = ${heartbeatRuns.id}
+          and ${nativeRunFinalizations.issueId} = ${heartbeatRuns.nativeIssueId}
+          and ${nativeRunFinalizations.phase} = 'observed' and ${nativeRunFinalizations.resultId} is null)`,
     executionScope: sql<Record<string, unknown>>`jsonb_build_object(
       'schema', ${input}->'schema', 'binding', ${input}->'binding', 'workspace', ${input}->'workspace',
       'provider', jsonb_build_object('kind', ${input}#>'{provider,kind}'))`,
@@ -60,6 +67,8 @@ export async function nativeWorkspaceExportPendingForLease(db: Db, lease: Worksp
     eq(heartbeatRuns.id, lease.heartbeatRunId), eq(heartbeatRuns.companyId, lease.companyId),
     eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
+  if (run?.observedRemoteWorkspace) return true;
+  if (await preparedRemoteWorkspaceSource(db, lease)) return true;
   if (!run || nativeRunHasNoWorkspaceAccess({ ...run, runnerProfileJson: { nativeExecutionInput: run.executionScope } })) return false;
   const reference = readNativeWorkspaceSyncReference(run.reference);
   return reference?.state === "prepared" && reference.leaseId === lease.id
