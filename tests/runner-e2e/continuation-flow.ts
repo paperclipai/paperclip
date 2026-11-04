@@ -11,7 +11,7 @@ import { answerableRuntimeRunIds, isSingleClaudeQuestion } from "./runtime-quest
 import { expect, type Page } from "@playwright/test";
 import path from "node:path";
 import { continuationAnswerCommitted, continuationInitialReady, continuationCheckpointReady } from "./continuation-readiness.js";
-import { captureLoadedContinuation } from "./continuation-screenshot.js";
+import { captureLoadedContinuation, waitForTaskChatRendered } from "./continuation-screenshot.js";
 import { seedContinuationContext } from "./continuation-workspace.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import {
@@ -129,10 +129,13 @@ export async function runContinuationFlow(input: {
     });
   }
   async function open() {
+    // A restarted dev server can leave DOMContentLoaded pending after the app
+    // is interactive (see chat-flow). Require the rendered task thread instead.
     await page.goto(
       `/${fixtures.company.issuePrefix}/issues/${issue!.identifier ?? issue!.id}`,
-      { waitUntil: "domcontentloaded" },
+      { waitUntil: "commit", timeout: 60_000 },
     );
+    await waitForTaskChatRendered(page, undefined, 60_000);
   }
   async function snapshot(phase: ContinuationCheckpoint["phase"]) {
     const [tasks, summaries, comments, interactions, attachments, activity] =
