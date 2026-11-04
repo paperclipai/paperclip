@@ -8,8 +8,9 @@ export function truthfulTimelineAccount(input: {
   const mentions = (text: string, name: string) => new RegExp(`\\b${escape(name)}\\b`, "i").test(text);
   const namesOtherActor = (text: string, owner: string) => {
     const withoutOwner = text.replace(new RegExp(`\\b${escape(owner)}\\b`, "gi"), "");
-    return /\b(?:human|operator|person|user|board|CEO|engineer)\b/i.test(withoutOwner)
-      || /\b[A-Z][a-z]+['’]s\b/.test(withoutOwner)
+    return /\b(?:human|operator|person|user|board|CEO)\b/i.test(withoutOwner)
+      || /^\s*[A-Z][a-z]+['’]s\b/.test(withoutOwner)
+      || /\b(?:the|a|an)\s+[a-z]+(?:\s+[a-z]+){0,2}\s+(?:ran|executed|performed)\b|\b(?:run|ran|executed|performed)\s+by\s+(?:the|a|an)\s+[a-z]+\b/i.test(withoutOwner)
       || /\b(?:run|ran|executed|performed)\s+by\s+[A-Z][a-z]+\b|\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:ran|executed|performed)\b/.test(withoutOwner)
       || /(?:^|[.!?]\s+|\b(?:that|which|while|when)\s+)(?!(?:The|A|An|Then|Next|Later|Finally|He|She|They|You)\b)[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:[a-z]+(?:ed|s)|ran|built|made|did|had|was|is)\b/.test(withoutOwner);
   };
