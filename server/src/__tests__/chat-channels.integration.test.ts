@@ -66437,6 +66437,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                 const retryHttp = () => httpRequest(app).post(`/api/issues/${context.issue.id}/retry`).send({
                   idempotencyKey: nextInput.idempotencyKey, observedRunId: nextInput.observedRunId,
                 }).expect(202);
+                const restoredRetryWake = vi.fn(heartbeat.wakeup);
                 const retryWithIdentityContention = async () => {
                   if (mode !== "committed_board_existing_identity_contended" && mode !== "committed_board_existing_identity_expired") return retryHttp();
                   let release = () => {};
@@ -66450,8 +66451,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                   try {
                     await locked;
                     const response = await retryHttp();
-                    if (mode === "committed_board_existing_identity_expired")
+                    if (mode === "committed_board_existing_identity_expired" || mode === "committed_board_existing_identity_contended")
                       await context.service.processFailedChatRunRetry(response.body.chatActionId);
+                    if (mode === "committed_board_existing_identity_contended") context.wakeup
+                      .mockImplementation(restoredRetryWake).mockRejectedValueOnce(new Error("retry_admission_unavailable_before_receipt"));
                     expect(await db.select().from(agentWakeupRequests).where(inArray(agentWakeupRequests.id, inputIds))
                       .orderBy(asc(agentWakeupRequests.id))).toEqual(before);
                     return response;
@@ -66504,9 +66507,28 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
                 }, { timeout: 5_000, interval: 50 });
                 expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
                   eq(activityLog.runId, failed.id), eq(activityLog.action, "issue.retry_inputs_restored")))).toHaveLength(1);
-                expect(await context.service.processFailedChatRunRetry(next.chatActionId!)).toMatchObject({ status: "queued" });
-                [resumed] = await readAgentWakeupRequestsById(next.chatActionId!);
-                expect(resumed.runId).toBeTruthy();
+                await vi.waitFor(async () => {
+                  expect(await context.service.processFailedChatRunRetry(next.chatActionId!)).toMatchObject({ status: "queued" });
+                  [resumed] = await readAgentWakeupRequestsById(next.chatActionId!);
+                  expect(resumed).toMatchObject({ companyId, agentId: context.fixture.assignedAgentId,
+                    requestedByActorType: "user", requestedByActorId: "owner-user",
+                    payload: { taskRetryRequestId: next.requestId, retryOfRunId: failed.id } });
+                  expect(resumed.runId).toBeTruthy();
+                  await reconcileTaskChatRetryReceipts(db, { companyId, requestId: next.requestId! });
+                  expect((await readAgentWakeupRequestsById(next.requestId!))[0]?.runId).toBe(resumed.runId);
+                }, { timeout: 5_000, interval: 50 });
+                if (mode === "committed_board_existing_identity_contended") {
+                  expect(restoredRetryWake).toHaveBeenCalledOnce();
+                  expect(restoredRetryWake).toHaveBeenCalledWith(context.fixture.assignedAgentId, expect.objectContaining({
+                    taskRetryRequestId: next.requestId, requestedByActorType: "user", requestedByActorId: "owner-user",
+                    contextSnapshot: expect.objectContaining({ taskRetryRequestId: next.requestId,
+                      chatFailedRunRetry: { version: 1, actionId: next.chatActionId, failedRunId: failed.id } }),
+                  }));
+                  expect((await readHeartbeatRunsByCompanyId(companyId)).filter(run =>
+                    run.contextSnapshot?.taskRetryRequestId === next.requestId).map(run => run.id)).toEqual([resumed.runId]);
+                  expect(await db.select().from(activityLog).where(and(eq(activityLog.companyId, companyId),
+                    eq(activityLog.runId, failed.id), eq(activityLog.action, "issue.retry_inputs_restored")))).toHaveLength(1);
+                }
                 if (mode === "committed_board_existing_coalesced") {
                   const restored = await db.select().from(agentWakeupRequests)
                     .where(inArray(agentWakeupRequests.id, savedInputs.map(source => source.id)));
