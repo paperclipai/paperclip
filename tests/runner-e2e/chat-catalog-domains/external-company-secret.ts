@@ -58,7 +58,7 @@ export const companySecretExternalCases=[definition("secrets.configure-company-s
  const controllerSecretBaseline=companySecretControllerBaseline(secrets,ctx.input.fixtures.company.id,ctx.input.fixtures.secretRefs);
  return {morganId:morgan.id,agentCreateStatus,controllerSecretBaseline};
 },gradeCompanySecret,{
- authentication:"human-session",oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v2",expectedRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
+ authentication:"human-session",oracleVersion:"paperclip.chat-catalog.company-secret-controller-baseline.v3",expectedRunCount:2,expectedHumanMessageCount:2,attemptTimeoutMs:480000,
  sourceFiles:["chat-catalog-domains/external-company-secret.ts","chat-catalog-domains/external-private-browser.ts","chat-catalog-domains/external-private-browser-worker.ts","chat-catalog-domains/external-credential-language.ts","chat-catalog-domains/external-secret-scan.ts","chat-catalog-domains/external-support.ts","chat-catalog-domains/internal-support.ts","chat-catalog-domains/identity-support.ts","live-fixtures.ts","../../server/src/services/secrets.ts","run-observations.ts","chat-flow.ts","chat-scenarios/secrets.yaml"],
  async act(ctx,state){
   await waitForReply(ctx, chatCatalogOriginalPhaseDeadline(ctx));const initial=await observeExternal(ctx,state),reply=initial.phaseReplies.at(-1);if(!reply||!deploymentSecretGuidance(reply.body))throw new Error("Actual reply must direct secure deployment-key entry and Morgan-only reference binding before human action");state.initialRunId=reply.runId;

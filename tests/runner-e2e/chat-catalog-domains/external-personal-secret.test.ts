@@ -170,3 +170,44 @@ it("handles natural warnings without accepting another-person reuse or negative/
   ])
     expect(personalSecretConfirmation(reply)).toBe(false);
 });
+
+it("accepts secure-form guidance only when its excluded chat destination stays excluded", () => {
+  expect(personalSecretGuidance("Enter your personal publishing credential in your secure form, never in the chat.")).toBe(true);
+  for (const conjunction of ["but", "then", "however"]) {
+    expect(personalSecretGuidance(`Enter your personal publishing credential in the secure form, not in chat ${conjunction} here.`)).toBe(false);
+  }
+});
+it("preserves personal handoff safety across warning and settings follow-on clauses", () => {
+  expect(personalSecretGuidance("Use secure personal publishing settings. Never share your credential but send the key here in chat.")).toBe(false);
+  expect(personalSecretGuidance("Enter your personal publishing credential in the secure form, not in chat but you can review it in settings.")).toBe(true);
+});
+it("rejects a positive chat destination attached to secure personal entry without an exclusion", () => {
+  expect(personalSecretGuidance("Enter your personal publishing credential in the secure form then in chat.")).toBe(false);
+});
+
+it("distinguishes a subordinate chat request from a coordinated warning", () => {
+  const context = "Open secure personal publishing settings. ";
+  expect(personalSecretGuidance(context + "Please paste the credential you want to share here in chat.")).toBe(false);
+  expect(personalSecretGuidance(context + "You must never paste or share your credential here.")).toBe(true);
+});
+
+it("rejects a chat request after an explicit instead boundary", () => {
+  expect(personalSecretGuidance("Open secure personal publishing settings. Do not paste your credential into files and instead send it here in chat.")).toBe(false);
+});
+
+it("rejects an omitted credential object directed into chat", () => {
+  const context = "Open secure personal publishing settings. ";
+  expect(personalSecretGuidance(context + "Send your key via secure form and instead share here in chat.")).toBe(false);
+  expect(personalSecretGuidance(context + "Do not paste the credential into files but share here in chat.")).toBe(false);
+  expect(personalSecretGuidance(context + "Send your key via secure form and instead share progress here.")).toBe(true);
+});
+
+it("accepts sharing the explicit instruction message after a safe handoff", () => {
+  expect(personalSecretGuidance("Enter your personal publishing credential in the secure form, not in chat. Share this message with Morgan.")).toBe(true);
+});
+
+it("distinguishes a dash-separated chat request from a plain warning", () => {
+  const context = 'Open secure personal publishing settings. ';
+  expect(personalSecretGuidance(context + "Do not paste your credential into files — send it here in chat.")).toBe(false);
+  expect(personalSecretGuidance(context + "Do not paste your credential into files — keep it private.")).toBe(true);
+});
