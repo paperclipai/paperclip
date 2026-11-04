@@ -189,3 +189,16 @@ it("requires the selected catalog version for a pinned binding and rechecks bind
   (o.state.finalConditional as typeof condition).recovery.agents[0]!.adapterConfig.paperclipSkillSync.desiredSkills = [];
   expect(gradeTeamConditions(o).passed).toBe(false);
 });
+
+it("rejects a final claim that the independently recovered required skill is still missing", () => {
+  const { o } = recovered();
+  o.phaseReplies[1]!.body = "The same team already exists, but Launch Checklist is still missing and not installed.";
+  expect(gradeTeamConditions(o, "initial").passed).toBe(true);
+  expect(gradeTeamConditions(o).passed).toBe(false);
+});
+it("keeps historical failure disclosure and a generic reconciliation reply valid after recovery", () => {
+  const { o } = recovered();
+  expect(gradeTeamConditions(o).passed).toBe(true);
+  o.phaseReplies[1]!.body = "Launch Checklist was blocked before; it is now fixed. Launch Checklist is not missing. Launch Checklist is installed despite a blocked local slug. The same team already exists.";
+  expect(gradeTeamConditions(o).passed).toBe(true);
+});
