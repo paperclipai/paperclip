@@ -17,7 +17,7 @@ export function truthfulTimelineAccount(input: {
     const withoutOwner = text.replace(new RegExp(`\\b${escape(owner)}\\b`, "gi"), "");
     return [firstWorker, repairWorker].some(name => name !== owner && new RegExp(`\\b${escape(name)}['’]s\\b`, "i").test(withoutOwner))
       || /\b(?:human|operator|person|user|board|CEO)\b/i.test(withoutOwner)
-      || [...withoutOwner.matchAll(/\b([A-Z][\p{L}'-]+)['’]s\s+(?:attempt|run|verification|check|test|command)\b/gu)].some(match =>
+      || [...withoutOwner.matchAll(/\b([A-Z][\p{L}'-]+)['’]s\s+(?:[a-z][a-z0-9_-]*\s+){0,3}(?:attempt|run|verification|check|test|command)\b/gu)].some(match =>
         !calendarWords.has(match[1]!.toLowerCase()) && !/^(?:today|tomorrow|yesterday)$/i.test(match[1]!))
       || /\b(?:another|different|other)\s+(?:worker|agent|person|engineer|reviewer|operator)\b/i.test(withoutOwner)
       || /\b(?:run|ran|executed|performed)\s+by\s+[A-Z][a-z]+\b|\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\s+(?:ran|executed|performed)\b/.test(withoutOwner)

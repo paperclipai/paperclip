@@ -41,9 +41,9 @@ it("does not turn a project prototype possessive into a worker", () => {
 it("starts fresh worker scope at a consecutive Markdown heading", () => {
   expect(grade(account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "## Earlier work (Riley)\nSummary.\n## Initial build (Morgan)\nThe engineer built the page.\n\n"))).toBe(true);
 });
-it("retains unknown-person command ownership as a contrary actor", () => {
+it.each(["run", "initial attempt", "saved check"])("retains unknown-person %s ownership as a contrary actor", execution => {
   expect(grade(account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "")
-    .replace("command failed", "command failed on Avery's run"))).toBe(false);
+    .replace("command failed", `command failed on Avery's ${execution}`))).toBe(false);
 });
 
 it("does not give a heading credit for another actor's command", () => {
