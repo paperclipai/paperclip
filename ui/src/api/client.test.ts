@@ -5,6 +5,7 @@ import {
 } from "@/lib/tenant-session-recovery";
 import { api, detachInflightGet } from "./client";
 import { toolsApi } from "./tools";
+import { museInvitationsApi } from "./museInvitations";
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -40,6 +41,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("tenant-session recovery", () => {
@@ -101,6 +103,55 @@ describe("tenant-session recovery", () => {
 });
 
 describe("in-tab GET coalescing", () => {
+  it("times out a caller without cancelling another and starts a fresh fetch on retry", async () => {
+    vi.useFakeTimers();
+    const first = deferred<Response>();
+    fetchMock.mockReturnValueOnce(first.promise);
+    const survivorController = new AbortController();
+    const survivor = api.get("/deadline-shared", { signal: survivorController.signal });
+    const timed = api.get("/deadline-shared", { timeoutMs: 100 }).catch(error => error);
+    const sharedSignal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await timed).toMatchObject({ status: 408, body: { error: "TIMEOUT" } });
+    expect(sharedSignal.aborted).toBe(false);
+    fetchMock.mockResolvedValueOnce(jsonResponse({ fresh: true }));
+    await expect(api.get("/deadline-shared", { timeoutMs: 100 })).resolves.toEqual({ fresh: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    survivorController.abort();
+    await expect(survivor).rejects.toMatchObject({ name: "AbortError" });
+    expect(sharedSignal.aborted).toBe(true);
+    first.resolve(jsonResponse({ stale: true }));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("bounds response-body reads and aborts the last caller's fetch", async () => {
+    vi.useFakeTimers();
+    const body = deferred<unknown>();
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: () => body.promise });
+    const result = api.get("/deadline-body", { timeoutMs: 100 }).catch(error => error);
+    const signal = fetchMock.mock.calls[0][1].signal as AbortSignal;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await result).toMatchObject({ status: 408 });
+    expect(signal.aborted).toBe(true);
+    body.resolve({ tooLate: true });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("clears a successful or cancelled caller's deadline", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
+    await expect(api.get("/deadline-success", { timeoutMs: 100 })).resolves.toEqual({ ok: true });
+    expect(vi.getTimerCount()).toBe(0);
+    const controller = new AbortController();
+    fetchMock.mockReturnValueOnce(deferred<Response>().promise);
+    const result = api.get("/deadline-cancel", { signal: controller.signal, timeoutMs: 100 });
+    controller.abort();
+    await expect(result).rejects.toMatchObject({ name: "AbortError" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it("shares one underlying fetch for identical in-flight GETs", async () => {
     const d = deferred<Response>();
     fetchMock.mockReturnValue(d.promise);
@@ -235,5 +286,24 @@ describe("managed-account request isolation", () => {
     previous.resolve(jsonResponse({ apps: ["previous-user-account"] }));
     expect(await currentUser).toEqual({ apps: ["current-user-account"] });
     expect(await previousUser).toEqual({ apps: ["previous-user-account"] });
+  });
+});
+
+describe("Muse operator request isolation", () => {
+  it.each([
+    ["invitation resume", () => museInvitationsApi.resume("company")],
+    ["connection evidence", () => museInvitationsApi.connection("company", "agent")],
+  ] as const)("does not join the previous operator's %s request", async (_name, read) => {
+    const previous = deferred<Response>();
+    const current = deferred<Response>();
+    fetchMock.mockReturnValueOnce(previous.promise).mockReturnValueOnce(current.promise);
+    const previousOperator = read();
+    const currentOperator = read();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls.every(([, options]) => options.cache === "no-store")).toBe(true);
+    current.resolve(jsonResponse({ operator: "current" }));
+    previous.resolve(jsonResponse({ operator: "previous" }));
+    expect(await currentOperator).toEqual({ operator: "current" });
+    expect(await previousOperator).toEqual({ operator: "previous" });
   });
 });

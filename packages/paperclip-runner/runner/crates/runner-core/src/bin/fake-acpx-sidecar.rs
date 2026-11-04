@@ -64,6 +64,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut stdout = io::stdout().lock();
     let mut next_sequence = 1_u64;
     let mut goal = Value::Null;
+    let mut provider_lost = false;
     let mut session_identity = Value::Null;
     for line in stdin.lock().lines() {
         let request: Value = serde_json::from_str(&line?)?;
@@ -75,6 +76,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .get("command")
             .and_then(Value::as_str)
             .ok_or("request command is missing")?;
+        if mode == "turns-provider-death" && provider_lost && command == "session.goal.get" {
+            write_json(
+                &mut stdout,
+                &json!({
+                    "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                    "id":id,"ok":false,"error":{"message":"provider has exited"}
+                }),
+            )?;
+            continue;
+        }
         if let Some(journal) = admission_journal.as_mut() {
             write_json(journal, &json!({"request":request}))?;
             let response = if command == "tool.resolve" {
@@ -229,7 +240,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             "hasToken": std::env::var("PAPERCLIP_NATIVE_MCP_TOKEN").is_ok(),
                             "hasUnrelatedSecret": std::env::var("UNRELATED_EVAL_SECRET").is_ok(),
                             "credentialBinding": std::env::var("PAPERCLIP_ACPX_CREDENTIAL_BINDING").ok(),
-                            "credentialKeys": (["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "MY_PI_SERVICE_KEY", "LD_API_KEY", "DYLD_API_KEY", "PAPERCLIP_PI_PROVIDERS", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
+                            "credentialKeys": (["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_API_KEY", "GEMINI_API_KEY", "PAPERCLIP_ACPX_ANTIGRAVITY_AUTH_JSON_SECRET", "MY_PI_SERVICE_KEY", "LD_API_KEY", "DYLD_API_KEY", "PAPERCLIP_PI_PROVIDERS", "CURSOR_API_KEY", "CURSOR_AUTH_TOKEN", "COPILOT_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
+                            "ambientAntigravityKeys": (["GEMINI_HOME", "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_API_KEY", "GOOGLE_CLOUD_PROJECT", "AGY_ACP_FORCE_FILE_STORAGE", "PYTHONPATH", "PYTHONHOME"].into_iter().filter(|key| std::env::var(key).is_ok()).collect::<Vec<_>>()),
                         }
                     }),
                 )?;
@@ -244,17 +256,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &success(id + 1, command, &request))?;
             }
             "remote-error" => {
+                let mut error = json!({
+                    "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
+                    "message": "violet-circuit-4821",
+                    "retryable": false,
+                });
+                if let Some(cause) = request["params"].get("providerFailure") {
+                    error["providerFailure"] = cause.clone();
+                }
                 write_json(
                     &mut stdout,
                     &json!({
                         "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
                         "id": id,
                         "ok": false,
-                        "error": {
-                            "code": "Q7Z9",
-                            "message": "violet-circuit-4821",
-                            "retryable": false,
-                        },
+                        "error": error,
                     }),
                 )?;
             }
@@ -298,6 +314,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-wrong-cancel"
             | "turns-wrong-scope"
             | "turns-tool"
+            | "turns-tool-resolution-rejected"
             | "turns-tool-terminal"
             | "turns-reused-tool-id-terminal"
             | "turns-late-tool-after-suspend"
@@ -315,6 +332,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "turns-mismatched-reserved-result-terminal"
             | "turns-unauthorized-tool"
             | "turns-permission"
+            | "turns-provider-death"
+            | "turns-malformed-activity"
             | "permissions-forged-origin"
             | "turns-retired"
             | "turns-retired-terminal-first"
@@ -331,6 +350,18 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             | "suspend-wrong-ack"
             | "suspend-wrong-identity"
             | "suspend-missing-identity" => {
+                if command == "tool.resolve" && mode == "turns-tool-resolution-rejected" {
+                    write_json(
+                        &mut stdout,
+                        &json!({
+                            "protocolVersion":GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
+                            "id":id,"ok":false,"error":{
+                                "code":"ACPX_TOOL_CALL_STALE", "message":"private-provider-token-canary", "retryable":false
+                            }
+                        }),
+                    )?;
+                    continue;
+                }
                 if command == "turn.cancel" && mode == "turns-retired-terminal-first" {
                     let turn_id = request
                         .pointer("/params/turnId")
@@ -365,6 +396,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 write_json(&mut stdout, &response)?;
+                if command == "turn.start" && mode == "turns-malformed-activity" {
+                    stdout.write_all(b"{invalid sidecar activity\n")?;
+                    stdout.flush()?;
+                }
                 let params = request.get("params").unwrap_or(&Value::Null);
                 let turn_id = params
                     .get("turnId")
@@ -381,6 +416,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         .map(|suffix| format!("call-{suffix}"))
                         .unwrap_or_else(|| "call-1".to_owned())
                 };
+                if command == "turn.start" && mode == "turns-provider-death" {
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.permission_requested",
+                        "run-1",
+                        turn_id,
+                        json!({"requestId":"dead-input","kind":"edit","title":"Write the file?","choices":[{"key":"accept","label":"Allow once"},{"key":"cancel","label":"Deny"}]}),
+                    )?;
+                    next_sequence += 1;
+                    provider_lost = true;
+                    write_turn_event(
+                        &mut stdout,
+                        next_sequence,
+                        "runtime.turn_terminal",
+                        "run-1",
+                        turn_id,
+                        json!({"status":"failed","error":{"code":"ACPX_PROVIDER_PROCESS_LOST","message":"provider has exited","retryable":false}}),
+                    )?;
+                    next_sequence += 1;
+                }
                 if command == "turn.start" && matches!(mode, "turns" | "turns-wrong-scope") {
                     write_turn_event(
                         &mut stdout,
@@ -400,6 +456,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     && matches!(
                         mode,
                         "turns-tool"
+                            | "turns-tool-resolution-rejected"
                             | "turns-tool-terminal"
                             | "turns-reused-tool-id-terminal"
                             | "turns-late-tool-after-suspend"
@@ -416,7 +473,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         turn_id,
                         json!({
                             "callId":tool_call_id.clone(),
-                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
+                            "operationId":if matches!(mode, "turns-tool" | "turns-tool-resolution-rejected" | "turns-tool-terminal" | "turns-reused-tool-id-terminal" | "turns-late-tool-after-suspend" | "turns-tool-result-terminal" | "turns-tool-error-result-terminal") { "issues.read" } else { "issues.delete" },
                             "input":{"id":"issue-1"},
                         }),
                     )?;

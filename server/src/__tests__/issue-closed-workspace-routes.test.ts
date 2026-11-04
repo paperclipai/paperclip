@@ -21,7 +21,8 @@ const mockIssueService = vi.hoisted(() => ({
 }));
 
 const mockExecutionWorkspaceService = vi.hoisted(() => ({
-  getById: vi.fn(),
+  getById: vi.fn(() => { throw new Error("Task routes must not inspect a workspace"); }),
+  getStoredById: vi.fn(),
   reopenClosedIsolatedExecutionWorkspaceForIssue: vi.fn(),
   clearReopenPendingConsumptionForUnconsumedReopen: vi.fn(async () => ({ cleared: true })),
   refreshReopenPendingConsumption: vi.fn(async () => ({ refreshed: true })),
@@ -244,7 +245,7 @@ describe("closed isolated workspace issue routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(makeIssue());
-    mockExecutionWorkspaceService.getById.mockResolvedValue(makeClosedWorkspace());
+    mockExecutionWorkspaceService.getStoredById.mockResolvedValue(makeClosedWorkspace());
     mockExecutionWorkspaceService.refreshReopenPendingConsumption.mockResolvedValue({ refreshed: true });
     // The guard reopens a closed isolated workspace and lets the request
     // continue. The default is a successful reopen.
@@ -318,7 +319,7 @@ describe("closed isolated workspace issue routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
-  it("returns 503 and blocks the checkout when the rebuild fails", async () => {
+  it("returns 409 and blocks the checkout when the rebuild fails", async () => {
     mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
       ok: false,
       code: "rebuild_failed",
@@ -332,8 +333,27 @@ describe("closed isolated workspace issue routes", () => {
         expectedStatuses: ["todo", "backlog", "blocked"],
       });
 
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(409);
     expect(mockIssueService.checkout).not.toHaveBeenCalled();
+  });
+
+  it.each(["comment", "update"])("returns a definite %s rejection when the saved commit cannot be restored", async (operation) => {
+    const message = "The saved workspace commit could not be restored. Check repository access and retry.";
+    mockExecutionWorkspaceService.reopenClosedIsolatedExecutionWorkspaceForIssue.mockResolvedValue({
+      ok: false,
+      code: "rebuild_failed",
+      message,
+    });
+
+    const app = request(createApp());
+    const res = operation === "comment"
+      ? await app.post(`/api/issues/${issueId}/comments`).send({ body: "continue" })
+      : await app.patch(`/api/issues/${issueId}`).send({ comment: "continue" });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe(message);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("does not reopen the workspace when a checkout fails the run-id gate", async () => {

@@ -842,6 +842,7 @@ export function IssueRunLedgerContent({
               );
             }
             const run = item.run;
+            const nextAction = run.execution ? run.execution.nextAction : run.nextAction;
             const liveness = livenessCopyForRun(run);
             const stopReason = stopReasonLabel(run);
             const duration = formatDuration(run.startedAt, run.finishedAt);
@@ -1001,13 +1002,13 @@ export function IssueRunLedgerContent({
                   />
                 ) : null}
 
-                {run.nextAction ? (
+                {nextAction ? (
                   <div className="min-w-0 rounded-md bg-accent/40 px-2 py-1.5 text-xs leading-5">
                     <span className="font-medium text-foreground">
                       Next action:{" "}
                     </span>
                     <span className="break-words text-muted-foreground">
-                      {run.nextAction}
+                      {nextAction}
                     </span>
                   </div>
                 ) : null}

@@ -1,6 +1,7 @@
 import { captureEnvironmentAcquisitionDiagnostic } from "../environment-acquisition-diagnostics.js";
 import { describe, expect, it } from "vitest";
 import type { heartbeatRuns } from "@paperclipai/db";
+import { attachRemoteRunnerRecoveryDiagnostic, RemoteRunnerRecoveryError } from "../native-runtime/remote-runner-recovery-diagnostics.js";
 import { collectRunFailureDiagnostics, collectRunFailureSecretValues, redactRunFailureSecretValues, sanitizeRunFailureDiagnostics, sanitizeRunFailureText } from "../run-failure-diagnostics.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
@@ -188,6 +189,62 @@ describe("run failure diagnostics", () => {
       Object.defineProperty({}, "provider", { get() { throw new Error("private"); } })]) {
       expect(collectRunFailureDiagnostics(run({ resultJson: { nativeProviderFailure: value } }), {}).provider).toEqual({});
     }
+  });
+
+  it("exports only the closed vocabulary of an unclassified native turn failure", () => {
+    const diagnostic = { provider: "codex", category: "turn_failed", codexErrorInfo: "responseStreamDisconnected", httpStatus: 502 };
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      nativeTurnFailure: { ...diagnostic, runnerFailureCode: "private_prompt_slug", message: "private-provider-response" },
+    } }), {}));
+    expect(result.provider).toEqual({ ...diagnostic, runnerFailureCode: "unrecognized" });
+    expect(JSON.stringify(result)).not.toContain("rivate");
+    for (const value of [null, [], { ...diagnostic, codexErrorInfo: "private-kind" },
+      Object.defineProperty({}, "provider", { get() { throw new Error("private"); } })]) {
+      expect(collectRunFailureDiagnostics(run({ resultJson: { nativeTurnFailure: value } }), {}).provider).toEqual({});
+    }
+  });
+
+  it("exports only the saved remote recovery stage and reason", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({
+      errorCode: "runner_remote_process_identity_unavailable", resultJson: {
+        remoteRunnerRecovery: { stage: "identity_marker", reason: "fingerprint_missing",
+          path: "private-path", pid: 123, nonce: "private-nonce", stderr: "private-stderr" },
+      },
+    }), {}));
+    expect(result.execution).toEqual({ remoteRunnerRecoveryStage: "identity_marker", remoteRunnerRecoveryReason: "fingerprint_missing" });
+    expect(result.exceptions).toEqual([]);
+    expect(JSON.stringify(result)).not.toContain("private");
+    for (const value of [null, { stage: "private-stage", reason: "marker_missing" },
+      { stage: "identity_marker", reason: "private-reason" },
+      Object.defineProperty({}, "stage", { get() { throw new Error("private"); } })]) {
+      expect(collectRunFailureDiagnostics(run({ errorCode: "runner_remote_process_identity_unavailable",
+        resultJson: { remoteRunnerRecovery: value } }), {}).execution).toEqual({});
+    }
+    expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), {}).execution).toEqual({});
+  });
+
+  it("exports the remote recovery stage and reason from an error thrown before the result was saved", () => {
+    const thrown = Object.assign(new RemoteRunnerRecoveryError({ stage: "process_verification", reason: "process_not_running" }),
+      { path: "private-path", pid: 123 });
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), { error: thrown }));
+    expect(result.execution).toEqual({ remoteRunnerRecoveryStage: "process_verification", remoteRunnerRecoveryReason: "process_not_running" });
+    expect(result.exceptions).toMatchObject([{ code: "runner_remote_process_identity_unavailable" }]);
+    expect(JSON.stringify(result)).not.toContain("private-path");
+    expect(result.exceptions[0]).not.toHaveProperty("path");
+    expect(result.exceptions[0]).not.toHaveProperty("pid");
+
+    const transport = attachRemoteRunnerRecoveryDiagnostic(new Error("socket closed"),
+      { stage: "identity_marker", reason: "probe_transport_failed" });
+    expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), { error: new Error("wrapped", { cause: transport }) }).execution)
+      .toEqual({ remoteRunnerRecoveryStage: "identity_marker", remoteRunnerRecoveryReason: "probe_transport_failed" });
+
+    const saved = collectRunFailureDiagnostics(run({ errorCode: "runner_remote_process_identity_unavailable",
+      resultJson: { remoteRunnerRecovery: { stage: "identity_marker", reason: "marker_missing" } } }), { error: thrown });
+    expect(saved.execution).toEqual({ remoteRunnerRecoveryStage: "identity_marker", remoteRunnerRecoveryReason: "marker_missing" });
+    expect(collectRunFailureDiagnostics(run({ errorCode: "adapter_failed" }), {
+      error: Object.assign(new Error("runner_remote_process_identity_unavailable"), { code: "runner_remote_process_identity_unavailable",
+        remoteRunnerRecovery: { stage: "private-stage", reason: "marker_missing" } }),
+    }).execution).toEqual({});
   });
 
   it("exports which native close barrier failed without tool identities or provider text", () => {
@@ -403,6 +460,27 @@ describe("run failure diagnostics", () => {
     });
   });
 
+  it("includes the stalled tool's closed kind label, silent time and permission evidence", () => {
+    const result = sanitizeRunFailureDiagnostics(collectRunFailureDiagnostics(run({ resultJson: {
+      acpStalledToolKind: "other", acpStalledToolSilentMs: 1_800_000, acpStalledToolTitle: "private lookup",
+      acpStalledToolPermissionRequested: false, acpPendingToolPermissionRequestedCount: 3,
+      acpSettledSameKindToolCount: 30, acpSettledSameKindToolPermissionRequestedCount: 29,
+    } }), {}));
+    expect(result.execution).toEqual({
+      acpStalledToolKind: "other", acpStalledToolSilentMs: 1_800_000,
+      acpStalledToolPermissionRequested: false, acpPendingToolPermissionRequestedCount: 3,
+      acpSettledSameKindToolCount: 30, acpSettledSameKindToolPermissionRequestedCount: 29,
+    });
+    expect(JSON.stringify(result)).not.toContain("private");
+  });
+
+  it.each(["other,execute", "private lookup", "", "Other", ["other"], 1])(
+    "omits a stalled tool kind that is not one closed label (%j)", (value) => {
+      const result = collectRunFailureDiagnostics(run({ resultJson: { acpStalledToolKind: value } }), {});
+      expect(result.execution).toEqual({});
+    },
+  );
+
   it.each(["execute,private command", "", "execute,", "Execute", ["execute"], 1])(
     "omits pending tool kinds that are not closed labels (%j)", (value) => {
       const result = collectRunFailureDiagnostics(run({ resultJson: { acpPendingToolKinds: value } }), {});
@@ -415,6 +493,9 @@ describe("run failure diagnostics", () => {
       const result = collectRunFailureDiagnostics(run({ resultJson: {
         acpLastEventAgeMs: value, acpObservedEventCount: value, acpPendingToolCount: value,
         acpToolInventoryComplete: value, acpLastEventAgeAtStopMs: value, acpOldestPendingToolAgeAtStopMs: value,
+        acpStalledToolSilentMs: value, acpStalledToolPermissionRequested: value,
+        acpPendingToolPermissionRequestedCount: value, acpSettledSameKindToolCount: value,
+        acpSettledSameKindToolPermissionRequestedCount: value,
       } }), {});
       expect(result.execution).toEqual({});
     },

@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 
 import { flushSync } from "react-dom";
+import { LinkExtension, LinkNode, $isLinkNode, registerLink, TOGGLE_LINK_COMMAND } from "@lexical/link";
+import { createEditor, $createParagraphNode, $createTextNode, $createLineBreakNode, $getRoot, $getSelection,
+  $isRangeSelection, $isElementNode, $createNodeSelection, $setSelection, DecoratorNode,
+  PASTE_COMMAND, COMMAND_PRIORITY_HIGH, type LexicalEditor } from "lexical";
+import { registerRichText } from "@lexical/rich-text";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { buildIssueReferenceHref, buildProjectMentionHref, buildRoutineMentionHref, buildSkillMentionHref } from "@paperclipai/shared";
@@ -20,12 +25,16 @@ import {
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog";
 
 const mdxEditorMockState = vi.hoisted(() => ({
+  linkValidator: null as ((url: string) => boolean) | null,
+  pluginDefinitions: [] as unknown[],
   emitMountEmptyReset: false,
   emitMountParseError: false,
   emitMountSilentEmptyState: false,
   throwOnRender: false,
   /** Markdown the mock emits through `onChange` once mounted, as the real editor would export it. */
   emitMountChange: null as string | null,
+  /** Markdown the mock emits once mounted with MDXEditor's `initialMarkdownNormalize` flag set. */
+  emitMountNormalizedMarkdown: null as string | null,
   /** Milliseconds the mock waits before painting its content, to model a slow import. */
   populateDelayMs: 0,
   markdownValues: [] as string[],
@@ -69,12 +78,14 @@ vi.mock("@mdxeditor/editor", async () => {
       onError,
       className,
       suppressHtmlProcessing,
+      plugins,
     }: {
       markdown: string;
       placeholder?: string;
-      onChange?: (value: string) => void;
+      onChange?: (value: string, initialMarkdownNormalize?: boolean) => void;
       onError?: (error: unknown) => void;
       suppressHtmlProcessing?: boolean;
+      plugins?: unknown[];
       className?: string;
     },
     forwardedRef: React.ForwardedRef<{
@@ -86,6 +97,7 @@ vi.mock("@mdxeditor/editor", async () => {
     if (mdxEditorMockState.throwOnRender) {
       throw new Error("Rich editor render crashed");
     }
+    mdxEditorMockState.pluginDefinitions = plugins ?? [];
     mdxEditorMockState.markdownValues.push(markdown);
     mdxEditorMockState.suppressHtmlProcessingValues.push(Boolean(suppressHtmlProcessing));
     const [content, setContent] = React.useState(markdown);
@@ -150,6 +162,10 @@ vi.mock("@mdxeditor/editor", async () => {
         if (mdxEditorMockState.emitMountChange !== null) {
           onChange?.(mdxEditorMockState.emitMountChange);
         }
+        if (mdxEditorMockState.emitMountNormalizedMarkdown !== null) {
+          setContent(mdxEditorMockState.emitMountNormalizedMarkdown);
+          onChange?.(mdxEditorMockState.emitMountNormalizedMarkdown, true);
+        }
       }, 0);
       return () => {
         window.clearTimeout(timer);
@@ -191,11 +207,14 @@ vi.mock("@mdxeditor/editor", async () => {
     headingsPlugin: () => ({}),
     imagePlugin: () => ({}),
     linkDialogPlugin: () => ({}),
-    linkPlugin: () => ({}),
+    linkPlugin: (options: { validateUrl: (url: string) => boolean }) => {
+      mdxEditorMockState.linkValidator = options.validateUrl;
+      return {};
+    },
     listsPlugin: () => ({}),
     markdownShortcutPlugin: () => ({}),
     quotePlugin: () => ({}),
-    realmPlugin: (plugin: unknown) => plugin,
+    realmPlugin: (plugin: unknown) => () => plugin,
     tablePlugin: () => ({}),
     thematicBreakPlugin: () => ({}),
   };
@@ -203,10 +222,6 @@ vi.mock("@mdxeditor/editor", async () => {
 
 vi.mock("../lib/mention-deletion", () => ({
   mentionDeletionPlugin: () => ({}),
-}));
-
-vi.mock("../lib/paste-normalization", () => ({
-  pasteNormalizationPlugin: () => ({}),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -321,11 +336,15 @@ describe("MarkdownEditor", () => {
     container.remove();
     Range.prototype.getBoundingClientRect = originalRangeRect;
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
+    mdxEditorMockState.linkValidator = null;
+    mdxEditorMockState.pluginDefinitions = [];
     mdxEditorMockState.emitMountEmptyReset = false;
     mdxEditorMockState.emitMountParseError = false;
     mdxEditorMockState.emitMountSilentEmptyState = false;
     mdxEditorMockState.throwOnRender = false;
     mdxEditorMockState.emitMountChange = null;
+    mdxEditorMockState.emitMountNormalizedMarkdown = null;
     mdxEditorMockState.populateDelayMs = 0;
     mdxEditorMockState.markdownValues = [];
     mdxEditorMockState.insertedMarkdownValues = [];
@@ -386,6 +405,183 @@ describe("MarkdownEditor", () => {
       root.unmount();
     });
   });
+
+  async function createSelectedTextPasteHarness() {
+    class ClipboardData {
+      private data = new Map<string, string>();
+      get types() { return [...this.data.keys()]; }
+      setData(type: string, value: string) { this.data.set(type === "text" ? "text/plain" : type, value); }
+      getData(type: string) { return this.data.get(type === "text" ? "text/plain" : type) ?? ""; }
+    }
+    class ClipboardEvent extends Event {
+      readonly clipboardData: DataTransfer | null;
+      constructor(type: string, options: ClipboardEventInit = {}) {
+        super(type, options);
+        this.clipboardData = options.clipboardData ?? null;
+      }
+    }
+    vi.stubGlobal("ClipboardEvent", ClipboardEvent);
+    vi.stubGlobal("DataTransfer", ClipboardData);
+    const root = createRoot(container);
+    await act(async () => root.render(<MarkdownEditor value={'{"status":"pending"}'} onChange={vi.fn()} />));
+    await flush();
+    const validator = mdxEditorMockState.linkValidator;
+    if (!validator || !LinkExtension.build) throw new Error("Production link policy was not registered");
+    class InlineMediaNode extends DecoratorNode<null> {
+      static getType() { return "test-inline-media"; }
+      static clone(node: InlineMediaNode) { return new InlineMediaNode(node.getKey()); }
+      createDOM() { return document.createElement("img"); }
+      updateDOM() { return false; }
+      decorate() { return null; }
+      isInline() { return true; }
+    }
+    const editor = createEditor({ namespace: "selected-text-paste", nodes: [LinkNode, InlineMediaNode], onError(error) { throw error; } });
+    const stores = LinkExtension.build(editor, { validateUrl: validator, attributes: undefined }, undefined as never);
+    const unregister = [registerLink(editor, stores)];
+    for (const definition of mdxEditorMockState.pluginDefinitions) {
+      const plugin = definition as { init?: (realm: { pub: (signal: unknown, subscriptions: Array<(editor: LexicalEditor) => () => void>) => void }) => void };
+      plugin.init?.({ pub: (_signal, subscriptions) => {
+        for (const subscription of subscriptions) unregister.push(subscription(editor));
+      } });
+    }
+    unregister.push(registerRichText(editor));
+    return {
+      editor,
+      paste(text: string, softBreak = false, html?: string) {
+        const data = new DataTransfer(); data.setData("text/plain", text);
+        if (html) data.setData("text/html", html);
+        const event = new ClipboardEvent("paste", { clipboardData: data, cancelable: true });
+        editor.update(() => {
+          const node = $createTextNode('{"status":"pending"}');
+          $getRoot().clear().append($createParagraphNode().append(node));
+          node.select(0, node.getTextContentSize());
+          if (softBreak) {
+            const ending = $createTextNode("second line");
+            node.getParentOrThrow().append($createLineBreakNode(), ending);
+            const selection = $getSelection();
+            if (!$isRangeSelection(selection)) throw new Error("Expected range");
+            selection.focus.set(ending.getKey(), ending.getTextContentSize(), "text");
+          }
+          editor.dispatchCommand(PASTE_COMMAND, event);
+        }, { discrete: true });
+        return editor.getEditorState().read(() => ({ text: $getRoot().getTextContent(),
+          links: $getRoot().getAllTextNodes().map(node => node.getParent()).filter($isLinkNode).map(node => node.getURL()) }));
+      },
+      formats() { return editor.getEditorState().read(() => $getRoot().getAllTextNodes().map(node => ({ text: node.getTextContent(), bold: node.hasFormat("bold") }))); },
+      yieldsPaste(kind: "files" | "collapsed" | "token" | "decorator") {
+        const data = new DataTransfer(); data.setData("text/plain", "replacement words");
+        if (kind === "files") data.setData("Files", "image.png");
+        const event = new ClipboardEvent("paste", { clipboardData: data, cancelable: true });
+        let forwarded = false;
+        const remove = editor.registerCommand(PASTE_COMMAND, received => {
+          forwarded = received === event;
+          return true;
+        }, COMMAND_PRIORITY_HIGH);
+        try {
+          editor.update(() => {
+            const node = kind === "decorator" ? new InlineMediaNode() : $createTextNode("keep this");
+            $getRoot().clear().append($createParagraphNode().append(node));
+            if (node instanceof InlineMediaNode) {
+              const selection = $createNodeSelection(); selection.add(node.getKey()); $setSelection(selection);
+            } else {
+              if (kind === "token") node.setMode("token");
+              node.select(0, kind === "collapsed" ? 0 : node.getTextContentSize());
+            }
+            editor.dispatchCommand(PASTE_COMMAND, event);
+          }, { discrete: true });
+          return { forwarded, prevented: event.defaultPrevented };
+        } finally { remove(); }
+      },
+      link(url: string, payload: "string" | "object", decorator: boolean) {
+        let handled = false;
+        editor.update(() => {
+          const node = decorator ? new InlineMediaNode() : $createTextNode("link label");
+          $getRoot().clear().append($createParagraphNode().append(node));
+          if (decorator) {
+            const selection = $createNodeSelection(); selection.add(node.getKey()); $setSelection(selection);
+          } else if (node instanceof InlineMediaNode) throw new Error("Expected text");
+          else node.select(0, node.getTextContentSize());
+          handled = editor.dispatchCommand(TOGGLE_LINK_COMMAND, payload === "string" ? url : { url, title: "Report" });
+        }, { discrete: true });
+        return editor.getEditorState().read(() => {
+          const paragraph = $getRoot().getFirstChildOrThrow();
+          const links = $isElementNode(paragraph) ? paragraph.getChildren().filter($isLinkNode) : [];
+          return { handled, links: links.map(node => ({ url: node.getURL(), href: node.sanitizeUrl(node.getURL()) })) };
+        });
+      },
+      async close() {
+        for (const cleanup of unregister.reverse()) cleanup();
+        await act(async () => root.unmount());
+        vi.unstubAllGlobals();
+      },
+    };
+  }
+
+  it.each(['{"status":"ready","items":[1,2]}', '{"email":"user@example.test"}', "replacement words", "first line\nsecond line", "/workspace/report.json", "reports/status.md", "#document-report", "v1.2.3", "https://", "www."])(
+    "replaces selected text through the real paste command for %j", async replacement => {
+      const harness = await createSelectedTextPasteHarness();
+      try { expect(harness.paste(replacement)).toEqual({ text: replacement, links: [] }); }
+      finally { await harness.close(); }
+    },
+  );
+
+  it("replaces selected text across a soft line break", async () => {
+    const harness = await createSelectedTextPasteHarness();
+    try { expect(harness.paste('{"status":"ready"}', true)).toEqual({ text: '{"status":"ready"}', links: [] }); }
+    finally { await harness.close(); }
+  });
+
+  it("replaces selected text with rich HTML through the native paste owner", async () => {
+    const harness = await createSelectedTextPasteHarness();
+    const replacement = '{"email":"user@example.test"}';
+    try {
+      expect(harness.paste(replacement, false, `<strong>${replacement}</strong>`)).toEqual({ text: replacement, links: [] });
+      expect(harness.formats()).toEqual([{ text: replacement, bold: true }]);
+    } finally { await harness.close(); }
+  });
+
+  it("keeps a genuine URL from an HTML clipboard as an intentional link", async () => {
+    const harness = await createSelectedTextPasteHarness();
+    const url = "https://example.test/report";
+    try { expect(harness.paste(url, false, `<a href="${url}">${url}</a>`)).toEqual({ text: '{"status":"pending"}', links: [url] }); }
+    finally { await harness.close(); }
+  });
+
+  it.each(["https://example.test/report?q=1#section", "http://example.test", "//cdn.example.test/image.png", "www.example.test", "mailto:user@example.test", "user@example.test", "user+updates@sub.example.test", "user@bücher.de", "josé@example.test"])(
+    "keeps selected-text URL paste as an intentional link (%s)", async url => {
+      const harness = await createSelectedTextPasteHarness();
+      try { expect(harness.paste(url)).toEqual({ text: '{"status":"pending"}', links: [url] }); }
+      finally { await harness.close(); }
+    },
+  );
+
+  it.each(["files", "collapsed", "token", "decorator"] as const)(
+    "leaves %s paste with its existing handler", async kind => {
+      const harness = await createSelectedTextPasteHarness();
+      try { expect(harness.yieldsPaste(kind)).toEqual({ forwarded: true, prevented: false }); }
+      finally { await harness.close(); }
+    },
+  );
+
+  it.each(["/issues/TEST-1#document-report", "reports/status.md", "../report.md", "#document-report", "mailto:user@example.test"])(
+    "preserves manual and decorator link destination %s", async url => {
+      const harness = await createSelectedTextPasteHarness();
+      try {
+        expect(harness.link(url, "object", false)).toEqual({ handled: true, links: [{ url, href: url === "reports/status.md" ? "https://reports/status.md" : url }] });
+        expect(harness.link(url, "string", true)).toEqual({ handled: true, links: [{ url, href: url === "reports/status.md" ? "https://reports/status.md" : url }] });
+      } finally { await harness.close(); }
+    },
+  );
+
+  it.each(["javascript:alert(1)", "data:text/html,unsafe", "vbscript:unsafe"])(
+    "preserves executable link guards for %s", async url => {
+      const harness = await createSelectedTextPasteHarness();
+      try {
+        expect(harness.link(url, "string", true)).toEqual({ handled: false, links: [] });
+        expect(harness.link(url, "object", false)).toEqual({ handled: true, links: [{ url, href: "about:blank" }] });
+      } finally { await harness.close(); }
+    },
+  );
 
   it("allows a user to clear loaded text as the first editor change", async () => {
     const handleChange = vi.fn();
@@ -689,6 +885,31 @@ describe("MarkdownEditor", () => {
     // What the user sees is still the markdown they wrote.
     expect(container.textContent).toContain("Rename <name> to the real name.");
     expect(handleChange).not.toHaveBeenCalled();
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("does not report MDXEditor's initial markdown normalization as a change", async () => {
+    // MDXEditor rewrites `-` bullets to `*` on load and flags it as normalization.
+    mdxEditorMockState.emitMountNormalizedMarkdown = "* first\n* second";
+    const handleChange = vi.fn();
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value={"- first\n- second"} onChange={handleChange} placeholder="Markdown body" />,
+      );
+    });
+
+    await flush();
+    await waitPastEmptyHeuristic();
+
+    expect(handleChange).not.toHaveBeenCalled();
+    // The editor keeps its normalized document; nothing pushes the original back.
+    expect(container.textContent).toContain("* first");
+    expect(container.querySelector("textarea")).toBeNull();
 
     await act(async () => {
       root.unmount();

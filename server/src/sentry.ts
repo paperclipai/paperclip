@@ -56,13 +56,16 @@
 // `instrumentation.ts`.
 
 import os from "node:os";
+import type { HeartbeatRunStatus } from "@paperclipai/shared";
 import { AdapterStopTimeoutError } from "./services/adapter-stop-timeout.js";
 import { CloudPortfolioError } from "./services/cloud-portfolio-error.js";
+import { storageFailureDiagnosticsFor } from "./storage/failure-diagnostics.js";
 import type { RunFailureDiagnostics } from "./services/run-failure-diagnostics.js";
 import { readBuildCommit } from "./build-commit.js";
 import { checkExactPeerVersions } from "./peer-version-check.js";
 import { resolveSentryDsns } from "./sentry-dsn.js";
 import { readRunFailureReportingMode } from "./sentry-run-failure-policy.js";
+import { addSentryRunLinks, type SentryRunReference } from "./sentry-links.js";
 
 const { backend: dsn, legacyFallbackUsed } = resolveSentryDsns();
 
@@ -106,15 +109,21 @@ export const sentryReady: Promise<void> = dsn ? bootstrapSentry(dsn) : Promise.r
  * never opens (the backend DSN resolves to `null`), or when bootstrap
  * failed. Never throws — observability must not change control flow.
  */
-export function captureException(error: unknown): void {
+export function captureException(error: unknown, reference?: SentryRunReference): void {
   if (!sentryHandle) return;
   try {
+    const tags = reference ? {
+      run_id: reference.runId,
+      ...(reference.companyId ? { company_id: reference.companyId } : {}),
+      ...(reference.agentId ? { agent_id: reference.agentId } : {}),
+    } : {};
+    const storageFailure = storageFailureDiagnosticsFor(error);
     if (error instanceof AdapterStopTimeoutError) {
       // Event-local, fixed-shape context: no ambient scope or raw error fields.
       const exception = new Error(error.message);
       exception.stack = error.stack;
       sentryHandle.captureException(exception, {
-        tags: { error_code: "adapter_stop_unconfirmed" },
+        tags: { ...tags, error_code: "adapter_stop_unconfirmed" },
         contexts: { adapter_stop: { ...error.diagnostics } },
         fingerprint: ["{{ default }}"],
       });
@@ -122,10 +131,20 @@ export function captureException(error: unknown): void {
       const exception = new Error(error.message);
       exception.stack = error.stack;
       sentryHandle.captureException(exception, {
-        tags: { error_code: "cloud_portfolio_failure" },
+        tags: { ...tags, error_code: "cloud_portfolio_failure" },
         contexts: { cloud_portfolio: { ...CloudPortfolioError.diagnosticsFor(error) } },
         fingerprint: ["{{ default }}"],
       });
+    } else if (storageFailure) {
+      // The original error keeps its default grouping; only the normalized
+      // record is added, never the provider's request or response.
+      sentryHandle.captureException(error, {
+        tags: { ...tags, storage_operation: storageFailure.operation, storage_error_code: storageFailure.errorCode },
+        contexts: { storage_failure: { ...storageFailure } },
+        fingerprint: ["{{ default }}"],
+      });
+    } else if (reference) {
+      sentryHandle.captureException(error, { tags, contexts: {}, fingerprint: ["{{ default }}"] });
     } else {
       sentryHandle.captureException(error);
     }
@@ -155,7 +174,8 @@ export interface RunFailureEvent {
   /** The agent's adapter type, or `"unknown"` when the agent row is absent. */
   agentAdapter: string;
   /** The run status that triggered this report. */
-  runStatus: RunFailureStatus;
+  runStatus: HeartbeatRunStatus;
+  failureSource?: "task_interruption";
   /** Bounded, redacted diagnostics selected by the run failure reporter. */
   diagnostics?: RunFailureDiagnostics;
   /** Recorded process exit evidence, when available. Validated before capture. */
@@ -188,8 +208,12 @@ function normalizeRunSignal(value: unknown): string | null {
  * change run control flow.
  *
  */
-export function captureRunFailure(event: RunFailureEvent): void {
-  if (!sentryHandle || readRunFailureReportingMode() === "off") return;
+export function captureRunFailure(event: RunFailureEvent): boolean {
+  return captureRunFailureEvent(event) !== null;
+}
+
+function captureRunFailureEvent(event: RunFailureEvent): string | null {
+  if (!sentryHandle || readRunFailureReportingMode() === "off") return null;
   const handle = sentryHandle;
   try {
     const errorCode = event.errorCode ?? "unknown";
@@ -249,9 +273,10 @@ export function captureRunFailure(event: RunFailureEvent): void {
       exception.stack = typeof diagnostics?.adapter.stackPreview === "string"
         ? diagnostics.adapter.stackPreview : undefined;
     }
-    handle.captureException(exception, {
+    return handle.captureException(exception, {
       tags: {
         event_kind: "run_failure",
+        ...(event.failureSource ? { failure_source: event.failureSource } : {}),
         ...(rootErrorCode ? { root_error_code: rootErrorCode } : {}),
         ...(failurePhase ? { failure_phase: failurePhase } : {}),
         run_id: event.runId,
@@ -279,6 +304,60 @@ export function captureRunFailure(event: RunFailureEvent): void {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("[paperclip] Sentry captureRunFailure failed", err);
+    return null;
+  }
+}
+
+const reportedTaskInterruptions = new Set<string>();
+const MAX_REPORTED_TASK_INTERRUPTIONS = 1_000;
+const TASK_INTERRUPTION_DELIVERY_RETRY_MS = 60_000;
+const pendingTaskInterruptions = new Map<string, { eventId: string; retryAt: number }>();
+const pendingTaskInterruptionEvents = new Map<string, string>();
+
+function forgetPendingTaskInterruption(key: string) {
+  const pending = pendingTaskInterruptions.get(key);
+  if (pending && pendingTaskInterruptionEvents.get(pending.eventId) === key) {
+    pendingTaskInterruptionEvents.delete(pending.eventId);
+  }
+  pendingTaskInterruptions.delete(key);
+}
+
+function confirmTaskInterruptionDelivery(eventId: string | undefined, statusCode: number | undefined) {
+  if (!eventId || statusCode === undefined || statusCode < 200 || statusCode >= 300) return;
+  const key = pendingTaskInterruptionEvents.get(eventId);
+  if (!key) return;
+  forgetPendingTaskInterruption(key);
+  reportedTaskInterruptions.add(key);
+  if (reportedTaskInterruptions.size > MAX_REPORTED_TASK_INTERRUPTIONS) {
+    reportedTaskInterruptions.delete(reportedTaskInterruptions.values().next().value!);
+  }
+}
+
+export function captureTaskInterruptionFailure(event: Pick<RunFailureEvent,
+  "companyId" | "agentId" | "taskId" | "runId" | "runStatus" | "agentAdapter"> & { intentId: string | null }): void {
+  const key = JSON.stringify([event.companyId, event.taskId, event.runId, event.intentId]);
+  if (reportedTaskInterruptions.has(key)) return;
+  const now = Date.now();
+  if ((pendingTaskInterruptions.get(key)?.retryAt ?? 0) > now) return;
+  for (const [pendingKey, pending] of pendingTaskInterruptions) {
+    if (pending.retryAt <= now) forgetPendingTaskInterruption(pendingKey);
+  }
+  const eventId = captureRunFailureEvent({
+    companyId: event.companyId,
+    agentId: event.agentId,
+    taskId: event.taskId,
+    runId: event.runId,
+    runStatus: event.runStatus,
+    agentAdapter: event.agentAdapter,
+    errorMessage: "Couldn’t finish this attempt. Your message is saved.",
+    errorCode: "task_attempt_failed",
+    failureSource: "task_interruption",
+  });
+  if (!eventId) return;
+  pendingTaskInterruptions.set(key, { eventId, retryAt: now + TASK_INTERRUPTION_DELIVERY_RETRY_MS });
+  pendingTaskInterruptionEvents.set(eventId, key);
+  if (pendingTaskInterruptions.size > MAX_REPORTED_TASK_INTERRUPTIONS) {
+    forgetPendingTaskInterruption(pendingTaskInterruptions.keys().next().value!);
   }
 }
 
@@ -323,6 +402,7 @@ export interface SentryInitOptions {
   sendDefaultPii: boolean;
   serverName: string;
   integrations: (defaults: Array<{ name: string }>) => Array<{ name: string }>;
+  beforeSend: typeof addSentryRunLinks;
 }
 
 /**
@@ -341,6 +421,7 @@ export function buildSentryInitOptions(
     skipOpenTelemetrySetup: true,
     tracesSampleRate: 0,
     sendDefaultPii: false,
+    beforeSend: addSentryRunLinks,
     serverName: process.env.SENTRY_NAME || os.hostname(),
     integrations: (defaults: Array<{ name: string }>) => {
       const kept = defaults.filter(
@@ -389,6 +470,10 @@ async function bootstrapSentry(dsn: string): Promise<void> {
     const Sentry = await import("@sentry/node");
 
     Sentry.init(buildSentryInitOptions(dsn, Sentry));
+
+    Sentry.getClient?.()?.on("afterSendEvent", (event: { event_id?: string }, response?: { statusCode?: number }) => {
+      confirmTaskInterruptionDelivery(event.event_id, response?.statusCode);
+    });
 
     sentryHandle = {
       captureException: (...args) => Sentry.captureException(...args),

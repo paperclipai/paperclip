@@ -126,7 +126,7 @@ describe("ImageGalleryModal", () => {
     expect(document.body.textContent).toContain("1 / 2");
 
     await act(async () => {
-      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
 
     expect(onOpenChange).toHaveBeenCalledWith(false);

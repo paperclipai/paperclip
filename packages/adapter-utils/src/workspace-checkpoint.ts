@@ -48,28 +48,25 @@ async function checkpointMain(
   const walk = async (relative = "") => {
     const directory = path.join(root, relative);
     if (await fs.realpath(directory) !== directory) throw new Error("Workspace directory changed during checkpoint capture");
-    for await (const child of await fs.opendir(directory)) {
-      const name = relative ? `${relative}/${child.name}` : child.name;
-      if (Buffer.byteLength(name) > 65536) throw new Error("Invalid workspace manifest path");
-      let ignoredPath = false;
-      for (let p = name; p; p = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") {
-        if (ignored.get(p)) { ignoredPath = true; break; }
-      }
-      if (ignoredPath || shouldExcludePath(name, exclude)) continue;
+    const pending: Promise<{ ok: true } | { ok: false; error: unknown }>[] = [];
+    const flush = async () => {
+      const results = await Promise.all(pending.splice(0));
+      for (const result of results) if (!result.ok) throw result.error;
+    };
+    const capture = async (name: string, before: import("node:fs").Stats) => {
       const source = path.join(root, name);
-      const before = await fs.lstat(source);
-      scanned++;
       let entry: { kind: string; hash?: string; mode?: number; target?: string };
       if (before.isDirectory()) entry = { kind: "dir" };
       else if (before.isFile()) entry = { kind: "file", mode: before.mode, hash: await hash(source) };
       else if (before.isSymbolicLink()) {
         const target = await fs.readlink(source);
         const resolved = path.resolve(path.dirname(source), target);
-        if (path.isAbsolute(target) || (resolved !== root && !resolved.startsWith(`${root}/`))) continue;
+        if (path.isAbsolute(target) || (resolved !== root && !resolved.startsWith(`${root}/`))) return;
         entry = { kind: "symlink", target };
-      } else continue;
+      } else return;
       if (fingerprint(before) !== fingerprint(await fs.lstat(source))) throw new Error("Workspace changed during checkpoint capture");
       const encoded = JSON.stringify(entry);
+      if (!result.isTransaction) throw new Error("Workspace checkpoint transaction ended during capture");
       insert.run(name, encoded);
       if (lookup.get(name)?.value !== encoded) {
         const destination = path.join(payload, name);
@@ -83,7 +80,30 @@ async function checkpointMain(
           files++; bytes += before.size;
         }
       }
-      if (before.isDirectory()) await walk(name);
+    };
+    try {
+      for await (const child of await fs.opendir(directory)) {
+        const name = relative ? `${relative}/${child.name}` : child.name;
+        if (Buffer.byteLength(name) > 65536) throw new Error("Invalid workspace manifest path");
+        let ignoredPath = false;
+        for (let p = name; p; p = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "") {
+          if (ignored.get(p)) { ignoredPath = true; break; }
+        }
+        if (ignoredPath || shouldExcludePath(name, exclude)) continue;
+        const before = await fs.lstat(path.join(root, name));
+        scanned++;
+        if (before.isFile()) {
+          pending.push(capture(name, before).then(() => ({ ok: true as const }), error => ({ ok: false as const, error })));
+          if (pending.length === 8) await flush();
+        } else {
+          await flush();
+          await capture(name, before);
+          if (before.isDirectory()) await walk(name);
+        }
+      }
+      await flush();
+    } finally {
+      await Promise.all(pending);
     }
   };
   try {

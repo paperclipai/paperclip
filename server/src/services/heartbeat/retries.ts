@@ -1,4 +1,9 @@
+import { notifyAttentionRetentionWork } from "../retention-work-notifications.js";
+import { normalizeAgentNameKey } from "../agent-name-key.js";
+import { notifyStatusCardIssueChange } from "../status-card-notifications.js";
+import { notifyScheduledRetryDispatch } from "../run-dispatch-notifications.js";
 import { deriveTaskKeyWithHeartbeatFallback } from "./run-state.js";
+import { infrastructureRetryDelayMs } from "../system-recovery-state.js";
 import {
   WORKSPACE_VALIDATION_FAILURE_CODE,
   isWorkspaceValidationFailedRun,
@@ -16,6 +21,8 @@ import {
   accountingForScheduledRetry,
 } from "../execution-recovery-attempt.js";
 import { WORKSPACE_GIT_SCAN_ERROR_CODES } from "../workspace-git-operation-scheduler.js";
+import { REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE } from "../remote-workspace-transport.js";
+import { CONTROLLER_LEASE_LOST_FAILURE_CODE } from "../legacy-controller-lease.js";
 import { randomUUID } from "node:crypto";
 import {
   and,
@@ -73,8 +80,9 @@ type PlanApprovalResumeFailure = {
 
 /** The retry module owns scheduling writes; the service owns lifecycle effects. */
 export interface HeartbeatRetryDependencies {
+  hasCaseHandoffForRun: (run: Pick<HeartbeatRun, "id" | "companyId">) => Promise<boolean>;
   runDispatch: Pick<ReturnType<typeof createRunDispatch>,
-    "evaluateScheduledRetryGate" | "promoteDueScheduledRetries" | "promoteScheduledRetry">;
+    "evaluateScheduledRetryGate" | "promoteDueScheduledRetries" | "promoteScheduledRetry" | "nextScheduledRetryAt">;
   getAgent: (agentId: string) => Promise<typeof agents.$inferSelect | null | undefined>;
   getRun: (
     runId: string,
@@ -111,17 +119,16 @@ export interface HeartbeatRetryDependencies {
 }
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
-  30_000, 30_000,
+  30_000, 60_000,
 ] as const;
-
-const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO = 0;
 
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON = "transient_failure_retry";
 
-export function isTransientWorkspaceGitScanCode(code: string | null | undefined): boolean {
-  return code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout || code === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated;
+export function isTransientWorkspacePreparationCode(code: string | null | undefined): boolean {
+  return code === WORKSPACE_GIT_SCAN_ERROR_CODES.timeout || code === WORKSPACE_GIT_SCAN_ERROR_CODES.saturated
+    || code === REMOTE_WORKSPACE_PREPARATION_TIMEOUT_CODE;
 }
 
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS =
@@ -173,31 +180,40 @@ export interface SharedWorkspaceHolder {
   issueIdentifier: string | null;
 }
 
+export interface ExecutionWorkspaceHolder extends SharedWorkspaceHolder {
+  // Silent past WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS but still running.
+  stale: boolean;
+}
+
 // Pre-dispatch gate outcome: another running run currently holds the issue's
-// shared project workspace. Not a failure — the run is parked as a bounded
-// scheduled retry and re-attempted once the holder finishes, so two agents
-// never mutate the same working tree concurrently.
+// shared project workspace, or the shared execution workspace it reuses. Not a
+// failure — the run is parked as a bounded scheduled retry and re-attempted
+// once the holder finishes, so two agents never mutate the same working tree
+// concurrently.
 export class WorkspaceBusyDeferral extends Error {
   code = WORKSPACE_BUSY_ERROR_CODE;
   holder: SharedWorkspaceHolder;
-  projectWorkspaceId: string;
+  projectWorkspaceId: string | null;
+  executionWorkspaceId: string | null;
   deferralAttempt: number;
   wasIssueAssignee: boolean;
 
   constructor(input: {
     holder: SharedWorkspaceHolder;
-    projectWorkspaceId: string;
+    projectWorkspaceId?: string | null;
+    executionWorkspaceId?: string | null;
     deferralAttempt: number;
     wasIssueAssignee: boolean;
   }) {
     super(
-      `Shared project workspace is busy: run ${input.holder.runId} (issue ${
+      `Shared ${input.executionWorkspaceId ? "execution" : "project"} workspace is busy: run ${input.holder.runId} (issue ${
         input.holder.issueIdentifier ?? input.holder.issueId
       }) is still running`,
     );
     this.name = "WorkspaceBusyDeferral";
     this.holder = input.holder;
-    this.projectWorkspaceId = input.projectWorkspaceId;
+    this.projectWorkspaceId = input.projectWorkspaceId ?? null;
+    this.executionWorkspaceId = input.executionWorkspaceId ?? null;
     this.deferralAttempt = input.deferralAttempt;
     this.wasIssueAssignee = input.wasIssueAssignee;
   }
@@ -311,9 +327,12 @@ function isRetryableInteractionContinuationInfrastructureFailure(
     "error" | "errorCode" | "resultJson"
   >,
 ) {
+  // `controller_lease_lost` is only recorded before provider dispatch, so the
+  // retry cannot repeat started work.
   if (
     run.errorCode === WORKSPACE_VALIDATION_FAILURE_CODE ||
-    run.errorCode === "process_lost"
+    run.errorCode === "process_lost" ||
+    run.errorCode === CONTROLLER_LEASE_LOST_FAILURE_CODE
   ) {
     return true;
   }
@@ -340,10 +359,7 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
   if (!Number.isInteger(attempt) || attempt <= 0) return null;
   const baseDelayMs = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS[attempt - 1];
   if (typeof baseDelayMs !== "number") return null;
-  const sample = Math.min(1, Math.max(0, random()));
-  const jitterMultiplier =
-    1 + (sample * 2 - 1) * BOUNDED_TRANSIENT_HEARTBEAT_RETRY_JITTER_RATIO;
-  const delayMs = Math.max(1_000, Math.round(baseDelayMs * jitterMultiplier));
+  const delayMs = infrastructureRetryDelayMs(attempt, random());
   return {
     attempt,
     baseDelayMs,
@@ -353,11 +369,7 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
   };
 }
 
-export function normalizeAgentNameKey(value: string | null | undefined) {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().toLowerCase();
-  return normalized.length > 0 ? normalized : null;
-}
+export { normalizeAgentNameKey };
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
@@ -366,6 +378,7 @@ function readNonEmptyString(value: unknown): string | null {
 /** Retry persistence uses the service database and explicit lifecycle callbacks. */
 export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDependencies) {
   const {
+    hasCaseHandoffForRun,
     appendRunEvent,
     escalatePlanApprovalResumeFailureNeedsAttention,
     getAgentInvokability,
@@ -395,8 +408,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       delayMs?: number;
     },
   ) {
-    if (parseObject(agent.adapterConfig).provider === "openai_dot"
-        || parseObject(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput).provider).kind === "openai_dot") {
+    if (await hasCaseHandoffForRun(run)) return { outcome: "not_scheduled" as const,
+      reason: "The durable case handoff owns successor work.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
+    if (["openai_dot", "muse"].includes(String(parseObject(agent.adapterConfig).provider))
+        || ["openai_dot", "muse"].includes(String(parseObject(parseObject(parseObject(run.runnerProfileJson).nativeExecutionInput).provider).kind))) {
       return { outcome: "not_scheduled" as const, reason: "Dot external execution must be reconciled before a new assignment; Paperclip cannot confirm its external stop.", issueId: readNonEmptyString(run.contextSnapshot?.issueId) };
     }
     if (run.errorCode === "provider_tool_definition_invalid") {
@@ -410,8 +425,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         errorCode: "chat_completion_outbox_owns_retry" as const, issueId: readNonEmptyString(run.contextSnapshot.issueId) };
     }
     const now = opts?.now ?? new Date();
-    const retryReason =
-      opts?.retryReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON;
+    const preparationRecovery = parseObject(run.resultJson?.executionRecovery);
+    const interruptedPreparation = run.status === "interrupted" &&
+      preparationRecovery.kind === "bootstrap" && preparationRecovery.providerWorkStarted === false;
+    const retryReason = opts?.retryReason ??
+      (interruptedPreparation ? "interrupted_preparation" : BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON);
     const wakeReason =
       opts?.wakeReason ?? BOUNDED_TRANSIENT_HEARTBEAT_RETRY_WAKE_REASON;
     const maxAttempts = Math.max(
@@ -549,7 +567,9 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         : baseSchedule;
 
     const requiresIssueGate =
-      isTransientWorkspaceGitScanCode(run.errorCode) ||
+      interruptedPreparation ||
+      (run.status === "interrupted" && run.errorCode === "server_shutdown_interrupted") ||
+      isTransientWorkspacePreparationCode(run.errorCode) ||
       hasConversationContinuationPolicy(run.resultJson) ||
       (retryReason === AI_CONNECTION_BUSY_RETRY_REASON || retryReason === AI_CONNECTION_POOL_WAIT_RETRY_REASON) ||
       retryReason === MAX_TURN_CONTINUATION_RETRY_REASON ||
@@ -660,6 +680,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       },
       "normal_model",
     );
+    // A successor resolves current assignments; the failed run retains its snapshot.
+    delete retryContextSnapshot.skillVersions;
+    delete retryContextSnapshot.skillSelectionSnapshot;
+    delete retryContextSnapshot.shadowedSkills;
     const responsibleUserId = await resolveResponsibleUserIdForRunContext(
       run,
       retryContextSnapshot,
@@ -980,6 +1004,8 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           retryContextSnapshot.previousRunId = continuation.previousRunId;
         }
 
+        await notifyAttentionRetentionWork(tx, { companyId: run.companyId });
+        await notifyScheduledRetryDispatch(tx, { companyId: run.companyId });
         const wakeupRequest = await tx
           .insert(agentWakeupRequests)
           .values({
@@ -1161,6 +1187,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
         }
 
         if (issueId) {
+          await notifyStatusCardIssueChange(tx, run.companyId);
           await tx
             .update(issues)
             .set({
@@ -1365,6 +1392,56 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       .then((rows) => rows[0] ?? null);
   }
 
+  // Finds a running run (other than the caller's) on an issue bound to the
+  // same reused execution workspace, typically a parent run that is still
+  // active after delegating a child that inherited its workspace. Unlike
+  // findSharedWorkspaceHolder, a holder silent past
+  // WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS is still returned (flagged stale):
+  // silence does not prove the holder stopped, so the caller must not treat
+  // the folder as free. A live holder is preferred over a stale one.
+  async function findExecutionWorkspaceHolder(input: {
+    companyId: string;
+    executionWorkspaceId: string;
+    excludeRunId: string;
+    now?: Date;
+  }): Promise<ExecutionWorkspaceHolder | null> {
+    const staleCutoff = new Date(
+      (input.now ?? new Date()).getTime() -
+        WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
+    );
+    const lastActivityBefore = sql<boolean>`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) < ${staleCutoff.toISOString()}::timestamptz`;
+    return await db
+      .select({
+        runId: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        issueId: sql<string>`${issues.id}::text`,
+        issueIdentifier: issues.identifier,
+        stale: lastActivityBefore,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, heartbeatRuns.companyId),
+          eq(issues.executionWorkspaceId, input.executionWorkspaceId),
+          or(
+            eq(issues.executionRunId, heartbeatRuns.id),
+            sql`${issues.id}::text = coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`,
+          ),
+        ),
+      )
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.status, "running"),
+          ne(heartbeatRuns.id, input.excludeRunId),
+        ),
+      )
+      .orderBy(asc(lastActivityBefore), asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   // Credential rotation can briefly contend with a fresh runtime read. Keep
   // the task on its automatic pre-provider retry path while the lock clears.
   async function finalizeAiConnectionBusyDeferral(
@@ -1446,11 +1523,12 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
           source: "control_plane",
           expected: true,
           initiator: { type: "system" },
-          reason: "Waiting for the shared project workspace",
+          reason: `Waiting for the shared ${deferral.executionWorkspaceId ? "execution" : "project"} workspace`,
           recordedAt: now.toISOString(),
         },
         workspaceBusy: {
           projectWorkspaceId: deferral.projectWorkspaceId,
+          executionWorkspaceId: deferral.executionWorkspaceId,
           holderRunId: deferral.holder.runId,
           holderIssueId: deferral.holder.issueId,
           deferralAttempt: deferral.deferralAttempt,
@@ -1514,6 +1592,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
             : `Deferred: ${deferral.message}. No retry could be scheduled; releasing the issue for other runs.`,
         payload: {
           projectWorkspaceId: deferral.projectWorkspaceId,
+          executionWorkspaceId: deferral.executionWorkspaceId,
           holderRunId: deferral.holder.runId,
           holderIssueId: deferral.holder.issueId,
           deferralAttempt: deferral.deferralAttempt,
@@ -1542,6 +1621,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
   ) {
+    if (await hasCaseHandoffForRun(run)) return null;
     if (!run.wakeupRequestId) return null;
     if (!isResolvedInteractionContinuationWakeContext(run.contextSnapshot))
       return null;
@@ -1571,6 +1651,10 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
       wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
       maxAttempts: INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS,
     });
+  }
+
+  async function nextScheduledRetryAt() {
+    return runDispatch.nextScheduledRetryAt({ cutoff: await getWorktreeExecutionCutoff() });
   }
 
   async function promoteDueScheduledRetries(now = new Date()) {
@@ -1680,6 +1764,7 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     };
 
     const updated = await db.transaction(async (tx) => {
+      await notifyScheduledRetryDispatch(tx, { companyId: scheduled.run.companyId });
       const row = await tx
         .update(heartbeatRuns)
         .set({
@@ -1827,9 +1912,11 @@ export function createHeartbeatRetries(db: Db, dependencies: HeartbeatRetryDepen
     timerClaimWasFirstHeartbeat,
     scheduleInteractionContinuationInfrastructureRetryIfEligible,
     findSharedWorkspaceHolder,
+    findExecutionWorkspaceHolder,
     finalizeAiConnectionBusyDeferral,
     finalizeWorkspaceBusyDeferral,
     promoteDueScheduledRetries,
+    nextScheduledRetryAt,
     retryScheduledRetryNow,
 
     scheduleBoundedRetry: async (

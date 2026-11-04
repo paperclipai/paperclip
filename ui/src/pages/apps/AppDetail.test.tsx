@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getAppStoreDefinition } from "@paperclipai/shared";
 import type { AggregatorAppSnapshot, AggregatorAppsResponse } from "@paperclipai/shared/aggregator-apps";
+import { ApiError } from "@/api/client";
 import { queryKeys } from "@/lib/queryKeys";
 import { rememberSkillSourceReturn, skillSourceReturnPath } from "@/lib/skill-source-connect-return";
 import { AppDetail } from "./AppDetail";
@@ -18,7 +19,7 @@ const listApplicationsMock = vi.hoisted(() => vi.fn());
 const listGalleryMock = vi.hoisted(() => vi.fn());
 const listConnectionsMock = vi.hoisted(() => vi.fn());
 const listCatalogMock = vi.hoisted(() => vi.fn());
-const listProfilesMock = vi.hoisted(() => vi.fn());
+const listConnectionProfileConfigurationMock = vi.hoisted(() => vi.fn());
 const listPoliciesMock = vi.hoisted(() => vi.fn());
 const listConnectionActivityMock = vi.hoisted(() => vi.fn());
 const listActionRequestsMock = vi.hoisted(() => vi.fn());
@@ -59,7 +60,7 @@ vi.mock("@/api/tools", () => ({
     listGallery: (companyId: string) => listGalleryMock(companyId),
     listConnections: (companyId: string) => listConnectionsMock(companyId),
     listCatalog: (connectionId: string) => listCatalogMock(connectionId),
-    listProfiles: (companyId: string) => listProfilesMock(companyId),
+    listConnectionProfileConfiguration: (connectionId: string) => listConnectionProfileConfigurationMock(connectionId),
     deleteProfile: (profileId: string) => deleteProfileMock(profileId),
     listPolicies: (companyId: string) => listPoliciesMock(companyId),
     listConnectionActivity: (connectionId: string, limit: number) =>
@@ -408,7 +409,7 @@ describe("AppDetail", () => {
         }),
       ],
     });
-    listProfilesMock.mockResolvedValue({
+    listConnectionProfileConfigurationMock.mockResolvedValue({
       profiles: [
         {
           profileKey: "app:conn-1",
@@ -926,6 +927,9 @@ describe("AppDetail", () => {
 
     await renderAppDetail();
 
+    expect(container.textContent).toContain("Which agents can use this connection?");
+    expect(container.textContent).not.toContain("Always installed");
+    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Read (1)");
     expect(container.textContent).toContain("Write (1)");
     expect(container.textContent).toContain("Read repo");
@@ -1030,14 +1034,13 @@ describe("AppDetail", () => {
     });
   });
 
-  it("removes the separate always-installed controls from Permissions", async () => {
-    mockParams.tab = "permissions";
-
+  it("fetches the connection configuration under a distinct child of the profiles cache", async () => {
     await renderAppDetail();
-
-    expect(container.textContent).toContain("Which agents can use this connection?");
-    expect(container.textContent).not.toContain("Always installed");
-    expect(putConnectionInstallsMock).not.toHaveBeenCalled();
+    expect(listConnectionProfileConfigurationMock).toHaveBeenCalledWith("conn-1");
+    expect(queryKeys.tools.connectionProfileConfiguration("company-1", "conn-1").slice(0, 3))
+      .toEqual(queryKeys.tools.profiles("company-1"));
+    expect(queryKeys.tools.connectionProfileConfiguration("company-1", "conn-1"))
+      .not.toEqual(queryKeys.tools.connectionProfileConfiguration("company-1", "conn-2"));
   });
 
   it("shows and removes task-granted access without changing the connection's default permissions", async () => {
@@ -1047,7 +1050,7 @@ describe("AppDetail", () => {
       bindings: [{ targetType: "agent", targetId: "agent-1" }],
       entries: [{ effect: "include", catalogEntryId: "catalog-write" }],
     };
-    listProfilesMock.mockResolvedValue({ profiles: [grant] });
+    listConnectionProfileConfigurationMock.mockResolvedValue({ profiles: [grant] });
     listPoliciesMock.mockResolvedValue({ policies: [{
       enabled: true, policyType: "require_approval",
       selectors: { catalogEntryId: "catalog-write" },
@@ -1057,7 +1060,7 @@ describe("AppDetail", () => {
     const section = Array.from(container.querySelectorAll("section")).find(section => section.textContent?.includes("Additional agent access"))!;
     expect(section.textContent).toContain("Write issue");
     expect(section.textContent).toContain("Ask first");
-    listProfilesMock.mockResolvedValue({ profiles: [] });
+    listConnectionProfileConfigurationMock.mockResolvedValue({ profiles: [] });
     await act(async () => section.querySelector("button")!.click());
     await flushReact();
     expect(deleteProfileMock).toHaveBeenCalledWith("task-grant");
@@ -1067,7 +1070,7 @@ describe("AppDetail", () => {
   });
 
   it("keeps the task grant visible when removal fails", async () => {
-    listProfilesMock.mockResolvedValue({ profiles: [{
+    listConnectionProfileConfigurationMock.mockResolvedValue({ profiles: [{
       id: "task-grant", status: "active", profileKey: "connection-intent:conn-1:agent-1",
       metadata: { source: "connection_intent", connectionId: "conn-1", agentId: "agent-1" },
       bindings: [{ targetType: "agent", targetId: "agent-1" }],
@@ -1084,7 +1087,7 @@ describe("AppDetail", () => {
 
   it("persists agent access independently from always-installed agents", async () => {
     mockParams.tab = "permissions";
-    listProfilesMock.mockResolvedValue({
+    listConnectionProfileConfigurationMock.mockResolvedValue({
       profiles: [{
         profileKey: "app:conn-1",
         entries: [
@@ -1150,7 +1153,7 @@ describe("AppDetail", () => {
 
   it("uses the setup-style agent access question without install terminology", async () => {
     mockParams.tab = "permissions";
-    listProfilesMock.mockResolvedValue({
+    listConnectionProfileConfigurationMock.mockResolvedValue({
       profiles: [{
         profileKey: "app:conn-1",
         entries: [
@@ -1434,6 +1437,52 @@ describe("AppDetail", () => {
     await renderAppDetail();
     expect(container.textContent).toContain("Retry access");
     expect(container.textContent).not.toContain("Reconnect required");
+  });
+
+  it("links a failed GitHub refresh to the suspended installation's settings", async () => {
+    mockParams.tab = "permissions";
+    const message = "The Paperclip GitHub installation is suspended. Unsuspend it on GitHub before refreshing access.";
+    getConnectionMock.mockResolvedValue(connection({
+      authKind: "oauth", healthStatus: "error", requiresReauthorization: false, healthMessage: message,
+    }));
+    checkConnectionHealthMock.mockRejectedValue(new ApiError(message, 422, {
+      error: message,
+      code: "github_installation_required",
+      details: {
+        code: "github_installation_required",
+        managementUrl: "https://github.com/organizations/paperclipai/settings/installations/101",
+      },
+    }));
+    const client = await renderAppDetail();
+    await act(async () => {
+      Array.from(container.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Retry access")
+        ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(checkConnectionHealthMock).toHaveBeenCalledWith("conn-1");
+    expect(container.querySelector('a[href="https://github.com/organizations/paperclipai/settings/installations/101"]')?.textContent)
+      .toBe("Open installation settings on GitHub");
+
+    // An already-cached connection that also needs attention must not inherit that link.
+    const other = connection({
+      id: "conn-2", authKind: "oauth", healthStatus: "error", requiresReauthorization: false, healthMessage: message,
+    });
+    getConnectionMock.mockResolvedValue(other);
+    client.setQueryData(queryKeys.tools.connection("conn-2"), other);
+    mockParams.connectionId = "conn-2";
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <AppDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("Retry access");
+    expect(container.querySelector('a[href="https://github.com/organizations/paperclipai/settings/installations/101"]')).toBeNull();
   });
 
   it("shows terminal OAuth failures as reconnect-required sign-in", async () => {

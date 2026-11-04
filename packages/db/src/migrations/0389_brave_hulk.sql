@@ -1,0 +1,1 @@
+CREATE INDEX CONCURRENTLY IF NOT EXISTS "decisions_open_expiry_idx" ON "decisions" USING btree ("expires_at","id") WHERE "decisions"."status" = 'open';

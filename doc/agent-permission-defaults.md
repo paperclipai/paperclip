@@ -6,7 +6,8 @@ This document describes the server defaults for an ordinary, standard trust agen
 
 | Capability | Source and limit |
 | --- | --- |
-| Agent configuration and suggestions | New standard agents receive direct, company-scoped `agents:configure` and `agents:suggest-changes` grants. Protected-change and responsible-user checks still apply. |
+| Agent configuration reads | Standard agents receive company-scoped `agents:read`. This permits redacted configuration, skill settings, instruction content, and configuration/instruction history reads. It grants no write, rollback, or environment-test authority. |
+| Agent configuration changes and suggestions | New standard agents also receive `agents:configure` and `agents:suggest-changes`. `agents:configure` permits reads and direct changes; `agents:suggest-changes` retains reads and consented changes. Protected-change and responsible-user checks still apply. |
 | Skill changes | New standard agents receive direct `skills:create` and `skills:suggest-changes` grants. |
 | Tool access and management | New standard agents receive `tools:manage_connections`, `tools:manage_profiles`, `tools:view_audit`, `tools:use`, and `tools:manage_runtime` grants. Tool, connection, profile, and runtime policy checks still apply. |
 | Audit and inbox | New standard agents receive `audit:view_agent_actions` and `inbox:manage` grants. The default inbox grant is limited to the responsible-user path and still follows that user's inbox policy. Cross-user management requires a separately configured grant or the target user's saved consent policy. |
@@ -18,7 +19,7 @@ This document describes the server defaults for an ordinary, standard trust agen
 
 ## Not granted by default
 
-These permission keys have no blanket grant for new standard agents: `agents:create` (the flag above is separate), `environments:manage`, `tools:admin`, `users:invite`, `users:manage_permissions`, `pipelines:write`, and `joins:approve`. Existing agents keep their current permissions. The defaults above apply when a new standard agent is created or a pending new hire is activated. Some actions have separate bounded paths; the absence of a grant row does not describe every route decision.
+These permission keys have no blanket grant for new standard agents: `agents:create` (the flag above is separate), `environments:manage`, `tools:admin`, `users:invite`, `users:manage_permissions`, and `joins:approve`. Existing agents keep their current permissions. The defaults above apply when a new standard agent is created or a pending new hire is activated. Some actions have separate bounded paths; the absence of a grant row does not describe every route decision.
 
 The new direct grants do not grant company administration, user permission management, blanket tool administration, or cross-company access. The responsible user's permissions, route checks, and the normal approval gates still apply.
 
@@ -26,6 +27,20 @@ Agent-authenticated callers cannot set process adapter configuration or switch a
 
 ## Exceptions and rollout
 
-The new direct grants are withheld from low trust agents and managed built-in agents. Low trust run or project policies can also deny privileged actions even if an agent has a grant. There is no permission backfill or upgrade migration for existing agents. A standard pending new hire receives the new default set when approved and activated. Invitation approval retains the set when it replaces a new agent's grants and preserves any explicitly scoped default grant. Existing scoped grants stay unchanged. A grant removed by an operator stays removed; ordinary updates and startup do not reapply it.
+The new direct grants are withheld from low trust agents and managed built-in agents. Low trust run or project policies can also deny privileged actions even if an agent has a grant. A standard pending new hire receives the new default set when approved and activated. Invitation approval retains the set when it replaces a new agent's grants and preserves any explicitly scoped default grant. Existing scoped grants stay unchanged. A grant removed by an operator stays removed; ordinary updates and startup do not reapply it.
+
+Migration `0423_agent_config_read_defaults` adds only `agents:read` to existing ready, paused, pausing or resuming standard agents with an active same-company membership. It skips setup holds or setup pause reasons, managed built-ins, nonstandard trust policies, pending or terminated agents, and agents with scoped configuration/suggestion grants. An existing read grant keeps its scope. Each addition has a system audit entry. Existing write grants are unchanged. The migration intentionally adds read access even when an older write grant is absent; it does not infer that a missing write grant denies the new independent read capability. Removing the read grant after this one-time migration persists across restarts and ordinary updates. `agents:configure` and `agents:suggest-changes` still independently imply reads within their scopes.
+
+Agents can read their own redacted configuration, skills and configuration history without a peer-read grant. Target-scoped reads identify the target agent, so scoped read grants also work on individual configuration and instruction routes. Company-wide configuration listings require company-wide read authority. Basic same-company agent profiles remain readable through their existing visibility rules.
 
 The standard agent configuration default supports the agent setup in the linked runner task. Enabling a warm runtime can still depend on the target agent's adapter and runtime configuration, provider availability, and any responsible-user or approval checks.
+
+## Connection administration (2026-10-13)
+
+The five default tool grants are usable through the existing connection APIs and default native `search_api`/`call_api`. A fresh standard agent for a normally provisioned Operator can configure app/tool, chat/email and AI connections, profiles and gateways without additional agent grants. Gateway management uses the agent's `tools:manage_connections` grant and still requires `tools:admin` on the responsible human. It does not grant blanket agent administration.
+
+Connection management always intersects the current human's authority, including in responsible-user shadow mode. Personal self-service remains available where the human setup surface permits it; sharing and assignments require authority over their targets. Current run/work-mode/trust restrictions, scoped grants and explicit grant removal remain effective. No existing-agent permissions are backfilled. Agent-issued gateway clients preserve this delegation at every use, even after the setup run ends.
+
+See [the authorization and qualification record](plans/2026-10-13-connection-api-parity.md) and the operation-reviewed [agent access maps](../maps/agent-access-map/connection-setup.md). Human consent, credential entry and identity confirmation remain bounded handoffs to saved setup.
+
+Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.

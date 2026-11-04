@@ -104,11 +104,12 @@ receipts, and recovered-file evidence. A successful result does not permit a
 normal execution retry, and a queued or running source cannot be repaired this
 way. Later saved messages can continue through ordinary admission after the
 file hold clears.
-The board shows repair guidance, an Inspect run link, and a Record file recovery
-form for operators with runtime access. The form requires recovered-file evidence
-and confirmation; the API verifies the original stop receipts. The operator API
-also supports this workflow and returns the exact action and lease IDs. Provider
-access may require an instance administrator or Cloud support.
+The task shows a compact operator-attention notice and an Inspect run link.
+Diagnostics and repair guidance stay under Recovery details. It does not ask the
+task user to certify recovered infrastructure files. Operators use the guarded
+resolution API with recovered-file evidence; the API verifies the original stop
+receipts and returns the exact action and lease IDs. Provider access may require
+an instance administrator or Cloud support.
 Then use the provider's operator console to remove that exact retained
 allocation when its files are no longer needed. Verify its immutable provider
 allocation ID against the recorded lease before removal. The ordinary reusable

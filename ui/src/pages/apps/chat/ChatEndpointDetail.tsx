@@ -7,6 +7,8 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { agentAvatarUrl } from "@/lib/agent-avatar-url";
 import { resolveAgentAppearance } from "@paperclipai/shared";
 import { SlackTestMessageButton } from "./SlackTestMessageButton";
+import { slackConversationUrl } from "./slack/conversation-url";
+import { useAccountIdentity } from "@/api/companies-query";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { SlackSetupAdvanced } from "./SlackAppDetails";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -15,6 +17,7 @@ import { ChatCommunicationInstructions } from "./ChatCommunicationInstructions";
 import { ChatExecutionDefaults } from "./ChatExecutionDefaults";
 import { agentsApi } from "@/api/agents";
 import { ChatConversationList } from "./ChatConversationList";
+import { GitHubConnectionRecoveryNotice } from "./GitHubConnectionRecovery";
 import { GitHubBotManagement, GitHubReviews } from "./GitHubBotManagement";
 import { GitHubBotMention, GitHubAppIdentityActions } from "./GitHubAppIdentity";
 import { GitHubConnectionComplete, type GitHubConnectionCompleteLocationState } from "./GitHubConnectionComplete";
@@ -242,6 +245,7 @@ export function connectionHealthPresentation(
 }
 
 export function ChatEndpointDetail() {
+  const { userId, settled: identitySettled } = useAccountIdentity();
   const { endpointId = "", tab: routeTab, reviewId } = useParams<{
     endpointId: string;
     tab?: string;
@@ -356,6 +360,7 @@ export function ChatEndpointDetail() {
         </div>
         <div className="flex flex-wrap items-center gap-2">
           {endpoint.provider === "speko" && <a href="https://platform.speko.ai/agents" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-sm text-primary underline">Open Speko<ExternalLink className="size-3.5" aria-hidden="true" /></a>}
+          {endpoint.provider === "slack" && !setupIncomplete && <Button asChild variant="outline"><a href={slackConversationUrl(endpoint, identitySettled ? userId : null)} target="_blank" rel="noopener noreferrer">Open Slack <ExternalLink className="size-4" /></a></Button>}
           {slackUrl && <Button asChild variant="outline"><a href={slackUrl} target="_blank" rel="noopener noreferrer">Open Slack configuration <ExternalLink className="size-4" /></a></Button>}
           {setupIncomplete ? (
             <Button
@@ -372,6 +377,7 @@ export function ChatEndpointDetail() {
           {endpoint.status !== "active" && <StatusBadge status={endpoint.status} className={endpoint.provider === "speko" ? "text-foreground" : undefined} />}
         </div>
       </header>
+      {endpoint.provider === "github" && <GitHubConnectionRecoveryNotice endpoint={endpoint} />}
       {activeTab === "settings" && endpoint.provider === "speko" && endpoint.status === "active" && <div className="space-y-6"><SpekoPhoneCallback companyId={endpoint.companyId} endpointId={endpoint.id} /><SpekoPhoneLine companyId={endpoint.companyId} endpointId={endpoint.id} /><SpekoIncomingCalls companyId={endpoint.companyId} endpointId={endpoint.id} agentId={endpoint.assignedAgentId} /></div>}
       {endpoint.provider === "slack" && <SlackTestMessageButton key={endpoint.id} endpointId={endpoint.id} />}
       {endpoint.provider === "github" && <div hidden={activeTab !== "settings" && activeTab !== "access"}>

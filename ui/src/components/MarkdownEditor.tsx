@@ -945,8 +945,6 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
     };
   }, [editorValue, placeholder, richEditorError]);
 
-  // Whether the image plugin should be included (boolean is stable across renders
-  // as long as the handler presence doesn't toggle)
   const hasImageUpload = Boolean(imageUploadHandler);
 
   const plugins = useMemo<RealmPlugin[]>(() => {
@@ -1003,11 +1001,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
       codeMirrorPlugin({ codeBlockLanguages: CODE_BLOCK_LANGUAGES }),
       markdownShortcutPlugin(),
     ];
-    if (imageHandler) {
-      // The inline image chip keeps only its remove affordance — no settings
-      // dialog, and the X glyph instead of MDXEditor's default trash can.
-      all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
-    }
+    all.push(imagePlugin({ imageUploadHandler: imageHandler, disableImageSettingsButton: true }));
     return all;
   }, [hasImageUpload]);
 
@@ -1532,7 +1526,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           suppressHtmlProcessing
           placeholder={placeholder}
           readOnly={readOnly}
-          onChange={(rawNext) => {
+          onChange={(rawNext, initialMarkdownNormalize) => {
             if (readOnly) return;
             // Reverse the editor-only rewrites: blockquotes the exporter escaped
             // as `\>` (so a `>`-prefixed line the user typed survives even when
@@ -1560,6 +1554,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
                 return;
               }
             }
+            // MDXEditor re-serialises the initial markdown on load (bullet
+            // markers, escapes, blank lines) and flags that emission. It is not
+            // a user edit: forwarding it marks every controlled parent with
+            // dirty tracking as unsaved before any keystroke. `latestValueRef`
+            // stays on the parent's value, so the prop-sync effect does not
+            // push the original back over the editor.
+            if (initialMarkdownNormalize) return;
             // `latestValueRef` is compared against `editorValue`, so it has to
             // hold editor space; storing `next` would make every edit containing
             // an escaped bracket look like a pending prop sync and trigger a

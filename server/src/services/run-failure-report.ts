@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, gte, sql } from "drizzle-orm";
 import { agents, dotRunnerAssignments, grokBotDispatches, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { captureRunFailure, type RunFailureStatus } from "../sentry.js";
 import {
@@ -14,6 +14,8 @@ import { isUnexpectedRunCancellation } from "./run-cancellation.js";
 import { readConnectionFailure, type ConnectionFailure } from "@paperclipai/adapter-utils/connection-failure";
 import { isAiConnectionConfigurationReason } from "./ai-connection-configuration-failure.js";
 import { readRunFailureReportingMode, type RunFailureReportingMode } from "../sentry-run-failure-policy.js";
+import { RESTRICTED_WORKSPACE_SOURCE_REASON } from "./workspace-source-restriction.js";
+import { NATIVE_PROVIDER_OVERLOADED_CODE, NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC } from "./native-runtime/native-provider-failure.js";
 
 type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
@@ -35,6 +37,27 @@ const PENDING_REPORT_DRAIN_TIMEOUT_MS = 5_000;
 
 function isRunFailureStatus(status: string): status is RunFailureStatus {
   return status === "failed" || status === "timed_out" || status === "cancelled";
+}
+
+type RunFailureTransitionState = Pick<HeartbeatRun, "status" | "runtimeMode" | "nativePhase">;
+
+/**
+ * A native run that waits for a same-run retry is stored as `failed` with
+ * `nativePhase: "retryable_failure"`. That is not terminal: the retry or the
+ * workspace copy-back retry can still finish the run as succeeded.
+ */
+function isPendingNativeRetry(run: RunFailureTransitionState): boolean {
+  return run.status === "failed" && run.runtimeMode === "native" && run.nativePhase === "retryable_failure";
+}
+
+/**
+ * Whether a status write is a new terminal failure to pass to `reportRunFailure`.
+ * A status change counts. A run that leaves a pending native retry but stays
+ * `failed` also counts, because `reportRunFailure` skipped its earlier write.
+ */
+export function isNewTerminalRunFailure(before: RunFailureTransitionState, after: RunFailureTransitionState): boolean {
+  if (after.status !== before.status) return true;
+  return isPendingNativeRetry(before) && !isPendingNativeRetry(after);
 }
 
 function readTaskId(run: HeartbeatRun): string | null {
@@ -123,6 +146,19 @@ function isLocalPathWorkspaceConfigurationBlocker(run: HeartbeatRun, options: Ru
     recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
 }
 
+/** A retained shared checkout denied by task privacy before dispatch; the task notice names the owner action. */
+function isRestrictedWorkspaceSourceBlocker(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "configuration_incomplete" ||
+    run.executionStage !== "preparing" || options.phase !== "setup" ||
+    run.exitCode != null || run.signal != null
+  ) return false;
+  const configuration = asRecord(run.resultJson?.configurationIncomplete);
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  return configuration?.reason === RESTRICTED_WORKSPACE_SOURCE_REASON &&
+    recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false;
+}
+
 /** Only the managed-clone producer can attach this bounded pre-dispatch evidence. */
 function isGitConnectionFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   const connection = readConnectionFailure(run.resultJson?.connectionFailure);
@@ -167,12 +203,76 @@ function isHermesConnectionFailure(run: HeartbeatRun, options: RunFailureReportO
 }
 
 /**
+ * The orphan reaper proved a server restart stopped legacy setup before
+ * dispatch and made the run eligible for its bounded retry. Only that reaper
+ * branch pairs process loss with bootstrap evidence.
+ */
+function isRestartInterruptedSetup(run: HeartbeatRun): boolean {
+  if (
+    run.status !== "failed" || run.errorCode !== "process_lost" || run.runtimeMode !== "legacy" ||
+    run.executionStage !== "preparing" || run.processPid != null || run.processGroupId != null
+  ) return false;
+  const recovery = asRecord(run.resultJson?.executionRecovery);
+  const processLoss = asRecord(run.resultJson?.processLossDiagnostic);
+  return recovery?.kind === "bootstrap" && recovery.providerWorkStarted === false &&
+    processLoss?.retryEligible === true && processLoss.runPredatesObserver === true &&
+    processLoss.localCheck === "no_identifiers";
+}
+
+/**
  * The adapter proved the user's provider account is out of quota, and recovery
  * waits for its reset. Both fields come from the adapter's own classifier.
  */
 function isProviderQuotaFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
   return run.status === "failed" && run.errorCode === "provider_quota" &&
     asRecord(run.resultJson)?.errorFamily === "provider_quota" &&
+    options.phase !== "setup" && run.signal == null;
+}
+
+function isCodexAcpModelCapacityFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  const result = asRecord(run.resultJson);
+  return run.status === "failed" && run.errorCode === "codex_transient_upstream" &&
+    result?.errorFamily === "transient_upstream" &&
+    asRecord(result.terminalSessionFailure)?.category === "service" &&
+    options.phase !== "setup" && run.signal == null;
+}
+
+/**
+ * A committed Codex `serverOverloaded` terminal chose the bounded capacity
+ * retry, and the same status transaction created that retry run. The retry
+ * owns recovery; a later failure reports itself. Held and exhausted capacity
+ * failures have no automatic retry and stay reportable. The retry carries the
+ * task in its context, so the company/context-issue index bounds the read to
+ * that task's runs created since this one.
+ */
+async function isScheduledNativeCapacityRetry(db: Db, run: HeartbeatRun, options: RunFailureReportOptions): Promise<boolean> {
+  const result = asRecord(run.resultJson);
+  const diagnostic = asRecord(result?.nativeProviderFailure);
+  if (run.status !== "failed" || run.runtimeMode !== "native" || run.errorCode !== NATIVE_PROVIDER_OVERLOADED_CODE ||
+      run.nativeIssueId == null ||
+      options.phase === "setup" || run.signal != null || result?.finalizationPhase !== "committed" ||
+      result.finalizationReasonCode !== NATIVE_PROVIDER_OVERLOADED_CODE ||
+      diagnostic?.provider !== NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC.provider ||
+      diagnostic.category !== NATIVE_PROVIDER_OVERLOADED_DIAGNOSTIC.category) return false;
+  const [retry] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, run.companyId),
+    sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${run.nativeIssueId}`, gte(heartbeatRuns.createdAt, run.createdAt),
+    eq(heartbeatRuns.agentId, run.agentId),
+    eq(heartbeatRuns.retryOfRunId, run.id), eq(heartbeatRuns.scheduledRetryReason, NATIVE_PROVIDER_OVERLOADED_CODE),
+  )).limit(1);
+  return retry !== undefined;
+}
+
+const providerAuthErrorCodes = new Set(["claude_auth_required", "acpx_auth_required"]);
+
+/**
+ * The ACP agent typed its terminal failure as `access` (provider auth_required),
+ * and the adapter kept it on the sign-in recovery path. The run blocks and the
+ * user gets a reconnect request, so Sentry adds no signal.
+ */
+function isAcpProviderAccessFailure(run: HeartbeatRun, options: RunFailureReportOptions): boolean {
+  return run.status === "failed" && run.errorCode != null && providerAuthErrorCodes.has(run.errorCode) &&
+    asRecord(asRecord(run.resultJson)?.terminalSessionFailure)?.category === "access" &&
     options.phase !== "setup" && run.signal == null;
 }
 
@@ -199,7 +299,8 @@ async function isRejectedExternalBotWake(db: Db, run: HeartbeatRun): Promise<boo
 
 /**
  * Report a terminal run failure to Sentry. Returns at once for any status
- * other than failures and unexpected started cancellations. Never throws — a Sentry failure or a
+ * other than failures and unexpected started cancellations, and for a native
+ * run that still waits for a same-run retry. Never throws — a Sentry failure or a
  * database read failure must not change the caller's control flow.
  *
  * Call this beside the caller's own terminal-status write, with
@@ -213,12 +314,18 @@ export function reportRunFailure(db: Db, run: HeartbeatRun, options: RunFailureR
   if (mode === "off") return Promise.resolve();
   if (!isRunFailureStatus(run.status)) return Promise.resolve();
   if (run.status === "cancelled" && !isUnexpectedRunCancellation(run)) return Promise.resolve();
+  // The terminal write that ends the retry reports instead (`isNewTerminalRunFailure`).
+  if (isPendingNativeRetry(run)) return Promise.resolve();
   if (mode === "unexpected" && (
     isMissingSecretConfigurationBlocker(run, options) ||
     isAiConnectionSelectionBlocker(run, options) ||
     isLocalPathWorkspaceConfigurationBlocker(run, options) ||
+    isRestrictedWorkspaceSourceBlocker(run, options) ||
     isGitConnectionFailure(run, options) ||
-    isProviderQuotaFailure(run, options)
+    isProviderQuotaFailure(run, options) ||
+    isCodexAcpModelCapacityFailure(run, options) ||
+    isAcpProviderAccessFailure(run, options) ||
+    isRestartInterruptedSetup(run)
   )) return Promise.resolve();
   const runStatus = run.status;
   const report = captureTerminalRunFailure(db, run, runStatus, options, mode);
@@ -256,6 +363,11 @@ async function captureTerminalRunFailure(
         return false;
       });
       if (rejectedExternally) return;
+      const capacityRetry = await isScheduledNativeCapacityRetry(db, run, options).catch((err) => {
+        logger.warn({ err, runId: run.id }, "failed to read native capacity retry for run failure report");
+        return false;
+      });
+      if (capacityRetry) return;
     }
 
     const taskId = readTaskId(run);

@@ -1,15 +1,17 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { DotPairing } from "@paperclipai/shared";
 import { grokBotApi } from "@/api/grokBot";
 import { buildGrokAccessPrompt, buildGrokRoutinePrompt } from "@/lib/grok-bot-setup-prompt";
 import { AgentSetupPrompt } from "./AgentSetupPrompt";
-import { Button } from "./ui/button";
+import { CopyText } from "./CopyText";
+import { Button, buttonVariants } from "./ui/button";
 import { Input } from "./ui/input";
 import { queryKeys } from "@/lib/queryKeys";
 
 /** Configuration writes update the authoritative binding, never an unsaved agent form. */
 export function GrokBotConnection({ companyId, agentId }: { companyId?: string; agentId?: string }) {
+  const pairingCodeId = useId();
   const cache = useQueryClient();
   const key = ["grok-binding", companyId, agentId];
   const state = useQuery({ queryKey: key, enabled: !!companyId && !!agentId,
@@ -75,7 +77,14 @@ export function GrokBotConnection({ companyId, agentId }: { companyId?: string; 
       <Button disabled={busy || !state.data?.enabled || !state.data.canConfigureConnection} onClick={() => pair.mutate()}>Reconnect agent access</Button>
       {pairing && state.data?.resourceUrl && <>
         <AgentSetupPrompt prompt={buildGrokAccessPrompt(state.data.resourceUrl, botName || "your Bot")} label="Copy connection instructions" title="Reconnect Grok Bot" description="Complete OAuth in the browser. Keep this code out of Bot chat." />
-        <label className="block space-y-2"><span>One-use pairing code</span><Input type="password" autoComplete="off" readOnly value={pairing.pairingCode} onFocus={e => e.target.select()} /></label>
+        <div className="space-y-2">
+          <label htmlFor={pairingCodeId}>One-use pairing code</label>
+          <div className="flex items-center gap-2">
+            <Input id={pairingCodeId} type="password" autoComplete="off" readOnly value={pairing.pairingCode} onFocus={e => e.target.select()} />
+            <CopyText text={pairing.pairingCode} ariaLabel="Copy pairing code" className={buttonVariants({ variant: "outline", size: "sm" })}>Copy code</CopyText>
+          </div>
+          <p className="text-xs text-muted-foreground">Copy this code into Paperclip’s authorization page. Keep it out of Bot chat.</p>
+        </div>
       </>}
     </>}
     {binding?.assignment && <div className="space-y-2"><p>{binding.assignment.status === "offered" ? "Awaiting acknowledgement" : "Working in a Paperclip work session"}</p><Button variant="outline" disabled={busy} onClick={() => stop.mutate(binding.assignment!.runId)}>Stop Paperclip work</Button><p className="text-xs text-muted-foreground">Revokes this session’s Paperclip authority and stops future dispatch. Remote execution may continue. Open Grok Bot to inspect it.</p></div>}

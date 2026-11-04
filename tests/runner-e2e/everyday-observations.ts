@@ -1,4 +1,5 @@
 import type { IssueComment } from "../../packages/shared/src/types/issue.js";
+import { gradeRemoteRestart, type RemoteRestartEvidence } from "./everyday-remote-restart.js";
 
 export interface StoryCheck {
   id: string;
@@ -140,6 +141,7 @@ export interface StoryRun {
   lastOutputSeq?: number | null;
   errorCode?: string | null;
   error?: string | null;
+  nativePhase?: string | null;
 }
 
 export type StoryArtifactGradeMode = "base" | "separator" | "max-length";
@@ -272,6 +274,8 @@ export function storyLifecycleChecks(input: {
   parentId: string;
   leadId: string;
   allowedInterruptedRuns?: string[];
+  requireRemoteRestart?: boolean;
+  remoteRestart?: RemoteRestartEvidence;
 }): StoryCheck[] {
   const executed = input.runs.filter((r) => !isStoryWorkspaceDeferral(r));
   const allowed = input.allowedInterruptedRuns ?? [];
@@ -281,6 +285,7 @@ export function storyLifecycleChecks(input: {
     detail,
   });
   return [
+    ...(input.requireRemoteRestart ? gradeRemoteRestart(input.remoteRestart) : []),
     check(
       "tasks-done",
       input.issues.length > 0 && input.issues.every((i) => i.status === "done"),
@@ -339,17 +344,34 @@ export function storyRepliesConsumed(
   );
 }
 
+export type StoryReplyExpectation = string | ((body: string) => boolean);
+
+export function storyAgentReplyMatches(
+  comment: StoryComment | undefined,
+  agentId: string,
+  expected: StoryReplyExpectation,
+): boolean {
+  if (!comment || comment.authorAgentId !== agentId) return false;
+  const body = String(comment.body ?? "");
+  return typeof expected === "string" ? body.includes(expected) : expected(body);
+}
+
+/** The requested output is one exact token after this continuation's marker. */
+export function retainedControllerReplyMatcher(marker: string): (body: string) => boolean {
+  const escaped = marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(`(?:^|\\s)${escaped}\\s+queue_r(?=\\s|$)`);
+  return body => pattern.test(body);
+}
+
 /** A terminal task is only ready for response assertions after its agent reply is visible. */
 export function storyHasAgentReply(
   issue: StoryIssue | undefined,
   agentId: string,
-  expectedText: string,
+  expectedText: StoryReplyExpectation,
 ): boolean {
   return (
     issue?.comments?.some(
-      (comment) =>
-        comment.authorAgentId === agentId &&
-        String(comment.body ?? "").includes(expectedText),
+      (comment) => storyAgentReplyMatches(comment, agentId, expectedText),
     ) ?? false
   );
 }

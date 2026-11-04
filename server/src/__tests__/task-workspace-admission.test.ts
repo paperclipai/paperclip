@@ -22,13 +22,27 @@ describe("task workspace admission authority", () => {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-source-authority-"));
     try {
       const restored = await ensurePersistedExecutionWorkspaceAvailable({
-        base: { baseCwd: cwd, source: "project_primary", projectId: "org-project", workspaceId: "org-source", repoUrl: null, repoRef: null },
+        base: { baseCwd: cwd, source: "project_primary", projectId: "org-project", workspaceId: "org-source", repoUrl: "https://github.com/organization/source", repoRef: "organization-main" },
         workspace: { mode: "shared_workspace", strategyType: "project_primary", cwd, providerRef: cwd,
-          projectId: null, projectWorkspaceId: null, repoUrl: null, baseRef: null, branchName: null },
+          projectId: null, projectWorkspaceId: null, repoUrl: null, baseRef: null, branchName: null, metadata: { source: "task_session" } },
         issue: { id: "task", identifier: null, title: "Retain files" },
         agent: { id: "agent", companyId: "company", name: "Agent" },
       });
-      expect(restored).toMatchObject({ cwd, projectId: null, workspaceId: null });
+      expect(restored).toMatchObject({ cwd, projectId: null, workspaceId: null, repoUrl: null, repoRef: null, source: "task_session" });
+    } finally { await fs.rm(cwd, { recursive: true, force: true }); }
+  });
+  it.each([
+    { projectId: "configured-project" }, { projectWorkspaceId: "configured-source" }, { repoUrl: "https://github.com/configured/source" },
+  ])("retains configured-source classification despite task_session metadata: %j", async configured => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-configured-source-"));
+    try {
+      const restored = await ensurePersistedExecutionWorkspaceAvailable({
+        base: { baseCwd: cwd, source: "task_session", projectId: null, workspaceId: null, repoUrl: null, repoRef: null },
+        workspace: { mode: "shared_workspace", strategyType: "project_primary", cwd, providerRef: cwd,
+          projectId: null, projectWorkspaceId: null, repoUrl: null, baseRef: null, branchName: null, metadata: { source: "task_session" }, ...configured },
+        issue: { id: "task", identifier: null, title: "Configured source" }, agent: { id: "agent", companyId: "company", name: "Agent" },
+      });
+      expect(restored?.source).toBe("project_primary");
     } finally { await fs.rm(cwd, { recursive: true, force: true }); }
   });
   it("permits new admission to apply explicit pending intent", () => {

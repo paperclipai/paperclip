@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { aiSubscriptions, aiSubscriptionPrices, aiSubscriptionConnections, connectionGrants, toolConnections, type Db } from "@paperclipai/db";
+import { aiSubscriptions, aiSubscriptionPrices, aiSubscriptionConnections, companySecrets, connectionGrants, toolConnections, type Db } from "@paperclipai/db";
 import { aiConnectionMetadataSchema, normalizeCents, subscriptionPlan, type AiProvider, type UpdateSubscriptionPrice } from "@paperclipai/shared";
 import { conflict, forbidden, notFound } from "../errors.js";
 import { logActivity, type ActivityPublication } from "./activity-log.js";
@@ -12,6 +12,16 @@ export interface SubscriptionActor { userId: string; canManage: boolean; readOnl
 export interface SubscriptionConnection {
   companyId: string; connectionId: string; grantId: string; provider: AiProvider;
   name: string; ownerUserId: string | null; credential: string;
+  session?: SubscriptionSession | null;
+}
+export interface SubscriptionSession { secretId: string; epoch: number }
+
+export async function subscriptionSession(db: Db, companyId: string, refs: { secretId: string; configPath: string }[]): Promise<SubscriptionSession | null> {
+  const ref = refs.find(r => r.configPath === "ai.credential");
+  if (!ref) return null;
+  const [secret] = await db.select({ epoch: companySecrets.aiSessionEpoch }).from(companySecrets)
+    .where(and(eq(companySecrets.companyId, companyId), eq(companySecrets.id, ref.secretId)));
+  return secret ? { secretId: ref.secretId, epoch: secret.epoch } : null;
 }
 
 export function canonicalSubscriptionId(id: string, accounts: Pick<Account, "id" | "mergedIntoId">[] | Map<string, string | null>): string {
@@ -88,10 +98,6 @@ async function mergeInTransaction(db: Db, companyId: string, source: Account, ta
 export function subscriptionService(db: Db) {
   async function register(input: SubscriptionConnection, observed?: SubscriptionIdentity) {
     const identity = { ...(observed ?? subscriptionCredentialIdentity(input.companyId, input.provider, input.credential)) };
-    // Only a successful provider observation may match another grant's billing
-    // identity or add its editors. Provisional rows are grant-scoped, even when
-    // two callers supply the same unverified credential or forged ID claims.
-    if (!observed?.verified) identity.accountKey = subscriptionIdentityKey(input.companyId, input.provider, ["grant", input.grantId, identity.credentialKey]);
     if (!observed) {
       const [cached] = await db.select().from(aiSubscriptionConnections).where(and(eq(aiSubscriptionConnections.companyId, input.companyId), eq(aiSubscriptionConnections.grantId, input.grantId)));
       if (cached?.credentialKey === identity.credentialKey && cached.connectionId === input.connectionId) return cached.subscriptionId;
@@ -106,6 +112,14 @@ export function subscriptionService(db: Db) {
         || !grant.connection.enabled || grant.connection.status !== "active"
         || !metadata.success || metadata.data.method !== "subscription" || metadata.data.provider !== input.provider) {
         throw notFound("Subscription connection not found");
+      }
+      if (!observed?.verified) {
+        const session = await subscriptionSession(tx, input.companyId, grant.grant.credentialSecretRefs);
+        if (session && (input.session?.secretId !== session.secretId || input.session.epoch !== session.epoch)) {
+          throw conflict("The AI credential changed. Retry this execution.");
+        }
+        identity.accountKey = subscriptionIdentityKey(input.companyId, input.provider, ["grant", input.grantId,
+          ...(session ? ["session", session.secretId, String(session.epoch)] : [identity.credentialKey])]);
       }
       const [binding] = await tx.select().from(aiSubscriptionConnections).where(and(eq(aiSubscriptionConnections.companyId, input.companyId), eq(aiSubscriptionConnections.grantId, input.grantId)));
       const accounts = await tx.select().from(aiSubscriptions).where(eq(aiSubscriptions.companyId, input.companyId));

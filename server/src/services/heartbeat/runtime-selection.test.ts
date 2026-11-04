@@ -2,17 +2,21 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { agents, companies, completionContracts, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { activityLog, agents, companies, completionContracts, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, executionWorkspaces, heartbeatRuns, issues, nativeRunFinalizations, workspaceOperations, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external-test-database.js";
 import { CHAT_CONTROL_RECOVERY_ADMISSION_KEY } from "../chat-control-recovery-stop.js";
 import { buildNativeRuntimeContext } from "../native-runtime/runtime-context.js";
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import { prepareNativeWorkspaceSync } from "../native-runtime/native-workspace-sync.js";
 import { resolveHeartbeatNativeRuntimeMode } from "../native-runtime/runtime-mode.js";
-import { canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
+import { claimNativeRestartRecoveries } from "../native-runtime/native-restart-recovery.js";
+import { buildNativeModelEnvelope, canonicalNativeRuntimeContextDigest } from "../../vendor/paperclip-runner/index.js";
 import { selectHeartbeatRuntime, type HeartbeatRuntimeSelectionInput } from "./runtime-selection.js";
+import { reserveRunBudget } from "../budget-reservations.js";
+import { legacyControllerClaim } from "../legacy-controller-lease.js";
 
 // Keep the real contract, session, and runtime-selection transactions. Replace only
 // filesystem materialization and sandbox synchronization at their external boundaries.
@@ -25,7 +29,8 @@ vi.mock("../native-runtime/native-workspace-sync.js", async (original) => ({
   prepareNativeWorkspaceSync: vi.fn(async () => null),
 }));
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RUNTIME_SELECTION_TEST_DATABASE_URL");
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
@@ -33,11 +38,14 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   beforeAll(async () => {
     instructionRoot = await mkdtemp(join(tmpdir(), "paperclip-selection-instructions-"));
     await writeFile(join(instructionRoot, "AGENTS.md"), "Complete the assigned task.\n");
-    database = await startEmbeddedPostgresTestDatabase("paperclip-runtime-selection");
+    if (externalDatabaseUrl) await applyPendingMigrations(externalDatabaseUrl);
+    database = externalDatabaseUrl ? { connectionString: externalDatabaseUrl, cleanup: async () => {} }
+      : await startEmbeddedPostgresTestDatabase("paperclip-runtime-selection");
     db = createDb(database.connectionString);
     await db.execute(sql`set client_min_messages = warning`);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
   afterAll(async () => { await db?.$client.end(); await database?.cleanup(); if (instructionRoot) await rm(instructionRoot, { recursive: true, force: true }); });
+  afterEach(() => vi.unstubAllEnvs());
   beforeEach(async () => {
     await db.execute(sql`truncate table companies restart identity cascade`);
     vi.clearAllMocks();
@@ -74,6 +82,160 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
   const coordinators = (id: string) => db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, id));
   const sandbox = { kind: "remote" as const, transport: "sandbox" as const, remoteCwd: "/workspace", reusableLeaseConfigured: false };
 
+  it.each(["matching", "different-session", "absent"])("persists the migrated logical cwd only for the receipt's exact session: %s", async receipt => {
+    const sameSession = receipt === "matching";
+    const { input, run, agent, issue } = await fixture();
+    const sessionId = randomUUID(), operationId = randomUUID();
+    const logicalCwd = "/paperclip/legacy/task-workspace";
+    const marker = { schema: "paperclip.native-workspace-migration.v1", operationId };
+    const [workspace] = await db.insert(executionWorkspaces).values({
+      companyId: agent.companyId, sourceIssueId: issue.id, name: "Migrated workspace",
+      mode: "shared_workspace", strategyType: "project_primary", cwd: "/tmp/ephemeral/task-workspace",
+      providerType: "cloud_sandbox", metadata: receipt === "absent" ? {} : { nativeWorkspaceMigration: marker },
+    }).returning();
+    await db.insert(workspaceOperations).values({
+      id: operationId, companyId: agent.companyId, executionWorkspaceId: workspace!.id,
+      phase: "remote_workspace_migration", status: "succeeded", metadata: {
+        schema: "paperclip.remote-workspace-migration.v1", snapshotId: randomUUID(),
+        nativeSessionContinuity: { schema: marker.schema, remoteCwd: sandbox.remoteCwd, sessions: [{
+          sourceRunId: randomUUID(), agentId: agent.id, issueId: issue.id,
+          sessionId: sameSession ? sessionId : randomUUID(), logicalCwd,
+        }] },
+      },
+    });
+    input.workspace.persistedExecutionWorkspace = workspace!;
+    input.workspace.executionWorkspace.cwd = logicalCwd;
+    input.workspace.executionTarget = sandbox;
+    const prior = await selectHeartbeatRuntime(db, input);
+    if (!prior.selected || !prior.nativeExecution) throw new Error("Expected prior native selection");
+    const priorInput = { ...prior.nativeExecution, session: { ...prior.nativeExecution.session, normalizedSessionId: sessionId } };
+    const priorProfile = (await read(run.id)).runnerProfileJson;
+    await db.update(heartbeatRuns).set({ status: "succeeded", nativeSessionId: sessionId,
+      runnerProfileJson: { ...priorProfile, nativeExecutionInput: priorInput, sessionCheckpoint: {
+        backendKind: "runner", driverKind: "codex_app_server", sessionId: "retained-provider-thread",
+        providerSessionId: "retained-provider-thread", identity: { ...priorInput.binding, sessionId },
+      } },
+    }).where(eq(heartbeatRuns.id, run.id));
+    const [nextRun] = await db.insert(heartbeatRuns).values({ companyId: agent.companyId, agentId: agent.id,
+      issueId: issue.id, scopeKind: "issue", status: "running", nativeSessionId: sessionId,
+      createdAt: new Date(run.createdAt.getTime() + 1000),
+    }).returning();
+    input.run = nextRun!;
+    input.workspace.executionWorkspace.cwd = workspace!.cwd!;
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected migrated native selection");
+    expect(selected.nativeExecution.session.normalizedSessionId).toBe(sessionId);
+    expect(selected.nativeExecution.workspace.cwd).toBe(sameSession ? logicalCwd : workspace!.cwd);
+    expect((await read(nextRun!.id)).runnerProfileJson?.nativeExecutionInput).toEqual(selected.nativeExecution);
+    expect((await read(nextRun!.id)).nativeSessionId).toBe(selected.nativeExecution.session.normalizedSessionId);
+  });
+
+  it.each([false, true])("persists the Cursor provider API placement and completion authority without a Computer lease (ephemeral: %s)", async ephemeral => {
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", String(ephemeral));
+    const { input, run, issue } = await fixture();
+    input.agent = { ...input.agent, adapterConfig: { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification" } };
+    await db.update(agents).set({ adapterConfig: input.agent.adapterConfig }).where(eq(agents.id, input.agent.id));
+    input.workspace.activeEnvironmentLease = null;
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {}, adapterConfig: input.agent.adapterConfig,
+      agent: input.agent, issue, target: null, workspaceId: null });
+    const result = await selectHeartbeatRuntime(db, input);
+    expect(result.selected).toBe(true);
+    if (!result.selected) throw new Error("Expected native Cursor selection");
+    expect(result.nativeExecution?.provider).toMatchObject({ kind: "cursor_cloud", model: "caller-model" });
+    expect(await read(run.id)).toMatchObject({ runtimeMode: "native", driverKind: "cursor_cloud_api", runnerProfileJson: {
+      backend: "cursor_cloud_api", executionPlacement: { kind: "provider_api", provider: "cursor_cloud", controller: "paperclip" },
+      nativeExecutionInput: result.nativeExecution,
+    } });
+    expect(await db.select().from(completionContracts)).toHaveLength(1);
+    expect(await coordinators(run.id)).toHaveLength(1);
+    expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+    expect(input.stopControllerLease).toHaveBeenCalledOnce();
+  });
+
+  it.each(["cursor_cloud_api", null] as const)("restores a historical Cursor workspace binding without allocating a Computer (driver: %s)", async driverKind => {
+    const { input, run, issue } = await fixture();
+    input.agent = { ...input.agent, adapterConfig: { provider: "cursor_cloud", model: "caller-model", repoUrl: "https://github.com/example/qualification" } };
+    await db.update(agents).set({ adapterConfig: input.agent.adapterConfig }).where(eq(agents.id, input.agent.id));
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: input.agent.companyId, sourceIssueId: issue.id,
+      name: "Previously admitted Cursor workspace", mode: "shared_workspace", strategyType: "project_primary", cwd: "/previous-cursor-workspace" }).returning();
+    input.workspace.persistedExecutionWorkspace = workspace;
+    input.workspace.activeEnvironmentLease = null;
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {}, adapterConfig: input.agent.adapterConfig,
+      agent: input.agent, issue, target: null, workspaceId: workspace.id });
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native Cursor selection");
+    expect(selected.nativeExecution.binding.executionWorkspaceId).toBe(workspace.id);
+    const saved = await read(run.id);
+    const historicalProfile: Record<string, unknown> = { ...saved.runnerProfileJson, sessionCheckpoint: { retained: "Cursor provider checkpoint" } };
+    delete historicalProfile.executionPlacement;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: historicalProfile, driverKind }).where(eq(heartbeatRuns.id, run.id));
+    input.run = await read(run.id);
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: input.run, enabled: true, runtimeConfig: {}, adapterConfig: input.agent.adapterConfig,
+      agent: input.agent, issue, target: null, workspaceId: null });
+    input.session.persistedRunnerProfile = historicalProfile;
+    input.session.persistedNativeExecutionInput = selected.nativeExecution;
+    input.workspace.persistedExecutionWorkspace = null;
+    input.workspace.executionWorkspace.cwd = "/private-cursor-controller";
+    vi.mocked(buildNativeRuntimeContext).mockClear();
+    const resumed = await selectHeartbeatRuntime(db, input);
+    expect(resumed).toMatchObject({ selected: true, nativeExecution: selected.nativeExecution, nativeRunnerInstanceId: selected.nativeRunnerInstanceId });
+    expect(await read(run.id)).toMatchObject({ driverKind: "cursor_cloud_api" });
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({ ...historicalProfile,
+      executionPlacement: { kind: "provider_api", provider: "cursor_cloud", controller: "paperclip" } });
+    expect(await db.select().from(executionWorkspaces)).toEqual([workspace]);
+    expect(await db.select().from(completionContracts)).toHaveLength(1);
+    expect(await coordinators(run.id)).toHaveLength(1);
+    expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+    expect(buildNativeRuntimeContext).not.toHaveBeenCalled();
+  });
+
+  it("persists and admits a standing-chat response contract without requiring the unavailable action", async () => {
+    const { input, issue, agent, run } = await fixture();
+    const [conversation] = await db.update(issues).set({ title: "Chat with CEO", description: null,
+      conversationAgentId: agent.id, conversationUserId: "runtime-test-operator", conversationState: "active" })
+      .where(eq(issues.id, issue.id)).returning();
+    input.task.issueRef = conversation!;
+    input.task.context.conversationMode = true;
+    const request = "Restart this instance.";
+    input.task.safeWakeComments = [{ id: randomUUID(), body: request }];
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    const contract = selected.nativeExecution.completionContract.contract;
+    expect(contract.objective).toMatch(/current conversation response/i);
+    expect(contract.criteria).toEqual([{ id: "objective", requirement: expect.stringContaining(request) }]);
+    expect(contract.criteria[0]!.requirement).not.toBe(request);
+    const [persisted] = await db.select().from(completionContracts).where(eq(completionContracts.issueId, issue.id));
+    expect(persisted!.contractJson).toEqual(contract);
+    expect(selected.nativeExecution.completionContract.sha256).toBe(persisted!.canonicalSha256);
+    expect((await read(run.id)).runnerProfileJson?.nativeExecutionInput).toEqual(selected.nativeExecution);
+    expect(buildNativeModelEnvelope(selected.nativeExecution).completionContract).toEqual(contract);
+  });
+
+  it("keeps recovery out of live preparation before the workspace descriptor exists", async () => {
+    const { input, run, issue } = await fixture();
+    input.workspace.executionTarget = sandbox;
+    await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, issue.id));
+    const liveRunExecutions = new Set([run.id]);
+    const recoveryInput = { db, restartKind: "hard" as const, runIds: [run.id], liveRunExecutions };
+    vi.mocked(prepareNativeWorkspaceSync).mockImplementationOnce(async () => {
+      const saved = await read(run.id);
+      expect(saved.runnerProfileJson).toHaveProperty("nativeExecutionInput");
+      expect(saved.runnerProfileJson).not.toHaveProperty("nativeWorkspaceSync");
+      const before = await coordinators(run.id);
+      expect(await claimNativeRestartRecoveries(recoveryInput)).toEqual([
+        { kind: "awaiting_evidence", runId: run.id, reason: "current_controller_preparing" },
+      ]);
+      expect(await coordinators(run.id)).toEqual(before);
+      expect((await read(run.id)).status).toBe("running");
+      return null;
+    });
+    expect((await selectHeartbeatRuntime(db, input)).selected).toBe(true);
+    liveRunExecutions.delete(run.id);
+    expect(await claimNativeRestartRecoveries(recoveryInput)).toEqual([
+      expect.objectContaining({ kind: "bootstrap_incomplete", runId: run.id, controllerGeneration: 1 }),
+    ]);
+  });
+
   it("persists the native input, completion contract, and coordinator before transferring cleanup ownership", async () => {
     const { input, run } = await fixture();
     input.workspace.onCheckpoint = vi.fn(async () => {});
@@ -92,10 +254,29 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     if (!selected.selected) throw new Error("Expected selection");
     const saved = await read(run.id);
     expect(saved).toMatchObject({ runtimeMode: "native", driverKind: "codex_app_server", nativePhase: "observed", nativeSessionId: expect.any(String), runnerInstanceId: selected.nativeRunnerInstanceId,
-      runnerProfileJson: { nativeExecutionInput: selected.nativeExecution, recoveryEventInventoryVersion: 1 } });
+      runnerProfileJson: { nativeExecutionInput: selected.nativeExecution, recoveryEventInventoryVersion: 1, nativePreparationFencingVersion: 1 } });
     expect(await db.select().from(completionContracts)).toHaveLength(1);
     expect(selected.getNativeFreshSessionHandoff).toBe(input.session.getFreshSessionHandoff);
     expect(input.onNativeOwnershipHeld).not.toHaveBeenCalled();
+  });
+
+  it("persists the Copilot task model without accepting task provider or permission changes", async () => {
+    const { input, run, issue } = await fixture();
+    const adapterConfig = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna", acpxPermissionMode: "approve-reads" };
+    input.agent = { ...input.agent, adapterConfig };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, input.agent.id));
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({
+      persisted: input.run, enabled: true, runtimeConfig: {}, adapterConfig,
+      agent: input.agent, issue, target: null, workspaceId: null,
+    });
+    input.config.issueAssigneeOverrides = { adapterConfig: {
+      model: "gpt-6-luna", provider: "codex", acpxAgent: "pi", acpxPermissionMode: "approve-all",
+    } };
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native Copilot selection");
+    const expected = { kind: "acpx", agent: "copilot", model: "gpt-6-luna", permissionMode: "approve-reads" };
+    expect(selected.nativeExecution.provider).toMatchObject(expected);
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({ nativeExecutionInput: { provider: expected } });
   });
 
   it("persists configured GitHub instruction skills without admitting provider-mentioned skills", async () => {
@@ -123,6 +304,24 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect((await read(run.id)).runnerProfileJson).toMatchObject({
       nativeExecutionInput: { task: { description: "Configured GitHub instruction skills:\n/configured" } },
     });
+  });
+
+  it("does not upgrade an older preparation from supplied runtime profile data", async () => {
+    const { input, run } = await fixture();
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution || input.nativeRuntimeResolution.kind !== "native") {
+      throw new Error("Expected native selection");
+    }
+    const saved = await read(run.id);
+    const olderProfile = { ...saved.runnerProfileJson };
+    delete olderProfile.nativePreparationFencingVersion;
+    await db.update(heartbeatRuns).set({ runnerProfileJson: olderProfile }).where(eq(heartbeatRuns.id, run.id));
+    input.run = await read(run.id);
+    input.session.persistedNativeExecutionInput = selected.nativeExecution;
+    input.session.persistedRunnerProfile = { ...olderProfile, nativePreparationFencingVersion: 1 };
+    Object.assign(input.nativeRuntimeResolution.profile, { nativePreparationFencingVersion: 1 });
+    expect((await selectHeartbeatRuntime(db, input)).selected).toBe(true);
+    expect((await read(run.id)).runnerProfileJson).not.toHaveProperty("nativePreparationFencingVersion");
   });
 
   it("restores the immutable admitted input and saved checkpoint when newer context arrives", async () => {
@@ -178,6 +377,42 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect((await read(run.id)).runnerProfileJson).toEqual(saved.runnerProfileJson);
     expect((await read(run.id)).contextSnapshot?.skillVersions).toEqual({ [key]: versionId });
   });
+
+  it.each(["exact", "fresh", "bootstrap", "dead-runner", "expired", "foreign-owner", "missing-audit"] as const)(
+    "admits only exact pending Stop cleanup at runtime selection (%s)", async mode => {
+      const { input, run, issue } = await fixture();
+      const initial = await selectHeartbeatRuntime(db, input);
+      if (!initial.selected || !initial.nativeExecution) throw new Error("Expected original native selection");
+      await reserveRunBudget(db, run.companyId, run.id, null);
+      const saved = await read(run.id), leaseOwner = `stop:${randomUUID()}`, intentAuditId = randomUUID();
+      input.run = saved;
+      input.session.persistedNativeExecutionInput = initial.nativeExecution;
+      input.session.persistedRunnerProfile = saved.runnerProfileJson ?? {};
+      await db.insert(activityLog).values({ id: intentAuditId, companyId: run.companyId, actorType: "system", actorId: "native-session-cancellation",
+        action: "native.cancellation_intent_recorded", entityType: "heartbeat_run", entityId: run.id, runId: run.id, agentId: run.agentId });
+      await db.update(nativeRunFinalizations).set({ leaseOwner: mode === "foreign-owner" ? "another-owner" : leaseOwner,
+        leaseExpiresAt: new Date(Date.now() + (mode === "expired" ? -1 : 60_000)), controllerGeneration: 2, attempt: 1,
+        recoveryState: mode === "bootstrap" ? "bootstrap_incomplete" : mode === "dead-runner" ? "resuming_session" : "awaiting_runner_reattach",
+        recoveryHistory: [{ disposition: "reattach_remote_runner", controllerGeneration: 2, providerAttempt: 1 }],
+      }).where(eq(nativeRunFinalizations.runId, run.id));
+      await db.update(heartbeatRuns).set({ resultJson: {
+        startupCancellation: { beforeNativeSelection: false, errorCode: "cancelled", requestedAt: new Date().toISOString() },
+        executionCancellation: { state: "requested" },
+        nativeCancellation: { schema: "paperclip.native-cancellation.v1", companyId: run.companyId, runId: run.id, issueId: issue.id,
+          scope: "run", reasonCode: "cancellation_run_only", intentId: `native-cancellation:${randomUUID()}`,
+          intentAuditId: mode === "missing-audit" ? randomUUID() : intentAuditId, dispatchState: "pending", dispatched: false,
+          effects: ["release_run_resources"] },
+      } }).where(eq(heartbeatRuns.id, run.id));
+      input.recovery = mode === "fresh" ? {} : { nativeLeaseOwner: leaseOwner, nativeRestartRecovery: {
+        kind: "reattach_remote_runner", runId: run.id, leaseOwner, controllerGeneration: 2, providerAttempt: 1,
+        restartKind: "hard", recoveryRequestId: null, remote: { providerLeaseId: "existing-sandbox", remoteCwd: "/workspace" },
+      } };
+      const selected = await selectHeartbeatRuntime(db, input);
+      expect(selected.selected).toBe(mode === "exact");
+      expect(await coordinators(run.id)).toHaveLength(1);
+      expect((await read(run.id)).nativeSessionId).toBe(saved.nativeSessionId);
+      expect((await read(run.id)).runnerProfileJson?.nativeExecutionInput).toEqual(initial.nativeExecution);
+    });
 
   it.each(["cancelled", "startup_cancellation"])("does not create a native coordinator when %s wins preparation", async winner => {
     const { input, run } = await fixture();
@@ -241,6 +476,118 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(await coordinators(run.id)).toHaveLength(0);
   });
 
+  it("rejects resolved legacy execution on an ephemeral server before runtime admission", async () => {
+    const { input, run } = await fixture("process");
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    expect(input.nativeRuntimeResolution.kind).toBe("legacy");
+    await expect(selectHeartbeatRuntime(db, input)).rejects.toThrow("native Paperclip Runner");
+    expect((await read(run.id)).runtimeMode).toBe("legacy");
+    expect(await coordinators(run.id)).toHaveLength(0);
+    expect(input.onNativeLifecycleSelected).not.toHaveBeenCalled();
+    expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+  });
+
+  it.each(["warm", "per_turn"] as const)("preserves resolved %s policy on an ephemeral server", async mode => {
+    const { input, run } = await fixture();
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    // Deliberately disagree with the resolved provider policy in both cases.
+    input.agent.adapterConfig = { ...input.agent.adapterConfig, ...(mode === "per_turn" ? { lifecycleMode: "warm" } : {}) };
+    input.workspace.executionTarget = { ...sandbox, reusableLeaseConfigured: true,
+      effectiveCapabilities: { reusableLeases: true } as never,
+      runnerLifecyclePolicy: mode === "warm" ? { mode, idleTimeoutMs: 300_000 } : { mode, idleTimeoutMs: null } };
+    const selected = await selectHeartbeatRuntime(db, input);
+    expect(selected.selected && selected.nativeExecution?.session.lifecyclePolicy.mode).toBe(mode);
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({ nativeExecutionInput: { session: { lifecyclePolicy: { mode } } } });
+    expect(await coordinators(run.id)).toHaveLength(1);
+  });
+
+  it.each([
+    { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", credentialProvider: "anthropic" as const, method: "subscription" as const },
+    { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", credentialProvider: "xai" as const, method: "subscription" as const },
+    { provider: "opencode", model: "openrouter/deepseek/deepseek-v4-flash-0731", credentialProvider: "openrouter" as const, method: "api_key" as const },
+  ])("admits managed $provider/$acpxAgent on an ephemeral server without changing credential lifecycle", async profile => {
+    vi.stubEnv("PAPERCLIP_EPHEMERAL_SERVER", "true");
+    const { input, run, issue } = await fixture();
+    const { credentialProvider, method, ...providerConfig } = profile;
+    const adapterConfig = { ...providerConfig, lifecycleMode: "warm" };
+    input.agent = { ...input.agent, adapterConfig };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, input.agent.id));
+    input.workspace.executionTarget = { ...sandbox, reusableLeaseConfigured: true,
+      effectiveCapabilities: { reusableLeases: true } as never, runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } };
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: run, enabled: true, runtimeConfig: {}, adapterConfig,
+      agent: input.agent, issue, target: input.workspace.executionTarget, workspaceId: null });
+    expect(input.nativeRuntimeResolution.kind).toBe("native");
+    const attribution = { connectionId: randomUUID(), grantId: randomUUID(), provider: credentialProvider, method,
+      mode: "responsible_user" as const, responsibleUserId: "task-owner" };
+    input.config.managedAiRuntime = { sessionIdentity: "account:epoch-1", identity: "account:generation-1",
+      config: { env: {}, managedAiConnection: { ...attribution, identity: "account:generation-1", sessionIdentity: "account:epoch-1" } },
+      attribution, accountName: "Saved account", accountOwnerUserId: "task-owner", home: instructionRoot, cleanup: async () => {} };
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native selection");
+    expect(selected.nativeExecution.provider.kind).toBe(profile.provider);
+    expect(selected.nativeExecution.session.lifecyclePolicy).toEqual({ mode: "per_turn", idleTimeoutMs: null });
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({
+      nativeExecutionInput: { session: { lifecyclePolicy: { mode: "per_turn" } } },
+    });
+    expect(await coordinators(run.id)).toHaveLength(1);
+  });
+
+  it.each([
+    { provider: "github" as const, method: "api_key" as const, expected: "warm" },
+    { provider: "github" as const, method: "subscription" as const, expected: "per_turn" },
+    { provider: "openai" as const, method: "api_key" as const, expected: "per_turn" },
+  ])("persists $expected Copilot lifecycle for a managed $provider/$method account", async ({ provider, method, expected }) => {
+    const { input, run, issue } = await fixture();
+    const adapterConfig = { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna", lifecycleMode: "warm", idleTimeoutMs: 300_000 };
+    input.agent = { ...input.agent, adapterConfig };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, input.agent.id));
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({
+      persisted: input.run, enabled: true, runtimeConfig: {}, adapterConfig,
+      agent: input.agent, issue, target: null, workspaceId: null,
+    });
+    const attribution = { connectionId: randomUUID(), grantId: randomUUID(), provider, method, mode: "responsible_user" as const, responsibleUserId: "task-owner" };
+    input.config.managedAiRuntime = {
+      sessionIdentity: "fixture-grant:task-owner:epoch-1",
+      config: { env: {}, managedAiConnection: { ...attribution, identity: "fixture-grant:task-owner:generation-1", sessionIdentity: "fixture-grant:task-owner:epoch-1" } },
+      attribution,
+      accountName: "Saved account",
+      accountOwnerUserId: "task-owner",
+      identity: "fixture-grant:task-owner:generation-1",
+      home: instructionRoot,
+      cleanup: async () => {},
+    };
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native Copilot selection");
+    expect(selected.nativeExecution.session.lifecyclePolicy.mode).toBe(expected);
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({
+      nativeExecutionInput: { session: { lifecyclePolicy: { mode: expected } } },
+    });
+    expect(await coordinators(run.id)).toHaveLength(1);
+  });
+
+  it.each(["api_key", "subscription"] as const)("keeps managed Claude %s task execution warm", async method => {
+    const { input, run, issue } = await fixture();
+    const adapterConfig = { provider: "acpx", acpxAgent: "claude", model: "claude-sonnet-4-6", lifecycleMode: "warm" };
+    input.agent = { ...input.agent, adapterConfig };
+    await db.update(agents).set({ adapterConfig }).where(eq(agents.id, input.agent.id));
+    input.nativeRuntimeResolution = resolveHeartbeatNativeRuntimeMode({ persisted: input.run, enabled: true, runtimeConfig: {}, adapterConfig,
+      agent: input.agent, issue, target: null, workspaceId: null });
+    input.workspace.executionTarget = { ...sandbox, runnerTask: vi.fn(), reusableLeaseConfigured: true,
+      effectiveCapabilities: { reusableLeases: true } as never, runnerLifecyclePolicy: { mode: "warm", idleTimeoutMs: 300_000 } };
+    const attribution = { connectionId: randomUUID(), grantId: randomUUID(), provider: "anthropic" as const, method,
+      mode: "responsible_user" as const, responsibleUserId: "task-owner" };
+    input.config.managedAiRuntime = { sessionIdentity: "account:epoch-1", identity: "account:generation-1",
+      config: { env: {}, managedAiConnection: { ...attribution, identity: "account:generation-1", sessionIdentity: "account:epoch-1" } },
+      attribution, accountName: "Saved account", accountOwnerUserId: "task-owner", home: instructionRoot, cleanup: async () => {} };
+    const selected = await selectHeartbeatRuntime(db, input);
+    if (!selected.selected || !selected.nativeExecution) throw new Error("Expected native Claude selection");
+    expect(selected.nativeExecution.session.lifecyclePolicy).toEqual({ mode: "warm", idleTimeoutMs: 300_000 });
+    expect((await read(run.id)).runnerProfileJson).toMatchObject({
+      nativeResourceDisposition: "keep_running",
+      nativeExecutionInput: { session: { lifecyclePolicy: { mode: "warm" } } },
+    });
+  });
+
   it("preserves only server-owned admission and dispatch evidence when recording legacy selection", async () => {
     const { input, run } = await fixture("process");
     const admission = { version: 1, kind: "fixture" }, dispatch = { entered: true };
@@ -252,4 +599,70 @@ describe.skipIf(!support.supported)("heartbeat runtime selection boundary", () =
     expect(input.stopControllerLease).not.toHaveBeenCalled();
     expect(buildNativeRuntimeContext).not.toHaveBeenCalled();
   });
+  async function claimPreparation(f: Awaited<ReturnType<typeof fixture>>) {
+    await db.update(heartbeatRuns).set(legacyControllerClaim("legacy")).where(eq(heartbeatRuns.id, f.run.id));
+    f.input.run = await read(f.run.id);
+    expect(f.input.run.controllerBootId).toBeTruthy();
+    expect(f.input.run.controllerLeaseExpiresAt!.getTime()).toBeGreaterThan(Date.now());
+    expect(f.input.run.executionStage).toBe("preparing");
+  }
+
+  it.each(["local", "remote"] as const)("retires actual preparation ownership atomically at native admission: %s", async target => {
+    const f = await fixture();
+    await claimPreparation(f);
+    if (target === "remote") f.input.workspace.executionTarget = sandbox;
+    vi.mocked(prepareNativeWorkspaceSync).mockImplementationOnce(async () => {
+      const saved = await read(f.run.id);
+      expect(saved).toMatchObject({ runtimeMode: "native", controllerBootId: null, controllerLeaseExpiresAt: null, executionStage: null });
+      expect(await coordinators(f.run.id)).toHaveLength(1);
+      expect(f.input.stopControllerLease).toHaveBeenCalledOnce();
+      return null;
+    });
+    expect((await selectHeartbeatRuntime(db, f.input)).selected).toBe(true);
+    expect(await read(f.run.id)).toMatchObject({ runtimeMode: "native", controllerBootId: null, controllerLeaseExpiresAt: null, executionStage: null });
+  });
+
+  it.each(["foreign_boot", "expired", "cancelled"] as const)("keeps preparation ownership when native admission is denied: %s", async denied => {
+    const f = await fixture();
+    await claimPreparation(f);
+    const patch = denied === "foreign_boot" ? { controllerBootId: randomUUID() } : denied === "expired" ? { controllerLeaseExpiresAt: new Date(0) } : { status: "cancelled" as const };
+    await db.update(heartbeatRuns).set(patch).where(eq(heartbeatRuns.id, f.run.id));
+    const before = await read(f.run.id);
+    expect(await selectHeartbeatRuntime(db, f.input)).toEqual({ selected: false });
+    const after = await read(f.run.id);
+    expect(after).toMatchObject({ runtimeMode: "legacy", controllerBootId: before.controllerBootId, controllerLeaseExpiresAt: before.controllerLeaseExpiresAt, executionStage: before.executionStage });
+    expect(await coordinators(f.run.id)).toHaveLength(0);
+    expect(f.input.stopControllerLease).not.toHaveBeenCalled();
+    expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+  });
+
+  it("rolls the preparation handoff back if the native coordinator cannot commit", async () => {
+    const f = await fixture();
+    await claimPreparation(f);
+    const before = await read(f.run.id);
+    await db.execute(sql`CREATE FUNCTION reject_test_native_coordinator() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'controlled_native_coordinator_rejected'; END $$`);
+    await db.execute(sql`CREATE TRIGGER reject_test_native_coordinator BEFORE INSERT ON native_run_finalizations FOR EACH ROW EXECUTE FUNCTION reject_test_native_coordinator()`);
+    try {
+      await expect(selectHeartbeatRuntime(db, f.input)).rejects.toMatchObject({ cause: { code: "P0001", message: "controlled_native_coordinator_rejected" } });
+      expect(await read(f.run.id)).toMatchObject({ runtimeMode: "legacy", controllerBootId: before.controllerBootId, controllerLeaseExpiresAt: before.controllerLeaseExpiresAt, executionStage: before.executionStage, nativeSessionId: null });
+      expect(await coordinators(f.run.id)).toHaveLength(0);
+      expect(f.input.stopControllerLease).not.toHaveBeenCalled();
+      expect(prepareNativeWorkspaceSync).not.toHaveBeenCalled();
+    } finally {
+      await db.execute(sql`DROP TRIGGER reject_test_native_coordinator ON native_run_finalizations`);
+      await db.execute(sql`DROP FUNCTION reject_test_native_coordinator()`);
+    }
+  });
+
+  it("keeps committed native authority after a later workspace synchronization failure", async () => {
+    const f = await fixture();
+    await claimPreparation(f);
+    f.input.workspace.executionTarget = sandbox;
+    vi.mocked(prepareNativeWorkspaceSync).mockRejectedValueOnce(new Error("controlled_workspace_sync_failure"));
+    await expect(selectHeartbeatRuntime(db, f.input)).rejects.toThrow("controlled_workspace_sync_failure");
+    expect(await read(f.run.id)).toMatchObject({ runtimeMode: "native", controllerBootId: null, controllerLeaseExpiresAt: null, executionStage: null });
+    expect(await coordinators(f.run.id)).toHaveLength(1);
+    expect(f.input.stopControllerLease).toHaveBeenCalledOnce();
+  });
+
 });

@@ -25,6 +25,46 @@ describe("Codex app-server transport limits", () => {
     })).toEqual({ PAPERCLIP_AI_PROVIDER_KEY: "selected-provider-key", CODEX_HOME: "/isolated/connection" });
   });
 
+  it.each([true, false])("passes configured OTLP authentication to the child only when present (%s)", async (enabled) => {
+    const headers = enabled ? {
+      OTEL_EXPORTER_OTLP_LOGS_HEADERS: "authorization=Bearer%20fixture-logs",
+      OTEL_EXPORTER_OTLP_TRACES_HEADERS: "authorization=Bearer%20fixture-traces",
+    } : {};
+    const transport = new ProcessCodexAppServerTransport({
+      command: process.execPath,
+      args: ["-e", `
+        process.stdin.resume();
+        process.stdout.write(JSON.stringify({ method: "environment", params: {
+          OTEL_EXPORTER_OTLP_LOGS_HEADERS: process.env.OTEL_EXPORTER_OTLP_LOGS_HEADERS,
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS,
+          DATABASE_URL: process.env.DATABASE_URL,
+          OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+        } }) + "\\n");
+      `],
+      environment: createSanitizedCodexEnvironment({
+        ...headers, DATABASE_URL: "excluded-database", OPENAI_API_KEY: "excluded-provider-key",
+      }),
+    });
+    try {
+      const notification = await transport.notifications()[Symbol.asyncIterator]().next();
+      expect(notification.value).toEqual({ method: "environment", params: headers });
+    } finally {
+      await transport.close();
+    }
+  });
+
+  it("does not inherit ambient OTLP credentials without an explicit launch environment", () => {
+    vi.stubEnv("OTEL_EXPORTER_OTLP_LOGS_HEADERS", "ambient-log-secret");
+    vi.stubEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "ambient-trace-secret");
+    try {
+      const environment = createSanitizedCodexEnvironment();
+      expect(environment.OTEL_EXPORTER_OTLP_LOGS_HEADERS).toBeUndefined();
+      expect(environment.OTEL_EXPORTER_OTLP_TRACES_HEADERS).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("passes only bounded controller-projected GitHub credentials", () => {
     expect(
       createSanitizedCodexEnvironment({

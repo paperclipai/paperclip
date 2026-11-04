@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, companies, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, createDb, heartbeatRunEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.js";
 import { getRunLogStore } from "../services/run-log-store.js";
@@ -22,6 +22,8 @@ describePostgres("heartbeat output through adapter dispatch and finalization", (
   beforeAll(async () => {
     temporary = await startEmbeddedPostgresTestDatabase("heartbeat-run-output-");
     db = createDb(temporary.connectionString);
+    await db.insert(authUsers).values({ id: "output-user", name: "Output fixture sponsor", email: "output-sponsor@example.test",
+      createdAt: new Date(), updatedAt: new Date() });
     heartbeat = heartbeatService(db);
     registerServerAdapter({
       type: adapterType, supportsLocalAgentJwt: false,
@@ -44,6 +46,8 @@ describePostgres("heartbeat output through adapter dispatch and finalization", (
   async function seed(execute: (input: AdapterExecutionContext) => Promise<void>) {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Output fixture", issuePrefix: `O${companyId.slice(0, 6)}` });
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "output-user",
+      membershipRole: "operator", status: "active" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Output writer", adapterType, status: "idle" });
     await db.insert(issues).values({ id: issueId, companyId, title: "Output fixture", status: "todo", assigneeAgentId: agentId, responsibleUserId: "output-user", issueNumber: 1 });
     executeByAgent.set(agentId, execute);

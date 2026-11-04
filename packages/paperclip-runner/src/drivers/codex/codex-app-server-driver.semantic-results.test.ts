@@ -46,6 +46,55 @@ import {
 import { RUNNERD_CANONICAL_ITEM } from "./codex-driver-values.js";
 
 describe("Codex app-server Codex driver", () => {
+  it.each([
+    ["monitor", false], ["monitor", true], ["same_agent", false], ["same_agent", true], ["same_agent", "explicit"],
+  ] as const)("uses saved %s continuation with nullable input=%s", async (kind, nullable) => {
+    const transport = new FakeCodexTransport();
+    const continuation = { kind, summary: "Continue from saved task state", idempotencyKey: "saved:task:receipt" };
+    const dynamicToolHandler = vi.fn().mockResolvedValue({ run: { id: "monitor-default" },
+      activeTask: { executionRunId: "monitor-default" }, completionContinuation: continuation });
+    const feedback = vi.fn().mockResolvedValue("Monitor wait accepted.");
+    const session = await makeDriver([transport], { dynamicToolHandler, completionFeedback: feedback }).openSession({
+      runId: "monitor-default", normalizedSessionId: "monitor-default", workingDirectory: WORKSPACE,
+    });
+    try {
+      await session.startTurn({ message: { role: "user", text: "Check the published PR later." } });
+      const report = { ...structuredClone(result), reportedWorkDisposition: "yielded", ...(nullable === "explicit" ? { continuation } : nullable ? { continuation: null } : {}) };
+      const response = await transport.invoke({ id: "finish-monitor", method: "item/tool/call", params: {
+        threadId: "thread-1", turnId: "turn-1", callId: "finish-monitor", tool: "paperclip_finish", arguments: report,
+      } });
+      expect(response).toMatchObject({ success: true });
+      expect(dynamicToolHandler).toHaveBeenCalledExactlyOnceWith({ tool: "get_task_context", callId: "finish-monitor:continuation",
+        threadId: "thread-1", turnId: "turn-1", arguments: {} });
+      expect(feedback).toHaveBeenCalledExactlyOnceWith({ ...report, continuation });
+      expect((await session.snapshot()).semanticResult?.result).toEqual({ ...report, continuation });
+    } finally { await session.close(); }
+  });
+
+  it.each([
+    { run: { id: "foreign" }, activeTask: { executionRunId: "saved-default" } },
+    { run: { id: "saved-default" }, activeTask: { executionRunId: "foreign" } },
+    { run: { id: "saved-default" }, activeTask: {} },
+  ])("rejects saved continuation without current run ownership %j", async context => {
+    const transport = new FakeCodexTransport();
+    const dynamicToolHandler = vi.fn().mockResolvedValue({ ...context,
+      completionContinuation: { kind: "same_agent", summary: "Continue checkout", idempotencyKey: "repository:receipt" } });
+    const feedback = vi.fn();
+    const session = await makeDriver([transport], { dynamicToolHandler, completionFeedback: feedback }).openSession({
+      runId: "saved-default", normalizedSessionId: "saved-default", workingDirectory: WORKSPACE,
+    });
+    try {
+      await session.startTurn({ message: { role: "user", text: "Continue the repository work." } });
+      const response = await transport.invoke({ id: "finish-saved", method: "item/tool/call", params: {
+        threadId: "thread-1", turnId: "turn-1", callId: "finish-saved", tool: "paperclip_finish",
+        arguments: { ...structuredClone(result), reportedWorkDisposition: "yielded" },
+      } });
+      expect(response).toMatchObject({ success: false });
+      expect(feedback).not.toHaveBeenCalled();
+      expect((await session.snapshot()).semanticResult).toBeNull();
+    } finally { await session.close(); }
+  });
+
   it("returns current approval feedback and permits correcting a rejected completion report", async () => {
     const transport = new FakeCodexTransport();
     const feedback = vi.fn()

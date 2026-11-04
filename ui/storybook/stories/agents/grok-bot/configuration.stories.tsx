@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import type { AgentDetail, GrokConnection } from "@paperclipai/shared";
 import { ConfigurationTab } from "@/pages/AgentDetail";
 import { storybookAgents } from "../../../fixtures/paperclipData";
@@ -36,6 +36,8 @@ function Configuration({ disconnected = false }: { disconnected?: boolean }) {
     const fixture: typeof fetch = async (input, init) => {
       const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url, window.location.origin);
       if (url.pathname === `/api/companies/${agent.companyId}/agents/${agent.id}/grok-binding`) {
+        if (disconnected && init?.method === "POST") return Response.json({ bindingId,
+          pairingCode: "synthetic-reconnect-code", expiresAt: new Date(Date.now() + 900000).toISOString() });
         if ((init?.method ?? "GET") !== "GET") return Response.json({ error: "This preview does not authorize connections." }, { status: 405 });
         return Response.json(disconnected ? { ...connection, binding: null } : connection);
       }
@@ -71,6 +73,12 @@ export const ConnectedBot: Story = { play: async ({ canvasElement }) => {
   await expect(page.queryByText("AI connection", { exact: true })).not.toBeInTheDocument();
 } };
 export const DisconnectedBot: Story = { args: { disconnected: true }, play: async ({ canvasElement }) => {
-  await expect(await within(canvasElement).findByRole("button", { name: "Reconnect agent access" })).toBeVisible();
+  const page = within(canvasElement);
+  const reconnect = await page.findByRole("button", { name: "Reconnect agent access" });
+  await waitFor(() => expect(reconnect).toBeEnabled());
+  await userEvent.click(reconnect);
+  await expect(await page.findByRole("button", { name: "Copy pairing code" })).toBeVisible();
+  await expect(page.getByLabelText("One-use pairing code")).toHaveAttribute("type", "password");
+  await expect(page.queryByText("synthetic-reconnect-code")).not.toBeInTheDocument();
 } };
 export const Mobile: Story = { ...ConnectedBot, globals: { viewport: { value: "mobile1", isRotated: false } } };
