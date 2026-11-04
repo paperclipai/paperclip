@@ -249,6 +249,17 @@ version. The receipt identifies the actual editor surface. The original case
 clock, query, and one-human/one-native limits remain unchanged. Older failed
 attempts are retained; component controls do not establish a native pass.
 
+### Team install conflict recovery
+
+`teams.install-team` v2 accepts either an honestly reported missing required
+skill or a supported catalog recovery that preserves the original local skill
+and agent. Recovery requires the accepted catalog key and source hash, exact
+current immutable-version bytes, and that key assigned to the intended imported
+members. It does not accept merely installing an unattached skill. The original
+repeat query, resource identity reconciliation, final rendered-link inspection,
+two-human/two-native limits, and case clock remain unchanged. Failed earlier
+attempts remain failed; this correction does not establish a native pass.
+
 ### Six prerequisite probes are not completed journeys
 
 The following six definitions retain explicit coverage gaps and must not be
