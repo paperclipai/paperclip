@@ -14,6 +14,7 @@ import { resolveNativeControllerRecovery } from "./native-controller-recovery.js
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
 import { canonicalProviderPackJson } from "./remote-provider-pack-verification.js";
 import { nativeSha256 } from "./canonical.js";
+import { createLocalEncryptedCipher } from "../../secrets/local-encrypted-provider.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
 import { legacyNativeControllerArchive } from "./native-controller-archive.js";
@@ -155,6 +156,11 @@ describeEmbeddedPostgres.each(["import", "archive", "success", "batch"])("offlin
       await f.db.delete(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
       expect(await migrateNativeControllers(f.db, { writersStopped: true, signal: AbortSignal.timeout(30_000) }))
         .toMatchObject({ imported: 1 });
+      const rows = await f.db.select().from(nativeRunnerCheckpoints).where(eq(nativeRunnerCheckpoints.runId, f.runId));
+      const cipher = createLocalEncryptedCipher("read");
+      for (const row of rows) expect(JSON.parse(cipher.decrypt(row.material))).toEqual({
+        ...binding, part: row.part, contents: checkpoint.records.get(row.part),
+      });
       const restored = await loadNativeRunnerCheckpoint(f.db, binding);
       expect(restored?.records).toEqual(checkpoint.records);
       expect(await readFile(f.file, "utf8")).toBe(f.source);
