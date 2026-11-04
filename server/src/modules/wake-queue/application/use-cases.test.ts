@@ -246,6 +246,22 @@ describe("releaseIssueExecution", () => {
     expect(transaction.cancelDeferredWake).not.toHaveBeenCalled();
   });
 
+  it.each([false, true])("plans recovery for a stopped reviewer only outside a reassignment handoff (handoffDrainOnly=%s)", async (handoffDrainOnly) => {
+    const run: RunSnapshot = { ...RUN, status: "cancelled", errorCode: "issue_reassigned", contextSnapshot: { wakeReason: "execution_review_requested" } };
+    const issue: IssueSnapshot = { ...ISSUE, status: "in_review", assigneeAgentId: "new-agent",
+      executionState: { status: "pending", currentParticipant: { type: "agent", agentId: RUN.agentId } } };
+    const transaction = createFakeTransaction();
+    const host = createFakeHost();
+    const release = createReleaseIssueExecution({
+      issueLock: { withIssueExecutionLock: vi.fn(async (_input, fn) =>
+        ({ ...(await fn({ primaryIssue: issue, run, handoffDrainOnly }, { host, transaction })), run })) },
+      recovery: createFakeRecovery(),
+    });
+    const result = await release({ companyId: RUN.companyId, runId: RUN.id, now: new Date() });
+    expect(result.outcome.kind).toBe(handoffDrainOnly ? "released" : "queued_review_participant_recovery");
+    expect(transaction.queueReviewParticipantRecoveryRun).toHaveBeenCalledTimes(handoffDrainOnly ? 0 : 1);
+  });
+
   it.each(["done", "in_progress"])("does not promote a former assignee's saved instruction after handoff (%s)", async (status) => {
     const queuedCommentIds = ["saved-user-direction"];
     const queue = [wakeCandidate({

@@ -691,6 +691,46 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
     expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId))).toHaveLength(0);
   });
 
+  it.each([true, false])("hands the lock to the new assignee's deferred wake after a legacy reassignment stop (confirmed=%s)", async (confirmed) => {
+    const companyId = await seedCompany();
+    const formerOwnerId = await seedAgent({ companyId, name: "Implementer" });
+    const newOwnerId = await seedAgent({ companyId, name: "Lead" });
+    const issueId = await seedIssue({ companyId, assigneeAgentId: newOwnerId, status: "todo" });
+    const runId = await seedRun({
+      companyId, agentId: formerOwnerId, status: "cancelled", errorCode: "issue_reassigned", contextSnapshot: { issueId },
+    });
+    await db.update(heartbeatRuns).set({ runtimeMode: "legacy", resultJson: {
+      executionCancellation: { state: "acknowledged" },
+      conversationContinuation: "continue_conversation_v1",
+      ...(confirmed ? { reassignmentStopConfirmed: true, issueMutationStopId: randomUUID() } : {}),
+    } }).where(eq(heartbeatRuns.id, runId));
+    await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
+    const formerOwnerWakeId = await seedDeferredWake({ companyId, agentId: formerOwnerId, issueId });
+    const newOwnerWakeId = await seedDeferredWake({ companyId, agentId: newOwnerId, issueId, requestedByActorType: "agent" });
+    await db.update(agentWakeupRequests).set({ source: "assignment", reason: "issue_assigned" })
+      .where(eq(agentWakeupRequests.id, newOwnerWakeId));
+    const release = createReleaseIssueExecution({
+      issueLock: createPostgresWakeQueueAdapter(db, stubDeps),
+      recovery: {
+        escalateStrandedAssignedIssue: async () => { throw new Error("unexpected escalation"); },
+        escalateStrandedRecoveryIssueInPlace: async () => { throw new Error("unexpected escalation"); },
+      },
+    });
+    const result = await release({ companyId, runId, now: new Date() });
+    const wake = async (id: string) => (await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, id)))[0];
+    const newRuns = (await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).filter((r) => r.id !== runId);
+    expect((await wake(formerOwnerWakeId)).status).toBe("deferred_issue_execution");
+    if (confirmed) {
+      expect(result.outcome.kind).toBe("promoted");
+      expect(newRuns.map((r) => r.agentId)).toEqual([newOwnerId]);
+      expect(await wake(newOwnerWakeId)).toMatchObject({ status: "queued", runId: newRuns[0].id });
+    } else {
+      expect(result).toMatchObject({ outcome: { kind: "released" }, postCommitEffects: [] });
+      expect((await wake(newOwnerWakeId)).status).toBe("deferred_issue_execution");
+      expect(newRuns).toHaveLength(0);
+    }
+  });
+
   it.each(["in_progress", "blocked"])("preserves recovery ownership and queued messages when a native task fails from %s", async (status) => {
     const companyId = await seedCompany();
     const agentId = await seedAgent({ companyId });

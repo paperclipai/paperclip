@@ -14,6 +14,7 @@ export type { InvokableAgentSnapshot, IssueSnapshot, ReleaseRecoveryBlockedNotic
 export type LockedIssueExecution = {
   /** Plan bounded recovery without draining messages while the finishing owner cleans up. */
   recoveryOnly?: boolean;
+  handoffDrainOnly?: boolean;
   primaryIssue: IssueSnapshot;
   run: RunSnapshot;
 };
