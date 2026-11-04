@@ -94,6 +94,39 @@ describe("pending agent roster display", () => {
     expect(container.querySelector('[data-testid="bulk-editor"]')).toBeNull();
   });
 
+  describe.each(["success", "failure"] as const)("selection changes during a %s read", outcome => {
+    it.each(["Clear selection", "Select Atlas", "Select all visible editable agents"])("discards a pending edit after %s", async label => {
+      const display = renderEditable();
+      let finish!: (value: Agent) => void, reject!: (error: Error) => void;
+      api.get.mockReturnValue(new Promise<Agent>((resolve, fail) => { finish = resolve; reject = fail; }));
+      await act(async () => editButton().click());
+      expect(api.get).toHaveBeenCalledTimes(1);
+      await act(async () => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!.click());
+      await act(async () => {
+        if (outcome === "success") finish(display);
+        else reject(new TypeError("Failed to fetch"));
+      });
+      expect(container.querySelector('[data-testid="bulk-editor"]')).toBeNull();
+      expect(container.querySelector('[role="alert"]')).toBeNull();
+      expect(container.textContent).not.toContain("Loading current agent settings");
+    });
+  });
+
+  it("retires a pending edit even when the same agent is selected again before the read finishes", async () => {
+    const display = renderEditable();
+    let finish!: (value: Agent) => void;
+    api.get.mockReturnValueOnce(new Promise<Agent>(resolve => { finish = resolve; })).mockResolvedValue(display);
+    await act(async () => editButton().click());
+    const checkbox = container.querySelector<HTMLButtonElement>('[aria-label="Select Atlas"]')!;
+    await act(async () => checkbox.click());
+    await act(async () => checkbox.click());
+    await act(async () => finish(display));
+    expect(container.querySelector('[data-testid="bulk-editor"]')).toBeNull();
+    await act(async () => editButton().click());
+    await vi.waitFor(() => expect(container.querySelector('[data-testid="bulk-editor"]')).not.toBeNull());
+    expect(api.get).toHaveBeenCalledTimes(2);
+  });
+
   it("retains the pending harness label while keeping the placeholder unavailable for bulk editing", () => {
     const row = render({ setupAdapterPending: true,
       setupAdapterChoice: { adapterType: "paperclip_runner", runnerProvider: "antigravity", runner: "auto" } });
