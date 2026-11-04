@@ -4,6 +4,7 @@ import { createPaperclipCloudConnector, paperclipCloudConnectorConfigFromEnv } f
 import type { CredentialMutationLeaseGuard } from "../../chat-credential-mutation-lease.js";
 import type { createChatCredentials } from "../credentials.js";
 import type { InternalSetupState } from "../runtime-types.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../delivery-work-notifications.js";
 import { notifyChatEndpointConfiguration } from "../configuration-work-notifications.js";
 
 /** Ordinary configured-credential producer. No periodic enrollment scan, provider
@@ -55,6 +56,7 @@ export function createSlackCloudEnrollment(db: Db, options: {
     await db.transaction(async tx => {
       await lease.assertOwned(tx);
       await notifyChatEndpointConfiguration(tx, endpoint);
+      await notifyDeliveryWork(tx, DELIVERY_QUEUES.connectionEvents);
       const updated = await tx.update(chatEndpoints).set({ setup: sql`jsonb_set(${chatEndpoints.setup}, '{slackCloudEvents}', ${JSON.stringify(enrolled)}::jsonb)`, updatedAt: new Date() })
         .where(and(eq(chatEndpoints.id, endpointId), eq(chatEndpoints.companyId, endpoint.companyId),
           sql`coalesce((${chatEndpoints.setup}->>'runtimeGeneration')::integer,0)=${generation}`)).returning({ id: chatEndpoints.id });
