@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, chatConversations, chatEndpoints, companies, createDb, type Db, environmentLeases, environments, executionWorkspaces, heartbeatRuns, issueComments, issues, issueRecoveryActions, nativeRunFinalizations, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { requestTaskRetry } from "./task-retry.js";
+import { HttpError } from "../errors.js";
+import { NativeChatReviewPresentationContentionError } from "./native-runtime/native-chat-review-presentation.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
@@ -441,4 +443,73 @@ describe("durable task Retry admission", () => {
       .toMatchObject({ status: "skipped", error: "task_retry_superseded" });
   });
 
+  async function seedChatTask() {
+    const input = await seed();
+    const [issue] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    const [application] = await db.insert(toolApplications).values({ companyId: input.companyId, name: "Slack", type: "chat" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: input.companyId, applicationId: application.id,
+      name: "Slack", uid: randomUUID(), transport: "chat_sdk", connectionPurpose: "channel" }).returning();
+    const [endpoint] = await db.insert(chatEndpoints).values({ companyId: input.companyId, connectionId: connection.id,
+      provider: "slack", publicId: randomUUID(), assignedAgentId: issue.assigneeAgentId!, status: "active" }).returning();
+    await db.insert(chatConversations).values({ companyId: input.companyId, endpointId: endpoint.id, issueId: input.issueId,
+      externalConversationId: "channel", externalThreadId: randomUUID(), externalLabel: "#retry", state: "waiting" });
+    return input;
+  }
+  const chatIdentityLock = (companyId: string, principalId: string) =>
+    sql`pg_try_advisory_xact_lock(hashtextextended(${`chat-identity:${companyId}:${principalId}`}, 0))`;
+
+  it("waits out brief chat authorization contention without a second request", async () => {
+    const input = await seedChatTask();
+    const principalId = randomUUID(), actionId = randomUUID();
+    let calls = 0, locked!: () => void, release!: () => void;
+    const held = new Promise<void>(resolve => { locked = resolve; });
+    const mayRelease = new Promise<void>(resolve => { release = resolve; });
+    // Another chat transaction owns this principal's authorization lock.
+    const holder = db.transaction(async tx => {
+      expect((await tx.execute<{ locked: boolean }>(sql`select ${chatIdentityLock(input.companyId, principalId)} as locked`))[0].locked).toBe(true);
+      locked(); await mayRelease;
+    });
+    await held;
+    const prepareChatRetry = async (tx: Db) => {
+      calls += 1;
+      if (calls === 2) release();
+      // Mirror the production authorization check, including its rollback.
+      const [row] = await tx.execute<{ locked: boolean }>(sql`select ${chatIdentityLock(input.companyId, principalId)} as locked`);
+      if (!row?.locked) throw new NativeChatReviewPresentationContentionError();
+      return { actionId };
+    };
+    try {
+      const receipt = await requestTaskRetry({ ...input, prepareChatRetry });
+      expect(receipt).toMatchObject({ accepted: true, chatActionId: actionId });
+      expect(calls).toBeGreaterThan(1);
+      const rows = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: receipt.requestId, status: "deferred_issue_execution",
+        payload: { taskRetry: { chatActionId: actionId } } });
+      expect((await requestTaskRetry({ ...input, prepareChatRetry })).requestId).toBe(receipt.requestId);
+    } finally { release(); await holder; }
+  });
+
+  it("returns a retryable conflict when chat authorization stays busy", async () => {
+    const input = await seedChatTask();
+    let calls = 0;
+    const failure = await requestTaskRetry({ ...input, prepareChatRetry: async () => {
+      calls += 1;
+      throw new NativeChatReviewPresentationContentionError();
+    } }).catch(error => error);
+    expect(failure).toBeInstanceOf(HttpError);
+    expect(failure).toMatchObject({ status: 409, details: { code: "task_retry_busy", retryable: true } });
+    expect(calls).toBe(10);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, input.companyId))).toHaveLength(0);
+  });
+
+  it("does not retry an authorization denial", async () => {
+    const input = await seedChatTask();
+    let calls = 0;
+    await expect(requestTaskRetry({ ...input, prepareChatRetry: async () => {
+      calls += 1;
+      throw new HttpError(403, "denied");
+    } })).rejects.toMatchObject({ status: 403 });
+    expect(calls).toBe(1);
+  });
 });
