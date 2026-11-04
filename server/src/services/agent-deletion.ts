@@ -1,8 +1,9 @@
-import { and, eq, or, sql } from "drizzle-orm";
-import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog,
+import { and, eq, inArray, or, sql } from "drizzle-orm";
+import { agents, agentApiKeys, agentRuntimeState, agentTaskSessions, agentWakeupRequests, activityLog, approvals,
   budgetIncidents, budgetPolicies, budgetReservations, heartbeatRunEvents, heartbeatRuns, issueExecutionDecisions, issues, issueComments,
   principalPermissionGrants, type Db } from "@paperclipai/db";
 import { conflict } from "../errors.js";
+import { resolvableApprovalStatuses } from "../lib/approval-records.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 
 export async function deleteAgentDependencies(tx: Db, companyId: string, id: string) {
@@ -41,6 +42,27 @@ export async function deleteAgentDependencies(tx: Db, companyId: string, id: str
   // Budget policies and incidents carry the agent id as an unkeyed scope
   // reference; leaving them behind orphans the rows and breaks the budget
   // overview for the whole company. See #3060.
+  const incidentApprovals = await tx
+    .select({ approvalId: budgetIncidents.approvalId })
+    .from(budgetIncidents)
+    .where(and(
+      eq(budgetIncidents.companyId, companyId),
+      eq(budgetIncidents.scopeType, "agent"),
+      eq(budgetIncidents.scopeId, id),
+    ));
+  const approvalIds = incidentApprovals
+    .map((row) => row.approvalId)
+    .filter((value): value is string => Boolean(value));
+  if (approvalIds.length > 0) {
+    const now = new Date();
+    await tx
+      .update(approvals)
+      .set({ status: "cancelled", decidedAt: now, updatedAt: now })
+      .where(and(
+        inArray(approvals.id, approvalIds),
+        inArray(approvals.status, resolvableApprovalStatuses),
+      ));
+  }
   await tx.delete(budgetIncidents).where(and(
     eq(budgetIncidents.companyId, companyId),
     eq(budgetIncidents.scopeType, "agent"),

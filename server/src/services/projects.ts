@@ -6,6 +6,7 @@ import {
   projectGoals,
   goals,
   issues,
+  approvals,
   budgetIncidents,
   budgetPolicies,
   pluginManagedResources,
@@ -32,6 +33,7 @@ import {
   type PluginManagedProjectResolution,
 } from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
+import { resolvableApprovalStatuses } from "../lib/approval-records.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
@@ -1065,25 +1067,49 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       // Budget rows reference the project only by scope id; remove them
       // with the project so they cannot orphan and break the budget
       // overview. See #3060.
-      await db.delete(budgetIncidents).where(and(
-        eq(budgetIncidents.companyId, existing.companyId),
-        eq(budgetIncidents.scopeType, "project"),
-        eq(budgetIncidents.scopeId, id),
-      ));
-      await db.delete(budgetPolicies).where(and(
-        eq(budgetPolicies.companyId, existing.companyId),
-        eq(budgetPolicies.scopeType, "project"),
-        eq(budgetPolicies.scopeId, id),
-      ));
-      return db
-        .delete(projects)
-        .where(eq(projects.id, id))
-        .returning()
-        .then((rows) => {
-          const row = rows[0] ?? null;
-          if (!row) return null;
-          return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
-        });
+      return db.transaction(async (transaction) => {
+        const db = transaction as unknown as Db;
+        const incidentApprovals = await db
+          .select({ approvalId: budgetIncidents.approvalId })
+          .from(budgetIncidents)
+          .where(and(
+            eq(budgetIncidents.companyId, existing.companyId),
+            eq(budgetIncidents.scopeType, "project"),
+            eq(budgetIncidents.scopeId, id),
+          ));
+        const approvalIds = incidentApprovals
+          .map((row) => row.approvalId)
+          .filter((value): value is string => Boolean(value));
+        if (approvalIds.length > 0) {
+          const now = new Date();
+          await db
+            .update(approvals)
+            .set({ status: "cancelled", decidedAt: now, updatedAt: now })
+            .where(and(
+              inArray(approvals.id, approvalIds),
+              inArray(approvals.status, resolvableApprovalStatuses),
+            ));
+        }
+        await db.delete(budgetIncidents).where(and(
+          eq(budgetIncidents.companyId, existing.companyId),
+          eq(budgetIncidents.scopeType, "project"),
+          eq(budgetIncidents.scopeId, id),
+        ));
+        await db.delete(budgetPolicies).where(and(
+          eq(budgetPolicies.companyId, existing.companyId),
+          eq(budgetPolicies.scopeType, "project"),
+          eq(budgetPolicies.scopeId, id),
+        ));
+        return db
+          .delete(projects)
+          .where(eq(projects.id, id))
+          .returning()
+          .then((rows) => {
+            const row = rows[0] ?? null;
+            if (!row) return null;
+            return { ...row, urlKey: deriveProjectUrlKey(row.name, row.id) };
+          });
+      });
     },
 
     listWorkspaces: async (projectId: string): Promise<ProjectWorkspace[]> => {

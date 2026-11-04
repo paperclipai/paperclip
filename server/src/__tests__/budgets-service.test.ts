@@ -9,9 +9,13 @@ import {
   companies,
   costEvents,
   createDb,
+  issues,
   projects,
+  type Db,
 } from "@paperclipai/db";
 import { budgetService } from "../services/budgets.ts";
+import { deleteAgentDependencies } from "../services/agent-deletion.ts";
+import { projectService } from "../services/projects.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -39,6 +43,7 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issues);
     await db.delete(budgetIncidents);
     await db.delete(approvals);
     await db.delete(budgetPolicies);
@@ -434,5 +439,136 @@ describeEmbeddedPostgres("budgetService release gate enforcement", () => {
     const overview = await service.overview(companyId);
     expect(overview.activeIncidents).toHaveLength(1);
     expect(overview.activeIncidents[0]).toMatchObject({ scopeId: orphanAgentId, scopeName: "agent" });
+  });
+
+  it("project removal keeps budget rows when the project delete is rejected", async () => {
+    const { companyId, projectId } = await createBudgetFixture();
+    const [policy] = await db
+      .insert(budgetPolicies)
+      .values({
+        companyId,
+        scopeType: "project",
+        scopeId: projectId,
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amount: 100,
+        isActive: true,
+      })
+      .returning();
+    await db.insert(budgetIncidents).values({
+      companyId,
+      policyId: policy!.id,
+      scopeType: "project",
+      scopeId: projectId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      windowStart: new Date(),
+      windowEnd: new Date(),
+      thresholdType: "hard",
+      amountLimit: 100,
+      amountObserved: 150,
+      status: "open",
+    });
+    await db.insert(issues).values({ companyId, projectId, title: "Blocking issue" });
+    await expect(projectService(db).remove(projectId)).rejects.toThrow();
+    expect(await db.select().from(budgetPolicies)).toHaveLength(1);
+    expect(await db.select().from(budgetIncidents)).toHaveLength(1);
+    expect(await db.select().from(projects)).toHaveLength(1);
+  });
+
+  it("agent cleanup cancels pending approvals linked to its budget incidents", async () => {
+    const { companyId, agentId } = await createBudgetFixture();
+    const [policy] = await db
+      .insert(budgetPolicies)
+      .values({
+        companyId,
+        scopeType: "agent",
+        scopeId: agentId,
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amount: 100,
+        isActive: true,
+      })
+      .returning();
+    const [approval] = await db
+      .insert(approvals)
+      .values({
+        companyId,
+        type: "budget_override_required",
+        requestedByUserId: null,
+        requestedByAgentId: null,
+        status: "pending",
+        payload: {},
+      })
+      .returning();
+    await db.insert(budgetIncidents).values({
+      companyId,
+      policyId: policy!.id,
+      scopeType: "agent",
+      scopeId: agentId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      windowStart: new Date(),
+      windowEnd: new Date(),
+      thresholdType: "hard",
+      amountLimit: 100,
+      amountObserved: 150,
+      status: "open",
+      approvalId: approval!.id,
+    });
+    await db.transaction(async (transaction) => {
+      await deleteAgentDependencies(transaction as unknown as Db, companyId, agentId);
+    });
+    const [updated] = await db.select().from(approvals).where(eq(approvals.id, approval!.id));
+    expect(updated!.status).toBe("cancelled");
+    expect(await db.select().from(budgetIncidents)).toHaveLength(0);
+    expect(await db.select().from(budgetPolicies)).toHaveLength(0);
+  });
+
+  it("project removal cancels pending approvals linked to its budget incidents", async () => {
+    const { companyId, projectId } = await createBudgetFixture();
+    const [policy] = await db
+      .insert(budgetPolicies)
+      .values({
+        companyId,
+        scopeType: "project",
+        scopeId: projectId,
+        metric: "billed_cents",
+        windowKind: "calendar_month_utc",
+        amount: 100,
+        isActive: true,
+      })
+      .returning();
+    const [approval] = await db
+      .insert(approvals)
+      .values({
+        companyId,
+        type: "budget_override_required",
+        requestedByUserId: null,
+        requestedByAgentId: null,
+        status: "pending",
+        payload: {},
+      })
+      .returning();
+    await db.insert(budgetIncidents).values({
+      companyId,
+      policyId: policy!.id,
+      scopeType: "project",
+      scopeId: projectId,
+      metric: "billed_cents",
+      windowKind: "calendar_month_utc",
+      windowStart: new Date(),
+      windowEnd: new Date(),
+      thresholdType: "hard",
+      amountLimit: 100,
+      amountObserved: 150,
+      status: "open",
+      approvalId: approval!.id,
+    });
+    const removed = await projectService(db).remove(projectId);
+    expect(removed).not.toBeNull();
+    const [updated] = await db.select().from(approvals).where(eq(approvals.id, approval!.id));
+    expect(updated!.status).toBe("cancelled");
+    expect(await db.select().from(budgetPolicies)).toHaveLength(0);
   });
 });
