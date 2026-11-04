@@ -5221,6 +5221,10 @@ impl CommandExecutor for CodexCommandExecutor {
             || state.active_provider_turn_id.is_some()
             || state.ambiguous_turn_start_pending
             || state.receipt_limit_interrupt_pending
+            || state
+                .goal
+                .as_ref()
+                .is_some_and(|goal| goal.status == "active")
             || state.tool_bridge.pending_calls().next().is_some()
             || !state.pending_events.is_empty()
             || !state.queued_events.is_empty()

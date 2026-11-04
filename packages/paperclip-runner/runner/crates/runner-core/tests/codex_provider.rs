@@ -246,6 +246,18 @@ fn hosted_park_proof_requires_the_surviving_settled_native_codex_process() {
     }
     assert_eq!(call_count(&directory, "process-start"), 1);
     assert_eq!(call_count(&directory, "turn/start"), 1);
+    executor
+        .execute(&command(
+            "goal",
+            4,
+            "session.goal.set",
+            json!({"objective":"Continue autonomous work.","status":"active"}),
+        ))
+        .unwrap();
+    for _ in 0..8 {
+        poll_and_ack(&mut executor).unwrap();
+    }
+    assert!(!executor.host_park_ready().unwrap());
     executor.shutdown().unwrap();
     assert!(!executor.host_park_ready().unwrap());
     assert_eq!(call_count(&directory, "process-start"), 1);
