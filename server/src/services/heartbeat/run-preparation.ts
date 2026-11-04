@@ -56,6 +56,7 @@ import {
   issueComments,
   issuePlanDecompositions,
   issueRecoveryActions,
+  issueThreadInteractions,
   issues,
   routineRevisions,
   routineRuns,
@@ -2231,6 +2232,96 @@ export async function readHeartbeatWakeComments(db: Db, companyId: string, issue
     );
 }
 
+// Answer routes for interaction kinds that can be addressed to an agent.
+const ADDRESSED_INTERACTION_ANSWER_ROUTES: Readonly<Record<string, readonly string[]>> = {
+  ask_user_questions: ["respond"],
+  request_confirmation: ["accept", "reject"],
+  request_checkbox_confirmation: ["accept", "reject"],
+  request_item_verdicts: ["verdicts"],
+  suggest_tasks: ["accept", "reject"],
+};
+const MAX_ADDRESSED_INTERACTION_PROMPT_CHARS = 1_000;
+
+export type AddressedInteractionWake = {
+  id: string;
+  kind: string;
+  prompt: string | null;
+  promptTruncated: boolean;
+  readPath: string;
+  answerPaths: string[];
+};
+
+function addressedInteractionPrompt(row: {
+  title: string | null;
+  summary: string | null;
+  payload: unknown;
+}): string | null {
+  const payload = parseObject(row.payload);
+  const direct = readNonEmptyString(row.title) ?? readNonEmptyString(payload.prompt) ?? readNonEmptyString(row.summary);
+  if (direct) return direct;
+  const questions = Array.isArray(payload.questions) ? payload.questions : [];
+  const prompts = questions
+    .map((question) => readNonEmptyString(parseObject(question).prompt))
+    .filter((prompt): prompt is string => prompt !== null);
+  return prompts.length > 0 ? prompts.join(" / ") : null;
+}
+
+/**
+ * When an agent is woken because a pending interaction on another agent's issue
+ * is addressed to it, describe that interaction and its answer route. The wake
+ * must not read as an assignment: the addressee would check the issue out, get
+ * 409 from the owner's checkout, and never answer. Returns null for every other
+ * wake, including when the agent owns the issue or the interaction is resolved.
+ */
+export async function readAddressedInteractionWake(input: {
+  db: Db;
+  companyId: string;
+  agentId?: string | null;
+  issueId: string | null;
+  contextSnapshot: Record<string, unknown>;
+}): Promise<AddressedInteractionWake | null> {
+  if (readNonEmptyString(input.contextSnapshot.wakeReason) !== "interaction_pending") return null;
+  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
+  if (!input.agentId || !input.issueId || !interactionId || !isUuidLike(interactionId)) return null;
+  const row = await input.db
+    .select({
+      id: issueThreadInteractions.id,
+      kind: issueThreadInteractions.kind,
+      title: issueThreadInteractions.title,
+      summary: issueThreadInteractions.summary,
+      payload: issueThreadInteractions.payload,
+      assigneeAgentId: issues.assigneeAgentId,
+    })
+    .from(issueThreadInteractions)
+    .innerJoin(
+      issues,
+      and(eq(issues.id, issueThreadInteractions.issueId), eq(issues.companyId, input.companyId)),
+    )
+    .where(
+      and(
+        eq(issueThreadInteractions.id, interactionId),
+        eq(issueThreadInteractions.companyId, input.companyId),
+        eq(issueThreadInteractions.issueId, input.issueId),
+        eq(issueThreadInteractions.addresseeAgentId, input.agentId),
+        eq(issueThreadInteractions.status, "pending"),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  if (!row || row.assigneeAgentId === input.agentId) return null;
+  const routes = ADDRESSED_INTERACTION_ANSWER_ROUTES[row.kind];
+  if (!routes) return null;
+  const prompt = addressedInteractionPrompt(row);
+  const base = `/api/issues/${input.issueId}/interactions`;
+  return {
+    id: row.id,
+    kind: row.kind,
+    prompt: prompt ? prompt.slice(0, MAX_ADDRESSED_INTERACTION_PROMPT_CHARS) : null,
+    promptTruncated: prompt !== null && prompt.length > MAX_ADDRESSED_INTERACTION_PROMPT_CHARS,
+    readPath: base,
+    answerPaths: routes.map((route) => `${base}/${row.id}/${route}`),
+  };
+}
+
 export async function buildPaperclipWakePayload(input: {
   db: Db;
   companyId: string;
@@ -2625,8 +2716,16 @@ export async function buildPaperclipWakePayload(input: {
           notice: externalAttachmentOmissionNotice(omission),
         }))
     : [];
+  const addressedInteraction = await readAddressedInteractionWake({
+    db: input.db,
+    companyId: input.companyId,
+    agentId: input.agentId,
+    issueId,
+    contextSnapshot: input.contextSnapshot,
+  });
   const payload = {
     reason: readNonEmptyString(input.contextSnapshot.wakeReason),
+    addressedInteraction,
     executionContinuation: input.contextSnapshot.executionContinuation ?? null,
     chatCompletionUpdates: input.contextSnapshot.chatCompletionUpdates ?? null,
     attachmentOmissions,

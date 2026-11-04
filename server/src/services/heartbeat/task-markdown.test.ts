@@ -63,6 +63,18 @@ describe("heartbeat task markdown rendering", () => {
     expect(buildPaperclipTaskMarkdown({ issue, nativeRunner: false, coordinatorWorkspace: true }))
       .not.toContain("Coordinator task proposals:");
   });
+  it("does not present another agent's issue as the addressee's assignment", () => {
+    const issue = { id: "issue-1", identifier: "PAP-18", title: "Build the core", description: "Ship it." };
+    const owner = buildPaperclipTaskMarkdown({ issue });
+    expect(owner?.endsWith("Use this task context as the current assignment.")).toBe(true);
+
+    const addressee = buildPaperclipTaskMarkdown({ issue, addressedInteraction: { id: "card-1" } });
+    expect(addressee).not.toContain("Use this task context as the current assignment.");
+    expect(addressee?.endsWith(
+      'This task belongs to another agent. Use this context only to answer the question card "card-1" addressed to you; it is not your assignment.',
+    )).toBe(true);
+  });
+
   it("returns null without a task or a nonempty wake comment", () => {
     expect(buildPaperclipTaskMarkdown({ issue: null })).toBeNull();
     expect(buildPaperclipTaskMarkdown({
