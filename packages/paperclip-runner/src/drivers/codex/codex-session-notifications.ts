@@ -424,6 +424,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "turn/started") {
+      if (ignoreRestoredTerminalReplay(state, notification.method, turnId)) return;
       const autonomousGoalTurn = state.currentGoal?.status === "active"
         && state.activeTurnId === null
         && !state.turnStartPending
@@ -477,6 +478,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "item/started") {
+      if (ignoreRestoredTerminalReplay(state, notification.method, turnId)) return;
       if (!state.notificationNamesActiveTurn(turnId, "item start")) return;
       const channel = channelForStartedItem(state, item);
       if (itemId) state.itemChannels.set(itemId, channel);
@@ -494,6 +496,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
     if (notification.method === "item/completed") {
+      if (ignoreRestoredTerminalReplay(state, notification.method, turnId)) return;
       if (!state.notificationNamesActiveTurn(turnId, "item completion")) return;
       if (!captureResultFromItem(state, item, turnId)) return;
       const channel = itemId
@@ -543,6 +546,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
     };
     const deltaKind = deltaKinds[notification.method];
     if (deltaKind !== undefined) {
+      if (ignoreRestoredTerminalReplay(state, notification.method, turnId)) return;
       if (!state.notificationNamesActiveTurn(turnId, "item update")) return;
       const methodChannel = channelForDelta(state, notification.method);
       const channel =
@@ -600,6 +604,26 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       return;
     }
   }
+
+// Resume can re-deliver committed history for a turn the checkpoint already
+// settled. Between turns the identity classifier sees no active turn, so the
+// replay would otherwise reach the live-turn guards and fail the session.
+function ignoreRestoredTerminalReplay(
+  state: CodexSessionState,
+  method: string,
+  turnId: string,
+): boolean {
+  if (!state.isRestoredTerminalReplay(turnId)) return false;
+  if (state.notificationIdentityDiagnostics < 32) {
+    state.notificationIdentityDiagnostics += 1;
+    state.emit("harness.diagnostic", {
+      code: "provider_notification_identity", method: method.slice(0, 128),
+      classification: "restored_terminal_replay",
+      expectedTurnId: state.activeTurnId, receivedTurnId: turnId.slice(0, 256),
+    });
+  }
+  return true;
+}
 
 function channelForStartedItem(
   state: CodexSessionState,
