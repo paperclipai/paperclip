@@ -222,6 +222,31 @@ export function trackConnectionInvoked(
   );
 }
 
+export function trackServerStarted(
+  client: TelemetryClient,
+  dims: {
+    os_platform: RawDimension<
+      | "aix"
+      | "android"
+      | "darwin"
+      | "freebsd"
+      | "haiku"
+      | "linux"
+      | "openbsd"
+      | "sunos"
+      | "win32"
+      | "cygwin"
+      | "netbsd"
+    >;
+  },
+): void {
+  client.track(
+    // @ts-expect-error -- proposed-telemetry(PAP-1677): measure which host operating systems run Paperclip servers (e.g. Windows vs Linux vs macOS); os_platform is the raw Node.js process.platform value
+    "server.started",
+    dims,
+  );
+}
+
 export function trackErrorHandlerCrash(
   client: TelemetryClient,
   dims: { errorCode: string },

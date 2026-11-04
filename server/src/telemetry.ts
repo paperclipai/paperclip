@@ -3,6 +3,7 @@ import {
   TelemetryClient,
   resolveTelemetryConfig,
   loadOrCreateState,
+  trackServerStarted,
 } from "@paperclipai/shared/telemetry";
 import { resolvePaperclipInstanceRoot } from "./home-paths.js";
 import { serverVersion } from "./version.js";
@@ -22,6 +23,7 @@ export function initTelemetry(fileConfig?: { enabled?: boolean }): TelemetryClie
     serverVersion,
   );
   client.startPeriodicFlush(60_000);
+  trackServerStarted(client, { os_platform: process.platform });
   return client;
 }
 
