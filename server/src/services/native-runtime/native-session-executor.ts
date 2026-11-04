@@ -239,7 +239,7 @@ import {
   RemoteRunnerRecoveryError, attachRemoteRunnerRecoveryDiagnostic, readRemoteRunnerRecoveryError, remoteRecoveryProbeReason,
 } from "./remote-runner-recovery-diagnostics.js";
 import { readRemoteRunnerRecoveryProbe, REMOTE_RUNNER_RECOVERY_PROBE_BUDGET_MS } from "./remote-runner-recovery-probe.js";
-import { inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, type RemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
+import { describeOwnFailedAttachment, inspectRemoteWarmSessionRecovery, isSettledRemoteWarmControlState, summarizePostTerminalEvents, type RemoteWarmSessionRecovery } from "./remote-warm-session-recovery.js";
 import { assertNativeWarmIngressRetirement, nativeWarmIngressAllocation, nativeWarmIngressIdentity, type NativeWarmIngressClaim, type NativeWarmIngressOwner } from "./native-warm-ingress-ownership.js";
 import { resolveNativeStagedAttachmentRecovery, type NativeStagedAttachmentRecovery } from "./native-staged-attachment-recovery.js";
 import { emitStartupReuse, environmentStartupReuse } from "@paperclipai/adapter-utils/startup-reuse";
@@ -2212,6 +2212,23 @@ function pluginColdCheckpointVerified(root: string, identity: RunnerdDurableIden
     assertColdCheckpointRunnerState(record(value.state), checkpoint.identity, checkpoint);
     return Object.entries(identity).every(([key, field]) => checkpoint.identity[key as keyof typeof checkpoint.identity] === field);
   } catch { return false; }
+}
+
+async function logPostTerminalEvents(root: string, onLog: ((stream: "stdout" | "stderr", chunk: string) => Promise<void> | void) | undefined) {
+  let summary: string | null = null;
+  try {
+    summary = summarizePostTerminalEvents(record(JSON.parse(readBoundedNativeFile(
+      resolve(root, "control-plane", "control-plane-state.json"), NATIVE_CONTROL_PLANE_STATE_MAX_BYTES,
+      "runner_durable_identity_too_large").toString("utf8"))));
+  } catch { /* Recovery reports an unreadable journal itself. */ }
+  if (summary) await onLog?.("stdout", `[paperclip-runner] The previous run recorded these events after it finished: ${summary}.\n`);
+}
+
+function readPluginRunnerReceiptRunId(root: string): unknown {
+  try {
+    return record(JSON.parse(readBoundedNativeFile(resolve(root, "plugin-runner-state.json"),
+      NATIVE_RUNNER_STATE_MAX_BYTES, "runner_state_too_large").toString("utf8"))).runId;
+  } catch { return null; }
 }
 
 function pluginRunnerdAuthorityLifecycle(
@@ -8783,6 +8800,14 @@ async function executePaperclipNativeSessionWithinScope(
       if (taskTarget.sandboxLeaseAcquisition?.outcome !== "resumed") {
         await recoverPluginRunnerCheckpoint(input, root);
       }
+    }
+    if (durableIdentityMatchesSession(identity, input.execution) && identity.runId !== input.execution.binding.runId) {
+      if (readPluginRunnerReceiptRunId(root) === input.execution.binding.runId) {
+        const [finalization] = await input.db.select({ recoveryHistory: nativeRunFinalizations.recoveryHistory })
+          .from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, input.execution.binding.runId));
+        throw new Error(describeOwnFailedAttachment(finalization?.recoveryHistory));
+      }
+      await logPostTerminalEvents(root, input.onLog);
     }
     if (durableIdentityMatchesSession(identity, input.execution) && identity.runId !== input.execution.binding.runId &&
         runnerdAuthorityLifecycleWithVerifiedBackup({ root, identity, execution: input.execution, allowVerifiedBackup: true }) !== "suspended" &&
