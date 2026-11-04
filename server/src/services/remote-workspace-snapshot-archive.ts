@@ -120,9 +120,28 @@ async function workspaceArchive(input: {
       if (state) fail("git_operation_in_progress: finish or abort the Git operation before saving the workspace");
     }
   };
+  const readStableFile = async (source: string, consume?: (bytes: Buffer) => Promise<void>) => {
+    check();
+    const original = await fs.lstat(source, { bigint: true });
+    const handle = await fs.open(source, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
+    try {
+      const before = await handle.stat({ bigint: true });
+      if (!before.isFile() || original.dev !== before.dev || original.ino !== before.ino || await fs.realpath(source) !== source) fail("changed");
+      const digest = crypto.createHash("sha256"); let size = 0;
+      for await (const bytes of handle.createReadStream({ autoClose: false, signal: input.signal })) {
+        check(); digest.update(bytes); size += bytes.length;
+        await consume?.(bytes);
+      }
+      const after = await handle.stat({ bigint: true }), current = await fs.lstat(source, { bigint: true });
+      if (size !== Number(before.size) || await fs.realpath(source) !== source
+        || ["dev", "ino", "size", "mode", "mtimeNs", "ctimeNs"].some(key => before[key as keyof typeof before] !== after[key as keyof typeof after]
+          || after[key as keyof typeof after] !== current[key as keyof typeof current])) fail("changed");
+      return { sha256: digest.digest("hex"), size, mode: Number(before.mode & 0o777n) };
+    } finally { await handle.close(); }
+  };
   const directories: string[] = [];
   const excludedPaths = new Set<string>();
-  const walk = async (root: string, copyTo?: string, skipGit = false) => {
+  const walk = async (root: string, skipGit = false) => {
     const entries: Entry[] = [];
     const visit = async (relative: string, parentIsRepository = false) => {
       const directory = relative ? path.join(root, relative) : root;
@@ -137,7 +156,7 @@ async function workspaceArchive(input: {
         if (input.exclude?.some(excluded => next === excluded || next.startsWith(`${excluded}/`)) || next === ".paperclip-runtime" || next.startsWith(".paperclip-runtime/")) {
           excludedPaths.add(next); continue;
         }
-        const source = path.join(root, next), target = copyTo ? path.join(copyTo, next) : null;
+        const source = path.join(root, next);
         const stat = await fs.lstat(source);
         if (skipGit && name === ".git") { if (stat.isSymbolicLink()) fail("unsafe_git_link"); directories.push(relative); continue; }
         if (stat.isDirectory() && name === "node_modules") {
@@ -150,30 +169,13 @@ async function workspaceArchive(input: {
         }
         if (stat.isDirectory()) {
           entries.push({ path: next, type: "directory", mode: stat.mode & 0o777 });
-          if (target) await fs.mkdir(target, { mode: 0o700 });
           await visit(next, inRepository);
         } else if (stat.isSymbolicLink()) {
           const link = await fs.readlink(source);
           if (!safeLink(next, link)) fail("unsafe_symlink");
           entries.push({ path: next, type: "symlink", target: link });
-          if (target) await fs.symlink(link, target);
         } else if (stat.isFile()) {
-          const handle = await fs.open(source, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW | fs.constants.O_NONBLOCK);
-          let output: Awaited<ReturnType<typeof fs.open>> | undefined;
-          try {
-            const before = await handle.stat({ bigint: true });
-            if (!before.isFile() || BigInt(stat.dev) !== before.dev || BigInt(stat.ino) !== before.ino || await fs.realpath(source) !== source) fail("changed");
-            if (target) output = await fs.open(target, "wx", 0o600);
-            const digest = crypto.createHash("sha256"); let bytes = 0;
-            for await (const part of handle.createReadStream({ autoClose: false, signal: input.signal })) {
-              check(); digest.update(part); bytes += part.length;
-              await output?.writeFile(part);
-            }
-            const after = await handle.stat({ bigint: true }), current = await fs.lstat(source, { bigint: true });
-            if (bytes !== Number(before.size) || await fs.realpath(source) !== source || ["dev", "ino", "size", "mtimeNs", "ctimeNs"].some(key => before[key as keyof typeof before] !== after[key as keyof typeof after] || after[key as keyof typeof after] !== current[key as keyof typeof current])) fail("changed");
-            entries.push({ path: next, type: "file", mode: stat.mode & 0o777, size: bytes, sha256: digest.digest("hex") });
-            if (target) await fs.chmod(target, stat.mode & 0o777);
-          } finally { await output?.close(); await handle.close(); }
+          entries.push({ path: next, type: "file", ...await readStableFile(source) });
         } else fail("unsupported_entry");
       }
     };
@@ -188,9 +190,10 @@ async function workspaceArchive(input: {
     const root = await fs.realpath(input.cwd!);
     if (!(await fs.lstat(root)).isDirectory()) fail("source_invalid");
     const scratch = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-capture-")));
+    let archiveCreated = false, completed = false;
     try {
       const tree = path.join(scratch, "tree"); await fs.mkdir(tree, { mode: 0o700 });
-      const before = await walk(root, tree, true);
+      const before = await walk(root, true);
       const repositories = [...new Set(directories)];
       const gitSignatures = new Map<string, string>();
       const signature = async (repo: string, settings?: Awaited<ReturnType<typeof portableGitSettings>>) => {
@@ -207,6 +210,7 @@ async function workspaceArchive(input: {
         // private repository. The selected worktree's index and HEAD are separate.
         await git(root, ["clone", "--mirror", "--no-hardlinks", "--dissociate", "--", repo, normalized]);
         const destination = path.join(tree, relative, ".git");
+        await fs.mkdir(path.dirname(destination), { recursive: true, mode: 0o700 });
         await fs.rename(normalized, destination);
         const sourceGit = (await git(repo, ["rev-parse", "--absolute-git-dir"])).trim();
         const sourceCommon = (await git(repo, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
@@ -232,35 +236,38 @@ async function workspaceArchive(input: {
           const [object, ref] = row.split(" "); return `update ${ref} ${object}\n`;
         }).join("");
         if (updates) await git(restoredRepo, ["update-ref", "--stdin"], updates);
-        await git(restoredRepo, ["repack", "-a", "-d"]);
         await fs.rm(path.join(destination, "objects", "info", "alternates"), { force: true });
         await git(restoredRepo, ["fsck", "--connectivity-only", "--no-dangling"]);
         if (await signature(repo) !== gitSignatures.get(relative)) fail("changed");
       }
-      directories.length = 0;
-      const after = await walk(root, undefined, true);
-      if (JSON.stringify(before) !== JSON.stringify(after)) fail("changed");
-      for (const relative of repositories) await assertGitOperationComplete(path.join(root, relative));
-      const entries = await walk(tree);
-      // Keep private staging writable for cleanup; the manifest preserves the
-      // source modes and restoration applies them only after writing children.
       const originals = new Map(before.map(entry => [entry.path, entry]));
-      for (const entry of entries) if (entry.type === "directory") {
-        const original = originals.get(entry.path); if (original) entry.mode = original.mode;
-      }
+      const entries = [...before, ...(await walk(tree)).filter(entry => !originals.has(entry.path))]
+        .sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
       const manifest = { schema, exclusionPolicy: "paperclip.remote-workspace-exclusions.v1", excluded: [...excludedPaths].sort(), entries }, body = Buffer.from(JSON.stringify(manifest));
       if (body.length > 64 * 1024 * 1024) fail("manifest_too_large");
       const digest = manifestHash(manifest), length = Buffer.alloc(4); length.writeUInt32BE(body.length);
       const output = await fs.open(input.archivePath, "wx", 0o600);
+      archiveCreated = true;
       try {
         await output.writeFile(Buffer.concat([magic, length, body]));
         for (const entry of entries) if (entry.type === "file") {
-          for await (const bytes of createReadStream(path.join(tree, entry.path), { signal: input.signal })) { check(); await output.writeFile(bytes); }
+          const observed = await readStableFile(path.join(originals.has(entry.path) ? root : tree, entry.path), bytes => output.writeFile(bytes));
+          if (observed.size !== entry.size || observed.sha256 !== entry.sha256 || observed.mode !== entry.mode) fail("changed");
         }
       } finally { await output.close(); }
+      directories.length = 0;
+      if (JSON.stringify(before) !== JSON.stringify(await walk(root, true))) fail("changed");
+      for (const relative of repositories) {
+        if (await signature(path.join(root, relative)) !== gitSignatures.get(relative)) fail("changed");
+      }
       if (input.manifestPath) await fs.writeFile(input.manifestPath, body, { flag: "wx", mode: 0o600 });
-      return { schema, manifestDigest: digest, ...await hashFile(input.archivePath), entries: entries.length };
-    } finally { await fs.rm(scratch, { recursive: true, force: true }); }
+      const content = await hashFile(input.archivePath);
+      completed = true;
+      return { schema, manifestDigest: digest, ...content, entries: entries.length };
+    } finally {
+      if (archiveCreated && !completed) await fs.rm(input.archivePath, { force: true });
+      await fs.rm(scratch, { recursive: true, force: true });
+    }
   }
   if (!input.targetDir || !/^[a-f0-9]{64}$/.test(input.expectedManifestDigest ?? "")) fail("restore_binding_invalid");
   if (input.maxEntries !== undefined && (!Number.isSafeInteger(input.maxEntries) || input.maxEntries < 0)) fail("restore_binding_invalid");

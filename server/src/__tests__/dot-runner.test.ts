@@ -24,7 +24,8 @@ import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.j
 import { createPublicMcpOAuth, DEVICE_GRANT } from "../services/public-mcp/oauth.js";
 import { createPublicMcpExecutor } from "../services/public-mcp/capabilities.js";
 import { publicMcpIngressRoutes, publicMcpManagementRoutes } from "../routes/public-mcp.js";
-import { createPublicMcpEvents, type EventFetch } from "../services/public-mcp/events.js";
+import { createPublicMcpEvents } from "../services/public-mcp/events.js";
+import type { EventFetch } from "../services/public-mcp/event-webhooks.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { canonicalNativeRuntimeContextDigest, type StrictCompletionContractInput } from "../vendor/paperclip-runner/index.js";
 import { createDotRunnerMcpTools, dotRunnerBroker } from "../services/dot-runner-broker.js";
@@ -45,6 +46,11 @@ import { createPostgresWakeQueueAdapter } from "../modules/wake-queue/adapters/p
 import { createReleaseIssueExecution } from "../modules/wake-queue/application/use-cases.js";
 
 const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_DOT_RUNNER_TEST_DATABASE_URL");
+
+function uploadGrantUrl(grant: { url: string } | { attachment: unknown }) {
+  if (!("url" in grant)) throw new Error("Expected an upload grant");
+  return new URL(grant.url);
+}
 
 describe("durable Dot Runner integration", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -264,7 +270,7 @@ describe("durable Dot Runner integration", () => {
     const body = Buffer.from("Authenticated concurrent deliverable"), uploadRequestId = randomUUID(), operationId = randomUUID();
     const upload = await transfers.getUploadUrl(f.principal, { companyId: f.company.id, taskId: issue!.id, requestId: uploadRequestId,
       filename: "concurrent.txt", contentType: "text/plain", byteSize: body.length, sha256: createHash("sha256").update(body).digest("hex") }, assignment.id);
-    const url = new URL(String(upload.url)), api = express(); api.use(transfers.router);
+    const url = uploadGrantUrl(upload), api = express(); api.use(transfers.router);
     let uploading: Promise<request.Response> | undefined, uploaded: request.Response | undefined, uploadError: unknown;
     try {
       await db.transaction(async tx => {
@@ -582,6 +588,21 @@ describe("durable Dot Runner integration", () => {
         expect(await db.select().from(dotMailboxItems).where(and(eq(dotMailboxItems.assignmentId, assignment.id), eq(dotMailboxItems.kind, "follow_up")))).toHaveLength(0);
       } finally { await f.events.stop(); }
     }, 30000);
+
+  it("does not authorize a failed Grok bootstrap retry without an external assignment", async () => {
+    const f = await fixture({ provider: "grok_bot" });
+    try {
+      const [task] = await db.insert(issues).values({ companyId: f.company.id, title: "Bootstrap retry", assigneeAgentId: f.agent.id }).returning();
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+        nativeIssueId: task.id, runtimeMode: "native", driverKind: "grok_bot_mcp", status: "failed", invocationSource: "assignment" }).returning();
+      await db.insert(nativeRunFinalizations).values({ companyId: f.company.id, issueId: task.id, runId: run.id, phase: "retryable_failure" });
+      const cancelRun = vi.fn().mockResolvedValue(null);
+      const broker = dotRunnerBroker(db, { heartbeat: { wakeup: vi.fn(), cancelRun } });
+      await expect(broker.stopGrokWork(f.company.id, f.agent.id, f.userId, run.id)).rejects.toThrow("changed");
+      expect(cancelRun).not.toHaveBeenCalled();
+      expect(await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId, run.id))).toHaveLength(0);
+    } finally { await f.events.stop(); }
+  });
 
   it("fences a failed Grok run's remaining external assignment without stopping a successor", async () => {
     const f = await fixture({ provider: "grok_bot" });
@@ -961,7 +982,7 @@ describe("durable Dot Runner integration", () => {
         const [assignment] = await db.select().from(dotRunnerAssignments).where(eq(dotRunnerAssignments.runId, run!.id));
         if (provider === "openai_dot") await f.events.tick();
         expect(JSON.stringify(f.received)).not.toContain("17 + 25");
-        const work = await f.broker.read(f.principal, assignment!.id);
+        const work = await f.broker.read(f.principal, assignment!.id) as Awaited<ReturnType<typeof f.broker.read>> & { tools: unknown };
         expect(work.accounting).toEqual({ usage: null, cost: null });
         expect(work.status).toBe("offered");
         expect(observed.filter(event => event.eventType === "turn.started")).toHaveLength(0);
@@ -990,7 +1011,7 @@ describe("durable Dot Runner integration", () => {
           const body = Buffer.from("Grok arithmetic file: 42\n"), uploadId = randomUUID();
           const args = { companyId: f.company.id, taskId: issue!.id, requestId: uploadId, filename: "report.txt", contentType: "text/plain", byteSize: body.length, sha256: createHash("sha256").update(body).digest("hex") };
           const grant = await transfers.getUploadUrl(f.principal, args, assignment!.id);
-          const url = new URL(String(grant.url));
+          const url = uploadGrantUrl(grant);
           if (revokeDuringUpload) {
             const uploading = request(api).put(url.pathname + url.search).set("Content-Type", "text/plain").send(body)
               .then(response => response);
@@ -1077,7 +1098,7 @@ describe("durable Dot Runner integration", () => {
           await expect(transfers.getUploadUrl(f.principal, { ...args, taskId: randomUUID() }, assignment!.id)).rejects.toThrow();
           const download = new URL(String((await transfers.getDownloadUrl(f.principal, uploaded.body.attachment.id, assignment!.id)).url));
           expect((await request(api).get(download.pathname + download.search)).status).toBe(200);
-          const pendingUpload = new URL(String((await transfers.getUploadUrl(f.principal, { ...args, requestId: randomUUID() }, assignment!.id)).url));
+          const pendingUpload = uploadGrantUrl(await transfers.getUploadUrl(f.principal, { ...args, requestId: randomUUID() }, assignment!.id));
           await db.update(issues).set({ workMode: "ask" }).where(eq(issues.id, issue!.id));
           await expect(transfers.getUploadUrl(f.principal, { ...args, requestId: randomUUID() }, assignment!.id)).rejects.toThrow("work mode");
           expect((await request(api).put(pendingUpload.pathname + pendingUpload.search).set("Content-Type", "text/plain").send(body)).status).toBeGreaterThanOrEqual(400);

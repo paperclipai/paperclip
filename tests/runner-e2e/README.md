@@ -1,5 +1,59 @@
 # Paid runner full-stack E2E
 
+The deployment-targeted [saved agent instructions journey](product-journeys/AGENT-SETTINGS.md) verifies browser save/reload, one instruction-dependent native task, independently attributed output, and restoration of the owned agent’s original instructions. Discovery and local grader controls remain separate from QA staging qualification.
+
+The explicit-only `cursor-cloud` suite uses a local controller and hosted Cursor
+Cloud work. Its four required cells check a downloaded registered artifact,
+question/answer continuation on the same Cloud agent, UI Stop of an
+independently observed active Cloud run, and semantic Plan revision/approval.
+It is experimental and unqualified until all four real cells pass.
+Model acknowledgement and provider dollar cost remain
+unavailable; catalog discovery and support tests are not live acceptance.
+
+Configure `PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_MODEL` with an exact account model,
+`PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REPO` with an owned disposable HTTPS repository,
+optional `PAPERCLIP_CURSOR_CLOUD_ACCEPTANCE_REF`, and `CURSOR_API_KEY`.
+Set `PAPERCLIP_CURSOR_CLOUD_CALLBACK_PORT` to a dedicated free loopback port and
+point an HTTPS tunnel at **that port only**. After approving unpriced provider
+spend for these disposable tests, set
+`PAPERCLIP_CURSOR_CLOUD_ALLOW_UNPRICED_QUALIFICATION=1`. Missing opt-in blocks
+before credential loading or fixture creation. Each fresh Cursor Cloud fixture
+sets and reads back only its company and agent monthly billed-cost policies:
+1,000 cents, active hard stops, and `unpricedUsagePolicy: allow`. A failed or
+mismatched readback blocks task dispatch. The verified policy receipt is retained
+in `fixtures.json`. These limits still stop known billed costs; they do not cap
+unpriced usage. Provider cost remains unavailable, never inferred as zero.
+Set `PAPERCLIP_PUBLIC_URL` to the
+tunnel's origin. The E2E wrapper exposes only POST `/mcp/native-runs/:runId`
+through this listener; it rejects the UI and `/api/` paths. Public ingress is
+checked before fixtures or provider work. Never tunnel the local operator app.
+
+Discover with `pnpm test:e2e:runner -- --list --suite cursor-cloud`. The smallest
+paid cell is `pnpm test:e2e:runner -- --id cursor-cloud.runner-cursor-cloud.local.task-artifact`.
+Select `cloud-followup`, `active-run-stop`, or `plan-revise-accept` explicitly for
+the other cells. The Plan cell reuses the production planning flow: publish a
+two-step Plan, request and review a three-step revision, then approve that exact
+revision in the browser before completion. Its three expected runs use
+Paperclip planning authority with Cursor's default harness; it does not exercise
+Cursor's native Plan API or native plan-decision callbacks.
+Draft and revision share one owned Cloud session. Approval must carry the exact
+revised interaction's fresh-session receipt and start a new owned Agent/session;
+all three turns require distinct Cloud runs. The follow-up cell keeps its
+separate same-Agent/session continuity requirement.
+The complete bounded checkpoint is `pnpm test:e2e:runner -- --suite cursor-cloud`.
+Each cell permits one attempt. Missing prerequisites setup-block before provider
+work. Teardown cancels observed active runs and deletes only agents named by
+run-owned persisted notices.
+After each owned Agent deletion, cleanup polls only its exact GET for up to
+30 seconds to confirm 404, including after an ambiguous deletion reply. It does
+not repeat DELETE; authorization failures, unknown read failures and continued
+presence still fail cleanup. Earlier cleanup failures keep their original grades.
+The Stop proof includes a 15-second quiet window
+over native run status, published artifact absence, and local non-continuation;
+it does not inspect the entire remote filesystem. Attempts remain private because
+ordinary run snapshots can contain native session identifiers. Use the existing
+local report generator; the public history publisher refuses this suite.
+
 The [chat scenario catalog](chat-scenarios/README.md) plans conversational
 coverage across the product using human requests, assumed context and expected
 outcomes. It shares feature-map capability IDs and belongs to this Product E2E
@@ -49,6 +103,24 @@ including provider failover-backup bytes. Once a per-turn sandbox is disposed,
 its DB checkpoint alone cannot replace those bytes. Per-turn application
 qualification under this disk loss awaits the provider-backup owner's durable
 storage contract; native controller recovery does not waive that dependency.
+
+`rolling-web-deployment` definition 4 selects every registered native Daytona
+profile in disposable per-turn environments; `rolling-web-deployment-warm`
+uses the same profiles in reusable warm environments. Their
+provider-backup path uses encrypted object storage and a fenced database ledger.
+The earlier per-turn failure remains failed evidence; this definition requires
+a fresh passing run, including the strict post-replacement continuation oracle.
+Its revision task includes a 180-second foreground CLI reliability soak, giving
+the replacement time to become ready while useful agent work remains active.
+The observer rechecks the original live owner immediately before switching
+traffic and fails if that turn already settled. A completed turn cannot count
+as active takeover. Per-turn file inspection requires the exact committed saved
+snapshot; the warm lane still requires the live workspace.
+Cold restores retain the published workspace directory name, including after
+the old allocation is destroyed, because provider recovery binds the working
+directory into session identity. Unpublished preparations retain distinct
+epoch/lease directories, and a restore refuses to overwrite an occupied path
+owned by another preparation.
 
 The ordinary Everyday matrix retains its 125-second active outage default. The
 two explicit continuity suites require 300 seconds and reject a shorter override.
@@ -100,9 +172,12 @@ The separate explicit-only `rolling-web-deployment` suite uses the same syntheti
 projectless workflow, four-admission budget, thirty-minute limit, and independent
 run/file oracles. Its supervisor starts an independent empty-home server, waits
 for `/api/ready`, moves ingress, sends SIGTERM to the predecessor, and deletes
-that predecessor's whole home and build. Continuous ordinary task reads and
+that predecessor's whole home and build. Cleanup makes read-only cache directories
+removable only after shutdown, without following dependency symlinks. Continuous ordinary task reads and
 comment saves must have zero failures, and every accepted save must be read back
-exactly once. Forced process cleanup fails graceful qualification even if the
+exactly once. Probe tasks live in a separate disposable company, so they cannot
+block the business workflow's all-tasks-done oracle or consume its agent budget.
+Forced process cleanup fails graceful qualification even if the
 successor recovers the execution. The read-only observer shares the controllers'
 disposable encryption key. It repeats replacement after completion before the retained-session
 follow-up. The five-minute outage suites are unchanged.
@@ -668,6 +743,31 @@ or `--offline` to require cached data. Offline mode supports reports and assets
 already visited; it reports uncached artifacts explicitly. The preview contains
 only published evidence, not private Playwright traces or videos.
 
+## Verified API artifact transfer
+
+The explicit-only `api-artifact-transfer` suite has one native Codex Daytona
+cell: `api-artifact-transfer.runner-codex.daytona.verified-artifact-copy`.
+It seeds a 388131-byte synthetic description containing Unicode and escaped
+characters. The agent must read the source through the authenticated API,
+install its saved response with `download_artifact`, and deliver the unchanged
+file. The oracle uses the persisted, redacted API and installation receipts, then
+independently downloads both the stored source and delivered attachment through
+the authorized public API. The server audit must identify that exact asset as an
+API capture from the tested company, agent and run. Their bytes, hashes, source
+ID and full content must agree. An uploaded substitute cannot satisfy provenance.
+A missing tool, incomplete receipt, copied substitute or one-byte loss fails.
+The browser must show the same downloadable attachment after reloading.
+
+This is one attempt, one native run and a ten-minute attempt deadline. Existing
+fixture ownership, credential isolation, usage reporting and cleanup apply.
+Use the protected Runner Full-Stack E2E workflow with this exact ID and the
+candidate branch. Its existing governed credentials and immutable image provide
+the live transport; local oracle tests and catalog registration are separate
+from a completed live pass. It is excluded from `--all`.
+
+Private evidence retains the normal run transcript. The added structured proof
+contains identities, counts and hashes; it does not publish the full API body.
+
 ## Credentials
 
 Copy `.env.runner-e2e.example` to `.env.runner-e2e.local` and fill only the
@@ -819,8 +919,16 @@ and asserts `created`, `resumed`, `resumed` lease acquisition on one sandbox.
 Runner Codex additionally proves stable native session, provider session,
 runner instance, PID, and process-start identity. The ordinary warm cell uses
 managed instructions and edits AGENT_HOME on every turn: a growing memory file,
-an unchanged 8 MiB binary, and a deletion. Public API reads independently verify
-the canonical bytes after every turn. Native checkpoint receipts must show only
+an unchanged 8 MiB binary, and a deletion. The temporary file contains exactly
+the nine ASCII bytes `temporary` without a trailing newline, so its transfer
+count is explicit in the prompt. Public API reads independently verify
+the canonical bytes after every turn. Save receipts come from the latest
+`instruction_save` event in the complete, paginated run log. Missing receipts,
+later failed saves, or events from another run fail the check; a successful run
+summary cannot replace this evidence. Definition version 5 preserves earlier
+results under their original receipt lookup. Review actions target the actual
+interaction card by its test ID and interaction ID, so the request navigation
+button cannot make the locator ambiguous. Native checkpoint receipts must show only
 the changed memory file transferred on turns 2 and 3; the PID oracle remains strict.
 The journal stress cell retains fixed external instructions as a control. Each warm turn is bounded to ten
 minutes, the cell to thirty minutes, and cleanup explicitly deletes the
@@ -1071,6 +1179,13 @@ pnpm test:e2e:runner:models:update
 ```
 
 ## Daytona image
+
+The image builder retains only its stripped Runner executable and portable
+provider pack. The dependency install and pack build share one layer so the
+workspace and package store can be removed before export. Source-provenance
+changes can repeat the dependency install; this bounds retained builder disk
+at the cost of install-cache granularity. The build reports workspace and pack
+sizes, and final runtime and CLI checks still execute in the published image.
 
 The ephemeral Daytona fixture requests a 60-minute wall-clock lifetime at creation.
 The provider destroys each sandbox at that expiry in any state. This bound includes
@@ -2072,6 +2187,12 @@ Missing subscription coverage remains a qualification blocker;
 an API-key pass must not be reported as subscription evidence. See
 [`doc/grok-native-runner.md`](../../doc/grok-native-runner.md) for installation,
 credential boundaries and repetition requirements.
+
+Grok accounting uses the complete prompt ledger bound to the matching ACP
+response. Its reasoning counter can exceed its output counter; it is not a
+validation bound or an extra term in the ledger's input-plus-output total.
+Reported cost remains authoritative. See the upstream
+[`UsageTotals` ledger](https://github.com/xai-org/grok-build/blob/2bdd1d6a6369de0e8c68132ea4539e9abd9e14a8/crates/codegen/xai-chat-state/src/usage.rs).
 
 ### Kimi Code qualification
 
@@ -3328,3 +3449,46 @@ It uses `local_trusted` authentication and no model provider. Its result does no
 qualify browser reconnects, active-agent continuity, distinct packaged releases
 or Railway. Keep failed receipts alongside successful attempts; the private
 server logs and config files may contain credentials and are not shareable evidence.
+
+### Report a terminal catalog run from retained evidence
+
+A missing cell projection makes the normal strict aggregate fail. It must not
+silently discard authentic sibling results or turn unavailable evidence into an
+original failed evaluation. For an operator recovery, authenticate the original
+selection, terminal GitHub jobs and exact retained archive keys first. Recover
+available originals through the existing sealed-inventory reader and exporter.
+Do not run agents again or change the original grades.
+
+The aggregate owner has an explicit offline data preparation mode:
+
+```sh
+node --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/chat-full-catalog-testops-merge.ts retained-reporting \
+  <safe-singleton-projection-root> <new-output-directory> \
+  <authenticated-original-selection.json> <retained-disposition.json> <executor-commit-sha>
+```
+
+`RetainedDisposition` in that module defines the closed input contract. It binds
+its origin to the selection, its selection digest to the exact two-space JSON
+serialization, and its terminal-job and custody observations to SHA-256 digests.
+Every missing execution needs an explicit `not_found` observation at its exact
+source-derived archive key. This input records an operator's authenticated
+observations; the offline command does not grant read or publish authority.
+Active jobs, unexplained omissions, duplicates and foreign identities fail.
+
+The command reuses the unchanged strict original exporter. It emits one frozen
+Allure bundle and `reporting-manifest.json`. The coverage count separates graded
+originals from reporting gaps. Gaps are separate DTOs with UNKNOWN original grade,
+checks, native-run count and cleanup. Their TestOps outcome is `broken`, not an
+inferred feature failure or pass. They have no fabricated duration or test steps.
+Only the flat `allure/` JSON files are transport files; the manifest stays outside
+any upload archive. Private originals, screenshots and traces stay private.
+
+Review the immutable payload and its file hashes before an authorized upload to
+the original jobrun. Persist a once-intent before transmission. After an ambiguous
+response, reconcile with manual GET requests or an independently reviewed,
+gap-aware read-only check; do not resend or regenerate UUIDs. The existing
+`verify-upload` CLI accepts strict original outcomes only. It cannot verify the
+separate BROKEN gap shape and must not be used for this recovery bundle. Final
+coverage must match all selected case IDs and preserve the separate gap count.
+This mode prepares data only. It does not upload, start jobs, reopen launches,
+change credentials, or change evaluation and evidence limits.

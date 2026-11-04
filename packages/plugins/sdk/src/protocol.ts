@@ -709,6 +709,7 @@ export interface PluginEnvironmentInspectLeaseParams extends PluginEnvironmentDr
 }
 
 export interface PluginEnvironmentLeaseObservation {
+  creationLease?: PluginEnvironmentLease;
   creationCleanup?: import("./environment-creation-cleanup.js").PluginEnvironmentCreationCleanup;
   providerLeaseId: string;
   state: "active" | "stopped" | "destroyed" | "unknown";

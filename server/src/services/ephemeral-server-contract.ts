@@ -4,6 +4,8 @@ import type { Config } from "../config.js";
 import { isValidLocalEncryptedMasterKey } from "../secrets/local-encrypted-provider.js";
 import { agentInstructionsBundleMode } from "./agent-instructions.js";
 import { skillInstallationMaintenance } from "./skill-installation-maintenance.js";
+import { hasLocalNativeHarnessObligations } from "./native-runtime/native-harness-backup-migration.js";
+import { hasLocalNativeControllerObligations } from "./native-runtime/native-controller-migration.js";
 
 export const ephemeralServerEnabled = () => process.env.PAPERCLIP_EPHEMERAL_SERVER === "true";
 
@@ -37,11 +39,11 @@ export function assertEphemeralServerConfig(config: Pick<Config, "databaseUrl" |
  * volume data is adopted by the owning maintenance commands before removal. */
 export async function assertEphemeralServerData(db: Db) {
   if (!ephemeralServerEnabled()) return;
-  const { blockers } = await readEphemeralServerDataEligibility(db);
+  const { blockers } = await readEphemeralServerDataEligibility(db, { purpose: "startup" });
   if (blockers.length) throw new Error(`Volume-free server data is not eligible: ${blockers.join(", ")}`);
 }
 
-export async function readEphemeralServerDataEligibility(db: Db) {
+export async function readEphemeralServerDataEligibility(db: Db, options: { purpose?: "migration" | "startup" } = {}) {
   const blockers: string[] = [];
   const [missingFiles] = await db.select({ id: agents.id }).from(agents).leftJoin(agentFileRoots,
     and(eq(agentFileRoots.companyId, agents.companyId), eq(agentFileRoots.agentId, agents.id)))
@@ -64,10 +66,12 @@ export async function readEphemeralServerDataEligibility(db: Db) {
     isNull(providerTraceRecords.deletedAt), sql`${providerTraceRecords.traceRef} not like 's3-segments-v1:%'`,
   )).limit(1);
   if (localTrace) blockers.push("provider_traces_require_migration");
+  if (await hasLocalNativeHarnessObligations(db)) blockers.push("native_harness_backups_require_migration");
+  if (await hasLocalNativeControllerObligations(db)) blockers.push("native_controllers_require_migration");
   const skills = skillInstallationMaintenance(db);
   let after: string | undefined;
   for (;;) {
-    const page = await skills.eligibility({ after, limit: 50 });
+    const page = await skills.eligibility({ after, limit: 50, purpose: options.purpose });
     if (page.results.some(skill => skill.status !== "version_backed")) { blockers.push("skills_require_migration"); break; }
     if (page.inspected < 50 || !page.after) break;
     after = page.after;

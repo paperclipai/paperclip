@@ -891,6 +891,7 @@ describe("public repository paid workflow security", () => {
     for (const filename of await readdir(workflows)) {
       if (!/\.ya?ml$/u.test(filename) || ["runner-full-stack-e2e.yml", "runner-protocol-live-evals.yml"].includes(filename)) continue;
       const other = await readFile(path.join(workflows, filename), "utf8");
+
       for (const environment of environments) expect(other, filename).not.toContain(environment);
     }
     const protocol = await readFile(path.join(workflows, "runner-protocol-live-evals.yml"), "utf8");

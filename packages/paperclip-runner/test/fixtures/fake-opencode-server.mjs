@@ -160,18 +160,23 @@ function emitFrame(value) {
   for (const response of clients) response.write(frame);
 }
 
+let retainedCompletionContract;
 function parsedPromptText(promptBody) {
   const text = promptBody.parts?.[0]?.text ?? "";
   try {
-    return JSON.parse(text);
+    const prompt = JSON.parse(text);
+    retainedCompletionContract = prompt.completionContract ?? prompt.task?.completionContract ?? retainedCompletionContract;
+    return prompt;
   } catch {
-    return { message: text };
+    // Ordinary follow-ups contain only the new message. The real provider
+    // retains its task contract in conversation history across these turns.
+    return { message: text, completionContract: retainedCompletionContract };
   }
 }
 
 async function mcpRequest(method, params, signal) {
   const response = await fetch(mcp.url, {
-    signal,
+    signal: signal ?? AbortSignal.timeout(mcp.timeout),
     method: "POST",
     headers: {
       ...mcp.headers,
@@ -478,7 +483,7 @@ const server = createServer(async (request, response) => {
       }
       setTimeout(async () => {
         const parsedPrompt = parsedPromptText(promptPayload);
-        const backlogTool = String(parsedPrompt.message ?? "").match(/stream-backlog-(discovery|completion)/)?.[1];
+        const backlogTool = String(parsedPrompt.message ?? parsedPrompt.task?.prompt ?? "").match(/stream-backlog-(discovery|completion|durable)/)?.[1];
         if (backlogTool) {
           const messageID = "message-stream-backlog";
           const partID = "part-stream-backlog";
@@ -491,13 +496,14 @@ const server = createServer(async (request, response) => {
           try {
             const result = backlogTool === "completion"
               ? await callTerminalTool(promptPayload, AbortSignal.timeout(5000))
-              : await mcpRequest("tools/call", { name: "paperclip_search_assigned_tools", arguments: {} }, AbortSignal.timeout(5000));
+              : await mcpRequest("tools/call", { name: "paperclip_search_assigned_tools", arguments: {} },
+                backlogTool === "durable" ? undefined : AbortSignal.timeout(5000));
             receipt = { acknowledged: result.result?.isError !== true && !!result.result, result };
           } catch (error) {
             receipt = { acknowledged: false, timedOut: error.name === "TimeoutError" };
           }
           await writeFile(join(process.cwd(), "fake-stream-backlog-receipt.json"), JSON.stringify(receipt));
-          if (backlogTool === "discovery" && receipt.acknowledged) await callTerminalTool(promptPayload);
+          if (backlogTool !== "completion" && receipt.acknowledged) await callTerminalTool(promptPayload);
           emit({ type: "session.idle", properties: { sessionID: session.id } });
           return;
         }

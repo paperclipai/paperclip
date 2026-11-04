@@ -50,6 +50,7 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import { performSyncIn, performSyncOut, withProviderSpan } from "./file-sync.js";
 import { DEFAULT_DAYTONA_OPERATION_TIMEOUT_MS } from "./manifest.js";
+import { withLeaseSpan, leaseStateAttributes, type LeaseSpanName } from "./lease-tracing.js";
 import { observeSessionStreamExit } from "./session-stream-exit.js";
 import { DaytonaIdleActivity, trackDaytonaHooks, type DaytonaIdleProof } from "./idle-activity.js";
 
@@ -124,6 +125,10 @@ const idleActivity = new DaytonaIdleActivity();
  */
 export function getPluginTracer(): PluginTracer {
   return pluginContext?.tracer ?? NOOP_PLUGIN_TRACER;
+}
+
+function traceLeaseStep<T>(name: LeaseSpanName, work: () => Promise<T>, attributes?: Record<string, string | number | boolean>): Promise<T> {
+  return withLeaseSpan(getPluginTracer(), name, work, attributes);
 }
 
 /**
@@ -427,6 +432,16 @@ function formatErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** The pinned SDK stores response statusCode as data; never read messages or headers. */
+function creationHttpStatus(error: unknown): number | undefined {
+  try {
+    if (!error || typeof error !== "object") return undefined;
+    const status = Object.getOwnPropertyDescriptor(error, "statusCode")?.value;
+    return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
+      ? status : undefined;
+  } catch { return undefined; }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -518,12 +533,16 @@ async function ensureSandboxStarted(sandbox: Sandbox, timeoutSeconds: number): P
   const startBoundMs = timeoutSeconds * 1_000 + LIVENESS_START_TIMEOUT_MARGIN_MS;
   if (sandbox.state === "error") {
     if (sandbox.recoverable) {
-      await withLivenessTimeout("sandbox.recover", startBoundMs, () => sandbox.recover(timeoutSeconds));
+      await traceLeaseStep("lease.recover", () =>
+        withLivenessTimeout("sandbox.recover", startBoundMs, () => sandbox.recover(timeoutSeconds)),
+        leaseStateAttributes(sandbox.state));
       return;
     }
     throw new Error(`Daytona sandbox ${sandbox.id} is in an unrecoverable error state: ${sandbox.errorReason ?? "unknown error"}`);
   }
-  await withLivenessTimeout("sandbox.start", startBoundMs, () => sandbox.start(timeoutSeconds));
+  await traceLeaseStep("lease.start", () =>
+    withLivenessTimeout("sandbox.start", startBoundMs, () => sandbox.start(timeoutSeconds)),
+    leaseStateAttributes(sandbox.state));
 }
 
 function hasMissingSandboxContainer(sandbox: Sandbox): boolean {
@@ -1039,8 +1058,9 @@ async function createSandbox(
       // error so cleanup can be reconciled rather than declaring success.
       await destroyFailedCreation(config, cleanup, params.driverKey);
     } catch (cleanupError) {
+      const status = creationHttpStatus(createError);
       throw new PluginEnvironmentCreationCleanupError([createError, cleanupError],
-        `Daytona sandbox creation failed; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
+        `Daytona sandbox creation failed${status === undefined ? "" : ` (HTTP ${status})`}; cleanup could not be confirmed for ${name}`, cleanup, diagnostic);
     }
     throw createError;
   }
@@ -1351,6 +1371,7 @@ const sandboxHandleActivityGates = (() => {
 
 type SandboxLeaseAdmissionOptions = {
   allowClosed?: boolean;
+  traceLeaseWait?: boolean;
 };
 
 const sandboxHandleLeaseAdmissionStates = (() => {
@@ -1391,7 +1412,8 @@ async function withSandboxActivityGate<T>(
 
     const teardownGate = sandboxHandleTeardownGates.current(scope);
     if (teardownGate) {
-      await teardownGate.promise;
+      if (options.traceLeaseWait) await traceLeaseStep("lease.wait_for_teardown", () => teardownGate.promise);
+      else await teardownGate.promise;
       if (!options.allowClosed && sandboxHandleLeaseAdmissionStates.isClosed(scope)) {
         throw new Error(`Daytona sandbox lease ${scope.providerLeaseId} is no longer active.`);
       }
@@ -2671,39 +2693,39 @@ const plugin = definePlugin(trackDaytonaHooks({
       return timeoutFailure();
     };
     const acquire = async (): Promise<PluginEnvironmentLease> => {
-      const sandbox = await createSandbox(params, config, {
+      const sandbox = await traceLeaseStep("lease.create", () => createSandbox(params, config, {
         onCreateAttempt: (attempt) => { assertActive(); cleanup = attempt; },
         onCreateFailure: observeFailure,
         onSnapshotIdentity: identity => { snapshotIdentity = identity; },
-      });
+      }));
       try {
         assertActive();
         if (cleanup) cleanup.observedProviderLeaseId = sandbox.id;
         phase = "workspace";
-        const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+        const remoteCwd = await traceLeaseStep("lease.workspace", () => resolveSandboxWorkingDirectory(sandbox));
         assertActive();
         phase = "shell";
-        const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(Math.max(1, deadline - Date.now())));
+        const shellCommand = await traceLeaseStep("lease.shell", () => detectSandboxShellCommand(sandbox, toTimeoutSeconds(Math.max(1, deadline - Date.now()))));
         assertActive();
         // Configure a provider-side destroy time at or before a caller deadline, so
         // an abandoned sandbox self-destroys even if Paperclip is down. The lease
         // carries the real provider expiry (or none) as evidence of the bound.
         phase = "expiry";
-        const expiresAt = await configureSandboxExpiry({
+        const expiresAt = await traceLeaseStep("lease.expiry", () => configureSandboxExpiry({
           sandbox,
           requestedExpiresAt: params.requestedExpiresAt,
           nowMs: Date.now(),
           preserveCreationExpiry: config.ttlMinutes != null,
-        });
+        }));
         assertActive();
         phase = "sentinel";
-        const workspaceSentinel = await writeWorkspaceSentinel({
+        const workspaceSentinel = await traceLeaseStep("lease.sentinel", () => writeWorkspaceSentinel({
           sandbox,
           remoteCwd,
           params,
           config,
           timeoutSeconds: toTimeoutSeconds(Math.max(1, deadline - Date.now())),
-        });
+        }));
         assertActive();
         sandboxHandleLeaseAdmissionStates.open({
           driverKey: params.driverKey,
@@ -2746,7 +2768,7 @@ const plugin = definePlugin(trackDaytonaHooks({
           cleanupInProgress = true;
           try {
             const proof = idleActivity.proof(providerActivityKey(params, config, sandbox.id));
-            await sandbox.delete(toTimeoutSeconds(Math.max(1, deadline - Date.now())), true);
+            await traceLeaseStep("lease.cleanup", () => sandbox.delete(toTimeoutSeconds(Math.max(1, deadline - Date.now())), true));
             idleActivity.confirm(proof);
           } catch (cleanupError) {
             if (cleanup) {
@@ -2810,7 +2832,7 @@ const plugin = definePlugin(trackDaytonaHooks({
       throw new Error("The stopped Daytona sandbox is still settling cancelled work. Retry shortly.");
     }
     return await withSandboxActivityGate(scope, async () => {
-      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
+      const sandbox = await traceLeaseStep("lease.lookup", () => getSandboxOrNull(scope, { bypassTeardownGate: true }));
       if (!sandbox) {
         return { providerLeaseId: null, metadata: { expired: true } };
       }
@@ -2820,7 +2842,7 @@ const plugin = definePlugin(trackDaytonaHooks({
       // backup-guarded replacement path. Unknown errors preserve the lease.
       if (hasMissingSandboxContainer(sandbox)) {
         try {
-          await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
+          await traceLeaseStep("lease.refresh", () => withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData()));
           assertHandleMatchesLease(sandbox, params.providerLeaseId);
         } catch (error) {
           evictSandboxHandle(scope);
@@ -2848,48 +2870,50 @@ const plugin = definePlugin(trackDaytonaHooks({
           // A stopped sandbox loses its pseudo-terminals, so a stored duplex channel
           // is dead after a real restart. Close and drop every channel on this lease
           // before the restart, so no stale channel id survives the resume.
-          await closeDaytonaDuplexChannelsForLease(params.providerLeaseId);
+          await traceLeaseStep("lease.channel_cleanup", () => closeDaytonaDuplexChannelsForLease(params.providerLeaseId));
         }
         const resumedFromState = sandbox.state ?? null;
         await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
         try {
-          const remoteCwd = await resolveSandboxWorkingDirectory(sandbox, false);
-          // C3: a resumed lease must clear the workspace sentinel before it is
-          // trusted, even when the handle came from the cache. On any non-match we
-          // evict the cached handle and expire the lease so a stale/foreign sandbox
-          // is never reused on the subsequent (sentinel-skipping) exec path.
-          const workspaceSentinel = await verifyWorkspaceSentinel({
-            sandbox,
-            remoteCwd,
-            leaseMetadata: params.leaseMetadata,
-            timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
-          });
-          if (workspaceSentinel.result !== "matched") {
-            evictSandboxHandle(scope);
-            return {
-              providerLeaseId: null,
-              metadata: { expired: true, workspaceSentinel },
-            };
-          }
-          const shellCommand = await detectSandboxShellCommand(
-            sandbox,
-            toTimeoutSeconds(config.timeoutMs),
-          );
-          sandboxHandleCache.markFresh(scope);
-          sandboxHandleLeaseAdmissionStates.open(scope);
-          return {
-            providerLeaseId: sandbox.id,
-            metadata: leaseMetadata({
-              config,
+          return await traceLeaseStep("lease.verify", async () => {
+            const remoteCwd = await traceLeaseStep("lease.workspace", () => resolveSandboxWorkingDirectory(sandbox, false));
+            // C3: a resumed lease must clear the workspace sentinel before it is
+            // trusted, even when the handle came from the cache. On any non-match we
+            // evict the cached handle and expire the lease so a stale/foreign sandbox
+            // is never reused on the subsequent (sentinel-skipping) exec path.
+            const workspaceSentinel = await traceLeaseStep("lease.sentinel", () => verifyWorkspaceSentinel({
               sandbox,
-              shellCommand,
-              remoteCwd: requestedCwd ?? remoteCwd,
-              resumedLease: true,
-              resumedFromState,
-              sandboxState: "started",
-              workspaceSentinel,
-            }),
-          };
+              remoteCwd,
+              leaseMetadata: params.leaseMetadata,
+              timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
+            }));
+            if (workspaceSentinel.result !== "matched") {
+              evictSandboxHandle(scope);
+              return {
+                providerLeaseId: null,
+                metadata: { expired: true, workspaceSentinel },
+              };
+            }
+            const shellCommand = await traceLeaseStep("lease.shell", () => detectSandboxShellCommand(
+              sandbox,
+              toTimeoutSeconds(config.timeoutMs),
+            ));
+            sandboxHandleCache.markFresh(scope);
+            sandboxHandleLeaseAdmissionStates.open(scope);
+            return {
+              providerLeaseId: sandbox.id,
+              metadata: leaseMetadata({
+                config,
+                sandbox,
+                shellCommand,
+                remoteCwd: requestedCwd ?? remoteCwd,
+                resumedLease: true,
+                resumedFromState,
+                sandboxState: "started",
+                workspaceSentinel,
+              }),
+            };
+          });
         } catch (error) {
           evictSandboxHandle(scope);
           // A timeout, rate limit, or provider 5xx does not prove this sandbox is
@@ -2899,7 +2923,7 @@ const plugin = definePlugin(trackDaytonaHooks({
           throw error;
         }
       },
-      { allowClosed: true },
+      { allowClosed: true, traceLeaseWait: true },
     );
   },
 

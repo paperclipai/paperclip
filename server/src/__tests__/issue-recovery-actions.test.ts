@@ -86,7 +86,28 @@ function makeRecoveryActionRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// Stranded-run fixtures began before anything the test later records.
+const LATEST_RUN_TIMES = { startedAt: new Date(), createdAt: new Date() };
+
 describe("issueRecoveryActionService", () => {
+  it.each(["unrelated unique constraint", "other SQLSTATE", "cyclic cause"])("does not retry %s errors", async kind => {
+    const constraint = "issue_recovery_actions_active_source_uq";
+    const error: Error & { cause?: unknown } = new Error("Wrapped database failure");
+    error.cause = kind === "unrelated unique constraint" ? { code: "23505", constraint_name: "other_unique_constraint" }
+      : kind === "other SQLSTATE" ? { code: "23503", constraint_name: constraint } : error;
+    const query = { from() { return this; }, where() { return this; }, orderBy() { return this; },
+      limit() { return Promise.resolve([]); } };
+    const fakeDb = {
+      async transaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> { return fn(fakeDb); },
+      select: vi.fn(() => query),
+      insert: vi.fn(() => ({ values: () => ({ returning: async () => { throw error; } }) })),
+    };
+    await expect(issueRecoveryActionService(fakeDb as never).upsertSourceScoped({ companyId: "company", sourceIssueId: "issue",
+      kind: "missing_disposition", cause: "saved-debt", fingerprint: "same-source", nextAction: "Restore existing work." }))
+      .rejects.toBe(error);
+    expect(fakeDb.select).toHaveBeenCalledOnce();
+    expect(fakeDb.insert).toHaveBeenCalledOnce();
+  });
   it("does not reactivate an action resolved between the active read and update", async () => {
     const existingRow = makeRecoveryActionRow({ id: "existing-action", attemptCount: 1 });
     const createdRow = makeRecoveryActionRow({ id: "new-action", attemptCount: 1 });
@@ -410,6 +431,49 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
+  it("converges two service instances after their real inserts compete for one active source", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const input = { companyId, sourceIssueId, kind: "stranded_assigned_issue" as const, ownerType: "agent" as const,
+      ownerAgentId: managerId, cause: "stranded_assigned_issue", fingerprint: "concurrent-source",
+      evidence: { sourceRunId: "concurrent-source-run" }, lastAttemptAt: new Date("2026-11-03T12:00:00Z"),
+      nextAction: "Restore the existing execution path." };
+    let release!: () => void, acquired!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const locked = new Promise<void>(resolve => { acquired = resolve; });
+    const lock = db.transaction(async tx => {
+      await tx.execute(sql`lock table issue_recovery_actions in share mode`);
+      acquired(); await gate;
+    });
+    await locked;
+    const outcomes = Promise.allSettled([issueRecoveryActionService(db).upsertSourceScoped(input),
+      issueRecoveryActionService(db).upsertSourceScoped(input)]);
+    try {
+      await vi.waitFor(async () => {
+        const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+          where datname = current_database() and state = 'active' and wait_event_type = 'Lock'
+            and query like 'insert into "issue_recovery_actions"%'`);
+        expect(waiting.count).toBe(2);
+      }, { timeout: 5000, interval: 20 });
+    } finally { release(); await lock; await outcomes; }
+    const results = await outcomes;
+    const active = await db.select().from(issueRecoveryActions).where(and(eq(issueRecoveryActions.companyId, companyId),
+      eq(issueRecoveryActions.sourceIssueId, sourceIssueId), sql`${issueRecoveryActions.status} in ('active', 'escalated')`));
+    expect(active).toHaveLength(1);
+    expect(results.flatMap(result => result.status === "rejected" ? [{
+      name: result.reason?.constructor?.name, code: result.reason?.code,
+      causeName: result.reason?.cause?.constructor?.name, causeCode: result.reason?.cause?.code,
+      causeConstraint: result.reason?.cause?.constraint_name,
+    }] : [])).toEqual([]);
+    expect(results.map(result => result.status === "fulfilled" ? result.value.id : null)).toEqual([active[0]!.id, active[0]!.id]);
+    // The lost insert uses the existing upsert merge, just like a second sequential call.
+    expect(active[0]).toMatchObject({
+      status: "active", attemptCount: 2, maxAttempts: null, timeoutAt: null,
+      ownerType: "agent", ownerAgentId: managerId, ownerUserId: null,
+      evidence: input.evidence, lastAttemptAt: input.lastAttemptAt,
+      nextAction: input.nextAction, wakePolicy: null, monitorPolicy: null,
+    });
+  });
+
   it("upserts one active source-scoped action per issue and keeps company scoping explicit", async () => {
     const { companyId, managerId, sourceIssueId } = await seedCompany();
     const svc = issueRecoveryActionService(db);
@@ -557,6 +621,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       contextSnapshot: { retryReason: "issue_continuation_needed" },
       livenessState: "needs_followup",
+      ...LATEST_RUN_TIMES,
     } as const;
 
     const results = await Promise.all([
@@ -803,6 +868,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "configuration_incomplete",
         contextSnapshot: { issueId },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
         resultJson: {
           configurationIncomplete: {
             reason: "workspace_base_ref_unresolved",
@@ -993,6 +1059,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode,
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
         resultJson: errorCode === "workspace_validation_failed"
           ? { workspaceValidation: { reason: "missing_workspace", fingerprint: "workspace:test" } }
           : null,
@@ -1659,6 +1726,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       contextSnapshot: { retryReason: "issue_continuation_needed" },
       livenessState: "needs_followup",
+      ...LATEST_RUN_TIMES,
     } as const;
     const secondLatestRun = {
       ...firstLatestRun,
@@ -1732,6 +1800,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "workspace_validation_failed",
       contextSnapshot: {},
       livenessState: "failed",
+      ...LATEST_RUN_TIMES,
       resultJson: { workspaceValidation },
     } as const;
     const secondLatestRun = {
@@ -1825,6 +1894,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       contextSnapshot: { retryReason: "issue_continuation_needed" },
       livenessState: "needs_followup",
+      ...LATEST_RUN_TIMES,
     } as const;
 
     await recovery.escalateStrandedAssignedIssue({
@@ -1906,6 +1976,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       },
     });
 

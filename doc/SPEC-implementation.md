@@ -333,6 +333,14 @@ replacement semantics, secret preservation, and revision preconditions. It uses
 the existing configuration and resource APIs, retaining their authorization
 and approval gates. Agent lifecycle commands remain separate actions.
 
+`agents:read` permits redacted configuration, configured skills, instruction
+content and history reads without write authority. `agents:configure` remains
+read/write; `agents:suggest-changes` retains reads and consented changes. Own
+configuration/history reads require no peer-read grant. Target scopes, company
+boundaries and responsible-user authority still apply. Standard agents receive
+read access by default, with a one-time read-only rollout to eligible existing
+agents. See [agent permission defaults](agent-permission-defaults.md).
+
 ## 7.3 `agent_api_keys`
 
 - `id` uuid pk
@@ -423,6 +431,7 @@ retain their titles and default to no generation request.
 - `title` text not null
 - `description` text null
 - `status` enum: `backlog | todo | in_progress | in_review | done | blocked | cancelled`
+- Task reads additionally expose read-only `displayStatus`: the lifecycle status, or `monitoring` for an agent-owned scheduled ordinary monitor wait with no active execution, locks, review participant or active recovery action. Board collection/search `displayStatus` filters and counts use the same projection before pagination. This field is not persisted and cannot authorize a status transition; existing `status` filters retain their lifecycle semantics.
 - `priority` enum: `critical | high | medium | low`
 - `review_policy` nullable enum: `anyone | not_creator | human_only`; null is equivalent to `anyone`
 - `assignee_agent_id` uuid fk `agents.id` null
@@ -1365,6 +1374,13 @@ Invites tab does not hide this Cloud action.
 
 ## 10.3 Agents
 
+Saving an existing agent's configuration with a healthy saved AI account checks
+current account access, installation, provider/model compatibility, and environment
+selection without allocating a computer or running a provider hello test. Use
+**Test** to verify the runtime. Unverified legacy-account adoption, task connection
+adoption, and Copilot's account-specific model checks retain their live validation.
+A configuration save confirms persistence; it does not certify runtime readiness.
+
 The Harness / Runtime configuration page offers **Upgrade runner** for existing
 legacy Claude, Codex, and Grok Build agents when the target environment selects Paperclip
 Runner by default. The action uses the normal authorized agent PATCH with
@@ -1586,7 +1602,11 @@ The current app also exposes V1-supporting surfaces for:
   server-owned URL expansion, issue/comment/document scopes, status/date filters, issue-level pagination, a
   bounded `matchesPerIssue` override for machine consumers, and explicit issue/match truncation flags
 - execution workspaces, project workspaces, workspace runtime services, and workspace operations. Workspace reads
-  derive `deliveryState` as `merged_via_pr | merged_by_ancestry | unmerged | unknown`; terminal issue trees with a
+  return stored metadata without storage inspection; explicit readiness derives `deliveryState` as
+  `merged_via_pr | merged_by_ancestry | unmerged | unknown`. For providers without ancestry inspection,
+  automatic cleanup proves the finalized HEAD reached its captured destination through GitHub ancestry
+  or an exact-head merged PR, including squash merges. Recorded PR work products are optional hints.
+  Fresh storage, recoverability, and lifecycle checks remain mandatory. Terminal issue trees with a
   merged delivery and no active checkout run become cleanup-eligible with reason `issue_terminal` and are archived
   through the workspace cleanup path. Reopening the source issue records activity but does not restore that workspace.
   Before that, terminal isolated worktrees are compacted: ignored, untracked dependency, build, and cache directories
@@ -1716,7 +1736,10 @@ Scheduler must skip invocation when:
 - an existing run is active
 - hard budget limit has been hit
 
-Budget admission and accounting serialize under the company accounting lock.
+Authoritative paid-work admission and accounting mutations serialize under the
+company accounting lock. Preliminary invocation checks use a read-only snapshot
+and take that lock only when a hold, incident, or enforcement transition needs
+reconciliation; reconciliation rereads current state under the lock.
 The dispatch boundary rechecks current company, agent, and project policies and
 reserves capacity before paid work starts. Accounting commits budget blocks and
 durable stop intent without waiting for provider shutdown or reconciling unrelated
@@ -2205,6 +2228,11 @@ Legacy agents retain their authentication until validated adoption. See
 [AI Connections](connections/AI-CONNECTIONS.md) for company isolation, compatible
 methods, lifecycle, runtime enforcement, and migration details.
 
+AI connections support concurrent runs and account tests. Admission does not
+take an account execution lock or wait for another runtime's credential cleanup.
+Private runtime homes remain independent. Credential writeback still checks the
+active grant and saved generation before an atomic update.
+
 Missing personal AI credentials detected before adapter dispatch also produce
 the inline connection card. Every missing binding must belong to the same
 compatible AI provider. The responsible user connects their own account and
@@ -2632,8 +2660,17 @@ have stopped. Cleanup retains copies whose upload completion is unknown. This
 includes operations from older builds without save-attempt records. A final
 save alone does not prove that an older upload has stopped.
 
-V1 supports plain task folders, Git sources, and managed mutable repositories
-from the same project. It rejects read-only cross-project referenced folders,
+V1 supports plain task folders, Git sources, and managed mutable repositories.
+An authorized mentioned project's configured Git repositories become writable
+copies inside the task workspace, under `.paperclip-repositories/`. The copies
+retain their saved files, paths, refs and pins on subsequent turns. Preparation
+rechecks the access and trust policy of each retained source project. This does
+not grant permission to change a shared source folder or push to a repository.
+Repositories attached on a later turn are acquired before they become part of
+the next committed archive. Snapshot coverage is separate from the requested
+source recipe. New copies honor `repoRef`, then `defaultRef`, then the remote's
+default branch; an invalid ref cannot publish a partial secondary checkout.
+It rejects explicitly read-only sources,
 explicit concurrent shared writers, and custom cleanup/teardown commands on
 remote close. Manual workspace runtime commands, jobs, and services are also
 unsupported in V1 and must fail before local filesystem work. Agent tasks remain
@@ -2643,10 +2680,15 @@ must fail admission rather than fall back to a controller checkout.
 
 A reference to an authorized project with no configured workspace source does
 not attach a folder. It adds a resolution warning and preserves the task's
-workspace. A configured cross-project source remains subject to the read-only
-folder restriction. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
+workspace. A configured cross-project local folder must be imported before remote
+acquisition. `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE` gates configured
 sources; a source-less project reference needs no folder and stays metadata-only
 when that switch is off.
+
+Task failure notices show the redacted workspace validation explanation when
+preparation fails. Existing retry permissions and execution gates still apply.
+This includes retained-folder access and trust denials. Low-trust project boundary
+denials retain their separate project-access action.
 
 An imported saved Git workspace can resume from its saved files after its old
 local repository is removed. Local repository paths remain invalid for new
@@ -2708,9 +2750,16 @@ its upstream authors; operators can pause updates to review changes manually.
 The task Filters menu also offers **Routine tasks**. It selects tasks with
 `originKind=routine_execution`, including manually triggered routine runs, even
 when other automatic tasks are hidden. The routines list's **View all tasks**
-link opens `/issues?view=all&originKind=routine_execution` with that checkbox
+link opens `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` with that checkbox
 selected. The URL retains the selection across reloads and task navigation.
-Search and pagination apply the routine origin filter on the server.
+Sort controls save `sortField` and `sortDir` in the URL. URL sorting overrides
+saved collection sorting, and the routines link opens newest-created tasks first.
+Shared sort links retain their order across task interfaces. Workflow sorting
+requests the existing authorized dependency-edge projection. Search and board
+queries keep their existing server order. Blocked-attention lists reject
+`sortField=created` with `422` because they use their own activity order.
+Search and pagination apply the routine origin filter on the server. Creation-time
+sorting also runs before pagination, with task ID as a stable tie-breaker.
 
 Tasks and project collections default to hiding agent/system-created tasks and
 provide a saved **Show agent-created tasks** filter. Classify creation using

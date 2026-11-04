@@ -44,6 +44,14 @@ CLI / MCP.
 Policy: Task/resource visibility, mutation/checkout ownership, revision/lock guards and
 permitted deliverable context.
 
+Native completion evidence accepts the server's relative link only for a document
+attached to the current company/task with a matching current-revision publication
+receipt. It can accompany a separately verified requested file; it cannot replace
+that file. The [native feedback regression](../../server/src/services/native-runtime/native-completion-feedback.test.ts)
+exercises the native write/register/finish boundary with local PostgreSQL and a
+controlled remote file reader. It does not qualify the whole document API or a
+live provider run.
+
 Evidence: `source-only` — [implementation](../../server/src/routes/issues.ts#L10299) at
 the reviewed commit above.
 

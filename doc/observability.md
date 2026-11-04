@@ -45,10 +45,15 @@ Keep credential values out of logs and diagnostic reports.
 ## Budget admission, accounting, and enforcement
 
 The operator-gated `paperclip.budgets` tracer records
+`budget.admission.inspect`, `budget.admission.reconcile`,
 `budget.admission.evaluate`, `budget.admission.reserve`,
 `budget.accounting.transaction`, `budget.accounting.settlement`, `budget.accounting.lock_wait`,
 `budget.exposure.evaluate`, `budget.enforcement.deliver`,
 `budget.enforcement.scope`, `budget.cancellation.deliver`, and `budget.accounting.recover`.
+Inspection spans cover the preliminary read-only snapshot. Reconciliation spans
+exist only when that inspection finds a transition requiring the company lock;
+compare their counts to measure how often preliminary checks bypass the lock.
+Authoritative reservation and transactional evaluation retain their own spans.
 Transaction spans include commit time. Lock-wait spans cover acquisition of the
 company accounting lock. Settlement spans cover the ledger and reservation
 transaction. Enforcement spans measure asynchronous delivery; cancellation
@@ -205,7 +210,8 @@ diagnostic line on boot and continues without tracing — your server stays up.
 ## Scope
 
 The OpenTelemetry export carries **traces only**. Metrics and log exporters
-are out of scope and intentionally not configured here. Auto-instrumentations
+are out of scope. The SDK receives explicit empty metric-reader and log-processor
+lists so its default OTLP exporters cannot emit unrequested metrics or logs. Auto-instrumentations
 for `fs`, `dns`, and `net` are disabled by default because they are too chatty
 for this workload; everything else from
 `@opentelemetry/auto-instrumentations-node` is on (HTTP, Express, PG, etc.).
@@ -973,8 +979,8 @@ backend Sentry DSN and the audited SDK. Set `PAPERCLIP_SENTRY_RUN_FAILURES` to:
 | `all` | Every failed or timed-out run, including the known configuration, quota, and external connection failures. Unexpected started cancellations also report. |
 
 Missing, blank, or unrecognized values keep run reporting off. Expected operator
-stops, shutdown interruptions, successful runs, and queued work do not report in
-either enabled mode. A native run that is `failed` while it waits for a same-run
+stops, shutdown interruptions, successful runs, and queued work do not report
+terminal run failures in either enabled mode. A native run that is `failed` while it waits for a same-run
 retry (`nativePhase` `retryable_failure`) does not report either. It reports once
 if a later write ends the retry as a terminal failure. The mode does not change run status, retries, recovery,
 Telemetry, or OpenTelemetry export. It is process-wide, so an operator can enable
@@ -995,6 +1001,24 @@ that event's capture call.
 They do not change the ambient Sentry scope, whose isolation is unavailable
 without an OpenTelemetry context manager. Later, unrelated exceptions must
 not inherit a previous run's identity or fingerprint.
+
+When a task read produces the system-owned failed state displayed as
+“Couldn’t finish this attempt. Your message is saved.”, either enabled mode also
+reports a `task_attempt_failed` error with `event_kind=run_failure` and
+`failure_source=task_interruption`. This catches saved-message failures without
+a new terminal run transition. The event keeps the actual observed run status,
+the adapter and the company, agent, task and run references. It uses fixed error
+text and includes no message bodies, prompts or raw run diagnostics. Working,
+scheduled-retry, resolved and user-action states do not produce this event.
+Repeated reads of the same company/task/run/intent are suppressed after the SDK
+receives a successful HTTP delivery response. The process retains the latest
+1,000 confirmed reports. An SDK capture ID alone does not confirm delivery:
+processing backpressure, network errors and rate limits can discard the event.
+Unconfirmed captures wait 60 seconds before a later task read can try again;
+this pending cache also holds at most 1,000 entries and starts no background
+timer. A server restart or cache eviction can report an old failure again.
+This task-state event can accompany a separate terminal run-failure report;
+the `failure_source` tag distinguishes them.
 
 The versioned `paperclip` context supplies company and agent IDs and relative
 API paths for the saved run, events, log, and optional task. A valid HTTP(S)
@@ -1887,6 +1911,49 @@ name to `sandbox.daytona.<name>`. The host maps any other value to
 daytona provider emits these spans today, so the segment is the literal
 `daytona`.
 
+### Daytona lease acquisition and resume
+
+The worker invocation carries nested, monotonic timing receipts for lease work.
+The host also admits the following fixed `lease.*` names and prefixes them with
+`sandbox.daytona.`. These use the existing opt-in endpoint and host-owned parent
+context; they do not create an exporter or first-party Telemetry events.
+
+```text
+execution.plugin_dispatch
+└── plugin.worker
+    ├── sandbox.daytona.lease.wait_for_teardown  (only when teardown blocks resume)
+    ├── sandbox.daytona.lease.lookup
+    ├── sandbox.daytona.lease.refresh            (missing-container confirmation)
+    ├── sandbox.daytona.lease.channel_cleanup    (before restart)
+    ├── sandbox.daytona.lease.start              (or lease.recover)
+    └── sandbox.daytona.lease.verify
+        ├── sandbox.daytona.lease.workspace
+        ├── sandbox.daytona.lease.sentinel
+        └── sandbox.daytona.lease.shell
+```
+
+`lease.lookup` includes cached-handle lookup and any required provider refresh.
+`lease.start` and `lease.recover` measure the actual SDK operation, including its
+internal readiness wait. They also cover starts triggered by execution or sync.
+They do not separate SDK-internal requests or provider-side queue time.
+Their `paperclip.sandbox.startup.state` attribute records the state before the
+call: `started`, `stopped`, `archived`, `error`, or `other`. Both the plugin and
+host restrict this value; no provider error text or resource identity is sent.
+
+Fresh acquisition emits `lease.create`, `lease.workspace`, `lease.shell`,
+`lease.expiry`, and `lease.sentinel`. `lease.create` covers the existing creation
+helper, including qualification-only snapshot resolution and creation-failure
+cleanup. Setup-failure deletion is a separate `lease.cleanup` sibling, so it
+does not inherit a failed workspace or verification phase. Existing deadlines,
+ownership, cleanup and retry behavior are unchanged. Failed awaited steps close
+with error status; the receipt contains no exception message.
+
+Children nest beneath the current `plugin.worker` receipt and verification
+children nest beneath `lease.verify`. Never add parent and child durations.
+Receipt budgets and clock validation still apply. Older workers without
+`tracer.withSpan` keep the original behavior without these detail spans. Tracing
+failures preserve the operation's result or error and never repeat it.
+
 The `sandbox.daytona.*` spans use this closed attribute allowlist. The host
 drops every other key, so a command, an argument, a path, an id, a standard
 output, or a standard error never rides a provider span. The host records only
@@ -1895,6 +1962,7 @@ the attributes that the producer sends for one span.
 | Attribute                                        | Type   | Optional | Meaning                                                                                                   |
 | ------------------------------------------------ | ------ | -------- | --------------------------------------------------------------------------------------------------------- |
 | `paperclip.sandbox.startup.provider`             | string | no       | The normalized provider family.                                                                           |
+| `paperclip.sandbox.startup.state`                | string | yes      | State before start/recovery: `started`, `stopped`, `archived`, `error`, or `other`.                            |
 | `paperclip.sandbox.startup.outcome`              | string | yes      | The step outcome (`ok`, `skipped`, or `failed`).                                                          |
 | `paperclip.sandbox.startup.pack.wall_ms`         | number | yes      | The host-local wall time of the pack step. It rides the `sandbox.daytona.pack` span.                      |
 | `paperclip.sandbox.startup.transfer.wall_ms`     | number | yes      | The wall time of the transfer step. It rides the `sandbox.daytona.transfer` span.                         |

@@ -92,6 +92,27 @@ They also become native Observability spans only with an operator OTLP endpoint.
 
 ## Native PRP Run-Log Events
 
+Provider startup command failures and failed provider turns can carry a
+`providerFailure` cause with schema `paperclip.provider-failure.v1`. The cause
+retains a normalized category, a bounded and redacted provider explanation, the
+startup/turn phase, and available status, code, request ID, or retry time. Provider
+adapters extract these fields; arbitrary exception objects, request bodies,
+headers, environment variables, and stacks are excluded. Unknown categories retain
+their explanation. The cause stays in company-scoped run records and the run log;
+it is not added to first-party Telemetry, Observability attributes, or Sentry
+failure reports. The reportable run error keeps its existing generic text, except
+that an ACPX startup rejection keeps Runner's closed rejection text and its
+classification. Startup receipts retain the cause across controller restart before
+any provider turn exists.
+
+Every ACPX session ensure rejection carries a startup cause. When the provider
+returned no ACP error, the cause keeps the rejection's own redacted message with
+category `unknown`. A provider can type the failure with ACP's
+authentication-required code, or with a known error type or `errorKind` in the ACP
+error data. The cause then uses that category, and the rejection classification is
+`provider_<category>`, such as `provider_quota_exhausted`, instead of
+`session_ensure_failed`.
+
 Completed OpenCode builtin `bash` parts preserve the numeric process exit from
 `state.metadata.exit` in `tool.execution.completed.payload.exitCode`. The tool
 status stays `completed` even when the command exits with a nonzero code. This
@@ -463,6 +484,16 @@ byte budget. In that reduced response, title and details have 1 KiB and 8 KiB
 byte budgets, including truncation markers. `retrievalTruncated` directs callers
 to the full adapter-bounded text in the run error or transcript. Other provider
 metadata and action payloads are not copied.
+
+When an ACP request fails with a JSON-RPC error, the engine also keeps the
+provider explanation. It reads a string `data`, or the string `data.details`, or
+the string `data.message`, in that order. It adds the explanation on a new line
+after the error message unless the message already contains it. The combined
+text passes through the same redaction and the 4,096-character title bound
+before it becomes the run error, the summary, and the `acpx.error` `message`.
+A numeric JSON-RPC error code appears as the optional integer `rpcCode` in
+`errorMeta` and in the `acpx.error` record. Errors without these fields keep
+their existing message and omit `rpcCode`.
 
 Recovery still uses the typed failure category and the adapter's existing
 classifier. Provider warnings do not become failures, and timeouts or lost

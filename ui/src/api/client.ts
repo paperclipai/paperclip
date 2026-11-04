@@ -1,6 +1,7 @@
 import { getPageVisibility, getVisibilityHeaderValue } from "@/lib/page-visibility";
 import { tenantSessionRecovery } from "@/lib/tenant-session-recovery";
 import { ApiError, apiErrorFromResponse } from "./api-error";
+import { errorCopy } from "./errors";
 export { ApiError, apiErrorFromResponse, type ApiErrorOptions } from "./api-error";
 import { readApiJson } from "./response";
 
@@ -98,6 +99,8 @@ export async function apiFetch(input: string, init?: RequestInit): Promise<Respo
 }
 
 export interface RequestOptions {
+  /** Per-caller GET deadline, including the response body. A retry starts a fresh fetch. */
+  timeoutMs?: number;
   /** Abort signal wired through to `fetch` and coalescing (per-caller). */
   signal?: AbortSignal;
   /** Extra request headers (e.g. the async-import opt-in). Mutations only. */
@@ -200,28 +203,42 @@ function coalescedGet<T>(path: string, options?: RequestOptions): Promise<T> {
   const releaseRef = () => {
     if (!activeEntry.refs.delete(ref)) return;
     // Last caller gone before the fetch settled → abort the shared request.
-    if (activeEntry.refs.size === 0 && inflightGets.get(path) === activeEntry) {
-      inflightGets.delete(path);
+    if (activeEntry.refs.size === 0) {
+      if (inflightGets.get(path) === activeEntry) inflightGets.delete(path);
       activeEntry.controller.abort();
     }
   };
 
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => {
       signal?.removeEventListener("abort", onAbort);
+      clearTimeout(timer);
+    };
+    const onAbort = () => {
+      cleanup();
       releaseRef();
       reject(abortError());
     };
     if (signal) signal.addEventListener("abort", onAbort);
+    if (options?.timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        cleanup();
+        // Other callers keep their request, but retries must not rejoin it.
+        if (inflightGets.get(path) === activeEntry) inflightGets.delete(path);
+        releaseRef();
+        reject(new ApiError(errorCopy("TIMEOUT").body, 408, { error: "TIMEOUT" }));
+      }, options.timeoutMs);
+    }
 
     activeEntry.promise.then(
       (value) => {
-        signal?.removeEventListener("abort", onAbort);
+        cleanup();
         activeEntry.refs.delete(ref);
         resolve(value as T);
       },
       (err) => {
-        signal?.removeEventListener("abort", onAbort);
+        cleanup();
         activeEntry.refs.delete(ref);
         reject(err);
       },

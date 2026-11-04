@@ -7,10 +7,21 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { captureRemoteWorkspaceDirectory, remoteWorkspaceArchiveScript, restoreRemoteWorkspaceArchive } from "./remote-workspace-snapshot-archive.js";
 
-const archiveIo = vi.hoisted(() => ({ afterChmod: undefined as ((target: string, mode: number) => void) | undefined }));
+const archiveIo = vi.hoisted(() => ({
+  afterChmod: undefined as ((target: string, mode: number) => void) | undefined,
+  beforeOpen: undefined as ((target: string) => Promise<void>) | undefined,
+  captures: [] as string[],
+}));
 vi.mock("node:fs/promises", async importOriginal => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...actual, async chmod(target: string, mode: number) {
+  return { ...actual, async open(...args: Parameters<typeof actual.open>) {
+    await archiveIo.beforeOpen?.(String(args[0]));
+    return actual.open(...args);
+  }, async mkdtemp(...args: Parameters<typeof actual.mkdtemp>) {
+    const directory = await actual.mkdtemp(...args);
+    if (String(args[0]).includes("pc-workspace-capture-")) archiveIo.captures.push(String(directory));
+    return directory;
+  }, async chmod(target: string, mode: number) {
     await actual.chmod(target, mode); archiveIo.afterChmod?.(target, mode);
   } };
 });
@@ -22,7 +33,10 @@ const git = async (cwd: string, ...args: string[]) => (await execute("git", ["-C
 describe("portable remote workspace archives", () => {
   let root: string;
   beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), "pc-workspace-archive-test-")); });
-  afterEach(async () => { archiveIo.afterChmod = undefined; await fs.rm(root, { recursive: true, force: true }); });
+  afterEach(async () => {
+    archiveIo.afterChmod = undefined; archiveIo.beforeOpen = undefined; archiveIo.captures = [];
+    await fs.rm(root, { recursive: true, force: true });
+  });
   async function source() { const cwd = path.join(root, "source"); await fs.mkdir(cwd); return cwd; }
   async function capture(cwd: string) { const archivePath = path.join(root, "snapshot.pcws"); return { archivePath, ...await captureRemoteWorkspaceDirectory({ cwd, archivePath }) }; }
   async function restore(snapshot: Awaited<ReturnType<typeof capture>>) {
@@ -56,6 +70,76 @@ describe("portable remote workspace archives", () => {
   it("round trips an empty workspace", async () => {
     const snapshot = await capture(await source()); const restored = await restore(snapshot);
     expect(await fs.readdir(restored)).toEqual([]);
+  });
+  it("captures with room for one archive and bounded metadata without another copy of working files", async () => {
+    const cwd = await source(), payload = Buffer.alloc(4 * 1024 * 1024, 123);
+    await fs.writeFile(path.join(cwd, "work.bin"), payload);
+    const archivePath = path.join(root, "snapshot.pcws");
+    async function bytes(directory: string): Promise<number> {
+      let total = 0;
+      for (const name of await fs.readdir(directory)) {
+        const file = path.join(directory, name), stat = await fs.lstat(file);
+        total += stat.isDirectory() ? await bytes(file) : stat.size;
+      }
+      return total;
+    }
+    archiveIo.beforeOpen = async target => {
+      if (target !== archivePath) return;
+      let staged = 0;
+      for (const directory of archiveIo.captures) staged += await bytes(directory);
+      if (staged + payload.length > payload.length + 128 * 1024) {
+        throw Object.assign(new Error("No space left for the archive"), { code: "ENOSPC" });
+      }
+    };
+    const snapshot = await capture(cwd);
+    archiveIo.beforeOpen = undefined;
+    const digest = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+    expect(digest(await fs.readFile(path.join(await restore(snapshot), "work.bin")))).toBe(digest(payload));
+    expect(digest(await fs.readFile(path.join(cwd, "work.bin")))).toBe(digest(payload));
+  });
+  it.each(["content", "symlink", "added-file"])("rejects a concurrent %s change and removes its incomplete archive", async change => {
+    const cwd = await source(), file = path.join(cwd, "work.txt"), archivePath = path.join(root, "snapshot.pcws");
+    await fs.writeFile(file, "original\n");
+    const outside = path.join(root, "outside.txt"); await fs.writeFile(outside, "must stay outside\n");
+    archiveIo.beforeOpen = async target => {
+      if (target !== archivePath) return;
+      archiveIo.beforeOpen = undefined;
+      if (change === "content") await fs.writeFile(file, "changed\n");
+      if (change === "added-file") await fs.writeFile(path.join(cwd, "new.txt"), "new file\n");
+      if (change === "symlink") { await fs.unlink(file); await fs.symlink(outside, file); }
+    };
+    await expect(capture(cwd)).rejects.toThrow();
+    await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await fs.readFile(outside, "utf8")).toBe("must stay outside\n");
+    for (const directory of archiveIo.captures) await expect(fs.access(directory)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+  it("cleans a cancelled capture without deleting a pre-existing archive", async () => {
+    const cwd = await source(), archivePath = path.join(root, "snapshot.pcws");
+    await fs.writeFile(path.join(cwd, "file"), "retained\n");
+    const controller = new AbortController(), reason = new Error("capture cancelled");
+    archiveIo.beforeOpen = async target => { if (target === archivePath) controller.abort(reason); };
+    await expect(captureRemoteWorkspaceDirectory({ cwd, archivePath, signal: controller.signal })).rejects.toBe(reason);
+    await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
+    archiveIo.beforeOpen = undefined;
+    await fs.writeFile(archivePath, "existing archive\n");
+    await expect(capture(cwd)).rejects.toMatchObject({ code: "EEXIST" });
+    expect(await fs.readFile(archivePath, "utf8")).toBe("existing archive\n");
+    expect(await fs.readFile(path.join(cwd, "file"), "utf8")).toBe("retained\n");
+  });
+  it("rejects Git reference changes during archive output and keeps the new reference", async () => {
+    const cwd = await source(), archivePath = path.join(root, "snapshot.pcws");
+    await git(cwd, "init", "-q", "-b", "main");
+    await fs.writeFile(path.join(cwd, "file"), "retained\n");
+    await git(cwd, "add", "."); await git(cwd, "commit", "-qm", "base");
+    const head = await git(cwd, "rev-parse", "HEAD");
+    archiveIo.beforeOpen = async target => {
+      if (target !== archivePath) return;
+      archiveIo.beforeOpen = undefined;
+      await git(cwd, "update-ref", "refs/heads/later-work", head);
+    };
+    await expect(capture(cwd)).rejects.toThrow("remote_workspace_archive_changed");
+    await expect(fs.access(archivePath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await git(cwd, "rev-parse", "refs/heads/later-work")).toBe(head);
   });
   it("rejects a Files entry limit before extraction while ordinary restores keep their full contents", async () => {
     const cwd = await source(); await fs.writeFile(path.join(cwd, "first.txt"), "first\n"); await fs.writeFile(path.join(cwd, "second.txt"), "second\n");

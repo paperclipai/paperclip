@@ -268,7 +268,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     svc = executionWorkspaceService(db, {
       resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
         pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
-        ?? { state: "unknown", headRef: null, headSha: null }
+        ?? { state: "unknown" as const, headRef: null, headSha: null }
       ),
       // Disable the reaper cooldown for the delivery, terminal, race, and
       // cleanup tests. They assert immediate reaping. The cooldown gets its own
@@ -834,7 +834,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       return executionWorkspaceService(flakyDb, {
         resolvePullRequestDetails: vi.fn(async (companyId, reference) =>
           pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
-          ?? { state: "unknown", headRef: null, headSha: null }
+          ?? { state: "unknown" as const, headRef: null, headSha: null }
         ),
         workspaceReaperCooldownDays: 0,
       });
@@ -1300,7 +1300,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       return executionWorkspaceService(db, {
         resolvePullRequestDetails: async (companyId, reference) =>
           pullRequestDetailsByKey.get(`${companyId}:${reference.number}`)
-          ?? { state: "unknown", headRef: null, headSha: null },
+          ?? { state: "unknown" as const, headRef: null, headSha: null },
         now: () => new Date(nowMs),
         workspaceReaperCooldownDays: cooldownDays,
       });
@@ -1553,7 +1553,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     }).where(eq(executionWorkspaces.id, seeded.executionWorkspaceId));
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
-        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" as const, headRef: null, headSha: null },
       workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async () => {
         await fs.writeFile(path.join(seeded.worktreePath, "late-work.txt"), "not delivered\n", "utf8");
@@ -1583,7 +1583,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const newerReason = "newer_archive_lifecycle_marker";
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
-        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" as const, headRef: null, headSha: null },
       workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async (workspace) => {
         // Stand in for a reopen and a fresh archive that ran after this sweep
@@ -2187,7 +2187,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const newerReason = "newer_archive_lifecycle_marker";
     const racingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
-        pullRequestDetailsByKey.get(`${failSeed.companyId}:${reference.number}`) ?? { state: "unknown" },
+        pullRequestDetailsByKey.get(`${failSeed.companyId}:${reference.number}`) ?? { state: "unknown" as const, headRef: null, headSha: null },
       workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async (workspace) => {
         await db
@@ -2233,7 +2233,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     let refUpdateFailure = "";
     const lockingService = executionWorkspaceService(db, {
       resolvePullRequestDetails: async (_companyId, reference) =>
-        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" },
+        pullRequestDetailsByKey.get(`${seeded.companyId}:${reference.number}`) ?? { state: "unknown" as const, headRef: null, headSha: null },
       workspaceReaperCooldownDays: 0,
       beforeTerminalWorkspaceCleanup: async () => {
         try {
@@ -2242,7 +2242,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
           commitFailure = error instanceof Error ? error.message : String(error);
         }
         try {
-          await runGit(seeded.worktreePath, ["update-ref", "HEAD", seeded.headSha]);
+          await runGit(seeded.worktreePath, ["update-ref", "HEAD", seeded.headSha!]);
         } catch (error) {
           refUpdateFailure = error instanceof Error ? error.message : String(error);
         }
@@ -3822,7 +3822,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
       baseRef: "main",
     });
 
-    let releaseBlockingTransaction: (() => void) | null = null;
+    let releaseBlockingTransaction = null as (() => void) | null;
     const releaseBlockingTransactionPromise = new Promise<void>((resolve) => {
       releaseBlockingTransaction = resolve;
     });
@@ -3984,6 +3984,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
           cwd: worktreePath,
           branchName: "feature/current",
           worktreePath,
+          branchCreatedByRuntime: false,
           warnings: [],
           created: false,
         },
@@ -4553,7 +4554,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     const workspaces = await svc.list(companyId);
     const readyService = workspaces
       .find((workspace) => workspace.id === readyWorkspaceId)
-      ?.runtimeServices.find((service) => service.id === readyServiceId);
+      ?.runtimeServices?.find((service) => service.id === readyServiceId);
     expect(readyService).toMatchObject({
       url: httpsUrl,
       port: 42_010,
@@ -4564,7 +4565,7 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
 
     const provisioningService = workspaces
       .find((workspace) => workspace.id === provisioningWorkspaceId)
-      ?.runtimeServices.find((service) => service.id === provisioningServiceId);
+      ?.runtimeServices?.find((service) => service.id === provisioningServiceId);
     expect(provisioningService?.url).toBeNull();
     expect(provisioningService?.exposure).toMatchObject({ state: "pending", publicUrl: null });
     expect(JSON.stringify(provisioningService)).not.toContain("http://127.0.0.1:42020");

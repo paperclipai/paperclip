@@ -84,15 +84,19 @@ export async function restoreDurableAgentFiles(tx: Tx, owner: Owner, root: strin
   if (generation === head.generation && await fs.stat(root).then(s => s.isDirectory()).catch(() => false)) return true;
   const temporary = path.join(path.dirname(root), `.agent-files-${randomUUID()}`);
   await fs.mkdir(temporary, { recursive: true, mode: 0o700 });
-  const signal = AbortSignal.timeout(30_000);
+  const failed = new AbortController();
+  const signal = AbortSignal.any([AbortSignal.timeout(30_000), failed.signal]);
   try {
-    // Complete and verify the replacement before discarding an older projection.
-    for (const entry of head.entries) {
+    // Bound open streams and file handles while avoiding one network round trip
+    // per file in series. Await every worker before removing a failed projection.
+    const entries = head.entries;
+    let next = 0;
+    const restoreEntry = async (entry: DurableAgentFileEntry) => {
       signal.throwIfAborted();
       const relative = instructionPath(entry.path);
       if (entry.kind === "dir") {
         await assertInstructionPathSafe(temporary, `${relative}/.path-check`);
-        await fs.mkdir(path.join(temporary, relative), { recursive: true, mode: 0o700 }); continue;
+        await fs.mkdir(path.join(temporary, relative), { recursive: true, mode: 0o700 }); return;
       }
       const filename = await assertInstructionPathSafe(temporary, relative);
       await fs.mkdir(path.dirname(filename), { recursive: true, mode: 0o700 });
@@ -110,7 +114,20 @@ export async function restoreDurableAgentFiles(tx: Tx, owner: Owner, root: strin
         }
         if (size !== entry.size || hash.digest("hex") !== entry.sha256) throw new Error("Agent file does not match its committed digest");
       } finally { await handle.close(); }
-    }
+    };
+    const workers = Array.from({ length: Math.min(8, entries.length) }, async () => {
+      try {
+        while (next < entries.length) {
+          signal.throwIfAborted();
+          await restoreEntry(entries[next++]!);
+        }
+      } catch (error) {
+        failed.abort(error);
+        throw error;
+      }
+    });
+    await Promise.allSettled(workers);
+    signal.throwIfAborted();
     await invalidateAgentFileProjection(root);
     await fs.rm(root, { recursive: true, force: true });
     await fs.rename(temporary, root);

@@ -1,9 +1,14 @@
+import { confirmMcpAttachmentCleanup, recordMcpAttachmentCleanup, type McpAttachmentCleanup } from "../services/public-mcp/upload-cleanup.js";
 import { notifyDeferredExecutionWork } from "../services/deferred-execution-notifications.js";
 import { notifyNativeRecoveryNotices } from "../services/native-recovery-notice-notifications.js";
 import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../services/unsafe-workspace-export-notifications.js";
 import { notifyChatInboundWakeNotices } from "../services/chat-inbound-wake-notice-notifications.js";
 import { completeIssueCommentReceipt } from "../services/issue-comment-receipt.js";
+import { readInboxMine } from "../services/inbox-mine-read.js";
+import { subscribeCompanyLiveEvents } from "../services/live-events.js";
+import { INBOX_MINE_ISSUE_STATUS_FILTER, latestFailedRunsByAgent } from "@paperclipai/shared";
+import { getHeartbeatRunReadDecisions, redactHeartbeatRunListRow } from "../services/heartbeat-run-privacy.js";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
 import { parseObject } from "../adapters/utils.js";
 import { prepareRestrictedWorkspaceRetry } from "../services/restricted-workspace-retry.js";
@@ -20,6 +25,7 @@ import { monitorPoliciesEqual, applyActorMonitorScheduledBy, assertCanManageIssu
 import type { IssuePrivacyConstraints } from "@paperclipai/shared";
 import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
 import {
+  childCreatedByRequest,
   loadCreationSourceAgent,
   loadRunBoundIssue,
   resolveIssueCreationSource,
@@ -2983,6 +2989,7 @@ const ISSUE_LIST_STORM_THRESHOLD = 4;
 const ISSUE_LIST_MAX_ACTOR_CLIENT_INFLIGHT = 8;
 
 type IssueListPreparedResponse =
+  | { kind: "inbox"; body: unknown }
   | {
       kind: "compact";
       body: CompactIssue[];
@@ -3145,8 +3152,9 @@ function issueListRequestKey(input: {
   req: Request;
   companyId: string;
   normalizedQuery: Record<string, unknown>;
+  route?: string;
 }) {
-  const route = "GET /api/companies/:companyId/issues";
+  const route = input.route ?? "GET /api/companies/:companyId/issues";
   const actor = issueListActorIdentity(input.req, input.companyId);
   const client = issueListClientIdentity(input.req);
   const normalizedQuery = normalizeIssueListCacheValue(
@@ -3247,6 +3255,7 @@ async function coordinateIssueListGet(input: {
   companyId: string;
   requestKey: ReturnType<typeof issueListRequestKey>;
   allowTtlCache: boolean;
+  retireOnCompanyChange?: boolean;
   diagnostics?: IssueListDiagnostics;
   compute: () => Promise<IssueListPreparedResponse>;
 }): Promise<{
@@ -3336,6 +3345,17 @@ async function coordinateIssueListGet(input: {
     stormLogged: false,
   };
   issueListInflight.set(input.requestKey.key, inflightEntry);
+  // Mine reads its primary rows before its optional context has necessarily
+  // settled. A mutation must make subsequent GETs read again, while this work
+  // and its existing readers keep their original admission until completion.
+  const unsubscribe = input.retireOnCompanyChange
+    ? subscribeCompanyLiveEvents(input.companyId, (event) => {
+      if (event.type !== "activity.logged" && event.type !== "heartbeat.run.queued" && event.type !== "heartbeat.run.status") return;
+      if (issueListInflight.get(input.requestKey.key) === inflightEntry) {
+        issueListInflight.delete(input.requestKey.key);
+      }
+    })
+    : undefined;
 
   try {
     const response = await promise;
@@ -3348,6 +3368,7 @@ async function coordinateIssueListGet(input: {
     }
     return { response, cacheStatus: "miss", identicalInFlightCount: 1 };
   } finally {
+    unsubscribe?.();
     if (issueListInflight.get(input.requestKey.key) === inflightEntry) {
       issueListInflight.delete(input.requestKey.key);
     }
@@ -8379,11 +8400,155 @@ export function issueRoutes(
       title: row.title,
       identifier: row.identifier,
       status: row.status as IssueSummary["status"],
+      displayStatus: row.displayStatus,
       updatedAt: row.updatedAt,
       externalConversationState: row.externalConversationState,
     }));
     res.setHeader("Cache-Control", "private, no-store");
     res.json(summaries);
+  });
+
+  async function prepareIssueListForActor(req: Request, companyId: string, listFilters: IssueFilters, view: string | undefined): Promise<IssueListPreparedResponse> {
+    const compactView = view === "compact" || view === "index" || view === "rows";
+    const rawResult = await svc.list(companyId, listFilters);
+    const visibleRows = await actorCanReadCompanyScope(req, companyId)
+      ? rawResult
+      : await filterIssuesForActor(req, rawResult);
+    const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);
+    if (view === "index") {
+      const body = result.map((issue) => ({ ...toCompactIssue(issue), listProjection: "index" as const }));
+      return { kind: "compact", body, etag: compactIssueListEtag(body), cacheControl: "private, must-revalidate" };
+    }
+    const issueIds = result.map((issue) => issue.id);
+    const interruptions = await taskInterruptionPresentations(db, companyId, result);
+    if (compactView) {
+      const [handoffStates, recoveryActionByIssue] = await Promise.all([
+        listSuccessfulRunHandoffStates(db, companyId, issueIds),
+        recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
+      ]);
+      const actor = getActorInfo(req);
+      await Promise.all(
+        result.map(async (issue) => {
+          const activeRecoveryAction =
+            recoveryActionByIssue.get(issue.id) ?? null;
+          if (!activeRecoveryAction) return;
+          const revalidated = await revalidateActiveSourceRecoveryForRead({
+            issue,
+            trigger: "read_projection",
+            actor,
+            activeRecoveryAction,
+          });
+          if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
+          else recoveryActionByIssue.delete(issue.id);
+        }),
+      );
+      const compactResult = result.map((issue) =>
+        ({ ...toCompactIssue({
+          ...issue,
+          activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+          interruption: interruptions.get(issue.id) ?? null,
+          successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+        }), ...(view === "rows" ? { listProjection: "rows" as const } : {}) }),
+      );
+      return {
+        kind: "compact",
+        body: compactResult,
+        etag: compactIssueListEtag(compactResult),
+        cacheControl: "private, must-revalidate",
+      };
+    }
+    const [handoffStates, recoveryActionByIssue] = await Promise.all([
+      listSuccessfulRunHandoffStates(db, companyId, issueIds),
+      recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
+    ]);
+    const actor = getActorInfo(req);
+    await Promise.all(
+      result.map(async (issue) => {
+        const activeRecoveryAction =
+          recoveryActionByIssue.get(issue.id) ?? null;
+        if (!activeRecoveryAction) return;
+        const revalidated = await revalidateActiveSourceRecoveryForRead({
+          issue,
+          trigger: "read_projection",
+          actor,
+          activeRecoveryAction,
+        });
+        if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
+        else recoveryActionByIssue.delete(issue.id);
+      }),
+    );
+    return {
+      kind: "full",
+      body: result.map((issue) => ({
+        ...issue,
+        successfulRunHandoff: handoffStates.get(issue.id) ?? null,
+        activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
+        interruption: interruptions.get(issue.id) ?? null,
+      })),
+    };
+  }
+
+  router.get("/companies/:companyId/inbox/mine", async (req, res) => {
+    const startedAt = Date.now();
+    const companyId = req.params.companyId as string;
+    assertBoard(req);
+    assertCompanyAccess(req, companyId);
+    if (Object.keys(req.query).length > 0) {
+      res.status(400).json({ error: "The Mine snapshot does not accept query parameters" });
+      return;
+    }
+    const userId = req.actor.userId;
+    if (!userId) throw new HttpError(401, "A signed-in board user is required");
+    const readCondition = await issueReadSqlCondition(db, req.actor);
+    const listFilters: IssueFilters = {
+      readCondition, touchedByUserId: userId, inboxArchivedByUserId: userId,
+      status: INBOX_MINE_ISSUE_STATUS_FILTER, listProjection: "index",
+      sortField: "updated", sortDir: "desc", limit: 100,
+      includeRoutineExecutions: true, includeLiveDescendantSummary: true,
+    };
+    const readCompact = async (filters: IssueFilters, projection: "index" | "rows") => {
+      const prepared = await prepareIssueListForActor(req, companyId, filters, projection);
+      if (prepared.kind !== "compact") throw new Error("Expected compact inbox rows");
+      return prepared.body;
+    };
+    const requestKey = issueListRequestKey({ req, companyId, normalizedQuery: { view: "mine-snapshot" }, route: "GET /api/companies/:companyId/inbox/mine" });
+    const coordinated = await coordinateIssueListGet({
+      req, companyId, requestKey, allowTtlCache: false, retireOnCompanyChange: true, diagnostics: opts.issueListDiagnostics,
+      compute: async () => ({
+        kind: "inbox",
+        body: { userId, ...await readInboxMine({
+          loadIssues: () => readCompact(listFilters, "index"),
+          loadFailures: async () => {
+            const permission = await access.decide({ actor: req.actor, action: "company_scope:read", resource: { type: "company", companyId } });
+            if (!permission.allowed) throw new HttpError(403, "Run telemetry is outside this actor's authorization boundary");
+            const runs = latestFailedRunsByAgent(await heartbeat.list(companyId, undefined, 200, { summary: true }));
+            const decisions = await getHeartbeatRunReadDecisions(db, access, req.actor, runs);
+            return runRedactions.redactForRuns(companyId, runs.map((run, index) => decisions[index] ? run : redactHeartbeatRunListRow(run)), getActorInfo(req).actorId);
+          },
+          loadContext: (ids, projection) => readCompact({
+            readCondition, issueIds: ids, listProjection: projection, limit: 100, includeRoutineExecutions: true,
+          }, projection),
+          sourceError: (error, source) => {
+            logger.warn({ err: error, companyId, source }, "inbox source read failed");
+            return {
+              status: error instanceof HttpError ? error.status : 503,
+              message: error instanceof HttpError && error.status < 500 ? error.message
+                : source === "failures" ? "Could not load failed runs" : "Could not load task context",
+            };
+          },
+        }) },
+      }),
+    });
+    res.setHeader("Cache-Control", "private, no-store");
+    res.setHeader("X-Paperclip-Request-Cache", coordinated.cacheStatus);
+    if (!coordinated.response) {
+      res.setHeader("Retry-After", String(coordinated.retryAfterSeconds ?? 1));
+      res.status(429).json({ error: "Too many concurrent issue-list requests for this actor/client", retryAfterSeconds: coordinated.retryAfterSeconds ?? 1 });
+      return;
+    }
+    logIssueListRequest({ req, res, companyId, requestKey, startedAt, cacheStatus: coordinated.cacheStatus,
+      bodyBytes: estimatedJsonBytes(coordinated.response.body), etagOutcome: "none", identicalInFlightCount: coordinated.identicalInFlightCount });
+    res.json(coordinated.response.body);
   });
 
   router.get("/companies/:companyId/issues", async (req, res) => {
@@ -8438,7 +8603,6 @@ export function issueRoutes(
     const sortField = req.query.sortField as string | undefined;
     const sortDir = req.query.sortDir as string | undefined;
     const view = req.query.view as string | undefined;
-    const compactView = view === "compact" || view === "index" || view === "rows";
     const issueIds = typeof req.query.ids === "string" ? [...new Set(req.query.ids.split(","))] : undefined;
     const parentIds = typeof req.query.parentIds === "string" ? [...new Set(req.query.parentIds.split(","))] : undefined;
     const oneChildPerParent = parseOptionalBooleanQuery(req.query.oneChildPerParent);
@@ -8548,10 +8712,10 @@ export function issueRoutes(
       res.status(400).json({ error: "offset must be a non-negative integer" });
       return;
     }
-    if (sortField !== undefined && sortField !== "updated" && sortField !== "id") {
+    if (sortField !== undefined && sortField !== "updated" && sortField !== "created" && sortField !== "id") {
       res
         .status(400)
-        .json({ error: "sortField must be 'updated' or 'id' when provided" });
+        .json({ error: "sortField must be 'updated', 'created', or 'id' when provided" });
       return;
     }
     if (sortDir !== undefined && sortDir !== "asc" && sortDir !== "desc") {
@@ -8619,6 +8783,7 @@ export function issueRoutes(
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
+      displayStatus: req.query.displayStatus as string | string[] | undefined,
       assigneeAgentId,
       participantAgentId: uuidFilters.participantAgentId,
       assigneeUserId,
@@ -8657,7 +8822,7 @@ export function issueRoutes(
       q: req.query.q as string | undefined,
       limit,
       offset,
-      sortField: sortField === "updated" || sortField === "id" ? sortField : undefined,
+      sortField: sortField === "updated" || sortField === "created" || sortField === "id" ? sortField : undefined,
       afterId: req.query.afterId as string | undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
       updatedSince: rawUpdatedSince,
@@ -8683,82 +8848,7 @@ export function issueRoutes(
       allowTtlCache: view === "compact",
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
-        const rawResult = await svc.list(companyId, listFilters);
-        const visibleRows = await actorCanReadCompanyScope(req, companyId)
-          ? rawResult
-          : await filterIssuesForActor(req, rawResult);
-        const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);
-        if (view === "index") {
-          const body = result.map((issue) => ({ ...toCompactIssue(issue), listProjection: "index" as const }));
-          return { kind: "compact", body, etag: compactIssueListEtag(body), cacheControl: "private, must-revalidate" };
-        }
-        const issueIds = result.map((issue) => issue.id);
-        const interruptions = await taskInterruptionPresentations(db, companyId, result);
-        if (compactView) {
-          const [handoffStates, recoveryActionByIssue] = await Promise.all([
-            listSuccessfulRunHandoffStates(db, companyId, issueIds),
-            recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
-          ]);
-          const actor = getActorInfo(req);
-          await Promise.all(
-            result.map(async (issue) => {
-              const activeRecoveryAction =
-                recoveryActionByIssue.get(issue.id) ?? null;
-              if (!activeRecoveryAction) return;
-              const revalidated = await revalidateActiveSourceRecoveryForRead({
-                issue,
-                trigger: "read_projection",
-                actor,
-                activeRecoveryAction,
-              });
-              if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
-              else recoveryActionByIssue.delete(issue.id);
-            }),
-          );
-          const compactResult = result.map((issue) =>
-            ({ ...toCompactIssue({
-              ...issue,
-              activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-              interruption: interruptions.get(issue.id) ?? null,
-              successfulRunHandoff: handoffStates.get(issue.id) ?? null,
-            }), ...(view === "rows" ? { listProjection: "rows" as const } : {}) }),
-          );
-          return {
-            kind: "compact",
-            body: compactResult,
-            etag: compactIssueListEtag(compactResult),
-            cacheControl: "private, must-revalidate",
-          };
-        }
-        const [handoffStates, recoveryActionByIssue] = await Promise.all([
-          listSuccessfulRunHandoffStates(db, companyId, issueIds),
-          recoveryActionsSvc.listActiveForIssues(companyId, issueIds),
-        ]);
-        const actor = getActorInfo(req);
-        await Promise.all(
-          result.map(async (issue) => {
-            const activeRecoveryAction =
-              recoveryActionByIssue.get(issue.id) ?? null;
-            if (!activeRecoveryAction) return;
-            const revalidated = await revalidateActiveSourceRecoveryForRead({
-              issue,
-              trigger: "read_projection",
-              actor,
-              activeRecoveryAction,
-            });
-            if (revalidated) recoveryActionByIssue.set(issue.id, revalidated);
-            else recoveryActionByIssue.delete(issue.id);
-          }),
-        );
-        return {
-          kind: "full",
-          body: result.map((issue) => ({
-            ...issue,
-            successfulRunHandoff: handoffStates.get(issue.id) ?? null,
-            activeRecoveryAction: recoveryActionByIssue.get(issue.id) ?? null,
-            interruption: interruptions.get(issue.id) ?? null,
-          })),
-        };
+        return prepareIssueListForActor(req, companyId, listFilters, view);
       },
     });
 
@@ -8869,6 +8959,7 @@ export function issueRoutes(
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
+      displayStatus: req.query.displayStatus as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
       participantAgentId: countUuidFilters.participantAgentId,
       assigneeUserId: req.query.assigneeUserId as string | undefined,
@@ -13120,6 +13211,7 @@ export function issueRoutes(
         entityId: issue.id,
         details: {
           parentId: parent.id,
+          createdByRequest: childCreatedByRequest(issueId, issue.id),
           identifier: issue.identifier,
           title: issue.title,
           ...buildCreateIssueActivityStatusDetails(issue, res),
@@ -13400,6 +13492,7 @@ export function issueRoutes(
           entityId: issue.id,
           details: {
             parentId: sourceIssue.id,
+            createdByRequest: true,
             identifier: issue.identifier,
             title: issue.title,
             inheritedExecutionWorkspaceFromIssueId: sourceIssue.id,
@@ -14708,16 +14801,28 @@ export function issueRoutes(
           issueId: existing.id,
           agentId: existing.assigneeAgentId,
         });
-        const runToStopForTerminalization = goalStopAction
+        const runToStopForTerminalization = goalStopAction ||
+          (req.actor.type === "board" && existing.executionRunId)
           ? await resolveActiveIssueRun(existing)
           : null;
-        if (goalStopAction && runToStopForTerminalization) {
+        // Closing a native task revokes its tool binding. Retire the board's
+        // active executor before releasing that binding, even without a goal.
+        const mustStopNativeRun = req.actor.type === "board" &&
+          runToStopForTerminalization?.runtimeMode === "native";
+        if (runToStopForTerminalization && (goalStopAction || mustStopNativeRun)) {
           const cancelled = await heartbeat.cancelRun(
             runToStopForTerminalization.id,
             "Cancelled before issue terminalization",
             {
               errorCode: "issue_terminalized",
-              resultJson: { terminalizationStopConfirmed: true, issueMutationStopId },
+              resultJson: {
+                terminalizationStopConfirmed: true,
+                issueMutationStopId,
+                ...(actor.actorType === "user" ? {
+                  cancelledByActorType: "user",
+                  cancelledByUserId: actor.actorId,
+                } : {}),
+              },
               eventMessage: "run cancelled before issue terminalization",
               eventPayload: {
                 issueId: existing.id,
@@ -16242,6 +16347,7 @@ export function issueRoutes(
     for (const attachment of attachments) {
       try {
         await storage.deleteObject(attachment.companyId, attachment.objectKey);
+        await recordMcpAttachmentCleanup(db, await confirmMcpAttachmentCleanup(db, storage, attachment));
       } catch (err) {
         logger.warn(
           { err, issueId: id, attachmentId: attachment.id },
@@ -20126,8 +20232,10 @@ export function issueRoutes(
     if (!(await assertDeliverableMutationAllowedByRunContext(req, res, issue)))
       return;
 
+    let mcpCleanup: McpAttachmentCleanup | null = null;
     try {
       await storage.deleteObject(attachment.companyId, attachment.objectKey);
+      mcpCleanup = await confirmMcpAttachmentCleanup(db, storage, attachment);
     } catch (err) {
       logger.warn(
         { err, attachmentId },
@@ -20135,7 +20243,7 @@ export function issueRoutes(
       );
     }
 
-    const removed = await svc.removeAttachment(attachmentId);
+    const removed = await svc.removeAttachment(attachmentId, { mcpCleanup });
     if (!removed) {
       res.status(404).json({ error: "Attachment not found" });
       return;

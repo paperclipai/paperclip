@@ -1,5 +1,7 @@
+import { resolveProviderApiPlacement } from "../native-runtime/provider-api-placement.js";
+import { readClaimedNativeStopRecovery } from "../native-runtime/native-cancellation-request.js";
 import { museRunnerBroker } from "../muse-runner-broker.js";
-import { assertEphemeralNativeLifecycle, readRemoteWorkspaceAuthority } from "../remote-workspaces.js";
+import { assertEphemeralNativeRuntime, readRemoteWorkspaceAuthority } from "../remote-workspaces.js";
 import { measureRunTransaction } from "../execution-transaction-timing.js";
 import { measureRunPhase } from "../execution-preparation-timing.js";
 import {
@@ -122,7 +124,7 @@ export interface HeartbeatRuntimeSelectionInput {
     persistedExecutionWorkspace: { id: string; metadata?: Record<string, unknown> | null } | null;
     executionWorkspace: Omit<Parameters<typeof buildNativeExecutionInput>[0]["workspace"], "id">;
     executionTarget: Parameters<typeof prepareNativeWorkspaceSync>[0]["target"];
-    activeEnvironmentLease: Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease">;
+    activeEnvironmentLease: Pick<Parameters<typeof prepareNativeWorkspaceSync>[0], "lease"> | null;
     isDotRun: boolean;
     projectRepositoryPaths: string[];
     onCheckpoint?: Parameters<typeof prepareNativeWorkspaceSync>[0]["onCheckpoint"];
@@ -267,6 +269,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
   const { runtimeConfig, runtimeSkillEntries, runScopedMentionedSkillKeys, instructionCopy, agentIdentity, issueAssigneeOverrides, resolvedConfig, managedAiRuntime } = input.config;
   const runOptions = input.recovery;
   const { providerTraceRequested, providerTraceCapture } = input.trace;
+  if (!isDotRun) assertEphemeralNativeRuntime(nativeRuntimeResolution.kind === "native");
   let nativeExecution: NativeExecutionInput | null = null;
   let getNativeFreshSessionHandoff: (() => Promise<string | null>) | undefined;
   let nativeRunnerInstanceId: string | null = null;
@@ -277,7 +280,11 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       throw new Error("native_runtime_ineligible: issue is required");
     }
     const nativeExecutionWorkspaceId =
-      persistedExecutionWorkspace?.id ?? run.id;
+      persistedNativeExecutionInput?.provider.kind === "cursor_cloud"
+        // Older Cursor runs keep their admitted binding identity. Their task
+        // files and Computer are not part of the recovered API controller.
+        ? persistedNativeExecutionInput.binding.executionWorkspaceId
+        : persistedExecutionWorkspace?.id ?? run.id;
     const nativeReviewContext = readNativeReviewAssignmentContext(context);
     const nativeReview = nativeReviewContext ? await measureRunPhase("runtime_selection.review", () => getNativeReviewAssignment(db, {
       companyId: agent.companyId, issueId: issueRef.id, agentId: agent.id,
@@ -512,12 +519,9 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       ((executionTarget?.kind === "remote" && executionTarget.transport === "sandbox" && !!executionTarget.runnerTask) ||
         supportsManagedNativeWarmSession({ ...nativeRuntimeResolution.profile, acpxAgent: parseObject(agent.adapterConfig).acpxAgent }, managedAiRuntime?.attribution));
     const effectiveLifecyclePolicy = persistedNativeExecutionInput?.session.lifecyclePolicy ??
-      (["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend) || managedAiRuntime && !supportsManagedWarmSession
+      (["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(nativeRuntimeResolution.profile.backend) || managedAiRuntime && !supportsManagedWarmSession
         ? { mode: "per_turn" as const, idleTimeoutMs: null }
         : environmentLifecyclePolicy ?? agentLifecyclePolicy);
-    if (!["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend)) {
-      assertEphemeralNativeLifecycle(effectiveLifecyclePolicy.mode);
-    }
     if (
       effectiveLifecyclePolicy.mode === "warm" &&
       executionTarget?.kind === "remote" &&
@@ -720,7 +724,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
         instructionWorkingCopy: instructionCopy ? { rootPath: instructionCopy.executionRoot, entryPath: instructionCopy.entryFile, ...(isAgentDirectoryCopy(instructionCopy) ? { kind: "agent_files" as const } : {}) } : undefined,
       });
       getNativeFreshSessionHandoff = nativeReviewRequest ? undefined : getFreshSessionHandoff;
-      const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "codex_app_server"
+      const nativeProviderConfig = nativeRuntimeResolution.profile.backend === "cursor_cloud_api"
+        || nativeRuntimeResolution.profile.backend === "codex_app_server"
         || (nativeRuntimeResolution.profile.backend === "acpx_runtime" && ["claude_local", "grok_local"].includes(agentHarnessType(agent.adapterType, parseObject(agent.adapterConfig))))
         || nativeRuntimeResolution.profile.backend === "opencode_server"
         || (nativeRuntimeResolution.profile.backend === "acpx_runtime"
@@ -771,7 +776,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                   }),
                 ) ??
                 `# ${issueRef.identifier ?? issueRef.id}: ${issueRef.title}`,
-                !["openai_dot_mcp", "grok_bot_mcp", "muse_external"].includes(nativeRuntimeResolution.profile.backend) && projectRepositoryPaths.length > 0
+                !["openai_dot_mcp", "grok_bot_mcp", "muse_external", "cursor_cloud_api"].includes(nativeRuntimeResolution.profile.backend) && projectRepositoryPaths.length > 0
                   ? `## Project repositories\nThe task workspace also contains these editable Git repositories:\n${projectRepositoryPaths.map((repo) => `- ${repo}`).join("\n")}`
                   : null,
               ].filter(Boolean).join("\n\n"),
@@ -926,7 +931,11 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       if (!lockedRun) throw new Error("native_runtime_run_missing");
       // Cancellation and runtime selection serialize on this row. A
       // stopped preparation must never create a new native coordinator.
-      if (lockedRun.status !== "running" || lockedRun.resultJson?.startupCancellation) return false;
+      const stopRecovery = runOptions.nativeRestartRecovery?.kind === "reattach_remote_runner"
+        && runOptions.nativeRestartRecovery.runId === lockedRun.id
+        && runOptions.nativeRestartRecovery.leaseOwner === runOptions.nativeLeaseOwner
+        && await readClaimedNativeStopRecovery(tx as unknown as Db, lockedRun, runOptions.nativeLeaseOwner);
+      if (lockedRun.status !== "running" || (lockedRun.resultJson?.startupCancellation && !stopRecovery)) return false;
       if (lockedRun.runtimeMode === "legacy" && lockedRun.controllerBootId &&
           !(await renewLegacyControllerLease(tx as unknown as Db, lockedRun))) {
         onNativeOwnershipHeld();
@@ -963,6 +972,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
           runnerProfileJson: {
             ...nativeRuntimeResolution.profile,
             ...lockedProfile,
+            ...(nativeExecution?.provider.kind === "cursor_cloud" ? { executionPlacement: resolveProviderApiPlacement({ agent, run }) } : {}),
             nativePreparationFencingVersion: !lockedRun.runnerInstanceId && !lockedRun.nativeSessionId
               ? NATIVE_PREPARATION_FENCING_VERSION
               : lockedProfile.nativePreparationFencingVersion,
@@ -1051,7 +1061,8 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
     });
     if (!nativeSelected) return { selected: false };
     stopControllerLease();
-    nativeWorkspaceSync = readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata) ? null
+    if (nativeExecution?.provider.kind !== "cursor_cloud" && !activeEnvironmentLease) throw new Error("native_environment_lease_unavailable");
+    nativeWorkspaceSync = nativeExecution?.provider.kind === "cursor_cloud" || readRemoteWorkspaceAuthority(persistedExecutionWorkspace?.metadata) ? null
       : await measureRunPhase("runtime_selection.workspace_sync", () => prepareNativeWorkspaceSync({
       db,
       runId: run.id,
@@ -1059,7 +1070,7 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
       workspaceId: nativeExecutionWorkspaceId,
       workspaceLocalDir: executionWorkspace.cwd,
       target: executionTarget,
-      lease: activeEnvironmentLease.lease,
+      lease: activeEnvironmentLease!.lease,
       restartRecovery: runOptions.nativeRestartRecovery,
       sameRunRecovery: Boolean(runOptions.nativeLeaseOwner),
       resourceDisposition: providerResourceDispositionForRun,

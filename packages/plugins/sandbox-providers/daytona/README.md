@@ -37,6 +37,7 @@ Notes:
 - The SDK returns full log snapshots, so fallback bandwidth grows with retained output; it has no paged snapshot or stream cancellation API. A recovery-read timeout keeps partial output and explicitly reports whether command exit remains unconfirmed; it does not prove the remote command stopped. Provider/session teardown remains responsible for closing an outstanding socket. A final snapshot reconciles bytes missed by the stream before returning a recorded exit.
 - A sandbox record can survive the loss of its underlying container. Resume treats it as expired only when a fresh provider read confirms the exact missing-container error for that sandbox and marks it unrecoverable. Unknown errors and failed confirmation reads preserve the lease. The host still requires a verified native-runner backup before replacement.
 - Directory export normally builds a sandbox archive and downloads it. If archive creation exhausts disk space, quota, or the file-size limit, export streams the archive through a raw terminal instead. Each bounded chunk waits for a host write acknowledgement. Import still requires successful tar completion and the existing archive/path validation. The total archive cannot exceed the provider-reported sandbox disk allocation, and each host write must leave a 1 GiB free-space reserve. This fallback writes no sandbox archive or command log, preserves source files, and retains the configured transfer timeout. Terminal cleanup has a separate five-second limit and cannot hold the host archive open. It requires Bash and GNU `tar`, `dd`, and `base64` in the sandbox. It does not repair a provider session that already failed to save its state or increase the sandbox's disk allocation.
+- Single-file export normally downloads a guarded sandbox copy. If that copy exhausts disk space, quota, or the file-size limit, the provider removes partial copies and streams the source through the same bounded sandbox-user channel. The stream rechecks canonical confinement and regular-file identity, refuses a symlink at open, and publishes host files only after a successful transfer receipt. It never hands a mutable source to the privileged download API. Permission, confinement, and transport failures still fail; a failed stream leaves prior host files intact. This removes the second archive-sized copy needed to download an already captured workspace archive. Creating the workspace archive itself still needs sandbox space.
 
 ## Local development
 
@@ -54,9 +55,9 @@ The capacity regression uses Python 3 for a real local PTY, Bash, and GNU core
 utilities (`gtar`, `gdd`, and `gbase64` on macOS). It skips when those prerequisites
 are unavailable or their version checks do not match. With `DAYTONA_API_KEY` set, run
 `pnpm test src/file-sync-capacity.live.test.ts` to exercise an actual stopped and
-resumed Daytona sandbox, a tar write to `/dev/full`, validated export, and a
-second export after reconnect. The test creates and deletes one disposable
-1 GiB Ubuntu sandbox; it does not fill a disk or modify existing sandboxes.
+resumed Daytona sandbox, tar and file-copy writes to `/dev/full`, validated
+exports, and second exports after reconnect. Each case creates and deletes one
+disposable 1 GiB Ubuntu sandbox; it does not fill a disk or modify existing sandboxes.
 
 ## Package layout
 

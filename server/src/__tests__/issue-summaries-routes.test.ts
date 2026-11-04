@@ -9,7 +9,7 @@ import {
 import { issueRoutes } from "../routes/issues.js";
 import * as issueServices from "../services/issues.js";
 import { errorHandler } from "../middleware/index.js";
-import { describeEmbeddedPostgres, seedCompanyWithBoardAccess, useEmbeddedPostgres } from "./helpers/route-test-harness.js";
+import { describeEmbeddedPostgres, seedCompanyWithBoardAccess, useEmbeddedPostgres, type BoardActor } from "./helpers/route-test-harness.js";
 
 describeEmbeddedPostgres("bounded issue summaries", () => {
   const ctx = useEmbeddedPostgres("paperclip-issue-summaries-");
@@ -28,10 +28,10 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     ]).returning();
     return { ...company, rows };
   }
-  function app(actor: Express.Request["actor"]) {
+  function app(actor: BoardActor | Express.Request["actor"]) {
     const result = express();
     result.use(express.json());
-    result.use((req, _res, next) => { req.actor = actor; next(); });
+    result.use((req, _res, next) => { req.actor = actor as Express.Request["actor"]; next(); });
     result.use("/api", issueRoutes(ctx.db, {} as never));
     result.use(errorHandler);
     return result;
@@ -50,7 +50,7 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
       expect(res.headers["cache-control"]).toBe("private, no-store");
       expect(res.body.map((row: { id: string }) => row.id)).toEqual([f.rows[1]!.id, f.rows[0]!.id]);
       expect(Object.keys(res.body[0]).sort()).toEqual([
-        "companyId", "externalConversationState", "id", "identifier", "status", "title", "updatedAt",
+        "companyId", "displayStatus", "externalConversationState", "id", "identifier", "status", "title", "updatedAt",
       ]);
       expect(res.body[0].externalConversationState).toBeNull();
       expect(forbiddenRead).not.toHaveBeenCalled();
@@ -95,7 +95,7 @@ describeEmbeddedPostgres("bounded issue summaries", () => {
     const [agent] = await ctx.db.insert(agents).values({ companyId: f.companyId, name: "Chat", role: "general", adapterType: "process" }).returning();
     const issue = f.rows[0]!;
     await ctx.db.update(issues).set({ status: "in_review", assigneeAgentId: agent!.id }).where(eq(issues.id, issue.id));
-    const [application] = await ctx.db.insert(toolApplications).values({ companyId: f.companyId, name: "Slack", type: "native" }).returning();
+    const [application] = await ctx.db.insert(toolApplications).values({ companyId: f.companyId, name: "Slack", type: "chat" }).returning();
     const connectionId = randomUUID();
     await ctx.db.insert(toolConnections).values({ id: connectionId, companyId: f.companyId, applicationId: application!.id, uid: connectionId, name: "Slack", transport: "chat_sdk", connectionPurpose: "channel" });
     const endpointId = randomUUID();

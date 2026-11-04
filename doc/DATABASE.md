@@ -1,5 +1,54 @@
 # Database
 
+### Durable native provider backups
+
+`native_harness_backups` journals encrypted provider-session archives in object
+storage. One current row per company and session scope selects the published
+backup. Pending uploads remain recorded after failure; a controller must still
+own the native run when it publishes. Superseded controllers cannot replace the
+selected backup. Archive bytes never enter the database.
+
+The dedicated volume migration imports verified surviving backups without
+removing their source files or changing task-session pointers. Replacement
+readiness rejects retained session pointers whose backups remain local. The
+existing bounded startup retention pass retires current backups only after its
+task, run, lease and age checks pass. Old superseded objects have a separate
+retention path that preserves the current backup and exact backups referenced
+by live leases. Abandoned pending uploads also require a settled run without an
+owner. Object deletion is acknowledged before removing the ledger row. This
+adds no idle polling.
+
+Archives stream up to 4 GiB of file data and 100,000 entries, with a separate
+4.75 GiB encoded-object bound. Contained relative symbolic links are preserved
+verbatim; absolute or escaping targets, link chains, writes beneath links, and
+special files are rejected. Offline verification streams file hashes and honors
+cancellation. A changed local manifest cannot be silently skipped just because
+a previous migration published an object. Backups whose source run was deleted
+remain untouched on the original volume and do not block enrollment.
+
+The same offline maintenance process imports surviving legacy controller state
+into `native_runner_checkpoints` and binds its existing session snapshot through
+`nativeControllerRecovery` metadata. Runner validates the original protocol
+state and recorded artifact; Core requires a finished run with no live owner.
+Blocked or pending recovery records remain unchanged while their surviving
+state is preserved; migration does not mark their work completed.
+The normal bounded continuation selector handles inherited, unstarted follow-ups.
+Never-started queued turns keep their task pointers and remain queued. Original
+files stay intact, canonical database checkpoints take precedence, and missing
+source files are reported separately rather than fabricated. This migration
+does not recover provider state that was already lost before enrollment.
+
+For an already-failed run, a valid legacy controller can lack proof of the
+original Runner artifact after its old bootstrap tickets were pruned. The
+migration preserves those exact controller and supervisor bytes as an encrypted
+`paperclip.legacy-controller-archive.v1` object through the same backup ledger.
+Its scope is the hash of its manifest and is separate from the provider session
+scope. Publication requires a terminal-failure coordinator with no live owner.
+The archive does not become an executable Runner checkpoint. Task pointers,
+failed results and recovery blockers stay unchanged. A successful retained
+session without artifact proof still blocks migration. The migration receipt
+reports failed-session archives separately from imported recovery authorities.
+
 ### Proactive agent chat messages
 
 Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint
@@ -522,23 +571,74 @@ leave database construction unchanged. An expired window stays inactive after a
 restart; remove the setting after the investigation.
 
 The diagnostic measures awaited Postgres.js `unsafe` responses before Drizzle
-column decoding. It retains the Drizzle builder caller for normal, prepared,
-transaction, and dedicated-pool execution. It issues no queries.
-It logs the public server caller locations, static schema table, operation,
-query/row counts, and response value sizes. It emits at most 2,048 aggregate
-groups and a summary. Measurement stops at the deadline. Environment-enabled
+column decoding. It issues no queries. Configuration is read when each database
+client is created; setting the environment on an already-running process does
+not install the capture on existing clients. Prepare the deployment artifact
+before choosing the UTC window, then start the window after rollout and warm-up.
+
+Server entry points use `withDatabaseOperation(owner, action)` to name the work
+that executes queries. Owners are fixed semantic labels, never request paths,
+company or run IDs, user input, or SQL. The execution owner is captured for each
+query and retained through completion, including transactions and dedicated
+pools. A prepared query reused by different operations keeps the owner of each
+execution. The builder caller is separate from that execution owner.
+Owner context is active while a valid future window is armed, up to 30 minutes
+before its start, so work that crosses the start boundary keeps its owner. Query
+accounting starts only at the window start. With no armed window, or after
+expiry, the owner helper calls the action directly without a context scope.
+
+The capture aggregates owner, static schema table, operation, calls, returned
+rows, query errors, and total/maximum completion wall time. `totalWallMs` and
+`maxWallMs` include pool, database, network, and event-loop waits; they are not
+CPU measurements, and concurrent query durations overlap. Timing excludes the
+capture's response sizing. Rank calls and returned rows both per second and per
+completed service operation; a busy owner is not necessarily wasteful.
+
+Response sizing samples successful results 1, 17, 33, and so on per aggregate
+group (`sampleEvery: 16`). It examines at most
+256 cells, 65,536 string code units, and 65,536 value bytes per sampled result;
+an individual string over 16,384 code units is not measured. Parsed objects and
+other complex values are not serialized. Oversized, complex, or unexamined
+values leave an incomplete sample. `sampledValueBytes` is a lower bound over
+sampled primitive values, not a total response-size estimate or network bytes.
+Do not extrapolate it as the total bytes returned by the database. Inspect
+`sampledResults`, `sampledRows`, `measuredValues`, `unmeasuredValues`, and
+`incompleteSamples` alongside it. `sizingWallMs` records the diagnostic's sizing
+work separately. Use a separate capture-disabled CPU profile to measure normal
+processing cost.
+
+The diagnostic emits at most 2,048 aggregate groups and a summary. Measurement
+stops at the deadline. Environment-enabled
 captures emit at most 64 records per second and can take another 33 seconds to
 finish writing the bounded output. Wait for the summary before collecting it.
 It never logs SQL, parameters, result
 values, connection strings, or query errors. In-flight queries continue normally.
 
-For a bundled server, keep the linked source maps and enable Node's
-`--enable-source-maps` option so the diagnostic can resolve public caller
-locations. Restore the prior Node options after capture. Sizes still count when
-caller locations are unavailable.
+Semantic owners work in a bundled server without source maps. Specific owners
+avoid stack capture. The generic `http.request` owner keeps its exact name but,
+like an unowned query, also captures a bounded caller location during the window.
+For wrapped query builders, a map-free hosted bundle retains one static generated
+construction-site anchor (`dist-runtime/server.mjs`, `index.mjs`, or
+`chunk-<build hash>.mjs`, with line and column). Correlate it with the exact serving
+revision and bundle; it is not a TypeScript location or an execution-time CPU
+owner. Capture wrapper frames are excluded before reading the stack, and deeper
+frames in the same bundle are omitted.
 
-Look for `paperclip.db_response_capture.entry.v1` and
-`paperclip.db_response_capture.summary.v1` in the process logs. A log provider
+Unscoped driver calls, including relational queries, do not accept generated
+anchors: a bundled ORM helper could otherwise be mistaken for an application
+caller. They can still retain existing public source/dist locations; linked
+source maps and Node's `--enable-source-maps` may help resolve those locations.
+Restore prior Node options after capture. Missing callers remain unknown and
+still contribute to totals. Disabled, future and expired windows do not capture
+stacks; wrappers installed for an armed window remain after expiry. Active census
+stack capture, grouping and bounded sizing add measurement overhead. More caller
+groups still share the existing group, page and output-rate caps. This diagnostic
+is not a production performance improvement.
+
+Look for `paperclip.db_response_capture.entry.v2` and
+`paperclip.db_response_capture.summary.v2` in the process logs. Version 2 uses
+sampled, bounded primitive-value sizing; do not interpret it as the version 1
+all-result byte estimate. A log provider
 can store `event` as a structured field instead of message text. Filter by that
 field or read the bounded window from the exact deployment. Check the summary
 and group totals, including the unattributed overflow group.
@@ -552,22 +652,26 @@ Fetch a complete capture as follows:
    from zero through `groupPages - 1`, filtering on the entry event, `captureId`,
    and `groupPage`. Request at least `groupPageSize` matching records per page.
    A structured query can use
-   `@event:paperclip.db_response_capture.entry.v1 AND @captureId:<id> AND @groupPage:0`.
+   `@event:paperclip.db_response_capture.entry.v2 AND @captureId:<id> AND @groupPage:0`.
 3. If the provider's record limit is smaller than a page, fetch each
    `groupIndex` separately with the same capture ID. Each index matches one
    entry. Do not split by timestamp: entries can share a timestamp.
 4. Deduplicate by `(captureId, groupIndex)`. Require every index from zero
    through `groups - 1`, with no gaps. Entry count must equal `groups`, summed
-   `calls` must equal `completedQueries`, and summed `responseValueBytes` must
-   equal the summary total. A missing page is an incomplete measurement.
+   `calls` must equal `completedQueries`, and summed `rows`, `sampledResults`,
+   and `sampledValueBytes` must equal their summary totals. A missing page is an
+   incomplete measurement. Keep overflow and unattributed groups visible.
 
 Tagged raw-driver calls, streams, unawaited raw-driver
 dispatch, and protocol overhead are not measured. Relational queries use a driver-level caller fallback.
-Queries still in flight at the deadline are reported separately. Sizes describe
-driver values before column decoding, not billed network bytes. Complex parsed
-values use JSON size estimates, counted in `estimatedValues`. Reconcile them with
-provider metering and socket measurements. Serialization adds temporary CPU and memory work;
-measure the final transfer rate after the window expires.
+Queries still in flight at the deadline are reported separately. The census does
+not include every PostgreSQL statement or internal transaction command, so its
+calls are not interchangeable with database-wide commit counters. It does not
+measure SQL compilation, driver parsing CPU, or Drizzle row-mapping CPU. Use the
+ranked owners to choose a narrow follow-up profile or synchronous-stage
+measurement; do not attribute CPU by subtracting process CPU usage across an
+asynchronous query. Remove the capture setting after collecting its final
+summary; the absolute deadline already prevents further measurement.
 
 ### Push the schema
 
@@ -586,6 +690,13 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@...5432/postgres \
 See [Supabase pricing](https://supabase.com/pricing) for current details.
 
 ## Connection loss and retries
+
+HTTP access logs distinguish a completed response from a connection that closes
+before or during the response. An aborted request has no success status in the
+log message. The structured response status is null when headers were not sent;
+after headers, it retains the status sent before the abort. These logs describe
+HTTP delivery, not database settlement. A disconnected issue PATCH may continue
+running, so an aborted response does not prove that its writes rolled back.
 
 The database client does not replay arbitrary statements after a disconnect.
 PostgreSQL may have committed a statement before the connection loses its
@@ -683,6 +794,53 @@ identity state, not parent keys. The lock still serializes identity writers and
 blocks concurrent task or run updates. It allows audit inserts to retain their
 foreign-key `KEY SHARE` locks without waiting on identity acquisition. The audit
 foreign keys and their deletion behavior remain enforced.
+
+## Execution admission accounting
+
+The execution-admission module (`server/src/modules/execution-admission/`) owns
+three tables. Nothing writes admissions or caps in production yet, and no claim
+path enforces a project maximum.
+
+- `project_task_execution_policies` stores a project's maximum concurrent tasks
+  apart from `projects`, so project readers never return an unenforced cap. No
+  row means never configured. A row with a null maximum means an explicit "no
+  limit", which a later legacy migration must not overwrite. Maximums are
+  positive. The row is deleted with its project.
+- `execution_admissions` stores one admission attempt of a run. A run can be
+  released before dispatch and admitted again, so `(run_id, attempt)` is unique
+  and a partial unique index allows one unsettled attempt per run. The row keeps
+  the context revision, the nullable primary project as provenance (no foreign
+  key) and the settlement identity, which is set together with `settled_at`.
+  `admitted_project_ids` is the complete admitted project set, sorted, kept
+  after settlement and immutable (a trigger rejects any change). It has no
+  project foreign key, so settled history never blocks project deletion and
+  keeps the deleted project's ID. `{}` is a known empty set. Null means
+  unknown and is allowed only on settled rows: migration `0428` filled it from
+  the charges of unsettled rows, but settled `0426` rows had already lost
+  their set. A retained provider session resumes with the previous set ∪ the
+  current references; an unknown previous set requires a fresh context, never
+  an empty or primary-only guess.
+- `execution_admission_project_charges` stores one row per distinct admitted
+  project, including unlimited projects. An admission without projects has no
+  rows. Composite `(company_id, …)` foreign keys keep admissions and projects in
+  one company. Rows are the only active capacity and exist only while the
+  admission is unsettled: settlement deletes the whole set in one transaction,
+  and `(company_id, project_id)` is indexed for active counts, so lookups
+  scale with active work, not history.
+
+Archiving a project changes no charge. Deleting a project with a charge returns
+`409 project_execution_admission_pending`; the foreign key is the backstop.
+Deleting an agent refuses unsettled admissions on its runs and removes settled
+ones, with their sets, together with the runs. Company deletion removes the company's admissions before its runs and
+projects.
+
+The proposed global lock order for the admission transaction is: company row
+(`FOR NO KEY UPDATE`), native finalization recovery owner, the whole project set
+in ascending ID order (`FOR NO KEY UPDATE`, one statement), issues, wake
+requests, the run, the external-admission advisory lock, the admission row and
+its charges, then budget reservations. Policy updates take the same project
+lock. Settlement takes no project lock. Only the project-set step is implemented
+so far; claim paths keep their current locks until they are integrated.
 
 ## Switching between modes
 
@@ -961,6 +1119,13 @@ objects can be reclaimed. Object existence alone is not a committed save.
 remote allocation/path, writer run, and dirty flag. Paths in this record belong
 to the remote allocation. Save publication checks the current writer/epoch and
 atomically commits the ledger row, authority pointer, and operation receipt.
+`execution_workspaces.metadata.remoteWorkspaceSnapshotRepositories` records the
+committed snapshot ID and the repository descriptors covered by that archive.
+Reservation retains this coverage when it adds requested repositories to the
+current source. Successful save publication advances coverage and the snapshot
+pointer together. Older saved workspaces capture their previous source inventory
+at the next reservation. Newly attached repositories use normal acquisition;
+they cannot claim coverage from an older archive. No schema migration is needed.
 `workspace_operations` journals preparation, save, restore, and local import;
 large file bodies stay outside the database. Ledger identities deliberately
 survive source-record deletion so object cleanup can finish.

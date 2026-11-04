@@ -4,7 +4,7 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create a reusable single-file skill in the company library. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
+    "description": "Save newly authored content as a reusable single-file skill in the company library. To add an existing skill, use source import or catalog install via search_api and call_api so source provenance is retained. Supply a complete SKILL.md whose name and description match the inputs. This saves the skill and shows a card; it does not assign the skill to any agent. Reuse idempotencyKey on retries.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
@@ -336,9 +336,10 @@
       "additionalProperties": false,
       "properties": {
         "key": {
-          "description": "Stable issue-document key.",
+          "description": "Stable document identifier, not a filename or path (for example reconciliation, not reconciliation.md). After trimming whitespace and lowercasing: 1–64 characters, starting with a letter or digit and containing only a–z, 0–9, _ or -. The raw input is limited to 120 characters.",
           "maxLength": 120,
           "minLength": 1,
+          "pattern": "^[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*[A-Za-z0-9\\u212a][A-Za-z0-9_\\u212a-]{0,63}[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*$",
           "type": "string"
         }
       },
@@ -371,9 +372,10 @@
       "additionalProperties": false,
       "properties": {
         "key": {
-          "description": "Stable issue-document key.",
+          "description": "Stable document identifier, not a filename or path (for example reconciliation, not reconciliation.md). After trimming whitespace and lowercasing: 1–64 characters, starting with a letter or digit and containing only a–z, 0–9, _ or -. The raw input is limited to 120 characters.",
           "maxLength": 120,
           "minLength": 1,
+          "pattern": "^[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*[A-Za-z0-9\\u212a][A-Za-z0-9_\\u212a-]{0,63}[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*$",
           "type": "string"
         },
         "limit": {
@@ -699,9 +701,10 @@
           "type": "string"
         },
         "key": {
-          "description": "Stable issue-document key.",
+          "description": "Stable document identifier, not a filename or path (for example reconciliation, not reconciliation.md). After trimming whitespace and lowercasing: 1–64 characters, starting with a letter or digit and containing only a–z, 0–9, _ or -. The raw input is limited to 120 characters.",
           "maxLength": 120,
           "minLength": 1,
+          "pattern": "^[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*[A-Za-z0-9\\u212a][A-Za-z0-9_\\u212a-]{0,63}[\\u0009-\\u000d\\u0020\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000\\ufeff]*$",
           "type": "string"
         },
         "title": {
@@ -3293,13 +3296,13 @@
       "standard",
       "skill_test"
     ],
-    "description": "Create an assigned task. In a conversation, create a project task with no parent; otherwise create a child of the active task. Include initialPlan to persist its plan before execution. Set status to backlog when the user wants to save or plan work without starting it; backlog tasks never wake an agent. Omitted status means todo, subject to blockers.",
+    "description": "Create a project task from a conversation, or a child from an ordinary task. When the user names an existing teammate or project, resolve their IDs with list_agents or list_projects and set assigneeActorId or projectId in this creation call. A todo task can start its assignee immediately; creating it for yourself and reassigning later can start the wrong agent. Persist initialPlan before execution. Use backlog to save or plan without starting work; backlog tasks never wake an agent. Omitted status means todo, subject to blockers. Include required inputs and constraints in self-contained child instructions.",
     "effect": "write",
     "inputSchema": {
       "additionalProperties": false,
       "properties": {
         "assigneeActorId": {
-          "description": "Optional actor assignee. Mutually exclusive with assigneeUserId.",
+          "description": "Existing company agent ID from list_agents. Set the requested teammate here during creation. Omit or use null to assign the current agent; a todo task can start that agent before a later reassignment. Mutually exclusive with assigneeUserId.",
           "maxLength": 200,
           "type": [
             "string",
@@ -3355,7 +3358,7 @@
           ]
         },
         "projectId": {
-          "description": "Project identifier for the new task.",
+          "description": "Project ID from list_projects. Set the requested project in this creation call so the task does not inherit a different project.",
           "maxLength": 20000,
           "type": [
             "string",

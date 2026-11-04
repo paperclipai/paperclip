@@ -269,6 +269,7 @@ export interface DurablePrpControlPlaneOptions {
     readonly identity: DurableRecoveryIdentity;
     readonly warmTransitionId: string | null;
   }) => Promise<void>;
+  semanticInputMode?: "dispatch" | "retain_only";
   onSemanticToolInput?: (input: {
     readonly callId: string;
     readonly operationId: string;
@@ -389,6 +390,33 @@ function captureCheckpoint(state: StoredCoreState, runnerVersion: string, runner
       atomicPrivateWrite(resolve(directory, "control-plane-state.json"), JSON.stringify(checkpointState(records).state));
     },
   };
+}
+
+export function captureLegacyDurablePrpCheckpoint(contents: string, expected: {
+  runId: string; runnerInstanceId: string; normalizedSessionId: string;
+}, verifiedArtifact?: { version: string; digest: string }): DurablePrpCheckpoint {
+  if (Buffer.byteLength(contents) > maxStateBytes) throw new Error("native_runner_checkpoint_invalid");
+  const value: unknown = JSON.parse(contents);
+  if (!isRecord(value) || !exactIdentity(value.identity) || !isStoredCoreState(value, value.identity)
+    || value.identity.runId !== expected.runId || value.identity.runnerInstanceId !== expected.runnerInstanceId
+    || value.identity.normalizedSessionId !== expected.normalizedSessionId
+    || checkpointRunId(value) !== expected.runId || value.warmTransition
+    || value.stagedRunAttachment && !stagedTargetActivated(value)) {
+    throw new Error("native_runner_checkpoint_binding_mismatch");
+  }
+  const artifacts: Array<{ runnerVersion: string; runnerDigest: string }> = value.completedWarmTransition
+    ? [value.completedWarmTransition.receipt]
+    : Object.values(value.tickets).filter(ticket => ticket.usedAt !== null
+      && Number.isFinite(Date.parse(ticket.usedAt))
+      && canonicalJson(ticket.identity) === canonicalJson(value.identity));
+  if (verifiedArtifact) artifacts.push({ runnerVersion: verifiedArtifact.version, runnerDigest: verifiedArtifact.digest });
+  const artifact = artifacts[0];
+  if (!artifact || typeof artifact.runnerVersion !== "string" || !artifact.runnerVersion
+    || !runnerDigestPattern.test(artifact.runnerDigest)
+    || artifacts.some(candidate => candidate.runnerVersion !== artifact.runnerVersion || candidate.runnerDigest !== artifact.runnerDigest)) {
+    throw new Error("native_runner_checkpoint_artifact_unproven");
+  }
+  return decodeDurablePrpCheckpoint(captureCheckpoint(value, artifact.runnerVersion, artifact.runnerDigest).records);
 }
 
 function parseCheckpointHeader(contents: string): Record<string, unknown> & {
@@ -920,6 +948,26 @@ export function inspectStagedRunAttachment(state: unknown, expectedTarget?: Dura
       || !state.stagedRunAttachment || (expectedTarget && canonicalJson(state.stagedRunAttachment.targetIdentity) !== canonicalJson(expectedTarget))) return null;
     const template = stagedAttachmentTemplate(state);
     return template ? { ...structuredClone(state.stagedRunAttachment), runAttachTemplate: structuredClone(template) } : null;
+  } catch { return null; }
+}
+
+/** Recover admitted instructions without opening the retired controller's assets.
+ * Inspection is evidence only; the caller still authorizes the runner and lease. */
+export function inspectRetainedRunInstructions(state: unknown, expected: {
+  runId: string; normalizedSessionId: string; runtimeContextDigest: string;
+}): string | null {
+  try {
+    if (!isRecord(state) || !exactIdentity(state.identity) || !isStoredCoreState(state, state.identity)) return null;
+    const matches = (identity: DurableRecoveryIdentity) => identity.runId === expected.runId
+      && identity.normalizedSessionId === expected.normalizedSessionId;
+    const staged = state.stagedRunAttachment;
+    const template = staged && matches(staged.targetIdentity)
+      ? stagedAttachmentTemplate(state)
+      : matches(state.identity) ? state.runAttachTemplate : null;
+    if (!isRecord(template) || !isRecord(template.provider)) return null;
+    const { instructions, runtimeContext } = template.provider;
+    return isRecord(runtimeContext) && runtimeContext.aggregateDigest === expected.runtimeContextDigest
+      && typeof instructions === "string" && instructions.trim().length > 0 ? instructions : null;
   } catch { return null; }
 }
 
@@ -1901,6 +1949,7 @@ export class DurablePrpControlPlane {
     code: string;
   }> = [];
   #port: number | null = null;
+  #semanticInputMode: "dispatch" | "retain_only";
   #onSemanticToolInput?: DurablePrpControlPlaneOptions["onSemanticToolInput"];
   #onCommittedEvent?: DurablePrpControlPlaneOptions["onCommittedEvent"];
   #recoverSemanticToolInput?: DurablePrpControlPlaneOptions["recoverSemanticToolInput"];
@@ -1955,6 +2004,7 @@ export class DurablePrpControlPlane {
         "Warm run transition requires its exact approved runner artifact.",
       );
     }
+    this.#semanticInputMode = options.semanticInputMode ?? "dispatch";
     this.#onSemanticToolInput = options.onSemanticToolInput;
     this.#onCommittedEvent = options.onCommittedEvent;
     this.#recoverSemanticToolInput = options.recoverSemanticToolInput;
@@ -2106,7 +2156,7 @@ export class DurablePrpControlPlane {
   }
 
   async recoverPendingSemanticInputs(): Promise<void> {
-    if (!this.#recoverSemanticToolInput) return;
+    if (this.#semanticInputMode === "retain_only" || !this.#recoverSemanticToolInput) return;
     const identity = this.#identity;
     for (const saved of [...this.#store.state.committedEvents]) {
       if (!unsettledSemanticInput(saved, this.#store.state)) continue;
@@ -3847,7 +3897,7 @@ export class DurablePrpControlPlane {
       eventType === "semantic_tool.input" || eventType === "mcp_app.tool_input";
     if (
       isSemanticInput &&
-      (this.#onSemanticToolInput === undefined ||
+      ((this.#onSemanticToolInput === undefined && this.#semanticInputMode !== "retain_only") ||
         semantic?.phase !== "input" ||
         typeof semantic.callId !== "string" ||
         typeof semantic.operationId !== "string" ||
@@ -3987,7 +4037,7 @@ export class DurablePrpControlPlane {
     }
     if (!isCurrentOwner()) return;
 
-    const liveCall = isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
+    const liveCall = this.#semanticInputMode !== "retain_only" && isSemanticInput && this.#onSemanticToolInput && semantic !== undefined
       && typeof semantic.callId === "string" && typeof semantic.operationId === "string"
       ? { callId: semantic.callId, operationId: semantic.operationId, input: semantic.input,
           sourceEventId, sourceEventType: eventType,
@@ -4128,6 +4178,12 @@ const runnerExplicitProviderEnvironmentKeys = [
   "PAPERCLIP_OPENCODE_PERMISSION_MODE",
   "PAPERCLIP_OPENCODE_RUNTIME_DIR",
   "PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS",
+  "PAPERCLIP_CURSOR_CLOUD_CONFIG_PATH",
+  "PAPERCLIP_CURSOR_CLOUD_ARTIFACT_ROOT",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_SOCKET_PATH",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_TOKEN",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_URL",
+  "PAPERCLIP_CURSOR_CLOUD_RELAY_EXPIRES_AT",
   "PAPERCLIP_RUNNER_INSTANCE_ID",
   "PAPERCLIP_RUN_ID",
   "PAPERCLIP_NORMALIZED_SESSION_ID",
@@ -4225,6 +4281,9 @@ export function spawnRunner(options: {
     sidecarScript: string;
     sidecarScriptSha256: string;
   };
+  cursorCloudLaunchProfile?: {
+    command: string; commandSha256: string; proxyScript: string; proxyScriptSha256: string;
+  };
   opencodeLaunchProfile?: {
     command: string;
     commandSha256: string;
@@ -4314,6 +4373,12 @@ export function spawnRunner(options: {
           ...(options.acpxLaunchProfile.candidateAdmission ? ["--acpx-candidate-admission-json", JSON.stringify(options.acpxLaunchProfile.candidateAdmission)] : []),
         ]
       : []),
+    ...(options.cursorCloudLaunchProfile ? [
+      "--cursor-cloud-proxy-command", options.cursorCloudLaunchProfile.command,
+      "--cursor-cloud-proxy-command-sha256", options.cursorCloudLaunchProfile.commandSha256,
+      "--cursor-cloud-proxy-script", options.cursorCloudLaunchProfile.proxyScript,
+      "--cursor-cloud-proxy-script-sha256", options.cursorCloudLaunchProfile.proxyScriptSha256,
+    ] : []),
     ...(options.opencodeLaunchProfile
       ? [
           "--opencode-proxy-command",
@@ -4384,7 +4449,7 @@ export function spawnRunner(options: {
           maxOutboxBytes: options.maxOutboxBytes, p0ReserveBytes: options.p0ReserveBytes,
           maxRuntimeMs, maxLifetimeMs: lifetimeDeadline === undefined ? options.maxLifetimeMs : maxRuntimeMs,
           reconnectGraceMs: options.reconnectGraceMs, lifecyclePolicy: options.lifecyclePolicy,
-          acpxLaunchProfile: options.acpxLaunchProfile, opencodeLaunchProfile: options.opencodeLaunchProfile,
+          acpxLaunchProfile: options.acpxLaunchProfile, opencodeLaunchProfile: options.opencodeLaunchProfile, cursorCloudLaunchProfile: options.cursorCloudLaunchProfile,
           diagnosticsDirectory: options.diagnosticsDirectory,
         },
       }),

@@ -355,7 +355,7 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
     expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, competingId)))[0]?.status).toBe("running");
   });
 
-  it.each(["native_safe_replacement", "native_provider_overloaded"])("does not dispatch %s when the task becomes blocked after scheduling", async retryReason => {
+  it.each(["native_safe_replacement", "native_provider_overloaded", "interrupted_preparation"])("does not dispatch %s when the task becomes blocked after scheduling", async retryReason => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();
     await seedIssue({ companyId, issueId, assigneeAgentId: agentId, status: "in_progress" });
@@ -840,6 +840,44 @@ describeEmbeddedPostgres("run-dispatch postgres adapter", () => {
       leaseOwner: owner, leaseExpiresAt: new Date(Date.now() + 60_000) });
     return { companyId, agentId, issueId, runId, owner, reservation };
   }
+
+  it.each(["fresh", "bootstrap", "dead-runner", "expired", "foreign-owner", "foreign-intent", "missing-audit", "foreign-audit", "stale-generation", "terminal", "no-hold", "settled-hold"] as const)(
+    "keeps %s work fenced while a company is paused for budget", async mode => {
+      const f = await seedRecoveryAdmission();
+      const intentAuditId = randomUUID();
+      await db.insert(activityLog).values({ id: intentAuditId, companyId: f.companyId, actorType: "system", actorId: "native-session-cancellation",
+        action: "native.cancellation_intent_recorded", entityType: "heartbeat_run", entityId: f.runId, runId: f.runId, agentId: f.agentId });
+      await db.update(nativeRunFinalizations).set({ controllerGeneration: 2, attempt: 1, recoveryState: "awaiting_runner_reattach",
+        recoveryHistory: [{ disposition: "reattach_remote_runner", controllerGeneration: 2, providerAttempt: 1 }],
+        ...(mode === "bootstrap" ? { recoveryState: "bootstrap_incomplete" } : {}),
+        ...(mode === "dead-runner" ? { recoveryState: "resuming_session" } : {}),
+        ...(mode === "expired" ? { leaseExpiresAt: new Date(Date.now() - 1) } : {}),
+        ...(mode === "foreign-owner" ? { leaseOwner: "another-owner" } : {}),
+        ...(mode === "stale-generation" ? { controllerGeneration: 3 } : {}),
+        ...(mode === "terminal" ? { phase: "terminal_failure" } : {}),
+      }).where(eq(nativeRunFinalizations.runId, f.runId));
+      await db.update(heartbeatRuns).set({ resultJson: mode === "fresh" ? {} : {
+        startupCancellation: { beforeNativeSelection: false, errorCode: "cancelled", requestedAt: new Date().toISOString() },
+        nativeCancellation: { schema: "paperclip.native-cancellation.v1", companyId: f.companyId, runId: f.runId,
+          issueId: mode === "foreign-intent" ? randomUUID() : f.issueId, scope: "run", reasonCode: "cancellation_run_only",
+          intentId: `native-cancellation:${randomUUID()}`, intentAuditId: mode === "missing-audit" ? randomUUID() : intentAuditId,
+          dispatchState: "pending", dispatched: false, effects: ["release_run_resources"] },
+      } }).where(eq(heartbeatRuns.id, f.runId));
+      if (mode === "foreign-audit") await db.update(activityLog).set({ entityId: randomUUID() }).where(eq(activityLog.id, intentAuditId));
+      if (mode === "no-hold") await db.delete(budgetReservations).where(eq(budgetReservations.id, f.reservation.id));
+      if (mode === "settled-hold") await db.update(budgetReservations).set({ state: "settled" }).where(eq(budgetReservations.id, f.reservation.id));
+      await db.update(companies).set({ status: "paused", pauseReason: "budget" }).where(eq(companies.id, f.companyId));
+      await expect(reserveRunBudget(db, f.companyId, f.runId, null, {}, f.owner)).rejects.toThrow();
+      const dispatch = vi.fn(async () => undefined);
+      const gate = await createPostgresRunDispatchAdapter(db).dispatchResolvedInteractionIfCurrent({ companyId: f.companyId, runId: f.runId,
+        reservationId: f.reservation.id, recoveryLeaseOwner: f.owner, expectedStatus: "running", now: new Date(), dispatch })
+        .catch(error => ({ dispatched: false, error }));
+      expect(gate.dispatched).toBe(false);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(await db.select().from(budgetReservations).where(eq(budgetReservations.runId, f.runId)))
+        .toHaveLength(mode === "no-hold" ? 0 : 1);
+      expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.runId))).toHaveLength(0);
+    });
 
   it.each(["reservation", "dispatch"] as const)("orders recovery %s behind a coordinator before taking finalization's issue and run locks", async boundary => {
     const f = await seedRecoveryAdmission();

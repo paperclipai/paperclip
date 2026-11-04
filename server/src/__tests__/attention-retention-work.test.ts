@@ -37,6 +37,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   const errors: unknown[] = [];
   const statements: string[] = [];
   const parameterCounts: number[] = [];
+  const testBodies = new Set<Promise<void>>();
   let captureBlockerPlan = false;
   let blockerPlanQuery: { query: string; parameters: unknown[] } | undefined;
   beforeAll(async () => {
@@ -58,10 +59,13 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board", membershipRole: "owner", status: "active" });
     await db.insert(agents).values({ id: agentId, companyId, name: "Origin", role: "engineer", status: "active" });
     await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.01)`)));
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
-    vi.setSystemTime(new Date("2026-11-01T12:00:00Z"));
+    // Ordinary issue creation uses database timestamp defaults. Start the fake
+    // clock there too; a fixed calendar date eventually trails those deadlines.
+    const [clock] = await db.execute<{ now: string }>(sql`select (extract(epoch from clock_timestamp()) * 1000)::text as now`);
+    vi.useFakeTimers({ now: Number(clock.now), toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
   });
   afterEach(async () => {
+    await Promise.allSettled([...testBodies]);
     await coordinator?.stop(); coordinator = undefined;
     vi.useRealTimers(); vi.restoreAllMocks();
     await db.transaction(async tx => {
@@ -74,6 +78,24 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   });
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
   const old = () => new Date(Date.now() - delay - 600_000);
+  async function tracked(body: () => Promise<void>) {
+    const running = body(); testBodies.add(running);
+    try { await running; } finally { testBodies.delete(running); }
+  }
+  async function insertSharedWorkspaceHistory(workspaceId: string, query: SQL) {
+    await db.transaction(async tx => {
+      await tx.execute(sql`alter table issues disable trigger issues_record_workspace_privacy_source`);
+      await tx.execute(query);
+      await tx.execute(sql`update execution_workspaces set metadata = metadata
+        where id = ${workspaceId}::uuid and company_id = ${companyId}::uuid`);
+      await tx.execute(sql`alter table issues enable trigger issues_record_workspace_privacy_source`);
+      const [provenance] = await tx.execute<{ complete: boolean }>(sql`select
+        w.metadata->'_issuePrivacySources' = (select jsonb_object_agg(i.id::text, true) from issues i
+          where i.execution_workspace_id = w.id and i.company_id = w.company_id) as complete
+        from execution_workspaces w where w.id = ${workspaceId}::uuid and w.company_id = ${companyId}::uuid`);
+      expect(provenance?.complete).toBe(true);
+    });
+  }
   async function insertIssue(status = "todo", values: Partial<typeof issues.$inferInsert> = {}, database: Db = db) {
     const [row] = await database.insert(issues).values({ companyId, title: randomUUID(), status,
       createdByAgentId: agentId, createdAt: old(), updatedAt: old(), ...values }).returning();
@@ -112,6 +134,19 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   const mutation = (sourceKind: "review", sourceId: string) => ({ companyId, sourceKind, sourceId,
     authActor: { type: "board" as const, source: "local_implicit" as const, userId: "board", companyIds: [companyId], isInstanceAdmin: true },
     actor: { actorType: "user" as const, actorId: "board", userId: "board", agentId: null, runId: null, agentApiKeyId: null, responsibleUserId: "board" } });
+
+  it("restores ordinary workspace provenance recording after a failed bulk fixture", async () => {
+    const workspaceId = randomUUID();
+    await db.execute(sql`insert into execution_workspaces (id, company_id, name, mode, strategy_type, metadata)
+      values (${workspaceId}::uuid, ${companyId}::uuid, 'Fixture rollback', 'shared', 'project_primary', '{"fixture":"retained"}'::jsonb)`);
+    await expect(insertSharedWorkspaceHistory(workspaceId, sql`select 1 / 0`)).rejects.toThrow();
+    const [trigger] = await db.execute<{ tgenabled: string }>(sql`select tgenabled from pg_trigger
+      where tgrelid = 'issues'::regclass and tgname = 'issues_record_workspace_privacy_source'`);
+    expect(trigger.tgenabled).toBe("O");
+    const issue = await insertIssue("done", { executionWorkspaceId: workspaceId });
+    const [workspace] = await db.execute<{ metadata: unknown }>(sql`select metadata from execution_workspaces where id = ${workspaceId}::uuid`);
+    expect(workspace.metadata).toEqual({ fixture: "retained", _issuePrivacySources: { [issue.id]: true } });
+  });
 
   it("records the aggregate baseline SQL across old ticks and eliminates it after settlement", async () => {
     await insertIssue("done");
@@ -161,7 +196,10 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await db.select().from(issueRelations).where(and(eq(issueRelations.issueId, child.id),
       eq(issueRelations.relatedIssueId, parent.id)))).toHaveLength(1);
     await settle(); expect(coordinator!.nextWakeAt()).not.toBeNull();
-    await vi.advanceTimersByTimeAsync(delay + 2000); await archived("review", child.id); await quiet();
+    // SQL assigns updatedAt using the database clock, independently of the fake
+    // scheduler clock. Cross the saved deadline rather than a fixed duration.
+    await vi.advanceTimersByTimeAsync(Math.max(0, child.updatedAt.getTime() + delay - Date.now()) + 2000);
+    await archived("review", child.id); await quiet();
     expect(await db.select().from(decisionArchiveNotificationOutbox).where(eq(decisionArchiveNotificationOutbox.sourceId, child.id))).toHaveLength(1);
   });
 
@@ -169,7 +207,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     const rows = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
       title: randomUUID(), status: "in_review", assigneeAgentId: agentId, updatedAt: old() }))).returning();
     await db.insert(issueThreadInteractions).values(rows.map(row => ({ companyId, issueId: row.id,
-      kind: "request_confirmation", addresseeAgentId: agentId, payload: { version: 1, prompt: "Agent verdict" } })));
+      kind: "request_confirmation" as const, addresseeAgentId: agentId, payload: { version: 1 as const, prompt: "Agent verdict" } })));
     statements.length = 0;
     const page = await attentionRetentionService(db).load({ companyId, sourceKind: "review" });
     expect(page.rows).toEqual([]); expect(page.complete).toBe(false);
@@ -240,11 +278,11 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   it("batches 100 blocker graphs with exact terminal timestamps and fresh terminal visibility", async () => {
     const roots = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
       title: randomUUID(), status: "blocked", updatedAt: old(), blockedTransitionAt: old(),
-      unblockDescriptor: { owner: "board", action: "Pick an owner" } }))).returning();
+      unblockDescriptor: { owner: "board" as const, action: "Pick an owner" } }))).returning();
     const terminals = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
       title: randomUUID(), status: "backlog", assigneeAgentId: agentId, updatedAt: old() }))).returning();
     await db.insert(issueRelations).values(roots.map((root, index) => ({ companyId,
-      issueId: terminals[index].id, relatedIssueId: root.id, type: "blocks" })));
+      issueId: terminals[index].id, relatedIssueId: root.id, type: "blocks" as const })));
     await db.execute(sql`update issues set updated_at = updated_at + interval '0.000321 seconds' where id = ${terminals[99].id}::uuid`);
     const service = attentionRetentionService(db), scope = { companyId, sourceKind: "blocker_attention" as const };
     statements.length = 0;
@@ -280,7 +318,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
       { companyId, issueId: middle.id, relatedIssueId: root.id, type: "blocks" },
       { companyId, issueId: terminal.id, relatedIssueId: middle.id, type: "blocks" },
       ...heavyNodes.map((node, index) => ({ companyId, issueId: node.id,
-        relatedIssueId: limit === "nodes" || index === 0 ? heavy.id : heavyNodes[index - 1].id, type: "blocks" })),
+        relatedIssueId: limit === "nodes" || index === 0 ? heavy.id : heavyNodes[index - 1].id, type: "blocks" as const })),
     ]);
     const owner = issueService(db);
     const expected = (await owner.listBlockerAttention(companyId, [root])).get(root.id)!;
@@ -312,7 +350,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     const cycle = await insertIssue("blocked");
     const leaf = await insertIssue("backlog", { assigneeAgentId: agentId });
     await db.insert(issueRelations).values([
-      ...chain.map((node, index) => ({ companyId, issueId: node.id, relatedIssueId: index ? chain[index - 1].id : root.id, type: "blocks" })),
+      ...chain.map((node, index) => ({ companyId, issueId: node.id, relatedIssueId: index ? chain[index - 1].id : root.id, type: "blocks" as const })),
       { companyId, issueId: leaf.id, relatedIssueId: cycle.id, type: "blocks" },
       { companyId, issueId: cycle.id, relatedIssueId: leaf.id, type: "blocks" },
     ]);
@@ -340,7 +378,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     });
     const listed = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true });
     expect(listed).toHaveLength(roots.length);
-    for (const root of listed) expect(root.blockerAttention).toMatchObject({ state: "needs_attention", terminalBlockerIssueId: root.id });
+    for (const root of listed) expect((root as typeof root & { blockerAttention?: unknown }).blockerAttention).toMatchObject({ state: "needs_attention", terminalBlockerIssueId: root.id });
     const feed = await attentionService(db).list(companyId, { all: true, allowUnscopedAll: true });
     const visible = new Set(feed.items.filter(item => item.sourceKind === "blocker_attention").map(item => item.subject.id));
     expect(visible).toEqual(new Set(roots.map(root => root.id)));
@@ -419,7 +457,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
       const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
       await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, child.id));
     } else if (kind === "confirmation") {
-      await db.insert(issueThreadInteractions).values({ companyId, issueId: child.id, kind: "request_confirmation", status: "pending", payload: { prompt: "Approve?" } });
+      await db.insert(issueThreadInteractions).values({ companyId, issueId: child.id, kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Approve?" } });
     }
     parameterCounts.length = 0;
     const batch = await issueService(db).listBlockerAttentionBatch(companyId, [root]);
@@ -437,13 +475,13 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await db.select().from(decisionArchiveNotificationOutbox)).toHaveLength(0);
   });
 
-  it.each(["running", "run", "confirmation", "completed"] as const)("filters completed blocker history before bounded %s attention and archive checks", async kind => {
+  it.each(["running", "run", "confirmation", "completed"] as const)("filters completed blocker history before bounded %s attention and archive checks", kind => tracked(async () => {
     const root = await insertIssue("blocked"), workspaceId = randomUUID();
     await db.execute(sql`insert into execution_workspaces (id, company_id, name, mode, strategy_type)
       values (${workspaceId}::uuid, ${companyId}::uuid, 'Finalized shared history', 'shared', 'project_primary')`);
     await db.execute(sql`insert into workspace_operations (company_id, execution_workspace_id, phase, status, started_at)
       values (${companyId}::uuid, ${workspaceId}::uuid, 'workspace_finalize', 'succeeded', ${old().toISOString()}::timestamptz)`);
-    await db.execute(sql`with history as (
+    await insertSharedWorkspaceHistory(workspaceId, sql`with history as (
       insert into issues (id, company_id, title, status, updated_at, execution_workspace_id)
       select ('00000000-0000-4000-8000-' || lpad(to_hex(n), 12, '0'))::uuid,
         ${companyId}::uuid, 'completed-blocker-' || n, 'done', ${old().toISOString()}::timestamptz, ${workspaceId}::uuid
@@ -457,7 +495,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
         const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
         await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, live.id));
       } else if (kind === "confirmation") await db.insert(issueThreadInteractions).values({ companyId, issueId: live.id,
-        kind: "request_confirmation", status: "pending", payload: { prompt: "Still waiting" } });
+        kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Still waiting" } });
     }
     statements.length = 0; parameterCounts.length = 0;
     captureBlockerPlan = kind === "completed";
@@ -498,7 +536,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(batch.deferredRootIds.size).toBe(0);
     expect(Boolean(batch.attention.get(root.id)?.blockingTreeLive)).toBe(kind !== "completed");
     expect(parameterCounts.length).toBeLessThanOrEqual(100);
-  });
+  }));
 
   it("does not archive an unknown truncated blocker tree during its fresh check", async () => {
     const root = await insertIssue("blocked");
@@ -564,7 +602,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
         values (${workspaceId}::uuid, ${companyId}::uuid, 'Pending shared export', 'shared', 'project_primary')`);
       await workspaceOperationService(db).createRecorder({ companyId, executionWorkspaceId: workspaceId })
         .recordOperation({ phase: "workspace_provision", run: async () => ({ status: "succeeded" }) });
-      await db.execute(sql`with history as (
+      await insertSharedWorkspaceHistory(workspaceId, sql`with history as (
         insert into issues (company_id, title, status, updated_at, execution_workspace_id)
         select ${companyId}::uuid, 'waiting-for-export-' || n, 'done', ${old().toISOString()}::timestamptz, ${workspaceId}::uuid
         from generate_series(1, 2100) n returning id)
@@ -649,13 +687,13 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     let query!: Parameters<typeof db.execute>[0], returned = 0;
     await db.transaction(async tx => {
       const execute = tx.execute.bind(tx);
-      vi.spyOn(tx, "execute").mockImplementation(async statement => {
+      vi.spyOn(tx, "execute").mockImplementation((async (statement: Parameters<typeof execute>[0]) => {
         const result = await execute(statement);
         if (new PgDialect().sqlToQuery(statement as SQL).sql.includes("with recursive affected")) {
           query = statement; returned = result.length;
         }
         return result;
-      });
+      }) as unknown as typeof execute);
       await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: leaf.id });
     });
     expect(returned).toBe(101);
@@ -766,7 +804,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     const [decision] = await db.insert(decisions).values({ companyId, originAgentId: agentId, originIssueId: origin.id, originRunId: run.id,
       title: "Decision", body: "Choose", options: [], signedSpec: "fixture", targetSnapshots: {}, expiresAt: new Date(Date.now() + 86_400_000), updatedAt: old() }).returning();
     const [recovery] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: origin.id, kind: "execution", ownerType: "board", cause: "fixture", fingerprint: "fixture", nextAction: "Choose", updatedAt: old() }).returning();
-    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId: origin.id, kind: "ask_user_questions", payload: { questions: [] }, updatedAt: old() }).returning();
+    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId: origin.id, kind: "ask_user_questions", payload: { version: 1, questions: [] }, updatedAt: old() }).returning();
     await start(); await quiet();
     await issueService(db).update(origin.id, { hiddenAt: null });
     for (const [kind, id] of [["decision", decision.id], ["recovery_action", recovery.id], ["failed_run", run.id], ["issue_thread_interaction", interaction.id]]) await archived(kind, id);
@@ -895,10 +933,10 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     await db.insert(decisions).values({ companyId, originAgentId: agentId, originIssueId: origin.id, originRunId: run.id,
       title: "Decision", body: "Choose", options: [], signedSpec: "fixture", targetSnapshots: {}, expiresAt: new Date(Date.now() + 86_400_000), updatedAt: old() });
     await db.insert(issueThreadInteractions).values([
-      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { questions: [] }, updatedAt: old() },
-      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { questions: [] }, addresseeAgentId: agentId, updatedAt: old() },
-      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { questions: [] }, addresseeUserId: "board", updatedAt: old() },
-      { companyId, issueId: hidden.id, kind: "ask_user_questions", payload: { questions: [] }, updatedAt: old() },
+      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { version: 1, questions: [] }, updatedAt: old() },
+      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { version: 1, questions: [] }, addresseeAgentId: agentId, updatedAt: old() },
+      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { version: 1, questions: [] }, addresseeUserId: "board", updatedAt: old() },
+      { companyId, issueId: hidden.id, kind: "ask_user_questions", payload: { version: 1, questions: [] }, updatedAt: old() },
     ]);
     await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: origin.id, kind: "execution", ownerType: "board", cause: "fixture", fingerprint: "fixture", nextAction: "Choose", updatedAt: old() });
     const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType: "company", scopeId: companyId, windowKind: "calendar_month_utc", amount: 100 }).returning();
@@ -986,16 +1024,16 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
       { companyId, name: "Unhealthy", role: "engineer", status: "active" },
     ]).returning();
     await db.update(agents).set({ reportsTo: manager.id }).where(eq(agents.id, unhealthy.id));
-    const common = { companyId, issueId: origin.id, kind: "request_confirmation", payload: { prompt: "Approve?" }, createdAt: old(), updatedAt: old() };
+    const common = { companyId, issueId: origin.id, kind: "request_confirmation", payload: { version: 1, prompt: "Approve?" }, createdAt: old(), updatedAt: old() };
     const [older, newest, independent] = await db.insert(issueThreadInteractions).values([
       common, { ...common, createdAt: new Date(old().getTime() + 1000) },
       { ...common, payload: { prompt: "Independent", qualityReview: { artifactKey: "copy" } } },
       { ...common, createdAt: new Date(), addresseeUserId: "board" },
       { ...common, addresseeAgentId: agentId },
       { ...common, issueId: hidden.id },
-      { ...common, issueId: conversation.id, kind: "ask_user_questions", payload: { questions: [] } },
+      { ...common, issueId: conversation.id, kind: "ask_user_questions", payload: { version: 1, questions: [] } },
       { ...common, issueId: conversation.id, addresseeAgentId: paused.id },
-      { ...common, issueId: conversation.id, addresseeAgentId: unhealthy.id, kind: "ask_user_questions", payload: { questions: [] } },
+      { ...common, issueId: conversation.id, addresseeAgentId: unhealthy.id, kind: "ask_user_questions", payload: { version: 1, questions: [] } },
     ] as typeof issueThreadInteractions.$inferInsert[]).returning();
     const feed = await attentionService(db).list(companyId, { all: true, allowUnscopedAll: true });
     const expected = [...new Set(feed.items.map(item => `${item.sourceKind}:${item.subject.id}`))].sort();
@@ -1010,7 +1048,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   it("excludes maintained reviews until a pending approval creates human attention", async () => {
     const row = await insertIssue("in_review", { assigneeAgentId: agentId });
     const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId: row.id,
-      kind: "request_confirmation", addresseeAgentId: agentId, payload: { prompt: "Agent verdict" } }).returning();
+      kind: "request_confirmation", addresseeAgentId: agentId, payload: { version: 1, prompt: "Agent verdict" } }).returning();
     expect((await loadAll()).some(entry => entry.sourceKind === "review")).toBe(false);
     const [approval] = await db.insert(approvals).values({ companyId, type: "hire_agent", payload: {}, status: "pending" }).returning();
     await db.insert(issueApprovals).values({ companyId, issueId: row.id, approvalId: approval.id });
@@ -1040,7 +1078,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await state("agent_error_alert", agentId)).toBeNull();
   });
 
-  it("drains a paged backlog with source-scoped self notifications and leaves completed history quiet", async () => {
+  it("drains a paged backlog with source-scoped self notifications and leaves completed history quiet", () => tracked(async () => {
     await db.insert(issues).values(Array.from({ length: 225 }, () => ({ companyId, title: randomUUID(), status: "in_review", assigneeUserId: "board", updatedAt: old() })));
     const service = attentionRetentionService(db);
     const load = vi.spyOn(service, "load");
@@ -1052,7 +1090,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(scopes.filter(scope => scope && !scope.sourceId)).toHaveLength(0);
     expect(scopes.filter(scope => scope?.sourceId).length).toBeLessThanOrEqual(225);
     expect(new Set((await db.select().from(decisionRetention)).map(row => row.sourceId)).size).toBe(225);
-  });
+  }), 45_000);
 
   it("retries a failed atomic archive across drain and preserves notifications during a scan", async () => {
     const row = await insertIssue("in_review", { assigneeUserId: "board" });

@@ -10,6 +10,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { eq, sql } from "drizzle-orm";
 import { agents, builtInManagedResources, companies, companySecretVersions, createDb, environmentLeases, environments, heartbeatRuns, plugins, sandboxCreationOperations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { environmentService } from "../services/environments.js";
 import { HttpError } from "../errors.js";
@@ -18,8 +19,9 @@ import { readIdleSleepSafety } from "../services/idle-sleep-safety.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_HISTORY_TEST_DATABASE_URL");
 describe("durable sandbox creation through the runtime entry point", () => {
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: ReturnType<typeof createDb>;
   let companyId: string, environmentId: string, pluginId: string, runId: string, spool: string;
   let creates: number, destroys: number, loseReply: boolean, failDestroy: boolean;
@@ -27,8 +29,8 @@ describe("durable sandbox creation through the runtime entry point", () => {
   const resources = new Map<string, string>();
   let workers: PluginWorkerManager;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("sandbox-creation-operations-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("sandbox-creation-operations-");
+    db = createDb(external ?? database!.connectionString, { maxConnections: 4, idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, 90_000);
   beforeEach(async () => {
     await db.execute(sql`truncate sandbox_creation_operations, companies, environments, plugins cascade`);
@@ -152,7 +154,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
       const result = await promisify(execFile)(process.execPath, ["--import", fileURLToPath(import.meta.resolve("tsx")), fixture], {
         cwd: fileURLToPath(new URL("../../..", import.meta.url)), timeout: 60_000,
         env: { ...process.env, CREATION_FIXTURE_ACTION: action, CREATION_FIXTURE_EMPTY_DISK: disk,
-          CREATION_FIXTURE_DATABASE_URL: database.connectionString, CREATION_FIXTURE_PROVIDER_URL: `http://127.0.0.1:${address.port}`,
+          CREATION_FIXTURE_DATABASE_URL: external ?? database!.connectionString, CREATION_FIXTURE_PROVIDER_URL: `http://127.0.0.1:${address.port}`,
           CREATION_FIXTURE_COMPANY_ID: companyId, CREATION_FIXTURE_ENVIRONMENT_ID: environmentId, CREATION_FIXTURE_RUN_ID: runId },
       });
       return result.stdout;
@@ -267,7 +269,7 @@ describe("durable sandbox creation through the runtime entry point", () => {
     return secret;
   }
   it.each(["deleted", "disabled", "archived", "version-disabled", "vault-disabled", "vault-coming-soon"] as const)(
-    "retains a %s creation credential as quiet manual reconciliation across restart", async state => {
+    "retains a %s creation credential with a quiet worker while sleep remains blocked across restart", async state => {
     const secrets = secretOwner.secretService(db);
     const vault = state.startsWith("vault-") ? await secrets.createProviderConfig(companyId, {
       provider: "local_encrypted", displayName: "Creation vault", status: "ready", config: {},
@@ -281,8 +283,10 @@ describe("durable sandbox creation through the runtime entry point", () => {
     const inspectCalls = () => vi.mocked(workers.call).mock.calls.filter(value => value[1] === "environmentInspectLease").length;
     await due(); await runtime().flushDeferredOrphanCleanups();
     expect(await db.select().from(sandboxCreationOperations)).toEqual([
-      expect.objectContaining({ state: "needs_reconciliation" }),
+      expect.objectContaining({ companyId, state: "needs_reconciliation",
+        metadata: expect.objectContaining({ creationReconciliationReason: "creation_identity_unavailable" }) }),
     ]);
+    expect(resources.size).toBe(1);
     expect(await db.select().from(environmentLeases)).toEqual([]);
     expect(inspectCalls()).toBe(0);
     expect(await nextEnvironmentCleanupAt(db)).toBeNull();
@@ -293,12 +297,12 @@ describe("durable sandbox creation through the runtime entry point", () => {
     await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
     const ownerId = randomUUID();
     const hold = { ownerId, draining: true, startedAt: new Date(Date.now() - 1000), expiresAt: new Date(Date.now() + 60_000), activeRuns: 0, pendingWakes: 0 };
-    // An installed plugin is a separate blocker until its worker proves quiet.
+    // A quiet plugin worker cannot discharge the retained creation uncertainty.
     expect(await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none"))
       .toEqual({ version: 1, backgroundWork: "present" });
     expect(await readIdleSleepSafety(db, () => hold, Date.now, ownerId, async () => "none",
       async () => ({ backgroundWork: "none", pluginIds: [pluginId] })))
-      .toEqual({ version: 1, backgroundWork: "none" });
+      .toEqual({ version: 1, backgroundWork: "present" });
     expect(await readdir(spool)).toEqual([]);
   });
   it("retries a temporary creation credential resolution failure without losing ownership", async () => {

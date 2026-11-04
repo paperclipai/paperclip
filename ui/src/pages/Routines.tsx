@@ -852,7 +852,7 @@ export function Routines() {
         onGroupChange={groupBy => updateRoutineView({ groupBy, collapsedGroups: [] })}
         onNewFolder={routineViewState.groupBy === "folder" && !hasRoutineFolders ? () => openCreateFolder() : undefined}
         onCreateRoutine={openCreateRoutine}
-        tasksHref="/issues?view=all&originKind=routine_execution"
+        tasksHref="/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc"
         selectMode={selectMode} onToggleSelect={showFolderRail ? () => setSelectMode(current => !current) : undefined}
       />
 

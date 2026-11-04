@@ -72,7 +72,10 @@ describe.skipIf(!support.supported)("run dispatch production wiring (controlled 
   }
   async function quiet() {
     await heartbeat.drainActiveRunExecutions();
-    await vi.waitFor(() => expect(coordinator!.nextWakeAt()).toBeNull(), { timeout: 5_000 });
+    await vi.waitFor(() => {
+      expect(coordinator!.nextWakeAt()).toBeNull();
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5_000 });
     const count = reads.mock.calls.length;
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     try {

@@ -12,7 +12,7 @@ const runner = defaultCapabilityRunnerdBinary();
 const compilerAvailable = process.platform !== "win32" && spawnSync("cc", ["--version"]).status === 0;
 const digest = (path: string) => `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
 
-it.skipIf(!compilerAvailable || !existsSync(runner)).each(["discovery", "completion"])(
+it.skipIf(!compilerAvailable || !existsSync(runner)).each(["discovery", "completion", "durable"])(
   "acknowledges %s before its MCP deadline after a burst of streamed text",
   async tool => {
     const root = await mkdtemp(join(tmpdir(), "runnerd-opencode-streaming-"));
@@ -44,10 +44,14 @@ it.skipIf(!compilerAvailable || !existsSync(runner)).each(["discovery", "complet
         providerNodeCommand: providerNode, providerNodeCommandSha256: digest(providerNode),
         opencodeCommand: executable, opencodeCommandSha256: digest(executable),
         opencodeProxyPath: proxy, opencodeProxySha256: digest(proxy),
+        ...(tool === "durable" ? { lifecyclePolicy: { mode: "warm" as const, idleTimeoutMs: 60_000 } } : {}),
         environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "synthetic-fixture-key" },
       });
       transport.setServerRequestHandler(async request => {
         seen.push(String(request.params.tool));
+        // Keep the real Rust → proxy → HTTP MCP request open beyond both old
+        // 30-second deadlines. The saved result must reach the provider once.
+        if (tool === "durable" && seen.length === 1) await new Promise(resolve => setTimeout(resolve, 31_000));
         return dynamicToolResponse(request.params.tool === "paperclip_finish" ? "Accepted completion." : { tools: [] });
       });
       let completed: Promise<void> | undefined;
@@ -67,10 +71,23 @@ it.skipIf(!compilerAvailable || !existsSync(runner)).each(["discovery", "complet
         await expect.poll(async () => {
           try { return JSON.parse(await readFile(join(workspace, "fake-stream-backlog-receipt.json"), "utf8")); }
           catch { return null; }
-        }, { timeout: 15_000 }).toMatchObject({ acknowledged: true });
+        }, { timeout: tool === "durable" ? 45_000 : 15_000 }).toMatchObject({ acknowledged: true });
         await completed;
-        expect(seen).toEqual(tool === "discovery" ? ["paperclip_search_assigned_tools", "paperclip_finish"] : ["paperclip_finish"]);
+        expect(seen).toEqual(tool !== "completion" ? ["paperclip_search_assigned_tools", "paperclip_finish"] : ["paperclip_finish"]);
         expect(text.join("")).toBe("Streaming progress. ".repeat(800));
+        if (tool === "durable") {
+          const runnerPid = transport.processInfo().pid;
+          await transport.attachRun!({ runId: "next-settled-run", turnId: "next-turn", itemId: "next-item" });
+          completed = (async () => {
+            for await (const event of transport.notifications()) if (event.method === "turn/completed") return;
+          })();
+          await transport.request("turn/start", { input: [{ type: "text", text: "stream-backlog-discovery" }] });
+          await completed;
+          expect(transport.processInfo().pid).toBe(runnerPid);
+          expect(seen).toEqual(["paperclip_search_assigned_tools", "paperclip_finish", "paperclip_search_assigned_tools", "paperclip_finish"]);
+          const provider = JSON.parse(await readFile(join(root, "state", "runner", "codex-provider-state.json"), "utf8"));
+          expect(provider.toolBridge.pending).toEqual({});
+        }
       } finally {
         await transport.close();
         await completed;

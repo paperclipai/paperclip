@@ -6,12 +6,14 @@ import { readTaskRetryIntent } from "./task-retry.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
 import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
-import { preserveNativeFailedWorkspace } from "./native-runtime/native-failed-workspace-recovery.js";
+import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
+import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
+import { preserveNativeFailedWorkspace, preserveTaskRemoteWorkspaceWriter } from "./native-runtime/native-failed-workspace-recovery.js";
 import { createHash } from "node:crypto";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
-import { isCancelledNativeStartup } from "./cancelled-native-startup.js";
+import { isCancelledNativeStartup, isFailedNativePreparation } from "./cancelled-native-startup.js";
 import { hasNativeLocalProcessStop, hasHistoricalSuspendedNativeSession, recordedLocalExecutionStopped } from "./native-local-process-stop.js";
 import { completeTerminatedRemoteNativeSessionCleanup } from "../vendor/paperclip-runner/index.js";
 import { hasRemoteTerminationReceipt, remoteLeaseCleanupScope } from "./remote-execution-termination.js";
@@ -52,7 +54,7 @@ const preflightProfile = sql<Run["runnerProfileJson"]>`case
       then jsonb_build_object('adapterType', field.value->'adapterType') else field.value end), '{}'::jsonb)
     from jsonb_each(case when jsonb_typeof(${heartbeatRuns.runnerProfileJson}) = 'object'
       then ${heartbeatRuns.runnerProfileJson} else '{}'::jsonb end) as field(key, value)
-    where field.key in ('adapterDispatch', 'nativeWorkspaceSync')
+    where field.key in ('adapterDispatch', 'nativeWorkspaceSync', 'remoteWorkspace')
   ) end`;
 const continuationRunFields = {
   id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
@@ -214,6 +216,7 @@ export async function admitExplicitNativeContinuation(input: {
     return blocked("send_intent_missing", "Send the saved message again to continue.");
   const authorizedAt = nativeQueuedSend ? interruptRequestedAt!
     : response?.comment.createdAt ?? comment?.createdAt ?? retryWake?.requestedAt ?? new Date();
+  if (!input.dryRun) await preserveTaskRemoteWorkspaceWriter(db, companyId, issueId);
   const blocker = await getExecutionBlocker(db, companyId, issueId);
   const [boundary] = await db.select({ createdAt: issueComments.createdAt }).from(issues).innerJoin(issueComments, and(
     eq(issueComments.companyId, issues.companyId), eq(issueComments.issueId, issues.id),
@@ -280,6 +283,16 @@ export async function admitExplicitNativeContinuation(input: {
         !run.finishedAt) return blocked("source_unavailable", "The previous execution has not finished or its owner changed. Your message is saved.");
     if (!queuedInterrupt && !queuedRequest && authorizedAt <= run.finishedAt) return blocked("message_predates_stop", "This message arrived before the previous run stopped. Send a new message to continue.");
     if (adapterExecutionControls.has(run.id)) return blocked("execution_settling", "Waiting for the previous run to stop. Your message will start automatically.");
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, run.id),
+    )).for("update");
+    const [lockedRun] = await db.select(continuationRunFields).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, run.id),
+    )).for("update");
+    if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
+        lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
+    run = lockedRun;
+    const failedPreparation = await isFailedNativePreparation(db, run, coordinator);
     const unusedAdmission = run.status === "cancelled" && !run.startedAt &&
       run.errorCode === "execution_reconciliation_required" &&
       !run.processPid && !run.processGroupId && !run.nativeSessionId;
@@ -295,7 +308,7 @@ export async function admitExplicitNativeContinuation(input: {
     const freshIntent = await canSelectFreshWorkspace({ db, companyId, issueId, agentId, actorId,
       sourceRunId: run.id, evidence: strategyEvidence, taskRetryRequestId: input.taskRetryRequestId,
       queuedRequestId: input.queuedCommentRequestId ?? savedChatRequestId });
-    const legacyUserTurn = run.runtimeMode === "legacy" &&
+    const legacyUserTurn = failedPreparation || run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
       (isConversationAdapter(agent.adapterType) ||
         (agent.adapterType === "paperclip_runner" && (freshIntent || await hasVerifiedWorkspaceRepair(db, run))));
@@ -303,27 +316,13 @@ export async function admitExplicitNativeContinuation(input: {
     // operator Stop or redeliver a message already consumed by this run.
     if (queuedRequest && !queuedInterrupt && (run.contextSnapshot?.wakeCommentId === commentId ||
         (Array.isArray(run.contextSnapshot?.wakeCommentIds) && run.contextSnapshot.wakeCommentIds.includes(commentId)))) return null;
-    if (legacyUserTurn) {
+    if (legacyUserTurn && !failedPreparation) {
       const historicalAdapter = await historicalAdapterType(db, run);
       // A settings change never converts a known process/webhook execution into
       // a conversation. Those adapters retain their reconciliation contract.
       if (historicalAdapter && !isConversationAdapter(historicalAdapter)) return null;
       if (!historicalAdapter && agent.adapterType === "paperclip_runner") return null;
     }
-    // For pre-upgrade rows without adapter evidence, only a new explicit user
-    // turn is allowed, after the termination proofs below. This does not infer
-    // an old adapter type, certify old outcomes, or authorize automatic replay.
-    const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
-      eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, run.id),
-    )).for("update");
-    // Same lock order as the native claim. Re-read the run while holding both
-    // locks before accepting the never-claimed startup proof.
-    const [lockedRun] = await db.select(continuationRunFields).from(heartbeatRuns).where(and(
-      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, run.id),
-    )).for("update");
-    if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
-        lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
-    run = lockedRun;
     const interruptedByThisClick = response?.source.requiresFreshSession === true &&
       interruptIntent?.targetRunId === run.id && run.resultJson?.operatorInterrupted === true &&
       run.resultJson?.interruptionSource === "issue_comment_interrupt" && run.resultJson?.interruptedIssueId === issueId &&
@@ -351,7 +350,7 @@ export async function admitExplicitNativeContinuation(input: {
       return blocked("workspace_repair_required", "Paperclip is recovering saved work before continuing. Your message is saved.");
     }
     const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
-    if (partiallyDeliveredQueue && run.runtimeMode !== "native" && !unusedAdmission && !cancelledStartup) return null;
+    if (partiallyDeliveredQueue && run.runtimeMode !== "native" && !unusedAdmission && !cancelledStartup && !failedPreparation) return null;
     if ((queuedInterrupt || queuedRequest) && !legacyUserTurn && !unusedAdmission &&
         !(queuedRequest && run.runtimeMode === "native" &&
           (run.status !== "cancelled" || authorizedAt > run.finishedAt!)) &&
@@ -383,8 +382,19 @@ export async function admitExplicitNativeContinuation(input: {
     // cleanup failed. That immutable result is history, not an active commit.
     // Keep it intact and require the same controller/process/lease stop proofs
     // before admitting new user input; never apply or replay the old result.
+    const legacyReference = readNativeWorkspaceSyncReference(run.runnerProfileJson?.nativeWorkspaceSync);
+    const migratedSource = coordinator && !coordinator.resultId && !coordinator.leaseOwner
+      && ["observed", "retryable_failure"].includes(coordinator.phase)
+      && await hasVerifiedWorkspaceRepair(db, run)
+      ? await readMigratedLegacyWorkspaceSource(db, { companyId, runId: run.id, reference: legacyReference }) : null;
+    // Offline migration fenced this exact unfinished turn and preserved its
+    // coordinator. A verified attachment permits new user input without
+    // inventing a terminal result or replaying the old session. All stop and
+    // ownership checks below still apply.
+    const preservedFailure = migratedSource?.issueId === issueId
+      && migratedSource.unresolvedFinalization?.phase === coordinator?.phase;
     if (!cancelledStartup && coordinator && (
-        (coordinator.phase !== "terminal_failure" && !committedFailure) || coordinator.leaseOwner ||
+        (coordinator.phase !== "terminal_failure" && !committedFailure && !preservedFailure) || coordinator.leaseOwner ||
         coordinator.failureDetail?.successorRunId)) return blocked("controller_settling",
           run.status === "cancelled" && !coordinator.leaseOwner
             ? "The cancelled run still needs verified cleanup. Your message is saved. Inspect the run and its environment for details."
@@ -406,7 +416,7 @@ export async function admitExplicitNativeContinuation(input: {
       }))) return null;
     } else {
       if (leases.some(lease => !lease.releasedAt || lease.cleanupStatus === "failed")) return blocked("local_cleanup", "Waiting for the previous environment to finish cleanup. Your message will start automatically.");
-      if (!unusedAdmission && !cancelledStartup) {
+      if (!unusedAdmission && !cancelledStartup && !failedPreparation) {
         if (freshIntent && (run.processPid || run.processGroupId) && !await recordedLocalExecutionStopped(db, run))
           return blocked("process_identity_missing", "Paperclip is verifying that the previous session stopped.");
         // A missing process identity is not evidence that a provider exited.
@@ -434,6 +444,17 @@ export async function admitExplicitNativeContinuation(input: {
           ...leases.map(lease => lease.id)])] };
     }
     sources.push(run);
+  }
+  if (taskRetry && !sources.some(run => run.id === taskRetry.sourceRunId)) {
+    const [coordinator] = await db.select().from(nativeRunFinalizations).where(and(
+      eq(nativeRunFinalizations.companyId, companyId), eq(nativeRunFinalizations.runId, taskRetry.sourceRunId),
+    )).for("update");
+    const [source] = await db.select(continuationRunFields).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, taskRetry.sourceRunId), eq(heartbeatRuns.agentId, agentId),
+    )).for("update");
+    if (!source || (source.nativeIssueId ?? source.issueId ?? source.contextSnapshot?.issueId) !== issueId
+      || adapterExecutionControls.has(source.id) || !await isFailedNativePreparation(db, source, coordinator)) return null;
+    sources.push(source);
   }
   const nativeSources = sources.filter(run => run.runtimeMode === "native");
   const executedSources = sources.filter(run => run.runtimeMode === "native" || run.errorCode !== "execution_reconciliation_required" || run.startedAt);

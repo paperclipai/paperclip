@@ -57,7 +57,7 @@ export function RunWorkspaceRecoverySurface({ run }: { run: HeartbeatRun }) {
   const issueId = readRunIssueId(run);
   const cause = run.execution?.cause ?? run.errorCode;
   if (issueId && (isNativeWorkspaceExportRepairCause(cause) || cause === "native_workspace_sync_out_unrecoverable"))
-    return <RunWorkspaceSourceInspection key={run.id} issueId={issueId} runId={run.id} />;
+    return <RunWorkspaceSourceInspection key={run.id} issueId={issueId} runId={run.id} companyId={run.companyId} />;
   return <WorkspaceValidationRecoverySurface run={run} />;
 }
 

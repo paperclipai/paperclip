@@ -104,7 +104,8 @@ const support = await getEmbeddedPostgresTestSupport();
       remoteHttpEndpointLookup: async () => [{ address: "8.8.8.8", family: 4 }] });
     const actor = { actorType: "user" as const, actorId: "policy-reviewer" };
     const connection = await service.createConnection(company.id, {
-      name: "Custom reviewed endpoint", transport: "mcp_remote", enabled: true, status: "active",
+      name: "Custom reviewed endpoint", connectionPurpose: "tool", transport: "mcp_remote", authKind: "none", ownership: "customer", connectionKind: "managed",
+      transportConfig: {}, credentialSecretRefs: [], enabled: true, status: "active",
       config: { sourceTemplateKey: "custom", url: RAILWAY_MCP_URL, quarantineNewEntries: true },
     }, actor);
     const initial = await service.refreshCatalog(connection.id, actor, { enableAllByDefault: true });
@@ -112,8 +113,8 @@ const support = await getEmbeddedPostgresTestSupport();
     tools = [...tools, { name: "provider_added_tool", annotations: { readOnlyHint: true } }];
     const refreshed = await service.refreshCatalog(connection.id, actor, { enableAllByDefault: true });
     expect(refreshed.catalog.find(tool => tool.toolName === "provider_added_tool")).toMatchObject({ riskLevel: "write", status: "quarantined" });
-    expect(refreshed.connection.config.quarantineNewEntries).toBe(true);
-    expect(refreshed.connection.config.sourceTemplateKey).toBe("custom");
+    expect(refreshed.connection.config?.quarantineNewEntries).toBe(true);
+    expect(refreshed.connection.config?.sourceTemplateKey).toBe("custom");
     expect(request).toHaveBeenCalled();
   });
 });

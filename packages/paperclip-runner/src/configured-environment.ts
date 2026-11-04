@@ -38,7 +38,7 @@ function eligibleKey(key: string): boolean {
   return /^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(key)
     && !GENERATED_RUNTIME_ENVIRONMENT_KEYS.has(upper)
     && !RESERVED_KEYS.has(upper)
-    && !/^(?:LD_|DYLD_|GIT_CONFIG_|PAPERCLIP_(?:RUNNER_|NATIVE_|GITHUB_|ACPX_|VERIFIED_))/.test(upper);
+    && !/^(?:LD_|DYLD_|GIT_CONFIG_|PAPERCLIP_(?:RUNNER_|NATIVE_|GITHUB_|ACPX_|CURSOR_CLOUD_|VERIFIED_))/.test(upper);
 }
 
 function checkedNames(names: unknown): string[] {
