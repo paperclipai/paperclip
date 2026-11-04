@@ -320,16 +320,25 @@ describe("producer-owned native usage", () => {
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.input.runId)))[0].usageJson).not.toHaveProperty("accountingLateReceiptPending", true);
     });
 
-    it("never charges a finished run from another session", async () => {
-      const owner = await finalizedSource();
-      await db.update(heartbeatRuns).set({ nativeSessionId: randomUUID() }).where(eq(heartbeatRuns.id, owner.input.runId));
+    it("charges the delivering run when its session has no finished run, never another session's", async () => {
+      const other = await finalizedSource();
+      await db.update(heartbeatRuns).set({ nativeSessionId: randomUUID() }).where(eq(heartbeatRuns.id, other.input.runId));
       const runId = randomUUID();
-      await db.insert(heartbeatRuns).values({ id: runId, companyId: owner.input.companyId, agentId: owner.input.agentId, invocationSource: "on_demand",
+      await db.insert(heartbeatRuns).values({ id: runId, companyId: other.input.companyId, agentId: other.input.agentId, invocationSource: "on_demand",
         status: "running", runtimeMode: "native", nativeSessionId: sessionId, costAccountingPending: true });
-      const current = { ...owner.input, runId };
-      await (await createNativeUsageDelivery(db, current)).capture(lateReport(current, { runId: owner.input.runId, normalizedSessionId: sessionId }));
-      expect(await db.select().from(runUsageReceipts).where(eq(runUsageReceipts.runId, owner.input.runId))).toHaveLength(2);
-      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, owner.input.runId)))[0].usageJson).not.toHaveProperty("accountingLateReceiptPending", true);
+      const current = { ...other.input, runId };
+      const delivery = await createNativeUsageDelivery(db, current);
+      await delivery.capture(lateReport(current, { runId: other.input.runId, normalizedSessionId: sessionId }));
+      await delivery.capture(event(current, 8, "usage.reported"));
+      await delivery.capture(event(current, 9, "turn.completed"));
+      await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
+      expect(await accountRunCost(db, runId)).toBe(true);
+      expect(await accountRunCost(db, runId)).toBe(true);
+      expect((await ledger(runId)).map(row => row.inputTokens).sort((a, b) => a - b)).toEqual([30, 120]);
+      expect(await ledger(other.input.runId)).toHaveLength(1);
+      const [activity] = await db.select().from(activityLog).where(and(eq(activityLog.entityId, runId), eq(activityLog.action, "cost.late_usage_posted")));
+      expect(activity.details).toMatchObject({ attribution: "inferred", reportedByRunId: runId });
+      expect((await accountingIntegrityService(db).inspect(current.companyId)).findings.filter(finding => finding.entityId === runId)).toEqual([]);
     });
   });
 

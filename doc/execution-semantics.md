@@ -1682,8 +1682,8 @@ names its owning run when the provider turn proves the owner. A report at or bel
 the known total was already counted by the run that saw it, and it adds nothing, so
 the sum across runs always equals the thread total. Core posts the increment to that run as a
 separate cost event and records `cost.late_usage_posted` in the activity log. If
-the owner is not proven, Core charges the session's last finished run and records
-the attribution as inferred. Local and remote Runner sessions follow the same rule. A late charge can put an agent over budget after later
+the owner is not proven, Core charges the session's last finished run, or the
+delivering run if the session has none, and records the attribution as inferred. Local and remote Runner sessions follow the same rule. A late charge can put an agent over budget after later
 work started; budget evaluation runs after each correction. Conflicting evidence,
 such as a lower total or a changed model, stays visible as accounting debt for
 an operator to review. It does not change the charge or stop the session.

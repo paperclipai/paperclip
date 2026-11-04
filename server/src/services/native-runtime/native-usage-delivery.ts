@@ -80,7 +80,7 @@ const finishedRunStatuses = ["succeeded", "failed", "timed_out", "cancelled", "i
 
 /** The Runner names a late report's owner when the turn proves it. A session's
  * usage belongs to that session, so an unproven owner is the session's last
- * finished run, recorded as inferred. Neither case changes the delivering run. */
+ * finished run, recorded as inferred. */
 export async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput,
   event: Pick<PrpEvent, "eventType" | "normalizedSessionId" | "sourceEventId" | "sourceSeq" | "emittedAt" | "turnId">, payload: Record<string, unknown>) {
   const reconciliation = payload.reconciliation;
@@ -96,8 +96,9 @@ export async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliver
     inArray(heartbeatRuns.status, finishedRunStatuses), ne(heartbeatRuns.id, input.runId),
   )).orderBy(desc(heartbeatRuns.finishedAt));
   const exact = runs.find(run => run.id === prior?.runId && prior?.normalizedSessionId === event.normalizedSessionId);
-  const owner = exact ?? runs[0];
-  if (!owner) return false;
+  // With no finished run in this session, the delivering run is the only owner
+  // left. Its own delta already excludes this usage, so it is never counted twice.
+  const owner = exact ?? runs[0] ?? { id: input.runId };
   const receipt = priceAnthropicReceipt(priceCodexReceipt({ ...input.billing, model: input.provider.model ?? "unknown", usage, usageBasis: "per_run",
     complete: true, costUsd: nativeUsageCostUsd(measured, input.provider) ?? null }));
   await persistUsageReceipt(db, { schema: "paperclip/accounting-receipt/v1", id: uuid(`${owner.id}:${input.runnerInstanceId}:${event.sourceEventId}`),
