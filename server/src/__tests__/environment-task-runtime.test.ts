@@ -616,6 +616,23 @@ describe("protected hosted parking operations", () => {
     else { await expect(run).rejects.toThrow(); expect(workers.call).not.toHaveBeenCalled(); }
     expect(JSON.stringify(store.sets)).not.toContain(operation.bootstrapTicket);
   });
+  it.each(["valid", "foreign-claim", "foreign-source", "foreign-park", "expired", "inactive"])("fences conditional retirement before provider dispatch: %s", async mode => {
+    const value = row();
+    const sourceIdentity = { ...identity, runId: "source-run" };
+    const source = { ...checkpoint, identity: sourceIdentity };
+    Object.assign(value.lease.metadata, { runnerTaskIdentity: { ...submit.runner, runId: sourceIdentity.runId }, runnerTaskColdCheckpoint: source,
+      providerMetadata: { parkedClaim: { parkId: "park", claimId: "run" } } });
+    if (mode === "expired") value.lease.expiresAt = new Date(0);
+    if (mode === "inactive") value.lease.status = "retained";
+    const workers = worker();
+    const operation = { kind: "stop" as const, ifParkedClaim: { parkId: mode === "foreign-park" ? "other" : "park",
+      claimId: mode === "foreign-claim" ? "other" : "run", resumeCheckpoint: { ...source, ...(mode === "foreign-source" ? { sourceId: "other" } : {}) } } };
+    const run = executeEnvironmentTask(database(value).db, workers as never, { companyId: "company", leaseId, operation });
+    if (mode === "valid") {
+      await expect(run).resolves.toMatchObject({ kind: "accepted" });
+      expect(workers.call).toHaveBeenCalledWith("original", "environmentTask", expect.objectContaining({ operation }), 15_000);
+    } else { await expect(run).rejects.toThrow(); expect(workers.call).not.toHaveBeenCalled(); }
+  });
   it.each(["parked", "stopped", "uncertain"])("settles unresolved parking from exact provider observations: %s", async mode => {
     const scope = `park-obligation-${mode}`;
     holdHostedParking(scope, "run");

@@ -14666,6 +14666,39 @@ describe("runnerd provider runtime wiring", () => {
     } finally {owner.mockRestore();vi.unstubAllEnvs();await rm(home,{recursive:true,force:true});}
   });
 
+  it.each(["attached", "foreign-claim", "foreign-lease", "no-claim"])("reattaches an admitted parked target with its logical lease: %s", async mode => {
+    const current = scopedNativeExecution(`parked-attached-${mode}`);
+    current.session.lifecyclePolicy = { mode: "warm", idleTimeoutMs: 300_000 };
+    const identity = { runnerInstanceId: "retained-runner", environmentLeaseId: "original-logical-lease", runId: current.binding.runId,
+      normalizedSessionId: current.session.normalizedSessionId!, turnId: "current-turn", itemId: "current-item" };
+    const root = await initializeScopedRunnerRoot(current, identity.runnerInstanceId);
+    await mkdir(join(root, "control-plane"), { recursive: true });
+    await writeFile(join(root, "control-plane", "control-plane-state.json"), JSON.stringify(durableControlPlaneState(identity)));
+    const home = await mkdtemp(join(tmpdir(), "parked-attached-account-"));
+    await writeFile(join(home, "auth.json"), JSON.stringify({ OPENAI_API_KEY: "synthetic-fixture" }), { mode: 0o600 });
+    const task = vi.fn(async (operation: any) => operation.kind === "status"
+      ? { kind: "status", taskId: "same-task", phase: "running", executionStopped: false }
+      : operation.kind === "read_state" ? { kind: "state", taskId: "same-task", state: durableRunnerState(identity, "ready") }
+      : { kind: "description", taskId: "same-task", launchPreparationVersion: 1, projectAuthCheckVersion: 1,
+          warmTaskVersion: 1, hostedParkingVersion: 1, runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } });
+    const owner = vi.spyOn(pluginTaskRuntime, "createPluginRunnerTaskOwner");
+    try {
+      const backend = createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: "replacement-controller",
+        runnerIngressAuthorized: true, managedAiCredentialHome: home, managedAiAccountIdentity: "account", managedAiCredentialIdentity: "revision",
+        restartRecovery: { kind: "reattach_remote_runner", runId: current.binding.runId, leaseOwner: "current-owner",
+          controllerGeneration: 2, providerAttempt: 1, restartKind: "hard", recoveryRequestId: null,
+          remote: { kind: "plugin_task", leaseId: mode === "foreign-lease" ? "foreign-physical-lease" : "incoming-physical-lease" } },
+        runnerExecutionTarget: { kind: "remote", transport: "sandbox", leaseId: "incoming-physical-lease", remoteCwd: ".", runnerTask: task,
+          ...(mode === "no-claim" ? {} : { runnerTaskParkedClaim: { parkId: "park", claimId: mode === "foreign-claim" ? "foreign-run" : current.binding.runId } }) } });
+      if (mode === "attached") {
+        await expect(backend).resolves.toBeDefined();
+        expect(owner).toHaveBeenCalledWith(expect.objectContaining({ adoptIdentity: identity, parkedClaimConsumed: true }));
+        expect(owner.mock.results.at(-1)!.value.driver.claimParkedRunner).toBeUndefined();
+        expect(task.mock.calls.some(([operation]) => ["stop", "claim", "submit"].includes(operation.kind))).toBe(false);
+      } else { await expect(backend).rejects.toThrow("native_plugin_recovery_lease_mismatch"); expect(owner).not.toHaveBeenCalled(); }
+    } finally { owner.mockRestore(); await rm(home, { recursive: true, force: true }); }
+  });
+
   it.each((["codex", "claude"] as const).flatMap(provider => [true, false].map(reuseProcess => [provider, reuseProcess] as const)))("reconnects task-only %s warm recovery under the saved identity before reuse or retirement: %s", async (provider, reuseProcess) => {
     const current=scopedNativeExecution(`plugin-restart-${provider}-${reuseProcess}`);
     if(provider === "claude") current.provider={kind:"acpx",agent:"claude",model:"fixture",permissionMode:"deny-all"} as never;

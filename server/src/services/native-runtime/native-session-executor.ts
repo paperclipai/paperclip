@@ -41,7 +41,7 @@ import { assertColdCheckpointRunnerState } from "../../vendor/paperclip-runner/i
 import { environmentTaskResultSchema, environmentTaskColdCheckpointSchema } from "@paperclipai/plugin-sdk";
 import { preparePluginRunnerCredentials } from "./plugin-runner-credentials.js";
 import { clearHostedParkingScope, hasUnresolvedHostedParking, holdHostedParking } from "./hosted-parking-obligations.js";
-import { isCompletedParkedSourceRecovery, retireBoundParkedRunner } from "./hosted-parked-runner.js";
+import { canAdoptAttachedParkedRunner, isCompletedParkedSourceRecovery, retireBoundParkedRunner } from "./hosted-parked-runner.js";
 import { createPluginRunnerTaskOwner, verifyPluginRunnerTaskReattachment } from "./plugin-runner-task.js";
 import { NativeExecutionContext } from "./native-execution-context.js";
 import { NativeStartupCleanupPendingError, clearNativeStartupContext } from "./native-startup-cleanup.js";
@@ -126,7 +126,7 @@ import {
 } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
+import { loadNativeRunnerCheckpoint, loadNativeRunnerCheckpointHeader, loadNativeUnclaimedBootstrapCheckpoint, nativeRunnerCheckpointPersistence, nativeRunnerCheckpointRegistration, restoreNativeRunnerCheckpoint } from "./native-runner-checkpoint.js";
 import { REMOTE_CONTROLLER_LEASE_MS, REMOTE_RUNNER_RECONNECT_GRACE_MS } from "./native-runner-recovery-contract.js";
 import type { NativeTaskSessionPublicationContext } from "./native-task-session-publication.js";
 import { basename, dirname, join, posix, resolve } from "node:path";
@@ -5398,7 +5398,8 @@ async function migrateRunnerdStateRootForExecution(input: {
       if (input.restartRecovery.remote.kind === "plugin_task") {
         const target = input.runnerExecutionTarget;
         if (target?.kind !== "remote" || target.transport !== "sandbox" || !target.runnerTask
-          || target.leaseId !== input.restartRecovery.remote.leaseId || identity.environmentLeaseId !== target.leaseId
+          || target.leaseId !== input.restartRecovery.remote.leaseId ||
+          (identity.environmentLeaseId !== target.leaseId && target.runnerTaskParkedClaim?.claimId !== input.execution.binding.runId)
           || !durableIdentityMatchesExecution(identity, input.execution)) {
           throw new Error("native_plugin_recovery_lease_mismatch");
         }
@@ -8786,6 +8787,7 @@ async function executePaperclipNativeSessionWithinScope(
   }
   let retainedTransition: VerifiedWarmTransitionBinding | undefined;
   let remoteWarmRecovery: RemoteWarmSessionRecovery | undefined;
+  let hostedParkingRecoverySupported = false;
   if (input.useRunnerd && (!input.restartRecovery || parkedSourceRecovery) && !input.backend &&
       input.runnerExecutionTarget?.kind === "remote" &&
       input.execution.session.lifecyclePolicy.mode === "warm" &&
@@ -8796,7 +8798,8 @@ async function executePaperclipNativeSessionWithinScope(
     if (taskTarget.transport === "sandbox" && taskTarget.runnerTask && taskTarget.leaseId &&
         durableIdentityMatchesSession(identity,input.execution) && identity.runId !== input.execution.binding.runId) {
       // Inspection can replace a stopped retained task before deciding between adoption and checkpoint recovery.
-      await taskTarget.runnerTask({kind:"describe"});
+      const description = environmentTaskResultSchema.parse(await taskTarget.runnerTask({ kind: "describe" }));
+      hostedParkingRecoverySupported = description.kind === "description" && description.hostedParkingVersion === 1;
       if (taskTarget.sandboxLeaseAcquisition?.outcome !== "resumed") {
         await recoverPluginRunnerCheckpoint(input, root);
       }
@@ -9951,16 +9954,40 @@ async function executePaperclipNativeSessionWithinScope(
     const resolveWake = () => timeController("wake_binding", () => resolveCurrentWakeCommentsBinding(input.db, input.execution.binding));
     const expectedCurrentWakeComments = await (executionContext ? executionContext.wait(resolveWake) : resolveWake());
     const parkedTarget = input.runnerExecutionTarget;
-    if (remoteWarmRecovery && parkedTarget?.kind === "remote" && parkedTarget.transport === "sandbox" &&
+    if (remoteWarmRecovery && hostedParkingRecoverySupported && parkedTarget?.kind === "remote" && parkedTarget.transport === "sandbox" &&
         parkedTarget.runnerTask && parkedTarget.runnerTaskParkedClaim) {
       const root = scopedRunnerdStateRoot(input.execution);
       const control = record(JSON.parse(readBoundedNativeFile(resolve(root, "control-plane", "control-plane-state.json"),
         NATIVE_CONTROL_PLANE_STATE_MAX_BYTES, "runner_durable_identity_too_large").toString("utf8")));
       const source = remoteWarmRecovery;
-      const retired = await retireBoundParkedRunner({ task: parkedTarget.runnerTask,
+      const recoverAttached = async () => {
+        if (input.restartRecovery?.kind !== "reattach_remote_runner") return false;
+        const checkpoint = await loadNativeRunnerCheckpoint(input.db, input.execution.binding);
+        if (!checkpoint) return false;
+        const header = record(JSON.parse(checkpoint.records.get("header") ?? "null"));
+        const identity = record(record(header.state).identity);
+        if (identity.runnerInstanceId !== source.identity.runnerInstanceId || identity.environmentLeaseId !== source.identity.environmentLeaseId ||
+            identity.normalizedSessionId !== source.identity.normalizedSessionId ||
+            !await canAdoptAttachedParkedRunner({ task: parkedTarget.runnerTask!, identity, targetRunId: input.execution.binding.runId,
+              parkedClaim: parkedTarget.runnerTaskParkedClaim! })) return false;
+        checkpoint.restoreSessionDirectory(root);
+        remoteWarmRecovery = undefined;
+        parkedSourceRecovery = false;
+        return true;
+      };
+      const alreadyAttached = await recoverAttached().catch(() => { throw new NativeRunnerOwnershipUnverifiedError(); });
+      const resumeCheckpoint = alreadyAttached ? undefined : await resolvePluginTaskColdCheckpoint(input.db, { companyId: input.execution.binding.companyId,
+        resumeFrom: source.remote.providerLeaseId, parkId: parkedTarget.runnerTaskParkedClaim.parkId, priorIdentity: { runnerInstanceId: source.identity.runnerInstanceId,
+          environmentLeaseId: source.identity.environmentLeaseId, runId: source.identity.runId, normalizedSessionId: source.identity.normalizedSessionId,
+          turnId: source.identity.turnId, itemId: source.identity.itemId } })
+        .catch(() => { throw new NativeRunnerOwnershipUnverifiedError(); });
+      const retired = !alreadyAttached && resumeCheckpoint ? await retireBoundParkedRunner({ task: parkedTarget.runnerTask, resumeCheckpoint,
         identity: { runnerInstanceId: source.identity.runnerInstanceId, environmentLeaseId: source.identity.environmentLeaseId,
           runId: source.identity.runId, normalizedSessionId: source.identity.normalizedSessionId, turnId: source.identity.turnId, itemId: source.identity.itemId }, targetRunId: input.execution.binding.runId, parkedClaim: parkedTarget.runnerTaskParkedClaim, control,
-        authorize: () => source.revalidate(leaseOwner) }).catch(() => { throw new NativeRunnerOwnershipUnverifiedError(); });
+        authorize: () => source.revalidate(leaseOwner) }).catch(async () => {
+          if (await recoverAttached().catch(() => false)) return false;
+          throw new NativeRunnerOwnershipUnverifiedError();
+        }) : false;
       if (retired) {
         remoteWarmRecovery = undefined;
         parkedTarget.runnerTaskParkedClaim = undefined;
@@ -13324,7 +13351,8 @@ async function createRunnerdBackendWithinSessionClaim(
       normalizedSessionId: input.remoteWarmRecovery.identity.normalizedSessionId,
       turnId: input.remoteWarmRecovery.identity.turnId, itemId: input.remoteWarmRecovery.identity.itemId,
     } : undefined;
-    if (input.restartRecovery?.kind === "reattach_remote_runner" && (!prior || !prior.turnId || !prior.itemId || prior.environmentLeaseId !== remoteTarget.leaseId)) {
+    if (input.restartRecovery?.kind === "reattach_remote_runner" && (!prior || !prior.turnId || !prior.itemId ||
+        (prior.environmentLeaseId !== remoteTarget.leaseId && remoteTarget.runnerTaskParkedClaim?.claimId !== input.execution.binding.runId))) {
       throw new Error("native_plugin_recovery_lease_mismatch");
     }
     const resumeFrom = !retainedOwner && !adopting && prior && prior.environmentLeaseId !== remoteTarget.leaseId

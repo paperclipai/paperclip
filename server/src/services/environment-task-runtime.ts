@@ -107,6 +107,22 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       throw new Error("Plugin Runner parking checkpoint changed");
     }
   }
+  if (operation.kind === "stop" && operation.ifParkedClaim) {
+    const requested = operation.ifParkedClaim;
+    const claim = (metadata.providerMetadata as { parkedClaim?: { parkId?: unknown; claimId?: unknown } } | undefined)?.parkedClaim;
+    const intent = metadata.runnerTaskParkIntent as { resumeCheckpoint?: unknown } | undefined;
+    const historical = (metadata.runnerTaskRetention as { parkId?: unknown } | undefined)?.parkId === requested.parkId
+      ? intent?.resumeCheckpoint : undefined;
+    const source = metadata.runnerTaskColdCheckpoint ?? historical;
+    const sourceMatches = matches(requested.resumeCheckpoint.identity, savedIdentity) ||
+      savedIdentity?.runId === run?.id && matches(requested.resumeCheckpoint.identity, priorSaved);
+    if (activeProbe || !run || run.status !== "running" || lease.status !== "active" || metadata.runnerTaskRetiring === true ||
+        lease.expiresAt && lease.expiresAt.getTime() <= Date.now() || claim?.parkId !== requested.parkId ||
+        claim.claimId !== requested.claimId || requested.claimId !== run.id || !sourceMatches ||
+        JSON.stringify(environmentTaskColdCheckpointSchema.parse(source)) !== JSON.stringify(requested.resumeCheckpoint)) {
+      throw new Error("Plugin Runner conditional retirement owner mismatch");
+    }
+  }
   if (operation.kind === "claim") {
     const claim = (metadata.providerMetadata as { parkedClaim?: { parkId?: unknown; claimId?: unknown } } | undefined)?.parkedClaim;
     if (activeProbe || !claim || claim.parkId !== operation.parkId || claim.claimId !== operation.claimId || operation.claimId !== run?.id) {
@@ -445,6 +461,15 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         if (saved.length !== 1) throw new Error("Plugin Runner project validation lease expired");
       }
     }
+    if (operation.kind === "stop" && operation.ifParkedClaim && parsed.kind === "accepted") {
+      const accepted = await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+        runnerTaskConditionalRetirement: operation.ifParkedClaim,
+      })}::jsonb` }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
+        eq(environmentLeases.status, "active"), sql`${environmentLeases.metadata}->'providerMetadata'->'parkedClaim' = ${JSON.stringify({
+          parkId: operation.ifParkedClaim.parkId, claimId: operation.ifParkedClaim.claimId,
+        })}::jsonb`)).returning({ id: environmentLeases.id });
+      if (accepted.length !== 1) throw new Error("Plugin Runner conditional retirement owner changed");
+    }
     if (operation.kind === "park" && parsed.kind === "accepted" && parsed.parkRefused === true) {
       await db.update(environmentLeases).set({ metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskParkIntent') || '{"runnerTaskRetention":null}'::jsonb` })
         .where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId)));
@@ -457,6 +482,14 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       observeSettledHostedParking(run.id);
     }
     if ((parsed.kind === "status" || parsed.kind === "copilot_metadata") && parsed.executionStopped === true) {
+      const retirement = metadata.runnerTaskConditionalRetirement as { parkId?: unknown; claimId?: unknown; resumeCheckpoint?: unknown } | undefined;
+      const claim = (metadata.providerMetadata as { parkedClaim?: { parkId?: unknown; claimId?: unknown } } | undefined)?.parkedClaim;
+      if (retirement?.parkId === claim?.parkId && retirement?.claimId === run?.id && retirement?.claimId === claim?.claimId && retirement?.resumeCheckpoint) {
+        const checkpoint = environmentTaskColdCheckpointSchema.parse(retirement.resumeCheckpoint);
+        await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskColdCheckpoint: checkpoint })}::jsonb` })
+          .where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.provider, lease.provider!),
+            eq(environmentLeases.providerLeaseId, taskId), eq(environmentLeases.heartbeatRunId, checkpoint.identity.runId)));
+      }
       await db.update(environmentLeases).set({
         metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskExecutionStopped: true,
           runnerTaskSessionRetained: parsed.kind === "status" && parsed.sessionStateAvailable === true,
@@ -572,13 +605,19 @@ export async function resolvePluginTaskResume(db: Db, input: {
 /** The exact receipt selected from the prior owner; never discover a newer artifact on the provider. */
 export async function resolvePluginTaskColdCheckpoint(db: Db, input: {
   companyId: string; resumeFrom: string;
-  priorIdentity: { runnerInstanceId: string; environmentLeaseId: string; runId: string; normalizedSessionId: string };
+  /** Historical park receipts are admissible only for conditional source retirement. */
+  parkId?: string;
+  priorIdentity: { runnerInstanceId: string; environmentLeaseId: string; runId: string; normalizedSessionId: string; turnId?: string; itemId?: string };
 }) {
   const rows = await db.select({ metadata: environmentLeases.metadata }).from(environmentLeases).where(and(
     eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.providerLeaseId, input.resumeFrom),
     eq(environmentLeases.heartbeatRunId, input.priorIdentity.runId))).limit(2);
   if (rows.length !== 1) throw new Error("Plugin Runner cold checkpoint owner ambiguous");
-  const value = rows[0]!.metadata?.runnerTaskColdCheckpoint;
+  const metadata = rows[0]!.metadata;
+  const intent = metadata?.runnerTaskParkIntent as { resumeCheckpoint?: unknown } | undefined;
+  const historical = input.parkId && (metadata?.runnerTaskRetention as { parkId?: unknown } | undefined)?.parkId === input.parkId
+    ? intent?.resumeCheckpoint : undefined;
+  const value = metadata?.runnerTaskColdCheckpoint ?? historical;
   if (value == null) return undefined;
   const checkpoint = environmentTaskColdCheckpointSchema.parse(value);
   if (Object.entries(input.priorIdentity).some(([key, value]) => checkpoint.identity[key as keyof typeof checkpoint.identity] !== value)) {

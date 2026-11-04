@@ -129,7 +129,8 @@ export const environmentTaskOperationSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("status") }).strict(),
   z.object({ kind: z.literal("connection") }).strict(),
   z.object({ kind: z.literal("complete") }).strict(),
-  z.object({ kind: z.literal("stop") }).strict(),
+  z.object({ kind: z.literal("stop"), ifParkedClaim: z.object({ parkId: providerId.max(1024), claimId: runnerIdentity,
+    resumeCheckpoint: environmentTaskColdCheckpointSchema }).strict().optional() }).strict(),
 ]);
 
 export const environmentTaskResultSchema = z.discriminatedUnion("kind", [
