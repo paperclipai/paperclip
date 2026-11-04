@@ -35,6 +35,8 @@ export function createPluginRunnerTaskOwner(input: {
   projectAuthCheckVersion?: 1;
   resumeFrom?: string;
   priorIdentity?: DurableRecoveryIdentity;
+  recoveryPurpose?: "source_reconcile";
+  sourceRecoveryVersion?: 1;
   credentialIdentity?: string;
   accountIdentity?: string;
   credential?: PluginEnvironmentTaskCredential;
@@ -46,6 +48,8 @@ export function createPluginRunnerTaskOwner(input: {
   githubBroker?: { url: string; token: string };
   adoptIdentity?: DurableRecoveryIdentity;
 }) {
+  if (input.recoveryPurpose && (input.sourceRecoveryVersion !== 1 || !input.resumeFrom || !input.priorIdentity || !input.accountIdentity ||
+      input.harness !== "codex" || input.adoptIdentity)) throw new Error("Plugin Runner source reconciliation unavailable");
   const pollMs = input.pollMs ?? 500;
   let registrationGeneration = 0;
   let activeOutbound: ReturnType<typeof connectRunnerPrpIngress> | null = null;
@@ -111,6 +115,10 @@ export function createPluginRunnerTaskOwner(input: {
   };
   const prepareLaunch: RunnerLaunchPreparer = async (requirements, recovery) => {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
+    const sourceRecovery = input.recoveryPurpose === "source_reconcile" && !launched;
+    if (sourceRecovery && Object.entries(input.priorIdentity!).some(([key, value]) => requirements.identity[key as keyof DurableRecoveryIdentity] !== value)) {
+      throw new Error("Plugin Runner source reconciliation identity mismatch");
+    }
     // Reconnecting the previous authority must not prepare it through the new run's lease.
     if (recovery && input.adoptIdentity && Object.entries(input.adoptIdentity).every(([key,value]) => requirements.identity[key as keyof DurableRecoveryIdentity] === value)) {
       await authorizeRunnerAdoption(recovery.configurationId, requirements.identity);
@@ -125,7 +133,8 @@ export function createPluginRunnerTaskOwner(input: {
     const result = await call(environmentTaskOperationSchema.parse({ kind: "prepare", requirements,
       ...(input.githubBroker ? { githubBroker: input.githubBroker } : {}),
       projectIds: [...input.projectIds], ...(recovery ? { recovery } : {}),
-      ...(input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
+      ...(input.resumeFrom && (!input.recoveryPurpose || sourceRecovery) ? { resumeFrom: input.resumeFrom } : {}),
+      ...(sourceRecovery ? { recoveryPurpose: "source_reconcile" as const } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(launched && preparedIdentity && requirements.identity.runId !== preparedIdentity.runId
         ? { priorIdentity: preparedIdentity } : {}),
@@ -185,6 +194,7 @@ export function createPluginRunnerTaskOwner(input: {
     const operation = environmentTaskOperationSchema.parse({
       kind: "submit", preparedLaunchId, projectIds: [...input.projectIds], bootstrapTicket: native.ticket,
       ...(input.resumeFrom ? { resumeFrom: input.resumeFrom } : {}),
+      ...(input.recoveryPurpose ? { recoveryPurpose: input.recoveryPurpose } : {}),
       ...(input.credentialIdentity ? { credentialIdentity: input.credentialIdentity } : {}),
       ...(input.accountIdentity ? { accountIdentity: input.accountIdentity } : {}),
       ...(input.credential ? { credential: input.credential } : {}),

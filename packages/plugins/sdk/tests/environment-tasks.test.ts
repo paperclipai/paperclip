@@ -1,5 +1,5 @@
 import {describe,expect,it} from "vitest";
-import {environmentTaskOperationSchema} from "../src/environment-tasks.js";
+import {environmentTaskOperationSchema,environmentTaskResultSchema} from "../src/environment-tasks.js";
 const submit={kind:"submit",projectIds:[],bootstrapTicket:"synthetic",runner:{harness:"codex",protocolMin:1,protocolMax:3,runnerId:"runner",leaseId:"lease",runId:"run",sessionId:"session",turnId:"turn",itemId:"item"},
  launch:{runnerVersion:"fixture",runnerDigest:`sha256:${"a".repeat(64)}`,maxOutboxBytes:262144,p0ReserveBytes:65536,lifecyclePolicy:{mode:"warm",idleTimeoutMs:300000}}};
 describe("task lifecycle policy",()=>{
@@ -23,6 +23,36 @@ const prepare = {
     preparedConversation: false, includeCollaborationModeInstructions: false,
   },
 };
+
+describe("stopped source reconciliation", () => {
+  const recoveryPrepare = { ...prepare, accountIdentity: "selected-account", resumeFrom: "source-task", recoveryPurpose: "source_reconcile" };
+  const recoverySubmit = { ...submit, accountIdentity: "selected-account", preparedLaunchId: "source-configuration", resumeFrom: "source-task", recoveryPurpose: "source_reconcile" };
+  it("preserves the source purpose and existing source identity fields", () => {
+    expect(environmentTaskOperationSchema.parse(recoveryPrepare)).toEqual(recoveryPrepare);
+    expect(environmentTaskOperationSchema.parse(recoverySubmit)).toEqual(recoverySubmit);
+    expect(environmentTaskResultSchema.parse({ kind: "description", taskId: "task", sourceRecoveryVersion: 1,
+      runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } })).toHaveProperty("sourceRecoveryVersion", 1);
+  });
+  it.each(["source", "account", "provider", "live-prior", "purpose"])("rejects invalid source preparation: %s", mode => {
+    expect(environmentTaskOperationSchema.safeParse({ ...recoveryPrepare,
+      ...(mode === "source" ? { resumeFrom: undefined } : {}),
+      ...(mode === "account" ? { accountIdentity: undefined } : {}),
+      ...(mode === "provider" ? { requirements: { ...prepare.requirements, provider: "acpx" } } : {}),
+      ...(mode === "live-prior" ? { priorIdentity: prepare.requirements.identity } : {}),
+      ...(mode === "purpose" ? { recoveryPurpose: "execution" } : {}),
+    }).success).toBe(false);
+  });
+  it.each(["source", "account", "provider", "configuration", "launch", "purpose"])("rejects invalid source submission: %s", mode => {
+    expect(environmentTaskOperationSchema.safeParse({ ...recoverySubmit,
+      ...(mode === "source" ? { resumeFrom: undefined } : {}),
+      ...(mode === "account" ? { accountIdentity: undefined } : {}),
+      ...(mode === "provider" ? { runner: { ...submit.runner, harness: "claude" } } : {}),
+      ...(mode === "configuration" ? { preparedLaunchId: undefined } : {}),
+      ...(mode === "launch" ? { launch: undefined } : {}),
+      ...(mode === "purpose" ? { recoveryPurpose: "execution" } : {}),
+    }).success).toBe(false);
+  });
+});
 
 describe("task hosted search restriction", () => {
   it("preserves Core's explicit restriction through plugin launch preparation", () => {

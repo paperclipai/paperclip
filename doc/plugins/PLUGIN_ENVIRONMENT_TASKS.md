@@ -84,6 +84,30 @@ authority as submission.
 Core requires preparation version 1 for native plugin execution. It validates
 and saves the result before it submits its configuration ID.
 
+### Stopped source reconciliation
+
+`sourceRecoveryVersion: 1` in `describe` declares support for restoring a stopped
+Codex source without starting another turn. Core can send
+`recoveryPurpose: "source_reconcile"` on `prepare` and `submit`. Both operations
+must name the same `resumeFrom`, exact source Runner identity, and current
+`accountIdentity`. The request and lease still belong to the current run.
+Preparation must save this source binding with its new configuration. Submission
+must verify the same binding before it starts the source process.
+
+Core requires the source run to have a committed successful result, an encrypted
+PRP journal, confirmed physical termination, and no other source consumer. Core
+claims the source under the current native controller lease. This does not change
+the source run's status or result. A stale source controller cannot write its
+journal after this claim. Workspace export and settlement holds still apply.
+
+The provider must verify the original account, workspace, runtime, and source
+ownership before launch. The native Runner must reject active goals, pending
+tools, ambiguous starts, and uncertain work before it restores the provider.
+Until the existing authenticated `run.attach` operation changes authority, the
+restored source can only reconcile its journal and known cleanup. It cannot start
+new work. Ordinary suspended recovery and live attachment keep their existing
+checks. Providers that omit the capability do not support this mode.
+
 ## Launch authentication validation
 
 Declare `projectAuthCheckVersion: 1` in `describe` for each native task launch.
