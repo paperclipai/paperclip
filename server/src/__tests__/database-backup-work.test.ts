@@ -152,11 +152,11 @@ describe("automatic database backup scheduling", () => {
     expect(s.execute).not.toHaveBeenCalled();
   });
 
-  it.each([
+  it.each<[string, () => Promise<number | null>]>([
     ["null", async () => null],
     ["a later deadline", async () => Date.now() + 2 * intervalMs],
     ["a rejection", async () => { throw new Error("backup dir unreadable"); }],
-  ] as const)("keeps the startup-relative deadline on %s", async (_name, resolveFirstRunAt) => {
+  ])("keeps the startup-relative deadline on %s", async (_name, resolveFirstRunAt) => {
     const s = setup(), now = Date.now();
     await registerDatabaseBackupWork(s.coordinator, { intervalMs, run: s.run, resolveFirstRunAt }).ready;
     await vi.advanceTimersByTimeAsync(0);
