@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { companies, environmentLeases, executionWorkspaces, heartbeatRuns, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, workspaceOperations, type Db } from "@paperclipai/db";
-import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
+import { remoteWorkspaceAuthoritySchema, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import { adapterExecutionControls } from "../adapter-execution-control.js";
 import { logActivity } from "../activity-log.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
@@ -107,7 +107,8 @@ async function lockSource(db: Db, companyId: string, runId: string) {
   const reference = parsed.data;
   const [workspace] = await db.select().from(executionWorkspaces).where(and(
     eq(executionWorkspaces.companyId, companyId), eq(executionWorkspaces.id, reference.workspaceId))).for("update", { noWait: true });
-  const authority = readRemoteWorkspaceAuthority(workspace?.metadata);
+  const parsedAuthority = remoteWorkspaceAuthoritySchema.safeParse(workspace?.metadata?.remoteWorkspace);
+  const authority = parsedAuthority.success ? parsedAuthority.data : null;
   if (!workspace || workspace.sourceIssueId !== task.id || !authority?.location || authority.epoch !== reference.epoch
     || authority.snapshotId !== reference.snapshotId || !authority.dirty || authority.writerRunId !== run.id
     || authority.location.leaseId !== reference.leaseId || authority.location.providerLeaseId !== reference.providerLeaseId

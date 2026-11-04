@@ -45,7 +45,9 @@ and saves the original files. The interrupted provider checkpoint and its unknow
 effects remain unknown; this path admits no provider turn, accepts no result and
 changes no task status. A changed or malformed modern workspace claim remains a
 cleanup hold even when it is ineligible for automatic preservation. It cannot fall
-through to destructive orphan cleanup. Already released or mismatched historical
+through to destructive orphan cleanup. Invalid workspace authority is refused
+without throwing or stopping preservation of the next source in the batch.
+Already released or mismatched historical
 sources require their owning reconciliation and are not rearmed by this path.
 
 The reconciliation candidate scan selects the complete workspace-sync record and

@@ -46,7 +46,6 @@ export async function preserveRemoteWorkspacePreparationFailure(db: Db, lease: W
 
 export async function nativeWorkspaceExportPendingForLease(db: Db, lease: WorkspaceSourceLease): Promise<boolean> {
   if (!lease.heartbeatRunId || !lease.provider || lease.provider === "local" || !lease.providerLeaseId) return false;
-  if (await preparedRemoteWorkspaceSource(db, lease)) return true;
   const input = sql`${heartbeatRuns.runnerProfileJson}->'nativeExecutionInput'`;
   const [run] = await db.select({
     id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
@@ -69,6 +68,7 @@ export async function nativeWorkspaceExportPendingForLease(db: Db, lease: Worksp
     eq(heartbeatRuns.runtimeMode, "native"),
   )).limit(1);
   if (run?.observedRemoteWorkspace) return true;
+  if (await preparedRemoteWorkspaceSource(db, lease)) return true;
   if (!run || nativeRunHasNoWorkspaceAccess({ ...run, runnerProfileJson: { nativeExecutionInput: run.executionScope } })) return false;
   const reference = readNativeWorkspaceSyncReference(run.reference);
   return reference?.state === "prepared" && reference.leaseId === lease.id

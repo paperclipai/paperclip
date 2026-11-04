@@ -278,6 +278,36 @@ describeEmbeddedPostgres("stopped observed native workspace preservation", () =>
       } finally { await heartbeat.drainActiveRunExecutions(); stopped.mockRestore(); destroyed.mockRestore(); }
     });
 
+  it("holds malformed workspace authority without throwing or recording a new pin", async () => {
+    const f = await seedSource("MALFORMED-WORKSPACE");
+    await f.db.update(executionWorkspaces).set({ metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{remoteWorkspace,epoch}', '0')` })
+      .where(eq(executionWorkspaces.id, f.workspaceId));
+    await expect(pinFailedObservedWorkspace(f.db, companyId, f.runId)).resolves.toBe(false);
+    expect((await readSource(f)).run.resultJson?.workspaceRestoreRecovery).toBeUndefined();
+    await sourceHeld(f);
+  });
+
+  it("keeps a poisoned workspace held and continues the actual orphan page to its next valid source", async () => {
+    const bad = await seedSource("POISONED-PAGE-FIRST"), good = await seedSource("VALID-PAGE-NEXT"), db = bad.db;
+    await db.update(environmentLeases).set({ updatedAt: new Date(Date.now() - 7 * 60_000) }).where(eq(environmentLeases.id, bad.leaseId));
+    await db.update(executionWorkspaces).set({ metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{remoteWorkspace,epoch}', '0')` })
+      .where(eq(executionWorkspaces.id, bad.workspaceId));
+    const provider = getSandboxProvider("fake")!, stopped = vi.spyOn(provider, "stopLease"), destroyed = vi.spyOn(provider, "destroyLease");
+    const backend = vi.fn(() => { throw new Error("Unexpected native execution"); });
+    const heartbeat = heartbeatService(db, { nativeSessionBackendFactory: backend });
+    try {
+      await expect(heartbeat.sweepOrphanedActiveLeases({ backoffMs: 0, companyId })).resolves.toMatchObject({ recovered: 1 });
+      expect((await readSource(bad)).run.resultJson?.workspaceRestoreRecovery).toBeUndefined();
+      expect((await readSource(bad)).lease.status).toBe("active");
+      expect((await readSource(good)).run.resultJson?.workspaceRestoreRecovery).toMatchObject({ leaseIds: [good.leaseId] });
+      expect((await readSource(good)).lease).toMatchObject({ status: "pending_cleanup", leasePolicy: "retain_on_failure" });
+      await sourceHeld(bad);
+      expect(stopped.mock.calls.filter(([input]) => input.providerLeaseId === bad.providerLeaseId)).toHaveLength(0);
+      expect(destroyed.mock.calls.filter(([input]) => input.providerLeaseId === bad.providerLeaseId)).toHaveLength(0);
+      expect(backend).not.toHaveBeenCalled();
+    } finally { await heartbeat.drainActiveRunExecutions(); stopped.mockRestore(); destroyed.mockRestore(); }
+  });
+
   it.each(["before_pin", "after_pin"] as const)("serializes the real ephemeral checkpoint claim %s", async order => {
     const f = await seedSource(`CLAIM-${order}`);
     if (order === "before_pin") await f.db.update(issues).set({ executionRunId: f.runId }).where(eq(issues.id, f.issueId));
@@ -313,7 +343,7 @@ describeEmbeddedPostgres("stopped observed native workspace preservation", () =>
     } finally { await heartbeat.drainActiveRunExecutions(); stopped.mockRestore(); destroyed.mockRestore(); }
   });
 
-  it.each(["generation", "checkpoint", "accepted_result", "other_owner", "lost_stop_ack"] as const)(
+  it.each(["generation", "checkpoint", "workspace_authority", "accepted_result", "other_owner", "lost_stop_ack"] as const)(
     "does not settle observed ownership from stale or missing Stop evidence (%s)", async mode => {
       const f = await seedSource(`STOP-FENCE-${mode}`);
       expect(await pinFailedObservedWorkspace(f.db, companyId, f.runId)).toBe(true);
@@ -329,6 +359,7 @@ describeEmbeddedPostgres("stopped observed native workspace preservation", () =>
         expect(hasRemoteTerminationReceipt((await readSource(f)).lease)).toBe(mode !== "lost_stop_ack");
         if (mode === "generation") await f.db.update(nativeRunFinalizations).set({ controllerGeneration: 4 }).where(eq(nativeRunFinalizations.runId, f.runId));
         if (mode === "checkpoint") await f.db.update(heartbeatRuns).set({ runnerProfileJson: { ...f.profile, sessionCheckpoint: { ...f.checkpoint, activeTurnId: "changed" } } }).where(eq(heartbeatRuns.id, f.runId));
+        if (mode === "workspace_authority") await f.db.update(executionWorkspaces).set({ metadata: sql`jsonb_set(${executionWorkspaces.metadata}, '{remoteWorkspace,epoch}', '0')` }).where(eq(executionWorkspaces.id, f.workspaceId));
         if (mode === "accepted_result") await acceptedResult(f);
         if (mode === "other_owner") await otherAllocationOwner(f);
         expect(await settleStoppedObservedWorkspace(f.db, companyId, f.runId)).toBe(false);
