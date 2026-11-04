@@ -459,6 +459,13 @@ continues automatically when the workspace is available. Internal scheduling
 attempts remain in the run log without conversation cancellation markers,
 cancellation toasts, or manual Retry controls. Users can keep sending instructions.
 
+A remote task workspace stays held by its last writer run until that writer's
+save and sandbox release settle. This hold continues after the writer run ends.
+A new run that finds such a recently ended writer waits for the workspace. It does
+not fail setup. The wait uses the same one-hour holder cutoff as a quiet live
+writer, measured from the time the writer ended. After the cutoff, preparation
+fails with the unfinished-writer error and leaves the held files unchanged.
+
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
 these existing runs immediately. The shared delivery coordinator owns the drain's

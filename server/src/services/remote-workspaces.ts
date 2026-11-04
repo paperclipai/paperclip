@@ -154,6 +154,8 @@ export class RemoteWorkspaceWriterActiveError extends HttpError {
     readonly workspaceId: string,
     readonly writer: {
       runId: string; agentId: string; issueId: string; issueIdentifier: string | null; lastActivityAt: Date;
+      /** The writer run ended; its workspace save or sandbox release has not settled. */
+      ended?: boolean;
     },
   ) {
     super(409, "The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
@@ -219,17 +221,16 @@ export async function reserveRemoteWorkspace(input: {
           errorCode: heartbeatRuns.errorCode, executionRecovery: sql<unknown>`${heartbeatRuns.resultJson}->'executionRecovery'`,
           contextIssueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot}->>'issueId', ${heartbeatRuns.contextSnapshot}->>'taskId')`,
           lastOutputAt: heartbeatRuns.lastOutputAt, startedAt: heartbeatRuns.startedAt, createdAt: heartbeatRuns.createdAt,
+          finishedAt: heartbeatRuns.finishedAt,
         }).from(heartbeatRuns).where(and(
           eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, authority.writerRunId)));
-        if (prior?.status === "running") {
-          const writerIssueId = prior.nativeIssueId ?? prior.issueId ?? prior.contextIssueId;
-          const [writerIssue] = writerIssueId ? await tx.select({ id: issues.id, identifier: issues.identifier }).from(issues)
-            .where(and(eq(issues.companyId, input.companyId), eq(issues.id, canonicalExecutionUuid(sql`${writerIssueId}::text`)))) : [];
-          if (writerIssue) throw new RemoteWorkspaceWriterActiveError(existing.id, {
-            runId: authority.writerRunId, agentId: prior.agentId, issueId: writerIssue.id, issueIdentifier: writerIssue.identifier,
-            lastActivityAt: prior.lastOutputAt ?? prior.startedAt ?? prior.createdAt,
-          });
-        }
+        const writerIssueId = prior ? prior.nativeIssueId ?? prior.issueId ?? prior.contextIssueId : null;
+        const [writerIssue] = writerIssueId ? await tx.select({ id: issues.id, identifier: issues.identifier }).from(issues)
+          .where(and(eq(issues.companyId, input.companyId), eq(issues.id, canonicalExecutionUuid(sql`${writerIssueId}::text`)))) : [];
+        if (prior?.status === "running" && writerIssue) throw new RemoteWorkspaceWriterActiveError(existing.id, {
+          runId: authority.writerRunId, agentId: prior.agentId, issueId: writerIssue.id, issueIdentifier: writerIssue.identifier,
+          lastActivityAt: prior.lastOutputAt ?? prior.startedAt ?? prior.createdAt,
+        });
         const leases = await tx.select().from(environmentLeases).where(and(eq(environmentLeases.companyId, input.companyId),
           eq(environmentLeases.heartbeatRunId, authority.writerRunId)));
         const bootstrap = object(prior?.executionRecovery);
@@ -240,7 +241,16 @@ export async function reserveRemoteWorkspace(input: {
         const unusedReservation = !authority.dirty && prior && ["failed", "cancelled", "interrupted", "timed_out", "succeeded"].includes(prior.status)
           && leases.every(lease => hasRemoteTerminationReceipt(lease) || (pristinePreparation
             && lease.releasedAt && lease.cleanupStatus === "success" && ["released", "expired", "failed"].includes(lease.status)));
-        if (!unusedReservation) throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
+        if (!unusedReservation) {
+          // An ended writer still holds the workspace until its save and sandbox
+          // release settle. Report it as the holder so preparation waits within
+          // the same bounded cutoff as a live writer instead of failing setup.
+          if (prior && writerIssue) throw new RemoteWorkspaceWriterActiveError(existing.id, {
+            runId: authority.writerRunId, agentId: prior.agentId, issueId: writerIssue.id, issueIdentifier: writerIssue.identifier,
+            lastActivityAt: prior.finishedAt ?? prior.lastOutputAt ?? prior.startedAt ?? prior.createdAt, ended: true,
+          });
+          throw conflict("The workspace still has an unfinished writer or save operation.", { code: "remote_workspace_writer_pending" });
+        }
       }
       if (authority.writerRunId === input.runId) return existing;
       const next: RemoteWorkspaceAuthority = { ...authority, source, epoch: authority.epoch + 1, writerRunId: input.runId };

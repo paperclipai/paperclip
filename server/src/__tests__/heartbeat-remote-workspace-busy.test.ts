@@ -112,4 +112,61 @@ describe.skipIf(!support.supported)("inherited remote workspace heartbeat wait",
       }
     } finally { transactionSpy.mockRestore(); }
   });
+
+  async function terminalWriterFixture(finishedAt: Date) {
+    const userId = randomUUID();
+    await db.insert(authUsers).values({ id: userId, name: "Workspace owner", email: `${userId}@example.test`,
+      createdAt: new Date(), updatedAt: new Date() });
+    const [company] = await db.insert(companies).values({ name: "Settling writer", issuePrefix: `S${randomUUID().slice(0, 6)}`,
+      requireBoardApprovalForNewAgents: false, defaultResponsibleUserId: userId }).returning();
+    await db.insert(companyMemberships).values({ companyId: company.id, principalType: "user", principalId: userId,
+      status: "active", membershipRole: "owner" });
+    const [environment] = await db.insert(environments).values({ name: `Settling ${randomUUID()}`,
+      driver: "sandbox", status: "active", config: { provider: "daytona" } }).returning();
+    const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Native worker", status: "idle",
+      adapterType: "paperclip_runner", defaultEnvironmentId: environment.id,
+      adapterConfig: { provider: "codex", model: "gpt-6.1-sol" }, runtimeConfig: { heartbeat: { maxConcurrentRuns: 2 } } }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Continue after a failed save",
+      status: "todo", assigneeAgentId: agent.id, responsibleUserId: userId }).returning();
+    // The previous run on this task ended, but its workspace save and sandbox
+    // release have not settled: the writer hold and unsaved files remain.
+    const [writer] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      nativeIssueId: issue.id, runtimeMode: "native", status: "failed", errorCode: "provider_transport_failed",
+      startedAt: new Date(finishedAt.getTime() - 60_000), lastOutputAt: new Date(finishedAt.getTime() - 30_000),
+      finishedAt }).returning();
+    const authority = { schema: "paperclip.remote-workspace.v1" as const, epoch: 5, snapshotId: randomUUID(),
+      source: { kind: "empty" as const }, location: null, writerRunId: writer.id, dirty: true };
+    const [workspace] = await db.insert(executionWorkspaces).values({ companyId: company.id, sourceIssueId: issue.id,
+      name: "Task workspace", mode: "isolated_workspace", strategyType: "project_primary", providerType: "cloud_sandbox",
+      cwd: `/workspaces/${randomUUID()}`, metadata: { remoteWorkspace: authority } }).returning();
+    await db.update(issues).set({ executionWorkspaceId: workspace.id, executionWorkspacePreference: "reuse_existing",
+      executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
+    const run = await heartbeat.wakeup(agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",
+      requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id } });
+    expect(run).not.toBeNull();
+    await heartbeat.drainActiveRunExecutions();
+    const [settled] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+    const [current] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+    return { run: settled, writer, workspace, authority, current };
+  }
+
+  it("waits for a writer that just ended while its save or sandbox release settles", async () => {
+    const f = await terminalWriterFixture(new Date());
+    expect(f.run).toMatchObject({ status: "cancelled", errorCode: "workspace_busy",
+      error: expect.stringContaining("ended, but its workspace save has not settled"),
+      resultJson: { executionRecovery: { kind: "workspace_wait", providerWorkStarted: false },
+        workspaceBusy: { executionWorkspaceId: f.workspace.id, holderRunId: f.writer.id } } });
+    const retries = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id));
+    expect(retries).toHaveLength(1);
+    expect(retries[0]).toMatchObject({ status: "scheduled_retry", scheduledRetryReason: "workspace_busy" });
+    // Waiting never takes over or discards the unsaved writer's files.
+    expect(readRemoteWorkspaceAuthority(f.current.metadata)).toEqual(f.authority);
+  });
+
+  it("stops waiting for an ended writer whose save stayed unsettled past the holder cutoff", async () => {
+    const f = await terminalWriterFixture(new Date(Date.now() - 2 * 60 * 60_000));
+    expect(f.run).toMatchObject({ status: "failed", error: "The workspace still has an unfinished writer or save operation." });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.retryOfRunId, f.run.id))).toEqual([]);
+    expect(readRemoteWorkspaceAuthority(f.current.metadata)).toEqual(f.authority);
+  });
 });
