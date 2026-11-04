@@ -195,11 +195,8 @@ export interface ChatCatalogCase {
   /** Known missing catalog conditions keep this executable diagnostic case from acceptance. */
   coverageGaps?: readonly string[];
   expectedRunCount: number;
-  /** Persisted human comments by default. The two credential cases may count one
-   * independently verified UI question answer as a declared human action instead
-   * of a followup comment; raw comment/query evidence is never rewritten. */
+  /** Persisted human comments; explicit followups must be declared before execution. */
   expectedHumanMessageCount?: number;
-  /** Only company/personal secure-entry cases; returns identity after full case proof, never authority. */
   expectedHumanQuestionAnswer?(observation: unknown): ChatCatalogExpectedHumanQuestionAnswer | undefined;
   /** Genuine persisted human setup turns before the canonical query; included in the total above. */
   setupHumanMessageCount?: number;
@@ -261,7 +258,6 @@ export interface ChatCatalogHumanQuestionAudit {
   companyId?: string; entityId?: string; action?: string; actorType?: string; actorId?: string;
   details?: Record<string, unknown> | null;
 }
-/** Verify public resolver facts independently of the case's proposed identity. */
 export function verifyChatCatalogHumanQuestionAnswer(input: {
   expected: ChatCatalogExpectedHumanQuestionAnswer; companyId: string; issueId: string; agentId: string;
   canonicalComment: { id: string; authorUserId?: string };

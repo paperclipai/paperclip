@@ -5,7 +5,6 @@ import { askUserQuestionsPayloadSchema } from "../../../packages/shared/src/vali
 export interface SecretQuestionBinding {
   companyId: string; issueId: string; agentId: string; userId: string; runId: string;
 }
-/** Structural admission only. Each credential journey owns its intent and saved-value proof. */
 export function boundSecretQuestion(value: unknown, b: SecretQuestionBinding, status: "pending" | "answered" = "pending") {
   const row = value as Partial<AskUserQuestionsInteraction> | undefined;
   if (!row || typeof row.id !== "string" || row.kind !== "ask_user_questions" || row.status !== status
