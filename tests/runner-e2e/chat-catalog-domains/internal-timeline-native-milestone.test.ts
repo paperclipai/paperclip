@@ -377,3 +377,9 @@ it.each([
   const o = fixture(); o.reply = reply;
   expect(gradeWorkTimeline(o).passed).toBe(true);
 });
+
+it.each(["another agent", "a bot"])("retains explicit nonhuman handoff attribution for %s", actor => {
+  const o = fixture();
+  o.reply = o.reply.replace("Then a human reassigned the task to Riley.", `The task was reassigned to Riley by ${actor}.`);
+  expect(gradeWorkTimeline(o).passed).toBe(false);
+});
