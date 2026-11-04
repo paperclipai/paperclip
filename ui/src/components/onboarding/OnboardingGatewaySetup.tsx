@@ -31,6 +31,7 @@ export function OnboardingGatewaySetup({
           <DialogDescription>Save the connection, then choose a model and test it with your agent.</DialogDescription>
         </DialogHeader>
         <AiProviderSetup companyId={companyId} agentId={agentId} environmentId={environmentId}
+          adapterType={adapterType}
           initialProvider="gateway" initialProtocol={adapterType === "codex_local" ? "responses" : "messages"}
           submitLabel="Save connection" onCancel={() => setOpen(false)}
           onComplete={binding => { setOpen(false); onComplete(binding); }} />

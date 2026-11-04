@@ -219,9 +219,10 @@ export function AiConnectionField({
           </DialogHeader>
           {advancedSetup ? <AiProviderSetup
             companyId={companyId} agentId={agentId} environmentId={environmentId}
+            adapterType={adapterType}
             advancedOnly={preferAdvanced}
             initialProtocol={adapterType === "claude_local" ? "messages" : adapterType === "codex_local" ? "responses" : "chat"}
-            onCancel={() => preferAdvanced ? setConnecting(false) : setAdvancedSetup(false)}
+            onCancel={() => (preferAdvanced || provider === "openrouter") ? setConnecting(false) : setAdvancedSetup(false)}
             onComplete={binding => {
               void client.invalidateQueries({ queryKey: ["ai-connections", companyId] });
               setConnecting(false);

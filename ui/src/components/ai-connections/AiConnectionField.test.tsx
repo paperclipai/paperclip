@@ -7,9 +7,11 @@ import type { ComponentProps } from "react";
 import type { AiManagedConnectionSummary } from "@paperclipai/shared";
 import { AiConnectionField, aiProviderForAdapter } from "./AiConnectionField";
 import type { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
+import type { AiProviderSetup } from "./AiProviderSetup";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), setDefault: vi.fn() }));
 let credentialProps: ComponentProps<typeof AiConnectionCredentialStep> | undefined;
+let setupProps: ComponentProps<typeof AiProviderSetup> | undefined;
 vi.mock("@/api/ai-connections", () => ({ aiConnectionsApi: mocks }));
 vi.mock("./AiConnectionCredentialStep", () => ({
   AiConnectionCredentialStep: (props: ComponentProps<typeof AiConnectionCredentialStep>) => {
@@ -17,7 +19,12 @@ vi.mock("./AiConnectionCredentialStep", () => ({
     return <div>Provider sign-in</div>;
   },
 }));
-vi.mock("./AiProviderSetup", () => ({ AiProviderSetup: () => <div>Advanced provider setup</div> }));
+vi.mock("./AiProviderSetup", () => ({
+  AiProviderSetup: (props: ComponentProps<typeof AiProviderSetup>) => {
+    setupProps = props;
+    return <div>Advanced provider setup</div>;
+  },
+}));
 vi.mock("@/pages/apps/AppLogo", () => ({ AppLogo: () => null }));
 
 let root: Root;
@@ -63,6 +70,7 @@ async function click(label: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   credentialProps = undefined;
+  setupProps = undefined;
   mocks.setDefault.mockResolvedValue({});
   container = document.createElement("div");
   document.body.append(container);
@@ -206,4 +214,16 @@ it.each(["openai", "anthropic", "google", "openrouter"] as const)("keeps a match
   const choice = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent?.includes("Pi provider account"));
   expect(choice).toBeDefined();
   expect(choice?.getAttribute("aria-disabled")).not.toBe("true");
+});
+
+it("passes adapterType when connecting a hermes_local agent", async () => {
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [], canManageConnections: true });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Hermes" adapterType="hermes_local"
+      value={{ provider: "openrouter", method: "api_key", mode: "responsible_user" }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  await click("Connect another account");
+  expect(document.body.textContent).toContain("Advanced provider setup");
+  expect(setupProps).toMatchObject({ adapterType: "hermes_local", advancedOnly: false });
 });
