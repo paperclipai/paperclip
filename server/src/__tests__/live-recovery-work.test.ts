@@ -928,6 +928,10 @@ describe("residual recovery production matrix", () => {
       phase: "retryable_failure", nextAttemptAt: new Date(Date.now() - 1_000) });
     await start(); await quiet();
     expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0].phase).toBe("retryable_failure");
+    if (gate === "agent") {
+      expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].status).toBe("in_progress");
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, f.issue.id))).toEqual([]);
+    }
     const before = timeline.filter(event => Array.isArray(event) && event[0] === "finished" && event[1] === "native-process-sessions").length;
     if (gate === "agent") { await createAgentLifecycle(db).resumeAgent(f.agent.id); await lifecycleWorker.process(f.agent.id); }
     else await tree.releaseHold(f.companyId, f.issue.id, hold!.hold.id, { actor, reason: "Resume native recovery" });
@@ -936,9 +940,9 @@ describe("residual recovery production matrix", () => {
     while (timeline.filter(event => Array.isArray(event) && event[0] === "finished" && event[1] === "native-process-sessions").length <= before && performance.now() < deadline)
       await realDelay(5);
     expect(timeline.filter(event => Array.isArray(event) && event[0] === "finished" && event[1] === "native-process-sessions").length).toBeGreaterThan(before);
-    const expectedPhase = gate === "agent" ? "retryable_failure" : "terminal_failure";
-    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0].phase).toBe(expectedPhase);
-    if (gate === "agent") expect((await db.select().from(issues).where(eq(issues.id, f.issue.id)))[0].status).toBe("blocked");
+    // A deliberate pause creates no stranded-work escalation. Once either
+    // gate opens, ordinary native finalization classifies the saved failure.
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, run.id)))[0].phase).toBe("terminal_failure");
     expect((await getRun(run.id)).errorCode).toBe("saved_native_failure");
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
     await quiet();

@@ -750,10 +750,30 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     },
   );
 
-  it("escalates an unchanged paused-assignee snapshot and publishes its committed notice", async () => {
+  it("holds an unchanged paused-assignee snapshot without publishing a recovery notice", async () => {
     const { companyId, coderId, sourceIssue } = await seedCompany();
     const observed = (await issueService(db).update(sourceIssue.id, { status: "todo" }))!;
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, coderId));
+    const enqueueWakeup = vi.fn(async () => null);
+    const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
+    expect(result).toMatchObject({ escalated: 0, issueIds: [] });
+    expect(await db.select().from(issues).where(eq(issues.id, observed.id)))
+      .toMatchObject([{ status: "todo", assigneeAgentId: coderId }]);
+    expect(await db.select().from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, observed.id))).toEqual([]);
+    expect(await db.select().from(issueComments)
+      .where(eq(issueComments.issueId, observed.id))).toEqual([]);
+    expect(await db.select().from(activityLog)
+      .where(eq(activityLog.entityId, observed.id))).toEqual([]);
+    expect(await db.select().from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId))).toEqual([]);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("escalates an unchanged terminated-assignee snapshot and publishes its committed notice", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    const observed = (await issueService(db).update(sourceIssue.id, { status: "todo" }))!;
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, coderId));
     const enqueueWakeup = vi.fn(async () => null);
     const result = await recoveryService(db, { enqueueWakeup }).reconcileStrandedAssignedIssues();
     expect(result).toMatchObject({ escalated: 1, issueIds: [observed.id] });
