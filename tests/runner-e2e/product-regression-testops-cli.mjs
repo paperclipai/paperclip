@@ -68,7 +68,8 @@ export function validateUploadedProductResults(details, selection, summary) {
       || details.some(row => summary.cases.find(value => value.caseId === row.testCaseId).status !== row.status)) fail('uploaded_status_mismatch');
 }
 
-export async function productTestOps(command, argument, env = process.env, exec = execute, fetchImpl = fetch) {
+export async function productTestOps(command, argument, env = process.env, exec = execute, fetchImpl = fetch,
+  wait = ms => new Promise(resolve => setTimeout(resolve, ms))) {
   admitProductTestOps(env);
   if (command === 'select') {
     const requestedJob = env.ALLURE_JOB_RUN_ID || '';
@@ -132,18 +133,25 @@ export async function productTestOps(command, argument, env = process.env, exec 
   await verifyProductJob(api, selection, env);
   const summary = await readJson(env.EXPORT_SUMMARY, 16_384);
   // Check server-side identity and count. A successful upload is not a pass.
-  let observed;
+  let observed, lastVerification;
   for (let attempt = 0; attempt < 12; attempt++) {
     observed = await api(`/api/testresult?${new URLSearchParams({ launchId: String(selection.launchId), page: '0', size: '100' })}`);
     if (!Array.isArray(observed?.content) || observed.totalPages > 1 || observed.totalElements !== observed.content.length) fail('result_page_invalid');
     const actual = observed.content;
-    if (actual.length === selection.cases.length && actual.every(row => selection.cases.some(value => value.id === row.testCaseId))) break;
-    if (attempt === 11) fail('upload_incomplete');
-    await new Promise(resolve => setTimeout(resolve, 2_000));
+    if (actual.length === selection.cases.length && actual.every(row => selection.cases.some(value => value.id === row.testCaseId))) {
+      const details = await Promise.all(actual.map(row => api(`/api/testresult/${row.id}`)));
+      try { validateUploadedProductResults(details, selection, summary); return 0; }
+      catch (error) {
+        if (!['product_regression_testops_uploaded_identity_mismatch', 'product_regression_testops_uploaded_status_mismatch'].includes(error.message)) throw error;
+        lastVerification = error;
+      }
+    }
+    // Planned rows can exist before the asynchronous upload processor settles
+    // their run binding and verdict. Observe this one upload, without rerunning
+    // the product or accepting unknown/partial results.
+    if (attempt === 11) { if (lastVerification) throw lastVerification; fail('upload_incomplete'); }
+    await wait(2_000);
   }
-  const details = await Promise.all(observed.content.map(row => api(`/api/testresult/${row.id}`)));
-  validateUploadedProductResults(details, selection, summary);
-  return 0;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

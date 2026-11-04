@@ -194,6 +194,10 @@ test('the separated selection, retained-report projection and server verificatio
   await writeFile(path.join(runtime.REPORT_DIR, 'normalized', 'normalized-results.json'), JSON.stringify(campaign()));
   assert.equal(await productTestOps('project', selectionFile, runtime, exec, fetchImpl), 0);
   assert.equal(await productTestOps('verify', selectionFile, runtime, exec, fetchImpl), 0);
+  uploadedStatus = 'unknown';
+  let readinessWaits = 0;
+  assert.equal(await productTestOps('verify', selectionFile, runtime, exec, fetchImpl, async () => { readinessWaits++; uploadedStatus = 'passed'; }), 0);
+  assert.equal(readinessWaits, 1);
   const failureOutput = path.join(root, 'failed-selection-output');
   const badPlan = async (command, args) => args[1] === 'plan'
     ? (await writeFile(args.at(-1), JSON.stringify({ version: '1.0', tests: [{ id: '999', selector: selected.fullName }] })), { stdout: '' })
@@ -207,7 +211,7 @@ test('the separated selection, retained-report projection and server verificatio
     { ...runtime, ALLURE_JOB_RUN_ID: '', TESTOPS_CASE: 'unknown' }, async () => { opened = true; }, fetchImpl), /manual_selection_invalid/);
   assert.equal(opened, false);
   uploadedStatus = 'failed';
-  await assert.rejects(productTestOps('verify', selectionFile, runtime, exec, fetchImpl), /uploaded_status_mismatch/);
+  await assert.rejects(productTestOps('verify', selectionFile, runtime, exec, fetchImpl, async () => {}), /uploaded_status_mismatch/);
   await writeFile(selectionFile, JSON.stringify({ ...receipt, targetSha: workflowSha }));
   await assert.rejects(productTestOps('project', selectionFile, runtime, exec, fetchImpl), /selection_hash/);
 });
