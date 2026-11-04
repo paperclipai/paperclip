@@ -245,7 +245,7 @@ export async function importNativeControllerRecovery(db: Db, input: {
     const [clock] = await tx.execute<{ now: Date }>(sql`select clock_timestamp() as now`);
     const liveOwner = owner.leaseOwner && (!owner.leaseExpiresAt || owner.leaseExpiresAt > new Date(clock.now));
     if (input.offline ? liveOwner : owner.leaseOwner || task.executionRunId) {
-      return owner.leaseExpiresAt && owner.leaseExpiresAt > new Date()
+      return owner.leaseExpiresAt && owner.leaseExpiresAt > new Date(clock.now)
         ? { kind: "waiting_for_owner" as const, deadline: owner.leaseExpiresAt }
         : { kind: "missing_evidence" as const, reason: "normal_ownership_recovery_required" };
     }

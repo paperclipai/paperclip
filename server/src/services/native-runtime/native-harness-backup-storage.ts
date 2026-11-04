@@ -1,6 +1,7 @@
+import { publishNativeHarnessBackup } from "./native-harness-backup-publication.js";
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { createReadStream, createWriteStream } from "node:fs";
-import { mkdtemp, readFile, rename } from "node:fs/promises";
+import { mkdtemp, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import os from "node:os";
 import { pipeline } from "node:stream/promises";
@@ -199,8 +200,8 @@ export async function restoreDurableNativeHarnessBackup(input: {
     const pending = join(input.backupRoot, `.durable-${randomUUID()}`);
     try {
       await cp(restored, pending, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true, errorOnExist: true, force: false });
-      await removeNativeHarnessBackup(current);
-      await rename(pending, current);
+      await publishNativeHarnessBackup({ db: input.db, companyId: input.companyId, scopeDigest: input.scopeDigest,
+        backupRoot: input.backupRoot, pendingRoot: pending });
     } finally { await removeNativeHarnessBackup(pending); }
     return true;
   } finally { key.fill(0); await removeNativeHarnessBackup(scratch); }
