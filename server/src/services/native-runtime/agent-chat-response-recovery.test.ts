@@ -51,7 +51,8 @@ describe.skipIf(!support.supported)("committed Agent Chat reply recovery", () =>
       completionContractRevision: "test", completionContractCriterionIds: [] });
     const reply = "The teammate is hired and ready for your next instruction.";
     const prpEvent = { runId, normalizedSessionId: sessionId, turnId: "hire-turn", sourceEventId: "fixture-final-answer",
-      payload: { kind: "agentMessage", channel: options.channel ?? "final", providerPhase: "final", text: reply } };
+      payload: { kind: "agentMessage", channel: "final", providerPhase: "final", text: reply } };
+    if (options.channel) prpEvent.payload.channel = options.channel;
     await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 170, eventType: "item.completed", payload: { prpEvent } });
     const disposition = options.disposition ?? "done";
     await port.completeRun({ result: { schema: "paperclip.run_result.v1", reportedWorkDisposition: disposition,
