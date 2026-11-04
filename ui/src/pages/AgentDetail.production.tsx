@@ -15,6 +15,7 @@ import { companySkillsApi } from "../api/companySkills";
 import { budgetsApi } from "../api/budgets";
 import { heartbeatsApi } from "../api/heartbeats";
 import { runCancellationLabel } from "../lib/run-cancellation-label";
+import { stopFailedNativeRun } from "../lib/native-run-stop";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { ChartCard, RunActivityChart, PriorityChart, IssueStatusChart, SuccessRateChart } from "../components/ActivityCharts";
@@ -2804,12 +2805,10 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
     setClaudeLoginResult(null);
   }, [run.id]);
 
-  const stopRequest = useRef<{ runId: string; id: string } | null>(null);
   const cancelRun = useMutation({
     mutationFn: () => {
       if (run.status !== "failed") return heartbeatsApi.cancel(run.id);
-      if (stopRequest.current?.runId !== run.id) stopRequest.current = { runId: run.id, id: crypto.randomUUID() };
-      return heartbeatsApi.cancel(run.id, { cancellationRequestId: stopRequest.current.id });
+      return stopFailedNativeRun(initialRun.id, initialRun.companyId);
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(run.id) });

@@ -23,6 +23,7 @@ import { builtInAgentsApi, type BuiltInManagedResourceKind } from "../api/builtI
 import { companySkillsApi } from "../api/companySkills";
 import { heartbeatsApi } from "../api/heartbeats";
 import { runCancellationLabel } from "../lib/run-cancellation-label";
+import { stopFailedNativeRun } from "../lib/native-run-stop";
 import { instanceSettingsApi } from "../api/instanceSettings";
 import { ApiError } from "../api/client";
 import { activityApi } from "../api/activity";
@@ -2960,13 +2961,11 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
   }, [run.id]);
 
   const grokWork = run.driverKind === "grok_bot_mcp";
-  const stopRequest = useRef<{ runId: string; id: string } | null>(null);
   const cancelRun = useMutation({
     mutationFn: () => {
       if (grokWork) return grokBotApi.stop(run.companyId, run.agentId, run.id);
       if (run.status !== "failed") return heartbeatsApi.cancel(run.id);
-      if (stopRequest.current?.runId !== run.id) stopRequest.current = { runId: run.id, id: crypto.randomUUID() };
-      return heartbeatsApi.cancel(run.id, { cancellationRequestId: stopRequest.current.id });
+      return stopFailedNativeRun(initialRun.id, initialRun.companyId);
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.runDetail(run.id) });
