@@ -3,7 +3,7 @@ import type { Page } from "@playwright/test";
 import { runnerMatrix } from "./catalog.js";
 import { parseRunnerSelectors, selectRunnerExecutions } from "./selectors.js";
 import { firstTaskScenario } from "./first-task-cases.js";
-import { APPROVAL_HISTORY_CASE, APPROVAL_HISTORY_SUITE, DRAFT_OPTION, PUBLISH_OPTION, approvalHistoryWriter } from "./first-task-approval-history.js";
+import { APPROVAL_HISTORY_CASE, APPROVAL_HISTORY_SUITE, DRAFT_OPTION, PUBLISH_OPTION, approvalHistoryWriter, readApprovalHistoryRevision } from "./first-task-approval-history.js";
 import { gradeFirstTask, snapshotInstruction, type FirstTaskCheckpoint, type FirstTaskEvidence, type Row } from "./first-task-scoring.js";
 import { projectFirstTaskResult } from "./first-task-flow.js";
 import { runApprovalHistoryDecisions } from "./first-task-approval-history-flow.js";
@@ -46,9 +46,12 @@ function recording(): FirstTaskEvidence {
     interactions: [resolve(planCard, 3, ["draft"]), resolve(hireCard, 5, ["writer"]), executionCard] });
   checkpoint("accepted", 7, { interactions: [resolve(planCard, 3, ["draft"]), resolve(hireCard, 5, ["writer"]), resolve(executionCard, 7)] });
   checkpoint("finished", 8, { tasks: [{ ...parent, status: "done" }, { id: "child", parentId: "parent", assigneeAgentId: "writer", status: "done", createdAt: at(7) }],
-    documents: [plan, { id: "welcome", issueId: "child", key: "welcome", body: `Welcome, beginners. Join our free Saturday meetup ${marker}.` }],
+    documents: [plan, { id: "welcome", issueId: "child", key: "welcome", latestRevisionId: "welcome-revision",
+      body: `Welcome, beginners. Join our free Saturday meetup ${marker}.`, savedRevision: { id: "welcome-revision", documentId: "welcome",
+        issueId: "child", key: "welcome", body: `Welcome, beginners. Join our free Saturday meetup ${marker}.`,
+        createdByAgentId: "writer", createdByRunId: "child-run", createdByUserId: null } }],
     runs: [{ id: "parent-run", nativeIssueId: "parent", agentId: "lead", status: "succeeded", startedAt: at(7) },
-      { id: "child-run", nativeIssueId: "child", agentId: "writer", status: "succeeded", startedAt: at(7) }] });
+      { id: "child-run", nativeIssueId: "child", agentId: "writer", status: "succeeded", runtimeMode: "native", startedAt: at(7) }] });
   checkpoint("finished", 9);
   return { caseId: APPROVAL_HISTORY_CASE, nonce: "history", onboardingIssueId: "parent", agentId: "lead", initialTaskIds: ["parent"],
     configuredModel: "fixture-model", observedModels: ["fixture-model"], instructions: [snapshotInstruction("AGENTS.md", "Persona"),
@@ -68,6 +71,20 @@ describe("onboarding approval history journey", () => {
 
   it("accepts the complete interview, partial plan approval, hiring, execution, and reload recording", () => {
     expect(failures(recording())).toEqual([]);
+  });
+
+  it("reads the exact saved document revision through its production API", async () => {
+    const document = recording().checkpoints.at(-1)!.documents[1];
+    const get = vi.fn(async <T>() => document.savedRevision as T);
+    const read = await readApprovalHistoryRevision({ get }, document);
+    expect(get).toHaveBeenCalledExactlyOnceWith("/api/issues/child/documents/welcome/revisions/welcome-revision");
+    expect(read.savedRevision).toMatchObject({ createdByAgentId: "writer", createdByRunId: "child-run" });
+  });
+
+  it.each(["id", "documentId", "issueId", "key", "body"])("rejects a mismatched saved revision %s", async field => {
+    const document = recording().checkpoints.at(-1)!.documents[1];
+    const get = async <T>() => ({ ...document.savedRevision, [field]: "foreign" }) as T;
+    await expect(readApprovalHistoryRevision({ get }, document)).rejects.toThrow("onboarding_saved_revision_binding_mismatch");
   });
 
   it("clears the unchecked plan step and operates all three saved approval controls before reload", async () => {
@@ -114,6 +131,12 @@ describe("onboarding approval history journey", () => {
     ["duplicate child execution", e => { e.checkpoints.at(-1)!.runs.push({ ...e.checkpoints.at(-1)!.runs[1], id: "duplicate" }); }, "approved-writer-executes-once"],
     ["no saved output after successful runs", e => { e.checkpoints.at(-1)!.documents.pop(); }, "durable-completion"],
     ["no persisted output after reload", e => { e.checkpoints.at(-1)!.documents.pop(); }, "reload-retains-completion"],
+    ["lead-authored writer output", e => { e.checkpoints.at(-1)!.documents[1].savedRevision.createdByAgentId = "lead"; }, "writer-authored-output"],
+    ["output from the wrong child run", e => { e.checkpoints.at(-1)!.documents[1].savedRevision.createdByRunId = "parent-run"; }, "writer-authored-output"],
+    ["missing saved revision proof", e => { delete e.checkpoints.at(-1)!.documents[1].savedRevision; }, "writer-authored-output"],
+    ["saved revision body mismatch", e => { e.checkpoints.at(-1)!.documents[1].savedRevision.body = "Different output"; }, "writer-authored-output"],
+    ["output without a current revision reference", e => { delete e.checkpoints.at(-1)!.documents[1].latestRevisionId; }, "writer-authored-output"],
+    ["writer switched to legacy execution", e => { e.checkpoints.at(-1)!.runs[1].runtimeMode = "legacy"; }, "writer-authored-output"],
     ["changed saved output after reload", e => { e.checkpoints.at(-1)!.documents[1].body += " Changed."; }, "reload-retains-completion"],
     ["duplicate approval left pending", e => { e.checkpoints.at(-1)!.interactions.push({ id: "duplicate", status: "pending", kind: "request_confirmation" }); }, "no-pending-approvals"],
     ["missing intermediate approval observations", e => { e.checkpoints = e.checkpoints.filter(c => c.phase !== "hiring-accepted"); }, "approval-history-stages"],

@@ -7,7 +7,8 @@ must use the lead's existing provider/AI connection through normal hiring.
 Credentials remain in the existing encrypted fixture path. It makes no direct
 database writes and changes no shared company. Public first-task projection
 retains synthetic checkbox option IDs/labels, selected IDs, plan document/revision
-IDs, and task/agent/run bindings so the approval history can be regraded. Provider
+IDs, task/agent/run bindings, and the exact saved output revision's agent/run
+authorship so the approval history can be regraded. Provider
 session IDs, account configuration, raw traces, and full instructions retain
 their existing private-only treatment. Registration is separate from live proof.
 

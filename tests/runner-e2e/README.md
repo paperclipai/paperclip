@@ -1770,7 +1770,8 @@ selects drafting and clears publishing. The model must hire the approved writer,
 assign one child, and produce the saved welcome document through that child's
 own execution. Persisted decisions, the unchanged plan revision and selection,
 creation timestamps, one child work run, and readback after browser reload own
-the grade. A successful parent run without the child or output fails.
+the grade. The exact saved output revision must name the writer and its actual
+child run as author. A successful parent run or lead-authored output fails.
 
 It has one local cell each for native Codex and ACPX Claude. It reuses the
 production wizard, first-task fixtures, $5 company task budget, twelve-run

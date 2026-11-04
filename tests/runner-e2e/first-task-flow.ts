@@ -6,7 +6,7 @@ import { firstTaskRejectionReplyRecorded, isFirstTaskRejectionCancellation } fro
 import { answerableRuntimeRunIds } from "./runtime-question-readiness.js";
 import { captureFirstTaskAttachments } from "./first-task-attachments.js";
 import { waitForFirstTaskReply } from "./first-task-replies.js";
-import { APPROVAL_HISTORY_CASE } from "./first-task-approval-history.js";
+import { APPROVAL_HISTORY_CASE, readApprovalHistoryRevision } from "./first-task-approval-history.js";
 import { runApprovalHistoryDecisions } from "./first-task-approval-history-flow.js";
 import { observeCompletionUpdate } from "./completion-update-flow.js";
 import {
@@ -122,7 +122,10 @@ export function projectFirstTaskResult(result: RunnerE2EResult): RunnerE2EResult
       comments: c.comments.map(comment => ({ ...pick(comment, ["id", "issueId", "body", "authorAgentId", "createdAt"]),
         ...(comment.authorUserId ? { authorUserId: "fixture-board" } : {}) })),
       interactions: c.interactions.map(interaction),
-      documents: c.documents.map(d => pick(d, ["id", "issueId", "key", "title", "body", "format", "latestRevisionId", "latestRevisionNumber", "createdAt", "updatedAt"])),
+      documents: c.documents.map(d => ({ ...pick(d, ["id", "issueId", "key", "title", "body", "format", "latestRevisionId", "latestRevisionNumber", "createdAt", "updatedAt"]),
+        ...(d.savedRevision ? { savedRevision: { ...pick(d.savedRevision, ["id", "documentId", "issueId", "key", "body", "createdByAgentId", "createdByRunId"]),
+          ...(d.savedRevision.createdByUserId ? { createdByUserId: "fixture-board" } : {}) } } : {}),
+      })),
       attachments: (c.attachments ?? []).map(a => pick(a, ["id", "issueId", "title", "originalFilename", "filename", "body", "contentVerified", "contentSha256", "byteSize", "createdAt"])),
       runs: c.runs.map(run => ({ ...pick(run, ["id", "issueId", "nativeIssueId", "agentId", "status", "startedAt", "finishedAt", "runtimeMode", "driverKind"]),
         ...pick({ model: run.resultJson?.model ?? run.usageJson?.model }, ["model"]) })),
@@ -474,13 +477,15 @@ export async function runFirstTaskFlow(input: {
             `/api/issues/${t.id}/documents`,
           );
           return Promise.all(
-            summaries.map(async (d) => ({
-              ...(await api.get<Row>(
+            summaries.map(async (d) => {
+              const document = { ...(await api.get<Row>(
                 `/api/issues/${t.id}/documents/${encodeURIComponent(d.key)}`,
               )),
               key: d.key,
               issueId: t.id,
-            })),
+              };
+              return scenario.id === APPROVAL_HISTORY_CASE ? readApprovalHistoryRevision(api, document) : document;
+            }),
           );
         }),
       )

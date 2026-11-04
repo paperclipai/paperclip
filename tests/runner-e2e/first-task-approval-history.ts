@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import type { RunnerApi } from "./api.js";
 import type { FirstTaskCheck, FirstTaskCheckpoint, FirstTaskEvidence, Row } from "./first-task-scoring.js";
 
 export const APPROVAL_HISTORY_SUITE = "onboarding-approval-history";
@@ -24,6 +25,17 @@ export function approvalHistoryDefinitionDigest() {
     hash.update(file).update("\0").update(readFileSync(new URL(file, import.meta.url))).update("\0");
   }
   return hash.digest("hex");
+}
+
+/** Read the exact immutable revision observed on the document, including its actual writer/run. */
+export async function readApprovalHistoryRevision(api: Pick<RunnerApi, "get">, document: Row): Promise<Row> {
+  if (typeof document.latestRevisionId !== "string" || !document.latestRevisionId) throw new Error("onboarding_saved_revision_missing");
+  const savedRevision = await api.get<Row>(`/api/issues/${document.issueId}/documents/${encodeURIComponent(document.key)}/revisions/${document.latestRevisionId}`);
+  if (!savedRevision || savedRevision.id !== document.latestRevisionId || savedRevision.documentId !== document.id
+    || savedRevision.issueId !== document.issueId || savedRevision.key !== document.key || savedRevision.body !== document.body) {
+    throw new Error("onboarding_saved_revision_binding_mismatch");
+  }
+  return { ...document, savedRevision };
 }
 
 const acceptedByHuman = (card: Row | undefined) => Boolean(card?.status === "accepted" && card.result?.outcome === "accepted"
@@ -85,6 +97,17 @@ export function gradeApprovalHistory(e: FirstTaskEvidence, marker: string): Firs
   add("approval-history-stages", stages.every(phase => e.checkpoints.some(c => c.phase === phase)), "Every approval and waiting boundary was observed");
   add("no-pending-approvals", last.interactions.every(card => card.status !== "pending"), "Completion leaves no pending human request or duplicate approval");
   const finished = e.checkpoints.filter(c => c.phase === "finished");
+  add("writer-authored-output", workers.length === 1 && tasks.length === 1 && finished.length >= 2
+    && finished.slice(-2).every(c => c.documents.some(doc => {
+      const revision = doc.savedRevision;
+      if (!revision || typeof doc.latestRevisionId !== "string") return false;
+      const run = c.runs.find(row => row.id === revision.createdByRunId);
+      return doc.issueId === tasks[0].id && doc.key !== "plan" && String(doc.body).includes(marker)
+        && revision.id === doc.latestRevisionId && revision.documentId === doc.id && revision.issueId === doc.issueId
+        && revision.key === doc.key && revision.body === doc.body && revision.createdByAgentId === workers[0].id
+        && !revision.createdByUserId && run?.agentId === workers[0].id && run.status === "succeeded" && run.runtimeMode === "native"
+        && (run.nativeIssueId ?? run.issueId ?? run.contextSnapshot?.issueId) === tasks[0].id && Boolean(run.startedAt);
+    })), "The saved output's exact revision was authored by the approved writer in its actual child execution");
   const output = (c: FirstTaskCheckpoint) => c.documents.filter(doc => doc.issueId === tasks[0]?.id && doc.key !== "plan")
     .map(doc => ({ id: doc.id, key: doc.key, revisionId: doc.latestRevisionId, body: doc.body }))
     .sort((a, b) => a.key.localeCompare(b.key) || a.id.localeCompare(b.id));
