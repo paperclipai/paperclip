@@ -50,20 +50,23 @@ The operator-gated `paperclip.budgets` tracer records
 `budget.accounting.transaction`, `budget.accounting.settlement`, `budget.accounting.lock_wait`,
 `budget.exposure.evaluate`, `budget.enforcement.deliver`,
 `budget.enforcement.scope`, `budget.cancellation.deliver`, and `budget.accounting.recover`.
-Inspection spans cover the preliminary read-only snapshot. Reconciliation spans
-exist only when that inspection finds a transition requiring the company lock;
-compare their counts to measure how often preliminary checks bypass the lock.
-Authoritative reservation and transactional evaluation retain their own spans.
-Transaction spans include commit time. Lock-wait spans cover acquisition of the
-company accounting lock. Settlement spans cover the ledger and reservation
-transaction. Enforcement spans measure asynchronous delivery; cancellation
-delivery spans start after acquiring a concurrency slot and cover the external
-Stop attempt. Both remain separate from provider inference.
+Inspection and admission spans cover read-only eligibility. Paid reservations,
+receipts and all five settlement owners avoid the company accounting mutex.
+`budget.admission.reconcile` remains a historical span name; eligibility no longer
+publishes budget transitions. `budget.accounting.lock_wait` still describes the
+legacy low-frequency configuration/control wrapper, not paid settlement.
+Transaction spans include commit time. Settlement spans cover the atomic ledger,
+reservation and owner acknowledgement. Acquisition duration is not a pure
+PostgreSQL lock-wait measurement: it can include network and Node scheduling.
+Enforcement spans cover asynchronous evaluation/delivery; cancellation delivery
+covers the external Stop attempt, separate from provider inference.
 
-The closed attribute list is `budget.policy_count` (number of applicable
-policies) and `budget.enforcement.queue_delay_ms` (time since the pending policy's
-last intent or retry timestamp). These spans contain no tool content, usage
-receipt bodies, credentials, or provider error bodies. They do not change
+The closed attribute list is `budget.policy_count` (applicable policy count),
+`budget.enforcement.queue_delay_ms` (time since pending intent/retry), and
+`budget.accounting.owner` (`run`, `decision`, `classifier`, `fast_response`,
+`browser`). The owner tag identifies the shared settlement span's emitter.
+These spans contain no prompts, usage receipt bodies, credentials or provider
+error bodies. They remain gated by the operator OTLP endpoint and do not change
 Paperclip's separate first-party Telemetry contract.
 
 ## Slack receipt reactions

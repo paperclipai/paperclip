@@ -1748,3 +1748,31 @@ the ordinary instance settings API. Seed inserts preserve an existing winner;
 replacements lock the row and reject stale revisions. Database/transaction
 handles permit atomic migration receipts. Connection URLs, API keys and unknown
 fields are excluded. See [field ownership and startup order](cloud-runtime-configuration.md).
+
+## Independent accounting and budget evaluation
+
+`budget_evaluation_work` holds independent pending inputs for committed exposure
+changes, with company and captured agent/project attribution. Producers append
+in their financial transaction after registering transaction-aware notification.
+The worker evaluates a consistent snapshot, fences policy publication through
+`budget_policies.evaluation_version`, and deletes only its selected committed
+input IDs in the publication transaction. A later commit with an older allocated
+ID remains pending. Policy creation/edits also append inputs, so a previously
+consumed no-policy batch cannot hide a newly applicable threshold.
+
+No financial commit increments a company/agent spend counter or company dirty
+version. Monthly API totals aggregate `cost_events`; runtime totals use existing
+`accounting_runtime_baselines` plus acknowledged v2 run ledger. Retained counter
+columns are non-authoritative. Invoice and verified late-receipt corrections
+retain append-only `cost_adjustments` evidence and immutable reported amounts.
+`cost_events.reported_usage_json` retains original placeholder usage before a
+verified late receipt updates effective token/request fields; each adjustment
+retains its previous usage in `previous_usage_json`.
+Unknown late run receipts remain durable per-receipt debt; resolving one receipt
+cannot clear another unresolved receipt.
+
+Upgrade all controllers/workers to this accounting contract and drain incompatible
+pre-upgrade database transactions before enabling independent writers. Do not run
+pre-upgrade synchronous counter/evaluation writers beside unlocked writers.
+Rollback must use a compatible version that reads the ledger and retains the
+durable evaluation feed; a pre-contract binary is not a safe rollback target.

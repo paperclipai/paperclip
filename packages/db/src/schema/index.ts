@@ -276,3 +276,4 @@ export { userWorkspacePreferences } from "./user_workspace_preferences.js";
 export { issueThreadInteractionIdempotencyKeys } from "./issue_thread_interaction_idempotency_keys.js";
 
 export { projectTaskExecutionPolicies, executionAdmissions, executionAdmissionProjectCharges } from "./execution_admissions.js";
+export { budgetEvaluationWork } from "./budget_evaluation_work.js";

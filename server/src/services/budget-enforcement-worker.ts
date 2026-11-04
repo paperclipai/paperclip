@@ -7,8 +7,10 @@ import {
   hasPendingBudgetEnforcement,
   nextBudgetReconciliationAt,
   reconcileDueBudgetPolicies,
+  flushBudgetEvaluationWork,
   type BudgetServiceHooks,
 } from "./budgets.js";
+import { hasPendingBudgetEvaluation } from "./budget-evaluation-work.js";
 import { readCostAccountingWork } from "./run-cost-accounting.js";
 import { subscribeAllCompanyLiveEvents } from "./live-events.js";
 
@@ -30,6 +32,7 @@ export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, 
   let nextDeadline: number | null = null;
   return coordinator.register(DELIVERY_QUEUES.budgetEnforcement, {
     retryMs: 1_000,
+    coalesceMs: 1_000,
     runDuringDrain: true,
     async run(signal) {
       if (signal.aborted) return;
@@ -40,14 +43,16 @@ export function registerBudgetEnforcementWork(db: Db, coordinator: Coordinator, 
         if (!reconciling) startup = false;
       }
       if (signal.aborted) return;
+      await flushBudgetEvaluationWork(db);
+      if (signal.aborted) return;
       await withBudgetSpan("budget.enforcement.deliver", () => deliverBudgetEnforcement(db, hooks));
     },
     async hasPending() {
-      const [pending, next] = await Promise.all([
-        hasPendingBudgetEnforcement(db), nextBudgetReconciliationAt(db),
+      const [pending, next, evaluation] = await Promise.all([
+        hasPendingBudgetEnforcement(db), nextBudgetReconciliationAt(db), hasPendingBudgetEvaluation(db),
       ]);
       nextDeadline = next?.getTime() ?? null;
-      return pending || reconciling;
+      return pending || evaluation || reconciling;
     },
     nextRunAt: () => nextDeadline,
   });
