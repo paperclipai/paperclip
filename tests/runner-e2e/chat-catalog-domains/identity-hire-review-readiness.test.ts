@@ -20,7 +20,7 @@ vi.mock("../api.js", () => ({ pollUntil: async (options: { deadlineAt: number; l
 } }));
 import { hireRevisionIdentityCases } from "./identity-hire-revision.js";
 afterEach(() => { vi.restoreAllMocks(); observations.read.mockReset(); document.body.replaceChildren(); });
-type Options = { deadline?: number | "missing"; readyAt?: number; href?: string; wrongComment?: boolean; foreignSource?: boolean; wrongActor?: boolean; wrongNativeComment?: boolean; wrongModel?: boolean; notPending?: boolean; lateDom?: boolean; progress?: boolean };
+type Options = { deadline?: number | "missing"; readyAt?: number; href?: string; wrongComment?: boolean; foreignSource?: boolean; wrongActor?: boolean; wrongNativeComment?: boolean; wrongModel?: boolean; notPending?: boolean; lateDom?: boolean; progress?: boolean; genericReply?: boolean };
 function fixture(options: Options = {}) {
   clock.now = 30_000; clock.deadlines.splice(0); vi.spyOn(Date, "now").mockImplementation(() => clock.now);
   vi.spyOn(Element.prototype, "getClientRects").mockImplementation(() => [{ width: 10, height: 10 }] as unknown as DOMRectList);
@@ -30,7 +30,7 @@ function fixture(options: Options = {}) {
   const run = { id: "native", companyId: "company", agentId: options.wrongActor ? "other" : "ceo", runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: source, commentId: options.wrongNativeComment ? "other" : "human" } };
   const comments = [{ id: "human", companyId: "company", issueId: source, authorUserId: "person", body: query },
     ...(options.progress ? [{ id: "progress", companyId: "company", issueId: source, authorAgentId: "ceo", createdByRunId: "native", body: "I am checking this proposal before revising it." }] : []),
-    { id: "reply", companyId: "company", issueId: source, authorAgentId: "ceo", createdByRunId: "native", body: "Revised to requested-model, pending proposal." }];
+    { id: "reply", companyId: "company", issueId: source, authorAgentId: "ceo", createdByRunId: "native", body: options.genericReply ? "Revised and resubmitted for approval." : "Revised to requested-model, pending proposal." }];
   function sync() {
     document.body.innerHTML = '<section data-testid="task-chat-thread"><div id="comment-human"></div>' + (options.progress ? '<div id="comment-progress"></div>' : '') + '<div id="comment-' + (options.wrongComment ? "foreign" : "reply") + '"></div></section>';
     if (clock.now >= readyAt) { const a = document.createElement("a"); a.setAttribute("href", href); a.textContent = "pending approval"; document.querySelector('div:last-child')!.append(a); if (options.progress) document.getElementById("comment-progress")!.append(a.cloneNode(true)); }
@@ -99,4 +99,12 @@ it("rereads the actual source comment independently of the captured history rece
   expect(result.comments[1]).not.toBe(captured);
   observed.body = "Changed independent observation";
   expect(captured.body).toBe("Revised model, pending approval.");
+});
+
+it("navigates a generic owned approval link without requiring the chat message to repeat the model", async () => {
+  const f = fixture({ readyAt: 30_000, genericReply: true });
+  await hireRevisionIdentityCases[0]!.act!(f.ctx, f.state);
+  expect(f.clicks()).toBe(1);
+  expect(f.state).toMatchObject({ pendingProposalVisible: true, revisedModelVisible: true,
+    revisionHistoryComment: { id: "reply", body: "Revised and resubmitted for approval." } });
 });

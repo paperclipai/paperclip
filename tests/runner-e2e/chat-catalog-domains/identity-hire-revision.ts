@@ -104,14 +104,15 @@ export const hireRevisionIdentityCases: readonly ChatCatalogCase[] = [identityDe
         const bound = ctx.issue()?.id === sourceId && ctx.issue()?.conversationState === "waiting" && runs.length === 1 && !!run
           && run.companyId === ctx.input.fixtures.company.id && run.agentId === ctx.input.fixtures.agent.id && run.status === "succeeded"
           && run.contextSnapshot?.issueId === sourceId && humans.length === 1 && run.contextSnapshot?.commentId === humans[0]?.id;
-        const link = bound && run ? links.find(row => {
+        const boundLinks = bound && run ? links.filter(row => {
           if (row.source !== "reply" || row.conversationId !== sourceId || !comments.some(comment => comment.id === row.commentId
-            && comment.authorAgentId === run.agentId && comment.createdByRunId === run.id
-            && comment.body?.includes(String(state.cheaperModel)))) return false;
+            && comment.authorAgentId === run.agentId && comment.createdByRunId === run.id)) return false;
           try { const url = new URL(row.href, ctx.input.api.baseURL); return url.origin === new URL(ctx.input.api.baseURL).origin
             && [ `/approvals/${id}`, `/${ctx.input.fixtures.company.issuePrefix}/approvals/${id}` ].includes(url.pathname); }
           catch { return false; }
-        }) : undefined;
+        }) : [];
+        const link = boundLinks.find(row => comments.some(comment => comment.id === row.commentId
+          && comment.body?.includes(String(state.cheaperModel)))) ?? boundLinks[0];
         const comment = link ? comments.find(row => row.id === link.commentId) : undefined;
         return { approval, link, comment };
       },

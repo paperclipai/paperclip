@@ -32,6 +32,20 @@ describe("formal hire remains a proposal after cost revision", () => {
   it("accepts retained original history and the exact bound native revision reply without an extra approval comment", () => {
     expect(gradeHireRevision(validChatRevision()).passed).toBe(true);
   });
+  it("accepts a generic linked chat message only when the owned approval note supplies model-specific history", () => {
+    const o = validChatRevision(), body = "Revised and resubmitted for approval. [Pending proposal](/approvals/approval).";
+    o.state.approvalComments = valid().state.approvalComments;
+    o.reply = body;
+    o.comments[0]!.body = body;
+    (o.state.revisionHistoryComment as { body: string }).body = body;
+    expect(gradeHireRevision(o).passed).toBe(true);
+    const missing = structuredClone(o);
+    missing.state.approvalComments = (missing.state.approvalComments as unknown[]).slice(0, 1);
+    expect(gradeHireRevision(missing).passed).toBe(false);
+    const foreign = structuredClone(o);
+    (foreign.state.approvalComments as Array<{ authorAgentId?: string }>)[1]!.authorAgentId = "other";
+    expect(gradeHireRevision(foreign).passed).toBe(false);
+  });
   it("accepts a bound revision reply alongside progress from the same run", () => {
     const o = validChatRevision();
     const progress = { ...structuredClone(o.comments[0]!), id: "progress", body: "I am checking the revised proposal." };
