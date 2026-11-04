@@ -268,8 +268,9 @@ run-bound complete comment-read receipt before accepting a finish report. An
 unread, partial, stale or foreign receipt returns a corrective
 `read_current_wake_comments` instruction through the completion tool. The agent
 can read the accepted comments and correct its report in the same turn without
-repeating completed actions. The terminal guard still checks the exact current
-binding and snapshot after provider settlement.
+repeating completed actions. An unfinished read continues with its most recent
+`nextCursor`; a changed snapshot restarts without a cursor. The terminal guard
+still checks the exact current binding and snapshot after provider settlement.
 
 ### `done`
 

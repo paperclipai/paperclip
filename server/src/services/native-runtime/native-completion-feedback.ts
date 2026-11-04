@@ -77,7 +77,10 @@ export async function nativeCompletionFeedback(
         const reason = error.message === "native_current_wake_comments_unread"
           ? "The accepted comments have not been fully read."
           : "The accepted comments changed after the complete read.";
-        throw new Error(`${reason} Call read_current_wake_comments without a cursor, then follow each nextCursor until complete=true. Reassess the complete current request and resubmit the completion report in this turn. Preserve completed work and do not repeat completed actions.`);
+        const cursorInstruction = error.message === "native_current_wake_comments_unread"
+          ? "If you have an unfinished read, continue with its most recent nextCursor; otherwise start without a cursor. If the reader reports that the snapshot changed, restart without a cursor."
+          : "Start without a cursor.";
+        throw new Error(`${reason} Call read_current_wake_comments. ${cursorInstruction} Follow each returned nextCursor until complete=true. Reassess the complete current request and resubmit the completion report in this turn. Preserve completed work and do not repeat completed actions.`);
       }
       throw error;
     }

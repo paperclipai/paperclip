@@ -91,6 +91,24 @@ describe.skipIf(!support.supported)("current-wake completion feedback", () => {
     await assertSameRunningTurn(value);
   });
 
+  it("follows partial-read feedback after two of three pages without restarting the reader", async () => {
+    const value = await seed(["B".repeat(32_001)]);
+    const first = await value.read();
+    const second = await value.read(first.nextCursor);
+    expect(first.complete).toBe(false);
+    expect(second.complete).toBe(false);
+    const correction = await finish(value).then(
+      () => { throw new Error("An incomplete read received an accepted report"); },
+      error => (error as Error).message,
+    );
+    const instructedCursor = correction.includes("most recent nextCursor") ? second.nextCursor : undefined;
+    const last = await value.read(instructedCursor);
+    expect(last).toMatchObject({ complete: true, nextCursor: null });
+    expect([...first.comments, ...second.comments, ...last.comments].map(comment => comment.bodyChunk).join("")).toBe(value.comments[0]!.body);
+    await expect(finish(value)).resolves.toContain("Completion report accepted");
+    await assertSameRunningTurn(value);
+  });
+
   it("corrects a changed snapshot and accepts only a new complete read", async () => {
     const value = await seed();
     await value.read();
@@ -98,6 +116,24 @@ describe.skipIf(!support.supported)("current-wake completion feedback", () => {
     await expect(finish(value)).rejects.toThrow(/read_current_wake_comments/);
     const page = await value.read();
     expect(page.comments[0]?.bodyChunk).toBe("Revised accepted message");
+    await expect(finish(value)).resolves.toContain("Completion report accepted");
+    await assertSameRunningTurn(value);
+  });
+
+  it("retains the snapshot-change restart path during a partial read", async () => {
+    const value = await seed(["C".repeat(32_001)]);
+    const first = await value.read();
+    const second = await value.read(first.nextCursor);
+    await db.update(issueComments).set({ body: "A revised request", updatedAt: new Date() }).where(eq(issueComments.id, value.comments[0]!.id));
+    const correction = await finish(value).then(
+      () => { throw new Error("A stale incomplete read received an accepted report"); },
+      error => (error as Error).message,
+    );
+    expect(correction).toContain("If the reader reports that the snapshot changed, restart without a cursor");
+    await expect(value.read(second.nextCursor)).rejects.toThrow("paperclip_current_wake_comments_snapshot_changed");
+    const restarted = await value.read();
+    expect(restarted).toMatchObject({ complete: true, nextCursor: null });
+    expect(restarted.comments[0]?.bodyChunk).toBe("A revised request");
     await expect(finish(value)).resolves.toContain("Completion report accepted");
     await assertSameRunningTurn(value);
   });
