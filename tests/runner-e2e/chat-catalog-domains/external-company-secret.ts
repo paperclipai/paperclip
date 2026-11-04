@@ -40,7 +40,6 @@ export function deploymentSecretGuidance(text:string){
   &&!text.split(/[.!;\n]+|\bbut\b/i).some(clause=>/\b(?:I(?:['’]ve| have)?|we(?:['’]ve| have)?)\s+(?:already\s+)?(?:added|created|bound|configured)\b/i.test(clause))
   &&!text.split(/[.!;\n]+/).some(clause=>/\b(?:bind|assign|add)\b[^.!;\n]{0,45}\b(?:all agents|every agent|CEO|Riley)\b/i.test(clause)&&!/(?:do not|don.t|never|avoid)\s+(?:bind|assign|add)/i.test(clause));
 }
-/** A confirmation asks about the saved company binding, never the value itself. */
 export function companySecretQuestionHandoff(value:unknown,b:SecretQuestionBinding,status:"pending"|"answered"="pending"){
  const bound=boundSecretQuestion(value,b,status);if(!bound)return;
  const {row,question:q,questionSet:qs,text,payloadHash}=bound;
