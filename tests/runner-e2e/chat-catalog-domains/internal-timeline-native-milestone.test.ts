@@ -392,7 +392,7 @@ it("accepts a recorded failed attempt without requiring every worker's name", ()
 it.each([
   unnamedAttempt.replace("You reassigned the task to Riley. ", ""),
   unnamedAttempt.replace("the check passed", "the check failed"),
-  unnamedAttempt.replace("The verification command failed", "Riley ran verification and it failed"),
+  unnamedAttempt.replace("The verification command failed", "The verification command failed on Riley's attempt"),
 ])("keeps missing handoff, failed repair and explicit wrong initial actor rejected: %s", reply => {
   const o = fixture(); o.reply = reply;
   expect(gradeWorkTimeline(o).passed).toBe(false);

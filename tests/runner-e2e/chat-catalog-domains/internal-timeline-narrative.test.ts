@@ -20,8 +20,18 @@ it.each([
 ])("retains consequential actor and outcome requirements: %s", reply => {
   expect(grade(reply)).toBe(false);
 });
-it("does not infer the initial worker over an explicit contrary actor in another paragraph", () => {
-  expect(grade(account.replace("The verification command failed", "\n\nRiley ran verification and it failed"))).toBe(false);
+it("does not infer the initial worker over a contrary possessive within the command clause", () => {
+  const reply = account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "")
+    .replace("The verification command failed", "The verification command failed on Riley's attempt");
+  expect(grade(reply)).toBe(false);
+});
+it("keeps a contrary worker heading as invalidation across blank lines", () => {
+  const reply = account.replace("First attempt (Morgan)", "Initial attempt (Riley)")
+    .replace("Morgan built the page. ", "Riley built the page.\n\n");
+  expect(grade(reply)).toBe(false);
+});
+it("keeps a legitimate anonymous command description across a blank line", () => {
+  expect(grade(account.replace("The verification", "\n\nThe verification"))).toBe(true);
 });
 
 it("does not give a heading credit for another actor's command", () => {
