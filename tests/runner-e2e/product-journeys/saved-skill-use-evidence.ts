@@ -127,7 +127,7 @@ function nativeOpenCodeSkillLoad(row: Row, bound: Row[], binding: NativePrpRunBi
     || (payload.output.match(/<\/skill_files>/g) ?? []).length !== 1) return false;
   // The native loader prints an absolute filesystem path, not a URI.
   const path = wrapper[4]!;
-  if (!path.startsWith("/") || /[\\\0\r\n?#]/.test(path) || /%[a-f0-9]{2}/i.test(path)
+  if (!path.startsWith("/") || /[\\\u0000-\u001f\u007f?#]/.test(path) || /%[a-f0-9]{2}/i.test(path)
     || path.split("/").some(part => part === "." || part === "..")
     || !path.replace(/\/$/, "").endsWith(`/.claude/skills/${runtimeName}`)) return false;
   const pair = bound.filter(candidate => ["tool.execution.started", "tool.execution.completed"].includes(candidate.payload.prpEvent.eventType)

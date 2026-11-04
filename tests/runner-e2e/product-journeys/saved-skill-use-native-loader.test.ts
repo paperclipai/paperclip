@@ -122,4 +122,8 @@ describe("saved-skill native OpenCode builtin loader", () => {
     const value = observations(); output(value, text => text.replace(`${runtimeName}\n`, `${runtimeName}${suffix}\n`));
     expect(read(value)).toEqual([]);
   });
+  it.each([["TAB", "\u0009"], ["ESC", "\u001b"], ["DEL", "\u007f"]])("rejects ASCII control %s in the base path", (_name, control) => {
+    const value = observations(); output(value, text => text.replace("/workspace/", `/work${control}space/`));
+    expect(read(value)).toEqual([]);
+  });
 });
