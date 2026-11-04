@@ -19,6 +19,7 @@ export type JourneyId =
   | "create-skill-studio"
   | "stop-redirect"
   | "hire-delegate-reuse"
+  | "agent-settings-persistence"
   | "file-input-answer"
   | "inbox-triage"
   | "routine-scheduled-run"

@@ -10,6 +10,7 @@ export const agentJourneyRuns = {
   "protected-actions": 4,
   "create-skill-studio": 1,
   "stop-redirect": 3,
+  "agent-settings-persistence": 1,
   "question-answer-resume": 3,
   "hire-delegate-reuse": 7
 } as const;
@@ -45,5 +46,6 @@ export const journeyRequiredChecks: Record<string, readonly string[]> = {
     "stopped-run-no-later-events", "stop-preserved-download", "redirect-consumed-once", "user-reply-stored-once", "configured-model-and-environment"],
   "followup-while-running": ["followup-native-command-active", "followup-stored-once", "followup-consumed-once", "followup-final-answer-persisted", "followup-one-or-two-native-runs", "configured-model-and-environment"],
   "hire-delegate-reuse": ["one-attributed-native-hire", "first-delegated-task-complete", "checklist-authored-by-hired-run", "same-teammate-reused", "review-authored-by-same-hired-run", "original-checklist-preserved", "hire-user-messages-stored-once", "delegated-result-visible-after-reload", "configured-model-and-environment"],
+  "agent-settings-persistence": ["agent-settings-browser-save", "agent-settings-reload-persisted", "agent-settings-instruction-only-input", "agent-settings-result-attributed", "agent-settings-result-reopened", "agent-settings-original-restored", "configured-model-and-environment"],
   "cloud-onboarding": ["fresh-workspace", "ui-connection-and-native-agent", "first-task-complete", "downloadable-artifact-verified", "native-trace-verified"],
 };
