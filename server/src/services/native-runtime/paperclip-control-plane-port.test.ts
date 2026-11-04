@@ -460,6 +460,26 @@ describe("PaperclipControlPlanePort conformance", () => {
     expect(observed).toBe(1);
   });
 
+  it("returns the default committed receipt when cancellation arrives during its postcommit observer", async () => {
+    let release!: () => void, observed!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const started = new Promise<void>(resolve => { observed = resolve; });
+    const f = await terminalObserverFixture({ async onCommittedEvent() { observed(); await gate; } });
+    const controller = new AbortController();
+    const outcome = f.port.appendEvent(f.event, { signal: controller.signal }).then(receipt => ({ receipt }), error => ({ error }));
+    try {
+      await started;
+      expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.identity.runId))).toHaveLength(1);
+      const cancellation = new Error("cancelled after event transaction committed");
+      controller.abort(cancellation);
+      release();
+      expect(await outcome).toMatchObject({ receipt: { disposition: "committed" } });
+      await expect(f.port.checkpointSession(f.snapshot, { signal: controller.signal })).rejects.toBe(cancellation);
+      await expect(f.port.completeRun(f.result, { signal: controller.signal })).rejects.toBe(cancellation);
+      expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, f.identity.runId))).toEqual([]);
+    } finally { release(); await outcome; }
+  });
+
   it("retains the original deferred observer rejection for checkpoint and result acceptance", async () => {
     let reject!: (error: Error) => void;
     const gate = new Promise<void>((_resolve, no) => { reject = no; });

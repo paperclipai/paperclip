@@ -472,7 +472,6 @@ export class PaperclipControlPlanePort implements ControlPlanePort {
       });
     } else {
       await observation;
-      this.#assertActive(options);
     }
     return {
       cursor: persisted.row.seq,
