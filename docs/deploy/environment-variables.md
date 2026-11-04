@@ -22,6 +22,7 @@ All environment variables that Paperclip uses for server configuration.
 | `PAPERCLIP_CHAT_WEBHOOK_PUBLIC_URL` | (board public origin) | Optional HTTPS origin for native chat provider webhooks when ingress and the board use different hosts. Must have no credentials, path, query, or fragment; invalid configuration refuses startup. Used only for provider callback URLs, not board links, authentication, trusted hosts, or identity confirmation. |
 | `PAPERCLIP_RUNNER_PUBLIC_URL` | (unset) | Explicit `wss://` base URL used only when a remote `paperclip_runner` target dials Paperclip directly. Paperclip appends `/api/runner/v1/connect/<runId>`; the reverse proxy must forward WebSocket upgrades for that route. This value is never inferred from request headers. Daytona ignores it and uses provider ingress. |
 | `PAPERCLIP_RUNNER_CA_BUNDLE_PATH` | (unset) | Optional PEM CA bundle for direct runner WSS. Platform roots remain enabled. There is no insecure TLS bypass. |
+| `PAPERCLIP_SANDBOX_BRIDGE_ALLOW_ALL_ROUTES` | `false` | Set exactly `true` in the Paperclip server environment to disable the additional callback bridge route allowlist for all sandbox and SSH agents using HTTP/2 or the file-queue fallback. See [Callback bridge route restrictions](#callback-bridge-route-restrictions). |
 | `PAPERCLIP_RUNNER_REMOTE_BINARY_PATH` | (host build) | Host-local path to a `paperclip-runnerd` artifact built for the remote target OS and architecture. Required when Paperclip and the remote sandbox do not share a compatible platform; build metadata and the required transport mode are verified before launch. |
 | `PAPERCLIP_RUNNER_REMOTE_CODEX_PATH` | (unset) | Optional host-local path to a Codex executable built for the remote target OS and architecture. For remote Codex-backed runners, Paperclip stages and verifies this executable beside `paperclip-runnerd`. |
 | `PAPERCLIP_RUNNER_REMOTE_CODEX_NPM_SPEC` | (unset) | Optional pinned npm package spec (for example, `@openai/codex@0.160.0`) installed inside each fresh remote lease when its Codex harness is not baked into the sandbox image. Mutually exclusive with `PAPERCLIP_RUNNER_REMOTE_CODEX_PATH`; Paperclip verifies the installed executable before starting `runnerd`. |
@@ -37,6 +38,22 @@ runs retain their recovery path. The deprecated `enableRunnerPreviewIngress`
 key remains accepted in stored and managed configuration for version-skew
 compatibility, but it has no runtime effect. The setting has no effect on
 legacy adapters or callback bridges.
+
+### Callback bridge route restrictions
+
+The callback bridge normally limits reachable routes before API authorization.
+To let agents call routes such as instruction-bundle and skill writes, set
+`PAPERCLIP_SANDBOX_BRIDGE_ALLOW_ALL_ROUTES=true` on the Paperclip server and
+restart it. The setting applies when a bridge starts. Unset it or use any value
+other than `true` to retain the default allowlist.
+
+This is an instance-wide operator choice. It expands the host routes reachable
+through the bridge, including by a compromised agent. Normal API authentication,
+agent permissions, company boundaries, and approval gates still apply. Bridge
+token checks, header filtering, path validation, and transport limits remain in
+place. This does not change sandbox isolation or external network policy.
+Setting this variable inside an agent's sandbox or adapter environment does not
+change the host-side policy. The setting does not affect native Runner API tools.
 
 ### Webhook-only chat ingress
 

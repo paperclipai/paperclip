@@ -4419,6 +4419,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   // forward budget (30 s) when the caller sets no option, so current behavior
   // does not change.
   const forwardTimeoutMs = input.forwardTimeoutMs ?? DEFAULT_DUPLEX_BROKER_BUDGETS.forwardTimeoutMs;
+  const allowAllRoutes = process.env.PAPERCLIP_SANDBOX_BRIDGE_ALLOW_ALL_ROUTES === "true";
 
   const runtimeRootDir =
     input.runtimeRootDir?.trim().length
@@ -4831,6 +4832,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
             bridgeToken,
             forwardRequest: http2ForwardRequest,
             routes: HTTP2_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST,
+            allowAllRoutes,
             // The same resolved limit the launch environment hands the
             // sandbox-side gateway (`PAPERCLIP_BRIDGE_MAX_BODY_BYTES`,
             // below), so the host check and the gateway check enforce one
@@ -4943,6 +4945,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
+      authorizeRequest: allowAllRoutes ? () => null : undefined,
       maxBodyBytes,
       getRuntimeParentContext: input.getRuntimeParentContext,
       runtimeSpan: input.runtimeSpan,
