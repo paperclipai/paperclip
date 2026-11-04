@@ -1,8 +1,9 @@
+import { constants } from "node:fs";
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { assertSecretFree, findSecretLeak, findSecretLeakInJsonValues, normalizedSecrets } from "./redaction.js";
+import { assertSecretFree, findSecretLeak, findSecretLeakInJsonValues, normalizedSecrets, sanitizeJson } from "./redaction.js";
 
 export const PRIVATE_FRAMEWORK_ORIGINAL_REPORT = "snapshots/playwright-framework-original.txt";
 export const PRIVATE_FRAMEWORK_REPORT = "snapshots/playwright-framework.json";
@@ -52,20 +53,21 @@ export function inspectPrivateFrameworkMetadata(relative: string, raw: string, s
   if (Buffer.byteLength(raw) > 128 * 1024 * 1024) fail();
   const parsed = JSON.parse(raw), report = original ? parsed : parsed.report;
   const expanded = normalizedSecrets(secrets).flatMap(v => [v, encodeURIComponent(v), Buffer.from(v).toString("base64"), Buffer.from(v).toString("base64url")]);
-  if (findSecretLeakInJsonValues(report, expanded)) fail();
+  if (findSecretLeakInJsonValues(parsed, expanded) || JSON.stringify(sanitizeJson(parsed, secrets)) !== JSON.stringify(parsed)) fail();
   for (const result of results(report)) for (const attachment of result.attachments as any[]) {
     if (!attachment || typeof attachment.name !== "string" || typeof attachment.contentType !== "string") fail();
     if (attachment.body !== undefined) {
       if (typeof attachment.body !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(attachment.body)) fail();
       const body = Buffer.from(attachment.body, "base64"), text = body.toString("utf8");
       if (!["text/plain", "application/json"].includes(attachment.contentType) || !Buffer.from(text).equals(body) || findSecretLeak(body, expanded)) fail();
-      if (attachment.contentType === "application/json" && findSecretLeak(JSON.stringify(JSON.parse(text)), expanded)) fail();
+      if (attachment.contentType === "application/json" && (findSecretLeak(JSON.stringify(JSON.parse(text)), expanded) || JSON.stringify(sanitizeJson(JSON.parse(text), secrets)) !== JSON.stringify(JSON.parse(text)))) fail();
     }
   }
   return true;
 }
 export async function copyPrivateFrameworkReport(source: string, destination: string, secrets: readonly string[]) {
   const raw = await regular(source, "framework-report.json", 128 * 1024 * 1024);
+  if (!Buffer.from(raw.toString("utf8")).equals(raw)) fail();
   assertSecretFree(raw.toString("utf8"), secrets, "private framework metadata");
   const report = JSON.parse(raw.toString("utf8"));
   const attachments = new Map<string, Row>();
@@ -130,10 +132,11 @@ export async function validatePrivateFrameworkReport(directory: string, canonica
   for (const result of results(value.report)) for (const attachment of result.attachments as any[]) {
     if (attachment.path !== undefined) { if (typeof attachment.path !== "string") fail(); referenced.add(attachment.path); }
   }
-  const seen = new Set<string>();
+  const seen = new Set<string>(); let attachmentBytes = 0;
   for (const row of value.attachments) {
     if (!row || Object.keys(row).sort().join() !== "bytes,path,sha256" || !referenced.has(row.path) || seen.has(row.path)
       || !Number.isSafeInteger(row.bytes) || row.bytes < 0 || !/^[0-9a-f]{64}$/.test(row.sha256)) fail();
+    attachmentBytes += row.bytes; if (attachmentBytes > LIMIT) fail();
     const data = await regular(canonical, row.path); if (data.length !== row.bytes || hash(data) !== row.sha256) fail();
     seen.add(row.path);
   }
@@ -151,4 +154,19 @@ export async function referenceSealedFrameworkAttachments(directory: string, ori
   }
   value.canonicalExecutionId = executionId;
   await writeFile(path.join(directory, PRIVATE_FRAMEWORK_REPORT), `${JSON.stringify(value)}\n`, { mode: 0o600 });
+}
+
+export async function materializePrivateFrameworkAttachments(directory: string, original: string, executionId: string) {
+  const value = await validatePrivateFrameworkReport(directory, original, executionId);
+  let bytes = 0;
+  for (const row of value.attachments) {
+    bytes += row.bytes; if (bytes > LIMIT) fail();
+    if (!row.path.startsWith("playwright-output/")) continue;
+    const source = await regular(original, row.path);
+    if (source.length !== row.bytes || hash(source) !== row.sha256) fail();
+    await mkdir(path.dirname(path.join(directory, row.path)), { recursive: true, mode: 0o700 });
+    await copyFile(path.join(original, row.path), path.join(directory, row.path), constants.COPYFILE_EXCL);
+    const restored = await regular(directory, row.path);
+    if (hash(restored) !== row.sha256) fail();
+  }
 }
