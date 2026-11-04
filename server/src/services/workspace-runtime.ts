@@ -3344,6 +3344,89 @@ async function resolveGitRepoRootForWorkspaceCleanup(
   return path.dirname(resolvedGitDir);
 }
 
+const repositoryMutationTails = new Map<string, Promise<void>>();
+
+async function withRepositoryMutation<T>(repoRoot: string, run: () => Promise<T>): Promise<T> {
+  const key = await resolvePathForWorktreeComparison(repoRoot);
+  const previous = repositoryMutationTails.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>(resolve => { release = resolve; });
+  repositoryMutationTails.set(key, current);
+  await previous;
+  try {
+    return await run();
+  } finally {
+    release();
+    if (repositoryMutationTails.get(key) === current) repositoryMutationTails.delete(key);
+  }
+}
+
+async function ensureGitBranchUpstream(
+  repoRoot: string,
+  branchName: string,
+  baseRef: string,
+  recorder?: WorkspaceOperationRecorder | null,
+  newBranch = false,
+) {
+  const tracking = parseRemoteTrackingRef(baseRef);
+  if (!tracking) return;
+  const upstream = `refs/remotes/${tracking.remote}/${tracking.branch}`;
+  if (!await resolveBaseRefSha(repoRoot, upstream)) return;
+  const remote = await runGit(["config", "--get", `branch.${branchName}.remote`], repoRoot).catch(() => null);
+  const merge = await runGit(["config", "--get", `branch.${branchName}.merge`], repoRoot).catch(() => null);
+  if (remote && merge && !newBranch) return;
+  await recordGitOperation(recorder, {
+    phase: "worktree_prepare",
+    args: ["branch", `--set-upstream-to=${upstream}`, branchName],
+    cwd: repoRoot,
+    metadata: { repoRoot, branchName, baseRef, upstreamRestored: true },
+    failureLabel: `Configure upstream for ${branchName}`,
+  });
+}
+
+async function createTrackedGitWorktree(input: {
+  repoRoot: string;
+  worktreePath: string;
+  branchName: string;
+  baseRef: string;
+  baseRefSha: string | null;
+  recorder?: WorkspaceOperationRecorder | null;
+}) {
+  const { repoRoot, worktreePath, branchName, baseRef, baseRefSha, recorder } = input;
+  try {
+    await recordGitOperation(recorder, {
+      phase: "worktree_prepare",
+      args: ["worktree", "add", "--no-track", "-b", branchName, worktreePath, baseRef],
+      cwd: repoRoot,
+      metadata: { repoRoot, worktreePath, branchName, baseRef, baseRefSha, created: true },
+      successMessage: `Created git worktree at ${worktreePath}\n`,
+    });
+    await ensureGitBranchUpstream(repoRoot, branchName, baseRef, recorder, true);
+  } catch (error) {
+    try {
+      if (await findRegisteredGitWorktreeByBranch(repoRoot, branchName) === worktreePath) {
+        await recordGitOperation(recorder, {
+          phase: "worktree_cleanup",
+          args: ["worktree", "remove", "--force", worktreePath],
+          cwd: repoRoot,
+          metadata: { branchName, rollback: true },
+        });
+      }
+      if (await localBranchExists(repoRoot, branchName)) {
+        await recordGitOperation(recorder, {
+          phase: "worktree_cleanup",
+          args: ["branch", "-D", branchName],
+          cwd: repoRoot,
+          metadata: { branchName, rollback: true },
+        });
+      }
+    } catch (rollbackError) {
+      throw new AggregateError([error, rollbackError], `Worktree preparation and rollback failed for ${branchName}`);
+    }
+    throw error;
+  }
+}
+
 export async function realizeExecutionWorkspace(input: {
   db?: Db | null;
   base: ExecutionWorkspaceInput;
@@ -3393,6 +3476,15 @@ export async function realizeExecutionWorkspace(input: {
   }
 
   const repoRoot = await resolveGitOwnerRepoRoot(input.base.baseCwd);
+  return withRepositoryMutation(repoRoot, () => realizeGitWorktree(input, rawStrategy, requestedExistingBranch, repoRoot));
+}
+
+async function realizeGitWorktree(
+  input: Parameters<typeof realizeExecutionWorkspace>[0],
+  rawStrategy: Record<string, unknown>,
+  requestedExistingBranch: string,
+  repoRoot: string,
+): Promise<RealizedExecutionWorkspace> {
   let branchName: string;
   if (requestedExistingBranch) {
     // Exact-branch mode: attach the requested pre-existing branch verbatim.
@@ -3467,6 +3559,9 @@ export async function realizeExecutionWorkspace(input: {
 
   async function reuseExistingWorktree(reusablePath: string, effectiveBranchName = branchName, extraWarnings: string[] = []) {
     if (reusablePath !== worktreePath) await input.beforeSourceCopy?.(repoRoot, reusablePath);
+    if (!requestedExistingBranch) {
+      await ensureGitBranchUpstream(repoRoot, effectiveBranchName, baseRef, input.recorder);
+    }
     // An exact-branch attach must never move the requested branch, so skip
     // the unstarted-worktree fast-forward that template-derived reuse gets.
     const refresh = currentBaseRefSha && !requestedExistingBranch
@@ -3713,57 +3808,24 @@ export async function realizeExecutionWorkspace(input: {
     throw error;
   }
 
-  let branchCreatedByRuntime = true;
-  try {
+  const branchExisted = await localBranchExists(repoRoot, branchName);
+  const branchCreatedByRuntime = !branchExisted
+    || (input.recordedBranchOwnership?.branchName === branchName
+      && input.recordedBranchOwnership.createdByRuntime === true);
+  if (branchExisted) {
     await recordGitOperation(input.recorder, {
       phase: "worktree_prepare",
-      args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
+      args: ["worktree", "add", worktreePath, branchName],
       cwd: repoRoot,
-      metadata: {
-        repoRoot,
-        worktreePath,
-        branchName,
-        baseRef,
-        baseRefSha: currentBaseRefSha,
-        created: true,
-      },
-      successMessage: `Created git worktree at ${worktreePath}\n`,
-      failureLabel: `git worktree add ${worktreePath}`,
+      metadata: { repoRoot, worktreePath, branchName, baseRef, created: false, reusedExistingBranch: true },
+      successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
     });
-  } catch (error) {
-    if (!gitErrorIncludes(error, "already exists")) {
-      throw error;
-    }
-    try {
-      await recordGitOperation(input.recorder, {
-        phase: "worktree_prepare",
-        args: ["worktree", "add", worktreePath, branchName],
-        cwd: repoRoot,
-        metadata: {
-          repoRoot,
-          worktreePath,
-          branchName,
-          baseRef,
-          baseRefSha: currentBaseRefSha,
-          created: false,
-          reusedExistingBranch: true,
-        },
-        successMessage: `Attached existing branch ${branchName} at ${worktreePath}\n`,
-        failureLabel: `git worktree add ${worktreePath}`,
-      });
-      // The template rendered to a branch that already existed, so this
-      // attach did not create the branch and cleanup must not delete it.
-      branchCreatedByRuntime = false;
-    } catch (attachError) {
-      if (!gitErrorIncludes(attachError, "already checked out")) {
-        throw attachError;
-      }
-      const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
-      if (!reusablePath || !await isGitCheckout(reusablePath)) {
-        throw attachError;
-      }
-      return await reuseExistingWorktree(reusablePath);
-    }
+    await ensureGitBranchUpstream(repoRoot, branchName, baseRef, input.recorder);
+  } else {
+    await createTrackedGitWorktree({
+      repoRoot, worktreePath, branchName, baseRef,
+      baseRefSha: currentBaseRefSha, recorder: input.recorder,
+    });
   }
   await input.afterSourceCopy?.(repoRoot, worktreePath);
   await provisionExecutionWorktree({
@@ -3890,6 +3952,19 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       "Cannot rebuild the git worktree: the base project checkout directory does not exist.",
     );
   }
+  const repoRoot = await resolveGitOwnerRepoRoot(baseCwd);
+  return withRepositoryMutation(repoRoot, () =>
+    restoreGitWorktree(input, realized, cwd, provisionCommand, repoRoot));
+}
+
+async function restoreGitWorktree(
+  input: Parameters<typeof ensurePersistedExecutionWorkspaceAvailable>[0],
+  realized: RealizedExecutionWorkspace,
+  cwd: string,
+  provisionCommand: string,
+  repoRoot: string,
+): Promise<RealizedExecutionWorkspace> {
+  const baseCwd = input.base.baseCwd.trim();
   const restoration = savedGitWorkspaceRestoration({ metadata: input.workspace.metadata, companyId: input.agent.companyId,
     workspaceId: input.workspace.id, cwd, baseCwd, repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
     branchName: input.workspace.branchName ?? null });
@@ -3950,7 +4025,6 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       }, prepareLocalSource: input.prepareRestoredLocalSource });
     await persistContentsRestoredAt(new Date().toISOString());
   };
-  const repoRoot = await runGit(["rev-parse", "--show-toplevel"], baseCwd);
   await input.beforeSourceCopy?.(repoRoot, realized.worktreePath ?? cwd);
   const recordedBaseRefSha = readRecordedBaseRefSha(input.workspace.metadata);
   if (await directoryExists(cwd)) {
@@ -4008,6 +4082,9 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
       ? await refreshRemoteTrackingBaseRef(repoRoot, reuseBaseRef, input.resolveGitAuth)
       : [];
     const currentBaseRefSha = reuseBaseRef ? await resolveBaseRefSha(repoRoot, reuseBaseRef) : null;
+    if (reuseBaseRef && realized.branchName) {
+      await ensureGitBranchUpstream(repoRoot, realized.branchName, reuseBaseRef, input.recorder);
+    }
     // An unstarted-worktree refresh can fast-forward the checked-out branch.
     // Never run it for an attached operator-owned ref.
     const refresh = !savedCommit && realized.branchCreatedByRuntime && reuseBaseRef && currentBaseRefSha
@@ -4111,25 +4188,16 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     }
     const baseRef = savedCommit ?? input.workspace.baseRef ?? await detectDefaultBranch(repoRoot) ?? "HEAD";
     const recreatedBaseRefSha = await resolveBaseRefSha(repoRoot, baseRef);
-    await recordGitOperation(input.recorder, {
-      phase: "worktree_prepare",
-      args: ["worktree", "add", "-b", branchName, worktreePath, baseRef],
-      cwd: repoRoot,
-      metadata: {
-        repoRoot,
-        worktreePath,
-        branchName,
-        baseRef,
-        baseRefSha: recreatedBaseRefSha,
-        created: true,
-        restored: true,
-      },
-      successMessage: `Recreated missing git worktree at ${worktreePath}\n`,
-      failureLabel: `git worktree add ${worktreePath}`,
+    await createTrackedGitWorktree({
+      repoRoot, worktreePath, branchName, baseRef,
+      baseRefSha: recreatedBaseRefSha, recorder: input.recorder,
     });
     created = true;
   }
 
+  if (restoreBaseRef) {
+    await ensureGitBranchUpstream(repoRoot, branchName, restoreBaseRef, input.recorder);
+  }
   const baseDrift = await inspectExecutionWorkspaceBaseDrift({
     repoRoot,
     worktreePath,
@@ -4311,6 +4379,16 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
       isolatedSource ?? input.projectWorkspace?.cwd ?? null,
     )
     : null;
+  const cleanup = () => cleanupWorkspaceArtifacts(input, repoRoot, workspacePath, warnings);
+  return repoRoot ? withRepositoryMutation(repoRoot, cleanup) : cleanup();
+}
+
+async function cleanupWorkspaceArtifacts(
+  input: Parameters<typeof cleanupExecutionWorkspaceArtifacts>[0],
+  repoRoot: string | null,
+  workspacePath: string | null,
+  warnings: string[],
+) {
   const cleanupEnv = buildExecutionWorkspaceCleanupEnv({
     workspace: input.workspace,
     projectWorkspaceCwd: isolatedSource ?? input.projectWorkspace?.cwd ?? null,
