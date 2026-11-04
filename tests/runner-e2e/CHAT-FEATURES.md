@@ -239,6 +239,16 @@ Domain descriptors declare real setup/actions/independent grading and exact boun
 
 Only `steering.preserve-draft` and `tasks.attachment-brief` may currently declare one `queryAttachments` receipt. The canonical typed query remains unchanged; the production composer appends its exact attachment reference. Before and after send, the harness independently reads the public same-source receipt and actual bytes, verifies SHA-256 and human attribution, and binds it to the real canonical comment. Extra markdown, text changes, foreign receipts and hidden followups fail. Attachment fingerprints pin both production composer source hashes as data, without importing the UI graph.
 
+### Authored skill inspection
+
+`skills.author-skill` v3 follows the normal library card to the exact saved skill.
+It accepts the canonical company-scoped detail route or the exact Studio route.
+The detail view must expose its normal Edit control. Both paths must show the
+editable saved checklist, survive reload, and match the same public current
+version. The receipt identifies the actual editor surface. The original case
+clock, query, and one-human/one-native limits remain unchanged. Older failed
+attempts are retained; component controls do not establish a native pass.
+
 ### Six prerequisite probes are not completed journeys
 
 The following six definitions retain explicit coverage gaps and must not be
