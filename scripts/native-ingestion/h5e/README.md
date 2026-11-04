@@ -2,9 +2,17 @@
 
 This directory packages the reviewed candidate-neutral H5e V4 helpers and the
 combined resource V3 diagnostic. The snapshots are exact copies: `sources.json`
-records every original path, length and SHA256. Original absolute paths inside
+records every original logical path, length and SHA256. An explicit `storagePath`
+stores the upstream postgres `package.json` as `package.json.fixture`; its
+original `engines.node: >=12` and complete bytes remain unchanged. This fixture
+is data, not a Paperclip workspace package. Original absolute paths inside
 those copies are provenance, not portable defaults. These source snapshots and
 examples grant no execution release.
+
+The [storage correction receipt](evidence/fixture-storage-correction.json)
+retains the original CI policy failure and scoped verification. The earlier
+packaging receipt still describes its original `b497…` manifest; no historical
+check or sealed fixture was rewritten to hide that failure.
 
 Large compiled entry/postgres fixture files are intentionally whole: the tests
 verify complete original bytes and exact transform anchors, so splitting them
@@ -93,17 +101,26 @@ Resource and external pure checks can be reproduced separately:
 
 ```sh
 node scripts/native-ingestion/h5e/run-source-checks.mjs --suite=resource
-python3 scripts/native-ingestion/h5e/snapshots/resource-v3/analyze-pg-windows.test.py
 node scripts/native-ingestion/h5e/run-source-checks.mjs --suite=external
+node scripts/native-ingestion/h5e/materialize-resource.mjs \
+  --output="$NEW_RESOURCE_STAGE"
+python3 "$NEW_RESOURCE_STAGE/analyze-pg-windows.test.py"
 python3 -m unittest discover \
-  -s scripts/native-ingestion/h5e/snapshots/resource-v3/external \
-  -p test_external_resources.py
+  -s "$NEW_RESOURCE_STAGE/external" -p test_external_resources.py
 ```
 
 These use fixture directories, extracted actual source and in-memory process/
 SQL/module stubs. They do not inspect live `/proc`, start systemd or PostgreSQL,
 or qualify serving hooks. Exact unchanged source/fixture closure can reuse the
 retained passing receipts; packaging path changes need their affected checks.
+
+`NEW_RESOURCE_STAGE` must be a fresh absolute directory outside the repository,
+with an existing owned parent. The materializer verifies stored source hashes,
+recreates every exact logical resource path (including `package.json`) and
+refuses existing output. The Node resource/external runner does this in its own
+temporary directory automatically and removes it afterward. Manual staging is
+source/data preparation only: it starts no app, database, service or benchmark.
+Remove only the staging directory you created when finished.
 
 The original `compose.py`, `run_checks.py`, generators and readiness/Python
 qualification wrappers are preserved authoring snapshots. Do not run them as a
@@ -157,6 +174,12 @@ not qualify actual Linux service permissions, controls, environment, authentic
 exit receipt, exited-child CPU accounting, installed postgres3.4.9 bytes or any
 serving hook. A separately released SMALL must exercise all six hooks, exact
 SQL/postmaster binding, independent flush and normal cleanup before FULL.
+
+For any diagnostic launch, first materialize the resource snapshot outside the
+checkout and point the new release's `sourcePacketFile` to that staging copy.
+The packet SHA and every original logical source hash stay unchanged; all
+existing launch/source guards still run. Directly launching the storage layout
+would lack its logical fixture path and is not the reproduction command.
 
 The registered resource comparison is five alternating three-role matched
 blocks (15 FULL invocations), supplying five pairs per contrast. Observations

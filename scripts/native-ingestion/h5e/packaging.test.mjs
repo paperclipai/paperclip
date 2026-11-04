@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { packageRoot, verifyPackage } from './verify-package.mjs';
+import { packageRoot, hash, verifyPackage } from './verify-package.mjs';
+import { materializeResource } from './materialize-resource.mjs';
 
 test('packaged source and fixture closure retains its sealed bytes', async () => {
   const result = await verifyPackage();
@@ -33,6 +34,29 @@ test('template relocation preserves authorization and pins and refuses overwrite
     assert.throws(() => execFileSync(process.execPath, [args[0], '--template=' + authorized,
       '--path-map=' + mapping, '--output=' + path.join(temporary, 'must-not-exist.json')], { stdio: 'pipe' }),
     error => error.status !== 0);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test('upstream manifest remains exact data and materializes at its original logical path', async () => {
+  const temporary = await mkdtemp(path.join(os.tmpdir(), 'ingestion-resource-stage-'));
+  try {
+    const manifest = JSON.parse(await readFile(path.join(packageRoot, 'sources.json'), 'utf8'));
+    const row = manifest.files.find(value => value.path.endsWith('/test-fixtures/postgres/package.json'));
+    assert.equal(row.storagePath, row.path + '.fixture');
+    const stored = await readFile(path.join(packageRoot, row.storagePath));
+    assert.equal(JSON.parse(stored).engines.node, '>=12');
+    await assert.rejects(readFile(path.join(packageRoot, row.path)), error => error.code === 'ENOENT');
+    const output = path.join(temporary, 'resource');
+    await materializeResource(output);
+    assert.deepEqual(await readFile(path.join(output, 'test-fixtures/postgres/package.json')), stored);
+    const packet = JSON.parse(await readFile(path.join(output, 'source-packet.json'), 'utf8'));
+    for (const source of packet.sourceFiles) {
+      assert.equal(hash(await readFile(path.join(output, source.path))), source.sha256, source.path);
+    }
+    await assert.rejects(materializeResource(output), error => error.code === 'EEXIST');
+    await assert.rejects(materializeResource(path.join(packageRoot, 'must-not-stage-here')), /Stage outside the repository/);
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

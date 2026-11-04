@@ -7,16 +7,28 @@ import { fileURLToPath } from 'node:url';
 export const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 export const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
+export function storagePathFor(row) {
+  const stored = row.storagePath ?? row.path;
+  for (const value of [row.path, stored]) {
+    assert.ok(typeof value === 'string' && !path.isAbsolute(value)
+      && !value.split('/').includes('..') && path.posix.normalize(value) === value);
+  }
+  return stored;
+}
+
 export async function verifyPackage(root = packageRoot) {
   const manifest = JSON.parse(await readFile(path.join(root, 'sources.json'), 'utf8'));
   assert.equal(manifest.schema, 'paperclip.native-ingestion.h5e-packaged-sources.v1');
   const seen = new Set();
+  const storage = new Set();
   let bytes = 0;
   for (const row of manifest.files) {
-    assert.ok(!path.isAbsolute(row.path) && !row.path.split('/').includes('..'));
+    const stored = storagePathFor(row);
     assert.ok(!seen.has(row.path), `Duplicate packaged source: ${row.path}`);
+    assert.ok(!storage.has(stored), `Duplicate storage path: ${stored}`);
     seen.add(row.path);
-    const actual = await readFile(path.join(root, row.path));
+    storage.add(stored);
+    const actual = await readFile(path.join(root, stored));
     assert.equal(actual.length, row.bytes, `Packaged length changed: ${row.path}`);
     assert.equal(hash(actual), row.sha256, `Packaged bytes changed: ${row.path}`);
     bytes += actual.length;

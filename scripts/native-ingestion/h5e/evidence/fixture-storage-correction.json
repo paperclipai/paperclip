@@ -1,0 +1,75 @@
+{
+  "schema": "paperclip.native-ingestion.fixture-storage-correction.v1",
+  "scope": "Package-only logical/storage-path correction; original sealed source bytes and all runtime/performance rules unchanged.",
+  "parentPackagingRevision": "b4971f7ed47029b73f81d54319f1ecfa828d7715",
+  "parentPackagingReceipt": "packaging-verification.json",
+  "ciFailure": {
+    "workflow": 41843201121,
+    "job": 126620227922,
+    "url": "https://github.com/paperclipai/paperclip/actions/runs/41843201121/job/126620227922",
+    "step": "Validate Node version policy",
+    "error": "Immutable postgres fixture package.json retains upstream engines.node >=12, while repository package manifests require >=24.11.0."
+  },
+  "fixture": {
+    "logicalPath": "snapshots/resource-v3/test-fixtures/postgres/package.json",
+    "storagePath": "snapshots/resource-v3/test-fixtures/postgres/package.json.fixture",
+    "sha256": "944d492614959389a5739ef2893bc1830fb773ff042159d9b331d43b2f6792e9",
+    "bytes": 1814,
+    "engineUnchanged": ">=12"
+  },
+  "sourceManifestSha256": "ea67be35c38ea696b37840f1799cf150a4c3226d5b077859384977d0e10a1179",
+  "exactOriginalCopies": 167,
+  "sourcePackets": {
+    "h5e-v4": "d0db3b84bcc73867dd6fe94afd68cadc956ba073c1a388678fa03748820be1b7",
+    "resource-v3": "f660208e118aa0e899a111fabfadac07c8da139051b5737105896b369d15e124"
+  },
+  "behavior": "verify-package reads the explicit physical storage path but checks the original logical packet path/hash. materialize-resource recreates all exact logical paths in a fresh owned directory outside the checkout, without execution. Resource/external source checks use this temporary staging and normal diagnostics must use its exact staged source packet. Existing output and in-checkout staging are rejected.",
+  "checks": {
+    "packagingAndMaterializationTests": {
+      "passed": 3,
+      "failed": 0
+    },
+    "targetedCurrentResourcePinsAndSixHookTransforms": {
+      "passed": 2,
+      "failed": 0
+    },
+    "unchangedNodePolicyTrackedPrebuildInputs": "PASS in a fresh temporary source-metadata copy; exact unmodified scanner and all tracked package/workflow/Docker/required-fragment inputs",
+    "directBuiltClonePolicy": "FAIL retained: two preexisting ignored generated Copilot distribution package manifests lack engines. The packaged postgres fixture is no longer reported. These generated artifacts were not edited or deleted.",
+    "sourceParity": "All167 original copied bytes unchanged including all58 resource logical source hashes",
+    "diffCheck": "PASS"
+  },
+  "logs": [
+    {
+      "path": "/private/tmp/native-ingestion-packaging-ci-diagnosis/fixture-storage-unit-final.log",
+      "sha256": "3312ffd4af489a073a7dbe82705e807e78333700cf3cb1493fd9483a4d34ccc4"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-packaging-ci-diagnosis/fixture-storage-transform.log",
+      "sha256": "c3275f1dc98d47eb3d5ae670316e5c89052150ffc92e769c4af3c11a718cd198"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-packaging-ci-diagnosis/fixture-storage-materialize-cli.log",
+      "sha256": "b6ec0bf9a299c94fe3a57e537e03237472f49de30f1b0b2437fa88db708fec14"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-packaging-ci-diagnosis/fixture-storage-node-policy.log",
+      "sha256": "523b9e36594b10d0690187468aa70eb7fe41c500be1fafb911aad8a336693555"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-packaging-ci-diagnosis/fixture-storage-tracked-policy.log",
+      "sha256": "2faf2c703bbfef5069bf96e8f0297bc0556d31679ceffc3f52e42ae89612f455"
+    },
+    {
+      "path": "/private/tmp/native-ingestion-packaging-ci-diagnosis/fixture-storage-tracked-policy.json",
+      "sha256": "473a38b56ca1f41f027d6598fb640a7583b31f1d843a90b97abb9460b80b05f4"
+    }
+  ],
+  "notChanged": [
+    "Global Node policy",
+    "Product source/dependency locks/migrations/native inputs",
+    "Frozen private source packets/drivers or active CF controls",
+    "Provider/live/cloud helper or credential state"
+  ],
+  "freshCiAndRootReview": "PENDING; no commit/push or CI retry performed by this worker",
+  "performanceAcceptance": false
+}

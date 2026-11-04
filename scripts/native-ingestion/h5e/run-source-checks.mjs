@@ -6,6 +6,7 @@ import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { packageRoot, hash, verifyPackage } from './verify-package.mjs';
+import { materializeResource } from './materialize-resource.mjs';
 
 const option = name => process.argv.find(value => value.startsWith(`--${name}=`))?.slice(name.length + 3);
 const suite = option('suite') ?? 'h5e';
@@ -35,7 +36,9 @@ function run(args, cwd, expectedExit = 0, environment = cleanEnvironment) {
 }
 
 try {
-  const resource = path.join(packageRoot, 'snapshots/resource-v3');
+  const resource = suite === 'h5e' ? path.join(packageRoot, 'snapshots/resource-v3')
+    : path.join(temporary, 'resource-v3');
+  if (suite !== 'h5e') await materializeResource(resource);
   if (suite === 'resource') {
     run(['--test', '--test-concurrency=1', 'counter-semantics.test.mjs', 'counter-flush.test.mjs',
       'resource-tools.test.mjs', 'cleanup-faults.test.mjs', 'preload-tag-contract.test.mjs'], resource);
