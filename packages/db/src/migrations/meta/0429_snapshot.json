@@ -1,5 +1,5 @@
 {
-  "id": "458c1df9-c30f-4617-ac0c-751bf30cb594",
+  "id": "809726a1-762c-4c9d-a7fd-55670f1c856f",
   "prevId": "fb4383f6-cbe6-4aff-9fd2-6eeb69a6927a",
   "version": "7",
   "dialect": "postgresql",
@@ -33805,168 +33805,6 @@
       "checkConstraints": {},
       "isRLSEnabled": false
     },
-    "public.heartbeat_run_event_cursors": {
-      "name": "heartbeat_run_event_cursors",
-      "schema": "",
-      "columns": {
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_instance_id": {
-          "name": "source_instance_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "contiguous_source_seq": {
-          "name": "contiguous_source_seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "pending_range_count": {
-          "name": "pending_range_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "heartbeat_run_event_cursors_company_id_companies_id_fk": {
-          "name": "heartbeat_run_event_cursors_company_id_companies_id_fk",
-          "tableFrom": "heartbeat_run_event_cursors",
-          "tableTo": "companies",
-          "columnsFrom": [
-            "company_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "no action",
-          "onUpdate": "no action"
-        },
-        "heartbeat_run_event_cursors_run_id_heartbeat_runs_id_fk": {
-          "name": "heartbeat_run_event_cursors_run_id_heartbeat_runs_id_fk",
-          "tableFrom": "heartbeat_run_event_cursors",
-          "tableTo": "heartbeat_runs",
-          "columnsFrom": [
-            "run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "heartbeat_run_event_cursors_company_id_run_id_source_instance_id_pk": {
-          "name": "heartbeat_run_event_cursors_company_id_run_id_source_instance_id_pk",
-          "columns": [
-            "company_id",
-            "run_id",
-            "source_instance_id"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "heartbeat_run_event_cursors_nonnegative": {
-          "name": "heartbeat_run_event_cursors_nonnegative",
-          "value": "\"heartbeat_run_event_cursors\".\"contiguous_source_seq\" >= 0 and \"heartbeat_run_event_cursors\".\"pending_range_count\" >= 0"
-        }
-      },
-      "isRLSEnabled": false
-    },
-    "public.heartbeat_run_event_source_ranges": {
-      "name": "heartbeat_run_event_source_ranges",
-      "schema": "",
-      "columns": {
-        "company_id": {
-          "name": "company_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "run_id": {
-          "name": "run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_instance_id": {
-          "name": "source_instance_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "start_seq": {
-          "name": "start_seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "end_seq": {
-          "name": "end_seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "heartbeat_run_event_source_ranges_cursor_fk": {
-          "name": "heartbeat_run_event_source_ranges_cursor_fk",
-          "tableFrom": "heartbeat_run_event_source_ranges",
-          "tableTo": "heartbeat_run_event_cursors",
-          "columnsFrom": [
-            "company_id",
-            "run_id",
-            "source_instance_id"
-          ],
-          "columnsTo": [
-            "company_id",
-            "run_id",
-            "source_instance_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "heartbeat_run_event_source_ranges_company_id_run_id_source_instance_id_start_seq_pk": {
-          "name": "heartbeat_run_event_source_ranges_company_id_run_id_source_instance_id_start_seq_pk",
-          "columns": [
-            "company_id",
-            "run_id",
-            "source_instance_id",
-            "start_seq"
-          ]
-        }
-      },
-      "uniqueConstraints": {},
-      "policies": {},
-      "checkConstraints": {
-        "heartbeat_run_event_source_ranges_positive": {
-          "name": "heartbeat_run_event_source_ranges_positive",
-          "value": "\"heartbeat_run_event_source_ranges\".\"start_seq\" >= 1 and \"heartbeat_run_event_source_ranges\".\"end_seq\" >= \"heartbeat_run_event_source_ranges\".\"start_seq\""
-        }
-      },
-      "isRLSEnabled": false
-    },
     "public.heartbeat_run_events": {
       "name": "heartbeat_run_events",
       "schema": "",
@@ -34685,20 +34523,6 @@
           "notNull": true,
           "default": 1
         },
-        "event_cursor_projection_seq": {
-          "name": "event_cursor_projection_seq",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true,
-          "default": 0
-        },
-        "event_cursor_rebuild_pending": {
-          "name": "event_cursor_rebuild_pending",
-          "type": "boolean",
-          "primaryKey": false,
-          "notNull": true,
-          "default": false
-        },
         "native_phase": {
           "name": "native_phase",
           "type": "text",
@@ -35125,28 +34949,6 @@
           ],
           "isUnique": true,
           "where": "\"heartbeat_runs\".\"scheduled_retry_reason\" = 'native_safe_replacement'",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "heartbeat_runs_event_cursor_rebuild_idx": {
-          "name": "heartbeat_runs_event_cursor_rebuild_idx",
-          "columns": [
-            {
-              "expression": "company_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"heartbeat_runs\".\"event_cursor_rebuild_pending\" = true",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -44222,6 +44024,133 @@
           "value": "(\"managed_agent_profiles\".\"qualified_at\" IS NULL AND \"managed_agent_profiles\".\"qualified_revision\" IS NULL) OR (\"managed_agent_profiles\".\"qualified_at\" IS NOT NULL AND \"managed_agent_profiles\".\"qualification\" <> '{}'::jsonb AND \"managed_agent_profiles\".\"qualified_revision\" ~ '^sha256:[0-9a-f]{64}$')"
         }
       },
+      "isRLSEnabled": false
+    },
+    "public.native_harness_backups": {
+      "name": "native_harness_backups",
+      "schema": "",
+      "columns": {
+        "id": {
+          "name": "id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true,
+          "default": "gen_random_uuid()"
+        },
+        "company_id": {
+          "name": "company_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "issue_id": {
+          "name": "issue_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "run_id": {
+          "name": "run_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "scope_digest": {
+          "name": "scope_digest",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "manifest_sha256": {
+          "name": "manifest_sha256",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'pending'"
+        },
+        "reference": {
+          "name": "reference",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "native_harness_backups_current_idx": {
+          "name": "native_harness_backups_current_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "scope_digest",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": true,
+          "where": "\"native_harness_backups\".\"status\" = 'current'",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "native_harness_backups_scope_idx": {
+          "name": "native_harness_backups_scope_idx",
+          "columns": [
+            {
+              "expression": "company_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "scope_digest",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            },
+            {
+              "expression": "manifest_sha256",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "policies": {},
+      "checkConstraints": {},
       "isRLSEnabled": false
     },
     "public.native_run_finalizations": {

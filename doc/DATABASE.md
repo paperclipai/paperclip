@@ -1,5 +1,54 @@
 # Database
 
+### Durable native provider backups
+
+`native_harness_backups` journals encrypted provider-session archives in object
+storage. One current row per company and session scope selects the published
+backup. Pending uploads remain recorded after failure; a controller must still
+own the native run when it publishes. Superseded controllers cannot replace the
+selected backup. Archive bytes never enter the database.
+
+The dedicated volume migration imports verified surviving backups without
+removing their source files or changing task-session pointers. Replacement
+readiness rejects retained session pointers whose backups remain local. The
+existing bounded startup retention pass retires current backups only after its
+task, run, lease and age checks pass. Old superseded objects have a separate
+retention path that preserves the current backup and exact backups referenced
+by live leases. Abandoned pending uploads also require a settled run without an
+owner. Object deletion is acknowledged before removing the ledger row. This
+adds no idle polling.
+
+Archives stream up to 4 GiB of file data and 100,000 entries, with a separate
+4.75 GiB encoded-object bound. Contained relative symbolic links are preserved
+verbatim; absolute or escaping targets, link chains, writes beneath links, and
+special files are rejected. Offline verification streams file hashes and honors
+cancellation. A changed local manifest cannot be silently skipped just because
+a previous migration published an object. Backups whose source run was deleted
+remain untouched on the original volume and do not block enrollment.
+
+The same offline maintenance process imports surviving legacy controller state
+into `native_runner_checkpoints` and binds its existing session snapshot through
+`nativeControllerRecovery` metadata. Runner validates the original protocol
+state and recorded artifact; Core requires a finished run with no live owner.
+Blocked or pending recovery records remain unchanged while their surviving
+state is preserved; migration does not mark their work completed.
+The normal bounded continuation selector handles inherited, unstarted follow-ups.
+Never-started queued turns keep their task pointers and remain queued. Original
+files stay intact, canonical database checkpoints take precedence, and missing
+source files are reported separately rather than fabricated. This migration
+does not recover provider state that was already lost before enrollment.
+
+For an already-failed run, a valid legacy controller can lack proof of the
+original Runner artifact after its old bootstrap tickets were pruned. The
+migration preserves those exact controller and supervisor bytes as an encrypted
+`paperclip.legacy-controller-archive.v1` object through the same backup ledger.
+Its scope is the hash of its manifest and is separate from the provider session
+scope. Publication requires a terminal-failure coordinator with no live owner.
+The archive does not become an executable Runner checkpoint. Task pointers,
+failed results and recovery blockers stay unchanged. A successful retained
+session without artifact proof still blocks migration. The migration receipt
+reports failed-session archives separately from imported recovery authorities.
+
 ### Proactive agent chat messages
 
 Migration `0419_slippery_impossible_man.sql` adds an agent-scoped unique constraint

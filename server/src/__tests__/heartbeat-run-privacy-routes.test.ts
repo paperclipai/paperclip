@@ -18,6 +18,7 @@ import {
   heartbeatRuns,
   issueAccessGrants,
   issues,
+  nativeRunFinalizations,
   toolApplications,
   toolConnections,
   workspaceOperations,
@@ -33,6 +34,7 @@ import { agentRoutes } from "../routes/agents.js";
 import { authorizationService } from "../services/authorization.js";
 import { canActorReadWorkspaceOperation, getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+import { claimCancellationRequest } from "../services/native-runtime/native-cancellation-request.js";
 
 const externalDatabaseUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_RUN_LOG_PRIVACY_TEST_DATABASE_URL");
 const embeddedPostgresSupport = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
@@ -56,6 +58,7 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     await db.delete(heartbeatRunEvents);
     await db.delete(issueAccessGrants);
     await db.delete(agentRuntimeState);
+    await db.delete(nativeRunFinalizations);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(agents);
@@ -473,6 +476,54 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
       .get(`/api/heartbeat-runs/${fixture.privateRunId}/issues`);
     expect(response.status).toBe(200);
     expect(response.body).toEqual([]);
+  });
+
+  it("returns an actor-bound saved native Stop claim through the real run detail", async () => {
+    const fixture = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", nativeIssueId: fixture.issueId, resultJson: null })
+      .where(eq(heartbeatRuns.id, fixture.privateRunId));
+    await db.insert(nativeRunFinalizations).values({ runId: fixture.privateRunId, companyId: fixture.companyId,
+      issueId: fixture.issueId, phase: "retryable_failure" });
+    const requestId = randomUUID();
+    await claimCancellationRequest(db, fixture.privateRunId, fixture.companyId, requestId, fixture.ownerUserId);
+    const detail = await request(createBoardApp(fixture.companyId, fixture.ownerUserId)).get(`/api/heartbeat-runs/${fixture.privateRunId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.execution.canStop).toBe(true);
+    expect(detail.body.resultJson.startupCancellation).toMatchObject({ cancellationRequestId: requestId,
+      requestedBy: { type: "board", userId: fixture.ownerUserId } });
+    expect(detail.body.resultJson.nativeCancellation).toBeUndefined();
+    await expect(claimCancellationRequest(db, fixture.privateRunId, fixture.companyId, requestId, fixture.otherUserId))
+      .rejects.toMatchObject({ status: 409 });
+    await expect(claimCancellationRequest(db, fixture.privateRunId, fixture.companyId, requestId, fixture.ownerUserId))
+      .resolves.toMatchObject({ status: "failed" });
+  });
+
+  it("rejects stale failed-native Stop correlation before cancellation activity is recorded", async () => {
+    const fixture = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "failed", runtimeMode: "native", nativeIssueId: fixture.issueId,
+      driverKind: "codex_app_server", resultJson: null,
+    }).where(eq(heartbeatRuns.id, fixture.privateRunId));
+    await db.insert(nativeRunFinalizations).values({ runId: fixture.privateRunId, companyId: fixture.companyId,
+      issueId: fixture.issueId, phase: "retryable_failure" });
+    const app = createBoardApp(fixture.companyId, fixture.ownerUserId);
+    const detail = await request(app).get(`/api/heartbeat-runs/${fixture.privateRunId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.execution.canStop).toBe(true);
+    await db.update(nativeRunFinalizations).set({ phase: "terminal_failure", failureCode: "retry_authority_revoked" })
+      .where(eq(nativeRunFinalizations.runId, fixture.privateRunId));
+    const before = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId));
+    const unchanged = await request(app).post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`).send({});
+    expect(unchanged.status).toBe(200);
+    expect(unchanged.body).toMatchObject({ status: "failed", resultJson: null });
+    const recorded = await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId));
+    expect(recorded).toHaveLength(before.length + 1);
+    expect(recorded.at(-1)?.action).toBe("heartbeat.cancelled");
+    const denied = await request(app).post(`/api/heartbeat-runs/${fixture.privateRunId}/cancel`)
+      .send({ cancellationRequestId: randomUUID() });
+    expect(denied.status).toBe(409);
+    expect(await db.select().from(activityLog).where(eq(activityLog.companyId, fixture.companyId))).toEqual(recorded);
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.privateRunId)))[0])
+      .toMatchObject({ status: "failed", resultJson: null });
   });
 
   it("conceals private runs from unauthorized cancellation and watchdog mutations", async () => {

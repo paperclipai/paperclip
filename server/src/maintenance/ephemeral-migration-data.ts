@@ -9,6 +9,8 @@ import { skillPackageMaintenance } from "../services/skill-package-maintenance.j
 import { hasUnsettledLocalInstructionCopies } from "../services/agent-instruction-working-copies.js";
 import { providerTraceStore } from "../services/provider-trace-store.js";
 import { migrateWorkspaceTrees } from "../services/remote-workspace-migration-batch.js";
+import { migrateNativeHarnessBackups } from "../services/native-runtime/native-harness-backup-migration.js";
+import { migrateNativeControllers } from "../services/native-runtime/native-controller-migration.js";
 
 /** Runs only in the maintenance process after Cloud has confirmed all legacy
  * deployments stopped. Each owner retains its own migration/publication rules;
@@ -25,12 +27,22 @@ export async function migrateEphemeralServerData(db: Db, input: {
   const before = await readEphemeralServerDataEligibility(db);
   const unsupported = before.blockers.filter(blocker => ![
     "agent_files_require_migration", "run_logs_require_migration", "provider_traces_require_migration", "skills_require_migration", "workspaces_require_migration",
+    "native_harness_backups_require_migration",
+    "native_controllers_require_migration",
   ].includes(blocker));
   if (unsupported.length) throw new Error(unsupported[0]);
 
-  phase("workspaces");
   const storage = getStorageService();
   if (storage.provider !== "s3") throw new Error("shared_object_storage_required");
+  phase("native_controllers");
+  const controllers = await migrateNativeControllers(db, { writersStopped: true, signal, storage });
+  counts.nativeControllers = controllers.imported;
+  counts.nativeControllersUnchanged = controllers.unchanged;
+  counts.nativeControllerSourcesAlreadyAbsent = controllers.sourceAlreadyAbsent;
+  counts.nativeControllersArchivedFailed = controllers.archivedFailed;
+  phase("native_harness_backups");
+  counts.nativeHarnessBackups = await migrateNativeHarnessBackups(db, { storage, writersStopped: true, signal });
+  phase("workspaces");
   counts.workspaces = await migrateWorkspaceTrees(db, { storage, signal, phase });
 
   phase("agent_files");

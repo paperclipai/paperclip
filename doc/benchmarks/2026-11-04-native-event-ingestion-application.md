@@ -1,6 +1,6 @@
 # Native ingestion application acceptance
 
-Status at 2026-11-04 10:00 UTC: **application acceptance remains open**. Source
+Status at 2026-11-04 10:28 UTC: **application acceptance remains open**. Source
 append measurements passed their registered gates. No production-application
 A/A calibration, paired browser improvement, or deployed improvement is claimed.
 Both delivery PRs remain drafts.
@@ -10,7 +10,42 @@ This report records the application inputs and qualification evidence. The
 append-service work; it does not establish application burst drainage or browser
 latency. The dependent batching PR owns incremental and combined results.
 
-## Matched application builds
+## Upstream integration and fresh calibration
+
+The delivery base advanced to `cf51936587963c26e3ddc7eb1365a07b2f8df5a6`.
+Source review found changed work on the exercised paths: remote per-turn harness
+restoration and checkpoint completion now check durable storage through a
+synchronous configuration read; the shared ordinary UI Stop wrapper also changed.
+These observations establish changed execution, not a measured regression.
+The earlier application calibration cannot qualify that integrated runtime.
+
+The old 4a83 A/A stage was operationally stopped after three successful owning
+invocations. The fourth owning attempt was interrupted and is censored. Its
+initial post-arm quiet check failed; targeted retirement of 51 identified Runner
+processes also retired their 51 provider children. The stopped fixture database
+still records 51 active leases without successful cleanup or release; those
+persisted states remain evidence of unfinished teardown. The original failed
+receipt and separate cleanup evidence remain retained. No completed or partial arm from
+this stage supplies accepted noise or is reused in the new campaign.
+
+The pinned upstream integration preserves all upstream changes. Cursor migration
+`0430_mute_may_parker.sql` is byte-identical to the previous cursor migration
+`0429_deep_prima.sql`; upstream's distinct 0429 and the combined generated schema
+remain intact. SQL/service attribution still requires the recorded unchanged
+append implementation, index and dependency checks. New matched baseline source
+is `7550ffa5d6447d2615bc89fc5313f4cbb958b615`; its normal build and inventories
+are pending. Fresh main and companion B0/B1 calibration must precede further
+optimization. Workloads, deadlines, noise limits and acceptance gates stay fixed.
+
+Review also found a prospective comparison defect: the old comparator required
+one Runner binary across both arms while the planned Rust candidate requires a
+new qualified binary. The new registration will validate each arm against its
+own qualified build and require stable samples; A/A retains one shared build.
+This correction is under test before the new freeze. Historical H5b/H5c/H5d
+sources and recorded qualifications stay immutable; their unexecuted prospective
+Rust-candidate comparisons are not accepted evidence.
+
+## Recorded 4a83 application builds
 
 All three inputs normally merge upstream
 `4a83ba4050f6e6d334fe4cb6e3ace050097530ce`. They use independent normal locked
@@ -228,8 +263,9 @@ samples increased chronologically from 1,843.546 to 5,655.339ms; plain assertion
 ranged from 1.363 to 3.017ms. This is neither a stable product-cost distribution
 nor an exact attribution of the earlier full-run timeout.
 
-Fresh B0 A/A began at 09:30 UTC. Two of ten invocations have completed and the
-third is running. No noise envelope or paired application gain has passed.
+Fresh B0 A/A began at 09:30 UTC and was operationally retired after three complete
+invocations and an interrupted fourth when integration required a new runtime.
+No noise envelope or paired application gain passed.
 
 ## Blocked-write Stop qualification
 

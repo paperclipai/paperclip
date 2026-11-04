@@ -444,7 +444,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const resolve = vi.spyOn(input.services, "resolveWorkspaceForRun").mockRejectedValue(new Error("local folder retained"));
     process.env.PAPERCLIP_EPHEMERAL_SERVER = String(ephemeral);
     await expect(prepareHeartbeatWorkspace(db, input)).rejects.toThrow(ephemeral
-      ? "Volume-free servers require warm Paperclip Runner execution with remote workspace storage." : "local folder retained");
+      ? "Volume-free servers require native Paperclip Runner execution with remote workspace storage." : "local folder retained");
     if (ephemeral) expect(resolve).not.toHaveBeenCalled();
     else expect(resolve).toHaveBeenCalledOnce();
     expect(await db.select().from(executionWorkspaces)).toHaveLength(0);
