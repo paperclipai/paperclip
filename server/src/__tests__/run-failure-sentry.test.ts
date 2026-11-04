@@ -49,6 +49,7 @@ function mockSentryPackage() {
 
   vi.doMock("@sentry/node", () => ({
     init,
+    getClient: () => ({ on: vi.fn() }),
     captureException,
     close,
     httpIntegration,

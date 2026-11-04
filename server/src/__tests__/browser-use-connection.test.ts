@@ -1165,10 +1165,10 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
       const resizePath = path.replace("/viewer", "/viewport");
       const resizeSpy = vi
         .spyOn(browserUseViewports, "resize")
-        .mockResolvedValue({ preset: "phone" });
+        .mockResolvedValue({ preset: "phone", applied: true });
       expect(
         (await http(app).post(resizePath).send({ preset: "phone" })).body,
-      ).toEqual({ preset: "phone" });
+      ).toEqual({ preset: "phone", applied: true });
       expect(resizeSpy).toHaveBeenCalledTimes(1);
       const viewerId = randomUUID();
       resizeSpy.mockResolvedValueOnce({
@@ -1457,7 +1457,7 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
     });
     it.each(["default_allow", "tool_name"])("retains valid %s profile authorization at browser admission", async selector => {
       const f = await fixture();
-      await db.update(toolProfiles).set({ status: "inactive" }).where(eq(toolProfiles.companyId, f.company.id));
+      await db.update(toolProfiles).set({ status: "disabled" }).where(eq(toolProfiles.companyId, f.company.id));
       const [profile] = await db.insert(toolProfiles).values({ companyId: f.company.id, name: "Scoped browser access",
         profileKey: randomUUID(), defaultAction: selector === "default_allow" ? "allow" : "deny" }).returning();
       await db.insert(toolProfileBindings).values({ companyId: f.company.id, profileId: profile.id, targetType: "agent", targetId: f.agent.id });

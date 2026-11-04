@@ -21,8 +21,8 @@ it("uses the canonical outstanding count on the phone as well as the desktop", a
   const host = document.createElement("div"); document.body.append(host); const root = createRoot(host);
   try {
     await act(() => root.render(<QueryClientProvider client={client}><MobileBottomNav visible /></QueryClientProvider>));
-    expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("3Needs You");
+    expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("3Needs you");
     await act(async () => { client.setQueryData(key, { totalCount: 0, deskBadgeCount: 0 }); await new Promise(resolve => setTimeout(resolve, 1)); });
-    expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("Needs You");
+    expect(host.querySelector('a[href="/decisions"]')?.textContent).toBe("Needs you");
   } finally { await act(() => root.unmount()); host.remove(); client.clear(); }
 });

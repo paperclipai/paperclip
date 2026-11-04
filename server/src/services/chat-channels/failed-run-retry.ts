@@ -550,6 +550,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       "provider_request_protocol_error",
       "provider_transport_failed",
       "native_runner_process_exited",
+      "provider_session_open_rejected",
     ];
     if (
       !coordinator ||

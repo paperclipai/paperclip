@@ -86,6 +86,9 @@ function makeRecoveryActionRow(overrides: Record<string, unknown> = {}) {
   };
 }
 
+// Stranded-run fixtures began before anything the test later records.
+const LATEST_RUN_TIMES = { startedAt: new Date(), createdAt: new Date() };
+
 describe("issueRecoveryActionService", () => {
   it("does not reactivate an action resolved between the active read and update", async () => {
     const existingRow = makeRecoveryActionRow({ id: "existing-action", attemptCount: 1 });
@@ -557,6 +560,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       contextSnapshot: { retryReason: "issue_continuation_needed" },
       livenessState: "needs_followup",
+      ...LATEST_RUN_TIMES,
     } as const;
 
     const results = await Promise.all([
@@ -803,6 +807,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "configuration_incomplete",
         contextSnapshot: { issueId },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
         resultJson: {
           configurationIncomplete: {
             reason: "workspace_base_ref_unresolved",
@@ -993,6 +998,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode,
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
         resultJson: errorCode === "workspace_validation_failed"
           ? { workspaceValidation: { reason: "missing_workspace", fingerprint: "workspace:test" } }
           : null,
@@ -1659,6 +1665,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       contextSnapshot: { retryReason: "issue_continuation_needed" },
       livenessState: "needs_followup",
+      ...LATEST_RUN_TIMES,
     } as const;
     const secondLatestRun = {
       ...firstLatestRun,
@@ -1732,6 +1739,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "workspace_validation_failed",
       contextSnapshot: {},
       livenessState: "failed",
+      ...LATEST_RUN_TIMES,
       resultJson: { workspaceValidation },
     } as const;
     const secondLatestRun = {
@@ -1825,6 +1833,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       errorCode: "adapter_failed",
       contextSnapshot: { retryReason: "issue_continuation_needed" },
       livenessState: "needs_followup",
+      ...LATEST_RUN_TIMES,
     } as const;
 
     await recovery.escalateStrandedAssignedIssue({
@@ -1906,6 +1915,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
         errorCode: "adapter_failed",
         contextSnapshot: { retryReason: "issue_continuation_needed" },
         livenessState: "needs_followup",
+        ...LATEST_RUN_TIMES,
       },
     });
 

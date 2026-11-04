@@ -1128,7 +1128,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
 
   it("atomically charges a new rule once across concurrent retries of the same invocation", async () => {
     const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
-    const added = await svc.createPolicy(company.id, { name: "New admission", policyType: "rate_limit", priority: 0,
+    const added = await svc.createPolicy(company.id, { name: "New admission", policyType: "rate_limit", enabled: true, priority: 0,
       selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
     const oldCounters = await db.select().from(toolRateLimitCounters);
     expect(await svc.decide(input, { admittedInvocationId: invocation.id })).toMatchObject({ allowed: true });
@@ -1150,7 +1150,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     expect(initial.allowed).toBe(true);
     const { invocation: second } = await svc.recordInvocation(input, initial);
     await db.update(toolInvocations).set({ status: "executing" }).where(eq(toolInvocations.id, second.id));
-    const added = await svc.createPolicy(company.id, { name: "One competing slot", policyType: "rate_limit", priority: 0,
+    const added = await svc.createPolicy(company.id, { name: "One competing slot", policyType: "rate_limit", enabled: true, priority: 0,
       selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
     const results = await Promise.all([invocation.id, second.id].map(id => svc.admitInvocation(input, id)));
     expect(results.filter(result => result.allowed)).toHaveLength(1);
@@ -1161,9 +1161,9 @@ describeEmbeddedPostgres("tool access policy service", () => {
 
   it("rolls back new rate charges when a later policy rejects the invocation", async () => {
     const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
-    await svc.createPolicy(company.id, { name: "Before rejection", policyType: "rate_limit", priority: 0,
+    await svc.createPolicy(company.id, { name: "Before rejection", policyType: "rate_limit", enabled: true, priority: 0,
       selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
-    await svc.createPolicy(company.id, { name: "Later rejection", policyType: "block", priority: 10,
+    await svc.createPolicy(company.id, { name: "Later rejection", policyType: "block", enabled: true, priority: 10,
       selectors: { toolName: "send_email" } });
     const counters = await db.select().from(toolRateLimitCounters);
     expect(await svc.admitInvocation(input, invocation.id)).toMatchObject({ decision: "deny" });
@@ -1174,7 +1174,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
 
   it("rolls back rate charges when saving the admission receipt fails and admits a retry once", async () => {
     const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
-    const added = await svc.createPolicy(company.id, { name: "Receipt failure", policyType: "rate_limit", priority: 0,
+    const added = await svc.createPolicy(company.id, { name: "Receipt failure", policyType: "rate_limit", enabled: true, priority: 0,
       selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
     await db.execute(sql`create function sleep_admission_fail() returns trigger language plpgsql as $$ begin
       raise exception 'receipt write unavailable'; end $$`);
@@ -1220,7 +1220,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
 
   it("rechecks a newly added rate policy rather than borrowing an older policy's consumed slot", async () => {
     const { company, input, invocation, svc } = await admittedRateLimitedInvocation();
-    await svc.createPolicy(company.id, { name: "New send limit", policyType: "rate_limit", priority: 0,
+    await svc.createPolicy(company.id, { name: "New send limit", policyType: "rate_limit", enabled: true, priority: 0,
       selectors: { toolName: "send_email" }, config: { limit: 1, windowSeconds: 3600, keyBy: ["agent", "tool"] } });
     // Consume the new rule through normal admission; the exhausted original
     // rule then denies this separate request before any provider dispatch.
@@ -1289,36 +1289,48 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const policy = await svc.createPolicy(company.id, {
       name: "Require review",
       policyType: "require_approval",
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
     });
 
     await expect(svc.createPolicy(company.id, {
       name: "Dead redact policy",
       policyType: "redact" as never,
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
       config: { redact: { fields: ["to", "body"] } },
     })).rejects.toThrow("Tool policy type 'redact' is not supported at runtime");
     await expect(svc.createPolicy(company.id, {
       name: "Dead custom check",
       policyType: "validate" as never,
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
       config: { schema: { required: ["body"] } },
     })).rejects.toThrow("Tool policy type 'validate' is not supported at runtime");
     await expect(svc.createPolicy(company.id, {
       name: "Malformed conditional policy",
       policyType: "allow",
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
       conditions: { args: { body: "safe" } } as never,
     })).rejects.toThrow("Tool policy conditions include unsupported runtime semantics");
     await expect(svc.createPolicy(company.id, {
       name: "Ignored approval config",
       policyType: "require_approval",
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
       config: { validate: { required: ["body"] } },
     })).rejects.toThrow("Tool policy type 'require_approval' does not support config");
     await expect(svc.createPolicy(company.id, {
       name: "Invalid rate limit",
       policyType: "rate_limit",
+      priority: 100,
+      enabled: true,
       selectors: { toolName: "send_email" },
       config: { rateLimit: { limit: 0, windowSeconds: 60 } },
     })).rejects.toThrow("Rate-limit policy config requires positive numeric limit and windowSeconds");
@@ -1336,6 +1348,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await expect(svc.createPolicy(company.id, {
       name: "Unsafe regex",
       policyType: "allow",
+      enabled: true,
       priority: 10,
       selectors: { toolName: "send_email" },
       conditions: {
@@ -1351,6 +1364,9 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await expect(svc.createPolicy(company.id, {
       name: "Unsafe alternation",
       policyType: "allow",
+      priority: 100,
+      enabled: true,
+      selectors: {},
       conditions: {
         arguments: { fieldMatches: { body: "^(a|aa)*b$" } },
       },
@@ -1365,6 +1381,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const allowPolicy = await svc.createPolicy(company.id, {
       name: "Allow safe destination",
       policyType: "allow",
+      enabled: true,
       priority: 10,
       selectors: { toolName: "send_email" },
       conditions: {
@@ -1378,6 +1395,7 @@ describeEmbeddedPostgres("tool access policy service", () => {
     const blockPolicy = await svc.createPolicy(company.id, {
       name: "Block external destination",
       policyType: "block",
+      enabled: true,
       priority: 5,
       selectors: { toolName: "send_email" },
       conditions: {
@@ -1863,6 +1881,10 @@ describeEmbeddedPostgres("tool access policy service", () => {
     await expect(svc.createConnection(company.id, {
       name: "Wrong secret",
       transport: "mcp_remote",
+      connectionPurpose: "tool",
+      authKind: "none",
+      ownership: "customer",
+      connectionKind: "managed",
       transportConfig: { url: "https://8.8.8.8/mcp" },
       credentialSecretRefs: [{
         secretId: otherSecret.id,

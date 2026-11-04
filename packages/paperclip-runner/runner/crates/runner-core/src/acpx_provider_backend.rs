@@ -426,7 +426,11 @@ impl AcpxProviderDescriptor {
             grok_disable_web_search: self.grok_disable_web_search.clone(),
             permission_mode_pinned: self.permission_mode_pinned,
             provider_policy: self.provider_policy.clone(),
-            system_instructions: self.instructions.clone(),
+            system_instructions: crate::task_memory::instructions_with_memory_note(
+                &self.instructions,
+                crate::acpx_provider_session::MAX_SYSTEM_INSTRUCTIONS_BYTES,
+            )
+            .into_owned(),
             runtime_context: self.runtime_context.clone(),
             tool_set: provider_tool_set,
             expected_identity,
@@ -3958,6 +3962,26 @@ mod tests {
             session_config.system_instructions,
             descriptor_value["instructions"]
         );
+        // The note reaches the provider without changing the durable descriptor.
+        let task_cgroup = directory.join("tasks").join("task-a");
+        fs::create_dir_all(&task_cgroup).unwrap();
+        fs::write(directory.join("tasks").join("memory.max"), "6442450944\n").unwrap();
+        crate::task_memory::TEST_TASK_CGROUP.with(|path| *path.borrow_mut() = Some(task_cgroup));
+        let session_config = refreshed
+            .session_config(
+                attached.state.as_ref().unwrap().tool_set.clone(),
+                attached.state.as_ref().unwrap().identity.clone(),
+                Some(&launch_profile),
+            )
+            .unwrap();
+        crate::task_memory::TEST_TASK_CGROUP.with(|path| *path.borrow_mut() = None);
+        assert!(session_config
+            .system_instructions
+            .starts_with(descriptor_value["instructions"].as_str().unwrap()));
+        assert!(session_config
+            .system_instructions
+            .contains("6 GiB memory limit"));
+        assert_eq!(refreshed.instructions, descriptor_value["instructions"]);
         // Both persistence and the sidecar launch config receive the new grant.
         let persisted: AcpxDurableState =
             serde_json::from_slice(&fs::read(attached.state_path()).unwrap()).unwrap();

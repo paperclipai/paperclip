@@ -5,6 +5,7 @@ import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
 import { acpxProviderFailure } from "./provider-failure.js";
+import type { ProviderFailure } from "../../contracts/provider-failure.generated.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
 import { usesPreconfiguredHome } from "../preconfigured-home.js";
 import type { ChildProcess } from "node:child_process";
@@ -600,11 +601,12 @@ export async function openQualifiedAcpxRuntime(
         return ensuredHandle;
       }) : ensuredSession)
     .catch((error: unknown) => {
-      const providerFailure = acpxProviderFailure(error, options.profile.agent, "startup", options.launchEnvironment);
-      if (providerFailure && error instanceof Error) {
-        Object.defineProperty(error, "providerFailure", { value: providerFailure, enumerable: false });
-      }
-      throw classifySessionEnsureFailure(error);
+      // The closed code below cannot say why the provider session did not
+      // start, so every ensure rejection keeps its redacted explanation. An
+      // abort reason is Runner cancellation, not a provider explanation.
+      const providerFailure = acpxProviderFailure(error, options.profile.agent, "startup",
+        options.launchEnvironment, options.signal?.aborted !== true);
+      throw classifySessionEnsureFailure(error, providerFailure);
     });
   let lateCleanup: Promise<void> | null = null;
   try {
@@ -706,20 +708,21 @@ export async function openQualifiedAcpxRuntime(
 /** Backward-compatible name retained for existing Codex-only consumers. */
 export const openCodexAcpxRuntime = openQualifiedAcpxRuntime;
 
-function classifySessionEnsureFailure(error: unknown): Error {
-  if (error instanceof Error) {
-    const details = error as Error & Record<string, unknown>;
-    if (typeof details.code !== "string" || details.code.length === 0) {
-      details.code =
-        error instanceof TypeError
-          ? "ACPX_SESSION_ENSURE_TYPE_ERROR"
-          : "ACPX_SESSION_ENSURE_FAILED";
-    }
-    return error;
+function classifySessionEnsureFailure(error: unknown, providerFailure: ProviderFailure | null): Error {
+  const failure = error instanceof Error ? error
+    : Object.assign(new Error("ACPX session ensure rejected a non-error"), { code: "ACPX_SESSION_ENSURE_NON_ERROR" });
+  const details = failure as Error & Record<string, unknown>;
+  if (typeof details.code !== "string" || details.code.length === 0) {
+    details.code =
+      failure instanceof TypeError
+        ? "ACPX_SESSION_ENSURE_TYPE_ERROR"
+        : "ACPX_SESSION_ENSURE_FAILED";
   }
-  return Object.assign(new Error("ACPX session ensure rejected a non-error"), {
-    code: "ACPX_SESSION_ENSURE_NON_ERROR",
-  });
+  // Keep a cause that an inner layer already attached.
+  if (providerFailure && !Object.hasOwn(failure, "providerFailure")) {
+    Object.defineProperty(failure, "providerFailure", { value: providerFailure, enumerable: false });
+  }
+  return failure;
 }
 
 function raceRuntimeHandshakeWithAbort<T>(

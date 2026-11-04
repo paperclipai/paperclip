@@ -1,13 +1,16 @@
+import type { VerifiedIdleCapabilities } from "./idle-incoming-wake-capability.js";
+import { idleApiActivity } from "./idle-api-activity.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { idleWorkSnapshot } from "./task-admission.js";
 import type { IdleSleepDiagnosticSink } from "./idle-sleep-diagnostics.js";
 
+export type IdleLocalWorkOptions = { backupCheckpoint?: boolean; diagnostic?: IdleSleepDiagnosticSink; deadlineCapability?: VerifiedIdleCapabilities };
 export type IdleLocalWork = "none" | "present" | "unknown";
 const spoolDirectories = new Set<string>();
-const localWorkProbes = new Set<() => IdleLocalWork>();
-export function registerIdleLocalWorkProbe(probe: () => IdleLocalWork): () => void {
+const localWorkProbes = new Set<(options: IdleLocalWorkOptions) => IdleLocalWork>();
+export function registerIdleLocalWorkProbe(probe: (options: IdleLocalWorkOptions) => IdleLocalWork): () => void {
   localWorkProbes.add(probe);
   return () => { localWorkProbes.delete(probe); };
 }
@@ -62,7 +65,7 @@ export async function inspectIdleQuotaRecovery(directory: string): Promise<IdleL
   }
 }
 
-export async function readIdleLocalWork(options: { backupCheckpoint?: boolean; diagnostic?: IdleSleepDiagnosticSink } = {}): Promise<IdleLocalWork> {
+export async function readIdleLocalWork(options: IdleLocalWorkOptions = {}): Promise<IdleLocalWork> {
   const record = options.diagnostic;
   const states: IdleLocalWork[] = [];
   record?.("local.startup", startupComplete ? "none" : "unknown");
@@ -83,7 +86,7 @@ export async function readIdleLocalWork(options: { backupCheckpoint?: boolean; d
   }
   let probes: IdleLocalWork;
   try {
-    const local = [...localWorkProbes].map(probe => probe());
+    const local = [idleApiActivity.active() ? "present" : "none", ...[...localWorkProbes].map(probe => probe(options))];
     probes = local.some(state => state !== "none" && state !== "present") ? "unknown"
       : local.includes("present") ? "present" : "none";
   } catch { probes = "unknown"; }

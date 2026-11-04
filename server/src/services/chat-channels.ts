@@ -136,6 +136,7 @@ import { notifyChatDeliveryWork, notifyChatPublicationWork } from "./chat-work-n
 
 import { voiceSessionStore } from "./voice/voice-session-store.js";
 import { createChatRuntime, type ChatRuntime } from "./chat-runtime.js";
+import { registerIdleLocalWorkProbe } from "./idle-local-work.js";
 import type { ChatEndpointRuntime } from "./voice/voice-runtime.js";
 
 import { fastResponseService, fastResponseSourceCurrent } from "./fast-responses.js";
@@ -517,6 +518,11 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
       version: string;
     }
   >();
+  // SDK initialize() and the final authority read continue after the registry's
+  // replacement tail settles. Neither that work nor a failed retirement may
+  // disappear just because the archived endpoint is no longer returned by get().
+  const unregisterRuntimeIdleProbe = registerIdleLocalWorkProbe(() =>
+    runtimeInitializations.size > 0 || runtime.hasUnsettledLifecycle() ? "present" : "none");
   const { recordCurrentMicrosoftTeamsRoute } = createTeamsRoutes(db, { runtime, runtimeCallbackEndpoint });
   const persistence = createChatSdkStatePersistence(db);
   const fetchImpl = options.fetch ?? globalThis.fetch;
@@ -3622,12 +3628,17 @@ return {
       // Stop every provider runtime before releasing leader rows. This gives a
       // standby an immediate takeover path without overlapping Gateway sockets.
       await runtime.shutdown();
+      await Promise.allSettled([...runtimeInitializations.values()].map(initialization => initialization.promise));
       await slackRegistration.close();
       await Promise.all(
         ownedDiscordGateways.map((ownership) =>
           releaseDiscordGatewayLeaseRow(ownership),
         ),
       );
+      if (runtimeInitializations.size > 0 || runtime.hasUnsettledLifecycle()) {
+        throw new Error("Chat runtime lifecycle is still unsettled after shutdown");
+      }
+      unregisterRuntimeIdleProbe();
     },
   };
 }

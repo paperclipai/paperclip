@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { companyService } from "../services/companies.ts";
 import { agentService } from "../services/agents.ts";
 
-function createSelectSequenceDb(results: unknown[]) {
+function createSelectSequenceDb(results: unknown[][]) {
   const pending = [...results];
   const chain = {
     from: vi.fn(() => chain),
