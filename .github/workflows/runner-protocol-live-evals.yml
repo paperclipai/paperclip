@@ -1294,12 +1294,16 @@ jobs:
           fi
           exit "$status"
 
-      - name: Render the same canonical grid from a public-safe evidence projection
+      - name: Project safe run records for reporting
         if: needs.authorize.outputs.accounting_mode == 'legacy' || needs.authorize.outputs.testops_enabled == 'true'
         run: |
           node packages/paperclip-runner/scripts/runner-protocol-eval-campaign.mjs sanitize \
             --runs-root runner-protocol-merged/runs \
             --output runner-protocol-merged/public-runs
+
+      - name: Render the same canonical grid from a public-safe evidence projection
+        if: needs.authorize.outputs.accounting_mode == 'legacy'
+        run: |
           python3 .paperclip-evals/evals/paperclip-runner/tools/eval_program.py report \
             --runs-root runner-protocol-merged/public-runs \
             --output runner-protocol-merged/public-report \
@@ -1312,11 +1316,24 @@ jobs:
       - name: Create the closed TestOps projection inside the report boundary
         if: always() && !cancelled() && needs.authorize.outputs.testops_enabled == 'true' && needs.testops_selection.result == 'success'
         id: testops_projection
+        env:
+          ACCOUNTING_MODE: ${{ needs.authorize.outputs.accounting_mode }}
         run: |
           mkdir -m 700 runner-protocol-testops-projection
-          node packages/paperclip-runner/scripts/runner-protocol-testops.mjs export \
-            runner-protocol-testops-selection/runner-protocol-testops-selection.json \
-            runner-protocol-merged/public-report runner-protocol-testops-projection/results
+          case "$ACCOUNTING_MODE" in
+            controlled)
+              node packages/paperclip-runner/scripts/runner-protocol-testops.mjs export-runs \
+                runner-protocol-testops-selection/runner-protocol-testops-selection.json \
+                runner-protocol-merged/campaign.json runner-protocol-merged/public-runs \
+                runner-protocol-testops-projection/results
+              ;;
+            legacy)
+              node packages/paperclip-runner/scripts/runner-protocol-testops.mjs export \
+                runner-protocol-testops-selection/runner-protocol-testops-selection.json \
+                runner-protocol-merged/public-report runner-protocol-testops-projection/results
+              ;;
+            *) exit 1 ;;
+          esac
 
       - name: Transfer only the closed TestOps results and receipt
         if: always() && steps.testops_projection.outcome == 'success'
