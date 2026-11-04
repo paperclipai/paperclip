@@ -51,6 +51,7 @@ import {
 import { canRetryStoppedRun } from "../cancelled-native-startup.js";
 import { getExecutionBlocker, hasPendingRunCleanup } from "../execution-blocker.js";
 import { nativeManualAdmissionHoldsExecution } from "../native-runtime/native-runner-ownership.js";
+import { taskChatRetrySourceCleanupPending } from "../chat-channels/task-retry-authority.js";
 import { validateNativeWorkspaceReconstruction } from "../native-runtime/native-workspace-reconstruction.js";
 import { isConversationAdapter } from "../conversation-continuation.js";
 import { recordExecutionWait } from "../execution-wait.js";
@@ -1073,6 +1074,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
       if (run.scheduledRetryReason === "native_provider_overloaded" && owner?.executionRunId &&
           owner.executionRunId !== run.id && owner.executionRunId !== run.retryOfRunId) {
+        return { ownsIssue, blocked: true };
+      }
+      if (ownsIssue && issueId && await taskChatRetrySourceCleanupPending(tx, run, issueId)) {
         return { ownsIssue, blocked: true };
       }
       const previousRunId = run.scheduledRetryReason === "native_provider_overloaded"
