@@ -1,6 +1,6 @@
 # Native ingestion application acceptance
 
-Status at 2026-11-04 10:28 UTC: **application acceptance remains open**. Source
+Status at 2026-11-04 10:58 UTC: **application acceptance remains open**. Source
 append measurements passed their registered gates. No production-application
 A/A calibration, paired browser improvement, or deployed improvement is claimed.
 Both delivery PRs remain drafts.
@@ -32,16 +32,40 @@ The pinned upstream integration preserves all upstream changes. Cursor migration
 `0430_mute_may_parker.sql` is byte-identical to the previous cursor migration
 `0429_deep_prima.sql`; upstream's distinct 0429 and the combined generated schema
 remain intact. SQL/service attribution still requires the recorded unchanged
-append implementation, index and dependency checks. New matched baseline source
-is `7550ffa5d6447d2615bc89fc5313f4cbb958b615`; its normal build and inventories
-are pending. Fresh main and companion B0/B1 calibration must precede further
+append implementation, index and dependency checks. New matched inputs are:
+
+| Role | Immutable application revision | Four-root inventory files |
+| --- | --- | ---: |
+| B0 | `7550ffa5d6447d2615bc89fc5313f4cbb958b615` | 12,930 |
+| B1 | `2cf1454406cbd582a11f04476713eceb746eada5` | 12,944 |
+| Unoptimized B2 base | `0b616ccc90bf43cb26adac056a22ff01a84f982b` | 12,952 |
+
+All three normal independent locked production builds exited zero. Their actual
+shared native SHA256 is
+`512875bd051b7f7a97c93d2aa63648c675a8a991e745c79bc7481ad2d2f02c66`,
+with Rust tree `11a7ac118a438159c252dc0df4779aa56fec80d6`. Reuse was limited
+to the same fifteen recorded native inputs in a fresh target. The previous
+4a83 target and builds stayed unchanged. Lead review independently verified all
+40 build/source/runtime evidence files and each full canonical inventory.
+Qualified receipt SHA256 is
+`5a849da1bc307f4f1fd05c70a75813f6f78acc9941a54cc01e945652a5a79d6b`;
+inventory-summary SHA256 is
+`e29a9a1a2b9481ef79f47c6b135e1d207e19d1ffc00833aa28b1f9163a210c5d`.
+These are build qualifications, with no application measurements. Fresh main
+and companion B0/B1 calibration must precede further
 optimization. Workloads, deadlines, noise limits and acceptance gates stay fixed.
 
 Review also found a prospective comparison defect: the old comparator required
 one Runner binary across both arms while the planned Rust candidate requires a
-new qualified binary. The new registration will validate each arm against its
-own qualified build and require stable samples; A/A retains one shared build.
-This correction is under test before the new freeze. Historical H5b/H5c/H5d
+new qualified binary. The corrected comparator validates each arm against its
+own qualified build and requires stable samples; A/A retains one shared build.
+The actual CLI regression fails on the historical comparator and passes the
+correction, with five native-provenance cases in a passing 44-case tool suite.
+H5e is frozen at `73ea8516739e81fa7f37cd67651b4a2c73674014`; the separate
+blocked-Stop V4 is `a89f321ab5654211cbff7be1ee15c110b8db4a5f`. They change
+baseline input references and registration metadata; H5e also includes this
+provenance correction. Qualification and timing execution remain unreleased.
+Historical H5b/H5c/H5d
 sources and recorded qualifications stay immutable; their unexecuted prospective
 Rust-candidate comparisons are not accepted evidence.
 

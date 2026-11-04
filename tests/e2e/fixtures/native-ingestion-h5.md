@@ -1,4 +1,4 @@
-# H5c canonical-settlement observation registration (prospective; no execution release)
+# H5e matched-CF observation registration (prospective; no execution release)
 
 H4c remains frozen at `7d7e7a88d562a95a1d407b76474763b666c181f5`
 (`5db4129bbdc1fa38775121aff5d0e68a8a11762519e41cfdf36eacd90ba7256b`).
@@ -8,13 +8,29 @@ concurrent remote participant and waits for the product's canonical settlement,
 including supported same-run recovery, within the same terminal deadline.
 It does not optimize the product or turn earlier failures into passes.
 
-The aligned fresh application baselines are B0 `bac53ec3bfeaf6546e7aaeaee516487b30534654`
-and B1 `07061a601cdc20603c8c7a46f9ddbad7ac5f5939`. Raw B2
-`ca7cba171cd5198ed569d75012edc858041cbc44` is the unoptimized batching base,
+The aligned fresh application baselines are B0 `7550ffa5d6447d2615bc89fc5313f4cbb958b615`
+and B1 `2cf1454406cbd582a11f04476713eceb746eada5`. Both normally include common
+upstream `cf51936587963c26e3ddc7eb1365a07b2f8df5a6`. Raw B2
+`0b616ccc90bf43cb26adac056a22ff01a84f982b` is the unoptimized batching base,
 not a qualified future performance candidate. A later candidate needs its actual
 new immutable revision, normal build receipt and inventory; no candidate reference
 or matching binary is presumed before those artifacts exist. The historical
 a365/d8cd/914 application failures remain evidence of their recorded revisions.
+
+This prospective registration inherits H5d `2df9897e1ce2ca90be29fa097d776c3766e217ad`.
+Only baseline input pins and the reviewed comparator binary-provenance correction
+change: each arm must use its qualified Runner binary consistently, while A/A uses
+one shared qualified build. Provider fixture hashes remain matched across arms.
+The workload, oracle, deadlines, precision and suitability thresholds stay fixed.
+The H5 registration digest changes because it includes the baseline references.
+The old 4a83 campaign was operationally aborted after upstream changed exercised
+remote checkpoint and ordinary UI Stop paths; preserve its completed/partial raw
+attempts, cleanup failures and later owned cleanup separately. None supplies H5e
+noise or a timing arm. Qualify the new actual normal builds, then collect fresh
+main and companion B0/B1 A/A before further product optimization. No new build
+receipt, native binary hash, inventory or execution release exists in this source
+preparation. Historical H5b/c/d helpers remain immutable; their original comparator
+cannot compare a distinct Rust B2 binary and must not execute this new campaign.
 
 Select H5 explicitly with
 `PAPERCLIP_INGESTION_OBSERVATION_MODE=h5c-observe-original-sla-independent-agents-settlement`.

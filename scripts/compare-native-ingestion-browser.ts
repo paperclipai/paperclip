@@ -281,9 +281,15 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
   }
   assert.equal(remote.provider.fixtureSha256, report.fixtureSha256, "Staged provider fixture changed");
   assert.ok(remote.runner.metadata?.prpTransportModes?.includes("dial_wss"), "Remote daemon must support verified WSS");
-  for (const [group, field] of [["runner", "sha256"], ["provider", "nodeSha256"], ["provider", "wrapperSha256"], ["provider", "fixtureSha256"]]) {
-    assert.equal(remote[group][field], first.baseline.remote[group][field], "Remote provider/daemon artifact changed across matched samples");
+  for (const field of ["nodeSha256", "wrapperSha256", "fixtureSha256"]) {
+    assert.equal(remote.provider[field], first.baseline.remote.provider[field], "Remote provider artifact changed across matched samples");
   }
+  // The candidate may change Runner code. Its serving hash is checked against
+  // its own sealed qualified receipt by validateArmInventory before this loop.
+  // Legacy comparisons without that receipt, and A/A, require one shared binary.
+  const runnerReference = h5 && phase !== "aa" ? first[arm] : first.baseline;
+  assert.equal(remote.runner.sha256, runnerReference.remote.runner.sha256, "Qualified Runner binary changed between samples of an arm");
+  if (h5) assert.equal(remote.runner.sha256, report.armInventory.binarySha256, "Serving Runner differs from its arm's qualified build");
   assert.equal(report.admissionProtocol, "two-at-a-time-provider-and-clock-readiness-before-common-epoch", "Use the qualified pre-measurement admission protocol");
   assert.equal(report.setupActivationConcurrency, 2, "Keep the qualified setup activation concurrency of two");
   assert.equal(report.setupReadinessPollingMs, 50, "Keep the qualified setup readiness observation interval");
@@ -303,8 +309,8 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
   assert.equal(report.sourceRevision, first[arm].sourceRevision, "Every sample must cover the same revision per arm");
   assert.equal(report.serverEntrySha256, first[arm].serverEntrySha256, "Compiled artifact changed between samples");
   assert.deepEqual(report.compiledHotPathHashes, first[arm].compiledHotPathHashes, "Compiled ingestion/runtime changed between samples");
-  if (h5) for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision"])
-    assert.equal(report.armInventory[field], first[arm].armInventory[field], "Full qualified artifact inventory changed between samples");
+  if (h5) for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision", "binarySha256", "rustSourceTree"])
+    assert.equal(report.armInventory[field], first[phase === "aa" ? "baseline" : arm].armInventory[field], "Full qualified artifact inventory changed between samples");
   assert.equal(report.measurementSha256, first.baseline.measurementSha256, "Fixture/observer protocol changed between runs");
   assert.match(report.harnessProvenance?.sourceRevision ?? "", /^[a-f0-9]{40}$/, "Missing frozen harness source revision");
   assert.equal(report.harnessProvenance.sourceStatus, "");
@@ -455,7 +461,7 @@ if (h5 && phase === "compare" && candidatePolicy === "final-b2") {
       assert.ok(Date.parse(owner.startedAt) > latestCandidateEnd, "Original confirmation must follow all candidate arms");
       assert.ok(pairs.every(pair => proof.companyId !== pair.baseline.companyId && proof.companyId !== pair.candidate.companyId), "Original confirmation needs a fresh disposable company/database");
       const inventory = await validateArmInventory(path.resolve(arg("original-h4e-inventory")!), { evidence: proof, owningPlaywright: owner });
-      for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision"] as const)
+      for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision", "binarySha256", "rustSourceTree"] as const)
         assert.equal(inventory[field], first.candidate.armInventory[field], "Original confirmation used a different full qualified artifact inventory");
       originalH4eConfirmation = { required: true, passed: true, owner, inventory, sourceRevision: proof.sourceRevision,
         retryObservations: proof.cases.map((item: any) => ({ name: item.name,
@@ -629,7 +635,7 @@ if (phase === "compare") {
   if (h5) {
     assert.equal(noise.observationMode, H5_MODE); assert.equal(noise.workloadSha256, H5_WORKLOAD_SHA256);
     assert.equal(noise.h5Assessments?.length, 5, "Fresh complete H5 A/A outcomes are required");
-    for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision"])
+    for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision", "binarySha256", "rustSourceTree"])
       assert.equal(noise.artifactInventories?.baseline?.[field], result.artifactInventories.baseline[field], "Baseline inventory changed after H5 A/A");
   }
   assert.equal(noise.protocolVersion, result.protocolVersion, "Noise report uses a different mixed protocol");
