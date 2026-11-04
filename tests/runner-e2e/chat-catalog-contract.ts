@@ -234,6 +234,9 @@ export function validChatCatalogHumanCounts(implementation: Pick<ChatCatalogCase
   return Number.isSafeInteger(setup) && setup >= 0 && Number.isSafeInteger(total)
     && total >= setup + (implementation.queryOutcome === "rejected" ? 0 : 1);
 }
+export function chatCatalogAllowsHumanQuestionAnswer(scenarioId: string): boolean {
+  return ["secrets.personal-secret", "secrets.configure-company-secret"].includes(scenarioId);
+}
 export function chatCatalogHumanHistoryMatches(input: {
   implementation: Pick<ChatCatalogCase, "setupHumanMessageCount" | "expectedHumanMessageCount" | "queryOutcome"> & Partial<Pick<ChatCatalogCase, "scenarioId">>;
   questionAnswer?: ChatCatalogVerifiedHumanQuestionAnswer;
@@ -241,7 +244,7 @@ export function chatCatalogHumanHistoryMatches(input: {
   boundary: ChatCatalogSetupBoundary; renderedQuery: string;
 }): boolean {
   const count = input.implementation.setupHumanMessageCount ?? 0;
-  return (!input.questionAnswer || ["secrets.personal-secret", "secrets.company-secret"].includes(input.implementation.scenarioId ?? ""))
+  return (!input.questionAnswer || chatCatalogAllowsHumanQuestionAnswer(input.implementation.scenarioId ?? ""))
     && validChatCatalogHumanCounts(input.implementation)
     && input.boundary.humanCommentIds.length === count
     && input.boundary.humanCommentIds.every((id, index) => input.human[index]?.id === id)
