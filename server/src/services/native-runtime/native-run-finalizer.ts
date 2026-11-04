@@ -259,6 +259,21 @@ async function claimCoordinator(input: {
   return claimed;
 }
 
+function terminalFinalizationFailureMessage(failureCode: string, failureScope: "provider" | "workspace" | undefined) {
+  if (failureCode === "native_workspace_sync_out_retry_exhausted") {
+    return "Workspace copy-back failed after 3 attempts. The agent's result and sandbox are retained for export repair.";
+  }
+  if (failureCode === "native_workspace_sync_out_unrecoverable") {
+    return "The sandbox holding unexported workspace changes is unavailable, so its files could not be saved.";
+  }
+  if (failureCode === "native_finalization_retry_exhausted") {
+    return "Native run finalization failed after 3 attempts.";
+  }
+  return failureScope === "workspace"
+    ? `Native workspace finalization failed (${failureCode}).`
+    : `Native run finalization failed (${failureCode}).`;
+}
+
 async function recordRetryableFailure(input: {
   db: Db;
   run: typeof heartbeatRuns.$inferSelect;
@@ -436,6 +451,7 @@ async function recordRetryableFailure(input: {
     if (projectsTerminalStatus) await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (projectsTerminalStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (projectsTerminalStatus) await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
+    const terminalRunStatus = input.failureScope === "workspace" ? "failed" : exhaustedRunStatus;
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({
@@ -445,9 +461,19 @@ async function recordRetryableFailure(input: {
               // Stop can win after the failure's admission snapshot. The
               // UPDATE locks and evaluates the current row, not that snapshot.
               status: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.status}
-                else ${input.failureScope === "workspace" ? "failed" : exhaustedRunStatus} end`,
+                else ${terminalRunStatus} end`,
               finishedAt: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.finishedAt}
                 else coalesce(${heartbeatRuns.finishedAt}, ${now.toISOString()}::timestamptz) end`,
+              // A failed run names its cause. Keep an earlier root cause, and
+              // leave a run that Stop already cancelled without a failure.
+              ...(terminalRunStatus === "failed"
+                ? {
+                    errorCode: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.errorCode}
+                      else coalesce(${heartbeatRuns.errorCode}, ${failureCode}) end`,
+                    error: sql`case when ${heartbeatRuns.status} = 'cancelled' then ${heartbeatRuns.error}
+                      else coalesce(${heartbeatRuns.error}, ${terminalFinalizationFailureMessage(failureCode, input.failureScope)}) end`,
+                  }
+                : {}),
             }
           : {}),
         nativePhase: phase,

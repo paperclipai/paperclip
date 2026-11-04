@@ -751,6 +751,97 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
         .where(eq(heartbeatRuns.id, fixture.runId))
         .then((rows) => rows[0]?.status),
     ).resolves.toBe("failed");
+    // A failed run must say why it failed. The retry-exhausted code is the
+    // terminal cause, so it is also the run's error code.
+    const failedRun = await readRunError(fixture.runId);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: "native_workspace_sync_out_retry_exhausted",
+    });
+    expect(failedRun?.error).toMatch(/workspace/i);
+  });
+
+  async function readRunError(runId: string) {
+    return db
+      .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode, error: heartbeatRuns.error })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+  }
+
+  async function exhaustWorkspaceRetries(runId: string, beforeLastAttempt?: () => Promise<unknown>) {
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      if (attempt === 3) await beforeLastAttempt?.();
+      await recordNativeFinalizationFailure({
+        db, runId, error: new Error("native_workspace_sync_out_failed"),
+        projectRunStatus: true, failureScope: "workspace",
+      });
+    }
+  }
+
+  it("keeps an earlier root error code when workspace retries are exhausted", async () => {
+    const fixture = await seedNativeRun();
+    await db.update(heartbeatRuns)
+      .set({ errorCode: "native_provider_terminal_failed", error: "Provider failed earlier." })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 1,
+    });
+    await exhaustWorkspaceRetries(fixture.runId);
+    await expect(readRunError(fixture.runId)).resolves.toEqual({
+      status: "failed",
+      errorCode: "native_provider_terminal_failed",
+      error: "Provider failed earlier.",
+    });
+  });
+
+  it("does not record an error on a run cancelled before workspace retries were exhausted", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 1,
+    });
+    await exhaustWorkspaceRetries(fixture.runId, () => db.update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.runId)));
+    await expect(readRunError(fixture.runId)).resolves.toEqual({ status: "cancelled", errorCode: null, error: null });
+  });
+
+  it("leaves a run without an error while workspace retries remain", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 1,
+    });
+    await recordNativeFinalizationFailure({
+      db, runId: fixture.runId, error: new Error("native_workspace_sync_out_failed"),
+      projectRunStatus: true, failureScope: "workspace",
+    });
+    await expect(readRunError(fixture.runId)).resolves.toEqual({ status: "running", errorCode: null, error: null });
+  });
+
+  it("records the finalization error code when provider-scope retries fail an unsucceeded run", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 3,
+    });
+    await recordNativeFinalizationFailure({
+      db, runId: fixture.runId, error: new Error("native_finalization_invalid"), projectRunStatus: true,
+    });
+    const run = await readRunError(fixture.runId);
+    expect(run).toMatchObject({ status: "failed", errorCode: "native_finalization_retry_exhausted" });
+    expect(run?.error).toBeTruthy();
+  });
+
+  it("does not attach a finalization error to a provider-succeeded run when provider retries are exhausted", async () => {
+    const fixture = await seedNativeRun();
+    await db.update(heartbeatRuns).set({ resultJson: { prpRunTerminalState: "succeeded" } })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 3,
+    });
+    await recordNativeFinalizationFailure({
+      db, runId: fixture.runId, error: new Error("native_finalization_invalid"), projectRunStatus: true,
+    });
+    await expect(readRunError(fixture.runId)).resolves.toEqual({ status: "succeeded", errorCode: null, error: null });
   });
 
   it("blocks immediately when the sandbox with unexported changes is gone", async () => {
@@ -786,6 +877,13 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
         .where(eq(heartbeatRuns.id, fixture.runId))
         .then((rows) => rows[0]?.status),
     ).resolves.toBe("failed");
+    await expect(
+      db
+        .select({ errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, fixture.runId))
+        .then((rows) => rows[0]?.errorCode),
+    ).resolves.toBe("native_workspace_sync_out_unrecoverable");
     await expect(
       db
         .select({ status: issues.status })
