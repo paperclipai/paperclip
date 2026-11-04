@@ -1,6 +1,6 @@
 import { and, eq, notInArray } from "drizzle-orm";
 import { pluginCompanySettings, plugins, type Db } from "@paperclipai/db";
-import type { PaperclipPluginManifestV1, ProjectWorkspaceProviderConfiguration } from "@paperclipai/shared";
+import type { PaperclipPluginManifestV1, ProjectExecutionWorkspacePolicy, ProjectWorkspaceProviderConfiguration } from "@paperclipai/shared";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { conflict } from "../errors.js";
 
@@ -59,6 +59,13 @@ export function resolveProjectWorkspaceProvider(
     effectivePolicy,
     error,
   };
+}
+
+export function sourcelessProjectWorkspacePolicy(rawPolicy: unknown): ProjectExecutionWorkspacePolicy | null {
+  const policy = parseProjectExecutionWorkspacePolicy(rawPolicy);
+  if (policy?.storageProviderPluginId === undefined) return policy;
+  const { storageProviderPluginId: _storage, ...settings } = policy;
+  return Object.keys(settings).some(key => key !== "enabled") ? settings : null;
 }
 
 export async function withDefaultProjectStorage(db: ProviderDb, companyId: string, rawPolicy: unknown) {

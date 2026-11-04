@@ -6,7 +6,7 @@ import { eq, sql } from "drizzle-orm";
 import { companies, createDb, executionWorkspaces, heartbeatRuns, issues, pluginCompanySettings, plugins, projects } from "@paperclipai/db";
 import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
-import { effectiveProjectWorkspacePolicy, listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "../services/project-workspace-provider.js";
+import { effectiveProjectWorkspacePolicy, listProjectWorkspaceProviders, resolveProjectWorkspaceProvider, sourcelessProjectWorkspacePolicy } from "../services/project-workspace-provider.js";
 import { preparePluginWorkspace } from "../services/plugin-workspaces.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { issueService } from "../services/issues.js";
@@ -194,6 +194,16 @@ describe.skipIf(!support.supported)("installed project workspace defaults", () =
   ])("rejects incompatible explicit settings: %j", async policy => {
     const f = await fixture();
     await expect(effectiveProjectWorkspacePolicy(db, f.companyId, { ...policy, storageProviderPluginId: f.pluginId }, true)).rejects.toThrow("explicit project workspace settings");
+  });
+
+  it("ignores saved storage for a project with no source", () => {
+    const pluginId = randomUUID();
+    expect(sourcelessProjectWorkspacePolicy(null)).toBeNull();
+    expect(sourcelessProjectWorkspacePolicy({ enabled: true, storageProviderPluginId: pluginId })).toBeNull();
+    expect(sourcelessProjectWorkspacePolicy({ enabled: false, storageProviderPluginId: null })).toBeNull();
+    expect(sourcelessProjectWorkspacePolicy({ enabled: true })).toEqual({ enabled: true });
+    expect(sourcelessProjectWorkspacePolicy({ enabled: true, defaultMode: "isolated_workspace", storageProviderPluginId: pluginId }))
+      .toEqual({ enabled: true, defaultMode: "isolated_workspace" });
   });
 
   it("preserves compatible explicit fields while supplying only missing defaults", async () => {
