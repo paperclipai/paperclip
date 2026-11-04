@@ -1926,9 +1926,11 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         agentId: String(claimed.payload.agentId),
         retryActionId: claimed.id,
       };
-      const source = await db.transaction((tx) =>
-        authorizeFailedChatRunRetry(tx, scope),
-      );
+      const source = await db.transaction(async tx => {
+        const authorized = await authorizeFailedChatRunRetry(tx, scope);
+        if (contentionResult.identityContentionPending === true) assertIdentityContentionDeadline(claimed);
+        return authorized;
+      });
       delete contentionResult.identityContentionPending;
       const existing = await db
         .select()

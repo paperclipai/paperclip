@@ -64744,10 +64744,13 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     } finally { await f.releaseIdentity(); await restarted?.service.shutdown(); await f.service.shutdown(); }
   });
 
-  it.each(["early_release", "expired_release"] as const)("honors a prepared Retry identity wait after %s", async mode => {
+  it.each(["early_release", "expired_release", "authorization_expired"] as const)("honors a prepared Retry identity wait after %s", async mode => {
     const f = await busyChatRetryHttpFixture();
     let release = () => {};
     let holding: Promise<unknown> | undefined;
+    let releaseAuthorization = () => {};
+    let authorizationHolding: Promise<unknown> | undefined;
+    let processing: Promise<void> | undefined;
     try {
       const originalInput = (await readAgentWakeupRequestsById(f.action.id))[0];
       const response = await request(f.app).post(`/api/issues/${f.issueId}/retry`)
@@ -64784,12 +64787,40 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await db.update(chatActions).set({ result: { ...waiting.result,
           identityContentionDeadlineAt: expired, retryAt: expired } }).where(eq(chatActions.id, waiting.id));
       }
+      let authorizationDeadline = 0, authorizationPid = 0;
+      if (mode === "authorization_expired") {
+        authorizationDeadline = Date.now() + 5_000;
+        await db.update(chatActions).set({ result: { ...waiting.result,
+          identityContentionDeadlineAt: new Date(authorizationDeadline).toISOString(), retryAt: new Date(0).toISOString() } })
+          .where(eq(chatActions.id, waiting.id));
+        let acquiredAuthorization = () => {};
+        const authorizationLocked = new Promise<void>(resolve => { acquiredAuthorization = resolve; });
+        const heldAuthorization = new Promise<void>(resolve => { releaseAuthorization = resolve; });
+        authorizationHolding = db.transaction(async tx => {
+          await tx.select({ id: chatConversations.id }).from(chatConversations).where(and(
+            eq(chatConversations.companyId, f.companyId), eq(chatConversations.id, f.conversation.id))).for("update");
+          const [{ pid }] = await tx.execute(sql`select pg_backend_pid() as pid`);
+          authorizationPid = Number(pid);
+          acquiredAuthorization(); await heldAuthorization;
+        });
+        await authorizationLocked;
+      }
       release(); await holding;
-      await processDue();
+      if (mode === "authorization_expired") {
+        processing = processDue();
+        await vi.waitFor(async () => {
+          const [{ blocked }] = await db.execute(sql`select exists(select 1 from pg_stat_activity
+            where ${authorizationPid} = any(pg_blocking_pids(pid))) as blocked`);
+          expect(blocked).toBe(true);
+        }, { timeout: 5_000, interval: 25 });
+        await new Promise(resolve => setTimeout(resolve, Math.max(0, authorizationDeadline - Date.now()) + 1));
+        releaseAuthorization(); await authorizationHolding;
+        await processing;
+      } else await processDue();
       const [settled] = await db.select().from(chatActions).where(eq(chatActions.id, waiting.id));
-      expect(settled.status).toBe(mode === "expired_release" ? "failed" : "processed");
+      expect(settled.status).toBe(mode === "early_release" ? "processed" : "failed");
       expect(settled.result?.identityContentionPending).toBeUndefined();
-      if (mode === "expired_release") {
+      if (mode !== "early_release") {
         expect(settled.result).toMatchObject({ code: "failed_chat_retry_contention_expired", attemptCount: 1 });
         expect(f.wakeup).toHaveBeenCalledOnce();
         expect((await readAgentWakeupRequestsById(response.body.requestId))[0]).toMatchObject({ status: "failed", runId: null });
@@ -64802,7 +64833,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(f.wakeup).toHaveBeenCalledTimes(2);
         expect((await readHeartbeatRunsByCompanyId(f.companyId)).filter(run => run.retryOfRunId === f.runId)).toHaveLength(1);
       }
-    } finally { release(); await holding; await f.releaseIdentity(); await f.service.shutdown(); }
+    } finally {
+      releaseAuthorization(); release(); await authorizationHolding; await processing;
+      await holding; await f.releaseIdentity(); await f.service.shutdown();
+    }
   });
 
   it("exhausts the existing delivery Retry budget after identity authorization without background renewal", async () => {
