@@ -3544,3 +3544,14 @@ database and storage; failed private evidence is retained under the usual policy
 
 This proves preservation during initial enrollment, which has an offline step.
 Use the separate rolling deployment suites for uninterrupted deployment proof.
+
+## Canonical private framework references
+
+The protected private-cell reader accepts legacy evidence and the source-owned
+compact Playwright JSON representation. It validates both sealed inventories and
+all compact attachment hashes against the original tree. After those checks, it
+materializes exact referenced files only in the derived `selected-runner-e2e`
+tree. The sealed original and final inventories remain unchanged. The existing
+normalizer and TestOps exporter consume the derived files. Registered raw JSON
+remains subject to deep JSON and decoded-body privacy checks regardless of its
+text suffix. No existing physical byte, entry, ZIP, time, or archive bound changes.
