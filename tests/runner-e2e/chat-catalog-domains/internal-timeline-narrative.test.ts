@@ -34,6 +34,18 @@ it("keeps a legitimate anonymous command description across a blank line", () =>
   expect(grade(account.replace("The verification", "\n\nThe verification"))).toBe(true);
 });
 
+it("does not turn a project prototype possessive into a worker", () => {
+  expect(grade(account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "")
+    .replace("command failed", "command failed on Launch's prototype"))).toBe(true);
+});
+it("starts fresh worker scope at a consecutive Markdown heading", () => {
+  expect(grade(account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "## Earlier work (Riley)\nSummary.\n## Initial build (Morgan)\nThe engineer built the page.\n\n"))).toBe(true);
+});
+it("retains unknown-person command ownership as a contrary actor", () => {
+  expect(grade(account.replace("**First attempt (Morgan)**\nMorgan built the page. ", "")
+    .replace("command failed", "command failed on Avery's run"))).toBe(false);
+});
+
 it("does not give a heading credit for another actor's command", () => {
   expect(grade(account.replace("The verification command failed", "The human operator ran verification and it failed"))).toBe(false);
 });
