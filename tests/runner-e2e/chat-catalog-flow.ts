@@ -1,3 +1,4 @@
+import type { AskUserQuestionsInteraction } from "../../packages/shared/src/types/issue.js";
 import { assertSdkCanaryFingerprintMatches } from "./sdk-canary-prefixture.js";
 import { collectConversationLinks, type ConversationLinkInput } from "./chat-rendered-links.js";
 import { chatCatalogAgentIsReady, chatCatalogNativePhaseIsTimely, chatCatalogNativePhaseRemainingBudget } from "./chat-catalog-contract.js";
@@ -11,7 +12,7 @@ import { expect } from "@playwright/test";
 import { pollUntil } from "./api.js";
 import { collectChatRunEvidence, sendChatMessage } from "./chat-flow.js";
 import { prepareNativeStopCanonicalBoundary } from "./chat-native-stop-boundary.js";
-import { chatCatalogHumanHistoryMatches, validateChatCatalogGrade, type ChatCatalogSetupBoundary, type ChatCatalogContext, type ChatCatalogGrade } from "./chat-catalog-contract.js";
+import { chatCatalogHumanHistoryMatches, chatCatalogAllowsHumanQuestionAnswer, verifyChatCatalogHumanQuestionAnswer, type ChatCatalogHumanQuestionAudit, validateChatCatalogGrade, type ChatCatalogSetupBoundary, type ChatCatalogContext, type ChatCatalogGrade } from "./chat-catalog-contract.js";
 import { findChatCatalogCase, loadChatCatalogImplementation } from "./chat-catalog-registry.js";
 import { chatCatalogInventoryDigest } from "./chat-catalog-inventory.js";
 import { resolveChatCatalogQuery } from "./chat-query-bindings.js";
@@ -63,14 +64,30 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
     grade = validateChatCatalogGrade(implementation!.grade(observation));
     const human = evidence.comments.filter(comment => !comment.authorAgentId);
     const canonicalHuman = human[implementation!.setupHumanMessageCount ?? 0];
+    const expectedAnswer = chatCatalogAllowsHumanQuestionAnswer(scenario.id)
+      ? implementation!.expectedHumanQuestionAnswer?.(observation) : undefined;
+    let questionAnswer: ReturnType<typeof verifyChatCatalogHumanQuestionAnswer>;
+    if (expectedAnswer && evidence.issue && canonicalHuman) {
+      const [interactions, activity] = await Promise.all([
+        input.api.get<AskUserQuestionsInteraction[]>(`/api/issues/${evidence.issue.id}/interactions`),
+        input.api.get<ChatCatalogHumanQuestionAudit[]>(`/api/issues/${evidence.issue.id}/activity`),
+      ]);
+      questionAnswer = verifyChatCatalogHumanQuestionAnswer({ expected: expectedAnswer, companyId: input.fixtures.company.id,
+        issueId: evidence.issue.id, agentId: input.fixtures.agent.id, canonicalComment: canonicalHuman,
+        interactions, activity, runs: evidence.runs });
+    }
+    const humanAccounting = { basis: expectedAnswer ? "comments_and_declared_credential_question_answer" : "comments", rawHumanCommentCount: human.length, verifiedHumanQuestionAnswerCount: questionAnswer ? 1 : 0,
+      accountedHumanActionCount: human.length + (questionAnswer ? 1 : 0), declaredHumanActionCount: implementation!.expectedHumanMessageCount ?? 1,
+      questionAnswer: questionAnswer ?? null, expectedQuestionAnswerVerified: expectedAnswer ? !!questionAnswer : null };
+
     const attachmentsValid = !queryAttachments.length || !!canonicalHuman && await verifyChatQueryAttachments(context, queryAttachments, canonicalHuman);
     if (queryAttachments.length) await input.evidence("chat-catalog-query-attachment-receipts.json", { receipts: queryAttachments,
       canonicalCommentId: canonicalHuman?.id ?? null, verified: attachmentsValid });
     const checks = [...grade.checks,
       { id: "catalog-complete-conditions", passed: !implementation!.coverageGaps?.length,
         detail: implementation!.coverageGaps?.length ? `Missing conditions: ${implementation!.coverageGaps.join(", ")}` : "No known catalog condition is omitted." },
-      { id: "catalog-original-human-query", passed: chatCatalogHumanHistoryMatches({ implementation: implementation!, human, runIds: evidence.runs.map(run => run.id), boundary: setupBoundary, renderedQuery: persistedQuery }),
-        detail: "The persisted request preserves the catalog query with only audited public-fixture identity bindings; all human turns were declared." },
+      { id: "catalog-original-human-query", passed: (!expectedAnswer || !!questionAnswer) && chatCatalogHumanHistoryMatches({ implementation: implementation!, human, questionAnswer, runIds: evidence.runs.map(run => run.id), boundary: setupBoundary, renderedQuery: persistedQuery }),
+        detail: "The original query/setup history is unchanged. Human actions are raw comments, plus one independently verified bound UI answer only for opted-in credential cases." },
       { id: "catalog-query-attachment-receipts", passed: attachmentsValid,
         detail: "Only declared production attachment suffixes are allowed, backed by same-source human receipts and independently retrieved matching bytes." },
       ...(slack ? [slackNativeRunCheck(context, evidence.runs, state)] : []),
@@ -79,7 +96,7 @@ export async function runChatCatalogFlow(context: ChatCatalogContext) {
     ];
     grade = { passed: checks.every(check => check.passed), checks };
     await input.evidence("chat-catalog-observation.json", { scenarioId: scenario.id, inventoryDigest: chatCatalogInventoryDigest,
-      oracleVersion: implementation!.oracleVersion, observation, grade });
+      oracleVersion: implementation!.oracleVersion, observation, humanAccounting, grade });
     return { grade, runs: evidence.runs, issue: evidence.issue };
   }
   try {

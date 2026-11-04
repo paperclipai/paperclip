@@ -1,3 +1,4 @@
+import type { AskUserQuestionsInteraction } from "../../packages/shared/src/types/issue.js";
 import type { ChatFlowInput, ChatIssue, ChatRun } from "./chat-flow.js";
 import type { CredentialName } from "./types.js";
 import type { ChatExternalInputRequirement } from "./chat-private-inputs.js";
@@ -196,6 +197,7 @@ export interface ChatCatalogCase {
   expectedRunCount: number;
   /** Persisted human comments; explicit followups must be declared before execution. */
   expectedHumanMessageCount?: number;
+  expectedHumanQuestionAnswer?(observation: unknown): ChatCatalogExpectedHumanQuestionAnswer | undefined;
   /** Genuine persisted human setup turns before the canonical query; included in the total above. */
   setupHumanMessageCount?: number;
   minimumRunCount?: number;
@@ -229,18 +231,63 @@ export function validChatCatalogHumanCounts(implementation: Pick<ChatCatalogCase
   return Number.isSafeInteger(setup) && setup >= 0 && Number.isSafeInteger(total)
     && total >= setup + (implementation.queryOutcome === "rejected" ? 0 : 1);
 }
+export function chatCatalogAllowsHumanQuestionAnswer(scenarioId: string): boolean {
+  return ["secrets.personal-secret", "secrets.configure-company-secret"].includes(scenarioId);
+}
 export function chatCatalogHumanHistoryMatches(input: {
-  implementation: Pick<ChatCatalogCase, "setupHumanMessageCount" | "expectedHumanMessageCount" | "queryOutcome">;
+  implementation: Pick<ChatCatalogCase, "setupHumanMessageCount" | "expectedHumanMessageCount" | "queryOutcome"> & Partial<Pick<ChatCatalogCase, "scenarioId">>;
+  questionAnswer?: ChatCatalogVerifiedHumanQuestionAnswer;
   human: Array<{ id: string; body: string }>; runIds: string[];
   boundary: ChatCatalogSetupBoundary; renderedQuery: string;
 }): boolean {
   const count = input.implementation.setupHumanMessageCount ?? 0;
-  return validChatCatalogHumanCounts(input.implementation)
+  return (!input.questionAnswer || chatCatalogAllowsHumanQuestionAnswer(input.implementation.scenarioId ?? ""))
+    && validChatCatalogHumanCounts(input.implementation)
     && input.boundary.humanCommentIds.length === count
     && input.boundary.humanCommentIds.every((id, index) => input.human[index]?.id === id)
     && input.boundary.runIds.every(id => input.runIds.includes(id))
     && (input.implementation.queryOutcome === "rejected"
       ? input.human.length === count
       : input.human[count]?.body.trim() === input.renderedQuery.trim()
-        && input.human.length === (input.implementation.expectedHumanMessageCount ?? 1));
+        && input.human.length + (input.questionAnswer ? 1 : 0) === (input.implementation.expectedHumanMessageCount ?? 1));
+}
+
+export function chatCatalogHumanQuestionPolicies(row: { resolverPolicy?: unknown; requestedResolverPolicy?: unknown; effectiveResolverPolicy?: unknown }): boolean {
+  return [row.resolverPolicy, row.requestedResolverPolicy ?? row.resolverPolicy, row.effectiveResolverPolicy ?? row.resolverPolicy]
+    .every(policy => policy === "anyone" || policy === "human_only");
+}
+
+export interface ChatCatalogExpectedHumanQuestionAnswer { interactionId: string; sourceRunId: string; userId: string }
+export interface ChatCatalogVerifiedHumanQuestionAnswer extends ChatCatalogExpectedHumanQuestionAnswer { continuationRunId: string; resolvedAt: string }
+export interface ChatCatalogHumanQuestionAudit {
+  companyId?: string; entityId?: string; action?: string; actorType?: string; actorId?: string;
+  details?: Record<string, unknown> | null;
+}
+export function verifyChatCatalogHumanQuestionAnswer(input: {
+  expected: ChatCatalogExpectedHumanQuestionAnswer; companyId: string; issueId: string; agentId: string;
+  canonicalComment: { id: string; authorUserId?: string };
+  interactions: Array<Partial<AskUserQuestionsInteraction>>; activity: ChatCatalogHumanQuestionAudit[];
+  runs: Array<{ id: string; companyId?: string; agentId: string; status: string; runtimeMode?: string; startedAt?: string | null; contextSnapshot?: Record<string, unknown> | null }>;
+}): ChatCatalogVerifiedHumanQuestionAnswer | undefined {
+  const b = input.expected, rows = input.interactions.filter(row => row.id === b.interactionId), row = rows[0];
+  if (rows.length !== 1 || !row || b.userId !== input.canonicalComment.authorUserId
+    || row.companyId !== input.companyId || row.issueId !== input.issueId || row.sourceRunId !== b.sourceRunId
+    || row.createdByAgentId !== input.agentId || row.createdByUserId || row.addresseeUserId !== b.userId || row.addresseeAgentId
+    || row.kind !== "ask_user_questions" || row.status !== "answered" || !chatCatalogHumanQuestionPolicies(row)
+    || row.resolvedByUserId !== b.userId || row.resolvedByAgentId || row.result?.answers?.length !== 1
+    || row.result.answers.some(answer => !!answer.otherText)) return;
+  const resolvedAt = Date.parse(String(row.resolvedAt));
+  const audits = input.activity.filter(event => event.details?.interactionId === b.interactionId && event.action === "issue.thread_interaction_answered");
+  const audit = audits[0];
+  if (!Number.isFinite(resolvedAt) || audits.length !== 1 || !audit || audit.companyId !== input.companyId || audit.entityId !== input.issueId
+    || audit.actorType !== "user" || audit.actorId !== b.userId || audit.details?.interactionKind !== "ask_user_questions" || audit.details.interactionStatus !== "answered") return;
+  const source = input.runs.find(run => run.id === b.sourceRunId);
+  const continuations = input.runs.filter(run => run.contextSnapshot?.interactionId === b.interactionId), run = continuations[0];
+  if (!source || source.companyId !== input.companyId || source.agentId !== input.agentId || source.runtimeMode !== "native" || source.status !== "succeeded"
+    || source.contextSnapshot?.issueId !== input.issueId || source.contextSnapshot.commentId !== input.canonicalComment.id
+    || !Number.isFinite(Date.parse(source.startedAt ?? "")) || Date.parse(source.startedAt!) > resolvedAt
+    || continuations.length !== 1 || !run || run.id === source.id || run.companyId !== input.companyId || run.agentId !== input.agentId
+    || run.runtimeMode !== "native" || run.status !== "succeeded" || run.contextSnapshot?.issueId !== input.issueId
+    || !Number.isFinite(Date.parse(run.startedAt ?? "")) || Date.parse(run.startedAt!) < resolvedAt) return;
+  return { ...b, continuationRunId: run.id, resolvedAt: new Date(resolvedAt).toISOString() };
 }

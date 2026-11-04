@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { chatCatalogHumanHistoryMatches, validChatCatalogHumanCounts } from "./chat-catalog-contract.js";
+import { chatCatalogHumanHistoryMatches, verifyChatCatalogHumanQuestionAnswer, validChatCatalogHumanCounts } from "./chat-catalog-contract.js";
 it("binds the canonical request after genuine setup history and retains native setup run identities", () => {
   const input = { implementation: { setupHumanMessageCount: 1, expectedHumanMessageCount: 2 },
     human: [{ id: "setup", body: "Remember this detail" }, { id: "query", body: "Use the detail" }],
@@ -16,4 +16,55 @@ it("preserves zero-setup semantics and refuses impossible setup/total declaratio
   expect(validChatCatalogHumanCounts({ setupHumanMessageCount: -1 })).toBe(false);
   expect(validChatCatalogHumanCounts({ setupHumanMessageCount: 0.5 })).toBe(false);
   expect(validChatCatalogHumanCounts({ setupHumanMessageCount: 0, expectedHumanMessageCount: 0, queryOutcome: "rejected" })).toBe(true);
+});
+
+function answerEvidence() {
+  return { expected: { interactionId: "question", sourceRunId: "initial", userId: "person" }, companyId: "company", issueId: "source", agentId: "ceo", canonicalComment: { id: "query", authorUserId: "person" },
+    interactions: [{ id: "question", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo", addresseeUserId: "person", kind: "ask_user_questions" as const,
+      status: "answered" as const, resolverPolicy: "human_only" as const, resolvedByUserId: "person", resolvedAt: "2026-11-04T13:30:00Z", result: { version: 1 as const, answers: [{ questionId: "saved", optionIds: ["yes"] }], summaryMarkdown: null } }],
+    activity: [{ companyId: "company", entityId: "source", action: "issue.thread_interaction_answered", actorType: "user", actorId: "person", details: { interactionId: "question", interactionKind: "ask_user_questions", interactionStatus: "answered" } }],
+    runs: [{ id: "initial", companyId: "company", agentId: "ceo", runtimeMode: "native", status: "succeeded", startedAt: "2026-11-04T13:20:00Z", contextSnapshot: { issueId: "source", commentId: "query" } },
+      { id: "confirmed", companyId: "company", agentId: "ceo", runtimeMode: "native", status: "succeeded", startedAt: "2026-11-04T13:30:01Z", contextSnapshot: { issueId: "source", interactionId: "question" } }],
+  };
+}
+it("counts one independently verified UI answer as the second declared credential action without fabricating a comment", () => {
+  const raw = answerEvidence(), questionAnswer = verifyChatCatalogHumanQuestionAnswer(raw); expect(questionAnswer).toBeDefined();
+  const human = [{ id: "query", body: "Original query" }];
+  const input = { implementation: { scenarioId: "secrets.personal-secret", expectedHumanMessageCount: 2 }, human, questionAnswer,
+    runIds: ["initial", "confirmed"], boundary: { humanCommentIds: [], runIds: [] }, renderedQuery: "Original query" };
+  expect(chatCatalogHumanHistoryMatches(input)).toBe(true); expect(human).toHaveLength(1);
+  expect(chatCatalogHumanHistoryMatches({ ...input, implementation: { scenarioId: "secrets.configure-company-secret", expectedHumanMessageCount: 2 } })).toBe(true);
+  expect(chatCatalogHumanHistoryMatches({ ...input, implementation: { scenarioId: "secrets.company-secret", expectedHumanMessageCount: 2 } })).toBe(false);
+  expect(chatCatalogHumanHistoryMatches({ ...input, questionAnswer: undefined })).toBe(false);
+  expect(chatCatalogHumanHistoryMatches({ ...input, human: [...human, { id: "extra", body: "Hidden nudge" }] })).toBe(false);
+  expect(chatCatalogHumanHistoryMatches({ ...input, implementation: { scenarioId: "questions-and-approvals.multi-part-question", expectedHumanMessageCount: 2 } })).toBe(false);
+});
+it.each(["wrong user", "missing audit", "duplicate audit", "foreign issue", "unrelated answer", "early successor", "extra successor"])("rejects %s as human-answer accounting authority", fault => {
+  const value = answerEvidence();
+  if (fault === "wrong user") value.interactions[0]!.resolvedByUserId = "other-person";
+  if (fault === "missing audit") value.activity = [];
+  if (fault === "duplicate audit") value.activity.push(value.activity[0]!);
+  if (fault === "foreign issue") value.interactions[0]!.issueId = "foreign";
+  if (fault === "unrelated answer") value.expected.interactionId = "unrelated";
+  if (fault === "early successor") value.runs[1]!.startedAt = "2026-11-04T13:29:00Z";
+  if (fault === "extra successor") value.runs.push({ ...value.runs[1]!, id: "extra" });
+  expect(verifyChatCatalogHumanQuestionAnswer(value)).toBeUndefined();
+});
+
+it.each(["anyone", "human_only"] as const)("independently verifies current-human answered %s questions", policy => {
+  const raw = answerEvidence();
+  const value = { ...raw, interactions: raw.interactions.map(row => ({ ...row, resolverPolicy: policy, requestedResolverPolicy: policy, effectiveResolverPolicy: policy })) };
+  expect(verifyChatCatalogHumanQuestionAnswer(value)).toBeDefined();
+  expect(verifyChatCatalogHumanQuestionAnswer({ ...value, interactions: value.interactions.map(row => ({ ...row, addresseeUserId: "other" })) })).toBeUndefined();
+  expect(verifyChatCatalogHumanQuestionAnswer({ ...value, interactions: value.interactions.map(row => ({ ...row, resolvedByUserId: undefined, resolvedByAgentId: "ceo" })) })).toBeUndefined();
+});
+
+it("rejects unknown or agent-only policies and submitted text in independent accounting", () => {
+  const raw = answerEvidence();
+  for (const effectiveResolverPolicy of ["unknown", "agent_only"] as const) {
+    expect(verifyChatCatalogHumanQuestionAnswer({ ...raw, interactions: raw.interactions.map(row => ({ ...row,
+      effectiveResolverPolicy: effectiveResolverPolicy as unknown as typeof row.resolverPolicy })) })).toBeUndefined();
+  }
+  expect(verifyChatCatalogHumanQuestionAnswer({ ...raw, interactions: raw.interactions.map(row => ({ ...row,
+    result: { ...row.result, answers: [{ ...row.result.answers[0]!, otherText: "Do not submit a note" }] } })) })).toBeUndefined();
 });
