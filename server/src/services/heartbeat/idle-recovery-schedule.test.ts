@@ -82,7 +82,7 @@ describe("owned recovery deadline inspection", () => {
   it("reconstructs watchdog grace from creation time without extending it", async () => {
     const watchdog = { id: "watchdog", companyId: "company", issueId: "issue", watchdogAgentId: "agent", status: "active",
       lastReviewedFingerprint: null, lastReviewedStopSnapshot: null };
-    const subtree = [{ id: "issue", companyId: "company", status: "in_progress", createdAt: new Date(now), updatedAt: new Date(now),
+    const subtree = [{ watchdogId: "watchdog", id: "issue", companyId: "company", status: "in_progress", createdAt: new Date(now), updatedAt: new Date(now),
       originKind: "manual", parentId: null, assigneeAgentId: "agent", assigneeUserId: null, subtreeIncomplete: false }];
     const reader = { select: () => {
       let table = "";
@@ -96,6 +96,27 @@ describe("owned recovery deadline inspection", () => {
     expect(await service.readIdleSchedule(reader, now, owner)).toMatchObject({ blocked: false, deadlines: [now + 15_000] });
     expect(await service.readIdleSchedule(reader, now + 1000, owner)).toMatchObject({ blocked: false, deadlines: [now + 15_000] });
     expect((await service.readIdleSchedule(reader, now + 15_000, owner)).blocked).toBe(true);
+  });
+  it("keeps first-run grace scoped to the run and issue company across batched watchdogs", async () => {
+    const watchdogs = ["A", "B"].map(key => ({ id: `watchdog${key}`, companyId: `company${key}`,
+      issueId: `issue${key}`, watchdogAgentId: `agent${key}`, status: "active",
+      lastReviewedFingerprint: null, lastReviewedStopSnapshot: null }));
+    const subtree = watchdogs.map(row => ({ watchdogId: row.id, id: row.issueId, companyId: row.companyId,
+      status: "in_progress", createdAt: new Date(now), updatedAt: new Date(now), originKind: "manual",
+      parentId: null, assigneeAgentId: row.watchdogAgentId, assigneeUserId: null, subtreeIncomplete: false }));
+    const reader = { select: (fields?: Record<string, unknown>) => {
+      let table = "";
+      const rows = () => table === "issue_watchdogs" ? watchdogs : table === "heartbeat_runs"
+        && fields?.contextSnapshot && !fields.status
+        ? [{ companyId: "companyA", contextSnapshot: { issueId: "issueB" } }] : [];
+      const query = { from: (source: Parameters<typeof getTableName>[0]) => { table = getTableName(source); return query; },
+        innerJoin: () => query, where: () => query, groupBy: () => query, orderBy: () => query,
+        limit: async () => rows(), then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(rows()).then(resolve) };
+      return query;
+    }, execute: async () => subtree } as unknown as Pick<Db, "select" | "execute">;
+    const result = await taskWatchdogService(reader as Db).readIdleSchedule(reader, now, owner);
+    expect(result.blocked).toBe(false);
+    expect(result.deadlines).toEqual([now + 15_000, now + 15_000]);
   });
   it("does not certify a first producer during drain, failed reconstruction, or a changed revision", async () => {
     let revision = "1";

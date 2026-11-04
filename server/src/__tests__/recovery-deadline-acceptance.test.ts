@@ -318,6 +318,50 @@ describe.skipIf(!fixtureUrl)("recovery deadline producer, proof and resumed exec
   }, 50_000);
 
 
+  it("batches seven settled watchdogs within the composed proof budget and rejects live or changed owners", async () => {
+    const fixtures = [];
+    for (let index = 0; index < 7; index++) {
+      const f = await fixture({ retainedSourceLock: false });
+      await issueService(db).update(f.issue.id, { status: "done", actorUserId: "recovery-test-user", companyGuard: f.companyId });
+      await taskWatchdogService(db).upsertForIssue(f.companyId, f.issue.id, { agentId: f.agent.id });
+      fixtures.push(f);
+    }
+    await start(); await settled();
+    recoveryWorker = heartbeat.registerIssueStateRecoveryWork(coordinator!, () => !draining);
+    const readWatchdogs = bindIdleDeadlineOwner(recoveryWorker.watchdogs.reconciliationSnapshot, heartbeat.readIdleWatchdogSchedule,
+      () => ({ coverage: { kind: "watchdogs" } }));
+    owners.watchdogs = readWatchdogs;
+    await recoveryWorker.ready;
+    await vi.waitFor(async () => {
+      await heartbeat.drainActiveRunExecutions();
+      for (const f of fixtures) {
+        const current = await taskWatchdogService(db).getActiveForIssue(f.companyId, f.issue.id);
+        expect(current?.lastReviewedFingerprint).toBeTruthy();
+        expect(current?.watchdogIssueId).toBeTruthy();
+        const [review] = await db.select({ status: issues.status }).from(issues).where(eq(issues.id, current!.watchdogIssueId!));
+        expect(review.status).toBe("done");
+      }
+      expect(recoveryWorker!.watchdogs.reconciliationSnapshot().reconciled).toBe(true);
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 65_000 });
+    const report = await proof();
+    expect(report.backgroundWork, JSON.stringify(report.diagnostics)).toBe("none");
+    expect(report.scheduledWake).toBeUndefined();
+    draining = true;
+    const f = fixtures[0];
+    const [pending] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agent.id,
+      issueId: f.issue.id, status: "queued", contextSnapshot: { issueId: f.issue.id } }).returning();
+    expect((await proof()).backgroundWork).not.toBe("none");
+    await db.delete(heartbeatRuns).where(eq(heartbeatRuns.id, pending.id));
+    expect((await proof()).backgroundWork).toBe("none");
+    owners.watchdogs = async (...args) => {
+      const snapshot = await readWatchdogs(...args);
+      await recoveryWorker!.watchdogs.stop();
+      return snapshot;
+    };
+    expect((await proof()).backgroundWork).not.toBe("none");
+  }, 80_000);
+
   it("blocks unconsumed budget inputs without a live owner and permits sleep only after normal settlement", async () => {
     const f = await fixture({ retainedSourceLock: false });
     await issueService(db).update(f.issue.id, { status: "done", actorUserId: "recovery-test-user", companyGuard: f.companyId });
