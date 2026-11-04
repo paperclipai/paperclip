@@ -40,7 +40,14 @@ pub(crate) enum HostRequest {
         bootstrap_ticket: String,
     },
     #[serde(rename_all = "camelCase")]
-    Retire { id: String, park_id: String },
+    Retire {
+        id: String,
+        park_id: String,
+        claim_id: Option<String>,
+        identity: Option<HostIdentity>,
+        last_controller_command_seq: Option<u64>,
+        acked_source_seq: Option<u64>,
+    },
 }
 
 impl HostRequest {
@@ -63,7 +70,9 @@ impl HostRequest {
                         && !bootstrap_ticket.trim().is_empty()
                         && bootstrap_ticket.len() <= 8192
                 }
-                Self::Retire { park_id, .. } => id_valid(park_id),
+                Self::Retire {
+                    park_id, claim_id, ..
+                } => id_valid(park_id) && claim_id.as_deref().is_none_or(id_valid),
                 Self::Park { .. } => true,
             }
     }
@@ -77,7 +86,7 @@ pub struct HostControl {
     input: Vec<u8>,
     receipts: BTreeMap<String, ([u8; 32], &'static str)>,
     pub(crate) park_id: Option<String>,
-    pub(crate) claiming_park_id: Option<String>,
+    pub(crate) claiming: Option<(String, String)>,
 }
 
 fn failure() -> DurableRunnerError {
@@ -110,7 +119,7 @@ impl HostControl {
             input: Vec::new(),
             receipts: BTreeMap::new(),
             park_id: None,
-            claiming_park_id: None,
+            claiming: None,
         })
     }
 

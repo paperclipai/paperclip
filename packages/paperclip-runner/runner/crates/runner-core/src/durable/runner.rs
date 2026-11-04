@@ -445,7 +445,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
 #[cfg(not(unix))]
 pub struct HostControl;
 #[cfg(unix)]
-use crate::host_control::{HostControl, HostRequest};
+use crate::host_control::{HostControl, HostIdentity, HostRequest};
 
 pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
     mut config: DurableRunnerConfig,
@@ -747,7 +747,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                         )?;
                         #[cfg(unix)]
                         if let Some(control) = host_control.as_mut() {
-                            control.claiming_park_id = None;
+                            control.claiming = None;
                         }
                     }
                     Err(error) => {
@@ -869,7 +869,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             apply_authority_rotation(&mut state, &store, &mut config, &mut endpoint, next)?;
             #[cfg(unix)]
             if let Some(control) = host_control.as_mut() {
-                control.claiming_park_id = None;
+                control.claiming = None;
             }
             disconnected_since = Some(Instant::now());
             continue;
@@ -1159,7 +1159,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                         )?;
                         #[cfg(unix)]
                         if let Some(control) = host_control.as_mut() {
-                            control.claiming_park_id = None;
+                            control.claiming = None;
                         }
                         disconnected_since = Some(Instant::now());
                         break;
@@ -1284,24 +1284,13 @@ fn process_host_control<E: CommandExecutor>(
             acked_source_seq,
         } if !parked
             && control.park_id.is_none()
-            && control.claiming_park_id.is_none()
-            && identity.runner_instance_id == state.runner_instance_id
-            && identity.environment_lease_id == state.environment_lease_id
-            && identity.run_id == state.run_id
-            && identity.normalized_session_id == state.normalized_session_id
-            && identity.turn_id == state.turn_id
-            && identity.item_id == state.item_id
-            && *last_controller_command_seq == state.last_controller_command_seq
-            && *acked_source_seq == state.acked_source_seq
-            && state.outbox.is_empty()
-            && state.acked_source_seq == state.highest_source_seq()
-            && state.warm_transition.is_none()
-            && state.pending_terminal_delivery.is_none()
-            && state.pending_provider_cleanup.is_none()
-            && state
-                .processed_commands
-                .values()
-                .all(|command| !matches!(command.status.as_str(), "pending" | "indeterminate"))
+            && control.claiming.is_none()
+            && host_park_cut_matches(
+                state,
+                identity,
+                *last_controller_command_seq,
+                *acked_source_seq,
+            )
             && executor.host_park_ready()? =>
         {
             control.park_id = Some(id.clone());
@@ -1309,19 +1298,42 @@ fn process_host_control<E: CommandExecutor>(
             Ok(HostAction::Park)
         }
         HostRequest::Claim {
+            id,
             park_id,
             bootstrap_ticket,
             ..
         } if parked && control.park_id.as_ref() == Some(park_id) => {
             let ticket = BootstrapTicket::new(bootstrap_ticket.clone())?;
-            control.claiming_park_id = Some(park_id.clone());
+            control.claiming = Some((park_id.clone(), id.clone()));
             control.park_id = None;
             control.reply(&request, "claimed")?;
             Ok(HostAction::Claim(ticket))
         }
-        HostRequest::Retire { park_id, .. }
-            if (parked && control.park_id.as_ref() == Some(park_id))
-                || control.claiming_park_id.as_ref() == Some(park_id) =>
+        HostRequest::Retire {
+            park_id,
+            claim_id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+            ..
+        } if match (
+            claim_id,
+            identity,
+            last_controller_command_seq,
+            acked_source_seq,
+        ) {
+            (None, None, None, None) => parked && control.park_id.as_ref() == Some(park_id),
+            (Some(claim_id), Some(identity), Some(command_seq), Some(acked_seq)) => {
+                !parked
+                    && control
+                        .claiming
+                        .as_ref()
+                        .is_some_and(|(park, claim)| park == park_id && claim == claim_id)
+                    && host_park_cut_matches(state, identity, *command_seq, *acked_seq)
+                    && executor.host_park_ready()?
+            }
+            _ => false,
+        } =>
         {
             executor.shutdown()?;
             control.reply(&request, "retired")?;
@@ -1332,6 +1344,32 @@ fn process_host_control<E: CommandExecutor>(
             Ok(HostAction::None)
         }
     }
+}
+
+#[cfg(unix)]
+fn host_park_cut_matches(
+    state: &DurableState,
+    identity: &HostIdentity,
+    command_seq: u64,
+    acked_seq: u64,
+) -> bool {
+    identity.runner_instance_id == state.runner_instance_id
+        && identity.environment_lease_id == state.environment_lease_id
+        && identity.run_id == state.run_id
+        && identity.normalized_session_id == state.normalized_session_id
+        && identity.turn_id == state.turn_id
+        && identity.item_id == state.item_id
+        && command_seq == state.last_controller_command_seq
+        && acked_seq == state.acked_source_seq
+        && state.outbox.is_empty()
+        && state.acked_source_seq == state.highest_source_seq()
+        && state.warm_transition.is_none()
+        && state.pending_terminal_delivery.is_none()
+        && state.pending_provider_cleanup.is_none()
+        && state
+            .processed_commands
+            .values()
+            .all(|command| !matches!(command.status.as_str(), "pending" | "indeterminate"))
 }
 
 fn lease_renewal_deadline(now: u64, expires_at: u64) -> u64 {
@@ -2772,6 +2810,7 @@ mod tests {
         struct IdleExecutor {
             proofs: usize,
             shutdowns: usize,
+            ready: bool,
         }
         impl CommandExecutor for IdleExecutor {
             fn execute(&mut self, _: &Command) -> Result<CommandExecution, DurableRunnerError> {
@@ -2779,7 +2818,7 @@ mod tests {
             }
             fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
                 self.proofs += 1;
-                Ok(true)
+                Ok(self.ready)
             }
             fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
                 self.shutdowns += 1;
@@ -2794,6 +2833,7 @@ mod tests {
         let mut executor = IdleExecutor {
             proofs: 0,
             shutdowns: 0,
+            ready: true,
         };
         let park = json!({"op":"park","id":"park-1","identity":{
             "runnerInstanceId":state.runner_instance_id,"environmentLeaseId":state.environment_lease_id,
@@ -2848,17 +2888,92 @@ mod tests {
             "conflict"
         );
         assert_eq!(executor.shutdowns, 0);
-        let mut premature_park = park;
+        let mut premature_park = park.clone();
         premature_park["id"] = json!("park-before-attach");
         assert_eq!(
             exchange(&premature_park, &state, &mut control, &mut executor, false).1["status"],
             "conflict"
         );
-        let retire = json!({"op":"retire","id":"retire-claim","parkId":"park-1"});
+        let mut retire = json!({"op":"retire","id":"retire-claim","parkId":"park-1"});
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        retire["claimId"] = json!("claim-1");
+        retire["identity"] = park["identity"].clone();
+        retire["lastControllerCommandSeq"] = json!(0);
+        retire["ackedSourceSeq"] = json!(0);
+        for field in [
+            "claimId",
+            "identity",
+            "lastControllerCommandSeq",
+            "ackedSourceSeq",
+        ] {
+            let mut partial = retire.clone();
+            partial.as_object_mut().unwrap().remove(field);
+            assert_eq!(
+                exchange(&partial, &state, &mut control, &mut executor, false).1["status"],
+                "conflict"
+            );
+        }
+        for pointer in [
+            "/parkId",
+            "/claimId",
+            "/identity/runnerInstanceId",
+            "/identity/environmentLeaseId",
+            "/identity/runId",
+            "/identity/normalizedSessionId",
+            "/identity/turnId",
+            "/identity/itemId",
+            "/lastControllerCommandSeq",
+            "/ackedSourceSeq",
+        ] {
+            let mut stale = retire.clone();
+            let value = stale.pointer_mut(pointer).unwrap();
+            *value = if value.is_number() {
+                json!(1)
+            } else {
+                json!("stale")
+            };
+            assert_eq!(
+                exchange(&stale, &state, &mut control, &mut executor, false).1["status"],
+                "conflict"
+            );
+        }
+        // PRP commands and source events can race the host's preceding disk proof.
+        state.last_controller_command_seq = 1;
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        state.last_controller_command_seq = 0;
+        state.acked_source_seq = 1;
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        state.acked_source_seq = 0;
+        executor.ready = false;
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        executor.ready = true;
+        let claiming = control.claiming.take();
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "conflict"
+        );
+        control.claiming = claiming;
+        assert_eq!(executor.shutdowns, 0);
         assert!(matches!(
             exchange(&retire, &state, &mut control, &mut executor, false).0,
             HostAction::Retire
         ));
+        assert_eq!(
+            exchange(&retire, &state, &mut control, &mut executor, false).1["status"],
+            "retired"
+        );
         assert_eq!(executor.shutdowns, 1);
     }
 

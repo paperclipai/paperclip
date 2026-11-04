@@ -65,6 +65,22 @@ P0 reserve is an explicit unrecoverable condition.
 
 ## Current boundary
 
+Unix builds advertise `hostedParkingVersion: 1` in `--build-metadata`. A trusted
+listen-mode launcher may pass `--host-control-fd 4`, a connected Unix stream
+carrying newline-delimited JSON frames up to 16 KiB. Parking requires an exact
+source identity and command/ACK cut plus a settled, live native Codex process.
+While parked, Runner waits only for private control, stream closure, or its
+existing hard lifetime. A claim installs a fresh bootstrap ticket in memory;
+the `claimed` reply precedes PRP authentication and `run.attach`.
+
+An unscoped `{op:"retire",id,parkId}` applies only while parked. Retiring an
+unused claim additionally requires `claimId`, all six `identity` fields,
+`lastControllerCommandSeq`, and `ackedSourceSeq`. Runner atomically rechecks
+the current claim, unchanged source cut, absence of pending operations, and
+settled provider proof before shutdown. Missing, stale, attached, or active
+claim requests return `conflict`; exact successful retries replay their receipt.
+Stream EOF still retires the owned process regardless of claim state.
+
 Durable mode is selected only when `paperclip-runnerd` receives
 `--connect-url`. Its executor accepts a Codex app-server descriptor and bound
 completion contract through `run.prepare`, owns the provider process group,
