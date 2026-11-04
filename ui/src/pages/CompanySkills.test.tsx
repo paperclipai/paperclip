@@ -4,8 +4,9 @@ import { act as reactAct, type ComponentProps, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createRoot, type Root } from "react-dom/client";
 import type { CatalogSkill, CompanySkillDetail, CompanySkillListItem, CompanySkillVersion, FolderListResult } from "@paperclipai/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  CompanySkills,
   DiscoveryGrid,
   InstallPreviewDialog,
   SkillDetailPage,
@@ -16,10 +17,46 @@ import {
   withDiscoveryTab,
   skillDetailBreadcrumbs,
 } from "./CompanySkills";
+import { ApiError } from "../api/client";
 import { skillStudioNewRoute } from "../lib/company-skill-routes";
+import { CompanySkills as ProductionCompanySkills } from "./CompanySkills.production";
+import { queryKeys } from "../lib/queryKeys";
 
 const readVersion = vi.hoisted(() => vi.fn());
-vi.mock("../api/companySkills", () => ({ companySkillsApi: { version: readVersion } }));
+const mockCompanySkillsApi = vi.hoisted(() => ({
+  version: readVersion,
+  list: vi.fn(),
+  catalogList: vi.fn(),
+  detail: vi.fn(),
+  file: vi.fn(),
+  versions: vi.fn(),
+  updateStatus: vi.fn(),
+  catalogDetail: vi.fn(),
+  catalogFile: vi.fn(),
+  browseProject: vi.fn(),
+}));
+const mockFoldersApi = vi.hoisted(() => ({ list: vi.fn() }));
+const mockAgentsApi = vi.hoisted(() => ({ list: vi.fn() }));
+
+vi.mock("../api/companySkills", () => ({ companySkillsApi: mockCompanySkillsApi }));
+vi.mock("../api/folders", () => ({ foldersApi: mockFoldersApi }));
+vi.mock("../api/agents", () => ({ agentsApi: mockAgentsApi }));
+vi.mock("../context/CompanyContext", () => ({
+  useCompany: () => ({ selectedCompanyId: "company-1", selectedCompany: { id: "company-1", name: "Acme" } }),
+}));
+vi.mock("../context/BreadcrumbContext", () => ({
+  useBreadcrumbs: () => ({ setBreadcrumbs: vi.fn() }),
+}));
+vi.mock("../context/ToastContext", () => ({
+  useToast: () => ({ pushToast: vi.fn() }),
+  useToastActions: () => ({ pushToast: vi.fn() }),
+}));
+vi.mock("../hooks/useStreamlinedUiEnabled", () => ({
+  useStreamlinedUiEnabled: () => ({ enabled: true, loaded: true }),
+}));
+vi.mock("../adapters/use-adapter-capabilities", () => ({
+  useAdapterCapabilities: () => () => ({}),
+}));
 
 vi.mock("@/lib/router", () => ({
   Link: ({ children, to, ...props }: { children: ReactNode; to: string }) => (
@@ -1152,5 +1189,173 @@ describe("install-time agent enablement", () => {
     await click(buttonsNamed(node, "Install update")[0] as HTMLButtonElement);
 
     expect(onConfirm).toHaveBeenCalledWith({ slug: "wireframe", force: false, agentIds: [] });
+  });
+});
+
+describe("CompanySkills page read resilience", () => {
+  function makeInstalledSkill(): CompanySkillListItem {
+    return {
+      id: "skill-1",
+      companyId: "company-1",
+      folderId: null,
+      folderPath: null,
+      key: "demo-skill",
+      slug: "demo-skill",
+      name: "Demo Skill",
+      description: "A demo skill.",
+      sourceType: "local_path",
+      sourceLocator: null,
+      sourceRef: null,
+      trustLevel: "markdown_only",
+      compatibility: "compatible",
+      fileInventory: [{ path: "SKILL.md", kind: "skill" }],
+      iconUrl: null,
+      color: null,
+      tagline: null,
+      authorName: null,
+      homepageUrl: null,
+      categories: [],
+      sharingScope: "private",
+      publicShareToken: null,
+      forkedFromSkillId: null,
+      forkedFromCompanyId: null,
+      starCount: 0,
+      installCount: 0,
+      forkCount: 0,
+      currentVersionId: "version-1",
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-01-02T00:00:00Z"),
+      attachedAgentCount: 0,
+      editable: true,
+      editableReason: null,
+      sourceLabel: "Local",
+      sourceBadge: "local",
+      sourcePath: null,
+      catalogKind: null,
+      originHash: null,
+      packageName: null,
+      packageVersion: null,
+    };
+  }
+
+  const emptyFolders: FolderListResult = { kind: "skill", folders: [], allCount: 1, unfiledCount: 1 };
+  let queryClient: QueryClient;
+
+  async function settle() {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+    }
+  }
+
+  async function renderPage(Page = CompanySkills) {
+    container = document.createElement("div");
+    document.body.appendChild(container);
+    root = createRoot(container);
+    await act(async () => {
+      root?.render(
+        <QueryClientProvider client={queryClient}>
+          <Page />
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+    return container;
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockCompanySkillsApi.list.mockReset().mockResolvedValue([makeInstalledSkill()]);
+    mockCompanySkillsApi.catalogList.mockReset().mockResolvedValue([]);
+    mockFoldersApi.list.mockReset().mockResolvedValue(emptyFolders);
+    mockAgentsApi.list.mockReset().mockResolvedValue([]);
+  });
+
+  afterEach(() => {
+    queryClient.clear();
+    vi.unstubAllGlobals();
+  });
+
+  describe.each([["current", CompanySkills], ["production", ProductionCompanySkills]] as const)("%s discovery errors", (_name, Page) => {
+    it.each([["skills", 403], ["skills", 429], ["catalog", 403], ["catalog", 429]] as const)(
+      "shows a %s %s failure while the other read pauses and keeps its own Retry usable",
+      async (failed, status) => {
+        const failedRead = failed === "skills" ? mockCompanySkillsApi.list : mockCompanySkillsApi.catalogList;
+        const otherRead = failed === "skills" ? mockCompanySkillsApi.catalogList : mockCompanySkillsApi.list;
+        const failedResult = failed === "skills" ? [makeInstalledSkill()] : [];
+        const otherResult = failed === "skills" ? [] : [makeInstalledSkill()];
+        failedRead.mockRejectedValueOnce(new ApiError("Read rejected", status, null)).mockResolvedValue(failedResult);
+        let resume!: () => void;
+        otherRead.mockImplementationOnce(() => new Promise(resolve => { resume = () => resolve(otherResult); }));
+        const node = await renderPage(Page);
+        const otherKey = failed === "skills" ? queryKeys.companySkills.catalog() : queryKeys.companySkills.list("company-1");
+        const otherQuery = queryClient.getQueryCache().find({ queryKey: otherKey, exact: true })!;
+        await act(() => { otherQuery.setState({ fetchStatus: "paused" }); });
+        expect(node.querySelector('[data-query-view="error"]')).not.toBeNull();
+        await act(() => { otherQuery.setState({ fetchStatus: "fetching" }); });
+        const error = node.querySelector('[data-query-view="error"]')!;
+        expect(error).not.toBeNull();
+        const retry = error.querySelector("button");
+        if (status === 429) {
+          expect(retry).not.toBeNull();
+          expect(retry!.disabled).toBe(false);
+          await click(retry!); await settle();
+          expect(failedRead).toHaveBeenCalledTimes(2);
+          expect(otherRead).toHaveBeenCalledOnce();
+          expect(node.querySelector('[data-query-view="error"]')).toBeNull();
+          await act(async () => { resume(); }); await settle();
+          expect(node.textContent).toContain("Demo Skill");
+        } else {
+          expect(retry).toBeNull();
+          await act(async () => { resume(); }); await settle();
+          expect(node.querySelector('[data-query-view="error"]')).not.toBeNull();
+        }
+      },
+    );
+  });
+
+  it("keeps installed skills visible when a refetch fails during an outage", async () => {
+    const node = await renderPage();
+    expect(node.textContent).toContain("Demo Skill");
+
+    mockCompanySkillsApi.list.mockRejectedValue(
+      new ApiError("Paperclip is restarting.", 503, { error: "tenant_app_unavailable" }),
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["company-skills"] });
+    });
+    await settle();
+
+    expect(mockCompanySkillsApi.list).toHaveBeenCalledTimes(2);
+    expect(node.textContent).toContain("Demo Skill");
+    expect(node.querySelector('[data-query-view="error"]')).toBeNull();
+    expect(node.textContent).not.toContain("Paperclip is restarting.");
+  });
+
+  it("shows readable copy and a Retry button when the skill list fails to load", async () => {
+    mockCompanySkillsApi.list
+      .mockReset()
+      .mockRejectedValueOnce(new ApiError("Boom", 500, { error: "Boom" }))
+      .mockResolvedValue([makeInstalledSkill()]);
+    const node = await renderPage();
+
+    const errorState = node.querySelector('[data-query-view="error"]');
+    expect(errorState).not.toBeNull();
+    expect(errorState?.textContent).toContain("Couldn't load skills");
+    expect(errorState?.textContent).toContain("Boom");
+    expect(node.textContent).not.toContain("Demo Skill");
+    const retryButton = Array.from(errorState?.querySelectorAll("button") ?? []).find((button) =>
+      button.textContent?.includes("Retry"),
+    ) as HTMLButtonElement | undefined;
+    expect(retryButton).toBeTruthy();
+
+    await act(async () => retryButton?.click());
+    await settle();
+
+    expect(mockCompanySkillsApi.list).toHaveBeenCalledTimes(2);
+    expect(node.textContent).toContain("Demo Skill");
+    expect(node.querySelector('[data-query-view="error"]')).toBeNull();
   });
 });
