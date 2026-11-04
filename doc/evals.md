@@ -113,6 +113,8 @@ reply with the late requirement, and persistence after reload. Its attached and
 managed targets share the same story and permit one steered run or one normal
 successor. Registration and calibration are separate from a live staging pass.
 
+The explicit [dependency continuation journey](../tests/runner-e2e/product-journeys/task-dependency-resume.md) checks a finite blocked wait and one automatic native continuation after a browser-completed blocker. Local evidence controls are separate from a deployed QA pass.
+
 [Reusable Product journeys](../tests/runner-e2e/PRODUCT-JOURNEYS.md) add explicit
 deployment targets and starting-state recipes. The shared task-properties
 journey and task-document create/edit/reopen journey use no model; Cloud
@@ -122,6 +124,8 @@ ordinary `/new` reset, fresh native context and retained history against an atta
 It requires a fresh owned agent with no prior work runs and uses three provider turns plus one synthetic reset row; it does not restart a shared stack.
 Cloud fleet operations and trusted CI remain private. Local eval gateway qualification
 does not qualify Cloud routes, and these selections stay outside `--all`.
+
+The deployment-targeted [saved skill journey](../tests/runner-e2e/product-journeys/saved-skill-use.md) checks one company skill assigned by key, its exact admitted immutable version, a bound native source read/load, and a run-authored saved result from skill-only inputs. It uses the reusable Product journey target and remains unqualified until a real target run passes.
 
 The explicit-only [case handoff workflow](../tests/runner-e2e/README.md#persistent-case-handoffs-explicit-only)
 contains arithmetic and receipt smoke cells for a same-task round trip among three native agents using real case/task

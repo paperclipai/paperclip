@@ -34,6 +34,7 @@ import { REMOTE_CONTROLLER_LEASE_MS } from "./native-runner-recovery-contract.js
 import { readProcessStartedAt } from "../hot-restart.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
+import { isUniqueViolation } from "../../db-errors.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
@@ -1236,6 +1237,12 @@ export async function claimNativeRestartRecoveries(input: {
         kind: claimKind,
         ...common,
       } satisfies NativeRestartRecoveryClaim;
+    }).catch((error: unknown) => {
+      if (!isUniqueViolation(error, "issues_open_routine_execution_uq")) throw error;
+      terminalRunToReport = null;
+      claimScope = undefined;
+      return { kind: "awaiting_evidence" as const, runId: candidate.runId,
+        reason: "routine_execution_busy", retryAt: new Date(now.getTime() + 30_000) };
     });
     if (terminalRunToReport)
       void reportRunFailure(input.db, terminalRunToReport);

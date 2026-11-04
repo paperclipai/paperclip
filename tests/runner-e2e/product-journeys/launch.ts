@@ -21,7 +21,9 @@ import { runClarificationJourney } from "./clarification-flow.js";
 import { runChatContinuity } from "./chat-continuity-flow.js";
 import { runRepositoryContinuation } from "./repository-continuation-flow.js";
 import { runScheduledRoutine } from "./routine-schedule-flow.js";
+import { taskDependencyResume } from "./task-dependency-resume.js";
 import { runInputFile } from "./input-file-flow.js";
+import { runSavedSkillUse } from "./saved-skill-use-flow.js";
 import { runAgentSettings } from "./agent-settings-flow.js";
 import { companyAccessIsolation } from "./company-access-flow.js";
 import { inboxTriage } from "./inbox-triage-flow.js";
@@ -117,6 +119,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
   const source = resolveRunnerE2ESource({ sha, ref: null, workflowRunUrl: null });
   const definitionHash = createHash("sha256").update(JSON.stringify(productJourneys));
   for (const name of [
+    "saved-skill-use-flow.ts",
+    "saved-skill-use-evidence.ts",
     "task-lifecycle.ts",
     "task-lifecycle-evidence.ts",
     "../../../packages/shared/src/validators/issue.ts",
@@ -141,6 +145,9 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
     "inbox-triage-fixture.ts",
     "inbox-author-contract.ts",
     "task-properties.ts",
+    "../../../packages/shared/src/constants.ts",
+    "task-dependency-resume.ts",
+    "task-dependency-resume-evidence.ts",
     "task-search-filter.ts",
     "task-search-evidence.ts",
     "basic-flows.ts",
@@ -283,11 +290,15 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             result.provider = ready.agent.provider;
             result.model = ready.agent.model;
             result.runtimeMode = ready.agent.runtimeMode;
-            if (id === "repository-continuation") await runRepositoryContinuation(ready, session!, campaignId, evidence,
+            if (id === "saved-skill-use") await runSavedSkillUse(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "repository-continuation") await runRepositoryContinuation(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "agent-settings-persistence") await runAgentSettings(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "routine-scheduled-run") await runScheduledRoutine(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "task-dependency-resume") await taskDependencyResume(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "file-input-answer") await runInputFile(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
