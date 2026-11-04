@@ -28,6 +28,7 @@ associate(["product-journeys"], {
   "followup-while-running": ["steering/queue"],
   "hire-delegate-reuse": ["agents/hire", "documents-artifacts/documents"],
   "project-task-context": ["projects/lifecycle", "projects/task-context", "tasks/create"],
+  "task-edit-lifecycle": ["tasks/properties", "tasks/completion"],
   "task-properties": ["tasks/properties"], "task-document-persistence": ["documents-artifacts/documents"], "task-search-filter": ["tasks/organize"], "cloud-onboarding": ["onboarding/first-task"] });
 associate(["antigravity-agent-journey"], {
   "saved-subscription-two-turn": ["agents/hire", "agents/instructions", "runs-adapters/validation", "runs-adapters/session",
