@@ -1518,7 +1518,10 @@ impl CodexProvider {
                         }
                         if matches!(
                             method.as_str(),
-                            "thread/tokenUsage/updated" | "paperclip/resumeUsageSnapshot"
+                            "thread/tokenUsage/updated"
+                                | "paperclip/resumeUsageSnapshot"
+                                | "thread/goal/updated"
+                                | "thread/goal/cleared"
                         ) {
                             accounting.push((method, params));
                             continue;

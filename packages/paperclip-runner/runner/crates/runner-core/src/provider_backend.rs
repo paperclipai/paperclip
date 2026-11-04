@@ -759,6 +759,35 @@ fn terminal_completion_rejected(state: &CodexProviderState) -> bool {
     state.active_terminal_tool_rejected && state.active_provider_result_fingerprint.is_none()
 }
 
+fn retain_goal_notification(
+    state: &mut CodexProviderState,
+    method: &str,
+    params: &Value,
+    working_now: bool,
+) -> Result<(), DurableRunnerError> {
+    let event_type = match method {
+        "thread/goal/updated" => {
+            state.goal = normalize_codex_goal(params, working_now);
+            "session.goal.updated"
+        }
+        "thread/goal/cleared" => {
+            state.goal = None;
+            "session.goal.cleared"
+        }
+        _ => return Ok(()),
+    };
+    state.goal_revision = state.goal_revision.saturating_add(1);
+    state.push_event(NormalizedProviderEvent {
+        event_type: event_type.to_owned(),
+        priority: EventPriority::P0,
+        payload: goal_event_payload(
+            state.goal.as_ref(),
+            state.goal_capability.as_ref(),
+            state.goal_revision,
+        ),
+    })
+}
+
 fn goal_continues_after_turn(state: &CodexProviderState, goal_active: bool) -> bool {
     goal_active && !terminal_completion_rejected(state)
 }
@@ -2964,6 +2993,7 @@ impl CodexCommandExecutor {
                 DurableRunnerError::invalid("Codex provider has not been prepared")
             })?;
             for (method, params) in tail {
+                retain_goal_notification(state, &method, &params, false)?;
                 let events = normalize_provider_notification(state, &method, &params)?;
                 state.extend_events(events)?;
             }
@@ -5033,31 +5063,7 @@ impl CodexCommandExecutor {
                             });
                         }
                     }
-                    if method == "thread/goal/updated" {
-                        state.goal = normalize_codex_goal(&params, working_now);
-                        state.goal_revision = state.goal_revision.saturating_add(1);
-                        state.push_event(NormalizedProviderEvent {
-                            event_type: "session.goal.updated".to_owned(),
-                            priority: EventPriority::P0,
-                            payload: goal_event_payload(
-                                state.goal.as_ref(),
-                                state.goal_capability.as_ref(),
-                                state.goal_revision,
-                            ),
-                        })?;
-                    } else if method == "thread/goal/cleared" {
-                        state.goal = None;
-                        state.goal_revision = state.goal_revision.saturating_add(1);
-                        state.push_event(NormalizedProviderEvent {
-                            event_type: "session.goal.cleared".to_owned(),
-                            priority: EventPriority::P0,
-                            payload: goal_event_payload(
-                                None,
-                                state.goal_capability.as_ref(),
-                                state.goal_revision,
-                            ),
-                        })?;
-                    }
+                    retain_goal_notification(state, &method, &params, working_now)?;
                     if let Some(reconciliation) = goal_reconciliation {
                         match reconciliation {
                             Ok(snapshot) => {

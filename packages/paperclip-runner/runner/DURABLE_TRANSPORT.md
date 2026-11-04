@@ -128,7 +128,8 @@ for the existing process that completed the current turn. An eligibility check
 never selects or restores a provider and cannot release source reconciliation.
 Active turns, goals, startup attempts, tool calls, pending credentials, and
 unsettled events block parking. The bounded completed-turn tail drain retains
-late accounting for normal delivery. The check also inspects the live provider
+late accounting and goal changes for durable state and normal event delivery.
+The check also inspects the live provider
 after that drain, so a late active-goal notification cannot be hidden by the
 older executor journal. This hook does not detach a controller, stop a process,
 or advertise hosted parking support. The host-control consumer must separately

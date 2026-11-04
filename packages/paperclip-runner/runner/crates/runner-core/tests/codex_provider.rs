@@ -576,7 +576,16 @@ fn hosted_park_proof_requires_the_surviving_settled_native_codex_process() {
 }
 
 #[test]
-fn hosted_park_rechecks_a_goal_activated_during_tail_drain() {
+fn hosted_park_preserves_goal_activation_during_tail_drain() {
+    verify_late_goal_retention(false);
+}
+
+#[test]
+fn hosted_park_preserves_goal_clear_during_tail_drain() {
+    verify_late_goal_retention(true);
+}
+
+fn verify_late_goal_retention(clear_goal: bool) {
     let directory = temporary_directory("hosted-park-late-goal");
     let gate = directory.join("release-goal");
     let gate_arg = gate.to_string_lossy().into_owned();
@@ -587,7 +596,11 @@ fn hosted_park_rechecks_a_goal_activated_during_tail_drain() {
             "--durable-turn-ids",
             "--late-accounting-tail-gate",
             &gate_arg,
-            "--late-active-goal",
+            if clear_goal {
+                "--late-goal-cleared"
+            } else {
+                "--late-active-goal"
+            },
         ],
     );
     let mut executor =
@@ -612,6 +625,16 @@ fn hosted_park_rechecks_a_goal_activated_during_tail_drain() {
         ))
         .unwrap();
     wait_for_executor_event(&mut executor, "turn.completed");
+    if clear_goal {
+        executor
+            .execute(&command(
+                "paused-goal",
+                4,
+                "session.goal.set",
+                json!({"objective":"Wait for work", "status":"paused"}),
+            ))
+            .unwrap();
+    }
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !executor.host_park_ready().unwrap() {
         assert!(std::time::Instant::now() < deadline);
@@ -626,6 +649,28 @@ fn hosted_park_rechecks_a_goal_activated_during_tail_drain() {
     // probe's tail drain, after its initial saved-state eligibility check.
     assert!(!executor.host_park_ready().unwrap());
     assert!(!executor.host_park_ready().unwrap());
+    let saved: Value =
+        serde_json::from_slice(&fs::read(directory.join("codex-provider-state.json")).unwrap())
+            .unwrap();
+    let expected_status = if clear_goal {
+        Value::Null
+    } else {
+        json!("active")
+    };
+    let expected_event = if clear_goal {
+        "session.goal.cleared"
+    } else {
+        "session.goal.updated"
+    };
+    assert_eq!(saved["goal"]["status"], expected_status);
+    let events = poll_and_ack(&mut executor).unwrap();
+    assert!(events.iter().any(|event| event.event_type == expected_event
+        && event.payload["goal"]["status"] == expected_status));
+    assert_eq!(
+        executor.host_park_ready().unwrap(),
+        clear_goal,
+        "only the cleared goal becomes parkable after event delivery"
+    );
     assert_eq!(call_count(&directory, "process-start"), 1);
     assert_eq!(call_count(&directory, "turn/start"), 1);
     executor.shutdown().unwrap();

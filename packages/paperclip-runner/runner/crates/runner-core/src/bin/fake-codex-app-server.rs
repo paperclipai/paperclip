@@ -2023,6 +2023,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                             let unsafe_tail =
                                 args.iter().any(|arg| arg == "--unsafe-after-late-usage");
                             let active_goal = args.iter().any(|arg| arg == "--late-active-goal");
+                            let clear_goal = args.iter().any(|arg| arg == "--late-goal-cleared");
                             let duplicate_burst = args
                                 .iter()
                                 .any(|arg| arg == "--late-accounting-duplicate-burst");
@@ -2032,11 +2033,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                                     thread::sleep(Duration::from_millis(1));
                                 }
                                 if gate.is_file() {
-                                    if active_goal {
+                                    if active_goal || clear_goal {
+                                        let method = if clear_goal {
+                                            "thread/goal/cleared"
+                                        } else {
+                                            "thread/goal/updated"
+                                        };
+                                        let goal = if clear_goal {
+                                            Value::Null
+                                        } else {
+                                            json!({"objective":"Continue work","status":"active"})
+                                        };
                                         let _ = send(
-                                            json!({"method":"thread/goal/updated","params":{
-                                                "threadId":thread_id,"goal":{"objective":"Continue work","status":"active"}
-                                            }}),
+                                            json!({"method":method,"params":{"threadId":thread_id,"goal":goal}}),
                                         );
                                         let _ = fs::write(gate.with_extension("sent"), "sent");
                                         return;
