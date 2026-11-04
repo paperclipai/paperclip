@@ -117,3 +117,28 @@ with matching, mismatched, and absent migration receipts. An executor-level
 test restores real backup files into a created warm lease only for the exact
 migrated session, verifies the retained provider identity, and checks the new
 lease's backup stamp. Neither test replaces the migration decision helper.
+
+### Live enrollment: protocol and physical lease identities
+
+The first full legacy import exposed a false binding failure: the controller's
+`environmentLeaseId` retained its logical workspace identity, while
+`nativeWorkspaceSync.leaseId` identified a distinct physical sandbox lease row.
+The migration now validates the sync record's `workspaceId` against the frozen
+execution workspace. The saved provider-pack authority still independently
+verifies the exact protocol lease, runner, session, company, agent, provider and
+remote path. A database-backed fixture uses distinct IDs, rejects foreign
+workspaces and protocol identities, and restores the original checkpoint after
+the predecessor home is deleted. The original failed live attempt and its
+attached volume remain preserved until the corrected owner passes verification.
+
+The next live import exposed a second boundary: one insert of 538 encrypted
+checkpoint records (about 2.2 MB) repeatedly closed the database connection on
+both pooled and direct endpoints, including after warming the database cache.
+The identical import completed with smaller inserts in a forced-rollback
+transaction. The importer now limits each statement to 64 records and about
+512 KiB of serialized rows; an individual larger record is sent alone. All
+statements remain in the original owner transaction. A real PostgreSQL test
+forces a conflict in a later batch, verifies that earlier batches roll back,
+then imports and decrypts the complete original checkpoint. The precise
+server-side reason for the connection closure is not yet established; the
+unbatched failures and batched comparison remain in the verification record.
