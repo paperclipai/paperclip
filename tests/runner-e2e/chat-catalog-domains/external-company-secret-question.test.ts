@@ -78,3 +78,11 @@ it.each(["value","mixed","owner","source","field","schema","initial","help solic
  if(fault==="help solicitation")q.helpText="Also provide the key value.";
  expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
 });
+it("rejects a second secret-value question in rendered environment-name guidance",()=>{
+ const row=environmentQuestion();row.payload.questionSet!.questions[0]!.helpText="What is the deployment key value?";
+ expect(companySecretQuestionHandoff(row,binding)).toBeUndefined();
+});
+it.each(["Enter the deployment key in the secure Settings Secrets form.","You should not paste the key value into chat."])("keeps safe environment-name guidance: %s",helpText=>{
+ const row=environmentQuestion();row.payload.questionSet!.questions[0]!.helpText=helpText;
+ expect(companySecretQuestionHandoff(row,binding)).toMatchObject({environmentName:"DEPLOYMENT_API_KEY"});
+});
