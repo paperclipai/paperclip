@@ -42,8 +42,11 @@ describe("native workspace export warm reuse fence", () => {
     const [environment] = await db.insert(environments).values({ name: runId, driver: "sandbox", status: "active",
       config: { provider, image: "fake:test", reuseLease: true } }).returning();
     const providerLeaseId: string = randomUUID();
-    const call = vi.fn(async (_id: string, method: string) => {
-      if (["environmentAcquireLease", "environmentResumeLease"].includes(method)) return { providerLeaseId, metadata: { remoteCwd: "/work" } };
+    let acquisitions = 0;
+    const call = vi.fn(async (_id: string, method: string, input?: Record<string, unknown>) => {
+      if (method === "environmentAcquireLease") return { providerLeaseId: acquisitions++ ? randomUUID() : providerLeaseId,
+        metadata: { remoteCwd: "/work" } };
+      if (method === "environmentResumeLease") return { providerLeaseId: String(input?.providerLeaseId ?? providerLeaseId), metadata: { remoteCwd: "/work" } };
       if (["environmentReleaseLease", "environmentStopLease"].includes(method)) return { providerLeaseId, state: "stopped" };
       if (method === "environmentDestroyLease") return { providerLeaseId, state: "destroyed" };
       throw new Error(method);
@@ -67,20 +70,62 @@ describe("native workspace export warm reuse fence", () => {
       descriptorSha256: "a".repeat(64), baselineSha256: "b".repeat(64), finalHostSha256: null };
     await db.update(heartbeatRuns).set({ status: "failed", runnerProfileJson: { nativeWorkspaceSync: reference } }).where(eq(heartbeatRuns.id, runId));
     const nextRunId = randomUUID();
-    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, issueId, nativeIssueId: issueId, runtimeMode: "native", status: "queued" });
+    await db.insert(heartbeatRuns).values({ id: nextRunId, companyId, agentId, issueId, nativeIssueId: issueId, runtimeMode: "native", status: "running" });
     call.mockClear();
     return { runtime, input, runId, nextRunId, reference, lease: acquired.lease, call };
   }
 
-  it.each([false, true])("refuses another run before a provider RPC for plugin=%s", async plugin => {
+  async function expectFreshAllocation(f: Awaited<ReturnType<typeof seed>>, runtime = f.runtime) {
+    const [protectedLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+    const fresh = await runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId });
+    expect(fresh.lease.providerLeaseId).not.toBe(f.lease.providerLeaseId);
+    expect(fresh.lease.heartbeatRunId).toBe(f.nextRunId);
+    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(protectedLease);
+    expect(f.call.mock.calls.map(call => call[1])).not.toContain("environmentResumeLease");
+    expect(f.call.mock.calls.map(call => call[1])).not.toContain("environmentDestroyLease");
+    return fresh;
+  }
+
+  it.each([false, true])("allocates a fresh sandbox while retaining its unfinished source for plugin=%s", async plugin => {
     const f = await seed(plugin);
     const acquire = vi.spyOn(providers, "acquireSandboxProviderLease");
-    await expect(f.runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId })).rejects.toThrow("Native workspace export is pending");
-    expect(f.call).not.toHaveBeenCalled();
-    expect(acquire).not.toHaveBeenCalled();
-    expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0])
-      .toMatchObject({ heartbeatRunId: f.runId, leasePolicy: "reuse_by_environment" });
+    const destroy = vi.spyOn(providers, "destroySandboxProviderLease");
+    await expectFreshAllocation(f);
+    expect(destroy).not.toHaveBeenCalled();
+    if (plugin) expect(f.call.mock.calls.map(call => call[1])).toEqual(["environmentAcquireLease"]);
+    else expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ reusableProviderLeaseId: null }));
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.runId)))[0].runnerProfileJson)
+      .toMatchObject({ nativeWorkspaceSync: { state: "prepared", leaseId: f.lease.id } });
   });
+
+  it.each([{ plugin: false, obsolete: false }, { plugin: true, obsolete: false },
+    { plugin: false, obsolete: true }, { plugin: true, obsolete: true }])(
+    "reuses a clean candidate without touching a pending allocation: plugin=$plugin obsolete=$obsolete", async ({ plugin, obsolete }) => {
+      const f = await seed(plugin), cleanRunId = randomUUID(), cleanLeaseId = randomUUID(), cleanProviderLeaseId = randomUUID();
+      await db.insert(heartbeatRuns).values({ id: cleanRunId, companyId: f.input.companyId, agentId: f.input.agentId,
+        issueId: f.input.issueId, runtimeMode: "legacy", status: "succeeded", finishedAt: new Date() });
+      await db.insert(environmentLeases).values({ id: cleanLeaseId, companyId: f.input.companyId, environmentId: f.input.environment.id,
+        heartbeatRunId: cleanRunId, issueId: f.input.issueId, provider: f.lease.provider, providerLeaseId: cleanProviderLeaseId,
+        leasePolicy: "reuse_by_environment", status: "released", cleanupStatus: "success", metadata: f.lease.metadata });
+      if (obsolete) await db.update(environmentLeases).set({ metadata: { ...f.lease.metadata, reusableSandboxLease: null } })
+        .where(eq(environmentLeases.id, f.lease.id));
+      const [protectedLease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id));
+      // The provider boundary returns the exact clean allocation selected by
+      // the real policy. No source inspection or database reads are mocked.
+      const acquire = vi.spyOn(providers, "acquireSandboxProviderLease");
+      if (!plugin) acquire.mockImplementation(async input => ({ providerLeaseId: input.reusableProviderLeaseId!,
+        metadata: { provider: "fake", image: "fake:test", reuseLease: true } }));
+      const destroy = vi.spyOn(providers, "destroySandboxProviderLease");
+      const resumed = await f.runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId });
+      expect(resumed.lease).toMatchObject({ heartbeatRunId: f.nextRunId, providerLeaseId: cleanProviderLeaseId });
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, f.lease.id)))[0]).toEqual(protectedLease);
+      expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, cleanLeaseId)))[0].status).toBe("expired");
+      expect(destroy).not.toHaveBeenCalled();
+      if (plugin) {
+        expect(f.call.mock.calls.map(call => call[1])).toEqual(["environmentResumeLease"]);
+        expect(f.call.mock.calls[0]?.[2]).toMatchObject({ providerLeaseId: cleanProviderLeaseId });
+      } else expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ reusableProviderLeaseId: cleanProviderLeaseId }));
+    });
 
   it("checks the allocation even when the candidate snapshot contains only a rebound row", async () => {
     const f = await seed(true);
@@ -93,8 +138,8 @@ describe("native workspace export warm reuse fence", () => {
     vi.spyOn(leases, "environmentService").mockReturnValue(service);
     const runtime = environmentRuntimeService(db, { pluginWorkerManager: { isRunning: () => true, call: f.call,
       getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }) } as unknown as PluginWorkerManager });
-    await expect(runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId })).rejects.toThrow("Native workspace export is pending");
-    expect(f.call).not.toHaveBeenCalled();
+    await expectFreshAllocation(f, runtime);
+    expect(f.call.mock.calls.map(call => call[1])).toEqual(["environmentAcquireLease"]);
   });
 
   it.each(["native", "legacy"])("fences a historical modern %s writer in one allocation read", async runtimeMode => {
@@ -118,8 +163,8 @@ describe("native workspace export warm reuse fence", () => {
     expect(await nativeWorkspaceExportPendingForResource(db, rebound, f.nextRunId)).toBe(true);
     expect(reads).toHaveBeenCalledTimes(1);
     reads.mockRestore();
-    await expect(f.runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId })).rejects.toThrow("Native workspace export is pending");
-    expect(f.call).not.toHaveBeenCalled();
+    await expectFreshAllocation(f);
+    expect(f.call.mock.calls.map(call => call[1])).toEqual(["environmentAcquireLease"]);
     // A saved descriptor or a changed writer cannot keep fencing an allocation.
     await db.update(heartbeatRuns).set({ runnerProfileJson: { remoteWorkspace: { ...reference, state: "saved" } } })
       .where(eq(heartbeatRuns.id, f.runId));
@@ -143,8 +188,8 @@ describe("native workspace export warm reuse fence", () => {
     vi.spyOn(leases, "environmentService").mockReturnValue(service);
     const runtime = environmentRuntimeService(db, { pluginWorkerManager: { isRunning: () => true, call: f.call,
       getWorker: () => ({ supportedMethods: ["environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease"] }) } as unknown as PluginWorkerManager });
-    await expect(runtime.acquireRunLease({ ...f.input, heartbeatRunId: f.nextRunId })).rejects.toThrow("Native workspace export is pending");
-    expect(f.call).not.toHaveBeenCalled();
+    await expectFreshAllocation(f, runtime);
+    expect(f.call.mock.calls.map(call => call[1])).toEqual(["environmentAcquireLease"]);
   });
 
   it("preserves exact same-run reattachment without allocating a replacement", async () => {

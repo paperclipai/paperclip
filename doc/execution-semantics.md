@@ -1949,7 +1949,10 @@ or permission to replay provider work. Repeated cleanup visits register the sour
 once; settled sources add no continuing discovery or new maintenance timer.
 
 Unfinished prepared native exports also fence ordinary warm reuse of the same
-physical allocation, including a different historical lease row. Exact same-run
+physical allocation, including a different historical lease row. Candidate
+selection excludes that allocation from reuse and obsolete-lease cleanup. It may
+reuse another clean allocation or acquire a fresh sandbox; workspace recovery and
+task admission still decide whether execution is allowed. Exact same-run
 reattachment keeps its existing controller checks. A saved board Retry can adopt
 one files-only maintenance generation when its first source-verification attempt
 failed before export because the exact warm source lacked retention policy.
