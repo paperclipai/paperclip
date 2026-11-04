@@ -7,8 +7,8 @@
   "files": [
     {
       "path": "README.md",
-      "bytes": 7357,
-      "sha256": "349c8a64444f41f06942959950afd0f480c724ee539e8a8b76523be5a3481050"
+      "bytes": 7696,
+      "sha256": "67aca55715fd0553e13637b159b79854c85dfdae236fd0308e68dd896093ca1d"
     },
     {
       "path": "after-live-stop.png",
@@ -91,6 +91,11 @@
       "sha256": "bc06e6797f7189a4d56b09ec268de3f59267e7ed7082f37f3aab3f4d784bc1e6"
     },
     {
+      "path": "helpers/verify-birth-settlement-before.source.txt",
+      "bytes": 1752,
+      "sha256": "3eca4c0bd960e87225fee9c74a6f9ef0eb785b3d3766bc8435900aaa266d4d46"
+    },
+    {
       "path": "helpers/verify-birth-settlement.mjs",
       "bytes": 2308,
       "sha256": "6072f66a8fedb085f6a321a11c90fbc98b4ee95dfc9b4c3c42010feaf0ae342e"
@@ -167,8 +172,8 @@
     },
     {
       "path": "verification-follow-up.json",
-      "bytes": 1676,
-      "sha256": "1c87e25e957f032ac3462441a8b20a6ca07985bf5e0e396fed8e49c1596f36ff"
+      "bytes": 2077,
+      "sha256": "0a917de1efb6664121eafd899dcd21d0464714098c88b1b18f72ff74cdc16c09"
     }
   ]
 }

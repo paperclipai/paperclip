@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { execFileSync } from 'node:child_process';
 
 const file = 'doc/benchmarks/native-event-ingestion-2026-11-03/live-ce33-914/helpers/verify-birth-settlement.mjs';
 const source = await readFile(new URL('../../' + file, import.meta.url), 'utf8');
-const before = execFileSync('git', ['show', 'd05f9b0db71eaee823b72136ae54611b12a72f35:' + file], { encoding: 'utf8' });
+const before = await readFile(new URL('../../' + file.replace('.mjs', '-before.source.txt'), import.meta.url), 'utf8');
 const gate = { chain: [{ pid: 101, birthTime: 'fixture-birth', executable: 'fixture-provider' }] };
 function check(text, ps) {
   const start = text.includes('const processList = ') ? text.indexOf('const processList = ') : text.indexOf('const checks=gate.chain.map');

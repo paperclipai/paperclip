@@ -14,8 +14,14 @@
       "correction": "Require a successful complete process-list read with verifier PID; all command failures propagate.",
       "regression": "Five actual-source checks pass: original false-positive reproduced; successful absent snapshot; command failures status1/status2/ENOENT/EACCES/SIGTERM rejected; malformed/empty/incomplete snapshot rejected; live captured PID rejected.",
       "helperSha256": "6072f66a8fedb085f6a321a11c90fbc98b4ee95dfc9b4c3c42010feaf0ae342e",
-      "testSha256": "3783686a4e3334a8ada07ec157b201c28d07412c7746b73d26a807ba230f9aeb",
-      "independentOriginalEvidence": "independent-successful-process-snapshot.json"
+      "testSha256": "4a7661e68843efb97e353eed3aa9c38c024e78d2a2f5ceb8ef3a4c0912ab0471",
+      "independentOriginalEvidence": "independent-successful-process-snapshot.json",
+      "beforeSourceFixture": {
+        "path": "helpers/verify-birth-settlement-before.source.txt",
+        "sha256": "3eca4c0bd960e87225fee9c74a6f9ef0eb785b3d3766bc8435900aaa266d4d46",
+        "originCommit": "d05f9b0db71eaee823b72136ae54611b12a72f35",
+        "scope": "Exact archived faulty source consumed as text by stubbed regression; no historical Git object needed at test execution"
+      }
     }
   ],
   "limits": [
