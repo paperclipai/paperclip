@@ -3,6 +3,7 @@ import { ENVIRONMENT_LEASE_POLICIES, WORKSPACE_SOURCE_VERIFICATION_REASONS } fro
 import { issuesApi } from "../api/issues";
 import { Button } from "./ui/button";
 import { formatDateTime } from "../lib/utils";
+import { WorkspaceExportRecovery } from "./WorkspaceExportRecovery";
 
 function recordedFailure(evidence: Record<string, unknown>): string {
   const recovery = evidence.systemRecovery;
@@ -19,7 +20,7 @@ function recordedFailure(evidence: Record<string, unknown>): string {
   return [failure.code, detail.reason, ...(allowedPolicy ? [`lease policy ${policy}`] : [])].join(" · ");
 }
 
-export function RunWorkspaceSourceInspection({ issueId, runId }: { issueId: string; runId: string }) {
+export function RunWorkspaceSourceInspection({ issueId, runId, companyId }: { issueId: string; runId: string; companyId: string }) {
   const listing = useMutation({ mutationFn: () => issuesApi.recoveryActions(issueId, { runId }) });
   const inspection = useMutation({ mutationFn: (actionId: string) => issuesApi.recoveryActions(issueId, { runId, actionId }) });
   const pending = listing.isPending || inspection.isPending;
@@ -41,6 +42,8 @@ export function RunWorkspaceSourceInspection({ issueId, runId }: { issueId: stri
           <Button variant="ghost" size="sm" disabled={pending} onClick={() => inspection.mutate(action.id)}>
             Inspect current source
           </Button>
+          {action.evidence.runId === runId ? <WorkspaceExportRecovery action={action}
+            issueId={issueId} companyId={companyId} showStatus={false} /> : null}
         </div>
       ))}
       {current ? <div className="space-y-2 text-xs" role="status">

@@ -27,7 +27,14 @@ export async function createNativeUsageDelivery(db: Db, input: NativeUsageDelive
   const [bound] = await db.update(heartbeatRuns).set({ usageJson: sql`
     coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || '{"accountingReceiptOwner":"native_producer"}'::jsonb ||
     case when ${heartbeatRuns.usageJson}->>'accountingReceiptSourceId' = ${sourceId}
-      then '{}'::jsonb else ${JSON.stringify({ accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false })}::jsonb end`
+      then '{}'::jsonb else
+        case when jsonb_typeof(${heartbeatRuns.usageJson}->'accountingReceiptSourceId') = 'string'
+          then jsonb_build_object('accountingReceiptSourceFences',
+            coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSourceFences', '{}'::jsonb)
+            || jsonb_build_object(${heartbeatRuns.usageJson}->>'accountingReceiptSourceId',
+              coalesce(${heartbeatRuns.usageJson}->'accountingReceiptSequence', '0'::jsonb)))
+          else '{}'::jsonb end
+        || ${JSON.stringify({ accountingReceiptSourceId: sourceId, accountingReceiptSequence: 0, accountingReceiptReady: false })}::jsonb end`
   }).where(and(eq(heartbeatRuns.companyId, input.companyId), eq(heartbeatRuns.id, input.runId),
     isNull(heartbeatRuns.costAccountedAt))).returning({ id: heartbeatRuns.id });
   if (!bound) throw new Error("native_usage_run_not_available");
@@ -59,7 +66,13 @@ function loadNativeUsageReceipts(db: Db, input: Pick<NativeUsageDeliveryInput, "
   return db.select({ receipt: runUsageReceipts.receiptJson, hash: runUsageReceipts.receiptHash,
     sequence: runUsageReceipts.sequence }).from(runUsageReceipts).where(and(
     eq(runUsageReceipts.companyId, input.companyId), eq(runUsageReceipts.runId, input.runId),
-    eq(runUsageReceipts.sourceId, sourceId))).orderBy(asc(runUsageReceipts.sequence));
+    eq(runUsageReceipts.sourceId, sourceId),
+    // A journaled late tail is durable evidence, not an accepted delivery. Keep
+    // replaying it through the explicit reconciliation response after restart.
+    sql`not exists (select 1 from ${heartbeatRuns} r where r.id = ${runUsageReceipts.runId}
+      and r.company_id = ${runUsageReceipts.companyId} and r.usage_json->>'accountingLateReceiptPending' = 'true'
+      and (r.usage_json->>'accountingLateReceiptId' = ${runUsageReceipts.id}::text
+        or coalesce(r.usage_json->'accountingLateReceiptDebts', '{}'::jsonb) ? ${runUsageReceipts.id}::text))`)).orderBy(asc(runUsageReceipts.sequence));
 }
 
 function createNativeUsageReceiver(db: Db, input: NativeUsageDeliveryInput, sourceId: string,

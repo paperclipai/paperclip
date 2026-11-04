@@ -1,5 +1,13 @@
 # Runner E2E fixture authoring
 
+The deployment-targeted [saved skill journey](product-journeys/saved-skill-use.md)
+creates and assigns one campaign-owned synthetic skill by key through public APIs, then
+creates the measured task through the browser. The saved outcome must come from
+one native run. Setup never supplies the output document or its native read
+receipt. The ordinary Latest assignment, immutable created version and admitted
+run version must agree. Skill ownership is journaled before creation and cleaned by the target
+provider with the other owned resources.
+
 [Chat feature evals](CHAT-FEATURES.md) load two authored YAML requests and seed
 only company, agents and project context through public APIs. Both agents use
 production role instructions; evaluator outcomes are never injected. Real browser
@@ -46,6 +54,18 @@ injection in the uncertain-retry case. Task/run/document REST reads own grading.
 
 The fixture catalog is executable production-contract data. Keep it small,
 typed, deterministic, and free of raw credentials.
+
+The explicit local `cursor-cloud` suite reuses the ordinary
+`plan_revision_acceptance` flow with three expected runs and one attempt. It
+checks the initial Plan, the requested revision and browser approval of that
+exact revision before completion. This is Paperclip semantic planning through
+the Cloud default harness; Cursor's native Plan API is outside this cell.
+Its ownership oracle requires draft/revision continuity followed by the exact
+accepted confirmation's explicit fresh-session transition, three distinct native
+runs and owned cleanup. The same-agent follow-up oracle is unchanged.
+The definition digest includes `catalog.ts` because Cloud's Plan and follow-up
+prompts derive from shared task definitions there. Earlier three-cell results
+retain their original definition and do not qualify the added Plan cell.
 
 ## Suites and matrices
 
@@ -202,6 +222,19 @@ matrix. Unsupported profile/environment combinations belong in
 `supportedEnvironments`, not in ad hoc test conditionals.
 
 ## Task cases and matchers
+
+`api-artifact-transfer` is one explicit native Codex/Daytona cell using the
+existing single-turn flow and fixture registry. A synthetic backlog issue is
+created through the public API before the tested task. The task carries its ID
+and requires `download_artifact`; the fixture never preinstalls the output.
+The independent oracle reads the stored source through its authorized asset
+endpoint and verifies the full delivered response against that source and the
+completed installation receipt after production run-log redaction. The existing
+server asset-created audit must prove API-capture origin in the tested run;
+matching bytes from an uploaded substitute are insufficient. It also compares the seeded
+description, so agreeing attachment metadata cannot hide a missing byte.
+The normal run-attributed public attachment download and reloaded browser link
+remain required. No new credential or private provider hook is introduced.
 
 A `RunnerTaskFixture` owns a work mode, a typed flow, expected run count,
 nonce-based title/prompt/marker factories, per-environment attempt deadlines,

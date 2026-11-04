@@ -40,6 +40,10 @@ for (const action of ["task_retry", "retry_after_reload", "inbox_retry", "messag
       } }));
       if (action === "automatic_message_on_reactivation") {
         await json(await request.patch(`/api/companies/${company.id}`, { data: { status: "paused" } }));
+        // Pause cleanup cancels pending wakeups. Finish that operation before
+        // seeding the historical saved input that reactivation must recover.
+        await expect.poll(async () => (await json(await request.get(`/api/agents/${agent.id}`))).lifecycleState,
+          { timeout: 45_000 }).toBe("paused");
       }
       const sourceRunId = randomUUID();
       // Seed the historical incident, then exercise ordinary recovery entry points.

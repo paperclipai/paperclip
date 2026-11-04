@@ -1,11 +1,12 @@
 import { withAgentAppearance } from "@paperclipai/shared";
-import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lte, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
   approvals,
   authUsers,
+  companyMemberships,
   heartbeatRuns,
   issueApprovals,
   issueComments,
@@ -119,8 +120,61 @@ function dateIso(value: Date | null | undefined) {
   return value ? value.toISOString() : null;
 }
 
-function readString(value: unknown) {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+function activeTimelineUser(companyId: string | SQL, userId: SQL) {
+  return sql<boolean>`exists (select 1 from ${companyMemberships}
+    where ${companyMemberships.companyId} = ${companyId}
+      and ${companyMemberships.principalType} = 'user'
+      and ${companyMemberships.principalId} = ${userId}
+      and ${companyMemberships.status} = 'active')`;
+}
+
+/** Scalar ownership facts for bounded recorded creation and change events. */
+function timelineOwnershipProjection() {
+  const record = (value: SQL) => sql`case when jsonb_typeof(${value}) = 'object' then ${value} else '{}'::jsonb end`;
+  const details = record(sql`${activityLog.details}`);
+  const previous = record(sql`${details} -> '_previous'`);
+  const changes = record(sql`${details} -> 'changes'`);
+  const canonical = sql`${activityLog.action} = 'issue.updated' and jsonb_typeof(${details} -> 'changes') = 'object'`;
+  const changed = ["assigneeAgentId", "assigneeUserId"].map(key => {
+    const change = record(sql`${changes} -> ${key}`);
+    return sql`case when ${canonical} then
+      (${change} ? 'from' and ${change} ? 'to' and (${change} -> 'from') is distinct from (${change} -> 'to'))
+      else (${details} ? ${key} and (not (${previous} ? ${key}) or (${details} -> ${key}) is distinct from (${previous} -> ${key}))) end`;
+  });
+  const stringValue = (value: SQL) => sql<string | null>`case when jsonb_typeof(${value}) = 'string'
+    then nullif(btrim(${value} #>> '{}'), '') else null end`;
+  const targetValue = (key: string, legacyKey: string) => sql`case when ${canonical} then ${changes} -> ${key} -> 'to'
+    when ${details} ? ${key} then ${details} -> ${key} else ${details} -> ${legacyKey} end`;
+  const target = (key: string, legacyKey: string) => stringValue(targetValue(key, legacyKey));
+  const creationAgentId = stringValue(sql`${details} -> 'assigneeAgentId'`);
+  const creationUserId = stringValue(sql`${details} -> 'assigneeUserId'`);
+  const sameCompanyAgent = (id: SQL) => sql`exists (select 1 from ${agents}
+    where ${agents.id} = case when ${id} ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+      then ${id}::uuid else null end and ${agents.companyId} = ${activityLog.companyId})`;
+  const knownUser = (id: SQL) => sql`(exists (select 1 from ${authUsers} where ${authUsers.id} = ${id})
+    and ${activeTimelineUser(sql`${activityLog.companyId}`, id)})`;
+  const creationOwnerTypes = ["assigneeAgentId", "assigneeUserId"].map(key => sql`${details} ? ${key}
+    and jsonb_typeof(${details} -> ${key}) in ('string', 'null')`);
+  const cleared = ([["assigneeAgentId", "toAgentId"], ["assigneeUserId", "toUserId"]] as const).map(([key, alias], index) => sql`(
+    (case when ${canonical} or ${details} ? ${key} then ${changed[index]} else ${details} ? ${alias} end)
+    and jsonb_typeof(${targetValue(key, alias)}) = 'null')`);
+  return {
+    recorded: sql<boolean>`coalesce(position('assign' in ${activityLog.action}) > 0 or
+      (${activityLog.action} = 'issue.updated' and (${sql.join(changed, sql` or `)})), false)`,
+    cleared: sql<boolean>`coalesce(${sql.join(cleared, sql` or `)}, false)`,
+    creationRecorded: sql<boolean>`coalesce((${activityLog.action} = 'issue.created'
+        or (${activityLog.action} = 'issue.child_created' and ${details} -> 'createdByRequest' = 'true'::jsonb))
+      and (${sql.join(creationOwnerTypes, sql` and `)})
+      and ((${creationAgentId} is not null and ${creationUserId} is null and ${sameCompanyAgent(creationAgentId)})
+        or (${creationUserId} is not null and ${creationAgentId} is null and ${knownUser(creationUserId)}))
+      and ((${activityLog.actorType} = 'agent' and ${sameCompanyAgent(sql`${activityLog.actorId}`)})
+        or (${activityLog.actorType} = 'user' and ${knownUser(sql`${activityLog.actorId}`)})), false)`,
+    creationAgentId,
+    creationUserId,
+    creationParentId: stringValue(sql`${details} -> 'parentId'`),
+    agentId: target("assigneeAgentId", "toAgentId"),
+    userId: target("assigneeUserId", "toUserId"),
+  };
 }
 
 function readNumber(value: unknown) {
@@ -439,7 +493,7 @@ export function workTimelineService(db: Db) {
         ? db
           .select({ id: authUsers.id, name: authUsers.name, image: authUsers.image })
           .from(authUsers)
-          .where(inArray(authUsers.id, maybeUuidList(userIds)))
+          .where(and(inArray(authUsers.id, maybeUuidList(userIds)), activeTimelineUser(companyId, sql`${authUsers.id}`)))
         : [],
     ]);
 
@@ -453,12 +507,6 @@ export function workTimelineService(db: Db) {
     if (issue.createdByAgentId) return actorId("agent", issue.createdByAgentId);
     if (issue.createdByUserId) return actorId("user", issue.createdByUserId);
     return actorId("system", "system");
-  }
-
-  function actorForIssueAssignee(issue: IssueRow) {
-    if (issue.assigneeAgentId) return actorId("agent", issue.assigneeAgentId);
-    if (issue.assigneeUserId) return actorId("user", issue.assigneeUserId);
-    return null;
   }
 
   async function getTimeline(input: WorkTimelineQuery): Promise<WorkTimelineResult> {
@@ -486,6 +534,7 @@ export function workTimelineService(db: Db) {
       };
     }
 
+    const ownership = timelineOwnershipProjection();
     const actorIds = new Set<string>();
     const events: WorkTimelineEvent[] = [];
     const edges: WorkTimelineEdge[] = [];
@@ -499,37 +548,6 @@ export function workTimelineService(db: Db) {
         issueId: issue.id,
         at: issue.createdAt.toISOString(),
       });
-
-      const assigneeActorId = actorForIssueAssignee(issue);
-      if (assigneeActorId) {
-        actorIds.add(assigneeActorId);
-        edges.push({
-          fromActorId: creatorActorId,
-          toActorId: assigneeActorId,
-          issueId: issue.id,
-          at: issue.createdAt.toISOString(),
-          kind: "assignment",
-        });
-      }
-
-      const parent = issue.parentId ? issueById.get(issue.parentId) : null;
-      const parentActorId = parent ? actorForIssueAssignee(parent) ?? actorForIssueCreator(parent) : null;
-      if (parentActorId && assigneeActorId && parentActorId !== assigneeActorId) {
-        actorIds.add(parentActorId);
-        edges.push({
-          fromActorId: parentActorId,
-          toActorId: assigneeActorId,
-          issueId: issue.id,
-          at: issue.createdAt.toISOString(),
-          kind: "delegation",
-        });
-        events.push({
-          actorId: parentActorId,
-          kind: "delegated",
-          issueId: issue.id,
-          at: issue.createdAt.toISOString(),
-        });
-      }
     }
 
     const [contextRunRows, activityRunRows, commentRows, approvalRows, interactionRows, logRows] = await Promise.all([
@@ -645,7 +663,14 @@ export function workTimelineService(db: Db) {
           actorType: activityLog.actorType,
           actorId: activityLog.actorId,
           action: activityLog.action,
-          details: activityLog.details,
+          creationRecorded: ownership.creationRecorded,
+          creationParentId: ownership.creationParentId,
+          creationAgentId: ownership.creationAgentId,
+          creationUserId: ownership.creationUserId,
+          assignmentCleared: ownership.cleared,
+          assignmentRecorded: ownership.recorded,
+          assignmentAgentId: ownership.agentId,
+          assignmentUserId: ownership.userId,
           createdAt: activityLog.createdAt,
         })
         .from(activityLog)
@@ -728,39 +753,55 @@ export function workTimelineService(db: Db) {
       });
     }
 
+    // The first visible receipt is selected before validating its facts. A
+    // later replay must not rescue an unknown original or invent its owner.
+    const creationReceipts = new Map<string, typeof logRows[number]>();
+    for (const row of logRows) {
+      if (row.action !== "issue.created" && row.action !== "issue.child_created") continue;
+      const first = creationReceipts.get(row.issueId);
+      if (!first || row.createdAt < first.createdAt) creationReceipts.set(row.issueId, row);
+    }
+
     for (const row of logRows) {
       const logActorType = row.actorType === "agent" || row.actorType === "user" || row.actorType === "plugin"
-        ? row.actorType
-        : "system";
+        ? row.actorType : "system";
       const fromActorId = actorId(logActorType, row.actorId);
-      actorIds.add(fromActorId);
-      if (row.action.includes("assign")) {
-        events.push({ actorId: fromActorId, kind: "assigned", issueId: row.issueId, at: row.createdAt.toISOString() });
-        const details = row.details && typeof row.details === "object" && !Array.isArray(row.details)
-          ? row.details as Record<string, unknown>
-          : {};
-        const targetAgentId = readString(details.assigneeAgentId) ?? readString(details.toAgentId);
-        const targetUserId = readString(details.assigneeUserId) ?? readString(details.toUserId);
-        const toActorId = targetAgentId
-          ? actorId("agent", targetAgentId)
-          : targetUserId
-            ? actorId("user", targetUserId)
-            : null;
-        if (toActorId) {
-          actorIds.add(toActorId);
-          edges.push({
-            fromActorId,
-            toActorId,
-            issueId: row.issueId,
-            at: row.createdAt.toISOString(),
-            kind: "assignment",
-          });
+      if (row.action === "issue.created" || row.action === "issue.child_created") {
+        const issue = issueById.get(row.issueId);
+        if (creationReceipts.get(row.issueId) !== row || !row.creationRecorded || !issue
+          || issue.createdAt < from || issue.createdAt > to) continue;
+        const toActorId = row.creationAgentId ? actorId("agent", row.creationAgentId)
+          : actorId("user", row.creationUserId!);
+        actorIds.add(fromActorId);
+        actorIds.add(toActorId);
+        edges.push({ fromActorId, toActorId, issueId: row.issueId, at: row.createdAt.toISOString(), kind: "assignment" });
+        // Delegation is the recorded creating agent's action under a readable
+        // parent, not an inference from that parent's mutable current owner.
+        if (logActorType === "agent" && row.creationParentId
+          && row.creationParentId !== row.issueId && issueById.has(row.creationParentId) && fromActorId !== toActorId) {
+          edges.push({ fromActorId, toActorId, issueId: row.issueId, at: row.createdAt.toISOString(), kind: "delegation" });
+          events.push({ actorId: fromActorId, kind: "delegated", issueId: row.issueId, at: row.createdAt.toISOString() });
         }
+        continue;
       }
+      if (!row.assignmentRecorded) continue;
+      const toActorId = row.assignmentAgentId ? actorId("agent", row.assignmentAgentId)
+        : row.assignmentUserId ? actorId("user", row.assignmentUserId) : null;
+      if (!toActorId && !row.assignmentCleared) continue;
+      actorIds.add(fromActorId);
+      events.push({ actorId: fromActorId, kind: toActorId ? "assigned" : "unassigned", issueId: row.issueId, at: row.createdAt.toISOString() });
+      if (!toActorId) continue;
+      actorIds.add(toActorId);
+      edges.push({ fromActorId, toActorId, issueId: row.issueId, at: row.createdAt.toISOString(), kind: "assignment" });
     }
 
     const actorMaps = await loadActorMaps(input.companyId, actorIds);
-    const actors: WorkTimelineActor[] = Array.from(actorIds).map((id) => {
+    const publicActorIds = new Set(Array.from(actorIds).filter(id => {
+      if (id.startsWith("agent:")) return actorMaps.agents.has(id.slice("agent:".length));
+      if (id.startsWith("user:")) return actorMaps.users.has(id.slice("user:".length));
+      return true;
+    }));
+    const actors: WorkTimelineActor[] = Array.from(publicActorIds).map((id) => {
       const [type, rawId] = id.split(":", 2) as [TimelineActorType, string];
       if (type === "agent") {
         const agent = actorMaps.agents.get(rawId);
@@ -776,9 +817,9 @@ export function workTimelineService(db: Db) {
 
     return {
       actors,
-      spans: Array.from(spanByRunId.values()).sort((left, right) => left.start.localeCompare(right.start)),
-      events: events.sort((left, right) => left.at.localeCompare(right.at)),
-      edges: edges.sort((left, right) => left.at.localeCompare(right.at)),
+      spans: Array.from(spanByRunId.values()).filter(span => publicActorIds.has(span.actorId)).sort((left, right) => left.start.localeCompare(right.start)),
+      events: events.filter(event => publicActorIds.has(event.actorId)).sort((left, right) => left.at.localeCompare(right.at)),
+      edges: edges.filter(edge => publicActorIds.has(edge.fromActorId) && publicActorIds.has(edge.toActorId)).sort((left, right) => left.at.localeCompare(right.at)),
       pagination: {
         limit,
         offset,

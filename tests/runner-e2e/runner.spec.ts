@@ -20,6 +20,9 @@ import { runNativeActiveStopFlow as runCopilotActiveStopFlow } from "./copilot-a
 import { nativeActiveStopTasks as copilotActiveStopTasks } from "./copilot-active-stop-tasks.js";
 import type { RestartRunnerIdentity } from "./process-tree-owner.js";
 import { runNativeActiveStopFlow } from "./native-active-stop-flow.js";
+import { runCursorCloudStopFlow } from "./cursor-cloud-stop-flow.js";
+import { CursorCloudOwnedObserver, cursorCloudIdentityProof } from "./cursor-cloud-observer.js";
+import { assertCursorCloudCallbackIngress } from "./cursor-cloud-callback-proxy.js";
 import { runKimiLifecycleFlow } from "./kimi-lifecycle.js";
 import { runPiControlsFlow } from "./pi-controls-flow.js";
 import { runCursorNativeFlow } from "./cursor-native-flow.js";
@@ -42,6 +45,7 @@ import { mayAllocateRemoteResources, runCleanupWithObservers, verifyCleanupAsser
 import { completionDelivery, type CompletionObservation } from "./completion-updates.js";
 import { runInstructionPersistenceFlow } from "./instruction-persistence.js";
 import { gradeApiResponsePaging, readResponseProof, responseEvidenceDescription } from "./api-response-reading.js";
+import { artifactTransferDescription, gradeApiArtifactTransfer, readArtifactTransferSource, usesApiResponseProof } from "./api-artifact-transfer.js";
 import { runBlockerFlow } from "./blocker-flow.js";
 import { largeJournalEvidence } from "./journal-evidence.js";
 import { observeBrowserBootstrap } from "./browser-bootstrap-diagnostics.js";
@@ -628,7 +632,7 @@ for (const execution of executions) {
       if (trace) { try { await trace.configureCompany(api, id); } finally { await saveTrace(); } }
     };
     const api = new RunnerApi(request);
-    const companyRunFlow = execution.suite.id === "task-titles" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "repository_skills", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "kimi_native_lifecycle", "public_mcp", "case_handoff"].includes(execution.task.flow);
+    const companyRunFlow = execution.suite.id === "task-titles" || execution.task.flow === "cursor_cloud_stop" || ["plan_task_guidance", "blocker_guidance", "continuation_accounting", "continuation", "context_integrity", "repository_skills", "agent_chat", "everyday_workflow", "first_task", "instruction_persistence", "pi_native", "pi_controls", "copilot_protection", "cursor_native", "native_active_stop", "native_provider_loss", "kimi_native_lifecycle", "public_mcp", "case_handoff"].includes(execution.task.flow);
     const publicMcpUsage = execution.task.flow === "public_mcp" ? assistantUsage(execution.profile.provider === "claude" ? "anthropic" : "openai", execution.profile.model) : undefined;
     let publicMcpUserId = "";
     const consoleDiagnostics: Array<Record<string, unknown>> = [];
@@ -679,6 +683,7 @@ for (const execution of executions) {
     let startupReuse: RunnerE2EResult["startupReuse"];
     const turnSubmissionTimesMs: number[] = [];
     const screenshots: NonNullable<RunnerE2EResult["screenshots"]> = [];
+    let cursorCloudObserver: CursorCloudOwnedObserver | undefined;
     let primaryError: unknown;
     let failureClassOverride: FailureClass | undefined;
     let cleanup: RunnerE2EResult["cleanup"] = "not_started";
@@ -778,7 +783,7 @@ for (const execution of executions) {
       });
     };
 
-    const captureFailureApiState = async () => {
+    const captureApiState = async (capturePhase: "failure" | "final" = "failure") => {
       if (!fixtures) return;
       if (execution.task.flow === "followup_stop_resume") {
         const captured = await captureFollowupStopFailureApiState({ api, companyId: fixtures.company.id,
@@ -855,7 +860,7 @@ for (const execution of executions) {
         snapshotsDir,
         "api-state.json",
         {
-          capturePhase: "failure",
+          capturePhase,
           issue: currentIssue,
           runs: detailedRuns,
           comments,
@@ -912,6 +917,7 @@ for (const execution of executions) {
     try {
       trace?.phase("setup");
       await saveTrace();
+      if (execution.profile.provider === "cursor_cloud") await assertCursorCloudCallbackIngress(process.env.PAPERCLIP_PUBLIC_URL!);
       if (execution.task.flow === "public_mcp") publicMcpUserId = await establishPublicMcpSession(api, page, secrets);
       if (execution.suite.id === "stock-harness") {
         const receipt = verifyStockHarnessPreflight(process.env[STOCK_PREFLIGHT_ENV]);
@@ -952,6 +958,10 @@ for (const execution of executions) {
         cleanupDeadlineAt: kimiLifecycleTiming?.cleanupDeadlineAt,
         onCompanyCreated,
       });
+      if (execution.profile.provider === "cursor_cloud") {
+        cursorCloudObserver = new CursorCloudOwnedObserver(api, fixtures.company.id, fixtures.agent.id, credentials.CURSOR_API_KEY!);
+        registerBeforeEnvironmentTeardownAssertion(() => cursorCloudObserver!.cleanup());
+      }
       await finishBudgetedEvalSetup({ executionId: execution.id, environmentId: execution.environment.id, agentId: fixtures.agent.id,
         companyId: fixtures.company.id, deadlineAt: startedAtMs + deadlineMs, api,
         observe: observations => writeSanitizedJson(snapshotsDir, "budgeted-setup.json", { observations }, secrets) });
@@ -1003,10 +1013,10 @@ for (const execution of executions) {
 
       }
 
-      if (execution.suite.id === "api-response-reading") {
+      if (usesApiResponseProof(execution.suite.id)) {
         const source = await api.post<{ id: string }>(`/api/companies/${fixtures.company.id}/issues`, {
           title: `Synthetic diagnostic evidence ${nonce}`,
-          description: responseEvidenceDescription(nonce), status: "backlog",
+          description: execution.suite.id === "api-artifact-transfer" ? artifactTransferDescription(nonce) : responseEvidenceDescription(nonce), status: "backlog",
         });
         apiResponseSourceId = source.id;
         prompt = prompt.replaceAll("{{API_RESPONSE_SOURCE_ID}}", source.id);
@@ -1031,6 +1041,7 @@ for (const execution of executions) {
           companyId: fixtures.company.id,
           environmentId: fixtures.environment.id,
           agentId: fixtures.agent.id,
+          ...(execution.suite.id === "cursor-cloud" && fixtures.qualificationBudget ? { qualificationBudget: fixtures.qualificationBudget } : {}),
           ...(fixtures.setupProbe ? { setupProbe: { durationMs: fixtures.setupProbe.durationMs,
             ...(fixtures.setupProbe.defaultRunner ? { defaultRunner: fixtures.setupProbe.defaultRunner } : {}) } } : {}),
           secretIds: Object.fromEntries(
@@ -1190,6 +1201,15 @@ for (const execution of executions) {
         });
         issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
         matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `nativeProviderLoss.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+      } else if (execution.task.flow === "cursor_cloud_stop") {
+        const story = await runCursorCloudStopFlow({ page, api, fixtures, execution, nonce, observer: cursorCloudObserver!, deadlineAt: startedAtMs + deadlineMs,
+          observe: (currentIssue, currentRuns) => { issue = currentIssue as IssueRecord; selectedRuns = currentRuns as RunRecord[]; },
+          capture: captureScreenshot, evidence: (name, data) => writeSanitizedJson(snapshotsDir, name, data, secrets),
+        });
+        issue = story.issue as IssueRecord; selectedRuns = story.runs as RunRecord[];
+        matcherResults = story.checks.map(check => ({ matcher: { kind: "json_path" as const, path: `cursorCloud.${check.id}`, expected: true }, passed: check.passed, detail: check.detail }));
+        await captureApiState("final");
+        await captureScreenshot("final-state", "Final visible task state", "final-state.png");
       } else if (execution.task.flow === "native_active_stop") {
         const story = await (execution.profile.qualificationCandidate === "copilot" ? runCopilotActiveStopFlow : runNativeActiveStopFlow)({
           page, api, fixtures, execution: execution.profile.qualificationCandidate === "copilot" && execution.task.id === "pending-permission-stop" ? { ...execution, task: copilotActiveStopTasks[0]! } : execution, nonce, workspacePath, deadlineAt: startedAtMs + deadlineMs,
@@ -1904,7 +1924,8 @@ for (const execution of executions) {
             .filter({ hasText: `PAPERCLIP_E2E_WARM_T${completedTurn}_${nonce}` }).last();
           await expect(turnReply).toBeVisible({ timeout: reviewUiTimeout() });
           const pendingReview = waitingState.interactions.find(isPendingWarmConfirmation)!;
-          const reviewCard = page.locator(`[id=${JSON.stringify(`interaction-${pendingReview.id}`)}]`);
+          const reviewCard = page.getByTestId("task-chat-interaction")
+            .and(page.locator(`[id=${JSON.stringify(`interaction-${pendingReview.id}`)}]`));
           await expect(reviewCard).toBeVisible({ timeout: reviewUiTimeout() });
           await expect(reviewCard.getByRole("button", { name: "Continue work", exact: true }))
             .toBeEnabled({ timeout: reviewUiTimeout() });
@@ -2338,10 +2359,31 @@ for (const execution of executions) {
             ]),
         ),
       );
-      if (execution.suite.id === "api-response-reading") {
+      if (usesApiResponseProof(execution.suite.id)) {
         downloadedResponseProof = await readResponseProof(api, issue.id, run.id);
         fileObservations["api-response-proof.txt"] = downloadedResponseProof.content;
-        await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", downloadedResponseProof, secrets);
+        if (execution.suite.id === "api-artifact-transfer") {
+          const transferIdentity = { companyId: fixtures.company.id, runId: run.id, agentId: fixtures.agent.id };
+          const transfer = gradeApiArtifactTransfer(runEventsByRun.flatMap(captured => captured.events),
+            apiResponseSourceId ?? "", downloadedResponseProof, artifactTransferDescription(nonce),
+            await readArtifactTransferSource(api, runEventsByRun.flatMap(captured => captured.events), transferIdentity), transferIdentity);
+          await writeSanitizedJson(snapshotsDir, "api-artifact-transfer.json", transfer, secrets);
+          if (!transfer.passed) invariantFailures.push(`Verified artifact transfer was not proven: ${transfer.failure}`);
+          await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", {
+            attachmentId: downloadedResponseProof.attachmentId, sha256: downloadedResponseProof.sha256,
+            byteSize: Buffer.byteLength(downloadedResponseProof.content),
+          }, secrets);
+        } else {
+          await writeSanitizedJson(snapshotsDir, "downloaded-response-proof.json", downloadedResponseProof, secrets);
+        }
+      }
+      if (cursorCloudObserver) {
+        const revisedInteraction = record(planLifecycleEvidence?.revisedInteraction);
+        const checks = execution.task.flow === "plan_revision_acceptance"
+          ? await cursorCloudObserver.assertPlanTransitions(selectedRuns.map(run => run.id), typeof revisedInteraction.id === "string" ? revisedInteraction.id : null)
+          : await cursorCloudObserver.assertContinuity(execution.task.expectedRunCount);
+        await writeSanitizedJson(snapshotsDir, "cursor-cloud-provider-continuity.json", { identities: [...cursorCloudObserver.identities.values()].map(cursorCloudIdentityProof), checks }, secrets);
+        matcherResults.push(...checks.map(check => ({ matcher: { kind: "json_path" as const, path: `cursorCloud.${check.id}`, expected: true }, passed: check.passed, detail: check.detail })));
       }
       const registeredArtifacts = await readRegisteredArtifacts(api, issue.id, run.id,
         taskMatchers.filter(matcher => matcher.kind === "artifact_exact").map(matcher => matcher.name));
@@ -2823,7 +2865,7 @@ for (const execution of executions) {
       if (execution.suite.id === "task-titles") {
         await expect(page.getByRole("heading", { name: issue.title.trim(), exact: true })).toBeVisible();
       }
-      if (execution.suite.id === "api-response-reading") {
+      if (usesApiResponseProof(execution.suite.id)) {
         // File delivery renders a card instead of an exact summary bubble.
         // Prove the visible link points to the same independently checked bytes.
         const proofLink = page.getByRole("link", { name: "Open api-response-proof.txt", exact: true }).first();
@@ -2958,7 +3000,7 @@ for (const execution of executions) {
         failureClassOverride = "permanent_infrastructure";
       }
       try {
-        await captureFailureApiState();
+        await captureApiState();
       } catch (captureError) {
         const failureClass = classifyFailure(captureError);
         if (failureClass === "secret_leak") {

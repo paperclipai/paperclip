@@ -341,7 +341,7 @@ const otelSdk = (() => {
     const require = createRequire(import.meta.url);
     return {
       api: require("@opentelemetry/api") as typeof import("@opentelemetry/api"),
-      sdk: require("@opentelemetry/sdk-trace-base") as typeof import("@opentelemetry/sdk-trace-base"),
+      sdk: require("@opentelemetry/sdk-trace") as typeof import("@opentelemetry/sdk-trace"),
     };
   } catch {
     return null;
@@ -354,8 +354,8 @@ describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
   it("opens the span at the true start time and ends it at the true end time", async () => {
     const { api, sdk } = otelSdk!;
     const exporter = new sdk.InMemorySpanExporter();
-    const provider = new sdk.BasicTracerProvider({
-      spanProcessors: [new sdk.SimpleSpanProcessor(exporter)],
+    const provider = new sdk.TracerProvider({
+      spanProcessors: [new sdk.SimpleSpanProcessor({ exporter })],
     });
     api.trace.setGlobalTracerProvider(provider);
     try {
@@ -389,7 +389,7 @@ describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
   it("exports an earlier lifecycle as a separate trace linked to its observer",async()=>{
     const {api,sdk}=otelSdk!;
     const exporter=new sdk.InMemorySpanExporter();
-    const provider=new sdk.BasicTracerProvider({spanProcessors:[new sdk.SimpleSpanProcessor(exporter)]});
+    const provider=new sdk.TracerProvider({spanProcessors:[new sdk.SimpleSpanProcessor({ exporter })]});
     api.trace.setGlobalTracerProvider(provider);
     try {
       const {recordProviderPluginSpan}=await import("../instrumentation.js");
@@ -407,8 +407,8 @@ describe.skipIf(!otelSdk)("recordProviderPluginSpan native duration", () => {
   it("opens and ends the span now when the timestamp pair is absent", async () => {
     const { api, sdk } = otelSdk!;
     const exporter = new sdk.InMemorySpanExporter();
-    const provider = new sdk.BasicTracerProvider({
-      spanProcessors: [new sdk.SimpleSpanProcessor(exporter)],
+    const provider = new sdk.TracerProvider({
+      spanProcessors: [new sdk.SimpleSpanProcessor({ exporter })],
     });
     api.trace.setGlobalTracerProvider(provider);
     try {

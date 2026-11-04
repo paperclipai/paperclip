@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
@@ -1217,6 +1218,36 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(1);
     });
 
+    it.each([400, 401, 403, 429, 500])("retains only SDK HTTP %i when failed creation cleanup is unconfirmed", async statusCode => {
+      mockCreate.mockRejectedValue(Object.assign(new Error("Bearer provider-secret-canary"), {
+        statusCode, headers: { authorization: "provider-secret-canary" },
+      }));
+      mockGet.mockRejectedValue(Object.assign(new Error("cleanup-secret-canary"), { statusCode: 503 }));
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(failure.message).toContain(`HTTP ${statusCode}`);
+      expect(failure.message).not.toContain("secret-canary");
+      expect(JSON.stringify(environmentCreationCleanupErrorData(failure, true))).not.toContain("secret-canary");
+      expect(readEnvironmentCreationCleanupError(failure)?.attemptId).toBeTruthy();
+    });
+
+    it.each([undefined, "401", -1, 600, NaN, 401.5])("omits non-HTTP statusCode %s without reading provider text", async statusCode => {
+      mockCreate.mockRejectedValue(Object.assign(new Error("HTTP 401 provider-secret-canary"), { statusCode }));
+      mockGet.mockRejectedValue(new Error("cleanup-secret-canary"));
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(failure.message).not.toContain("HTTP");
+      expect(failure.message).not.toContain("secret-canary");
+    });
+
+    it("does not invoke a provider status accessor", async () => {
+      const getter = vi.fn(() => { throw new Error("provider-secret-canary"); });
+      mockCreate.mockRejectedValue(Object.defineProperty(new Error("provider-secret-canary"), "statusCode", { get: getter }));
+      mockGet.mockRejectedValue(new Error("cleanup-secret-canary"));
+      const failure = await plugin.definition.onEnvironmentAcquireLease!(params).catch(error => error);
+      expect(failure.message).not.toContain("HTTP");
+      expect(failure.message).not.toContain("secret-canary");
+      expect(getter).not.toHaveBeenCalled();
+    });
+
     it("reports unconfirmed cleanup when the provider lookup fails", async () => {
       mockGet.mockRejectedValue(new Error("provider unavailable"));
       await expect(plugin.definition.onEnvironmentAcquireLease?.(params)).rejects.toThrow("cleanup could not be confirmed");
@@ -1317,7 +1348,7 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
-  it("acquires a lease from a created sandbox", async () => {
+  it.each([true, false])("records allocation bytes for reuseLease=%s", async reuseLease => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockCreate.mockResolvedValue(sandbox);
@@ -1333,7 +1364,7 @@ describe("Daytona sandbox provider plugin", () => {
       config: {
         image: "node:20",
         timeoutMs: 300000,
-        reuseLease: true,
+        reuseLease,
       },
     });
 
@@ -1344,13 +1375,21 @@ describe("Daytona sandbox provider plugin", () => {
         shellCommand: "bash",
         sandboxId: "sandbox-123",
         remoteCwd: "/home/daytona/paperclip-workspace",
-        reuseLease: true,
+        reuseLease,
         workspaceSentinel: {
           path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
           result: "written",
         },
       },
     });
+    const uploaded = sandbox.fs.uploadFile.mock.calls.find(call => call[1] ===
+      "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json")?.[0];
+    expect(Buffer.isBuffer(uploaded)).toBe(true);
+    expect(lease?.metadata?.workspaceAllocationFiles).toEqual({ providerLeaseId: "sandbox-123",
+      remoteCwd: "/home/daytona/paperclip-workspace", files: [{
+        relativePath: ".paperclip-runtime/reusable-sandbox-lease.json",
+        sha256: createHash("sha256").update(uploaded as Buffer).digest("hex"),
+      }] });
     expect(sandbox.fs.createFolder).toHaveBeenCalledWith(
       "/home/daytona/paperclip-workspace/.paperclip-runtime",
       "755",

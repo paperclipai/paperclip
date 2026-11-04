@@ -1,3 +1,4 @@
+import { budgetServiceInTransaction } from "../../services/budgets.js";
 import { notifyExternalAgentSettlement } from "./muse-terminal-settlement.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../../services/delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
@@ -76,7 +77,7 @@ export function createNativeExternalBroker<S>(db:Db,provider:Provider,identity:I
       if(!grant||grant.companyId!==b.companyId||grant.agentId!==b.agentId||grant.userId!==b.operatorId)throw forbidden("External agent grant authority is unavailable.");
       if(actualProvider==="grok_bot")await authorizeExternalBotOperator(database as Db,b.companyId,b.operatorId);
     }
-    if((company.budgetMonthlyCents>0&&company.spentMonthlyCents>=company.budgetMonthlyCents)||(agent.budgetMonthlyCents>0&&agent.spentMonthlyCents>=agent.budgetMonthlyCents))throw forbidden("External execution budget is exhausted.");
+    if(await budgetServiceInTransaction(database as Db).getInvocationBlock(b.companyId,b.agentId))throw forbidden("External execution budget is exhausted.");
   }
   async function authorizeController(database:Database,a:Assignment,generation:number) {
     const [owner]=await database.select().from(nativeRunFinalizations).where(and(eq(nativeRunFinalizations.runId,a.runId),eq(nativeRunFinalizations.companyId,a.companyId),eq(nativeRunFinalizations.controllerGeneration,generation),gt(nativeRunFinalizations.leaseExpiresAt,new Date())));

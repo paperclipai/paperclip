@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
-import { agentWakeupRequests, chatActions, chatDeliveries, chatEndpoints, type Db } from "@paperclipai/db";
-import { and, eq, inArray, or, sql, type SQLWrapper } from "drizzle-orm";
+import { agentWakeupRequests, chatActions, chatConversations, chatDeliveries, chatEndpoints, type Db } from "@paperclipai/db";
+import { and, eq, exists, inArray, or, sql, type SQLWrapper } from "drizzle-orm";
 import { HttpError } from "../errors.js";
 
 export interface CommittedChatResponseAuthorizationInput {
@@ -232,6 +232,22 @@ export interface DeferredChatWakeScope {
   agentId: string;
   issueId: string;
   requestId: string;
+}
+
+/** Identify saved input by its canonical receipt, never by a caller's source
+ * label. This is selection only; the inbound owner rechecks live authority. */
+export function deferredChatInputPredicate(db: Db) {
+  return exists(db.select({ id: chatActions.id }).from(chatActions)
+    .innerJoin(chatConversations, and(eq(chatConversations.companyId, chatActions.companyId),
+      eq(chatConversations.id, chatActions.conversationId)))
+    .innerJoin(chatEndpoints, and(eq(chatEndpoints.companyId, chatActions.companyId),
+      eq(chatEndpoints.id, chatActions.endpointId), eq(chatEndpoints.id, chatConversations.endpointId)))
+    .where(and(eq(chatActions.companyId, agentWakeupRequests.companyId), eq(chatActions.id, agentWakeupRequests.id),
+      eq(chatActions.kind, "inbound_wakeup"), eq(chatActions.status, "processed"),
+      eq(chatEndpoints.assignedAgentId, agentWakeupRequests.agentId), eq(chatEndpoints.externalExecutionPolicy, "restricted"),
+      sql`${chatConversations.issueId}::text = ${agentWakeupRequests.payload}->>'issueId'`,
+      sql`${chatActions.payload}->>'issueId' = ${agentWakeupRequests.payload}->>'issueId'`,
+      sql`${chatActions.payload}->>'agentId' = ${agentWakeupRequests.agentId}::text`)));
 }
 const deferredChatWakeOwners = new WeakMap<Db, (input: DeferredChatWakeScope) => Promise<void>>();
 

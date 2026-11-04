@@ -476,6 +476,7 @@ pub fn run_durable_runner<E: CommandExecutor>(
     #[cfg(unix)]
     let mut notifications =
         crate::runtime_notifications::RuntimeNotifications::bind(&config.state_dir).ok();
+    let mut task_memory = crate::task_memory::TaskMemoryMonitor::new();
     // Bind listener mode or resolve dial mode before processing commands. Dial
     // reconnects retain the same validated addresses so DNS cannot redirect a
     // retry after the trust decision.
@@ -886,6 +887,9 @@ pub fn run_durable_runner<E: CommandExecutor>(
             #[cfg(unix)]
             if let Some(notifications) = notifications.as_mut() {
                 notifications.poll(&config, &mut state, &store);
+            }
+            if let Some(task_memory) = task_memory.as_mut() {
+                task_memory.poll(&config, &mut state, &store);
             }
             let now = current_unix_ms()?;
             if welcome.lease_renewal_version == Some(1) && now >= next_lease_renewal {
@@ -1394,6 +1398,7 @@ fn wait_for_old_authority_outbox_ack(
     )?;
     let target = state.highest_source_seq();
     let deadline = Instant::now() + TERMINAL_RESULT_ACK_TIMEOUT;
+    let mut ack_persistence = CumulativeAckPersistence::default();
     while state.acked_source_seq < target {
         if Instant::now() >= deadline {
             return Err(DurableRunnerError::invalid(
@@ -1410,8 +1415,10 @@ fn wait_for_old_authority_outbox_ack(
                     .pointer("/payload/ackedSourceSeq")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| DurableRunnerError::invalid("ACK cursor is required"))?;
-                state.apply_ack(acked, connection.protocol_version)?;
-                store.save(state)?;
+                // As in normal ingress, checkpoint cumulative ACK bursts
+                // without fsyncing every prefix inside the delivery deadline.
+                // The final empty-outbox ACK is always persisted.
+                ack_persistence.apply(state, store, acked, connection.protocol_version)?;
             }
             Some("ping") => transport.send_json(&control_envelope(
                 state,
@@ -1919,13 +1926,17 @@ fn process_command<E: CommandExecutor>(
                 "{} command failed: {message}",
                 command.command_type
             ));
-            let result = state.fail_command(
-                command,
-                json!({
-                    "code": "command_execution_failed",
-                    "message": message,
-                }),
-            )?;
+            let mut failure = json!({
+                "code": "command_execution_failed",
+                "message": message,
+            });
+            if let Some(classification) = error.classification() {
+                failure["classification"] = json!(classification);
+            }
+            if let Some(provider_failure) = error.provider_failure() {
+                failure["providerFailure"] = provider_failure;
+            }
+            let result = state.fail_command(command, failure)?;
             store.save(state)?;
             return Ok((result, CommandLifecycle::for_terminal(command)));
         }
@@ -2481,6 +2492,17 @@ mod tests {
         }
     }
 
+    struct IncompatibleStateExecutor;
+
+    impl CommandExecutor for IncompatibleStateExecutor {
+        fn execute(&mut self, _command: &Command) -> Result<CommandExecution, DurableRunnerError> {
+            Err(
+                DurableRunnerError::invalid("saved provider state cannot be adopted")
+                    .with_classification(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
+            )
+        }
+    }
+
     impl CommandExecutor for ShutdownFailingExecutor {
         fn execute(&mut self, _command: &Command) -> Result<CommandExecution, DurableRunnerError> {
             Ok(CommandExecution::result(json!({"status": "completed"})))
@@ -2545,6 +2567,7 @@ mod tests {
             runner_digest: "sha256:test".to_owned(),
             acpx_launch_profile: None,
             opencode_launch_profile: None,
+            cursor_cloud_launch_profile: None,
             max_outbox_bytes: 64 * 1024,
             p0_reserve_bytes: 4096,
             max_frame_bytes: 64 * 1024,
@@ -4856,6 +4879,46 @@ mod tests {
             .diagnostics
             .iter()
             .all(|diagnostic| !diagnostic.contains("test-secret")));
+        assert!(failed.result.get("classification").is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn classified_executor_failure_keeps_its_closed_class_in_the_durable_result() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-command-classified-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let command = command("run.attach");
+        let (failed, _) = process_command(
+            &mut state,
+            &store,
+            &config,
+            &mut IncompatibleStateExecutor,
+            &command,
+        )
+        .unwrap();
+        let (mut recovered, _) = store.load_or_create(&config).unwrap();
+        let replay = process_command(
+            &mut recovered,
+            &store,
+            &config,
+            &mut IncompatibleStateExecutor,
+            &command,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.result["code"], "command_execution_failed");
+        assert_eq!(
+            failed.result["classification"],
+            "provider_state_incompatible"
+        );
+        assert_eq!(failed, replay);
         fs::remove_dir_all(directory).unwrap();
     }
 

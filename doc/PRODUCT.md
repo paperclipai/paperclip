@@ -97,6 +97,11 @@ When an agent creates a subtask or follow-up task, its source task's feed shows
 a linked card at creation time with the current title, task number, and status.
 The Tasks tab keeps the full relationship list.
 
+Tasks waiting between automatic checks show **Monitoring** with a blue clock.
+Task lists, board columns, filters, search, recent navigation and task properties
+use the same read-only display state. The task retains its execution lifecycle
+status, and the monitor banner shows when the next check is due.
+
 Automatic monitor checks pause when a task is blocked. A person can use Check now
 to request one check of a retained monitor through normal execution admission.
 Dependencies, recovery, pause, budgets and ownership still apply. Provider-usage
@@ -141,9 +146,15 @@ choice stays selected while task data refreshes.
 The task Filters menu also offers **Routine tasks**. It selects tasks with
 `originKind=routine_execution`, including manually triggered routine runs, even
 when other automatic tasks are hidden. The routines list's **View all tasks**
-link opens `/issues?view=all&originKind=routine_execution` with that checkbox
+link opens `/issues?view=all&originKind=routine_execution&sortField=created&sortDir=desc` with that checkbox
 selected. The URL retains the selection across reloads and task navigation.
-Search and pagination apply the routine origin filter on the server.
+Sort controls save `sortField` and `sortDir` in the URL. URL sorting overrides
+saved collection sorting, and the routines link opens newest-created tasks first.
+Shared sort links work across Coordinator, Streamlined UI, and Classic UI, including
+sort fields without a visible column in the selected interface. Search relevance
+and board-column membership keep their existing server order.
+Search and pagination apply the routine origin filter on the server. Creation-time
+sorting also runs before pagination, with task ID as a stable tie-breaker.
 
 Tasks and project lists hide agent-created and system-created tasks by default.
 The Filters menu's **Show agent-created tasks** checkbox includes routine runs,
@@ -448,3 +459,14 @@ The agent performs authorized setup, reuses saved accounts and drafts, and hands
 Authorized policy administration includes user-requested changes that loosen the acting agent’s own tool controls. These writes remain bounded by management grants, resource scope and the responsible user’s current authority; they do not need an additional approval solely because the agent is a target. Subsequent tool calls obey the resulting policy. Agents cannot approve their own governed action requests or edit their own principal permission grants.
 
 The implementation, operation inventory, permission matrix and fixture qualification are recorded in [Agent API parity for connection configuration](plans/2026-10-13-connection-api-parity.md). Provider fixtures establish API behavior; they do not constitute live provider setup or an empirical agent-success claim.
+
+## Budget control behavior
+
+Paperclip records paid-operation charges durably and avoids company-wide
+serialization during receipt ingestion and settlement. Budget checks and
+threshold enforcement are best effort. Concurrent operations can start from
+the same observed balance; estimates and provider caps do not replace the
+actual bill. A background worker applies threshold holds and scoped Stop intent.
+Manual Stop and authorization remain independently enforced. Unknown charges
+remain visible, and stale unevaluated accounting blocks new limited-budget work
+until reconciliation catches up.

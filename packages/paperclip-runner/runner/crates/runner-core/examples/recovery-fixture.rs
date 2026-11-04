@@ -243,6 +243,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         runner_digest: value("--runner-digest")?,
         acpx_launch_profile: None,
         opencode_launch_profile: None,
+        cursor_cloud_launch_profile: None,
         max_outbox_bytes: value("--max-outbox-bytes")?.parse()?,
         p0_reserve_bytes: value("--p0-reserve-bytes")?.parse()?,
         max_frame_bytes: 1024 * 1024,

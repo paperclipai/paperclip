@@ -92,6 +92,70 @@ describe("InlineEditor", () => {
     container.remove();
   });
 
+  it.each(["unchanged", "escape", "save", "failure"])("reports single-line editing through %s without an initial closed notification", async (exit) => {
+    const onEditingChange = vi.fn();
+    let resolve!: () => void;
+    let reject!: (error: Error) => void;
+    const onSave = vi.fn(() => new Promise<void>((done, fail) => { resolve = done; reject = fail; }));
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(signedIn("user-1", <InlineEditor value="Original" onSave={onSave} onEditingChange={onEditingChange} />)));
+      expect(onEditingChange).not.toHaveBeenCalled();
+      await act(async () => container.querySelector("span")!.click());
+      expect(onEditingChange.mock.calls).toEqual([[true]]);
+      const input = container.querySelector("textarea")!;
+      if (exit === "save" || exit === "failure") act(() => setNativeTextareaValue(input, "Edited title"));
+      await act(async () => input.dispatchEvent(new KeyboardEvent("keydown", { key: exit === "escape" ? "Escape" : "Enter", bubbles: true })));
+      if (exit === "save" || exit === "failure") {
+        expect(onSave).toHaveBeenCalledWith("Edited title");
+        expect(onEditingChange.mock.calls).toEqual([[true]]);
+        if (exit === "failure") {
+          await act(async () => reject(new Error("Save unavailable")));
+          expect(onEditingChange.mock.calls).toEqual([[true]]);
+          expect(container.querySelector("textarea")?.value).toBe("Edited title");
+          return;
+        }
+        await act(async () => resolve());
+      }
+      expect(onEditingChange.mock.calls).toEqual([[true], [false]]);
+      expect(container.querySelector("textarea")).toBeNull();
+    } finally { act(() => root.unmount()); }
+  });
+
+  it("reports a restored single-line edit and retires it before a late save completes", async () => {
+    const onEditingChange = vi.fn();
+    let resolve!: () => void;
+    const onSave = vi.fn(() => new Promise<void>((done) => { resolve = done; }));
+    localStorage.setItem("paperclip:inline-draft:v2:user-1:restored-callback", JSON.stringify({ version: 1, draft: "Restored title", base: "Original" }));
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(signedIn("user-1", <InlineEditor value="Original" draftKey="restored-callback" onSave={onSave} onEditingChange={onEditingChange} />)));
+      expect(onEditingChange.mock.calls).toEqual([[true]]);
+      expect(container.querySelector("textarea")?.value).toBe("Restored title");
+      act(() => root.unmount());
+      expect(onEditingChange.mock.calls).toEqual([[true], [false]]);
+      await act(async () => resolve());
+      expect(onEditingChange.mock.calls).toEqual([[true], [false]]);
+    } finally { localStorage.removeItem("paperclip:inline-draft:v2:user-1:restored-callback"); }
+  });
+
+  it("keeps one edit notification bound to the callback that opened it", async () => {
+    const opened = vi.fn();
+    const next = vi.fn();
+    const onSave = vi.fn();
+    const root = createRoot(container);
+    try {
+      await act(async () => root.render(<InlineEditor value="Original" onSave={onSave} onEditingChange={opened} />));
+      await act(async () => container.querySelector("span")!.click());
+      await act(async () => root.render(<InlineEditor value="Original" onSave={onSave} onEditingChange={next} />));
+      expect(opened.mock.calls).toEqual([[true]]);
+      expect(next).not.toHaveBeenCalled();
+      await act(async () => container.querySelector("textarea")!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })));
+      expect(opened.mock.calls).toEqual([[true], [false]]);
+      expect(next).not.toHaveBeenCalled();
+    } finally { act(() => root.unmount()); }
+  });
+
   it("calls onSave with empty string when nullable and the field is cleared (single-line)", () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const root = createRoot(container);

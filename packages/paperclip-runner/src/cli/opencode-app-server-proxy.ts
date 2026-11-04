@@ -134,6 +134,9 @@ async function open(
     ),
     runtimeContext,
     dynamicTools,
+    // Runner owns these calls until a durable result, cancellation, or lease
+    // expiry. A shorter MCP deadline would leave an unknown effect pending.
+    durableToolRequests: true,
     completionFeedback: openCodeProxyCompletionFeedback((method, params) => requestController(method, params, true)),
     dynamicToolHandler: async (call) =>
       requestController("item/tool/call", {
