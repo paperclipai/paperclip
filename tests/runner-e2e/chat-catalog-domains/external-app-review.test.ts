@@ -130,7 +130,7 @@ function valid() {
               catalogEntryId: "write",
               argumentsHash,
               status: ["denied", "failed", "succeeded"][index],
-              errorCode: index === 1 ? "tool_error" : null,
+              errorCode: index === 1 ? "tool_execution_failed" : null,
             },
             actionRequest: {
               id: phase.actionRequestId,
@@ -335,3 +335,30 @@ it.each(["attribution", "code", "mutation", "revocation"])("refuses invalid appr
   if (fault === "revocation") o.state.agentProbeKeyRevoked = false;
   expect(gradeAppReview(o).passed).toBe(false);
 });
+
+it("accepts the approved replay provider error with its persisted execution-failure code", () => {
+  const o = valid();
+  o.state.decisions[1]!.decisions[0]!.invocation.errorCode = "tool_execution_failed";
+  expect(gradeAppReview(o).passed).toBe(true);
+});
+
+it.each(["tool_error", "policy_denial", "approval_required", "action_declined", "tool_timeout", "tool_not_found", null])(
+  "rejects unrelated approved-outcome error code %s", errorCode => {
+    const o = valid();
+    o.state.decisions[1]!.decisions[0]!.invocation.errorCode = errorCode;
+    expect(gradeAppReview(o).passed).toBe(false);
+  },
+);
+it.each(["no human approval", "wrong human", "successful invocation", "successful request", "no provider call", "changed provider state", "wrong provider"])(
+  "the execution-failure code cannot hide %s", fault => {
+    const o = valid(), row = o.state.decisions[1]!.decisions[0]!, phase = o.state.phases[1]!;
+    if (fault === "no human approval") o.interactions[1]!.status = "rejected";
+    if (fault === "wrong human") o.interactions[1]!.resolvedByUserId = "another-person";
+    if (fault === "successful invocation") row.invocation.status = "succeeded";
+    if (fault === "successful request") row.actionRequest.status = "executed";
+    if (fault === "no provider call") phase.afterWrites = 0;
+    if (fault === "changed provider state") phase.writtenAfter = phase.reviewedText;
+    if (fault === "wrong provider") row.invocation.connectionId = "unrelated";
+    expect(gradeAppReview(o).passed).toBe(false);
+  },
+);

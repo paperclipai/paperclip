@@ -210,7 +210,8 @@ export function gradeAppReview(value: unknown) {
           request?.id === phase.actionRequestId &&
           request.status === ["rejected", "failed", "executed"][index] &&
           v.status === ["denied", "failed", "succeeded"][index] &&
-          (index !== 1 || v.errorCode === "tool_error") &&
+          // Approved replay normalizes MCP error results to this code.
+          (index !== 1 || v.errorCode === "tool_execution_failed") &&
           phase.beforeWrites === [0, 0, 1][index] &&
           phase.afterWrites === [0, 1, 2][index] &&
           (index < 2
@@ -362,7 +363,7 @@ export const appReviewExternalCases = [
     gradeAppReview,
     {
       authentication: "human-session",
-      oracleVersion: "paperclip.chat-catalog.app-review.v4",
+      oracleVersion: "paperclip.chat-catalog.app-review.v5",
       queryAttachments: [{ stateKey: "factualContextAttachment", filename: "launch-update.md" }],
       expectedRunCount: 6,
       minimumRunCount: 6,
