@@ -3,7 +3,7 @@ import { createHmac, generateKeyPairSync, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:http";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { and, eq, sql } from "drizzle-orm";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
@@ -31,7 +31,7 @@ const cloudUrl = resolveExternalTestDatabaseUrl("SLACK_EVENT_TEST_DATABASE_URL")
 const cloudDist = process.env.SLACK_TEST_CLOUD_DIST;
 
 it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actual event owner preserve one domain reply through lost ACK and removal retries", async () => {
-  const network = guardSlackFixtureNetwork();
+  const network = guardSlackFixtureNetwork({ requirePreload: true });
   const load = (file: string) => import(/* @vite-ignore */ pathToFileURL(path.resolve(cloudDist!, file)).href);
   const [{ PostgresCloudHarnessRegistry }, { PostgresConnectorStore }, { ConnectorBroker }, { InMemoryProviderSecretStore },
     { providerRegistryFromEnvironment }, { CloudStackProvisioner }, { FakeCloudStackProvider }, { Pool }] = await Promise.all([
@@ -180,8 +180,8 @@ it.skipIf(!appUrl || !cloudUrl || !cloudDist)("signed Slack enrollment and actua
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", path.join(secretDirectory, "master.key"));
     const markerPath = path.join(secretDirectory, "normal-process-marker.json");
     const markerText = `slack-domain-once-${id}`;
-    await db.update(agents).set({ adapterConfig: { command: "/private/tmp/native-ingestion-node24/bin/node", cwd: secretDirectory,
-      args: ["-e", `if(process.env.SLACK_GATE_GUARD_PID!==String(process.pid))throw Error("child prewire guard missing");require("node:fs").writeFileSync(${JSON.stringify(markerPath)},JSON.stringify({pid:process.pid,runId:process.env.PAPERCLIP_RUN_ID,marker:${JSON.stringify(markerText)}}),{flag:"ax"});console.log(${JSON.stringify(markerText)});`],
+    await db.update(agents).set({ adapterConfig: { command: process.execPath, cwd: secretDirectory,
+      args: ["--require", fileURLToPath(new URL("./cloud-test-prewire.cjs", import.meta.url)), "-e", `if(process.env.SLACK_GATE_GUARD_PID!==String(process.pid))throw Error("child prewire guard missing");require("node:fs").writeFileSync(${JSON.stringify(markerPath)},JSON.stringify({pid:process.pid,runId:process.env.PAPERCLIP_RUN_ID,marker:${JSON.stringify(markerText)}}),{flag:"ax"});console.log(${JSON.stringify(markerText)});`],
       timeoutSec: 10, graceSec: 1 } }).where(eq(agents.id, agentId));
     const vault = secretService(db), refs: ToolCredentialSecretRef[] = [];
     for (const [key, value] of Object.entries({ botToken: "xoxb-fixture", signingSecret })) {

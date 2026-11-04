@@ -241,3 +241,26 @@ must cover normal signed enrollment, durable retry after removal, sealed drain,
 the actual event worker and SDK, lost-ACK redelivery and one domain effect,
 generation changes, and callback evidence. Synthetic protocol coverage does not
 prove live Slack, complete configuration UI or a deployed stop/restart/wake journey.
+
+### Reproduce the paired Cloud acceptance
+
+Use the repository's supported Node version and installed dependencies. Compile
+the companion Cloud checkout first. Set `PAPERCLIP_SLACK_TEST_DATABASE_URL` and
+`SLACK_EVENT_TEST_DATABASE_URL` to two distinct, owned loopback PostgreSQL
+`*_test` databases. Set `SLACK_TEST_CLOUD_DIST` to its absolute compiled `dist`
+directory. This test applies actual migrations and uses only those two databases.
+It does not create a PostgreSQL cluster or use a live Slack provider.
+
+From the app repository root, run:
+
+```sh
+node server/scripts/test-slack-cloud-postgres.mjs
+```
+
+The launcher uses the current Node executable and one Vitest worker. It loads the
+checked-in prewire guard in that actual worker before client construction. The
+controlled process child explicitly loads the same guard before its script.
+The guard rejects off-host and unowned socket targets before transport. Caught
+unexpected attempts still fail the fixture. No private preload path or manual
+`SLACK_GATE_GUARD_PID` setting is needed. The fixture remains opt-in during the
+normal test suite; its default owner and guard regressions run without databases.

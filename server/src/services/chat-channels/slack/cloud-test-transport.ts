@@ -2,7 +2,15 @@ import http from "node:http";
 import https from "node:https";
 import { expect, vi } from "vitest";
 
-export function guardSlackFixtureNetwork() {
+export function guardSlackFixtureNetwork(options: { requirePreload?: boolean } = {}) {
+  const prewire = Reflect.get(process, Symbol.for("paperclip.slack.fixture.prewire")) as {
+    pid: number;
+    stats(): { pid: number; peakPgSockets: number; remainingPgSockets: number; unexpectedAttempts: unknown[] };
+  } | undefined;
+  if (options.requirePreload) {
+    expect(prewire?.pid).toBe(process.pid);
+    expect(process.env.SLACK_GATE_GUARD_PID).toBe(String(process.pid));
+  }
   if (process.env.SLACK_GATE_EXPECT_PRELOAD === "1") {
     expect(process.env.SLACK_GATE_GUARD_PID).toBe(String(process.pid));
     console.info(JSON.stringify({ slackFixtureWorkerPid: process.pid, prewireGuardPid: process.env.SLACK_GATE_GUARD_PID }));
@@ -29,7 +37,8 @@ export function guardSlackFixtureNetwork() {
   });
   return { assertQuiet: () => {
     expect(blocked).toEqual([]);
-    const stats = (process as typeof process & { __sleep2ChatNetworkStats?: () => unknown }).__sleep2ChatNetworkStats;
+    if (prewire) expect(prewire.stats().unexpectedAttempts).toEqual([]);
+    const stats = prewire?.stats ?? (process as typeof process & { __sleep2ChatNetworkStats?: () => unknown }).__sleep2ChatNetworkStats;
     if (process.env.SLACK_GATE_EXPECT_PRELOAD === "1") {
       expect(stats).toBeTypeOf("function");
       console.info(JSON.stringify({ slackFixtureWorkerPid: process.pid, networkStats: stats!() }));
