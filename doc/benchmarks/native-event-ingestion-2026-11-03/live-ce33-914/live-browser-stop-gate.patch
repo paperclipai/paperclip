@@ -1,0 +1,23 @@
+--- live-browser.mjs
++++ live-browser.guarded.mjs
+@@ -138,6 +138,20 @@
+   }, Boolean);
+   stopped.activeRunId = active.id;
+   await page.screenshot({ path: join(config.evidenceDir, "before-live-stop.png"), fullPage: true });
++  stopped.preStopProcessProof = await poll("owned sleep60 birth identity before UI Stop", async () => {
++    let observation;
++    try { observation = JSON.parse(await readFile(join(config.evidenceDir, "process-gate.json"), "utf8")); }
++    catch (error) { if (error.code === "ENOENT" || error instanceof SyntaxError) return null; throw error; }
++    const now = Date.now();
++    const proof = observation.sleepCandidates.find(value => value.companyId === config.company.id && value.runId === active.id
++      && value.command.trim().match(/^(?:\/[\w./-]+\/)?sleep\s+60$/)
++      && now >= value.observedAtMs && now - value.observedAtMs <= 500
++      && value.observedProcessAgeMs + now - value.observedAtMs < 20000
++      && value.chain[0].pid === value.sleepPid && value.chain[0].birthTime === value.sleepBirthTime
++      && value.chain.at(-1).pid === value.runnerPid && value.chain.at(-1).executable === "paperclip-runnerd"
++      && value.chain.some(process => /verified-executable|opencode/.test(process.executable)));
++    return proof ? { ...proof, verifiedBeforeClickAtMs: Date.now() } : null;
++  }, Boolean, 20000);
+   stopped.requestedAt = Date.now();
+   await page.getByTestId("task-chat-composer-stop").last().click();
+   const afterStop = await poll("native cancellation acknowledgement", async () => {

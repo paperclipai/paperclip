@@ -1,0 +1,18 @@
+{
+  "passed": true,
+  "scope": "Offline verification-only, network aborted, no app/provider/database/resources",
+  "command": "node --test scripts/native-ingestion/live-browser-streaming-check.mjs",
+  "exit": 0,
+  "testsPassed": 5,
+  "checkedAt": "2026-11-04T00:47:02.143566+00:00",
+  "helperSha256": "5ff4cd9b187829e706ff770b96a110f654b087c92a5a97c8f4ce0a1319dcf2be",
+  "testSha256": "3f26b2df27f9f40e5f941706a38623cf391fe92bb4091f903745a17d963e315c",
+  "cases": [
+    "capturedpartialDOMoldselectormisses/newobserves",
+    "live-tail/settled compatibility",
+    "hidden/human/otherthread rejection",
+    "openitem/freshrunning positive/no closedphaseallowlist",
+    "finalizing/accepted/terminal/closeditem rejection"
+  ],
+  "renamedOptInCommandVerified": true
+}

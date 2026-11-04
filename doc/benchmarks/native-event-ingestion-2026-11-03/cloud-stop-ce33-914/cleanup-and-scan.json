@@ -1,0 +1,68 @@
+{
+  "status": "passed",
+  "allTaskOwnedResourcesAndCredentialScan": {
+    "status": "passed",
+    "checkedAt": "2026-11-04T00:30:33.752Z",
+    "providerApiOperations": "get only; no resource mutations",
+    "taskOwnedProviderCount": 6,
+    "providerStates": [
+      {
+        "id": "61ea5024-e513-4234-8925-22109c3e9649",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      },
+      {
+        "id": "3f713f74-c3d8-49e3-9e84-807192c6ea0e",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      },
+      {
+        "id": "d61aec89-e2c4-4cc7-aaf3-6b7d2bf04c5e",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      },
+      {
+        "id": "cbf9f558-49f2-4b84-bbe1-ea651502a6bb",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      },
+      {
+        "id": "19e2daa7-e0fa-4427-988b-de136dd1b2b0",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      },
+      {
+        "id": "79fd034e-b161-4ce0-87b0-a54c430be3f4",
+        "absent": true,
+        "errorName": "DaytonaNotFoundError",
+        "status": 404
+      }
+    ],
+    "exactCredentialKinds": [
+      "Daytona API key",
+      "1Password service-account token"
+    ],
+    "knownPreviewTokenValues": 0,
+    "scannedFilesAndDecompressedEntries": 660,
+    "matches": []
+  },
+  "localCleanup": {
+    "status": "passed",
+    "checkedAt": "2026-11-04T00:27:05.886Z",
+    "ownedControllerProcessGone": true,
+    "ownedPostgresProcessGone": true,
+    "ownedHttpPortClosed": true,
+    "ownedDatabasePortClosed": true,
+    "postmasterPidFileGone": true,
+    "credentialBearingDataRemoved": true,
+    "ownedDirectoriesVisited": 141,
+    "ownedReadonlyDirectoriesMadeWritable": 22,
+    "followedSymlinks": false,
+    "cleanupScope": "Only the recorded stopped qualification data directory; shared application outputs remain intact"
+  }
+}

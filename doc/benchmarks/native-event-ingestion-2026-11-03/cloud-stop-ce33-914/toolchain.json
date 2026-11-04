@@ -1,0 +1,63 @@
+{
+  "runnerRustTree": "eac015472eb88b49aa92e6f30def348aa34b4911",
+  "mac": {
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: aarch64-apple-darwin\nrelease: 1.97.1\nLLVM version: 22.1.8",
+    "cargo": "cargo 1.97.1 (c980f4866 2026-06-30) (Homebrew)\nrelease: 1.97.1\ncommit-hash: c980f4866141969fab6254a680546a277789d6f0\ncommit-date: 2026-06-30\nhost: aarch64-apple-darwin\nlibgit2: 1.9.7 (sys:0.20.4 system)\nlibcurl: 8.7.1 (sys:0.4.88+curl-8.20.0 system ssl:(SecureTransport) LibreSSL/3.3.6)\nos: Mac OS 26.5.2 [64-bit]",
+    "overrideFacts": {
+      "RUSTUP_TOOLCHAIN": null,
+      "RUSTFLAGS": null,
+      "CARGO_ENCODED_RUSTFLAGS": null,
+      "CARGO_TARGET_DIR": null,
+      "RUSTC": null,
+      "RUSTC_WRAPPER": null
+    },
+    "artifactFingerprintFacts": [
+      {
+        "artifact": "paperclip-runner-core-a22b1419a8800206/bin-paperclip-runnerd.json",
+        "rustflags": [],
+        "profile": 2040997289075261400,
+        "compileKind": 0
+      }
+    ],
+    "ownFreshTarget": true,
+    "oldTargetReused": false
+  },
+  "linux": {
+    "sourceTree": "eac015472eb88b49aa92e6f30def348aa34b4911",
+    "binarySha256": "6873b6325850a0f9eeedb43eca83413ac2379e7e804dee0ef614aa87c57859c8",
+    "binaryMode": "0o755",
+    "platform": "linux-x64",
+    "architecture": "x86_64",
+    "rustInputObjects": {
+      "runner": "eac015472eb88b49aa92e6f30def348aa34b4911",
+      "runner/Cargo.toml": "e5ea7fb7c65397eab9ba3f4e69b0beff80d59aaf",
+      "runner/Cargo.lock": "809b81962dbabf3aa3dce11aa4a4b3384c55f31d",
+      "runner/crates/runner-core/Cargo.toml": "08ded319dbaf35e7d63e143f6dd0fc9a3a24388f",
+      "package.json": "ae8b5a3ad0d89e3e2bc387fca1a3d11676212ac0",
+      "rust-toolchain.toml": "cf01515b3a12ae24e658a2a30c47b2d4b8f97dfb",
+      "protocol": "fd1ab6ec49a32eda46608036faaa8a87bb7952eb",
+      "protocol/manifest.json": "b0c918e3514e8f1d6a32a6bdcdd069db840a7622",
+      "generated/semantic-action-catalog.json": "10800237d17af2eb0839220f98c8ec58a49bce83",
+      "antigravity-distributions.json": "c6836e59b9888d99cfdfe0f8f48c01a5f566ff33",
+      "scripts": "85cc40f3658570b1bfd24723e62ba73224c7dfbd",
+      "acpx-profiles.json": "a3993363cd05df1c158ede0ba798d10506cceaec",
+      "cursor-distributions.json": "c049c080192c62f9300953d7a28f617e45555812",
+      "cursor-contract.json": "a7f8eca443cd7bbaf094da808be0650edf063db9",
+      "src/drivers/acpx/kimi-closure-pins.ts": "f7942c01f1eaa18c592c41344f15710b0507732c"
+    },
+    "rustcVersion": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6\n",
+    "cargoVersion": "cargo 1.97.1 (c980f4866 2026-06-30)\nrelease: 1.97.1\ncommit-hash: c980f4866141969fab6254a680546a277789d6f0\ncommit-date: 2026-06-30\nhost: x86_64-unknown-linux-gnu\nlibgit2: 1.9.2 (sys:0.20.4 vendored)\nlibcurl: 8.20.0-DEV (sys:0.4.88+curl-8.20.0 vendored ssl:OpenSSL/3.6.2)\nssl: OpenSSL 3.6.2 7 Apr 2026\nos: Ubuntu 24.4.0 (noble) [64-bit]\n",
+    "effectiveRustEnvironment": {
+      "RUSTUP_TOOLCHAIN": "1.97.1",
+      "CARGO_TARGET_DIR": null,
+      "RUSTFLAGS": null,
+      "CARGO_ENCODED_RUSTFLAGS": null,
+      "CARGO_BUILD_TARGET": null,
+      "releaseProfile": "Cargo defaults; no custom target/features"
+    },
+    "oldRustTargetNotReused": true,
+    "qualifiedBuildReceiptSha256": "e54b67a017ea8223effde240c94863dddc027817ea7d82b852290f71ec5118c2"
+  },
+  "oldLinuxBfArtifactUsed": false,
+  "normalProductionBuildAndCleanTrackedSource": true
+}

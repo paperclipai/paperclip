@@ -1,0 +1,59 @@
+{
+  "status": "ready",
+  "builtAt": "2026-11-04T00:06:06.855Z",
+  "appRoot": "<built-app-checkout>",
+  "sourceRevision": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+  "compiledBuildStamp": {
+    "commit": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da"
+  },
+  "runnerRustTree": "eac015472eb88b49aa92e6f30def348aa34b4911",
+  "cleanSource": true,
+  "independentLockedDependencies": true,
+  "normalProductionBuild": true,
+  "oldRustTargetReused": false,
+  "platform": {
+    "os": "darwin",
+    "architecture": "arm64",
+    "node": "v26.4.0",
+    "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14) (Homebrew)"
+  },
+  "hashes": {
+    "server": "7db3ab75d39e5d6a467f961a267991cc55781439572cc37e45b4599908d1e23b",
+    "ui": "847e43ecc2469a5b54dcf89e0be4a71ba750f9d123e9d893ed90a3b3f693959e",
+    "macRunner": "3e9acd73d2fb380d3d95e35de0e6ed78232b1be5dcbb3a96c76ca0d8b8c951b2",
+    "vendorMacRunner": "3e9acd73d2fb380d3d95e35de0e6ed78232b1be5dcbb3a96c76ca0d8b8c951b2"
+  },
+  "macRunnerBuildMetadata": {
+    "binaryContractVersion": 2,
+    "binaryName": "paperclip-runnerd",
+    "durableSessionCapabilities": [
+      "unlimited_runtime",
+      "connection_lease_renewal"
+    ],
+    "externalProviderCapabilities": [
+      "openai_dot_mcp",
+      "grok_bot_mcp",
+      "muse_external_v1"
+    ],
+    "harnessDriverVersion": 1,
+    "nativeExecutionVersion": 1,
+    "packageName": "@paperclipai/paperclip-runner",
+    "packageVersion": "0.0.0",
+    "providerPacks": [],
+    "prp": {
+      "maximumVersion": 2,
+      "minimumVersion": 1,
+      "name": "paperclip.runner"
+    },
+    "prpTransportModes": [
+      "dial_ws_loopback",
+      "dial_wss",
+      "listen_ws"
+    ],
+    "schema": "paperclip-runner/runnerd-build-metadata/v1"
+  },
+  "readOnlyConsumers": [
+    "delivery_evidence"
+  ],
+  "loader": "<built-app-checkout>/server/node_modules/tsx/dist/loader.mjs"
+}

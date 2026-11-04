@@ -53,7 +53,10 @@ const context = await browser.newContext({ viewport: { width: 1440, height: 1000
   recordVideo: { dir: join(config.evidenceDir, "video"), size: { width: 1440, height: 1000 } } });
 await context.tracing.start({ screenshots: true, snapshots: true });
 const page = await context.newPage();
-const visibleAgentText = async () => (await page.locator('[data-conversation-message="agent"] [data-conversation-text]:visible, [data-testid="task-chat-live-self-talk"]:visible').allInnerTexts()).join("\n");
+const visibleAgentText = async () => (await page.getByTestId("issue-detail-content")
+  .getByTestId("task-chat-thread")
+  .locator('[data-conversation-message="agent"] [data-conversation-text]:visible, [data-testid="task-chat-phase-interstitial"]:visible, [data-testid="task-chat-live-text"]:visible, [data-testid="task-chat-live-self-talk"]:visible')
+  .allInnerTexts()).join("\n");
 const normalizeVisible = value => String(value).replace(/[*_`#]/g, "").replace(/\s+/g, " ").trim();
 let activeIssueId;
 try {
@@ -78,14 +81,21 @@ try {
     const text = normalizeVisible(await visibleAgentText());
     const visibleAt = Date.now();
     const rows = await eventsFor(active.id);
-    const delta = rows.map(row => row.payload?.prpEvent).find(event => event?.eventType === "item.delta"
+    const events = rows.map(row => row.payload?.prpEvent).filter(Boolean);
+    if (rows.some(row => ["run.result.accepted", "run.terminal"].includes(row.eventType)
+      || ["run.result.accepted", "run.terminal"].includes(row.payload?.prpEvent?.eventType))) return null;
+    const sameItem = (left, right) => left.runId === right.runId && left.sourceInstanceId === right.sourceInstanceId
+      && left.turnId === right.turnId && left.itemId === right.itemId;
+    const delta = events.find(event => event?.eventType === "item.delta" && event.runId === active.id
       && event.payload.kind === "agentMessage" && normalizeVisible(event.payload.text).length >= 12
-      && text.includes(normalizeVisible(event.payload.text)));
+      && text.includes(normalizeVisible(event.payload.text)) && typeof event.itemId === "string"
+      && events.some(item => item.eventType === "item.started" && sameItem(item, event))
+      && !events.some(item => ["item.completed", "item.failed", "item.cancelled"].includes(item.eventType) && sameItem(item, event)));
     if (!delta) return null;
     // Re-read status after observing the matching UI text. A completed run
     // discovered on the next poll cannot establish streaming visibility.
     const observedRun = await api(`/api/heartbeat-runs/${active.id}`);
-    if (observedRun.status !== "running") return null;
+    if (observedRun.status !== "running" || observedRun.finishedAt || observedRun.nativePhase === "workspace_finalizing") return null;
     return { runId: active.id, sourceEventId: delta.sourceEventId, sourceSeq: delta.sourceSeq,
       emittedAt: delta.emittedAt, visibleText: text.slice(-1000), visibleAt,
       run: runSummary(observedRun), statusObservedAt: Date.now() };

@@ -1,0 +1,35 @@
+{
+  "scope": "Public metadata/path-only helper adaptations; not a new live acceptance run",
+  "projections": [
+    {
+      "path": "cleanup.json",
+      "originalSha256": "094d0b21bc2aeb8fa0d6ad751d76d631e8075c193c8963ec7bd14d5aaedc627e",
+      "publicSha256": "e8e1581ac2594c646ec9cae84ea1323fdbcaf3ad15f8301aad6b1acbef9f55af",
+      "reason": "Remove the absolute credential-bearing temporary home path; cleanup facts unchanged"
+    },
+    {
+      "path": "build-ready.json",
+      "originalSha256": "1e4c3cfd42bda732fe143eefb6676cd8d6843d4d10e3950ae1adfedfa100efad",
+      "publicSha256": "d8d696c7ccfd8cfd76dc33ee881715f2178e14c97e3f0b520a88152656d81328",
+      "reason": "Remove local checkout/loader absolute paths; revision and build hashes unchanged"
+    },
+    {
+      "path": "future-helper-review-regressions.json",
+      "originalSha256": "81a64f34ab1e635309d2f71f4bb55072e5f7b860e349a44efecc8e10ef5b79c9",
+      "publicSha256": "234994fab5fa62ee849bc76c6d4f12de3558bae299c4d91c701d4889bd504781",
+      "reason": "Remove a local evidence-directory path; controlled regression results and source hashes unchanged"
+    },
+    {
+      "path": "helpers/process-monitor.mjs",
+      "originalSha256": "4f003d4db2ce70006028265735ecb10151710fccb8b6c701837ba1a21b150ab0",
+      "publicSha256": "bc06e6797f7189a4d56b09ec268de3f59267e7ed7082f37f3aab3f4d784bc1e6",
+      "reason": "Public reproduction path adaptation only; executed private source SHA remains in execution receipt; adaptation was not used for another live claim"
+    },
+    {
+      "path": "helpers/verify-birth-settlement.mjs",
+      "originalSha256": "ce6a5aca9a0fdeef21c0e5b785d2d3ac643da62c992465f8b9b4e4c41b947cef",
+      "publicSha256": "3eca4c0bd960e87225fee9c74a6f9ef0eb785b3d3766bc8435900aaa266d4d46",
+      "reason": "Public reproduction path adaptation only; executed private source SHA remains in execution receipt; adaptation was not used for another live claim"
+    }
+  ]
+}

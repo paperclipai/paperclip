@@ -1,0 +1,27 @@
+{
+  "verified": true,
+  "checkedAt": "2026-11-04T00:15:40.332815+00:00",
+  "ports": [
+    {
+      "port": 3104,
+      "ECONNREFUSED": true
+    },
+    {
+      "port": 54333,
+      "ECONNREFUSED": true
+    }
+  ],
+  "absentOwnedPids": [
+    58087,
+    68248,
+    90624,
+    90674,
+    90708,
+    92068,
+    89408,
+    89567,
+    89629,
+    89644
+  ],
+  "recordedCredentialBearingDataRemoved": true
+}

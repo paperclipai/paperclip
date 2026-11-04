@@ -1,0 +1,60 @@
+{
+  "passed": true,
+  "scope": "Controlled helper contract/observation seams extracted from actual archived and changed source; no app, browser, provider, database or network is started.",
+  "historicalLiveProof": "Historical B9 functional proof; exact before-helper hashes retained below",
+  "historicalProofUsesOriginalHelpers": true,
+  "files": {
+    "launcher": {
+      "beforeSha256": "353a1b1cf2ee38551349617e91c95cdfb4d0021abf55be62e7058319b8e5b6bd",
+      "afterSha256": "67b5c1f367be4451ee70b969f9cf9ad10f5cb48ba4cf9ff0ea51f6f4d39b0ebb"
+    },
+    "browser": {
+      "beforeSha256": "cf34b0f7bb8a4f84786a38f1c90b750e7a336b126e6e2bc25647095c1eac9fab",
+      "afterSha256": "5ff4cd9b187829e706ff770b96a110f654b087c92a5a97c8f4ce0a1319dcf2be"
+    }
+  },
+  "cases": [
+    {
+      "name": "original launcher rejects ordinary-checkout contract",
+      "outcome": "expected failure reproduced"
+    },
+    {
+      "name": "fixed launcher forwards linkedWorktree=false",
+      "outcome": "passed"
+    },
+    {
+      "name": "fixed launcher forwards linkedWorktree=true",
+      "outcome": "passed"
+    },
+    {
+      "name": "fixed launcher forwards the prepared instance identity",
+      "outcome": "passed"
+    },
+    {
+      "name": "original observer rejects a run settling immediately after successful active poll",
+      "outcome": "expected false negative reproduced"
+    },
+    {
+      "name": "fixed observer retains exact successful active-stream observation across terminal race",
+      "outcome": "passed",
+      "calls": [
+        "task-runs",
+        "visible-text",
+        "durable-events",
+        "status-after-visible"
+      ]
+    },
+    {
+      "name": "terminal status after visibility still rejects streaming proof",
+      "outcome": "expected rejection passed"
+    },
+    {
+      "name": "missing visible matching text still rejects streaming proof",
+      "outcome": "expected rejection passed"
+    },
+    {
+      "name": "reasoning-only event still rejects ordinary-assistant proof",
+      "outcome": "expected rejection passed"
+    }
+  ]
+}

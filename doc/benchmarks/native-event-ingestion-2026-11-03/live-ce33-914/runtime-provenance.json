@@ -1,0 +1,21 @@
+{
+  "sourceRevision": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da",
+  "compiledBuildStamp": {
+    "commit": "914129afb141d81c0d6d8c5f0ea11c20bd69a3da"
+  },
+  "sourceStatus": "",
+  "hashes": {
+    "server/dist/index.js": "7db3ab75d39e5d6a467f961a267991cc55781439572cc37e45b4599908d1e23b",
+    "ui/dist/index.html": "847e43ecc2469a5b54dcf89e0be4a71ba750f9d123e9d893ed90a3b3f693959e",
+    "server/dist/services/heartbeat-run-events.js": "f841f01af7f5a19f9f0b3be5e49dd26f66d9f869ff858d70b9e30dbacf3b29ef",
+    "server/dist/services/native-runtime/native-session-executor.js": "cc5367b5c207dc32bc11b8483492331d4fd6959af61ca3cd15ac1d62a359d587",
+    "server/dist/vendor/paperclip-runner/native-session-runtime.js": "5da124ef0d8e537c1c55a390e32c80b5a7d01dbdeeba8b08ee6c907886e43a11",
+    "server/dist/vendor/paperclip-runner/live/runnerd-codex-transport.js": "6075d27d51482b164c60890691d1a32d3f6b3074e160a5acfc86f57b93161ea0",
+    "server/dist/vendor/paperclip-runner/bin/paperclip-runnerd": "3e9acd73d2fb380d3d95e35de0e6ed78232b1be5dcbb3a96c76ca0d8b8c951b2"
+  },
+  "sourceAndArtifactRecheckAfterJourneys": {
+    "checkedAt": "2026-11-04T00:14:39.100218+00:00",
+    "sourceClean": true,
+    "allRecordedArtifactsUnchanged": true
+  }
+}

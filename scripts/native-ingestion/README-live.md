@@ -41,7 +41,7 @@ and checked that completed, missing-text and reasoning-only observations remain
 ineligible. They start no app, provider, database or network. The
 [receipt](../../doc/benchmarks/native-event-ingestion-2026-11-03/live/helper-review-regressions.json)
 records both source hashes and the
-[portable source-seam check](../../doc/benchmarks/native-event-ingestion-2026-11-03/live/helper-review-regressions.mjs)
+[current source-seam check](live-helper-contract-check.mjs)
 accepts the current helper directory, an original B9 helper directory and a new
 owned output path as its three arguments.
 
@@ -168,3 +168,9 @@ private fixture to use the raw driver's explicit JSON object wrapper produced
 the successful qualification without changing verifier code. This is fixture
 qualification evidence, not a repeated live-provider journey. Every future real
 database invocation must retain its own revision/environment/cleanup receipt.
+
+## Current 914 journey and observer follow-up
+
+The current [914 functional packet](../../doc/benchmarks/native-event-ingestion-2026-11-03/live-ce33-914/README.md) records the exact executed helper hashes, real model/tool/result/reload, and independent live-process Stop settlement. Its initially selected source52 observation was preterminal during finalization. Original retained JPEGs/DOM/source timestamps independently prove earlier progressive content before later deltas/result; the retained UI response omitted native phase. The original executed helpers and historical proof manifests remain unchanged.
+
+The current browser helper includes the owned thread's normal live interstitial and live-text branches and requires an open started ordinary item plus a fresh running full GET, rejecting known finalization, accepted results, terminal state and closed items. These follow-up checks were verified offline and were not retroactively executed in the recorded journey. Run the five DOM/source checks explicitly with `node --test scripts/native-ingestion/live-browser-streaming-check.mjs`; this starts an offline browser with network aborted and belongs outside default Vitest. The current nine-case source-seam checker is `live-helper-contract-check.mjs`; the archived historical checker and receipt retain their original bytes.

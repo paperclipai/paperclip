@@ -1,0 +1,14 @@
+{
+  "status": "passed",
+  "source": "independent read-only PostgreSQL",
+  "events": [
+    {
+      "seq": "64",
+      "event_type": "item.delta",
+      "source_event_id": "d4246355-c2ee-40a2-b297-5c4f65faf5c5:12cc7b1f-b698-4465-b9bb-dc3258328afb:12",
+      "source_seq": "12",
+      "kind": "agentMessage",
+      "text": "CLOUD-STOP-STREAM: real sandbox process is starting. "
+    }
+  ]
+}
