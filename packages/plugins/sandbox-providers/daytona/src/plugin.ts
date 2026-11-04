@@ -9,7 +9,7 @@ import type {
   Resources,
   Sandbox,
 } from "@daytonaio/sdk";
-import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep, preserveEnvironmentSyncErrorDiagnostic } from "@paperclipai/plugin-sdk";
+import { decodeChannelBytes, definePlugin, NOOP_PLUGIN_TRACER, PluginEnvironmentCreationCleanupError, PluginEnvironmentRunnerIngressError, readEnvironmentCreationCleanupError, withEnvironmentSyncTransferStep, preserveEnvironmentSyncErrorDiagnostic } from "@paperclipai/plugin-sdk";
 import type {
   PluginContext,
   PluginEnvironmentCreationCleanup,
@@ -30,6 +30,7 @@ import type {
   PluginEnvironmentExecuteResult,
   PluginEnvironmentRunnerIngressEndpointParams,
   PluginEnvironmentRunnerIngressEndpoint,
+  PluginEnvironmentRunnerIngressFailure,
   PluginEnvironmentGetInteractiveSetupParams,
   PluginEnvironmentInteractiveSetupSession,
   PluginEnvironmentLease,
@@ -442,6 +443,17 @@ function creationHttpStatus(error: unknown): number | undefined {
     return typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599
       ? status : undefined;
   } catch { return undefined; }
+}
+
+async function acquireRunnerIngress<T>(phase: PluginEnvironmentRunnerIngressFailure["phase"], operation: () => Promise<T>): Promise<T> {
+  try { return await operation(); }
+  catch (error) {
+    const httpStatus = creationHttpStatus(error);
+    if (httpStatus !== undefined && httpStatus >= 400) {
+      throw new PluginEnvironmentRunnerIngressError({ phase, httpStatus });
+    }
+    throw error;
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -3504,21 +3516,21 @@ const plugin = definePlugin(trackDaytonaHooks({
         config,
       },
       async () => {
-        const sandbox = await getSandbox({
+        const sandbox = await acquireRunnerIngress("sandbox_lookup", () => getSandbox({
           driverKey: params.driverKey,
           companyId: params.companyId,
           environmentId: params.environmentId,
           providerLeaseId,
           config,
-        });
-        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
-        await withLivenessTimeout(
+        }));
+        await acquireRunnerIngress("sandbox_start", () => ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs)));
+        await acquireRunnerIngress("sandbox_refresh", () => withLivenessTimeout(
           "sandbox.refreshData",
           config.livenessTimeoutMs,
           () => sandbox.refreshData(),
-        );
-        const preview = await sandbox.getPreviewLink(params.port);
-        if (typeof preview.url !== "string" || typeof preview.token !== "string") {
+        ));
+        const preview = await acquireRunnerIngress("private_preview", () => sandbox.getPreviewLink(params.port));
+        if (!isRecord(preview) || typeof preview.url !== "string" || typeof preview.token !== "string") {
           throw new Error("Daytona returned an incomplete private preview endpoint.");
         }
         const url = new URL(preview.url);
