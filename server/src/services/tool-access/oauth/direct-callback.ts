@@ -5,7 +5,7 @@ import type { ActorInfo } from "../types.js";
 import { createOAuthDiscovery } from "./discovery.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
 import { normalizeOAuthProviderError, oauthProviderErrorMessage } from "./provider-errors.js";
-import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
+import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes, connectionServerUrl } from "./metadata.js";
 import { connectionMethodForConnection } from "../connection-methods.js";
 import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
@@ -147,6 +147,8 @@ export function createDirectOAuthCallback(db: Db, dependencies: Dependencies) {
       codeVerifier: stateRow.codeVerifier,
       code: input.code,
       resource: endpoints.resource,
+      serverUrl: connectionServerUrl(connection.config),
+      scopes: authorizedScopes,
     });
     if (sourceTemplateKey === "google-workspace" && !isGoogleWorkspaceScopeGrant(normalizeOauthScopes(token.scope))) {
       throw unprocessable("Google did not return a supported permission grant. Reconnect and choose the Google services you want to use.", { code: "oauth_scope_grant_invalid" });

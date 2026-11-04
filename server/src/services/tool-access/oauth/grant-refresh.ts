@@ -1,7 +1,7 @@
 import { writeToolConnectionHealthChange } from "../../tool-connection-health-notifications.js";
 import type { ActorInfo } from "../types.js";
 import { createOAuthClientProtocol, storedOAuthTokenEndpointAuthMethod } from "./client.js";
-import { oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
+import { connectionServerUrl, oauthConfig, normalizeOauthScopes, resolveGrantedOauthScopes } from "./metadata.js";
 import { googleWorkspaceEffectiveScopes, isGoogleWorkspaceScopeGrant } from "@paperclipai/shared";
 import { emitConnectionUpdated } from "../../connector-telemetry.js";
 import { and, eq, sql } from "drizzle-orm";
@@ -312,6 +312,7 @@ export function createOAuthGrantRefresh(db: Db, { now, store, leases, currentClo
         try {
           token = await exchangeOAuthToken({
             tokenUrl: oauthTokenUrl,
+            serverUrl: connectionServerUrl(connection.config),
             clientId: client.clientId,
             clientSecret: client.clientSecret,
             tokenEndpointAuthMethod: storedOAuthTokenEndpointAuthMethod(

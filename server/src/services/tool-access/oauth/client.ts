@@ -309,6 +309,7 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     refreshToken?: string | null;
     /** RFC 8707 resource indicator: the MCP server this token is for. */
     resource?: string | null;
+    serverUrl?: string | null;
   }) {
     const body = new URLSearchParams();
     if (input.grantType === "client_credentials") {
@@ -345,11 +346,11 @@ export function createOAuthClientProtocol({ fetchRemoteHttpUrl, assertOAuthEndpo
     // exchange) to this MCP server.
     // Microsoft Entra ID v2.0 rejects token requests if `resource` does not match the scope prefix.
     // Microsoft v1 endpoints still require `resource`.
-    // We only omit the resource indicator for verified Microsoft resources with matching scopes,
-    // ensuring untrusted remote MCP servers cannot suppress RFC 8707 audience restrictions.
+    // Only a matching Microsoft destination or an operator-approved binding may omit it.
     const omitResource = shouldOmitMicrosoftResourceIndicator({
       oauthUrl: input.tokenUrl,
       resource: input.resource,
+      serverUrl: input.serverUrl,
       scopes: input.scopes,
     });
     if (input.resource && !omitResource)

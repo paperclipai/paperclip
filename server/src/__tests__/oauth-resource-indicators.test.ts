@@ -72,12 +72,32 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
     });
   });
 
+  describe("trusted custom Entra resources", () => {
+    const oauthUrl = "https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize";
+    const resource = "https://mcp.example.com/mcp";
+    const scopes = ["api://custom-api/access", "offline_access"];
+
+    it("requires an operator-approved server, resource and scope binding", () => {
+      vi.stubEnv("PAPERCLIP_TRUSTED_ENTRA_MCP_RESOURCES", JSON.stringify([{ serverUrl: resource, resource, scopes: [scopes[0]] }]));
+      try {
+        expect(shouldOmitMicrosoftResourceIndicator({ oauthUrl, resource, scopes, serverUrl: resource })).toBe(true);
+        expect(shouldOmitMicrosoftResourceIndicator({ oauthUrl, resource, scopes, serverUrl: "https://attacker.example/mcp" })).toBe(false);
+        expect(shouldOmitMicrosoftResourceIndicator({ oauthUrl, resource, scopes: ["https://graph.microsoft.com/.default"], serverUrl: resource })).toBe(false);
+        expect(shouldOmitMicrosoftResourceIndicator({ oauthUrl, resource, scopes: [], serverUrl: resource })).toBe(false);
+        expect(shouldOmitMicrosoftResourceIndicator({ oauthUrl, resource: "https://mcp.example.com/other", scopes, serverUrl: resource })).toBe(false);
+        vi.stubEnv("PAPERCLIP_TRUSTED_ENTRA_MCP_RESOURCES", "not-json");
+        expect(shouldOmitMicrosoftResourceIndicator({ oauthUrl, resource, scopes, serverUrl: resource })).toBe(false);
+      } finally { vi.unstubAllEnvs(); }
+    });
+  });
+
   describe("shouldOmitMicrosoftResourceIndicator", () => {
     it("omits resource for verified Microsoft v2 endpoint and Microsoft resource", () => {
       expect(
         shouldOmitMicrosoftResourceIndicator({
           oauthUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
           resource: "https://mcp.dev.azure.com/CareConnections",
+          serverUrl: "https://mcp.dev.azure.com/CareConnections",
           scopes: ["https://mcp.dev.azure.com/.default", "offline_access"],
         }),
       ).toBe(true);
@@ -93,11 +113,21 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
       ).toBe(false);
     });
 
+    it("does not trust a Microsoft resource advertised by a different server", () => {
+      expect(shouldOmitMicrosoftResourceIndicator({
+        oauthUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+        resource: "https://graph.microsoft.com",
+        serverUrl: "https://attacker.example/mcp",
+        scopes: ["https://graph.microsoft.com/.default"],
+      })).toBe(false);
+    });
+
     it("does NOT omit resource if requested scope targets a different resource host (negative test)", () => {
       expect(
         shouldOmitMicrosoftResourceIndicator({
           oauthUrl: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
           resource: "https://mcp.dev.azure.com/CareConnections",
+          serverUrl: "https://mcp.dev.azure.com/CareConnections",
           scopes: ["https://graph.microsoft.com/.default"],
         }),
       ).toBe(false);
@@ -138,7 +168,7 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
         name: "Test Connection",
         status: "draft" as const,
         credentialPolicy: "per_user" as const,
-        config: { transport: "http", sourceTemplateKey: null },
+        config: { transport: "http", sourceTemplateKey: null, url: resource },
       };
 
       return createOAuthAuthorizationStart(mockDb, {
@@ -172,6 +202,20 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
         assertOAuthEndpointUrl: (_type, url) => url,
       });
     }
+
+    it("omits the resource for an explicitly trusted custom server at authorization", async () => {
+      const resource = "https://mcp.example.com/mcp";
+      const scopes = ["api://custom-api/access"];
+      vi.stubEnv("PAPERCLIP_TRUSTED_ENTRA_MCP_RESOURCES", JSON.stringify([{ serverUrl: resource, resource, scopes }]));
+      try {
+        const startOAuth = createMockAuthStart("https://login.microsoftonline.com/tenant/oauth2/v2.0/authorize", resource, scopes);
+        const result = await startOAuth("company-fixture", "conn-fixture", {
+          redirectUri: "https://paperclip.example:3100/api/tools/oauth/callback",
+          actor: { actorType: "user", actorId: "user-123" },
+        });
+        expect(new URL(result.authorizationUrl).searchParams.get("resource")).toBeNull();
+      } finally { vi.unstubAllEnvs(); }
+    });
 
     it("omits resource parameter from authorization URL for Microsoft Entra ID v2.0 with Microsoft resource", async () => {
       const startOAuth = createMockAuthStart(
@@ -264,6 +308,27 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
       return { protocol, calls };
     }
 
+    it.each(["authorization_code", "refresh_token"] as const)("uses the approved binding for %s requests", async (grantType) => {
+      const resource = "https://mcp.example.com/mcp";
+      const scopes = ["api://custom-api/access"];
+      vi.stubEnv("PAPERCLIP_TRUSTED_ENTRA_MCP_RESOURCES", JSON.stringify([{ serverUrl: resource, resource, scopes }]));
+      try {
+        const { protocol, calls } = setupClientProtocol();
+        await protocol.exchangeOAuthToken({
+          tokenUrl: "https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+          clientId: "client-fixture", grantType, code: "code", refreshToken: grantType === "refresh_token" ? "refresh" : undefined,
+          resource, serverUrl: resource, scopes,
+        });
+        expect(calls[0].body.get("resource")).toBeNull();
+        await protocol.exchangeOAuthToken({
+          tokenUrl: "https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+          clientId: "client-fixture", grantType, code: "code", refreshToken: grantType === "refresh_token" ? "refresh" : undefined,
+          resource, serverUrl: "https://attacker.example/mcp", scopes,
+        });
+        expect(calls[1].body.get("resource")).toBe(resource);
+      } finally { vi.unstubAllEnvs(); }
+    });
+
     describe("code exchange", () => {
       it("omits resource in POST body for Microsoft Entra ID v2.0 token endpoint with Microsoft resource", async () => {
         const { protocol, calls } = setupClientProtocol();
@@ -275,6 +340,7 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
           redirectUri: "https://paperclip.example:3100/api/tools/oauth/callback",
           codeVerifier: "verifier-xyz",
           resource: "https://mcp.dev.azure.com/CareConnections",
+          serverUrl: "https://mcp.dev.azure.com/CareConnections",
           scopes: ["https://mcp.dev.azure.com/.default"],
         });
 
@@ -343,6 +409,7 @@ describe("OAuth Resource Indicators and Provider Handling", () => {
           grantType: "refresh_token",
           refreshToken: "refresh-xyz",
           resource: "https://mcp.dev.azure.com/CareConnections",
+          serverUrl: "https://mcp.dev.azure.com/CareConnections",
           scopes: ["https://mcp.dev.azure.com/.default"],
         });
 
