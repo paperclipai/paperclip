@@ -35,6 +35,7 @@ import { readProcessStartedAt } from "../hot-restart.js";
 import { getServerProcessStartedAt } from "../../server-info.js";
 import { redactSensitiveText } from "../../redaction.js";
 import { isUniqueViolation } from "../../db-errors.js";
+import { logger } from "../../middleware/logger.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { isNativeRunnerOwnershipHeld } from "./native-runner-ownership.js";
@@ -51,6 +52,9 @@ export type NativeControllerIdentity = {
 };
 
 export type NativeRestartKind = "hot" | "hard" | "graceful";
+
+/** A recovery claim for one run failed unexpectedly and was deferred. */
+export const NATIVE_RESTART_RECOVERY_FAILED = "restart_recovery_failed";
 
 export type NativeRestartRecoveryClaim =
   | {
@@ -1238,11 +1242,19 @@ export async function claimNativeRestartRecoveries(input: {
         ...common,
       } satisfies NativeRestartRecoveryClaim;
     }).catch((error: unknown) => {
-      if (!isUniqueViolation(error, "issues_open_routine_execution_uq")) throw error;
+      // The whole candidate transaction rolled back, so this run's state is
+      // unchanged and nothing was claimed. Keep the obligation on the existing
+      // recovery deadline and continue the batch: one run must not stop
+      // startup recovery.
       terminalRunToReport = null;
       claimScope = undefined;
+      const routineBusy = isUniqueViolation(error, "issues_open_routine_execution_uq");
+      if (!routineBusy) {
+        logger.error({ err: error, runId: candidate.runId }, "native restart recovery failed for one run; deferring it");
+      }
       return { kind: "awaiting_evidence" as const, runId: candidate.runId,
-        reason: "routine_execution_busy", retryAt: new Date(now.getTime() + 30_000) };
+        reason: routineBusy ? "routine_execution_busy" : NATIVE_RESTART_RECOVERY_FAILED,
+        retryAt: new Date(now.getTime() + 30_000) };
     });
     if (terminalRunToReport)
       void reportRunFailure(input.db, terminalRunToReport);

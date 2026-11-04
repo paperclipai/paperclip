@@ -67,6 +67,7 @@ import {
   dispatchNativeSessionResumptions,
   detachNativeSessionsForRestart,
   isNativeSessionId,
+  NATIVE_RESTART_RECOVERY_FAILED,
   readNativeWorkspaceSyncReference,
   type NativeRestartRecoveryClaim,
   reconcileNativeFinalizations,
@@ -1018,7 +1019,13 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
         // No ownership decision was made for a locked row. Writing an event
         // would wait on that same row and defeat the non-blocking startup scan.
         if (disposition.kind === "awaiting_evidence" && disposition.reason === "recovery_rows_busy") continue;
-        const run = await getRun(disposition.runId);
+        // Claims are already committed and must still dispatch, so one failed
+        // audit write cannot stop the rest of the batch.
+        const auditFailed = (error: unknown) => {
+          logger.warn({ err: error, runId: disposition.runId }, "failed to record native restart recovery transition");
+          return null;
+        };
+        const run = await getRun(disposition.runId).catch(auditFailed);
         if (run) {
           const isClaim =
             disposition.kind === "reattach_existing_runner" ||
@@ -1028,7 +1035,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
           await appendRunEvent(run, {
             eventType: "native.recovery.transition",
             stream: "system",
-            level: disposition.kind === "blocked" ? "warn" : "info",
+            level: disposition.kind === "blocked" || (disposition.kind === "awaiting_evidence"
+              && disposition.reason === NATIVE_RESTART_RECOVERY_FAILED) ? "warn" : "info",
             message:
               disposition.kind === "reattach_existing_runner" ||
               disposition.kind === "reattach_remote_runner"
@@ -1037,6 +1045,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                   ? "Resuming the durable native provider session after runner process loss"
                   : disposition.kind === "bootstrap_incomplete"
                     ? "Restarting an incomplete native runner bootstrap on the same heartbeat run"
+                    : disposition.kind === "awaiting_evidence" && disposition.reason === NATIVE_RESTART_RECOVERY_FAILED
+                      ? "Native restart recovery failed for this run and will retry"
                     : disposition.kind === "awaiting_evidence"
                       ? "Native restart recovery is waiting for safe ownership evidence"
                       : disposition.kind === "already_finalized"
@@ -1064,7 +1074,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
                   }
                 : {}),
             },
-          });
+          }).catch(auditFailed);
         }
       }
       for (const claim of claims) {
