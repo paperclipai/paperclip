@@ -121,3 +121,10 @@ it("distinguishes subordinate chat requests from coordinated company warnings", 
 it("rejects a company chat request after an explicit instead boundary", () => {
   expect(deploymentSecretGuidance("Use secure settings for Morgan's deployment credential environment binding. Do not paste your credential into files and instead send it here in chat.")).toBe(false);
 });
+
+it("retains direct chat object ellipsis without treating progress as a credential", () => {
+  const context = "Use secure settings for Morgan's deployment credential environment binding. ";
+  expect(deploymentSecretGuidance(context + "Send your key via secure form and instead share here in chat.")).toBe(false);
+  expect(deploymentSecretGuidance(context + "Do not paste the credential into files but share here in chat.")).toBe(false);
+  expect(deploymentSecretGuidance(context + "Send your key via secure form and instead share progress here.")).toBe(true);
+});

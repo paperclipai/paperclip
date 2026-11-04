@@ -249,3 +249,10 @@ it("distinguishes a subordinate chat request from a coordinated warning", () => 
 it("rejects a chat request after an explicit instead boundary", () => {
   expect(personalSecretGuidance("Open secure personal publishing settings. Do not paste your credential into files and instead send it here in chat.")).toBe(false);
 });
+
+it("rejects an omitted credential object directed into chat", () => {
+  const context = "Open secure personal publishing settings. ";
+  expect(personalSecretGuidance(context + "Send your key via secure form and instead share here in chat.")).toBe(false);
+  expect(personalSecretGuidance(context + "Do not paste the credential into files but share here in chat.")).toBe(false);
+  expect(personalSecretGuidance(context + "Send your key via secure form and instead share progress here.")).toBe(true);
+});

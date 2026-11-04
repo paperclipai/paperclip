@@ -65,3 +65,13 @@ it("keeps contrast normalization aligned with secure exemptions", () => {
 it("resets a polite request at the same contrast boundary", () => {
   expect(solicitsChatCredential("Do not paste your credential into files and instead please send it here in chat.")).toBe(true);
 });
+
+it("retains an omitted credential object only for direct chat destinations", () => {
+  expect(solicitsChatCredential("Send your key via secure form and instead share here in chat.")).toBe(true);
+});
+it("does not inherit a prior prohibition for an independent omitted-object request", () => {
+  expect(solicitsChatCredential("Do not paste the credential into files but share here in chat.")).toBe(true);
+});
+it("retains an explicit noncredential object", () => {
+  expect(solicitsChatCredential("Send your key via secure form and instead share progress here.")).toBe(false);
+});
