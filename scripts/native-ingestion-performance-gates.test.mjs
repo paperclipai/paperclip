@@ -234,7 +234,7 @@ test("H5 assessor retains an original SLA failure assessed before its nominal st
   assert.throws(() => requireH5Candidate("final-b2", outcome, outcome), /every original SLA/);
 });
 
-test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires complete owning evidence", async () => {
+test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires complete owning evidence", async context => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "native-ingestion-h5-gates-"));
   const script = new URL("./compare-native-ingestion-browser.ts", import.meta.url);
   const save = async (name, value) => { const file = path.join(directory, name); await writeFile(file, JSON.stringify(value)); return file; };
@@ -271,11 +271,17 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
     for (let index = 0; index < 5; index++) {
       const entry = {};
       for (const arm of ["baseline", "candidate"]) {
-        const report = h5Report(arm === "baseline" || sameRevision ? baselineRevision : candidateRevision, arm === "baseline" ? 180000 : candidateLatency);
+        const ordinal = 2 * index + (arm === "baseline" ? index % 2 : index % 2 ? 0 : 1);
+        const startedAtMs = Date.parse(sameRevision ? "2026-11-02T00:00:00.000Z" : "2026-11-03T00:00:00.000Z") + ordinal * 2000000;
+        const ownedIdPrefix = createHash("sha256").update(prefix).digest("hex").slice(0,6) + ordinal.toString(16).padStart(2,"0");
+        const report = JSON.parse(JSON.stringify(h5Report(arm === "baseline" || sameRevision ? baselineRevision : candidateRevision,
+          arm === "baseline" ? 180000 : candidateLatency)).replaceAll("00000000-", `${ownedIdPrefix}-`), (key, value) =>
+          typeof value === "number" && (key.endsWith("AtMs") || ["epochMs", "deadlineMs", "readinessDeadlineMs", "visibleMs", "intendedMs", "emittedMs"].includes(key)) ? value + startedAtMs : value);
+        report.bodyFinishedAtMs = startedAtMs + duration - 1;
         const owner = { timeout: 1200000, expectedStatus: "passed", results: [{ status: "passed", retry: 0,
-          duration, startTime: "2026-11-03T00:00:00.000Z", errors: [], attachments: [] }] };
+          duration, startTime: new Date(startedAtMs).toISOString(), errors: [], attachments: [] }] };
         if (index === 0 && arm === "candidate") mutate?.(report, owner);
-        mutateArm?.(report, { index, arm });
+        mutateArm?.(report, { index, arm, owner });
         owner.results[0].attachments.push({ name: "native-ingestion-evidence", contentType: "application/json",
           body: Buffer.from(JSON.stringify(report)).toString("base64") });
         entry[`${arm}File`] = await save(`${prefix}-${index}-${arm}.json`, report);
@@ -299,11 +305,90 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
     const originalInventory = await inventory(proof, originalProof, "original-h4c");
     const finalProofArgs = [`--original-h4e-proof=${originalProof}`, `--original-h4e-inventory=${originalInventory}`];
     const noise = path.join(directory, "aa.json");
-    const aa = run(["--phase=aa", `--pairs=${await manifest("aa", 181000, { sameRevision: true })}`, `--output=${noise}`]);
+    const aaManifest = await manifest("aa", 181000, { sameRevision: true });
+    const aa = run(["--phase=aa", `--pairs=${aaManifest}`, `--output=${noise}`]);
     assert.equal(aa.status, 0, aa.stderr);
     const aaReport = JSON.parse(await readFile(noise, "utf8"));
     assert.equal(aaReport.h5Assessments.length, 5);
+    assert.equal(aaReport.measurements.filter(item => item.metric === "h5.independentDrain.elapsedFromEpochMs").length, 5,
+      "Every non-Stop case needs its own verified-completion A/A noise");
+    assert(aaReport.measurements.find(item => item.name === "burst512" && item.metric === "h5.independentDrain.elapsedFromEpochMs").aaNoiseEnvelopeRelative > 0);
     assert.deepEqual(aaReport.h5Assessments[0].baseline.misses, ["burst512:streaming120"]);
+    assert.equal(aaReport.aaSuitability.passed, true); assert.equal(aaReport.armChronology.length, 10);
+    assert.equal(new Set(aaReport.armChronology.map(arm => arm.companyId)).size, 10);
+    for (const [name, mutateArm, expectation] of [
+      ["aa-paired-jitter", (report, { arm, index }) => { if (arm === "candidate" && index === 4) report.cases[0].firstVisibleAfterEmissionMs = 1300; }, "paired"],
+      ["aa-chronological-drift", (report, { index }) => { report.cases[0].firstVisibleAfterEmissionMs = 1000 + index * 60; }, "chronological"],
+      ["aa-role-bias", (report, { arm }) => { report.cases[0].firstVisibleAfterEmissionMs = arm === "candidate" ? 1120 : 1000; }, "role"],
+    ]) {
+      const output = path.join(directory, `${name}.json`);
+      const attempt = run(["--phase=aa", `--pairs=${await manifest(name, 180000, { sameRevision: true, mutateArm })}`, `--output=${output}`]);
+      assert.notEqual(attempt.status, 0, name); assert.match(attempt.stderr, /A\/A suitability failed/);
+      const unsuitable = JSON.parse(await readFile(output, "utf8"));
+      assert.equal(unsuitable.aaSuitability.passed, false); assert.equal(unsuitable.armChronology.length, 10);
+      const metric = unsuitable.measurements.find(item => item.name === "paced" && item.metric === "firstVisibleAfterEmissionMs").aaSuitability;
+      if (expectation === "paired") assert(metric.pairedDifferencesMs.some((value,index) => value > metric.pairedLimitsMs[index]));
+      if (expectation === "chronological") { assert.equal(metric.observedNoiseAbsoluteMs, 0); assert(metric.chronologicalMedianDriftMs > metric.chronologicalDriftLimitMs); }
+      if (expectation === "role") assert(metric.roleMedianDriftMs > metric.roleDriftLimitMs);
+    }
+    for (const [name, mutateArm] of [
+      ["aa-missing-owner-time", (_report, { arm, index, owner }) => { if (arm === "candidate" && index === 0) delete owner.results[0].startTime; }],
+      ["aa-overlap", (_report, { arm, index, owner }) => { if (arm === "candidate" && index === 0) owner.results[0].startTime = "2026-11-02T00:00:00.001Z"; }],
+      ["aa-wrong-order", (_report, { arm, index, owner }) => { if (index === 1) owner.results[0].startTime = new Date(Date.parse("2026-11-02T00:00:00.000Z") + (arm === "baseline" ? 4 : 5) * 1000000).toISOString(); }],
+      ["aa-reused-company-run", (report) => { const prefix = report.companyId.slice(0,8); Object.assign(report, JSON.parse(JSON.stringify(report).replaceAll(`${prefix}-`, "00000000-"))); }],
+    ]) {
+      const attempt = run(["--phase=aa", `--pairs=${await manifest(name, 180000, { sameRevision: true, mutateArm })}`]);
+      assert.notEqual(attempt.status, 0, name);
+    }
+    for (const [name, forge] of [
+      ["forged-absolute-noise", noise => { noise.measurements[0].aaNoiseEnvelopeAbsoluteMs = 9999; }],
+      ["forged-relative-noise", noise => { noise.measurements[0].aaNoiseEnvelopeRelative = 9; }],
+      ["forged-representation", noise => { noise.measurements[0].representationLimited = !noise.measurements[0].representationLimited; }],
+      ["forged-suitability", noise => { noise.measurements[0].aaSuitability.pairedLimitsMs[0] = 9999; }],
+      ["forged-sample", noise => { noise.measurements[0].samples[0].improvementMs++; }],
+      ["forged-rule", noise => { noise.aaSuitability.rule.contrastRepresentationFloorMs = 1000; }],
+    ]) {
+      const forged = structuredClone(aaReport); forge(forged);
+      const attempt = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression",
+        `--pairs=${await manifest(name, 180000, { candidateRevision: "B1" })}`, `--noise-report=${await save(`${name}-noise.json`, forged)}`, "--require-performance"]);
+      assert.notEqual(attempt.status, 0, name); assert.match(attempt.stderr, /forged|rule changed/);
+    }
+    for (const repeat of [1,2]) {
+      const shortNoise = path.join(directory, `short-${repeat}-noise.json`);
+      const aa = run(["--phase=aa", `--pairs=${await manifest(`short-${repeat}-aa`, 180000, { sameRevision: true,
+        mutateArm: (report, { arm }) => { report.cases[0].firstVisibleAfterEmissionMs = arm === "candidate" ? repeat : 1; } })}`, `--output=${shortNoise}`]);
+      assert.equal(aa.status, 0, aa.stderr);
+      const calibrated = JSON.parse(await readFile(shortNoise, "utf8"));
+      const control = calibrated.measurements.find(item => item.name === "paced" && item.metric === "firstVisibleAfterEmissionMs");
+      assert.equal(control.representationLimited, true); assert.equal(control.percentageGainClaimAllowed, false);
+      assert.equal(control.medianPairedImprovementRelative, null); assert.equal(control.aaNoiseEnvelopeAbsoluteMs, repeat - 1);
+      const output = path.join(directory, `short-${repeat}-regression.json`);
+      const attempt = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression",
+        `--pairs=${await manifest(`short-${repeat}-regression`, 180000, { candidateRevision: "B1", mutateArm: (report, { arm }) => {
+          report.cases[0].firstVisibleAfterEmissionMs = repeat === 1 ? arm === "candidate" ? 2 : 1 : arm === "candidate" ? 12 : 10;
+        } })}`, `--noise-report=${shortNoise}`, `--output=${output}`, "--require-performance"]);
+      assert.notEqual(attempt.status, 0, "The suitability floor must not pad actual observed absolute noise");
+      const compared = JSON.parse(await readFile(output, "utf8"));
+      const gate = compared.gates.find(item => item.name === "paced" && item.metric === "firstVisibleAfterEmissionMs");
+      assert.equal(gate.noiseEnvelopeAbsoluteMs, repeat - 1); assert.equal(gate.representationLimited, true); assert.equal(gate.passed, false);
+      if (repeat === 2) {
+        const improving = path.join(directory, "short-calibrated-improvement.json");
+        const changed = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression",
+          `--pairs=${await manifest("short-calibrated-improvement", 180000, { candidateRevision: "B1", mutateArm: (report, { arm }) => {
+            report.cases[0].firstVisibleAfterEmissionMs = arm === "candidate" ? 1 : 100;
+          } })}`, `--noise-report=${shortNoise}`, `--output=${improving}`, "--require-performance"]);
+        assert.equal(changed.status, 0, changed.stderr);
+        const measured = JSON.parse(await readFile(improving, "utf8")).measurements.find(item => item.name === "paced" && item.metric === "firstVisibleAfterEmissionMs");
+        assert.equal(measured.representationLimited, true); assert.equal(measured.percentageGainClaimAllowed, false);
+        assert.equal(measured.medianPairedImprovementRelative, null, "Short calibration cannot turn into a percentage gain claim");
+      }
+    }
+    const replayedOwners = JSON.parse(await readFile(await manifest("reused-aa-owner", 180000, { candidateRevision: "B1" }), "utf8"));
+    const oldOwners = JSON.parse(await readFile(aaManifest, "utf8"));
+    for (const field of ["baselineFile", "baselinePlaywrightFile", "baselineInventoryFile"]) replayedOwners[0][field] = oldOwners[0][field];
+    const replay = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression",
+      `--pairs=${await save("reused-aa-owner-pairs.json", replayedOwners)}`, `--noise-report=${noise}`, "--require-performance"]);
+    assert.notEqual(replay.status, 0); assert.match(replay.stderr, /calibration|reus/);
     const cursor = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression",
       `--pairs=${await manifest("cursor", 180000, { candidateRevision: "B1" })}`, `--noise-report=${noise}`, "--require-acceptance"]);
     assert.equal(cursor.status, 0, cursor.stderr);
@@ -318,6 +403,69 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
     const goodPairs = await manifest("good", 1000);
     const good = run(["--candidate-policy=final-b2", `--pairs=${goodPairs}`, `--noise-report=${noise}`, ...finalProofArgs, "--require-acceptance"]);
     assert.equal(good.status, 0, good.stderr);
+    const completionRegressionPairs = await manifest("verified-drain-regression", 1000, {
+      mutateArm: (report, { arm }) => {
+        if (arm !== "candidate") return;
+        const item = report.cases[3];
+        Object.assign(item.h5.independentDrain, { elapsedFromEpochMs: 200000, verifiedAtMs: item.epochMs + 200000 });
+      } });
+    const completionRegressionOutput = path.join(directory, "verified-drain-regression.json");
+    const completionRegression = run(["--candidate-policy=final-b2", `--pairs=${completionRegressionPairs}`,
+      `--noise-report=${noise}`, `--output=${completionRegressionOutput}`, "--require-performance"]);
+    const completionRegressionReport = JSON.parse(await readFile(completionRegressionOutput, "utf8"));
+    context.diagnostic(JSON.stringify({ regression: "browser and terminal faster but independently verified completion slower",
+      comparatorSha256: completionRegressionReport.comparatorSha256, exit: completionRegression.status,
+      performancePassed: completionRegressionReport.performancePassed, baselineVerifiedMs: 180010, candidateVerifiedMs: 200000,
+      verifiedCompletionGate: completionRegressionReport.gates.find(gate => gate.name === "burst512"
+        && gate.metric === "h5.independentDrain.elapsedFromEpochMs") ?? null }));
+    assert.notEqual(completionRegression.status, 0, "Faster browser/terminal must not conceal slower fully verified completion");
+    const regressionGate = completionRegressionReport.gates.find(gate => gate.name === "burst512"
+      && gate.metric === "h5.independentDrain.elapsedFromEpochMs");
+    assert.equal(regressionGate.improvementRequired, true); assert.equal(regressionGate.passed, false);
+    assert(completionRegressionReport.gates.filter(gate => gate.name === "burst512" &&
+      ["emissionToVisible.p95Ms", "intendedToVisible.p95Ms", "drainThroughTerminalMs"].includes(gate.metric)).every(gate => gate.passed));
+    const goodReport = JSON.parse(good.stdout);
+    const rate = goodReport.verifiedCompletionRates.find(item => item.name === "burst512");
+    assert.equal(rate.samples[0].measuredDeltas, 51200);
+    assert.equal(rate.samples[0].baselineDeltasPerSecond, 51200000 / 180010);
+    assert.equal(rate.samples[0].candidateDeltasPerSecond, 51200000 / 1010);
+    assert(rate.candidateMedianDeltasPerSecond > rate.baselineMedianDeltasPerSecond);
+    for (const beyondNoise of [3,4]) {
+      const output = path.join(directory, `verified-drain-${beyondNoise}-wins.json`);
+      const attempt = run(["--candidate-policy=final-b2", `--pairs=${await manifest(`verified-drain-${beyondNoise}-wins`, 1000, {
+        mutateArm: (report, { arm, index }) => {
+          if (arm !== "candidate") return;
+          const item = report.cases[3], elapsed = index < beyondNoise ? 90000 : 179500;
+          Object.assign(item.h5.independentDrain, { elapsedFromEpochMs: elapsed, verifiedAtMs: item.epochMs + elapsed });
+        } })}`, `--noise-report=${noise}`, `--output=${output}`, "--require-performance"]);
+      assert.equal(attempt.status === 0, beyondNoise === 4, attempt.stderr);
+      const compared = JSON.parse(await readFile(output, "utf8"));
+      const gate = compared.gates.find(item => item.name === "burst512" && item.metric === "h5.independentDrain.elapsedFromEpochMs");
+      assert.equal(gate.noiseExceedingPairedWins, beyondNoise); assert.equal(gate.requiredPairedWins, 4);
+      assert.equal(gate.passed, beyondNoise === 4);
+    }
+    const zeroNoise = path.join(directory, "zero-noise.json");
+    const zeroAA = run(["--phase=aa", `--pairs=${await manifest("zero-noise-aa", 180000, { sameRevision: true })}`, `--output=${zeroNoise}`]);
+    assert.equal(zeroAA.status, 0, zeroAA.stderr);
+    for (const resolvedPairs of [0,3,4]) {
+      const output = path.join(directory, `timestamp-gain-${resolvedPairs}.json`);
+      const attempt = run(["--candidate-policy=final-b2", `--pairs=${await manifest(`timestamp-gain-${resolvedPairs}`, 1000, {
+        mutateArm: (report, { arm, index }) => {
+          if (arm !== "candidate") return;
+          const item = report.cases[3], gain = resolvedPairs === 0 ? 1 : index < resolvedPairs ? 3 : 2;
+          Object.assign(item.h5.independentDrain, { elapsedFromEpochMs: 180010 - gain, verifiedAtMs: item.epochMs + 180010 - gain });
+        } })}`, `--noise-report=${zeroNoise}`, `--output=${output}`, "--require-performance"]);
+      assert.equal(attempt.status === 0, resolvedPairs === 4, attempt.stderr);
+      const gate = JSON.parse(await readFile(output, "utf8")).gates.find(item => item.name === "burst512"
+        && item.metric === "h5.independentDrain.elapsedFromEpochMs");
+      assert.equal(gate.noiseExceedingPairedWins, resolvedPairs); assert.equal(gate.requiredAbsoluteImprovementAboveMs, 2);
+    }
+    const cursorCompletionRegression = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression",
+      `--pairs=${await manifest("cursor-verified-drain-regression", 180000, { candidateRevision: "B1", mutateArm: (report, { arm }) => {
+        if (arm !== "candidate") return;
+        const item = report.cases[3]; Object.assign(item.h5.independentDrain, { elapsedFromEpochMs: 200000, verifiedAtMs: item.epochMs + 200000 });
+      } })}`, `--noise-report=${noise}`, "--require-performance"]);
+    assert.notEqual(cursorCompletionRegression.status, 0, "Cursor nonregression must include fully verified completion");
     const wrongPolicy = run(["--expect=nonregression", "--candidate-policy=cursor-nonregression", `--pairs=${goodPairs}`,
       `--noise-report=${noise}`, "--require-acceptance"]);
     assert.notEqual(wrongPolicy.status, 0); assert.match(wrongPolicy.stderr, /Cursor policy requires B0→B1/);
@@ -447,6 +595,8 @@ test("H5 CLI retains baseline SLA failure, rejects final SLA misses and requires
       ["stop-recorded-provider-failure", report => { report.cases[5].recordedFailures.rows[0].current_error_code = "provider_transport_failed"; }, /recorded failed run must have recovered/],
       ["censored", report => { report.cases[3].h5.streaming.observation.censored = true; }, /false/],
       ["terminal-failed", report => { report.cases[3].terminalStatuses[99].status = "failed"; }, /successful drainage/],
+      ["missing-independent-drain", report => { delete report.cases[3].h5.independentDrain; }, /independentDrain|verifiedAtMs|Cannot read/],
+      ["tampered-independent-drain", report => { report.cases[3].h5.independentDrain.elapsedFromEpochMs++; }, /strictly equal/],
       ["result-missing", report => { report.cases[3].durable[99].resultAcceptedEvents = 0; }, /persisted result/],
       ["missing-delta", report => { report.cases[3].durable[99].individualDeltas--; }, /individualDeltas|result.events|512/],
       ["wrong-workload", report => { report.workloadSha256 = "old"; }, /registration changed/],
