@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { deliveryAttestations, heartbeatRuns, issues, projectWorkspaces, type Db } from "@paperclipai/db";
-import { conflict, notFound, unprocessable } from "../errors.js";
+import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 
 export async function resolveWorkspaceDeliveryTargetFingerprint(
   db: Db,
@@ -100,6 +100,25 @@ export async function findSucceededAttestation(
     )
     .limit(1);
   return attestation ?? null;
+}
+
+/**
+ * The completion requirement is the board's contract with the agent. An agent
+ * must not be able to clear it in the same write that moves the issue to done,
+ * or the terminal gate above can be opted out of by whoever it constrains.
+ */
+export function assertCompletionRequirementMutation(input: {
+  previousRequirement: string | null;
+  nextRequirement: string | null;
+  actorUserId?: string | null;
+  actorAgentId?: string | null;
+}) {
+  if (input.previousRequirement === input.nextRequirement) return;
+  if (!input.actorAgentId) return;
+  if (input.actorUserId) return;
+  throw forbidden("Only a human may change the completion requirement", {
+    code: "completion_requirement_protected",
+  });
 }
 
 export async function assertDeliveryAttestationSatisfied(
