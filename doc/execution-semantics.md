@@ -3318,7 +3318,8 @@ A failed native run can still own a scheduled same-run bootstrap retry. The
 ordinary run detail offers Stop when the server's batched execution projection
 sets `canStop`: the native run is failed, its matching coordinator is retryable,
 and no result has been accepted. Unknown, legacy and accepted-result states
-remain ineligible. This presentation hint grants no permission; the existing
+remain ineligible. A false or absent hint does not remove the existing queued
+or running Cancel action. This presentation hint grants no permission; the existing
 company, actor and locked cancellation checks remain authoritative. A changed
 retry can reject Stop, which the run detail displays without claiming cleanup.
 A successful request refreshes the selected run and its history. Stop does not
