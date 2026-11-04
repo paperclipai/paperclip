@@ -3192,8 +3192,9 @@ owner as quiet or launch a replacement over it. The next retirement attempt uses
 the same owner and must finish provider closure and stopped-file collection.
 The existing explicit-reset exception still requires its typed retirement proof.
 
-`prepareIdleWarmNativeSessionsForSleep({ canRetire })` uses that same retirement
-path for idle owners. Its caller owns the admission hold and supplies a synchronous
+`heartbeatService(...).prepareIdleWarmNativeSessionsForSleep({ canRetire })`
+delegates to the native owner's retirement path for idle owners. Its caller owns
+the admission hold and supplies a synchronous
 current-authority check. The check runs before each retirement and after its
 awaited effects. A started cleanup settles if the hold expires, but no further
 owner retires under that expired hold. Busy turns remain active and do not inherit
