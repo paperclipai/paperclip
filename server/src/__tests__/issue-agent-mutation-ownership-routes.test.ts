@@ -4,6 +4,7 @@ import request from "supertest";
 import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { IssueExecutionPolicy } from "@paperclipai/shared";
 import { HttpError } from "../errors.js";
 import type { LogActivityInput } from "../services/activity-log.js";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
@@ -167,7 +168,9 @@ const mockExternalObjectService = vi.hoisted(() => ({
 const mockIssueTreeControlService = vi.hoisted(() => ({ getActivePauseHoldGate: vi.fn(async (): Promise<unknown> => null) }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async (_db: unknown, _input: LogActivityInput) => undefined));
 const mockObserveCrossIssueInfluence = vi.hoisted(() => vi.fn(async () => null));
-const mockResolveDefaultIssueExecutionPolicy = vi.hoisted(() => vi.fn(async () => null));
+const mockResolveDefaultIssueExecutionPolicy = vi.hoisted(() =>
+  vi.fn(async (): Promise<IssueExecutionPolicy | null> => null),
+);
 
 const mockRetryWorkspaceExport = vi.hoisted(() => vi.fn());
 const mockRequestWorkspaceRecovery = vi.hoisted(() => vi.fn());
@@ -3483,9 +3486,10 @@ describe("agent issue mutation checkout ownership", () => {
         commentRequired: true,
         stages: [
           {
+            id: "default-stage-id",
             type: "approval" as const,
             approvalsNeeded: 1 as const,
-            participants: [{ type: "user" as const, userId: "default-reviewer", agentId: null }],
+            participants: [{ id: "default-participant-id", type: "user" as const, userId: "default-reviewer", agentId: null }],
           },
         ],
       };

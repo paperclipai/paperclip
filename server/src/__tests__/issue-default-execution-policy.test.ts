@@ -63,7 +63,7 @@ describeEmbeddedPostgres("company/project default execution policy", () => {
   };
 
   function agentActor(agentId: string, companyId: string): TestActor {
-    return { type: "agent", agentId, companyId, runId: null } as TestActor;
+    return { type: "agent", agentId, companyId } as TestActor;
   }
 
   function app(actor: TestActor) {

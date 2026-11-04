@@ -1,8 +1,24 @@
 import { z } from "zod";
 import { COMPANY_STATUSES, PAUSE_REASONS } from "./constants.js";
 import { interactionResolverGovernanceSchema } from "./validators/company.js";
+import {
+  issueExecutionPolicySchema,
+  issueExecutionStageParticipantSchema,
+  issueExecutionStageSchema,
+} from "./validators/issue.js";
 import type { BoardBootstrap } from "./types/board-bootstrap.js";
 import type { Company } from "./types/company.js";
+import type { IssueExecutionPolicy } from "./types/issue.js";
+
+/** Stored policies always have ids assigned; the input schema leaves them optional for creation. */
+const storedIssueExecutionPolicySchema: z.ZodType<IssueExecutionPolicy> = issueExecutionPolicySchema.extend({
+  stages: z.array(
+    issueExecutionStageSchema.extend({
+      id: z.string(),
+      participants: z.array(issueExecutionStageParticipantSchema.safeExtend({ id: z.string() })),
+    }),
+  ),
+});
 
 const companySnapshotSchema: z.ZodType<Company> = z.object({
   id: z.string().min(1),
@@ -18,6 +34,7 @@ const companySnapshotSchema: z.ZodType<Company> = z.object({
   defaultResponsibleUserId: z.string().nullable(),
   requireBoardApprovalForNewAgents: z.boolean(),
   interactionResolverGovernance: interactionResolverGovernanceSchema,
+  defaultExecutionPolicy: storedIssueExecutionPolicySchema.nullable(),
   feedbackDataSharingEnabled: z.boolean(),
   feedbackDataSharingConsentAt: z.coerce.date().nullable(),
   feedbackDataSharingConsentByUserId: z.string().nullable(),
