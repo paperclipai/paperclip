@@ -106,7 +106,8 @@ describe("prepared bound-chat authorization", () => {
     const acquiredPromise = new Promise<void>((resolve) => { acquired = resolve; });
     const held = new Promise<void>((resolve) => { release = resolve; });
     const locker = db.transaction(async (tx) => {
-      await authorizeChatConversationForBoundRun(tx, binding, context, "blocking");
+      await tx.select({ id: chatMessageLinks.id }).from(chatMessageLinks)
+        .where(eq(chatMessageLinks.commentId, commentId)).for("update");
       acquired();
       await held;
     });
