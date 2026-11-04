@@ -961,7 +961,12 @@ export async function runChatFlow(input: ChatFlowInput) {
           const reply = rows.filter((run) => isChatCompletionReply(run, issue!.id, child.id));
           return { runs: rows, reply, comments: await comments() };
         },
-        accept: (state) => state.reply.length > 0 && state.reply.every((run) => ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)),
+        // A native reply comment is presented after its run succeeds, so wait
+        // for the comment too; a failed reply turn settles immediately.
+        accept: (state) => state.reply.length > 0 &&
+          state.reply.every((run) => ["succeeded", "failed", "cancelled", "timed_out"].includes(run.status)) &&
+          (state.reply.some((run) => run.status !== "succeeded") ||
+            state.comments.some((c) => c.authorAgentId === f.agent.id && state.reply.some((run) => run.id === c.createdByRunId))),
       });
       expect(completionReply.reply.map((run) => run.status), "one completion reply turn").toEqual(["succeeded"]);
       expect(completionReply.comments.filter((c) => c.authorAgentId === f.agent.id &&
