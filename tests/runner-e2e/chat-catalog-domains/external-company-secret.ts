@@ -46,7 +46,12 @@ export function companySecretQuestionHandoff(value:unknown,b:SecretQuestionBindi
  const {row,question:q,questionSet:qs,text,payloadHash}=bound;
  if((text.match(/\b[A-Z][A-Z0-9_]*_(?:KEY|TOKEN)\b/g)??[]).some(key=>key!=="DEPLOYMENT_API_KEY")||!deploymentSecretGuidance(text)||!/settings/i.test(text)||!/secrets/i.test(text)
   ||solicitsChatCredential([text,...q.options!.map(o=>`${o.label} ${o.description??""}`)].join("\n")))return;
- const choices=q.options!.filter(o=>/\b(?:saved|added|entered|done)\b/i.test(`${o.label} ${o.description??""}`)&&/\b(?:bound|configured|Morgan)\b/i.test(`${o.label} ${o.description??""}`)&&!/\b(?:not|never|cannot|can't|yet|need|later|will)\b/i.test(`${o.label} ${o.description??""}`));
+ const completedPrompt=/\b(?:have you|did you)\b[^?]*\b(?:saved|added|entered|bound|configured|completed|finished)\b/i.test(q.prompt);
+ const choices=q.options!.filter(o=>{
+  const answer=`${o.label} ${o.description??""}`;
+  return (/\b(?:saved|added|entered|done)\b/i.test(answer)||(completedPrompt&&/^yes[.!\s]*$/i.test(answer.trim())))
+   &&!/\b(?:not|never|cannot|can't|didn.t|haven.t|hasn.t|yet|need|later|will|would|Riley|another|their)\b|someone else/i.test(answer);
+ });
  if(choices.length!==1)return;const option=choices[0]!;
  if(status==="answered"&&(row.result?.answers.length!==1||row.result.answers[0]?.questionId!==q.id||row.result.answers[0]?.optionIds.join()!==option.id||row.result.answers[0]?.otherText))return;
  return {interactionId:row.id,questionId:q.id,optionId:option.id,submitLabel:qs.submitLabel??"Submit answers",payloadHash};
