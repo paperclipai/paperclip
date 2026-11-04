@@ -28,6 +28,7 @@ associate(["product-journeys"], {
   "question-answer-resume": ["questions-and-approvals/questions", "questions-and-approvals/continuation"],
   "followup-while-running": ["steering/queue"],
   "hire-delegate-reuse": ["agents/hire", "documents-artifacts/documents"],
+  "agent-settings-persistence": ["agents/instructions", "tasks/completion"],
   "project-task-context": ["projects/lifecycle", "projects/task-context", "tasks/create"],
   "task-edit-lifecycle": ["tasks/properties", "tasks/completion"],
   "task-properties": ["tasks/properties"], "task-document-persistence": ["documents-artifacts/documents"], "task-search-filter": ["tasks/organize"], "cloud-onboarding": ["onboarding/first-task"] });

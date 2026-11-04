@@ -1258,6 +1258,13 @@ checks coordinator ownership in its terminal update, so a result recorded after
 the process check is also protected. Terminal task status remains authoritative;
 exhausted finalization retries do not keep an otherwise orphaned run alive.
 
+A native failure that schedules a same-run resume marks the run `failed` but
+keeps the task's execution and checkout locks for that resume. The sweep leaves
+those locks in place and clears them only when the task is done or cancelled.
+If a scheduled resume finds its execution lock free, restart recovery reclaims
+it, as the local resume claim does, unless another run for the task is queued,
+running, or scheduled. A lock held by another run still blocks the resume.
+
 Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.
 
 ### Issue-thread interaction resolution
@@ -1834,9 +1841,10 @@ An interrupted conversation does not permanently block its task. For local conve
 
 Shutdown, process loss, and provider failure use the existing durable failure retry counter and delay. Ordinary failure recovery permits at most two automatic retries in a failure chain. Accepted-interaction infrastructure recovery retains its existing bounded policy. Repeated scheduler visits reuse the same successor; restarting the server does not reset the counter. After exhaustion, automatic attempts stop. A new explicit user message can start a fresh run and failure budget. Productive max-turn continuation and confirmed workspace waits keep their separate existing semantics.
 
-If shutdown interrupts Paperclip Runner preparation before native execution was
-selected, recovery verifies that no provider, process launch, native result or
-coordinator exists. The previous controller must have settled or lost its lease.
+If shutdown or a recorded unexpected system interruption stops Paperclip Runner
+preparation before native execution was selected, recovery verifies that no
+provider, process launch, native result or coordinator exists. The previous
+controller must have settled or lost its lease.
 Required workspace recovery must have an exact saved-file receipt and stopped
 leases before the task can continue. Once these checks pass, the server retires
 its own unchanged bootstrap-failure block and schedules one bounded retry.
@@ -1845,7 +1853,8 @@ restart. A pending Retry or saved message owns its continuation instead of
 starting a competing automatic attempt. Retry uses the same preparation proof
 and preserves the recovered workspace. Current task ownership, human blocks,
 pauses, approvals, budgets and the existing retry limit remain effective.
-Operator Stops retain their explicit continuation requirements.
+Operator Stops retain their explicit continuation requirements. Other ambiguous
+interruptions without a server system-cancellation record remain held.
 
 Graceful shutdown interrupts an owned legacy adapter through its cancellation
 control, then waits within one shared 30-second window for provider stop and

@@ -148,6 +148,7 @@ describe("runner E2E catalog", () => {
       "stop-redirect",
       "followup-while-running",
       "hire-delegate-reuse",
+      "agent-settings-persistence",
       "cloud-onboarding"
     ]);
     expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);

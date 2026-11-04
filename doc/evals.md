@@ -1,5 +1,7 @@
 # Paperclip evaluation guide
 
+The explicit deployment-targeted [saved agent instructions journey](../tests/runner-e2e/product-journeys/AGENT-SETTINGS.md) checks an owned agent’s ordinary UI save, persisted instruction bytes, one current-run output, and restoration. The task request omits its instruction-only reference. It reuses the existing Product E2E target and report path; local controls do not establish a staging pass.
+
 The explicit-only [verified API artifact transfer](../tests/runner-e2e/README.md#verified-api-artifact-transfer)
 cell checks a native Codex agent on Daytona installing an authorized saved API
 response and delivering unchanged bytes. The oracle binds the source capture,

@@ -22,6 +22,7 @@ import { runRepositoryContinuation } from "./repository-continuation-flow.js";
 import { runScheduledRoutine } from "./routine-schedule-flow.js";
 import { runInputFile } from "./input-file-flow.js";
 import { runSavedSkillUse } from "./saved-skill-use-flow.js";
+import { runAgentSettings } from "./agent-settings-flow.js";
 import { companyAccessIsolation } from "./company-access-flow.js";
 import { inboxTriage } from "./inbox-triage-flow.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type JourneyOutcome, type TargetLifecycleInput, type TargetProvider, type TargetSession } from "./types.js";
@@ -153,6 +154,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
     "project-context-evidence.ts",
     "agent-flows.ts",
     "hire-delegate-flow.ts",
+    "agent-settings-flow.ts",
+    "agent-settings-evidence.ts",
     "hire-delegate-composer.ts",
     "hire-delegate-evidence.ts",
     "active-followup-flow.ts",
@@ -282,6 +285,8 @@ export async function launchProductJourneys(args: string[], repositoryRoot: stri
             if (id === "saved-skill-use") await runSavedSkillUse(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "repository-continuation") await runRepositoryContinuation(ready, session!, campaignId, evidence,
+              { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
+            else if (id === "agent-settings-persistence") await runAgentSettings(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });
             else if (id === "routine-scheduled-run") await runScheduledRoutine(ready, session!, campaignId, evidence,
               { deadlineAt, directory: path.join(outputDir, "private-stories", id) });

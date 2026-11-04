@@ -1930,6 +1930,9 @@ fn process_command<E: CommandExecutor>(
                 "code": "command_execution_failed",
                 "message": message,
             });
+            if let Some(classification) = error.classification() {
+                failure["classification"] = json!(classification);
+            }
             if let Some(provider_failure) = error.provider_failure() {
                 failure["providerFailure"] = provider_failure;
             }
@@ -2486,6 +2489,17 @@ mod tests {
             Err(DurableRunnerError::invalid(
                 "provider bootstrap rejected authorization=Bearer test-secret",
             ))
+        }
+    }
+
+    struct IncompatibleStateExecutor;
+
+    impl CommandExecutor for IncompatibleStateExecutor {
+        fn execute(&mut self, _command: &Command) -> Result<CommandExecution, DurableRunnerError> {
+            Err(
+                DurableRunnerError::invalid("saved provider state cannot be adopted")
+                    .with_classification(crate::durable::PROVIDER_STATE_INCOMPATIBLE),
+            )
         }
     }
 
@@ -4865,6 +4879,46 @@ mod tests {
             .diagnostics
             .iter()
             .all(|diagnostic| !diagnostic.contains("test-secret")));
+        assert!(failed.result.get("classification").is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn classified_executor_failure_keeps_its_closed_class_in_the_durable_result() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-runner-command-classified-failure-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&directory).unwrap();
+        let (mut state, _) = store.load_or_create(&config).unwrap();
+        let command = command("run.attach");
+        let (failed, _) = process_command(
+            &mut state,
+            &store,
+            &config,
+            &mut IncompatibleStateExecutor,
+            &command,
+        )
+        .unwrap();
+        let (mut recovered, _) = store.load_or_create(&config).unwrap();
+        let replay = process_command(
+            &mut recovered,
+            &store,
+            &config,
+            &mut IncompatibleStateExecutor,
+            &command,
+        )
+        .unwrap()
+        .0;
+        assert_eq!(failed.status, "failed");
+        assert_eq!(failed.result["code"], "command_execution_failed");
+        assert_eq!(
+            failed.result["classification"],
+            "provider_state_incompatible"
+        );
+        assert_eq!(failed, replay);
         fs::remove_dir_all(directory).unwrap();
     }
 
