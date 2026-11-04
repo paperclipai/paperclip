@@ -28,7 +28,7 @@ import { buildNativeExecutionInput } from "../native-runtime/native-execution-in
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { buildEffectiveRunSessionConfigMetadata } from "./workspaces.js";
-import { revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
+import { buildPaperclipRuntimeMcpServers, createAdapterRuntimeToolAccess, revokeHeartbeatRunGatewayTokens } from "./run-preparation.js";
 import { executeHeartbeatRuntime, type HeartbeatRuntimeExecutionInput } from "./runtime-execution.js";
 
 // Keep real accounting, workspace barriers, and task-session persistence. Providers
@@ -120,6 +120,43 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     expect(revokeHeartbeatRunGatewayTokens).toHaveBeenCalledWith({ db, companyId: input.agent.companyId, runId: input.run.id });
     expect(input.instructions.releaseInstructionCopy).toHaveBeenCalledOnce();
   }
+
+  it.each(["native_mcp", "invocation_context"] as const)("delivers portable built-in MCP names (%s)", async delivery => {
+    const { input, adapter } = await fixture();
+    const external = { name: "external-tools", url: "https://external.example/mcp", token: "external-token", connectionId: "external-connection" };
+    const runtimeTools = {
+      version: 1 as const,
+      guidance: "Use connection tools",
+      mcpEndpoint: "https://paperclip.example/mcp/runtime-tools",
+      rest: {
+        connectionsSearch: "https://paperclip.example/runtime-tools/connections/search",
+        connectionRequest: "https://paperclip.example/runtime-tools/connections/request",
+      },
+      bearerToken: "runtime-tools-token",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      tools: ["connections_search", "connection_request"] as const,
+    };
+    input.runtime.adapter = { ...adapter, supportsLocalAgentJwt: true, runtimeToolDelivery: delivery };
+    vi.stubEnv("PAPERCLIP_API_URL", "https://paperclip.example");
+    vi.stubEnv("PAPERCLIP_AGENT_JWT_SECRET", "runtime-mcp-name-test-secret");
+    vi.mocked(buildPaperclipRuntimeMcpServers).mockResolvedValueOnce([external]);
+    vi.mocked(createAdapterRuntimeToolAccess).mockReturnValueOnce(runtimeTools);
+    try {
+      await executeHeartbeatRuntime(db, input);
+      expect(adapter.execute).toHaveBeenCalledOnce();
+      const ctx = adapter.execute.mock.calls[0]![0];
+      expect(ctx.authToken).toEqual(expect.any(String));
+      expect(ctx.runtimeMcp?.getServers()).toEqual([
+        { name: "paperclip-projects", url: "https://paperclip.example/api/mcp/project-tools", token: ctx.authToken, connectionId: "paperclip-project-tools" },
+        ...(delivery === "native_mcp" ? [{ name: "paperclip-connections", url: runtimeTools.mcpEndpoint, token: runtimeTools.bearerToken, connectionId: "paperclip-runtime-tools" }] : []),
+        external,
+      ]);
+      expect(ctx.context.paperclipRuntimeTools).toEqual(delivery === "invocation_context" ? runtimeTools : undefined);
+    } finally {
+      vi.unstubAllEnvs();
+      vi.stubEnv("PAPERCLIP_HOME", home);
+    }
+  });
 
   it("passes preparation renewal ownership to native dispatch", async () => {
     const { input } = await fixture(true);
