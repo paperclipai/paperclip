@@ -1176,13 +1176,55 @@ const support = await getEmbeddedPostgresTestSupport();
         second.calls.some((call) => call.operation.kind === "inspect"),
       ).toBe(true);
     });
+    it("passes project workspaceStrategy into prepare and keeps it across metadata patches", async () => {
+      const f = await fixture();
+      const strategy = {
+        worktreeParentDir: ".paperclip/worktrees",
+        provisionCommand: "pnpm install",
+        runtimeProvisionCommand: "pnpm dev",
+        teardownCommand: "docker compose down",
+      };
+      const workspace = await preparePluginWorkspace(db, f.workers, {
+        ...f.input,
+        ...strategy,
+      });
+      expect(f.calls.at(-1).operation).toMatchObject({
+        kind: "prepare",
+        ...strategy,
+      });
+      expect(workspace!.metadata?.workspaceProviderStrategy).toEqual(strategy);
+
+      const patched = await executionWorkspaceService(db, {
+        pluginWorkerManager: f.workers,
+        workspaceReaperCooldownDays: 0,
+      }).update(workspace!.id, {
+        metadata: { ...workspace!.metadata, operatorNote: "kept" },
+      });
+      expect(patched!.metadata?.workspaceProviderStrategy).toEqual(strategy);
+      expect(patched!.metadata?.operatorNote).toBe("kept");
+
+      await preparePluginWorkspace(db, f.workers, {
+        ...f.input,
+        existingWorkspaceId: workspace!.id,
+      });
+      expect(f.calls.at(-1).operation).toMatchObject(strategy);
+    });
+    it("omits workspaceStrategy fields from prepare when the project sets none", async () => {
+      const f = await fixture();
+      await preparePluginWorkspace(db, f.workers, f.input);
+      const operation = f.calls.at(-1).operation as Record<string, unknown>;
+      expect(operation).not.toHaveProperty("worktreeParentDir");
+      expect(operation).not.toHaveProperty("provisionCommand");
+      expect(operation).not.toHaveProperty("runtimeProvisionCommand");
+      expect(operation).not.toHaveProperty("teardownCommand");
+    });
     it("never removes a checkout with local-only changes", async () => {
       const f = await fixture();
       const workspace = await preparePluginWorkspace(db, f.workers, f.input);
       f.dirty();
       await expect(
         removePluginWorkspace(db, f.workers, workspace!, "a".repeat(40)),
-      ).rejects.toThrow("local changes");
+      ).rejects.toThrow("Workspace cannot be safely removed");
       expect(f.calls.some((call) => call.operation.kind === "remove")).toBe(
         false,
       );

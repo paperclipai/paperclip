@@ -178,31 +178,20 @@ export async function callWorkspaceProvider(
   return result;
 }
 
-/** metadata.workspaceProviderStrategy → prepare op 透传字段(缺失 → 不传)。 */
-function strategyFields(
-  raw: unknown,
-): { worktreeParentDir?: string; provisionCommand?: string; runtimeProvisionCommand?: string; teardownCommand?: string } | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const out: Record<string, string> = {};
-  for (const key of ["worktreeParentDir", "provisionCommand", "runtimeProvisionCommand", "teardownCommand"] as const) {
-    const value = (raw as Record<string, unknown>)[key];
-    if (typeof value === "string" && value.trim().length > 0) out[key] = value;
-  }
-  return Object.keys(out).length > 0
-    ? (out as { worktreeParentDir?: string; provisionCommand?: string; runtimeProvisionCommand?: string; teardownCommand?: string })
-    : undefined;
-}
+const workspaceStrategyKeys = [
+  "worktreeParentDir",
+  "provisionCommand",
+  "runtimeProvisionCommand",
+  "teardownCommand",
+] as const;
 
-/** 项目级 workspaceStrategy 透传字段(仅保留非空;存进 metadata 供 op 组装/重试)。 */
-function strategyPassthrough(input: {
-  worktreeParentDir?: string | null;
-  provisionCommand?: string | null;
-  runtimeProvisionCommand?: string | null;
-  teardownCommand?: string | null;
-}): Record<string, string> | undefined {
-  const out: Record<string, string> = {};
-  for (const key of ["worktreeParentDir", "provisionCommand", "runtimeProvisionCommand", "teardownCommand"] as const) {
-    const value = input[key];
+type WorkspaceStrategyFields = Partial<Record<(typeof workspaceStrategyKeys)[number], string>>;
+
+function workspaceStrategyFields(raw: unknown): WorkspaceStrategyFields | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const out: WorkspaceStrategyFields = {};
+  for (const key of workspaceStrategyKeys) {
+    const value = (raw as Record<string, unknown>)[key];
     if (typeof value === "string" && value.trim().length > 0) out[key] = value;
   }
   return Object.keys(out).length > 0 ? out : undefined;
@@ -442,7 +431,7 @@ export async function preparePluginWorkspace(
         throw conflict("Task workspace binding changed; retry preparation");
       const id = randomUUID();
       await notifyTerminalWorkspaceWork(tx, `workspace:${id}`);
-      const strategyPassthroughFields = strategyPassthrough(input);
+      const strategyMetadata = workspaceStrategyFields(input);
       const [row] = await tx
         .insert(executionWorkspaces)
         .values({
@@ -465,7 +454,7 @@ export async function preparePluginWorkspace(
             workspaceProviderOwner: pluginId,
             workspaceProviderSource: sourceInput,
             workspaceProviderBranchMode: input.fresh ? "create" : input.branchMode ?? "create",
-            ...(strategyPassthroughFields ? { workspaceProviderStrategy: strategyPassthroughFields } : {}),
+            ...(strategyMetadata ? { workspaceProviderStrategy: strategyMetadata } : {}),
             ...(input.fresh ? { workspaceProviderFresh: input.fresh } : {}),
           },
         })
@@ -525,7 +514,7 @@ export async function preparePluginWorkspace(
           input.branchMode ??
           "create",
         baseRef: workspace.baseRef,
-        ...(strategyFields(workspace.metadata?.workspaceProviderStrategy)),
+        ...(workspaceStrategyFields(workspace.metadata?.workspaceProviderStrategy)),
         existing: saved,
         ...(workspace.metadata?.workspaceProviderFresh ? { fresh: workspace.metadata.workspaceProviderFresh as PluginFreshWorkspace } : {}),
       },
@@ -613,7 +602,7 @@ async function reconcilePluginWorkspaceReservation(
     branchName: workspace.metadata.workspaceProviderFresh ? null : workspace.branchName,
     branchMode: workspace.metadata.workspaceProviderBranchMode ?? "create",
     baseRef: workspace.baseRef,
-    ...(strategyFields(workspace.metadata?.workspaceProviderStrategy)),
+    ...(workspaceStrategyFields(workspace.metadata?.workspaceProviderStrategy)),
     existing: null,
     ...(workspace.metadata?.workspaceProviderFresh ? { fresh: workspace.metadata.workspaceProviderFresh as PluginFreshWorkspace } : {}),
   });
@@ -877,8 +866,6 @@ export async function removePluginWorkspace(
   const binding = readWorkspaceProviderBinding(workspace.metadata);
   if (!binding) throw conflict("Workspace storage binding is unavailable");
   const inspection = await inspectBinding(db, workers, workspace, recoveryPullRequest);
-  // 报错指名具体条件——归档失败排障时(cleanupReason 落库/500 响应体)直接可读,
-  // 不用再逐条件猜(2026-11-04 wt 生命周期验收曾因此排查数小时)。
   const removalBlockers = [
     inspection.hasDirtyTrackedFiles && "dirty tracked files",
     inspection.hasUntrackedFiles && "untracked files",
@@ -994,7 +981,7 @@ export async function restorePluginWorkspace(
     branchName: workspace.metadata?.workspaceProviderFresh ? null : workspace.branchName,
     branchMode: workspace.metadata?.workspaceProviderFresh ? "create" : "existing",
     baseRef: workspace.baseRef,
-    ...(strategyFields(workspace.metadata?.workspaceProviderStrategy)),
+    ...(workspaceStrategyFields(workspace.metadata?.workspaceProviderStrategy)),
     existing: binding,
     ...(workspace.metadata?.workspaceProviderFresh ? { fresh: workspace.metadata.workspaceProviderFresh as PluginFreshWorkspace } : {}),
   });

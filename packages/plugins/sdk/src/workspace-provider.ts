@@ -48,8 +48,6 @@ export const workspaceProviderOperationSchema = z.discriminatedUnion("kind", [
       branchName: z.string().min(1).max(256).nullable(),
       branchMode: z.enum(["create", "existing"]).optional(),
       baseRef: z.string().nullable(),
-      // 项目级 workspaceStrategy 透传(wt 等生命周期型 provider 消费):
-      // 建树起点/树父目录/资源钩子。可选且可空——老 host 不传,provider 走默认。
       worktreeParentDir: z.string().nullable().optional(),
       provisionCommand: z.string().nullable().optional(),
       runtimeProvisionCommand: z.string().nullable().optional(),
