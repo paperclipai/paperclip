@@ -31,3 +31,13 @@ it("accepts the reported explicit chat exclusions and secure-target articles", (
     "Enter your personal publishing credential in your secure form, not in chat.",
   ]) expect(solicitsChatCredential(text), text).toBe(false);
 });
+it("does not let a warning negate a later positive imperative", () => {
+  expect(solicitsChatCredential("Never share your credential but send the key here in chat.")).toBe(true);
+});
+it("keeps a safe chat exclusion when the follow-on clause is a settings instruction", () => {
+  expect(solicitsChatCredential("Enter your credential in the secure form, not in chat but you can review it in settings.")).toBe(false);
+});
+it("does not carry a destination across a sentence or a negative prohibition", () => {
+  expect(solicitsChatCredential("Enter your credential in the secure form, not in chat. Here.")).toBe(false);
+  expect(solicitsChatCredential("Never enter your credential in the secure form, not in chat but here.")).toBe(false);
+});
