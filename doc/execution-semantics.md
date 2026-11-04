@@ -1258,6 +1258,13 @@ checks coordinator ownership in its terminal update, so a result recorded after
 the process check is also protected. Terminal task status remains authoritative;
 exhausted finalization retries do not keep an otherwise orphaned run alive.
 
+A native failure that schedules a same-run resume marks the run `failed` but
+keeps the task's execution and checkout locks for that resume. The sweep leaves
+those locks in place and clears them only when the task is done or cancelled.
+If a scheduled resume finds its execution lock free, restart recovery reclaims
+it, as the local resume claim does, unless another run for the task is queued,
+running, or scheduled. A lock held by another run still blocks the resume.
+
 Automatic productivity reviews are retired. Run counts, missing comments, and elapsed task time do not create review tasks or impose continuation holds. Bounded continuation, provider recovery, budget limits, explicit blockers, and normal review/approval stages remain in force. Existing productivity-review tasks, comments, assignments, and dependencies remain unchanged and readable; their historical origins still identify them as recovery work for recursion suppression.
 
 ### Issue-thread interaction resolution
