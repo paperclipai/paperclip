@@ -85,7 +85,8 @@ describe("Coordinator pinned pages", () => {
     await renderSidebar();
     expect(container.querySelector('a[href="/chats"]')?.getAttribute("aria-label")).toBe("Chat, 2 unread chats");
   });
-  const pinnedPages = () => container.querySelector('[aria-label="Pinned pages"]');
+  const navigation = () => container.querySelector('nav[aria-label="Workspace navigation"]')!;
+  const pinnedPage = (to: string) => navigation().querySelector(`a[href="${to}"]`);
   async function click(label: string) {
     const button = document.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`);
     expect(button).not.toBeNull();
@@ -93,32 +94,39 @@ describe("Coordinator pinned pages", () => {
     await flush();
   }
 
-  it("pins from More without navigating, restores after remount, and unpins from the sidebar", async () => {
+  it.each([false, true])("keeps pins above More without a separate section, restores and unpins when collapsed is %s", async collapsed => {
+    fixture.collapsed = collapsed;
     await renderSidebar();
-    expect(pinnedPages()).toBeNull();
+    expect(pinnedPage("/projects")).toBeNull();
     await click("More workspace pages");
     expect(document.activeElement).toBe(document.querySelector('[data-slot="popover-content"]'));
     await click("Pin Projects");
     expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    expect(pinnedPages()?.querySelector('a[href="/projects"]')?.textContent).toBe("Projects");
+    expect(pinnedPage("/projects")?.textContent).toBe("Projects");
+    expect(navigation().querySelector('[aria-label="Pinned pages"]')).toBeNull();
+    expect(navigation().querySelector('[data-slot="sidebar-group-label"]')).toBeNull();
+    const more = navigation().querySelector('button[aria-label="More workspace pages"]')!;
+    expect(pinnedPage("/projects")!.compareDocumentPosition(more) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     await act(async () => root.unmount());
     root = createRoot(container);
     await renderSidebar();
-    expect(pinnedPages()?.querySelector('a[href="/projects"]')).not.toBeNull();
+    expect(pinnedPage("/projects")).not.toBeNull();
+    if (collapsed) await click("More workspace pages");
     await click("Unpin Projects");
-    expect(pinnedPages()).toBeNull();
+    expect(pinnedPage("/projects")).toBeNull();
   });
 
   it("keeps pins personal and only renders known destinations", async () => {
-    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(["/projects", "/unknown", "https://example.com"]));
+    localStorage.setItem("paperclip.coordinator.pinned-nav.v1:reviewer", JSON.stringify(["/routines", "/projects", "/unknown", "https://example.com"]));
     await renderSidebar();
-    expect(pinnedPages()?.querySelectorAll("a")).toHaveLength(1);
+    expect(Array.from(navigation().querySelectorAll("a")).map(link => link.getAttribute("href")))
+      .toEqual(["/chats", "/issues", "/decisions", "/routines", "/projects"]);
     fixture.userId = "other-user";
     await renderSidebar();
-    expect(pinnedPages()).toBeNull();
+    expect(pinnedPage("/projects")).toBeNull();
     fixture.userId = "reviewer";
     await renderSidebar();
-    expect(pinnedPages()?.textContent).toContain("Projects");
+    expect(pinnedPage("/projects")?.textContent).toBe("Projects");
   });
 
   it("reflects pins changed in another browser tab", async () => {
@@ -128,7 +136,7 @@ describe("Coordinator pinned pages", () => {
       localStorage.setItem(key, JSON.stringify(["/agents/all"]));
       window.dispatchEvent(new StorageEvent("storage", { key }));
     });
-    expect(pinnedPages()?.querySelector('a[href="/agents/all"]')?.textContent).toBe("Agents");
+    expect(pinnedPage("/agents/all")?.textContent).toBe("Agents");
   });
 });
 afterEach(async () => { await act(async () => root.unmount()); client.clear(); container.remove(); });

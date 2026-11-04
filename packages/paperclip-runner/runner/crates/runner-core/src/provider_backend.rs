@@ -231,21 +231,6 @@ impl ProviderStartupAttempt {
     }
 }
 
-fn is_startup_audit_event(event: &PolledEvent) -> bool {
-    event.event_type == "harness.diagnostic"
-        && event.payload.get("code") == Some(&json!("provider_startup_ownership"))
-        && event
-            .payload
-            .as_object()
-            .is_some_and(|payload| payload.len() == 2)
-        && event.payload.get("startup").is_some_and(|value| {
-            serde_json::from_value::<ProviderStartupAttempt>(value.clone()).is_ok_and(|attempt| {
-                attempt.validate().is_ok()
-                    && attempt.phase != ProviderStartupPhase::InitializationFailed
-            })
-        })
-}
-
 impl ProviderEventIdentity {
     fn from_config(config: &DurableRunnerConfig) -> Self {
         Self {
@@ -2947,26 +2932,48 @@ impl CodexCommandExecutor {
             .clone()
             .ok_or_else(|| DurableRunnerError::invalid("Codex provider has not been prepared"))?;
         // execute() restores the durable provider before dispatching run.attach.
-        // An exact, settled restore can emit one session.resumed notice about
-        // the prior provider session before the new run authority is attached.
-        // That lifecycle-only notice is safe to discard during rotation. Closed
-        // startup audit facts are retained for the runner's old-authority ACK
-        // fence; other pending events still block attachment so terminal, tool,
-        // and reconciliation data cannot be lost.
-        let only_recovery_notice_pending = next_state
-            .pending_events
-            .iter()
-            .all(|event| event.event_type == "session.resumed" || is_startup_audit_event(event));
-        if next_state.thread_id.is_none()
-            || next_state.lifecycle == "closed"
-            || next_state.active_provider_turn_id.is_some()
-            || next_state.ambiguous_turn_start_pending
-            || !only_recovery_notice_pending
-            || !next_state.queued_events.is_empty()
-        {
-            return Err(DurableRunnerError::invalid(
-                "run.attach requires a settled Codex provider session with no pending events",
-            ));
+        // Attachment asks one question: is anything live or waiting right now?
+        // Pending events describe the past, so they never block it. They stay in
+        // the retained FIFO, and the runner commits them before rotating authority.
+        let mut blockers = self
+            .provider
+            .as_ref()
+            .map(CodexProvider::run_attachment_live_work)
+            .unwrap_or_default();
+        if next_state.thread_id.is_none() {
+            blockers.push("no_provider_thread");
+        }
+        if next_state.lifecycle == "closed" {
+            blockers.push("session_closed");
+        }
+        if next_state.lifecycle == "reconciliation_required" {
+            blockers.push("reconciliation_required");
+        }
+        if next_state.active_provider_turn_id.is_some() {
+            blockers.push("durable_active_turn");
+        }
+        if next_state.ambiguous_turn_start_pending {
+            blockers.push("durable_ambiguous_turn_start");
+        }
+        if next_state.tool_bridge.pending_calls().next().is_some() {
+            blockers.push("durable_pending_tool_calls");
+        }
+        // An active goal lets a running provider start its next turn at any moment.
+        // A stopped provider starts nothing, and `working_now` can be stale after a
+        // stop, so only the goal's status with a live process counts.
+        let goal_active = self.provider.is_some()
+            && next_state
+                .goal
+                .as_ref()
+                .is_some_and(|goal| goal.status == "active");
+        if goal_continues_after_turn(&next_state, goal_active) {
+            blockers.push("durable_active_goal");
+        }
+        if !blockers.is_empty() {
+            return Err(DurableRunnerError::invalid(format!(
+                "run.attach requires a settled Codex provider session: {}",
+                blockers.join(", ")
+            )));
         }
         let runtime_launch_args: Option<Vec<String>> = payload
             .get("runtimeLaunchArgs")
@@ -3093,10 +3100,7 @@ impl CodexCommandExecutor {
                         ))
                     })
             }
-        } else if next_state.lifecycle == "prepared"
-            && next_state.provider_process_generation > 0
-            && next_state.pending_events.iter().all(is_startup_audit_event)
-        {
+        } else if next_state.lifecycle == "prepared" && next_state.provider_process_generation > 0 {
             // turn.stop deliberately terminates the exact old process and
             // retains a prepared, settled thread checkpoint. Rebind only its
             // validated run-scoped settings here; open_session then restores
@@ -3123,10 +3127,12 @@ impl CodexCommandExecutor {
             }
             self.provider = None;
         }
-        // Successful startup facts remain owned by their original attempt.
-        // The runner must commit this retained FIFO before rotating authority;
-        // only the superseded informational restore notice is discarded.
-        next_state.pending_events.retain(is_startup_audit_event);
+        // Pending facts remain owned by their original authority. The runner
+        // must commit this retained FIFO before rotating authority; only the
+        // superseded restore notice is discarded.
+        next_state
+            .pending_events
+            .retain(|event| event.event_type != "session.resumed");
         next_state.lifecycle = if retained_provider {
             "session_open".to_owned()
         } else {
@@ -5984,6 +5990,64 @@ mod tests {
     }
 
     #[test]
+    fn stopped_checkpoint_rebinding_retains_undelivered_facts_for_the_prior_authority() {
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-provider-retained-facts-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let mut state = opencode_result_state();
+        state.config.provider = "codex".to_owned();
+        state.config.driver = "codex_app_server".to_owned();
+        state.config.command = PathBuf::from("must-not-start-during-attachment");
+        state.config.model = None;
+        state.active_provider_turn_id = None;
+        state.provider_process_generation = 1;
+        state.lifecycle = "prepared".to_owned();
+        state
+            .push_event(NormalizedProviderEvent {
+                event_type: "run.result.proposed".to_owned(),
+                priority: EventPriority::P0,
+                payload: json!({}),
+            })
+            .unwrap();
+        // A paused goal can keep a stale working flag after its provider stops.
+        for (status, working_now) in [("paused", true), ("active", false)] {
+            let mut stopped = state.clone();
+            stopped.goal = Some(SessionGoalSnapshot {
+                objective: "Keep working.".to_owned(),
+                status: status.to_owned(),
+                token_budget: None,
+                tokens_used: 0,
+                elapsed_seconds: 0,
+                iterations: 0,
+                last_reason: None,
+                created_at: None,
+                updated_at: None,
+                completed_at: None,
+                working_now,
+            });
+            let writer = CodexCommandExecutor::new(&directory);
+            writer.persist_state(&stopped).unwrap();
+            let mut executor = CodexCommandExecutor::new(&directory);
+            executor.restore().unwrap();
+            executor
+                .attach_run(&json!({}))
+                .expect("a stopped provider has nothing live");
+        }
+        let writer = CodexCommandExecutor::new(&directory);
+        writer.persist_state(&state).unwrap();
+        let mut executor = CodexCommandExecutor::new(&directory);
+        executor.restore().unwrap();
+        executor.attach_run(&json!({})).unwrap();
+        let rebound = executor.state.as_ref().unwrap();
+        assert_eq!(rebound.pending_events.len(), 1);
+        assert_eq!(rebound.pending_events[0].event_type, "run.result.proposed");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn stopped_checkpoint_rebinding_keeps_unsettled_and_missing_process_fences() {
         let mut settled = opencode_result_state();
         settled.config.provider = "codex".to_owned();
@@ -5998,8 +6062,6 @@ mod tests {
             "session_open",
             "active",
             "ambiguous",
-            "pending",
-            "queued",
             "thread_missing",
             "generation_missing",
             "profile_changed",
@@ -6010,19 +6072,6 @@ mod tests {
                 "closed" | "session_open" => state.lifecycle = change.to_owned(),
                 "active" => state.active_provider_turn_id = Some("still-active".to_owned()),
                 "ambiguous" => state.ambiguous_turn_start_pending = true,
-                "pending" | "queued" => {
-                    let event = PolledEvent {
-                        executor_event_id: "undelivered-result".to_owned(),
-                        event_type: "run.result.proposed".to_owned(),
-                        priority: EventPriority::P0,
-                        payload: json!({}),
-                    };
-                    if change == "pending" {
-                        state.pending_events.push_back(event);
-                    } else {
-                        state.queued_events.push_back(event);
-                    }
-                }
                 "thread_missing" => state.thread_id = None,
                 "generation_missing" => state.provider_process_generation = 0,
                 "profile_changed" => {

@@ -1,5 +1,17 @@
 # Paperclip evaluation guide
 
+The optional Product regression TestOps lane in `runner-full-stack-e2e.yml`
+maps the standing 20-case plan to existing isolated Product E2E cells: native
+Codex/local, with native OpenCode/local for the task-workspaces case. A manual
+`testops_case` bootstrap accepts `all`, a case name or its TestOps ID. TestOps
+dispatch supplies `ALLURE_JOB_RUN_ID`; its exact case IDs and full names take
+precedence. This lane preserves the existing paid admission, fixture, model,
+timeout, assertion, cleanup and retained-report paths. Reporting credentials
+stay in trusted default-branch jobs. Missing evidence becomes a broken result.
+Subset runs do not qualify the full plan or the historical 355-row snapshot.
+Catalog and projection tests are not live qualification; retain the fresh
+TestOps launch and GitHub run when reporting acceptance.
+
 The explicit deployment-targeted [saved agent instructions journey](../tests/runner-e2e/product-journeys/AGENT-SETTINGS.md) checks an owned agent’s ordinary UI save, persisted instruction bytes, one current-run output, and restoration. The task request omits its instruction-only reference. It reuses the existing Product E2E target and report path; local controls do not establish a staging pass.
 
 The explicit-only [verified API artifact transfer](../tests/runner-e2e/README.md#verified-api-artifact-transfer)

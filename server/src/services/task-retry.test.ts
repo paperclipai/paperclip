@@ -14,6 +14,7 @@ import { instanceSettingsService } from "./instance-settings.js";
 import { heartbeatService } from "./heartbeat.js";
 import { taskChatRetryCanAwaitRecovery, taskChatRetryExecutionStopped } from "./chat-channels/task-retry-authority.js";
 import { admitExplicitNativeContinuation } from "./explicit-native-continuation.js";
+import { buildExecutionContinuation } from "./execution-continuation.js";
 
 describe("durable task Retry admission", () => {
   let postgres: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
@@ -38,6 +39,49 @@ describe("durable task Retry admission", () => {
       contextSnapshot: { issueId }, finishedAt: new Date() });
     return { db, companyId, issueId, actorId: "board", observedRunId: runId, idempotencyKey: randomUUID() };
   }
+  it.each(["valid", "wrong_run", "wrong_actor", "wrong_source", "wrong_generation", "unadmitted", "missing_authorization"])(
+    "dispatches a preparation Retry with no recovery-action row only from its exact admitted receipt: %s", async state => {
+      const input = await seed();
+      await db.update(issues).set({ status: "todo" }).where(eq(issues.id, input.issueId));
+      const [source] = await db.update(heartbeatRuns).set({ runtimeMode: "legacy", errorCode: "setup_failed",
+        executionStage: "preparing", runnerProfileJson: { adapterDispatch: { adapterType: "paperclip_runner" } },
+        resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
+      }).where(eq(heartbeatRuns.id, input.observedRunId)).returning();
+      const receipt = await requestTaskRetry(input), successorRunId = randomUUID();
+      const continuation = await db.transaction(async tx => {
+        await tx.select().from(issues).where(eq(issues.id, input.issueId)).for("update");
+        const result = await admitExplicitNativeContinuation({ db: tx as unknown as Db,
+          companyId: input.companyId, issueId: input.issueId, agentId: source.agentId,
+          actorId: input.actorId, actorType: "user", reason: "task_retry", commentId: null,
+          successorRunId, taskRetryRequestId: receipt.requestId!,
+        });
+        await tx.insert(heartbeatRuns).values({ id: successorRunId, companyId: input.companyId, agentId: source.agentId,
+          issueId: input.issueId, status: "queued", contextSnapshot: { issueId: input.issueId } });
+        await tx.update(agentWakeupRequests).set({ status: "coalesced", runId: successorRunId })
+          .where(eq(agentWakeupRequests.id, receipt.requestId!));
+        return result;
+      });
+      expect(continuation).toMatchObject({ previousRunId: source.id, taskRetryRequestId: receipt.requestId });
+      expect(await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, input.issueId))).toHaveLength(0);
+      const [admitted] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!));
+      const taskRetry = admitted.payload!.taskRetry as Record<string, unknown>;
+      if (state !== "valid") await db.update(agentWakeupRequests).set({
+        ...(state === "wrong_run" ? { runId: source.id } : {}),
+        ...(state === "wrong_actor" ? { requestedByActorId: "other-user" } : {}),
+        ...(state === "unadmitted" ? { status: "deferred_issue_execution" } : {}),
+        ...(state === "wrong_source" ? { payload: { ...admitted.payload, taskRetry: { ...taskRetry, sourceRunId: randomUUID() } } } : {}),
+        ...(state === "wrong_generation" ? { payload: { ...admitted.payload, taskRetry: { ...taskRetry, generationId: randomUUID() } } } : {}),
+        ...(state === "missing_authorization" ? { payload: { ...admitted.payload,
+          taskRetry: Object.fromEntries(Object.entries(taskRetry).filter(([key]) => key !== "continuation")) } } : {}),
+      }).where(eq(agentWakeupRequests.id, admitted.id));
+      const result = buildExecutionContinuation({ db, companyId: input.companyId, issueId: input.issueId,
+        agentId: source.agentId, runId: successorRunId,
+        context: { issueId: input.issueId, explicitUserContinuation: continuation }, summary: null, exposeLowTrustRaw: false });
+      if (state === "valid") await expect(result).resolves.toMatchObject({ interruptedRunId: source.id });
+      else await expect(result).rejects.toThrow("continuation_user_authorization_missing");
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, source.id)))[0])
+        .toMatchObject({ status: "failed", resultJson: source.resultJson });
+    });
   it("serializes concurrent clicks and remembers each key after completion", async () => {
     const input = await seed();
     const second = { ...input, idempotencyKey: randomUUID() };
