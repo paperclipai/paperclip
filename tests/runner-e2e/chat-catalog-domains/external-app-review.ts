@@ -210,7 +210,6 @@ export function gradeAppReview(value: unknown) {
           request?.id === phase.actionRequestId &&
           request.status === ["rejected", "failed", "executed"][index] &&
           v.status === ["denied", "failed", "succeeded"][index] &&
-          // Approved replay normalizes MCP error results to this code.
           (index !== 1 || v.errorCode === "tool_execution_failed") &&
           phase.beforeWrites === [0, 0, 1][index] &&
           phase.afterWrites === [0, 1, 2][index] &&
@@ -300,8 +299,6 @@ export const appReviewExternalCases = [
       try {
         const connection = await connectNotes(ctx, provider, "ask-first");
         provider.failWrites();
-        // Three human intents each need a proposal turn and an outcome turn.
-        // Keep the daily admission gate finite and consistent with this case.
         const agentPath = `/api/agents/${ctx.input.fixtures.agent.id}`;
         const agent = await ctx.input.api.get<{
           runtimeConfig: { heartbeat?: Record<string, unknown>; [key: string]: unknown };
