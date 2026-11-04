@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import os from "node:os";
 import { readProcessStartedAt } from "./hot-restart.js";
 import { runUsedConversationAdapter } from "./conversation-continuation.js";
@@ -18,27 +17,6 @@ const HOST_BOOT_MARGIN_MS = 60_000;
 
 function beforeHostBoot(at: Date | null) {
   return Boolean(at && at.getTime() < Date.now() - os.uptime() * 1000 - HOST_BOOT_MARGIN_MS);
-}
-
-/** Start times of a process group's current members, or null if any is unreadable. */
-async function processGroupMemberStartTimes(processGroupId: number): Promise<Date[] | null> {
-  if (process.platform === "win32") return null;
-  const stdout = await new Promise<string>((resolve, reject) => execFile("ps", ["-A", "-o", "pid=,pgid="],
-    { encoding: "utf8", timeout: 1_500, windowsHide: true },
-    (error, output) => error ? reject(error) : resolve(output))).catch(() => null);
-  if (stdout === null) return null;
-  const members = stdout.split("\n").map(line => line.trim().split(/\s+/).map(Number))
-    .filter(([pid, pgid]) => pgid === processGroupId && Number.isInteger(pid) && pid > 0).map(([pid]) => pid);
-  const startedAt: Array<string | null> = await Promise.all(members.map(pid => readProcessStartedAt(pid).catch(() => null)));
-  return startedAt.every(Boolean) ? startedAt.map(value => new Date(value!)) : null;
-}
-
-/** A dead leader's group ID can be recycled. Every member of the run's own
- * group was alive when the run finished, so a group made only of later
- * processes belongs to someone else. */
-async function processGroupReusedAfter(processGroupId: number, finishedAt: Date) {
-  const members = await processGroupMemberStartTimes(processGroupId);
-  return Boolean(members && members.every(startedAt => startedAt.getTime() > finishedAt.getTime()));
 }
 
 /** Cancellation changes admission. Process and lease evidence controls cleanup. */
@@ -88,8 +66,8 @@ export async function agentExecutionsHaveStopped(db: Db, agentIds: string[]) {
           if (run.processGroupId === run.processPid) groupAlive = false;
         }
       }
-      if (groupAlive && !processAlive && run.finishedAt &&
-          await processGroupReusedAfter(run.processGroupId!, run.finishedAt)) groupAlive = false;
+      // A dead leader's group stays live: the run's own descendants can be
+      // younger than the run, so member start times cannot prove reuse.
       if (processAlive || groupAlive) return false;
     }
     if (run.status !== "cancelled" || !run.startedAt) continue;

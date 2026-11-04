@@ -82,19 +82,24 @@ describe.skipIf(process.platform === "win32")("agent execution stop proof", () =
 
   it("keeps a live leader with its recorded start time", async () => {
     const group = await detachedGroup(false);
+    const startedAt = await readProcessStartedAt(group);
+    expect(startedAt).not.toBeNull();
     const { agentId } = await agentWithRun({ status: "succeeded", startedAt: new Date(), finishedAt: new Date(Date.now() - 10_000),
-      processPid: group, processGroupId: group, processStartedAt: new Date(await readProcessStartedAt(group)) });
+      processPid: group, processGroupId: group, processStartedAt: new Date(startedAt!) });
     expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(false);
   });
 
-  it("treats a dead leader's group made only of later processes as reused", async () => {
-    const before = new Date(Date.now() - 10_000);
-    const group = await detachedGroup(true);
-    const { agentId, runId } = await agentWithRun({ status: "succeeded", startedAt: before, finishedAt: before,
-      processPid: group, processGroupId: group, processStartedAt: before });
-    expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(true);
-    // A member that was alive when the run finished keeps the group live.
-    await db.update(heartbeatRuns).set({ finishedAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, runId));
+  it("keeps a dead leader's group live when the run's own child replaced itself after the run finished", async () => {
+    const finishedAt = new Date(Date.now() - 10_000);
+    // The leader exits; its background child starts a grandchild and exits too,
+    // so every survivor in the group is younger than the run.
+    const child = spawn("sh", ["-c", "sh -c 'sleep 30 & exit 0' & wait; exit 0"], { detached: true, stdio: "ignore" });
+    child.unref();
+    const group = child.pid!;
+    groups.push(group);
+    await new Promise(resolve => child.once("exit", resolve));
+    const { agentId } = await agentWithRun({ status: "succeeded", startedAt: finishedAt, finishedAt,
+      processPid: group, processGroupId: group, processStartedAt: finishedAt });
     expect(await agentExecutionsHaveStopped(db, [agentId])).toBe(false);
   });
 });
