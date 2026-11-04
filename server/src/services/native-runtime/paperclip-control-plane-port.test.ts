@@ -2398,6 +2398,41 @@ describe("PaperclipControlPlanePort conformance", () => {
       .toBe(scenario === "current human rejection" ? "done" : scenario === "model-only decline" ? "in_review" : "in_progress");
   });
 
+  it("rechecks publication removed between assessment and native done commit", async () => {
+    const objective = "Create a Markdown briefing document on this task.";
+    const { companyId, agentId, issueId, runId, port, result } = await prepareFirstTaskCompletion("ordinary task", objective);
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    const authority = new PaperclipRunnerToolAuthority(db, { companyId, agentId, issueId, runId });
+    await authority.execute({ tool: "write_document", callId: "briefing", arguments: {
+      idempotencyKey: "briefing", key: "briefing", title: "Briefing", body: "Verified service titles and receipt.", baseRevisionId: null,
+    } });
+    const report = { ...result, evidence: [{ ref: "provider:opencode:agent-message" }], artifacts: [] };
+    await port.completeRun({ result: report, terminal: CONTROL_PLANE_CONFORMANCE_TERMINAL });
+    const trigger = `publication_race_${randomUUID().replaceAll("-", "")}`;
+    await db.execute(sql.raw(`create function ${trigger}() returns trigger language plpgsql as $$
+      begin
+        if NEW.issue_id = '${issueId}'::uuid and NEW.run_id = '${runId}'::uuid then
+          delete from issue_documents where issue_id = '${issueId}'::uuid and company_id = '${companyId}'::uuid;
+        end if;
+        return NEW;
+      end $$`));
+    try {
+      await db.execute(sql.raw(`create trigger ${trigger} before insert on work_assessments
+        for each row execute function ${trigger}()`));
+      await finalizeNativeRun({ db, runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+      expect((await db.select().from(issues).where(eq(issues.id, issueId)))[0]!.status).toBe("in_progress");
+      expect(await db.select().from(statusDecisions).where(eq(statusDecisions.issueId, issueId)))
+        .not.toContainEqual(expect.objectContaining({ toStatus: "done" }));
+      expect(await db.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId))))
+        .toContainEqual(expect.objectContaining({ payload: expect.objectContaining({
+          continuationIdempotencyKey: "native-completion-incomplete", continuationSummary: expect.stringContaining("write_document"),
+        }) }));
+    } finally {
+      await db.execute(sql.raw(`drop trigger if exists ${trigger} on work_assessments`));
+      await db.execute(sql.raw(`drop function if exists ${trigger}()`));
+    }
+  });
+
   it.each(refusedFirstTaskCompletionScenarios)(
     "refuses native completion feedback without a trusted current first-task decision (%s)", async (scenario) => {
     const { issueId, runId, result } = await prepareFirstTaskCompletion(scenario);
