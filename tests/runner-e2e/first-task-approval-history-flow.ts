@@ -14,12 +14,13 @@ export async function runApprovalHistoryDecisions(input: {
   const cards = () => input.api.get<Row[]>(`/api/issues/${input.issueId}/interactions`);
   const approve = async (card: Row, phase: FirstTaskCheckpoint["phase"]) => {
     const before = new Set((await input.allRuns()).map(run => run.id));
+    const at = new Date().toISOString();
     await input.page.getByRole("button", { name: card.payload.acceptLabel
       ?? (card.kind === "request_confirmation" ? "Approve" : "Confirm selection"), exact: true }).last().click();
     await pollUntil({ label: `saved ${phase} decision`, deadlineAt: Math.min(input.deadlineAt, Date.now() + 30_000), intervalMs: 250,
       load: cards, accept: rows => rows.some(row => row.id === card.id && row.status === "accepted" && row.resolvedByUserId),
     });
-    await input.snapshot(phase);
+    await input.snapshot(phase, at);
     await input.settle(before, phase === "accepted");
   };
   const pending = async (predicate: (row: Row) => boolean) => {

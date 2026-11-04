@@ -90,6 +90,7 @@ describe("onboarding approval history journey", () => {
   it("clears the unchecked plan step and operates all three saved approval controls before reload", async () => {
     const evidence = recording();
     const events: string[] = [];
+    const clickedAt: number[] = [];
     const state = (phase: FirstTaskCheckpoint["phase"]) => structuredClone(evidence.checkpoints.find(c => c.phase === phase)!);
     let current = state("clarified");
     const selections = new Set(["draft", "publish"]);
@@ -97,20 +98,28 @@ describe("onboarding approval history journey", () => {
       check: async () => { events.push(`check:${name}`); if (name === DRAFT_OPTION) selections.add("draft"); },
       uncheck: async () => { events.push(`uncheck:${name}`); selections.delete("publish"); },
       click: async () => {
+        clickedAt.push(Date.now());
+        // Work can begin while the acceptance response is still in flight.
+        vi.setSystemTime(Date.now() + 5_000);
         const pending = current.interactions.find(card => card.status === "pending")!;
         events.push(`accept:${pending.id}`);
         current = state(pending.id === "plan-card" ? "plan-accepted" : pending.id === "hire-card" ? "hiring-accepted" : "accepted");
         if (pending.id === "plan-card") current.interactions[0].result.selectedOptionIds = [...selections];
       },
     }) }), reload: async () => { events.push("reload"); } } as unknown as Page;
-    const snapshot = vi.fn(async (phase: FirstTaskCheckpoint["phase"]) => { events.push(phase); return structuredClone(current); });
-    await runApprovalHistoryDecisions({ page, api: { get: async <T>() => structuredClone(current.interactions) as T }, issueId: "parent",
-      marker: firstTaskScenario(APPROVAL_HISTORY_CASE, "history").marker, deadlineAt: Date.now() + 30_000,
-      allRuns: async () => current.runs, snapshot, capture: vi.fn(async () => undefined),
-      settle: async (_runs, completion) => {
-        current = state(completion ? "finished" : current.phase === "plan-accepted" ? "hiring-proposed" : "execution-proposed");
-      },
-    });
+    const snapshot = vi.fn(async (phase: FirstTaskCheckpoint["phase"], _at?: string) => { events.push(phase); return structuredClone(current); });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      await runApprovalHistoryDecisions({ page, api: { get: async <T>() => structuredClone(current.interactions) as T }, issueId: "parent",
+        marker: firstTaskScenario(APPROVAL_HISTORY_CASE, "history").marker, deadlineAt: Date.now() + 30_000,
+        allRuns: async () => current.runs, snapshot, capture: vi.fn(async () => undefined),
+        settle: async (_runs, completion) => {
+          current = state(completion ? "finished" : current.phase === "plan-accepted" ? "hiring-proposed" : "execution-proposed");
+        },
+      });
+      expect(snapshot.mock.calls.filter(([phase]) => ["plan-accepted", "hiring-accepted", "accepted"].includes(phase)).map(([, at]) => at))
+        .toEqual(clickedAt.map(at => new Date(at).toISOString()));
+    } finally { vi.useRealTimers(); }
     expect([...selections]).toEqual(["draft"]);
     expect(events).toEqual([`check:${DRAFT_OPTION}`, `uncheck:${PUBLISH_OPTION}`, "accept:plan-card", "plan-accepted", "hiring-proposed",
       `check:Hire ${approvalHistoryWriter(firstTaskScenario(APPROVAL_HISTORY_CASE, "history").marker)}`, "accept:hire-card", "hiring-accepted",
