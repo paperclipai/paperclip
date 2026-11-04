@@ -79,6 +79,18 @@ export function describeOwnFailedAttachment(recoveryHistory: unknown): string {
   return `runner_state_identity_mismatch: prior_attach_failed: ${typeof cause === "string" && cause ? cause : "unknown"}`;
 }
 
+const SETTLEMENT_DOC = "https://github.com/paperclipai/paperclip/blob/master/doc/execution-semantics.md#session-settlement-after-a-run";
+
+/** Points whoever diagnoses a failed attachment at reviewed docs. The stored
+ * failure is already redacted and bounded; other failures produce no pointer. */
+export function describeFailedAttachment(failureMessage: unknown): string | null {
+  if (typeof failureMessage !== "string" || !/\brun\.attach (failed|requires)\b/.test(failureMessage)) return null;
+  const encoded = /"message":("(?:[^"\\]|\\.)*")/.exec(failureMessage)?.[1];
+  let cause = failureMessage;
+  try { if (encoded) cause = JSON.parse(encoded) as string; } catch { /* Keep the whole failure. */ }
+  return `This run could not attach to its provider session: ${cause}. A later run may start a new provider thread. See ${SETTLEMENT_DOC}`;
+}
+
 export async function inspectRemoteWarmSessionRecovery(input: {
   db: Db;
   execution: NativeExecutionInput;
