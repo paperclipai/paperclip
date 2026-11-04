@@ -417,6 +417,16 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         .where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.provider, lease.provider!),
           eq(environmentLeases.providerLeaseId, taskId)));
     }
+    if (operation.kind === "stop" && operation.ifParkedClaim) {
+      // A lost reply must leave the exact request available to the next Core.
+      const pending = await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
+        runnerTaskConditionalRetirement: operation.ifParkedClaim,
+      })}::jsonb` }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
+        eq(environmentLeases.status, "active"), sql`${environmentLeases.metadata}->'providerMetadata'->'parkedClaim' = ${JSON.stringify({
+          parkId: operation.ifParkedClaim.parkId, claimId: operation.ifParkedClaim.claimId,
+        })}::jsonb`)).returning({ id: environmentLeases.id });
+      if (pending.length !== 1) throw new Error("Plugin Runner conditional retirement owner changed");
+    }
     const result = await callWorker("environmentTask", params, timeout);
     if (executionContext) context!.assertOpen();
     const parsed = parseEnvironmentTaskResult(operation, taskId, result);
@@ -461,15 +471,6 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         if (saved.length !== 1) throw new Error("Plugin Runner project validation lease expired");
       }
     }
-    if (operation.kind === "stop" && operation.ifParkedClaim && parsed.kind === "accepted") {
-      const accepted = await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({
-        runnerTaskConditionalRetirement: operation.ifParkedClaim,
-      })}::jsonb` }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId),
-        eq(environmentLeases.status, "active"), sql`${environmentLeases.metadata}->'providerMetadata'->'parkedClaim' = ${JSON.stringify({
-          parkId: operation.ifParkedClaim.parkId, claimId: operation.ifParkedClaim.claimId,
-        })}::jsonb`)).returning({ id: environmentLeases.id });
-      if (accepted.length !== 1) throw new Error("Plugin Runner conditional retirement owner changed");
-    }
     if (operation.kind === "park" && parsed.kind === "accepted" && parsed.parkRefused === true) {
       await db.update(environmentLeases).set({ metadata: sql`(coalesce(${environmentLeases.metadata}, '{}'::jsonb) - 'runnerTaskParkIntent') || '{"runnerTaskRetention":null}'::jsonb` })
         .where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, input.companyId)));
@@ -486,6 +487,12 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       const claim = (metadata.providerMetadata as { parkedClaim?: { parkId?: unknown; claimId?: unknown } } | undefined)?.parkedClaim;
       if (retirement?.parkId === claim?.parkId && retirement?.claimId === run?.id && retirement?.claimId === claim?.claimId && retirement?.resumeCheckpoint) {
         const checkpoint = environmentTaskColdCheckpointSchema.parse(retirement.resumeCheckpoint);
+        // Stopped alone cannot prove this request was accepted: the provider
+        // must replay its exact durable, authenticated retirement outcome.
+        const replay = environmentTaskOperationSchema.parse({ kind: "stop", ifParkedClaim: {
+          parkId: retirement.parkId, claimId: retirement.claimId, resumeCheckpoint: checkpoint,
+        } });
+        parseEnvironmentTaskResult(replay, taskId, await callWorker("environmentTask", { ...params, operation: replay }, timeout));
         await db.update(environmentLeases).set({ metadata: sql`coalesce(${environmentLeases.metadata}, '{}'::jsonb) || ${JSON.stringify({ runnerTaskColdCheckpoint: checkpoint })}::jsonb` })
           .where(and(eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.provider, lease.provider!),
             eq(environmentLeases.providerLeaseId, taskId), eq(environmentLeases.heartbeatRunId, checkpoint.identity.runId)));

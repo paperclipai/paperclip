@@ -1156,21 +1156,37 @@ impl DurableStateStore {
                 "durable state exceeds its configured storage bound",
             ));
         }
-        let (temporary, mut file) = create_private_temporary_file(&self.path)?;
+        Self::commit_bytes(&self.path, &bytes)
+    }
+
+    #[cfg(unix)]
+    pub(super) fn record_host_retirement(
+        &self,
+        request_id: &str,
+    ) -> Result<(), DurableRunnerError> {
+        let proof = format!("{:x}", Sha256::digest(request_id.as_bytes()));
+        Self::commit_bytes(
+            &self.path.with_file_name("host-retirement-proof.v1"),
+            proof.as_bytes(),
+        )
+    }
+
+    fn commit_bytes(path: &Path, bytes: &[u8]) -> Result<(), DurableRunnerError> {
+        let (temporary, mut file) = create_private_temporary_file(path)?;
         let result = (|| -> Result<(), DurableRunnerError> {
-            file.write_all(&bytes)
+            file.write_all(bytes)
                 .and_then(|_| file.sync_all())
                 .map_err(|error| {
                     DurableRunnerError::invalid(format!("failed to commit durable state: {error}"))
                 })?;
             drop(file);
-            fs::rename(&temporary, &self.path).map_err(|error| {
+            fs::rename(&temporary, path).map_err(|error| {
                 DurableRunnerError::invalid(format!(
                     "failed to atomically replace durable state: {error}"
                 ))
             })?;
             #[cfg(unix)]
-            if let Some(parent) = self.path.parent() {
+            if let Some(parent) = path.parent() {
                 File::open(parent)
                     .and_then(|directory| directory.sync_all())
                     .map_err(|error| {

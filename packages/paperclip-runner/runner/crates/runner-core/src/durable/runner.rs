@@ -516,7 +516,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
                     shutdown_preserving_cleanup(&state, &mut executor)?;
                     return Ok(());
                 }
-                match process_host_control(control, &state, &mut executor, true, remaining) {
+                match process_host_control(control, &state, &store, &mut executor, true, remaining)
+                {
                     Ok(HostAction::Claim(ticket)) => {
                         bootstrap_ticket = Some(ticket);
                         lease = None;
@@ -582,7 +583,7 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
         let using_bootstrap = lease.is_none();
         #[cfg(unix)]
         if let Some(control) = host_control.as_mut() {
-            match process_host_control(control, &state, &mut executor, false, None) {
+            match process_host_control(control, &state, &store, &mut executor, false, None) {
                 Ok(HostAction::Park) => {
                     lease = None;
                     bootstrap_ticket = None;
@@ -999,7 +1000,8 @@ pub fn run_durable_runner_with_host_control<E: CommandExecutor>(
             #[cfg(unix)]
             if matches!(control_message, Ok(None)) {
                 if let Some(control) = host_control.as_mut() {
-                    match process_host_control(control, &state, &mut executor, false, None) {
+                    match process_host_control(control, &state, &store, &mut executor, false, None)
+                    {
                         Ok(HostAction::Park) => {
                             // The private owner now holds the exact idle cut. No
                             // old PRP frame, lease renewal, or provider poll may follow.
@@ -1266,6 +1268,7 @@ enum HostAction {
 fn process_host_control<E: CommandExecutor>(
     control: &mut HostControl,
     state: &DurableState,
+    store: &DurableStateStore,
     executor: &mut E,
     parked: bool,
     remaining: Option<Duration>,
@@ -1335,6 +1338,11 @@ fn process_host_control<E: CommandExecutor>(
             _ => false,
         } =>
         {
+            if claim_id.is_some() {
+                // From this point, success or failure exits the Runner loop. Record
+                // acceptance before shutdown can change the captured provider files.
+                store.record_host_retirement(request.id())?;
+            }
             executor.shutdown()?;
             control.reply(&request, "retired")?;
             Ok(HostAction::Retire)
@@ -2808,6 +2816,7 @@ mod tests {
         use std::io::{BufRead, BufReader, Write};
         use std::os::unix::net::UnixStream;
         struct IdleExecutor {
+            proof_file: PathBuf,
             proofs: usize,
             shutdowns: usize,
             ready: bool,
@@ -2821,16 +2830,25 @@ mod tests {
                 Ok(self.ready)
             }
             fn shutdown(&mut self) -> Result<(), DurableRunnerError> {
+                // Cleanup can mutate provider state before the host sees an ACK.
+                assert_eq!(fs::read_to_string(&self.proof_file).unwrap().len(), 64);
                 self.shutdowns += 1;
                 Ok(())
             }
         }
-        let config = config(PathBuf::from("unused-host-control"));
+        let directory = std::env::temp_dir().join(format!(
+            "paperclip-host-retirement-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let config = config(directory.clone());
+        let store = DurableStateStore::new(&config.state_dir).unwrap();
+        let proof = directory.join("host-retirement-proof.v1");
         let mut state = DurableState::new(&config);
         let (socket, mut host) = UnixStream::pair().unwrap();
         let mut reader = BufReader::new(host.try_clone().unwrap());
         let mut control = HostControl::new(socket).unwrap();
         let mut executor = IdleExecutor {
+            proof_file: proof.clone(),
             proofs: 0,
             shutdowns: 0,
             ready: true,
@@ -2848,6 +2866,7 @@ mod tests {
             let action = process_host_control(
                 control,
                 state,
+                &store,
                 executor,
                 parked,
                 Some(Duration::from_secs(1)),
@@ -2888,6 +2907,7 @@ mod tests {
             "conflict"
         );
         assert_eq!(executor.shutdowns, 0);
+        assert!(!proof.exists());
         let mut premature_park = park.clone();
         premature_park["id"] = json!("park-before-attach");
         assert_eq!(
@@ -2966,6 +2986,7 @@ mod tests {
         );
         control.claiming = claiming;
         assert_eq!(executor.shutdowns, 0);
+        assert!(!proof.exists());
         assert!(matches!(
             exchange(&retire, &state, &mut control, &mut executor, false).0,
             HostAction::Retire
@@ -2975,6 +2996,13 @@ mod tests {
             "retired"
         );
         assert_eq!(executor.shutdowns, 1);
+        // The owner can recover the decision from disk even if it missed the
+        // socket reply. The challenge itself is never written to disk.
+        assert_eq!(
+            fs::read_to_string(&proof).unwrap(),
+            "6e50678b4ee214af5f43dc03e18778a48c9c4d7b843af024cf4f307565f97c8c"
+        );
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

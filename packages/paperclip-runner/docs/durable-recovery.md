@@ -117,7 +117,7 @@ then uses the existing `run.attach` protocol to admit the successor.
 
 A `bootstrapBound` claim observation means the host has already bound a ticket,
 even if delivery acknowledgement was lost. Core does not replace that secret.
-Before any successor attachment or work, Core can request conditional retirement of the exact reserved source. The host verifies its captured state and the Runner checks the original claim and journal cut before accepting retirement. Core then requires independent proof that the process stopped before cold continuation. Staged transitions and work that already began
+Before any successor attachment or work, Core persists and requests conditional retirement of the exact reserved source. The host verifies its captured state and the Runner checks the original claim and journal cut before accepting retirement. Core then requires independent proof that the process stopped and an accepted replay of the exact retirement request before cold continuation, including after a lost reply or Core restart. Staged transitions and work that already began
 retain their adoption/reconciliation path. Neither an uncertain claim nor an
 old controller authorizes another executor or a signal to a successor.
 

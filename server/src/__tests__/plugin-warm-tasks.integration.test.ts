@@ -22,6 +22,7 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   const companyId=randomUUID(),agentId=randomUUID(),issueId=randomUUID(),environmentId=randomUUID(),pluginId=randomUUID();
   let runId=randomUUID(),allocation=0,stopped=false,outage=false,releaseFails=false;
   let nativeRunId=runId;
+  let retirementProof:string|undefined,lostRetirementReply=false;
   let sessionStateAvailable = true;
   const calls:string[]=[];
   let projectIds=[...initialProjects],providerExpiry=initialExpiry;
@@ -50,8 +51,16 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
     if(p.operation.kind==="status") return {kind:"status",taskId:p.taskId,phase:stopped?"completed":"running",executionStopped:stopped,sessionStateAvailable:stopped && sessionStateAvailable};
     if(p.operation.kind==="read_state") return {kind:"state",taskId:p.taskId,state:{...p.operation.identity,lifecycle:"ready"}};
     if(p.operation.kind==="stop") {
-     if(p.operation.ifParkedClaim && p.operation.ifParkedClaim.resumeCheckpoint.identity.runId!==nativeRunId) throw Error("conditional source changed before signal");
+     if(p.operation.ifParkedClaim) {
+      const proof=JSON.stringify(p.operation.ifParkedClaim);
+      if(stopped ? retirementProof!==proof : p.operation.ifParkedClaim.resumeCheckpoint.identity.runId!==nativeRunId)
+       throw Error("conditional source changed before signal");
+      const [owner]=await db.select().from(environmentLeases).where(eq(environmentLeases.heartbeatRunId,p.runId));
+      expect(owner.metadata?.runnerTaskConditionalRetirement).toEqual(p.operation.ifParkedClaim);
+      retirementProof=proof;
+     }
      stopped=true;
+     if(p.operation.ifParkedClaim && lostRetirementReply){lostRetirementReply=false;throw Error("lost retirement reply");}
     }
     if(p.operation.kind==="prepare") return {kind:"prepared",taskId:p.taskId,launch:{configurationId:"configuration",requirementsDigest:`sha256:${"a".repeat(64)}`,provider:{}}};
     if(p.operation.kind==="check_project_auth") return {kind:"project_auth",taskId:p.taskId,configurationId:p.operation.configurationId,provider:"openai",allowed:true};
@@ -69,13 +78,13 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
   await runtime().releaseRunLeases(runId,"released",undefined,"keep_running");
   await db.update(heartbeatRuns).set({status:"succeeded"}).where(eq(heartbeatRuns.id,runId));
   return {companyId,first,identity,calls,runtime,acquire,acquireRequests,workers,
-   attachTarget(){nativeRunId=runId;},noSuspendedCheckpoint(){sessionStateAvailable=false;},
+   attachTarget(){nativeRunId=runId;},loseRetirementReply(){lostRetirementReply=true;},noSuspendedCheckpoint(){sessionStateAvailable=false;},
    setExpiry(next?:string){providerExpiry=next;},
    async nextRun(){runId=randomUUID();await db.insert(heartbeatRuns).values({id:runId,companyId,agentId,nativeIssueId:issueId,invocationSource:"manual",status:"running"});return runId;},
    setProjects(next:string[]){projectIds=next;},stopped(retainsSuspendedState=true){stopped=true;sessionStateAvailable=retainsSuspendedState;},failRelease(){releaseFails=true;},outage(){outage=true;},
    raceResume(){resumeGate=new Promise<void>(resolve=>{releaseResume=resolve;});}};
  }
- it.each([false,true])("publishes a historical park cut only after conditional source stop (target attached: %s)",async attached=>{
+ it.each(["accepted","lost-reply","refused","refused-then-stopped","unrelated-stop"])("reconciles a historical park cut after controller restart: %s",async mode=>{
   const f=await fixture();f.noSuspendedCheckpoint();
   const checkpoint={schema:"paperclip.runner.cold-checkpoint.v1" as const,sourceId:"exact-park-cut",sha256:`sha256:${"1".repeat(64)}`,
    runnerStateSha256:`sha256:${"2".repeat(64)}`,identity:f.identity,providerSessionId:"same-native-thread"};
@@ -97,21 +106,27 @@ const support=external ? {supported:true} : await getEmbeddedPostgresTestSupport
    expect(await read()).toBeUndefined();
    expect(await resolvePluginTaskColdCheckpoint(reader,{companyId:f.companyId,resumeFrom:f.first.lease.providerLeaseId!,priorIdentity:f.identity,parkId:"foreign"})).toBeUndefined();
    expect(await resolvePluginTaskColdCheckpoint(reader,{companyId:f.companyId,resumeFrom:f.first.lease.providerLeaseId!,priorIdentity:f.identity,parkId})).toEqual(checkpoint);
-   if(attached) f.attachTarget();
+   const refused=mode==="refused" || mode==="refused-then-stopped" || mode==="unrelated-stop";
+   if(mode.startsWith("refused")) f.attachTarget();
+   if(mode==="unrelated-stop") f.stopped(false);
+   if(mode==="lost-reply") f.loseRetirementReply();
    const stop=f.runtime().task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"stop",ifParkedClaim:{parkId,claimId:runId,resumeCheckpoint:checkpoint}}});
-   if(attached) {
+   const restarted=environmentRuntimeService(reader,{pluginWorkerManager:f.workers});
+   if(refused) {
     await expect(stop).rejects.toThrow("reconcile the same task");
-    const observed=await f.runtime().task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"status"}});
-    expect(observed).toMatchObject({executionStopped:false});
+    if(mode!=="refused") f.stopped(false);
+    const observed=restarted.task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"status"}});
+    if(mode==="refused") await expect(observed).resolves.toMatchObject({executionStopped:false});
+    else await expect(observed).rejects.toThrow("reconcile the same task");
     expect(await read()).toBeUndefined();
     const [current]=await reader.select().from(environmentLeases).where(eq(environmentLeases.id,next.lease.id));
-    expect(current.metadata?.runnerTaskConditionalRetirement).toBeUndefined();
+    expect(current.metadata?.runnerTaskConditionalRetirement).toEqual({parkId,claimId:runId,resumeCheckpoint:checkpoint});
    } else {
-    await expect(stop).resolves.toMatchObject({kind:"accepted"});
+    if(mode==="lost-reply") await expect(stop).rejects.toThrow("reconcile the same task");
+    else await expect(stop).resolves.toMatchObject({kind:"accepted"});
     expect(await read()).toBeUndefined();
     const [pending]=await reader.select().from(environmentLeases).where(eq(environmentLeases.id,next.lease.id));
     expect(pending.metadata?.runnerTaskConditionalRetirement).toEqual({parkId,claimId:runId,resumeCheckpoint:checkpoint});
-    const restarted=environmentRuntimeService(reader,{pluginWorkerManager:f.workers});
     await expect(restarted.task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"status"}})).resolves.toMatchObject({executionStopped:true});
     expect(await read()).toEqual(checkpoint);
     await restarted.task({companyId:f.companyId,leaseId:next.lease.id,operation:{kind:"complete"}});

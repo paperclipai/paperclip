@@ -89,3 +89,10 @@ provider notifications to PRP events. The server supplies the bootstrap ticket
 only through the child environment, stores the process identity for bounded
 cancellation, and waits for the durable result and terminal pair. The existing
 local fake-runner mode remains unchanged.
+
+For conditional retirement, the task host persists an unpredictable request ID
+before delivery. After checking the claim and journal cut, Runner atomically
+records the lowercase SHA-256 of that ID in `host-retirement-proof.v1` beside
+its journal and syncs it before provider shutdown. All paths after acceptance
+exit the Runner loop. The host can match this proof after a lost socket reply.
+It must still confirm physical termination before admitting a cold successor.
