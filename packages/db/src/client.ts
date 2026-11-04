@@ -358,6 +358,47 @@ export async function closeFileStorageDb(db: Db, timeoutSeconds: number): Promis
   await fileStorageDbs.get(db)?.$client.end({ timeout: timeoutSeconds });
 }
 
+const POST_COMMIT_HOOKS = Symbol("paperclip.db.postCommitHooks");
+
+export type PostCommitHook = () => void | Promise<void>;
+
+type PostCommitHookCarrier = { [POST_COMMIT_HOOKS]?: PostCommitHook[] };
+
+type TransactionRunner = PostCommitHookCarrier & {
+  transaction: (callback: (tx: TransactionRunner) => Promise<unknown>, ...config: unknown[]) => Promise<unknown>;
+};
+
+export function registerPostCommitHook(tx: object, hook: PostCommitHook): boolean {
+  const hooks = (tx as PostCommitHookCarrier)[POST_COMMIT_HOOKS];
+  if (!hooks) return false;
+  hooks.push(hook);
+  return true;
+}
+
+function trackPostCommitHooks(runner: TransactionRunner, parentHooks: PostCommitHook[] | null) {
+  const transaction = runner.transaction.bind(runner);
+  runner.transaction = async (callback, ...config) => {
+    const hooks: PostCommitHook[] = [];
+    const result = await transaction(async (tx) => {
+      tx[POST_COMMIT_HOOKS] = hooks;
+      trackPostCommitHooks(tx, hooks);
+      return callback(tx);
+    }, ...config);
+    if (parentHooks) {
+      parentHooks.push(...hooks);
+      return result;
+    }
+    for (const hook of hooks) {
+      try {
+        await hook();
+      } catch (error) {
+        console.error("A post-commit hook failed after its transaction committed:", error);
+      }
+    }
+    return result;
+  };
+}
+
 export function createDb(url: string, options?: DatabaseClientOptions) {
   const resolved = resolveDatabaseClientOptions(options ?? databaseClientOptionsFromEnv());
   return createDbClient(url, resolved);
@@ -374,6 +415,7 @@ function createDbClient(url: string, resolved: DatabaseClientOptions, owner?: ob
   // that know the complete operation is idempotent.
   const db = installDatabaseWorkSignals(drizzlePg(sql, { schema }), owner);
   installDatabaseResponseCapture(db, schema);
+  trackPostCommitHooks(db as unknown as TransactionRunner, null);
   dedicatedDbFactories.set(db, () => createDbClient(url, {
     ...resolved, maxConnections: 1, applicationName: "paperclip-workspace-finalization-lock",
   }, db));
