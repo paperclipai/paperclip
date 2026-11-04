@@ -261,7 +261,7 @@ async function claimCoordinator(input: {
 
 function terminalFinalizationFailureMessage(failureCode: string, failureScope: "provider" | "workspace" | undefined) {
   if (failureCode === "native_workspace_sync_out_retry_exhausted") {
-    return "Workspace copy-back failed after 3 attempts. The agent's result and sandbox are retained for export repair.";
+    return "Saving the workspace failed after 3 attempts. The agent's result is kept; repair the workspace export to finish the run.";
   }
   if (failureCode === "native_workspace_sync_out_unrecoverable") {
     return "The sandbox holding unexported workspace changes is unavailable, so its files could not be saved.";

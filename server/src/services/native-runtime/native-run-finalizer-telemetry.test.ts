@@ -2,7 +2,7 @@ import { resolveExternalTestDatabaseUrl } from "../../__tests__/helpers/external
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
 import { verifyCommittedReplayPayloadReads } from "./__tests__/helpers/committed-replay.js";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -803,6 +803,44 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     await exhaustWorkspaceRetries(fixture.runId, () => db.update(heartbeatRuns)
       .set({ status: "cancelled", finishedAt: new Date() })
       .where(eq(heartbeatRuns.id, fixture.runId)));
+    await expect(readRunError(fixture.runId)).resolves.toEqual({ status: "cancelled", errorCode: null, error: null });
+  });
+
+  it("does not record an error when Stop wins after the finalizer read the running run", async () => {
+    const fixture = await seedNativeRun();
+    await db.insert(nativeRunFinalizations).values({
+      runId: fixture.runId, companyId, issueId: fixture.issueId, phase: "observed", attempt: 1,
+    });
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      await recordNativeFinalizationFailure({
+        db, runId: fixture.runId, error: new Error("native_workspace_sync_out_failed"),
+        projectRunStatus: true, failureScope: "workspace",
+      });
+    }
+    // Stop holds the run row. The finalizer reads the still-running run, then
+    // its terminal UPDATE waits for that lock. Stop commits the cancellation,
+    // and the UPDATE must evaluate the cancelled row, not its earlier read.
+    let finalizer: Promise<unknown> | null = null;
+    await db.transaction(async (stop) => {
+      await stop.select({ id: heartbeatRuns.id }).from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, fixture.runId)).for("update");
+      finalizer = recordNativeFinalizationFailure({
+        db, runId: fixture.runId, error: new Error("native_workspace_sync_out_failed"),
+        projectRunStatus: true, failureScope: "workspace",
+      });
+      const deadline = Date.now() + 10_000;
+      for (;;) {
+        const [waiting] = await db.execute<{ count: number }>(
+          sql`select count(*)::int as count from pg_locks where not granted and locktype in ('tuple', 'transactionid')`,
+        );
+        if (Number(waiting?.count) > 0) break;
+        if (Date.now() > deadline) throw new Error("finalizer never waited for the Stop lock");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await stop.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, fixture.runId));
+    });
+    await finalizer;
     await expect(readRunError(fixture.runId)).resolves.toEqual({ status: "cancelled", errorCode: null, error: null });
   });
 
