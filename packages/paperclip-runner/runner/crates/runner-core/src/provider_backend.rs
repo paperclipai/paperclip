@@ -5208,6 +5208,54 @@ impl CodexCommandExecutor {
 }
 
 impl CommandExecutor for CodexCommandExecutor {
+    fn host_park_ready(&mut self) -> Result<bool, DurableRunnerError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(false);
+        };
+        if state.config.provider != "codex"
+            || state.config.driver != "codex_app_server"
+            || self.provider.is_none()
+            || !state.completed_turn_authoritative
+            || state.completed_turn_process_generation != Some(state.provider_process_generation)
+            || state.completed_provider_turn_id.is_none()
+            || state.active_provider_turn_id.is_some()
+            || state.ambiguous_turn_start_pending
+            || state.receipt_limit_interrupt_pending
+            || state
+                .goal
+                .as_ref()
+                .is_some_and(|goal| goal.status == "active")
+            || state.tool_bridge.pending_calls().next().is_some()
+            || !state.pending_events.is_empty()
+            || !state.queued_events.is_empty()
+            || state.lifecycle == "reconciliation_required"
+        {
+            return Ok(false);
+        }
+        self.retain_completed_accounting_tail()?;
+        let state = self
+            .state
+            .as_ref()
+            .expect("surviving native provider state");
+        if !state.pending_events.is_empty() || !state.queued_events.is_empty() {
+            return Ok(false);
+        }
+        let provider = self
+            .provider
+            .as_mut()
+            .expect("checked surviving native provider");
+        if provider.completed_turn_authority()
+            != state
+                .completed_turn_process_generation
+                .zip(state.completed_provider_turn_id.as_deref())
+        {
+            return Ok(false);
+        }
+        Ok(provider
+            .warm_run_attachment_blockers()
+            .map_err(|_| DurableRunnerError::invalid("native Codex parking proof failed"))?
+            .is_empty())
+    }
     fn can_reconcile_result_delivery(&mut self) -> Result<bool, DurableRunnerError> {
         // ProviderToolBridge persists the exact call/result and rejects changed
         // receipts. Delivery cannot execute a server-side semantic operation.
