@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { noiseExceedingPairedWins } from "./native-ingestion-performance-gates.mjs";
-import { H5_MODE, H5_PROTOCOL, H4D_PROTOCOL, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS, ORIGINAL_BUDGETS,
-  assessH5Arm, requireH5Candidate, assertParticipantSetup, assertParticipantTopology } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
+import { H5_MODE, H5_PROTOCOL, H4E_PROTOCOL, H5_WORKLOAD_SHA256, H5_BASELINE_REVISIONS, ORIGINAL_BUDGETS,
+  assessH5Arm, requireH5Candidate, assertParticipantSetup, assertParticipantTopology, assertSettlementObservation, assertRecordedFailures } from "../tests/e2e/fixtures/native-ingestion-h5.mjs";
 import { validateArmInventory } from "./native-ingestion-h5-inventory.mjs";
 
 // Each manifest entry points at native-ingestion-evidence JSON attachments
@@ -18,6 +18,7 @@ const h5 = arg("observation-mode") === H5_MODE;
 assert.ok(arg("observation-mode") === undefined || h5, "Unknown observation mode");
 const candidatePolicy = arg("candidate-policy");
 assert.ok(!arg("original-h4c-proof") && !arg("original-h4c-inventory"), "Old H4c proof arguments cannot confirm the new independent-agent geometry");
+assert.ok(!arg("original-h4d-proof") && !arg("original-h4d-inventory"), "Old H4d proof arguments use the premature settlement observer");
 assert.ok(["aa", "compare"].includes(phase));
 assert.ok(["improvement", "nonregression"].includes(expectation));
 const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as Array<{ baselineFile: string; candidateFile: string;
@@ -154,6 +155,8 @@ function assertCaseAuthority(report: any, result: any) {
 }
 
 function assertCaseSettlement(report: any, result: any, validated = assertCaseAuthority(report, result)) {
+  assertSettlementObservation(result.h5?.terminalObservation ?? result.terminalObservation, result);
+  assertRecordedFailures(result.recordedFailures, result, report.companyId);
   const remote = report.remote, local = report.local;
   const { authority, authorityByRun } = validated;
   if (result.stop) {
@@ -229,7 +232,7 @@ function assertCaseSettlement(report: any, result: any, validated = assertCaseAu
 
 for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) {
   const report = pair[arm];
-  assert.equal(report.protocolVersion, h5 ? H5_PROTOCOL : H4D_PROTOCOL,
+  assert.equal(report.protocolVersion, h5 ? H5_PROTOCOL : H4E_PROTOCOL,
     "Fresh browser acceptance requires the independent-agent observation or default-deadline protocol");
   assert.equal(report.transport, "sandbox-remote-with-local-stop", "V4 requires remote streaming and the original local Stop transport");
   assert.deepEqual(report.transportPolicy, { streaming: "sandbox-remote", operatorStop: "local",
@@ -401,25 +404,25 @@ for (const pair of pairs) for (const arm of ["baseline", "candidate"] as const) 
     for (const field of ["runs", "events", "intervalMs", "prelude", "stop"]) assert.equal(result[field], reference[field], `Workload changed: ${name}.${field}`);
   }
 }
-let originalH4dConfirmation: Record<string, any> | undefined;
+let originalH4eConfirmation: Record<string, any> | undefined;
 if (h5 && phase === "compare" && candidatePolicy === "final-b2") {
-  originalH4dConfirmation = { required: true, passed: false, reason: "Later H4d default-mode full functional proof on the same source and geometry is pending" };
-  if (arg("original-h4d-proof")) {
+  originalH4eConfirmation = { required: true, passed: false, reason: "Later H4e default-mode full functional proof on the same source and geometry is pending" };
+  if (arg("original-h4e-proof")) {
     try {
-      assert.ok(arg("original-h4d-inventory"), "H4d original-deadline proof requires its full artifact inventory sidecar");
-      const { evidence: proof, owner } = await owningResult(path.resolve(arg("original-h4d-proof")!));
+      assert.ok(arg("original-h4e-inventory"), "H4e original-deadline proof requires its full artifact inventory sidecar");
+      const { evidence: proof, owner } = await owningResult(path.resolve(arg("original-h4e-proof")!));
       assert.equal(owner.status, "passed"); assert.equal(owner.retry, 0); assert.deepEqual(owner.errors, []);
       assert.equal(owner.timeoutMs, ORIGINAL_BUDGETS.fullInvocationMs);
       assert.ok(owner.durationMs > 0 && owner.durationMs < ORIGINAL_BUDGETS.fullInvocationMs);
-      assert.equal(proof.protocolVersion, H4D_PROTOCOL, "Old H4c geometry cannot confirm H5b");
+      assert.equal(proof.protocolVersion, H4E_PROTOCOL, "Old H4c geometry cannot confirm H5c");
       assertParticipantSetup(proof);
       assert.deepEqual(proof.agentTopology, first.candidate.agentTopology);
-      assert.equal(proof.observationMode, undefined, "Confirmation must use H4d default deadlines");
-      assert.equal(proof.harnessProvenance?.sourceRevision, first.candidate.harnessProvenance.sourceRevision, "H4d confirmation must use the same frozen harness source");
+      assert.equal(proof.observationMode, undefined, "Confirmation must use H4e default deadlines");
+      assert.equal(proof.harnessProvenance?.sourceRevision, first.candidate.harnessProvenance.sourceRevision, "H4e confirmation must use the same frozen harness source");
       assert.deepEqual(proof.harnessProvenance.sourceHashes, first.candidate.harnessProvenance.sourceHashes);
       assert.equal(proof.harnessProvenance.driverLockSha256, first.candidate.harnessProvenance.driverLockSha256);
       assert.equal(proof.harnessProvenance.sourceStatus, "");
-      assert.equal(proof.measurementSha256, first.candidate.measurementSha256, "H4d confirmation must bind the same measured harness bytes");
+      assert.equal(proof.measurementSha256, first.candidate.measurementSha256, "H4e confirmation must bind the same measured harness bytes");
       assert.deepEqual(proof.resourceBudgets, ORIGINAL_BUDGETS);
       assert.equal(proof.complete, true); assert.equal(proof.qualificationOnly, false); assert.equal(proof.diagnosticOnly, false);
       assert.equal(proof.performanceAcceptanceEligible, true); assert.equal(proof.serverArtifact, "compiled");
@@ -447,12 +450,15 @@ if (h5 && phase === "compare" && candidatePolicy === "final-b2") {
       const latestCandidateEnd = Math.max(...pairs.map(pair => Date.parse(pair.candidate.owningPlaywright.startedAt) + pair.candidate.owningPlaywright.durationMs));
       assert.ok(Date.parse(owner.startedAt) > latestCandidateEnd, "Original confirmation must follow all candidate arms");
       assert.ok(pairs.every(pair => proof.companyId !== pair.baseline.companyId && proof.companyId !== pair.candidate.companyId), "Original confirmation needs a fresh disposable company/database");
-      const inventory = await validateArmInventory(path.resolve(arg("original-h4d-inventory")!), { evidence: proof, owningPlaywright: owner });
+      const inventory = await validateArmInventory(path.resolve(arg("original-h4e-inventory")!), { evidence: proof, owningPlaywright: owner });
       for (const field of ["manifestFileSha256", "aggregateSha256", "qualifiedReceiptSha256", "inventorySummarySha256", "revision"] as const)
         assert.equal(inventory[field], first.candidate.armInventory[field], "Original confirmation used a different full qualified artifact inventory");
-      originalH4dConfirmation = { required: true, passed: true, owner, inventory, sourceRevision: proof.sourceRevision };
+      originalH4eConfirmation = { required: true, passed: true, owner, inventory, sourceRevision: proof.sourceRevision,
+        retryObservations: proof.cases.map((item: any) => ({ name: item.name,
+          ...assertRecordedFailures(item.recordedFailures, item, proof.companyId),
+          transitions: item.terminalObservation.transitions, recordedFailures: item.recordedFailures })) };
     } catch (error) {
-      originalH4dConfirmation.reason = error instanceof Error ? error.message : String(error);
+      originalH4eConfirmation.reason = error instanceof Error ? error.message : String(error);
     }
   }
 }
@@ -478,6 +484,34 @@ const measurements = names.flatMap(name => {
       samples };
   });
 });
+const retryObservations = names.map(name => {
+  const samples = pairs.map(pair => Object.fromEntries((["baseline", "candidate"] as const).map(arm => {
+    const item = pair[arm].cases.find((value: any) => value.name === name);
+    const value = item.h5?.terminalObservation ?? item.terminalObservation;
+    const recorded = assertRecordedFailures(item.recordedFailures, item, pair[arm].companyId);
+    return [arm, { runs: item.runs, ...recorded,
+      retryRate: recorded.uniqueEverFailedRuns / item.runs,
+      errorClassRates: Object.fromEntries(Object.entries(recorded.recordedErrorClasses).map(([code, count]) => [code, Number(count) / item.runs])),
+      transitionCount: value.transitions.length, transitions: value.transitions, recordedFailures: item.recordedFailures }];
+  }))) as Array<Record<string, any>>;
+  const observedErrorClasses = [...new Set(samples.flatMap(sample => ["baseline", "candidate"]
+    .flatMap(arm => Object.keys(sample[arm].recordedErrorClasses))))].sort();
+  const rates = [null, ...observedErrorClasses].map(errorClass => {
+    const values = samples.map(sample => {
+      const baselineCount = errorClass === null ? sample.baseline.uniqueEverFailedRuns : sample.baseline.recordedErrorClasses[errorClass] ?? 0;
+      const candidateCount = errorClass === null ? sample.candidate.uniqueEverFailedRuns : sample.candidate.recordedErrorClasses[errorClass] ?? 0;
+      assert.equal(sample.baseline.runs, sample.candidate.runs);
+      const runs = sample.baseline.runs;
+      return { runs, baselineCount, candidateCount, baseline: baselineCount / runs, candidate: candidateCount / runs,
+        increaseCount: candidateCount - baselineCount, increase: (candidateCount - baselineCount) / runs };
+    });
+    return { errorClass, samples: values, medianIncrease: median(values.map(value => value.increase)),
+      medianIncreaseCount: median(values.map(value => value.increaseCount)),
+      aaNoiseEnvelopeRuns: phase === "aa" ? Math.max(...values.map(value => Math.abs(value.increaseCount))) : undefined,
+      aaNoiseEnvelopeAbsolute: phase === "aa" ? Math.max(...values.map(value => Math.abs(value.increase))) : undefined };
+  });
+  return { name, pairCount: samples.length, observedErrorClasses, samples, rates };
+});
 const result: Record<string, any> = {
   scope: "Compiled-app streaming with100 independent normal agents and the original local Stop workload; real cloud Stop is separately required",
   agentTopology: first.baseline.agentTopology,
@@ -490,11 +524,11 @@ const result: Record<string, any> = {
   gatesSha256: createHash("sha256").update(await readFile(new URL("./native-ingestion-performance-gates.mjs", import.meta.url))).digest("hex"),
   comparatorSha256: createHash("sha256").update(await readFile(new URL(import.meta.url))).digest("hex"),
   manifestSha256: createHash("sha256").update(await readFile(manifestPath)).digest("hex"), measurements,
-  primaryLoadedWorkload: "burst512", complete: true,
+  primaryLoadedWorkload: "burst512", complete: true, retryObservations,
   ...(h5 ? { observationMode: H5_MODE, workloadSha256: H5_WORKLOAD_SHA256, candidatePolicy, h5Assessments,
-    artifactInventories: { baseline: first.baseline.armInventory, candidate: first.candidate.armInventory }, originalH4dConfirmation,
-    originalProtocolAcceptance: "Baseline SLA misses are retained; H5b complete observation is not an original-deadline PASS",
-    finalH4dFunctionalPassRequired: candidatePolicy === "final-b2" } : {}),
+    artifactInventories: { baseline: first.baseline.armInventory, candidate: first.candidate.armInventory }, originalH4eConfirmation,
+    originalProtocolAcceptance: "Baseline SLA misses are retained; H5c complete observation is not an original-deadline PASS",
+    finalH4eFunctionalPassRequired: candidatePolicy === "final-b2" } : {}),
 };
 if (phase === "compare") {
   assert.ok(arg("noise-report"), "Comparison requires its frozen A/A --noise-report");
@@ -529,14 +563,33 @@ if (phase === "compare") {
       noiseExceedingPairedWins: paired.noiseExceedingPairedWins, requiredPairedWins: paired.requiredPairedWins,
       passed: improvementRequired ? improvement : noRegression };
   });
+  assert.equal(noise.retryObservations?.length, names.length, "A/A must retain complete retry-rate calibration");
+  result.retryGates = retryObservations.flatMap(item => {
+    const control = noise.retryObservations.find((entry: any) => entry.name === item.name);
+    assert.equal(control?.pairCount, pairs.length, "A/A retry calibration must retain every pair");
+    return item.rates.map(rate => {
+      const knownClass = rate.errorClass === null || control.observedErrorClasses.includes(rate.errorClass);
+      const reference = control.rates.find((entry: any) => entry.errorClass === rate.errorClass);
+      const envelope = reference?.aaNoiseEnvelopeAbsolute ?? 0;
+      assert.ok(Number.isFinite(envelope) && envelope >= 0 && envelope <= 1, "Invalid frozen absolute retry-rate noise");
+      const envelopeRuns = reference?.aaNoiseEnvelopeRuns ?? 0;
+      assert.ok(Number.isSafeInteger(envelopeRuns) && envelopeRuns >= 0
+        && envelope === envelopeRuns / rate.samples[0].runs, "Retry-rate noise must match its exact run counts");
+      const pairedPassed = rate.samples.every(sample => sample.increaseCount <= envelopeRuns);
+      return { name: item.name, errorClass: rate.errorClass, knownClass, noiseEnvelopeAbsolute: envelope,
+        medianIncrease: rate.medianIncrease, pairedIncreases: rate.samples.map(sample => sample.increase),
+        passed: knownClass && pairedPassed && rate.medianIncreaseCount <= envelopeRuns };
+    });
+  });
   result.performancePassed = result.gates.every((entry: any) => entry.passed)
+    && result.retryGates.every((entry: any) => entry.passed)
     && (!h5 || h5Assessments.every(entry => entry.candidateSlaPolicyPassed));
-  result.acceptancePassed = result.performancePassed && (!originalH4dConfirmation || originalH4dConfirmation.passed);
+  result.acceptancePassed = result.performancePassed && (!originalH4eConfirmation || originalH4eConfirmation.passed);
 }
 if (arg("output")) await writeFile(arg("output")!, JSON.stringify(result, null, 2));
 console.log(JSON.stringify(result, null, 2));
 if (process.argv.includes("--require-performance")) {
-  assert.equal(h5, true, "H5b performance-only gating is explicit; default H4d keeps original deadlines");
+  assert.equal(h5, true, "H5c performance-only gating is explicit; default H4e keeps original deadlines");
   assert.equal(phase, "compare");
   assert.equal(result.performancePassed, true, "H5 performance/SLA gates failed; retain results and diagnose");
 }

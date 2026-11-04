@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 
-export const H5_MODE = 'h5b-observe-original-sla-independent-agents';
-export const H5_PROTOCOL = 'v5b-independent-agents-complete-observation-original-sla';
-export const H4D_PROTOCOL = 'v4d-independent-agents-original-deadlines';
+export const H5_MODE = 'h5c-observe-original-sla-independent-agents-settlement';
+export const H5_PROTOCOL = 'v5c-independent-agents-complete-settlement-original-sla';
+export const H4E_PROTOCOL = 'v4e-independent-agents-settlement-original-deadlines';
 export const H5_TOPOLOGY = Object.freeze({ mode: 'one-normal-agent-per-concurrent-participant',
   fullRemoteAgentPoolSize: 100, agentSetupConcurrency: 8, maxConcurrentRuns: 50,
   poolReuse: 'only-across-sequential-cases' });
@@ -12,6 +12,7 @@ export const H5_BASELINE_REVISIONS = Object.freeze({ B0: 'bac53ec3bfeaf6546e7aae
 export const ORIGINAL_BUDGETS = Object.freeze({ providerReadinessMs: 300_000, fullInvocationMs: 900_000,
   streamingMs: 120_000, terminalDrainageMs: 180_000, stopAcknowledgementMs: 30_000, remoteLeaseCleanupMs: 30_000 });
 export const H5_LIMITS = Object.freeze({ streamingMs: 600_000, terminalDrainageMs: 180_000, fullInvocationMs: 1_200_000 });
+export const SETTLEMENT_MAX_TRANSITIONS_PER_RUN = 16;
 export const H5_WORKLOADS = Object.freeze([
   { name: 'paced', runs: 1, events: 128, intervalMs: 25, prelude: 0, stop: false },
   { name: 'burst16', runs: 1, events: 16, intervalMs: 0, prelude: 0, stop: false },
@@ -22,14 +23,19 @@ export const H5_WORKLOADS = Object.freeze([
 ]);
 export const H5_REGISTRATION = Object.freeze({ mode: H5_MODE, protocolVersion: H5_PROTOCOL,
   baselineRevisions: H5_BASELINE_REVISIONS,
-  topology: H5_TOPOLOGY, originalDeadlineProtocol: H4D_PROTOCOL,
+  topology: H5_TOPOLOGY, originalDeadlineProtocol: H4E_PROTOCOL,
+  settlement: { classification: 'Failed native retryable_failure remains pending within the original terminal window',
+    detailReads: 'Only failed run-list candidates use the normal detail GET; no event polling or retry dispatch',
+    maxTransitionsPerRun: SETTLEMENT_MAX_TRANSITIONS_PER_RUN,
+    retryRatePolicy: 'No new recorded error class after frozen A/A; every paired and median total/per-class unique-ever-failed-run rate increase must stay within absolute paired A/A noise',
+    recordedFailures: 'Post-timing exact-run-set read-only snapshot unions current and durable recovered error codes with observed transitions; retained recovery metadata is last-failure evidence, not exhaustive per-class history' },
   originalBudgets: ORIGINAL_BUDGETS, observationLimits: H5_LIMITS, workloads: H5_WORKLOADS,
   pairs: 5, order: 'baseline-first on even pair index; candidate-first on odd pair index',
   stages: ['B0 A/A', 'B1 A/A', 'B0→B1 nonregression', 'B1→B2 improvement', 'B0→B2 improvement'],
   knownBaselineMisses: ['burst512:streaming120', 'invocation:observed-total-duration900'],
-  baselineEligibility: 'Finite complete correct observation; SLA misses remain failures of the H4d original deadlines',
+  baselineEligibility: 'Finite complete correct observation; SLA misses remain failures of the H4e original deadlines',
   cursorCandidateEligibility: 'Nonregression; only the paired baseline exact registered known misses may be inherited',
-  finalCandidateEligibility: 'Every original SLA passes in every arm; independently assessed total duration <900s; later H4d default-mode functional PASS on the same harness source and independent-agent geometry required',
+  finalCandidateEligibility: 'Every original SLA passes in every arm; independently assessed total duration <900s; later H4e default-mode functional PASS on the same harness source and independent-agent geometry required',
   noise: 'Fresh B0 and B1 A/A frozen before any further product implementation; no old abort/profile samples',
   performance: 'Loaded p95 emission/intended-to-visible and terminal drainage improve beyond frozen noise in median and at least4/5 pairs; all other metrics nonregress',
 });
@@ -156,9 +162,176 @@ export async function observeStreaming({ readCount, poll, target, now = Date.now
 
 export function originalTerminal(streaming, terminal) {
   return streaming.original.status === 'passed'
-    ? { status: terminal.complete ? 'passed' : 'failed', reason: terminal.complete ? null : 'original_terminal_deadline',
+    ? { status: terminal.complete ? 'passed' : 'failed', reason: terminal.complete ? null
+      : terminal.censored === false && terminal.error ? 'original_terminal_failure' : 'original_terminal_deadline',
       startedAtMs: terminal.startedAtMs, deadlineMs: terminal.deadlineMs, assessedAtMs: terminal.assessedAtMs }
     : { status: 'not-reached', reason: 'original_streaming_deadline', startedAtMs: null, deadlineMs: null, assessedAtMs: null };
+}
+
+/** The run list omits nativePhase. Resolve failed rows through the normal run
+ * detail API before deciding whether the existing terminal window has drained. */
+export async function observeRunSettlement({ readRuns, readRun, poll, expectedRuns, now = Date.now, onOutcome = _value => {} }) {
+  const startedAtMs = now();
+  const outcome = { startedAtMs, deadlineMs: startedAtMs + ORIGINAL_BUDGETS.terminalDrainageMs,
+    assessedAtMs: 0, lastObservedAtMs: 0, observedRuns: 0, terminalRuns: 0, pendingRetryRuns: 0,
+    lastStatuses: [], transitions: [], uniqueRetryableRuns: 0, recoveredRuns: 0, nonretryableFailures: 0,
+    retryableErrorClasses: {}, complete: false, censored: false };
+  const previous = new Map();
+  let runs = [];
+  onOutcome(outcome);
+  try {
+    await poll(async () => {
+      runs = [];
+      for (const listed of await readRuns()) {
+        const run = listed.status === 'failed' ? await readRun(listed.id) : listed;
+        assert.equal(run.id, listed.id, 'Run detail belongs to a different run');
+        if (listed.status === 'failed') {
+          assert.ok(typeof run.runtimeMode === 'string', 'Run detail must expose runtimeMode');
+          if (run.runtimeMode === 'native') assert.ok(Object.hasOwn(run, 'nativePhase'), 'Run detail must expose nativePhase');
+        }
+        runs.push(run);
+      }
+      assert.ok(runs.length <= expectedRuns && new Set(runs.map(run => run.id)).size === runs.length,
+        'Terminal observation contains duplicate or additional runs');
+      const observedAtMs = now();
+      const statuses = runs.map(run => ({ runId: run.id, status: run.status,
+        runtimeMode: run.runtimeMode ?? null, nativePhase: run.nativePhase ?? null, errorCode: run.errorCode ?? null }));
+      for (const state of statuses) {
+        const signature = JSON.stringify(state);
+        if (previous.get(state.runId) !== signature) {
+          assert.ok(outcome.transitions.filter(row => row.runId === state.runId).length < SETTLEMENT_MAX_TRANSITIONS_PER_RUN,
+            'Terminal state transition evidence overflow; no observation may be dropped');
+          outcome.transitions.push({ observedAtMs, ...state });
+        }
+        previous.set(state.runId, signature);
+      }
+      const pending = run => run.status === 'failed' && run.runtimeMode === 'native' && run.nativePhase === 'retryable_failure';
+      const settled = run => ['succeeded', 'cancelled', 'failed'].includes(run.status) && !pending(run);
+      Object.assign(outcome, { lastObservedAtMs: observedAtMs, observedRuns: runs.length,
+        terminalRuns: runs.filter(settled).length, pendingRetryRuns: runs.filter(pending).length, lastStatuses: statuses,
+        ...summarizeSettlementTransitions(outcome.transitions) });
+      onOutcome(outcome);
+      assert.ok(!runs.some(run => run.status === 'timed_out' || run.status === 'failed' && !pending(run)),
+        'Terminal run failed; automatic retry is not pending');
+      return runs.length === expectedRuns && runs.every(settled);
+    }, ORIGINAL_BUDGETS.terminalDrainageMs);
+    assert.equal(outcome.recoveredRuns, outcome.uniqueRetryableRuns, 'Every observed retryable run must recover successfully');
+    outcome.assessedAtMs = now(); outcome.complete = true; onOutcome(outcome);
+    return { runs, outcome };
+  } catch (error) {
+    outcome.assessedAtMs = now();
+    outcome.censored = error?.matcherResult?.name === 'toBe' && error.matcherResult.pass === false
+      && error.message.includes(`Timeout ${ORIGINAL_BUDGETS.terminalDrainageMs}ms exceeded while waiting on the predicate`);
+    outcome.error = String(error); onOutcome(outcome); throw error;
+  }
+}
+
+export function summarizeSettlementTransitions(transitions) {
+  const retryable = new Set(), recovered = new Set(), permanent = new Set(), classes = new Map();
+  for (const row of transitions) {
+    if (row.status === 'failed' && row.runtimeMode === 'native' && row.nativePhase === 'retryable_failure') {
+      assert.ok(typeof row.errorCode === 'string' && row.errorCode.length > 0, 'Retryable failure needs its observed error class');
+      retryable.add(row.runId);
+      const runs = classes.get(row.errorCode) ?? new Set(); runs.add(row.runId); classes.set(row.errorCode, runs);
+    } else if (row.status === 'failed' || row.status === 'timed_out') permanent.add(row.runId);
+    if (row.status === 'succeeded' && retryable.has(row.runId)) recovered.add(row.runId);
+  }
+  return { uniqueRetryableRuns: retryable.size, recoveredRuns: recovered.size, nonretryableFailures: permanent.size,
+    retryableErrorClasses: Object.fromEntries([...classes].sort(([a], [b]) => a.localeCompare(b)).map(([code, runs]) => [code, runs.size])) };
+}
+
+export function assertSettlementObservation(value, item) {
+  assert.ok(value, 'Missing canonical run settlement observation');
+  assert.equal(value.complete, true); assert.equal(value.censored, false);
+  assert.ok(Number.isSafeInteger(value.startedAtMs) && value.startedAtMs > 0);
+  assert.equal(value.deadlineMs, value.startedAtMs + ORIGINAL_BUDGETS.terminalDrainageMs);
+  assert.equal(value.assessedAtMs, item.settledAtMs);
+  assert.ok(value.lastObservedAtMs >= value.startedAtMs && value.lastObservedAtMs <= value.assessedAtMs
+    && value.assessedAtMs <= value.deadlineMs, 'Settlement must fit the original terminal window');
+  assert.equal(value.observedRuns, item.runs); assert.equal(value.terminalRuns, item.runs); assert.equal(value.pendingRetryRuns, 0);
+  assert.deepEqual(value.lastStatuses.map(row => row.runId).sort(), [...item.runIds].sort());
+  assert.ok(value.lastStatuses.every(row => row.status === (item.stop ? 'cancelled' : 'succeeded')), 'Failed runs are not settled success');
+  assert.ok(Array.isArray(value.transitions) && value.transitions.length >= item.runs
+    && value.transitions.length <= item.runs * SETTLEMENT_MAX_TRANSITIONS_PER_RUN, 'Missing or overflowing bounded state history');
+  const last = new Map(), counts = new Map(); let priorTime = value.startedAtMs;
+  for (const row of value.transitions) {
+    assert.ok(item.runIds.includes(row.runId), 'State history belongs to another run');
+    assert.ok(Number.isSafeInteger(row.observedAtMs) && row.observedAtMs >= priorTime
+      && row.observedAtMs <= value.lastObservedAtMs, 'Invalid state history timestamp');
+    priorTime = row.observedAtMs;
+    for (const field of ['runtimeMode', 'nativePhase', 'errorCode']) assert.ok(row[field] === null || typeof row[field] === 'string');
+    const count = (counts.get(row.runId) ?? 0) + 1; counts.set(row.runId, count);
+    assert.ok(count <= SETTLEMENT_MAX_TRANSITIONS_PER_RUN, 'State history overflow');
+    last.set(row.runId, row);
+  }
+  for (const row of value.lastStatuses) {
+    const { observedAtMs: _at, ...state } = last.get(row.runId) ?? {};
+    assert.deepEqual(state, row, 'Final state must match retained state history');
+  }
+  const summary = summarizeSettlementTransitions(value.transitions);
+  for (const [field, expected] of Object.entries(summary)) assert.deepEqual(value[field], expected, 'Retry ledger must match retained transitions');
+  assert.equal(summary.nonretryableFailures, 0, 'Nonretryable failures cannot qualify');
+  assert.equal(summary.recoveredRuns, summary.uniqueRetryableRuns, 'Every observed retryable run must recover successfully');
+  return summary;
+}
+
+export function assertRecordedFailures(proof, item, companyId) {
+  const observed = assertSettlementObservation(item.h5?.terminalObservation ?? item.terminalObservation, item);
+  assert.equal(proof?.kind, 'recorded-run-failure-codes', 'Missing post-timing recorded failure proof');
+  assert.equal(proof.transaction, 'READ ONLY REPEATABLE READ'); assert.equal(proof.observedReadOnly, 'on');
+  assert.equal(proof.observedIsolation, 'repeatable read');
+  const after = Math.max(item.settledAtMs, item.remoteLeasesCheckedAtMs ?? 0, item.stopAcknowledgedAtMs ?? 0,
+    item.localStopProof?.checkedAtMs ?? 0);
+  assert.ok(Number.isSafeInteger(proof.queryStartedAtMs) && proof.queryStartedAtMs >= after
+    && Number.isSafeInteger(proof.checkedAtMs) && proof.checkedAtMs >= proof.queryStartedAtMs
+    && Number.isSafeInteger(proof.connectionClosedAtMs) && proof.connectionClosedAtMs >= proof.checkedAtMs,
+  'Close the post-timing failure snapshot after settlement and lease timing');
+  assert.equal(proof.rows?.length, item.runs, 'Recorded failure proof needs every actual run');
+  assert.deepEqual(proof.rows.map(row => row.run_id).sort(), [...item.runIds].sort(), 'Recorded failure run set mismatch');
+  assert.equal(new Set(proof.rows.map(row => row.run_id)).size, item.runs);
+  const classes = new Map(), ever = new Set(), recovered = new Set();
+  const add = (runId, code) => {
+    assert.ok(typeof code === 'string' && code.length > 0 && code.length <= 128, 'Missing closed recorded error code');
+    ever.add(runId); const ids = classes.get(code) ?? new Set(); ids.add(runId); classes.set(code, ids);
+  };
+  const transitions = (item.h5?.terminalObservation ?? item.terminalObservation).transitions;
+  for (const row of transitions) if (row.status === 'failed') add(row.runId, row.errorCode);
+  for (const row of proof.rows) {
+    assert.equal(row.company_id, companyId, 'Recorded failure company mismatch');
+    assert.equal(row.agent_id, item.controllerAuthority.rows.find(authority => authority.run_id === row.run_id)?.agent_id,
+      'Recorded failure agent mismatch');
+    assert.equal(row.runtime_mode, 'native');
+    assert.equal(row.status, item.stop ? 'cancelled' : 'succeeded', 'Recorded run is not successfully settled');
+    if (!item.stop) assert.equal(row.native_phase, 'committed', 'Recorded native finalization is not committed');
+    else assert.ok(row.native_phase === null || typeof row.native_phase === 'string', 'Invalid recorded cancellation phase');
+    assert.ok(typeof row.current_has_error === 'boolean');
+    assert.ok(row.current_error_code === null || typeof row.current_error_code === 'string');
+    if (!item.stop) {
+      assert.equal(row.current_has_error, false, 'Successful committed runs must clear their current execution error');
+      assert.equal(row.current_error_code, null, 'Successful committed runs must clear their current execution error code');
+    }
+    // The normal Stop path writes the closed code "cancelled". Retain it as
+    // cancellation evidence; every other recorded code remains failure evidence.
+    if ((row.current_has_error || row.current_error_code !== null) && !(item.stop && row.current_error_code === 'cancelled'))
+      add(row.run_id, row.current_error_code);
+    if (row.recovered_type === null || row.recovered_type === 'null') {
+      for (const key of ['recovered_schema', 'recovered_error_code', 'recovered_observed_at']) assert.equal(row[key], null);
+    } else {
+      assert.equal(row.recovered_type, 'object'); assert.equal(row.recovered_schema, 'paperclip.recovered_execution_failure.v1');
+      assert.ok(typeof row.recovered_observed_at === 'string' && Number.isFinite(Date.parse(row.recovered_observed_at))
+        && Date.parse(row.recovered_observed_at) <= proof.checkedAtMs, 'Invalid recovered failure observation time');
+      add(row.run_id, row.recovered_error_code);
+    }
+    assert.ok(row.finalization_attempt === null || Number.isSafeInteger(row.finalization_attempt) && row.finalization_attempt >= 0,
+      'Invalid descriptive finalization attempt');
+    if (ever.has(row.run_id) && row.status === 'succeeded') recovered.add(row.run_id);
+  }
+  assert.equal(recovered.size, ever.size, 'Every recorded failed run must have recovered successfully');
+  assert.ok(item.durable.every(row => row.resultAcceptedEvents === (item.stop ? 0 : 1)), 'Every run needs its exact independently persisted result');
+  if (item.h5?.independentDrain) assert.ok(item.h5.independentDrain.verifiedAtMs >= proof.connectionClosedAtMs,
+    'Independent drainage must include the closed recorded-failure snapshot');
+  return { ...observed, uniqueEverFailedRuns: ever.size, allRecordedRecoveredRuns: recovered.size,
+    recordedErrorClasses: Object.fromEntries([...classes].sort(([a], [b]) => a.localeCompare(b)).map(([code, ids]) => [code, ids.size])) };
 }
 
 export function assessH5Arm(report, owner) {
@@ -209,6 +382,7 @@ export function assessH5Arm(report, owner) {
       assert.equal(streaming.error, null);
       assert.equal(value.terminalOriginal.status, 'passed');
     }
+    assertSettlementObservation(value.terminalObservation, item);
     assert.equal(value.terminalObservation.complete, true, 'H5 terminal observation must drain');
     assert.equal(value.terminalObservation.censored, false);
     assert.equal(value.terminalObservation.deadlineMs, value.terminalObservation.startedAtMs + H5_LIMITS.terminalDrainageMs);

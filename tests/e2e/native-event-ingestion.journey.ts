@@ -7,8 +7,8 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { expect, test } from "@playwright/test";
 import { json } from "./agent-chat.shared";
-import { h5Enabled, H5_MODE, H5_PROTOCOL, H4D_PROTOCOL, H5_TOPOLOGY, H5_LIMITS, H5_WORKLOAD_SHA256, ORIGINAL_BUDGETS,
-  observeStreaming, originalTerminal, prepareParticipantAgents, assertParticipantTopology } from "./fixtures/native-ingestion-h5.mjs";
+import { h5Enabled, H5_MODE, H5_PROTOCOL, H4E_PROTOCOL, H5_TOPOLOGY, H5_LIMITS, H5_WORKLOAD_SHA256, ORIGINAL_BUDGETS,
+  observeStreaming, observeRunSettlement, originalTerminal, prepareParticipantAgents, assertParticipantTopology, assertRecordedFailures } from "./fixtures/native-ingestion-h5.mjs";
 
 type SeenMarker = { markerCode: string; index: number; visibleMs: number };
 type Emission = { nonce: string; markerCode: string; index: number; intendedMs: number; emittedMs: number; receivedAtMs: number };
@@ -44,7 +44,7 @@ const stats = (values: number[]) => {
 
 async function runtimeAuthority(input: {
   appRoot: string; companyId: string; environmentId: string; issueIds: string[]; transport: "local" | "sandbox-remote";
-  afterStop?: boolean;
+  afterStop?: boolean; recordedFailureRunIds?: string[];
 }) {
   const configuration = process.env.PAPERCLIP_E2E_SERVER_CONFIG;
   if (!configuration) throw new Error("Missing owned server configuration");
@@ -68,6 +68,21 @@ async function runtimeAuthority(input: {
         current_setting('transaction_isolation') as isolation`;
       expect(settings[0].read_only).toBe("on");
       expect(settings[0].isolation).toBe("repeatable read");
+      if (input.recordedFailureRunIds) {
+        const queryStartedAtMs = Date.now();
+        const rows = await tx`select r.id as run_id, r.company_id, r.agent_id, r.runtime_mode, r.status, r.native_phase,
+          r.error_code as current_error_code, r.error is not null as current_has_error,
+          jsonb_typeof(r.result_json->'recoveredExecutionFailure') as recovered_type,
+          r.result_json->'recoveredExecutionFailure'->>'schema' as recovered_schema,
+          r.result_json->'recoveredExecutionFailure'->>'errorCode' as recovered_error_code,
+          r.result_json->'recoveredExecutionFailure'->>'observedAt' as recovered_observed_at,
+          f.attempt as finalization_attempt
+          from heartbeat_runs r left join native_run_finalizations f on f.run_id = r.id and f.company_id = r.company_id
+          where r.company_id = ${input.companyId} and r.id = any(${input.recordedFailureRunIds}::uuid[])`;
+        return { kind: "recorded-run-failure-codes", queryStartedAtMs, checkedAtMs: Date.now(),
+          transaction: "READ ONLY REPEATABLE READ", observedReadOnly: settings[0].read_only,
+          observedIsolation: settings[0].isolation, rows };
+      }
       const rows = await tx`select r.id as run_id, r.company_id, r.agent_id, r.native_issue_id as issue_id, r.runtime_mode,
         r.native_session_id, r.runner_instance_id, r.status, r.process_pid, r.process_group_id, r.process_started_at,
         r.runner_profile_json->'nativeExecutionInput'->'binding'->>'executionWorkspaceId' as admitted_execution_workspace_id,
@@ -115,7 +130,7 @@ async function runtimeAuthority(input: {
   } finally { await sql.end({ timeout: 5 }); }
   const connectionClosedAtMs = Date.now();
   let localJournal;
-  if (input.transport === "local" && !input.afterStop) {
+  if (input.transport === "local" && !input.afterStop && !input.recordedFailureRunIds) {
     expect(input.issueIds).toHaveLength(1);
     const base = await realpath(path.join(path.dirname(configuration), "runtime/paperclip-runner/durable-sessions"));
     expect(base.startsWith(`${ownedHome}${path.sep}`)).toBe(true);
@@ -275,7 +290,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
   const browserRecording = { trace: captureMode(info.project.use.trace), video: captureMode(info.project.use.video),
     screencast: captureMode(info.project.use.trace) !== "off" || captureMode(info.project.use.video) !== "off" };
   const report: Record<string, unknown> = {
-    protocolVersion: h5 ? H5_PROTOCOL : H4D_PROTOCOL, transport, bodyStartedAtMs,
+    protocolVersion: h5 ? H5_PROTOCOL : H4E_PROTOCOL, transport, bodyStartedAtMs,
     agentTopology: { ...H5_TOPOLOGY, remoteAgentPoolSize: Math.max(...cases.map(item => item.runs)) },
     ...(h5 ? { observationMode: H5_MODE, workloadSha256: H5_WORKLOAD_SHA256, observationLimits: H5_LIMITS,
       observationComplete: false, actualPlaywrightTimeoutMs: info.timeout,
@@ -555,25 +570,20 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
       }
       active.phase = "terminal-drainage";
       let runs: any[] = [];
-      const terminalStartedAtMs = h5 ? Date.now() : undefined;
-      const terminalObservation = h5 ? { startedAtMs: terminalStartedAtMs!, deadlineMs: terminalStartedAtMs! + H5_LIMITS.terminalDrainageMs,
-        assessedAtMs: 0, lastObservedAtMs: 0, observedRuns: 0, terminalRuns: 0,
-        lastStatuses: [] as Array<{ runId: string; status: string }>, complete: false, censored: false } : undefined;
-      if (h5) active.terminalObservation = terminalObservation;
-      try { await expect.poll(async () => {
-        runs = (await json(await request.get(`/api/companies/${company.id}/heartbeat-runs?limit=1000`))).filter((run: { issueId?: string; nativeIssueId?: string; contextSnapshot?: { issueId?: string; taskId?: string } }) => issueIds.includes(run.issueId ?? run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId));
-        if (terminalObservation) Object.assign(terminalObservation, { lastObservedAtMs: Date.now(), observedRuns: runs.length,
-          terminalRuns: runs.filter(run => ["succeeded", "cancelled", "failed"].includes(run.status)).length,
-          lastStatuses: runs.map(run => ({ runId: run.id, status: run.status })) });
-        return runs.length === issueIds.length && runs.every(run => ["succeeded", "cancelled", "failed"].includes(run.status));
-      }, { timeout: 180_000 }).toBe(true); }
+      let settlement;
+      try { settlement = await observeRunSettlement({ expectedRuns: issueIds.length,
+        readRuns: async () => (await json(await request.get(`/api/companies/${company.id}/heartbeat-runs?limit=1000`))).filter((run: { issueId?: string; nativeIssueId?: string; contextSnapshot?: { issueId?: string; taskId?: string } }) => issueIds.includes(run.issueId ?? run.nativeIssueId ?? run.contextSnapshot?.issueId ?? run.contextSnapshot?.taskId)),
+        readRun: async (runId: string) => json(await request.get(`/api/heartbeat-runs/${runId}`)),
+        poll: (read: () => Promise<boolean>, milliseconds: number) => expect.poll(read, { timeout: milliseconds }).toBe(true),
+        onOutcome: (value: Record<string, unknown>) => { active.terminalObservation = value; },
+      }); }
       catch (error) {
-        if (terminalObservation) { terminalObservation.assessedAtMs = Date.now(); terminalObservation.censored = true;
-          active.terminalOriginal = originalTerminal(streamingObservation!, terminalObservation); }
+        if (h5) active.terminalOriginal = originalTerminal(streamingObservation!, active.terminalObservation);
         throw error;
       }
-      const settledAt = Date.now(), seenMarkers = await observed();
-      if (terminalObservation) { terminalObservation.assessedAtMs = settledAt; terminalObservation.complete = true; }
+      const terminalObservation = settlement.outcome;
+      runs = settlement.runs;
+      const settledAt = terminalObservation.assessedAtMs, seenMarkers = await observed();
       active.settledAt = settledAt; active.seenMarkers = seenMarkers;
       const details = [];
       for (const run of runs) details.push(await json(await request.get(`/api/heartbeat-runs/${run.id}`)));
@@ -651,8 +661,9 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         ...(h5 ? { h5: { streaming: streamingObservation, terminalObservation,
           terminalOriginal: originalTerminal(streamingObservation!, terminalObservation!),
           visibleCountByOriginalPaintDeadline: seenMarkers.filter(marker => marker.visibleMs <= streamingObservation!.original.deadlineMs).length,
-          deadlineCountScope: "Original poll last count/time retained separately; paint-deadline count derives from unchanged2RAF timestamps" } } : {}),
-        ...(h5 ? { terminalStatuses: runs.map(run => ({ runId: run.id, runtimeMode: run.runtimeMode, status: run.status })) } : {}),
+          deadlineCountScope: "Original poll last count/time retained separately; paint-deadline count derives from unchanged2RAF timestamps" } } : { terminalObservation }),
+        terminalStatuses: runs.map(run => ({ runId: run.id, runtimeMode: run.runtimeMode, status: run.status,
+          nativePhase: run.nativePhase ?? null, errorCode: run.errorCode ?? null })),
         setupActivationConcurrency, setupReadinessStartedAtMs, readinessDeadlineMs, allReadyObservedAtMs, activations, activationWaves,
         nonce, markerCode, epochMs, settledAtMs: settledAt, stopRequestedAtMs: stopRequestedAt,
         stopAcknowledgedAtMs: acknowledgedAt, preludeProof, controllerAuthority, clockEvidence, interChunkGaps,
@@ -689,7 +700,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
           if (!rows.length) break;
           for (const row of rows) {
             const event = row.payload?.prpEvent;
-            if (h5 && (row.eventType === "run.result.accepted" || event?.eventType === "run.result.accepted")) resultAcceptedEvents++;
+            if (row.eventType === "run.result.accepted" || event?.eventType === "run.result.accepted") resultAcceptedEvents++;
             if (event?.eventType !== "item.delta") continue;
             for (const match of String(event.payload?.text ?? "").matchAll(new RegExp(`\\[${code}([a-z0-9]{1,3})\\]`, "g"))) {
               const index = Number.parseInt(match[1], 36);
@@ -712,16 +723,20 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         expect(new Set(deltas.map(item => item.identity)).size).toBe(deltas.length);
         expect(deltas.map(item => item.index)).toEqual(Array.from({ length: stop ? deltas.length : workload.events }, (_, index) => index));
         if (stop) for (const item of visible) expect(deltas.some(delta => delta.index === item.index)).toBe(true);
-        if (h5) expect(resultAcceptedEvents).toBe(stop ? 0 : 1);
+        expect(resultAcceptedEvents).toBe(stop ? 0 : 1);
         durable.push({ runId: run.id, token, markerCode: code, individualDeltas: deltas.length, uniqueSourceIdentities: deltas.length,
-          matchedSourceClocks: deltas.length, ordered: true, ...(h5 ? { resultAcceptedEvents } : {}) });
+          matchedSourceClocks: deltas.length, ordered: true, resultAcceptedEvents });
       }
       await expect.poll(() => [...state.streams.values()].every(stream => stream.ended || stream.aborted), { timeout: 30_000 }).toBe(true);
       expect(state.errors).toEqual([]);
       expect([...state.streams.values()].every(stream => !stream.error)).toBe(true);
+      const recordedFailures = await runtimeAuthority({ appRoot, companyId: company.id,
+        environmentId: caseEnvironment.id, issueIds, transport: caseTransport, recordedFailureRunIds: runs.map(run => run.id) });
+      active.recordedFailures = recordedFailures;
+      assertRecordedFailures(recordedFailures, { ...result, durable, runIds: runs.map(run => run.id) }, company.id);
       if (h5) {
         const verifiedAtMs = Date.now();
-        Object.assign(result.h5!, { independentDrain: { verifiedAtMs, elapsedFromEpochMs: verifiedAtMs - epochMs,
+        Object.assign((result as any).h5, { independentDrain: { verifiedAtMs, elapsedFromEpochMs: verifiedAtMs - epochMs,
           deltaCount: durable.reduce((count, row) => count + row.individualDeltas, 0),
           resultAcceptedCount: durable.reduce((count, row) => count + (row.resultAcceptedEvents ?? 0), 0),
           clockStreamsClosed: true,
@@ -732,6 +747,7 @@ test("native ingestion reaches the shipped UI promptly and survives reload", asy
         hello: stream.hello, ended: stream.ended, aborted: stream.aborted, error: stream.error, partialBytes: stream.partialBytes,
         providerReadyAtMs: stream.providerReadyAtMs, clockHelloAtMs: stream.clockHelloAtMs, readinessObservedAtMs: stream.readinessObservedAtMs,
         emissions: [...stream.records.values()].sort((a, b) => a.index - b.index) })));
+      Object.assign(result, { recordedFailures });
       (report.cases as unknown[]).push({ ...result, durable, persistedAfterReload: true });
       await info.attach(`${workload.name}${stop ? "-stop" : ""}-metrics`, { body: JSON.stringify(result, null, 2), contentType: "application/json" });
       pending.delete(key); clocks.delete(key); delete report.activeCase;
