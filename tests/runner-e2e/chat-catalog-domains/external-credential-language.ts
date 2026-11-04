@@ -9,8 +9,8 @@ function positiveCredentialRequest(clause: string, hasKeyContext: boolean, needs
     ? /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b.{0,40}\b(?:chat|message|conversation|here)\b|\b(?:paste|send|share)\b.{0,20}\b(?:here|in chat)\b.{0,40}\b(?:key|credential|token)\b/i
     : /\b(?:paste|send|share|provide|enter)\b.{0,70}\b(?:key|credential|token)\b/i;
   const carried = needsChatDestination
-    ? /\b(?:paste|send|share|provide|enter)\s+(?:(?:it|that|the value)\b.{0,40}\b(?:here|chat|message|conversation)\b|(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:here|chat|message|conversation)\b)/i
-    : /\b(?:paste|send|share|provide|enter)\s+(?:(?:it|that|the value)\b|(?:(?:in|into|via|through)\s+)?(?:(?:the|this|your)\s+)?(?:here|chat|message|conversation)\b)/i;
+    ? /\b(?:paste|send|share|provide|enter)\s+(?:(?:it|that|the value)\b.{0,40}\b(?:here|chat|message|conversation)\b|(?:here\b|(?:in|into|via|through)\s+(?:(?:the|this|your)\s+)?(?:chat|message|conversation)\b))/i
+    : /\b(?:paste|send|share|provide|enter)\s+(?:(?:it|that|the value)\b|(?:here\b|(?:in|into|via|through)\s+(?:(?:the|this|your)\s+)?(?:chat|message|conversation)\b))/i;
   const match = request.exec(clause) ?? (hasKeyContext ? carried.exec(clause) : null);
   if (!match) return false;
   const before = clause.slice(0, match.index).trim();

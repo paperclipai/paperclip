@@ -201,3 +201,7 @@ it("rejects an omitted credential object directed into chat", () => {
   expect(personalSecretGuidance(context + "Do not paste the credential into files but share here in chat.")).toBe(false);
   expect(personalSecretGuidance(context + "Send your key via secure form and instead share progress here.")).toBe(true);
 });
+
+it("accepts sharing the explicit instruction message after a safe handoff", () => {
+  expect(personalSecretGuidance("Enter your personal publishing credential in the secure form, not in chat. Share this message with Morgan.")).toBe(true);
+});
