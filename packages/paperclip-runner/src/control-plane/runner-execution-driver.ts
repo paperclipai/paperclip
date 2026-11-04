@@ -2,6 +2,9 @@ import type { RunnerLaunchPreparer } from "../live/runner-provider-launch.js";
 import type { DurablePrpControlPlane, RunnerProcessConnection, RunnerProcessHandle, RunnerProcessLaunchSpec } from "./durable-prp-control-plane.js";
 import type { DurableRecoveryIdentity } from "../contracts/durable-recovery.js";
 
+/** Eligible sources retain a committed provider identity in their controller checkpoint.
+ * Normal event compaction preserves it; older sources without it fail closed.
+ * Receipt issuance must not treat an optional resume-session hint as that proof. */
 export interface RunnerColdCheckpoint {
   schema: "paperclip.runner.cold-checkpoint.v1";
   sourceId: string;

@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rename, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { expect, it } from "vitest";
@@ -6,7 +6,7 @@ import { defaultCapabilityRunnerdBinary, fakeCodex, fakeCodexArgs } from "../../
 import { coldCheckpointStateDigest } from "../control-plane/cold-checkpoint.js";
 import { createCapabilityRunnerdCodexTransport } from "./runnerd-codex-transport.js";
 
-it("continues the same Codex thread after killing a settled Runner before graceful close", async () => {
+it.each(["same-thread", "receipt-thread-mismatch", "restored-thread-mismatch"])("verifies cold Codex thread continuity after killing a settled Runner: %s", async mode => {
   const root = await mkdtemp(join(tmpdir(), "runner-cold-checkpoint-"));
   const identity = {
     runnerInstanceId: "runner", environmentLeaseId: "lease", normalizedSessionId: "session",
@@ -37,7 +37,7 @@ it("continues the same Codex thread after killing a settled Runner before gracef
     expect(state.lifecycle).toBe("ready");
     const digest = coldCheckpointStateDigest(state);
     const receipt = {schema:"paperclip.runner.cold-checkpoint.v1" as const,sourceId:"host-snapshot",
-      sha256:digest,runnerStateSha256:digest,identity,providerSessionId:thread.id};
+      sha256:digest,runnerStateSha256:digest,identity,providerSessionId:mode === "receipt-thread-mismatch" ? "another-thread" : thread.id};
     const {runnerPid,providerPid} = first.evidence();
     expect(runnerPid).toBeGreaterThan(0);
     expect(providerPid).toBeGreaterThan(0);
@@ -47,6 +47,15 @@ it("continues the same Codex thread after killing a settled Runner before gracef
       if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
     }
     await expect.poll(() => { try { process.kill(runnerPid!,0); return true; } catch { return false; } }).toBe(false);
+    if (mode === "restored-thread-mismatch") {
+      const providerStatePath = join(root, "fake-codex-state.json");
+      const providerState = JSON.parse(await readFile(providerStatePath, "utf8"));
+      await writeFile(providerStatePath, JSON.stringify({ ...providerState, threadId: "another-thread" }));
+      const runnerProviderPath = join(root, "runner", "codex-provider-state.json");
+      const runnerProviderState = JSON.parse(await readFile(runnerProviderPath, "utf8"));
+      expect(runnerProviderState.threadId).toBe(thread.id);
+      await writeFile(runnerProviderPath, JSON.stringify({ ...runnerProviderState, threadId: "another-thread" }));
+    }
 
     const external = join(root, "host-owned");
     await rename(join(root,"runner"),external);
@@ -62,13 +71,24 @@ it("continues the same Codex thread after killing a settled Runner before gracef
         return state;
       },
     });
-    expect((await second.transport.request("thread/read",{})).thread).toMatchObject({id:thread.id,sessionId:thread.sessionId});
-    await completeTurn(second,"follow-up");
-    expect(second.evidence().runnerPid).not.toBe(runnerPid);
+    const resumed = second.transport.request("thread/read",{});
+    if (mode === "same-thread") {
+      expect((await resumed).thread).toMatchObject({id:thread.id,sessionId:thread.sessionId});
+      await completeTurn(second,"follow-up");
+      expect(second.evidence().runnerPid).not.toBe(runnerPid);
+    } else {
+      await expect(resumed).rejects.toThrow(/identity_mismatch|identity_conflict|restore_conflict/);
+      if (mode === "receipt-thread-mismatch") expect(archived).toBe(false);
+    }
     const providerCalls = await readFile(calls,"utf8");
-    expect(providerCalls.split("\n").filter(line => line === "turn/start")).toHaveLength(2);
+    expect(providerCalls.split("\n").filter(line => line === "turn/start")).toHaveLength(mode === "same-thread" ? 2 : 1);
   } finally {
-    try { await second?.transport.close(); } finally {
+    try {
+      try { await second?.transport.close(); } catch (error) {
+        if (mode !== "restored-thread-mismatch") throw error;
+        expect(String(error)).toContain("provider_transport_failed");
+      }
+    } finally {
       await first.transport.close();
       await rm(root,{recursive:true,force:true});
     }
