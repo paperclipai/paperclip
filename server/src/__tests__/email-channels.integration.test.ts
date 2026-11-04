@@ -38,6 +38,8 @@ import {
   applyPendingMigrations,
   createDb,
   companies,
+  budgetPolicies,
+  costEvents,
   agents,
   chatEndpoints,
   chatConversations,
@@ -1127,10 +1129,10 @@ describe("AgentMail durable email pipeline", () => {
       chat.publishComment(f.endpointId, conversation.id, comment.id),
     ).rejects.toThrow(/explicit email/);
     await chat.shutdown();
-    await db
-      .update(agents)
-      .set({ budgetMonthlyCents: 100, spentMonthlyCents: 100 })
-      .where(eq(agents.id, f.agentId));
+    await db.insert(budgetPolicies).values({ companyId: f.companyId, scopeType: "agent", scopeId: f.agentId,
+      windowKind: "calendar_month_utc", amount: 100 });
+    await db.insert(costEvents).values({ companyId: f.companyId, agentId: f.agentId,
+      provider: "test", model: "test", costCents: 100, occurredAt: new Date() });
     await f.service.tick();
     expect(f.sends).toHaveLength(0);
     expect((await f.service.publication(queued.id, f.companyId)).outcome).toBe(

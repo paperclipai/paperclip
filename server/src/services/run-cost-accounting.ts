@@ -1,23 +1,45 @@
 import { notifyStrandedAgentStatus } from "./live-run-recovery-notifications.js";
 import { usdToUnits, unitsToCents } from "@paperclipai/shared";
 import { and, asc, eq, inArray, or, sql } from "drizzle-orm";
-import { accountingRuntimeBaselines, budgetReservations, agentRuntimeState, agents, costEvents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
-import { withAccountingTransaction } from "./accounting-transaction.js";
+import { budgetReservations, agents, heartbeatRuns, nativeRunFinalizations, issues, projects, decisionInvocations, promptInjectionInvocations, type Db } from "@paperclipai/db";
+import { withOperationAccountingTransaction } from "./accounting-transaction.js";
 import { withBudgetSpan } from "./budget-tracing.js";
 import { conflict } from "../errors.js";
 import { createCostEventInTransaction } from "./costs.js";
-import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
+import type { BudgetServiceHooks } from "./budgets.js";
+import { queueBudgetEvaluation } from "./budget-evaluation-work.js";
+import { ensureRuntimeAccountingBaseline } from "./runtime-accounting-totals.js";
 import { logger } from "../middleware/logger.js";
 import { promises as fs } from "node:fs";
-import { replayUsageReceipts, indexPendingUsageReceipts, recoverPendingRunUsageReceipts, type UsageReceiptIndex } from "./usage-receipts.js";
+import { replayUsageReceipts, indexPendingUsageReceipts, readPendingRunUsageReceipts, persistUsageReceiptInTransaction, reconcileLateRunUsageReceiptInTransaction, type UsageReceiptIndex } from "./usage-receipts.js";
 
 const terminalStatuses = ["succeeded", "failed", "timed_out", "cancelled", "interrupted"];
 const object = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const text = (value: unknown) => typeof value === "string" && value.length > 0 ? value : null;
 const amount = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 
-/** The run's persisted usage is a durable receipt. Ledger, runtime totals, and
- * acknowledgement commit together, including after a restart or failed run. */
+/** The source/closed-provider identity is captured before filesystem reads and
+ * checked again after run arbitration. A newly closed/replaced source retries
+ * rather than acknowledging evidence from an earlier spool snapshot. */
+async function readAccountingClosure(db: Db, runId: string) {
+  const [closure] = await db.select({
+    sourceId: sql<unknown>`${heartbeatRuns.usageJson}->'accountingReceiptSourceId'`,
+    sequence: sql<unknown>`${heartbeatRuns.usageJson}->'accountingReceiptSequence'`,
+    receiptId: sql<unknown>`${heartbeatRuns.usageJson}->'accountingReceiptId'`,
+    ready: sql<unknown>`${heartbeatRuns.usageJson}->'accountingReceiptReady'`,
+    failed: sql<unknown>`${heartbeatRuns.usageJson}->'accountingCaptureFailed'`,
+    runtimeMode: heartbeatRuns.runtimeMode,
+    preProviderFailure: sql<boolean>`(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false'
+      or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false') is true`,
+    coordinatorId: nativeRunFinalizations.runId, resultId: nativeRunFinalizations.resultId, phase: nativeRunFinalizations.phase,
+  }).from(heartbeatRuns).leftJoin(nativeRunFinalizations, and(
+    eq(nativeRunFinalizations.runId, heartbeatRuns.id), eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+  )).where(eq(heartbeatRuns.id, runId));
+  return closure;
+}
+
+/** The run's persisted usage is a durable receipt. Ledger, reservation handoff
+ * and acknowledgement commit together, including after a restart or failed run. */
 export async function accountRunCost(db: Db, runId: string, hooks: BudgetServiceHooks = {}, receiptIndex?: UsageReceiptIndex) {
   const [identity] = await db.select({ companyId: heartbeatRuns.companyId, status: heartbeatRuns.status,
     pending: heartbeatRuns.costAccountingPending, accountedAt: heartbeatRuns.costAccountedAt,
@@ -28,8 +50,17 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
   // Pending acknowledgements still receive the locked stale-marker cleanup.
   const index = identity.pending && !identity.accountedAt && terminalStatuses.includes(identity.status)
     ? receiptIndex ?? await indexPendingUsageReceipts() : undefined;
+  const closure = await readAccountingClosure(db, runId);
+  if (!closure) return false;
+  if (!identity.accountedAt && closure.runtimeMode === "native" && !closure.preProviderFailure
+    && closure.coordinatorId && !closure.resultId && closure.phase !== "terminal_failure") return false;
+  const pendingReceipts = !identity.accountedAt
+    ? await readPendingRunUsageReceipts({ companyId: identity.companyId, runId }, undefined, index) : [];
   let recoveredFiles: string[] = [];
-  const accounted = await withBudgetSpan("budget.accounting.settlement", () => withAccountingTransaction(db, identity.companyId, async (tx, publications) => {
+  const accounted = await withBudgetSpan("budget.accounting.settlement", () => withOperationAccountingTransaction(db, identity.companyId, async (tx, publications) => {
+    // The operation wrapper can retry a transaction PostgreSQL rolled back.
+    // Never delete files imported only by an earlier, unsuccessful attempt.
+    recoveredFiles = [];
     // Native recovery owns the issue before updating its run. Acquire the
     // charge's issue FK lock first so inserting it cannot reverse that order.
     const issueId = text(identity.issueId);
@@ -39,16 +70,18 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     let [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update");
     if (!run?.costAccountingPending || !terminalStatuses.includes(run.status)) return false;
     if (run.costAccountedAt) {
+      if (object(run.usageJson).accountingLateReceiptPending === true)
+        return reconcileLateRunUsageReceiptInTransaction(tx, run, publications);
       await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
       await tx.update(heartbeatRuns).set({ costAccountingPending: false }).where(eq(heartbeatRuns.id, run.id));
-      await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(run.companyId, run.agentId,
-        text(object(object(run.usageJson).ledgerScope).projectId));
+      await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId,
+        projectId: text(object(object(run.usageJson).ledgerScope).projectId) });
       return false;
     }
-    // The bounded global replay can leave a newer receipt behind an older
-    // complete snapshot. Drain this run under the accounting lock before
-    // deciding completeness, and retain disk evidence until the outer commit.
-    recoveredFiles = await recoverPendingRunUsageReceipts(tx, { companyId: identity.companyId, runId }, undefined, { retainFiles: true, index });
+    if (JSON.stringify(await readAccountingClosure(tx, runId)) !== JSON.stringify(closure))
+      throw conflict("Run accounting closure changed during receipt recovery. Retry accounting.");
+    for (const item of pendingReceipts) await persistUsageReceiptInTransaction(tx, item.envelope);
+    recoveredFiles = pendingReceipts.map(item => item.file);
     [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     if (text(object(object(run.usageJson).ledgerScope).issueId) !== issueId) {
       throw conflict("Run cost attribution changed. Retry accounting.");
@@ -69,6 +102,7 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     // arrives. Keep the debt pending instead of acknowledging an invented zero
     // and permanently discarding that late receipt.
     if (!preProviderFailure && object(run.usageJson).accountingReceiptReady === false) return false;
+    if (!preProviderFailure) await ensureRuntimeAccountingBaseline(tx, run.companyId, run.agentId);
     // Acknowledgement is part of the same transaction. Budget checks inside
     // this transaction must not mistake this receipt for missing accounting.
     await notifyStrandedAgentStatus(tx, { companyId: run.companyId, agentId: run.agentId });
@@ -76,8 +110,8 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     await tx.update(budgetReservations).set({ state: preProviderFailure ? "released" : "settled", settledAt: new Date() })
       .where(and(eq(budgetReservations.companyId, run.companyId), eq(budgetReservations.runId, run.id), eq(budgetReservations.state, "held")));
     if (preProviderFailure) {
-      await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(run.companyId, run.agentId,
-        text(object(object(run.usageJson).ledgerScope).projectId));
+      await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId,
+        projectId: text(object(object(run.usageJson).ledgerScope).projectId) });
       return true;
     }
     const usage = object(run.usageJson);
@@ -136,27 +170,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
     } else {
       await createCostEventInTransaction(tx, run.companyId, receipt, publications, undefined, { deferBudgetEvaluation: true });
     }
-    await budgetServiceInTransaction(tx, publications).evaluateAffectedScopes(run.companyId, run.agentId, text(scope.projectId));
-    const [event] = await tx.select({
-      inputTokens: sql<string>`coalesce(sum(${costEvents.inputTokens}),0)::text`,
-      cachedInputTokens: sql<string>`coalesce(sum(${costEvents.cachedInputTokens}),0)::text`,
-      outputTokens: sql<string>`coalesce(sum(${costEvents.outputTokens}),0)::text`,
-      costCents: sql<string>`coalesce(sum(${costEvents.costCents}),0)::text`,
-    }).from(costEvents).where(and(eq(costEvents.companyId, run.companyId), eq(costEvents.heartbeatRunId, run.id)));
-    await tx.insert(agentRuntimeState).values({ agentId: run.agentId, companyId: run.companyId, adapterType: agent.adapterType }).onConflictDoNothing();
-    await tx.execute(sql`insert into accounting_runtime_baselines (agent_id,company_id,cost_cents,input_tokens,cached_input_tokens,output_tokens)
-      select agent_id,company_id,total_cost_cents,total_input_tokens,total_cached_input_tokens,total_output_tokens
-      from agent_runtime_state where agent_id = ${run.agentId} on conflict do nothing`);
-    await tx.update(agentRuntimeState).set({
-      totalInputTokens: sql`${agentRuntimeState.totalInputTokens} + ${event.inputTokens}`,
-      totalCachedInputTokens: sql`${agentRuntimeState.totalCachedInputTokens} + ${event.cachedInputTokens}`,
-      totalOutputTokens: sql`${agentRuntimeState.totalOutputTokens} + ${event.outputTokens}`,
-      totalCostCents: sql`${agentRuntimeState.totalCostCents} + ${event.costCents}::numeric`,
-      updatedAt: new Date(),
-    }).where(eq(agentRuntimeState.agentId, run.agentId));
+    await queueBudgetEvaluation(tx, { companyId: run.companyId, agentId: run.agentId, projectId: text(scope.projectId) });
     await tx.update(heartbeatRuns).set({ costAccountingPending: false, costAccountedAt: new Date(), accountingProjectionVersion: "v2", accountingLastError: null, accountingLastAttemptAt: new Date() }).where(eq(heartbeatRuns.id, run.id));
     return true;
-  }));
+  }), { "budget.accounting.owner": "run" });
   for (const file of recoveredFiles) {
     try { await fs.rm(file, { force: true }); }
     catch (error) { logger.warn({ err: error, runId }, "Accounting committed; recovered receipt cleanup will retry"); }
@@ -167,7 +184,10 @@ export async function accountRunCost(db: Db, runId: string, hooks: BudgetService
 function actionableRunAccounting() {
   return and(
     eq(heartbeatRuns.costAccountingPending, true), inArray(heartbeatRuns.status, terminalStatuses),
-    or(sql`${heartbeatRuns.costAccountedAt} is not null`, and(
+    or(and(sql`${heartbeatRuns.costAccountedAt} is not null`,
+      or(sql`${heartbeatRuns.usageJson}->>'accountingLateReceiptPending' is distinct from 'true'`,
+        sql`${heartbeatRuns.usageJson}->>'accountingLateReceiptId' is distinct from ${heartbeatRuns.usageJson}->>'accountingLateReceiptAttemptedId'`)), and(
+      sql`${heartbeatRuns.costAccountedAt} is null`,
       sql`${heartbeatRuns.usageJson}->>'accountingCaptureFailed' is distinct from 'true'`,
       sql`(${heartbeatRuns.resultJson}->'executionRecovery'->>'providerWorkStarted' = 'false'
         or ${heartbeatRuns.usageJson}->>'accountingProviderWorkStarted' = 'false'

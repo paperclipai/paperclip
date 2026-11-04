@@ -21,6 +21,9 @@ export function createDeliveryWorkCoordinator(input: {
     nextWakeAt: scheduler.nextWakeAt,
     register(queue: DeliveryQueue, task: {
       retryMs: number;
+      // Bound bursts by the first notification's deadline; later notifications
+      // do not postpone the obligation indefinitely.
+      coalesceMs?: number;
       run: (signal: AbortSignal) => Promise<unknown>;
       hasPending: () => Promise<boolean>;
       // Scoped hints belong to the outer transaction, including uncertainty recovery.
@@ -100,13 +103,13 @@ export function createDeliveryWorkCoordinator(input: {
           running = null;
           controller = null;
           finish();
-          if (dirty) schedule(0);
+          if (dirty) schedule(task.coalesceMs ?? 0);
         }));
       }
       function wake() {
         if (workerStopped) return;
         dirty = true;
-        if (!running) schedule(0);
+        if (!running) schedule(task.coalesceMs ?? 0);
       }
       const unsubscribe = subscribeDatabaseWork(input.owner, queue, (event, hints) => {
         if (workerStopped) return;
