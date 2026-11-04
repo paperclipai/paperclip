@@ -70,3 +70,27 @@ it("writes one closed variable to the actual owned runner environment file and r
     await expect(appendPrivateAttemptDiagnostic({ stage: "execution" }, { ...env, GITHUB_ENV: path.join(commands, "set_env_symlink") })).rejects.toThrow();
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+it("classifies existing reporter and packaging carriers without exposing private filenames", () => {
+  const reason = "zip inspection exceeded its expanded-byte bound";
+  const issues = [
+    { file: "blob-report/report.zip", reason },
+    { file: "playwright-output/private-test/trace.zip", reason },
+    { file: "html-report/data/private-hash.zip", reason },
+    { file: "html-report/index.html", reason: "zip inspection exceeded its time bound" },
+    { file: "snapshots/private-path.json", reason: "exact secret value" },
+    { file: "private-path", reason: "private-reason" },
+  ];
+  const diagnostic = privateAttemptDiagnostic({ stage: "package-original", observation: { privacy: { issues } },
+    evidence: { leaks: [{ file: "playwright-output\\private-test\\trace.zip", reason }, { file: "private-path", reason }] } });
+  expect(diagnostic.carrierReasons).toEqual([
+    { source: "reporter", carrier: "blob-zip", reason, count: 1 },
+    { source: "reporter", carrier: "playwright-trace-zip", reason, count: 1 },
+    { source: "reporter", carrier: "html-trace-zip", reason, count: 1 },
+    { source: "reporter", carrier: "embedded-html", reason: "zip inspection exceeded its time bound", count: 1 },
+    { source: "reporter", carrier: "other", reason: "exact secret value", count: 1 },
+    { source: "packaging", carrier: "playwright-trace-zip", reason, count: 1 },
+    { source: "packaging", carrier: "other", reason, count: 1 },
+  ]);
+  expect(JSON.stringify(diagnostic)).not.toMatch(/private-(?:test|hash|path|reason)/);
+});
