@@ -256,17 +256,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 write_json(&mut stdout, &success(id + 1, command, &request))?;
             }
             "remote-error" => {
+                let mut error = json!({
+                    "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
+                    "message": "violet-circuit-4821",
+                    "retryable": false,
+                });
+                if let Some(cause) = request["params"].get("providerFailure") {
+                    error["providerFailure"] = cause.clone();
+                }
                 write_json(
                     &mut stdout,
                     &json!({
                         "protocolVersion": GENERATED_ACPX_SIDECAR_PROTOCOL_VERSION,
                         "id": id,
                         "ok": false,
-                        "error": {
-                            "code": request["params"]["errorCode"].as_str().unwrap_or("Q7Z9"),
-                            "message": "violet-circuit-4821",
-                            "retryable": false,
-                        },
+                        "error": error,
                     }),
                 )?;
             }

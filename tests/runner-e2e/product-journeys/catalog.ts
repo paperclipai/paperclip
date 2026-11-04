@@ -2,7 +2,7 @@ import { agentJourneyRuns } from "./success-contract.js";
 export { agentJourneyRuns, agentJourneyRunCountValid } from "./success-contract.js";
 import type { JourneyId, TargetConfig } from "./types.js";
 export const productJourneys = [
-  { id: "agent-settings-persistence", label: "Save a fresh dedicated agent's instructions and verify its first task", requires: ["company", "board-user", "task-write", "agent", "agent-settings-write"], capabilities: ["agents/instructions", "tasks/completion"], paid: true },
+  { id: "task-edit-lifecycle", label: "Edit task properties, complete and reopen with saved context", requires: ["company", "board-user", "task-write"], capabilities: ["tasks/properties", "tasks/completion"], paid: false },
   { id: "company-access-isolation", label: "Switch QA workspaces and verify restricted agent isolation", requires: ["company", "board-user", "task-write", "company-access"], capabilities: ["companies/selection", "access/resources"], paid: false },
   { id: "repository-continuation", label: "Continue repository work with the same saved workspace", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["projects/task-context", "documents-artifacts/attachments"], paid: true },
   { id: "routine-scheduled-run", label: "Run a scheduled routine once and verify pause and saved history", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["routines/definition", "routines/triggers", "routines/history", "routines/management"], paid: true },
@@ -22,6 +22,7 @@ export const productJourneys = [
   { id: "stop-redirect", label: "Stop active work and send a new direction once", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["steering/stop-and-pause"], paid: true },
   { id: "followup-while-running", label: "Send a follow-up during active work and verify its saved result", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["steering/queue"], paid: true },
   { id: "hire-delegate-reuse", label: "Hire, delegate and reuse one teammate", requires: ["company", "board-user", "task-write", "agent"], capabilities: ["agents/hire", "documents-artifacts/documents"], paid: true },
+  { id: "agent-settings-persistence", label: "Save a fresh dedicated agent's instructions and verify its first task", requires: ["company", "board-user", "task-write", "agent", "agent-settings-write"], capabilities: ["agents/instructions", "tasks/completion"], paid: true },
   { id: "cloud-onboarding", label: "Create a Cloud workspace and complete a first task", requires: ["cloud-account", "fresh-workspace", "provider-key"], capabilities: ["onboarding/first-task"], paid: true },
 ] as const;
 

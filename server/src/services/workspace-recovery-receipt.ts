@@ -1,8 +1,10 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { executionWorkspaces, executionWorkspaceSnapshots, heartbeatRuns, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
 import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema, type ExecutionBlocker } from "@paperclipai/shared";
 import { z } from "zod";
 import { readNativeWorkspaceSyncReference } from "./native-runtime/native-workspace-sync.js";
+import { readMigratedLegacyWorkspaceSource } from "./legacy-workspace-recovery-migration.js";
+import { readSnapshot } from "./workspace-recovery-snapshot.js";
 
 export const workspaceRecoverySchema = z.object({
   schema: z.literal("paperclip.workspace-recovery.v1"),
@@ -43,6 +45,39 @@ export async function verifiedWorkspaceRepairReceipt(db: Db, run: Pick<typeof he
   const parsedRemote = remoteWorkspaceRunReferenceSchema.safeParse(run.runnerProfileJson?.remoteWorkspace);
   const remote = parsedRemote.success && parsedRemote.data.state === "saved" ? parsedRemote.data : null;
   if ((run.runnerProfileJson?.remoteWorkspace != null && !parsedRemote.success) || reference && parsedRemote.success) return null;
+  if (typeof issueId === "string" && (reference?.state === "prepared" || !reference && !parsedRemote.success
+    && run.runnerProfileJson?.legacyWorkspaceRecoveryMigration != null)) {
+    let migrated;
+    try { migrated = await readMigratedLegacyWorkspaceSource(db, { companyId: run.companyId, runId: run.id, reference }); }
+    catch (error) { if (error instanceof Error && error.message === "legacy_workspace_migration_receipt_invalid") return null; throw error; }
+    if (migrated) {
+      const allocations = reference ? [{ leaseId: reference.leaseId, providerLeaseId: reference.providerLeaseId }]
+        : migrated.recoveryAllocations;
+      if (!allocations?.length) return null;
+      let receiptId: string | null = null;
+      for (const allocation of allocations) {
+        // Migration retires the local merge destination. A verified immutable
+        // attachment is the repair receipt; the old copyback remains unresolved.
+        // Provider stop and current execution ownership are checked separately.
+        const [saved] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata,
+          evidence: issueRecoveryActions.evidence }).from(workspaceOperations).innerJoin(issueRecoveryActions, and(
+          eq(issueRecoveryActions.companyId, workspaceOperations.companyId), eq(issueRecoveryActions.sourceIssueId, workspaceOperations.issueId),
+          sql`${issueRecoveryActions.id}::text = ${workspaceOperations.metadata}->>'recoveryActionId'`,
+        )).where(and(eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.issueId, issueId),
+          eq(workspaceOperations.heartbeatRunId, run.id), eq(workspaceOperations.phase, "workspace_recovery_snapshot"),
+          eq(workspaceOperations.status, "succeeded"),
+          sql`${workspaceOperations.metadata}->>'leaseId' = ${allocation.leaseId}`,
+          sql`${workspaceOperations.metadata}->>'providerLeaseId' = ${allocation.providerLeaseId}`,
+          sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,runId}' = ${run.id}`,
+          sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' = 'recovered'`,
+        )).orderBy(desc(workspaceOperations.createdAt)).limit(1);
+        if (!saved || readWorkspaceRecovery(saved.evidence)?.status !== "recovered") return null;
+        try { readSnapshot(saved.metadata, run.companyId, run.id); } catch { return null; }
+        receiptId = saved.id;
+      }
+      return receiptId;
+    }
+  }
   if (typeof issueId !== "string" || (!remote && (!reference || reference.state !== "finalized" || !reference.finalHostSha256))) return null;
   const [receipt] = await db.select({ id: workspaceOperations.id, metadata: workspaceOperations.metadata }).from(workspaceOperations).where(and(
     eq(workspaceOperations.companyId, run.companyId), eq(workspaceOperations.issueId, issueId),

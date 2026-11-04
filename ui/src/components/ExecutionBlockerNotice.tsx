@@ -25,7 +25,7 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
     canRetry={canRetry && presentation.canRetry} onRetry={onRetry} error={error} className={className} />;
   if (error && !optimistic && !takingLonger) return <div role="alert" className={cn("flex items-center justify-between gap-2 text-sm text-destructive", className)}><span>{error.message}</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
   if (takingLonger) return <div role="status" className={cn("flex items-center justify-between gap-2 text-sm text-muted-foreground", className)}><span>Taking longer than usual…</span>{canRetry && <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button>}</div>;
-  if (!optimistic && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
+  if (!optimistic && !presentation?.retryWait && presentation?.providerFailure && ["failed", "retry_scheduled", "waiting_for_user"].includes(presentation.state)) {
     return <ProviderFailureNotice failure={presentation.providerFailure} className={className}
       actions={canRetry && presentation.canRetry ? <Button variant="outline" size="sm" onClick={onRetry}>Retry</Button> : undefined}>
       {presentation.state === "retry_scheduled" && <p>Paperclip will retry automatically.</p>}
@@ -43,6 +43,7 @@ export function ExecutionBlockerNotice({ presentation, canRetry, onRetry, optimi
         {presentation.state === "failed" && <AlertCircle className="size-5 shrink-0 text-destructive" aria-hidden="true" />}
         <span className="min-w-0 flex-1">{presentation.state === "retry_scheduled"
           ? `Trying again in ${seconds > 60 ? `${Math.ceil(seconds / 60)}m` : `${seconds}s`}…`
+          : presentation.retryWait ? presentation.retryWait.message
           : presentation.workspaceFailure
             ? <>Couldn’t prepare the task folders. {presentation.workspaceFailure.message}</>
             : "Couldn’t finish this attempt. Your message is saved."}</span>

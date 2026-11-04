@@ -20,7 +20,7 @@
     "storybook": "storybook dev -p 6006 -c storybook/.storybook",
     "build-storybook": "storybook build -c storybook/.storybook -o storybook-static",
     "preview": "vite preview",
-    "typecheck": "node ../scripts/storybook-catalog.mjs && tsc -b",
+    "typecheck": "node ../scripts/storybook-catalog.mjs && node ../scripts/run-tsc.mjs -b",
     "clean": "rm -rf dist dist-preview storybook-static tsconfig.tsbuildinfo",
     "prepack": "rm -f package.dev.json && cp package.json package.dev.json && node ../scripts/generate-ui-package-json.mjs",
     "postpack": "if [ -f package.dev.json ]; then mv package.dev.json package.json; fi"

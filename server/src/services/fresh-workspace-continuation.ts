@@ -9,6 +9,7 @@ import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { hasPendingRunCleanup } from "./execution-blocker.js";
 import { toExecutionWorkspace } from "./execution-workspaces.js";
 import { isBoundIsolatedTaskDirectory } from "./isolated-task-directory.js";
+import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 
 export type ContinuationReadiness =
   | { mode: "resume_preserved_workspace"; preservationReceiptId: string }
@@ -167,6 +168,33 @@ export async function readFreshWorkspaceReadiness(db: Db, run: Pick<typeof heart
     if (intent.strategy !== "fresh_isolated_workspace") {
       const preservationReceiptId = await verifiedWorkspaceRepairReceipt(db, source);
       if (preservationReceiptId) return { mode: "resume_preserved_workspace", preservationReceiptId };
+      const [bound] = await db.select({ id: executionWorkspaces.id, metadata: executionWorkspaces.metadata }).from(issues)
+        .innerJoin(executionWorkspaces, and(eq(executionWorkspaces.companyId, issues.companyId),
+          eq(executionWorkspaces.id, issues.executionWorkspaceId)))
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)));
+      const authority = readRemoteWorkspaceAuthority(bound?.metadata);
+      if (bound && authority && !authority.dirty && !authority.writerRunId && authority.snapshotId) {
+        const recovered = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
+          nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
+          contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId')`,
+          runnerProfileJson: sql<Record<string, unknown>>`jsonb_build_object('remoteWorkspace', ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace',
+            'nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync')`,
+        }).from(issueRecoveryActions)
+          .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
+            sql`${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'`))
+          .where(and(eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+            eq(heartbeatRuns.agentId, run.agentId),
+            sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,runId}' = ${run.id}`,
+            sql`${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,workspaceId}' = ${bound.id}`,
+            sql`${heartbeatRuns.runnerProfileJson}#>>'{remoteWorkspace,snapshotId}' = ${authority.snapshotId}`)).limit(1);
+        for (const writer of recovered) {
+          const remote = remoteWorkspaceRunReferenceSchema.safeParse(writer.runnerProfileJson?.remoteWorkspace);
+          if (!remote.success || remote.data.state !== "saved" || remote.data.workspaceId !== bound.id
+            || remote.data.epoch !== authority.epoch || remote.data.snapshotId !== authority.snapshotId) continue;
+          const receipt = await verifiedWorkspaceRepairReceipt(db, writer);
+          if (receipt) return { mode: "resume_preserved_workspace", preservationReceiptId: receipt };
+        }
+      }
       const workspace = run.contextSnapshot?.previousRunId === source.id
         ? await reusableDirectoryAfterPreparationFailure(db, source, issueId) : null;
       if (workspace?.cwd) {

@@ -63,6 +63,7 @@ import { isAutomaticRecoverySuppressedByPauseHold } from "../recovery/pause-hold
 import { readRunCancellation } from "../run-cancellation.js";
 import { appendHeartbeatRunEvent } from "../heartbeat-run-events.js";
 import { retireSupersededNativeRetry } from "./native-superseded-retry.js";
+import { legacyWorkspaceRecoveryNotMigrated } from "../legacy-workspace-recovery-migration.js";
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -115,6 +116,7 @@ export async function claimNativeSessionResumptions(input: {
     .where(
       and(
         eq(heartbeatRuns.runtimeMode, "native"),
+        legacyWorkspaceRecoveryNotMigrated(),
         nativeRunnerOwnershipNotHeldCondition(),
         isNull(heartbeatRuns.processPid),
         isNull(heartbeatRuns.processGroupId),
@@ -156,7 +158,7 @@ export async function claimNativeSessionResumptions(input: {
         eq(heartbeatRuns.companyId, candidate.companyId), eq(heartbeatRuns.id, candidate.runId),
         eq(heartbeatRuns.nativeIssueId, issue.id),
       )).for("update").limit(1);
-      if (!run || !coordinator) return false;
+      if (!run || !coordinator || run.runnerProfileJson?.legacyWorkspaceRecoveryMigration != null) return false;
       if (await retireSupersededNativeRetry(tx as unknown as Db, {
         run, coordinator, issueExecutionRunId: issue.executionRunId, now,
       })) return false;

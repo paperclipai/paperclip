@@ -207,7 +207,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     const rows = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
       title: randomUUID(), status: "in_review", assigneeAgentId: agentId, updatedAt: old() }))).returning();
     await db.insert(issueThreadInteractions).values(rows.map(row => ({ companyId, issueId: row.id,
-      kind: "request_confirmation", addresseeAgentId: agentId, payload: { version: 1, prompt: "Agent verdict" } })));
+      kind: "request_confirmation" as const, addresseeAgentId: agentId, payload: { version: 1 as const, prompt: "Agent verdict" } })));
     statements.length = 0;
     const page = await attentionRetentionService(db).load({ companyId, sourceKind: "review" });
     expect(page.rows).toEqual([]); expect(page.complete).toBe(false);
@@ -278,11 +278,11 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   it("batches 100 blocker graphs with exact terminal timestamps and fresh terminal visibility", async () => {
     const roots = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
       title: randomUUID(), status: "blocked", updatedAt: old(), blockedTransitionAt: old(),
-      unblockDescriptor: { owner: "board", action: "Pick an owner" } }))).returning();
+      unblockDescriptor: { owner: "board" as const, action: "Pick an owner" } }))).returning();
     const terminals = await db.insert(issues).values(Array.from({ length: 100 }, () => ({ companyId,
       title: randomUUID(), status: "backlog", assigneeAgentId: agentId, updatedAt: old() }))).returning();
     await db.insert(issueRelations).values(roots.map((root, index) => ({ companyId,
-      issueId: terminals[index].id, relatedIssueId: root.id, type: "blocks" })));
+      issueId: terminals[index].id, relatedIssueId: root.id, type: "blocks" as const })));
     await db.execute(sql`update issues set updated_at = updated_at + interval '0.000321 seconds' where id = ${terminals[99].id}::uuid`);
     const service = attentionRetentionService(db), scope = { companyId, sourceKind: "blocker_attention" as const };
     statements.length = 0;
@@ -318,7 +318,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
       { companyId, issueId: middle.id, relatedIssueId: root.id, type: "blocks" },
       { companyId, issueId: terminal.id, relatedIssueId: middle.id, type: "blocks" },
       ...heavyNodes.map((node, index) => ({ companyId, issueId: node.id,
-        relatedIssueId: limit === "nodes" || index === 0 ? heavy.id : heavyNodes[index - 1].id, type: "blocks" })),
+        relatedIssueId: limit === "nodes" || index === 0 ? heavy.id : heavyNodes[index - 1].id, type: "blocks" as const })),
     ]);
     const owner = issueService(db);
     const expected = (await owner.listBlockerAttention(companyId, [root])).get(root.id)!;
@@ -350,7 +350,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     const cycle = await insertIssue("blocked");
     const leaf = await insertIssue("backlog", { assigneeAgentId: agentId });
     await db.insert(issueRelations).values([
-      ...chain.map((node, index) => ({ companyId, issueId: node.id, relatedIssueId: index ? chain[index - 1].id : root.id, type: "blocks" })),
+      ...chain.map((node, index) => ({ companyId, issueId: node.id, relatedIssueId: index ? chain[index - 1].id : root.id, type: "blocks" as const })),
       { companyId, issueId: leaf.id, relatedIssueId: cycle.id, type: "blocks" },
       { companyId, issueId: cycle.id, relatedIssueId: leaf.id, type: "blocks" },
     ]);
@@ -378,7 +378,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     });
     const listed = await issueService(db).list(companyId, { status: "blocked", includeBlockedBy: true });
     expect(listed).toHaveLength(roots.length);
-    for (const root of listed) expect(root.blockerAttention).toMatchObject({ state: "needs_attention", terminalBlockerIssueId: root.id });
+    for (const root of listed) expect((root as typeof root & { blockerAttention?: unknown }).blockerAttention).toMatchObject({ state: "needs_attention", terminalBlockerIssueId: root.id });
     const feed = await attentionService(db).list(companyId, { all: true, allowUnscopedAll: true });
     const visible = new Set(feed.items.filter(item => item.sourceKind === "blocker_attention").map(item => item.subject.id));
     expect(visible).toEqual(new Set(roots.map(root => root.id)));
@@ -457,7 +457,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
       const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
       await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, child.id));
     } else if (kind === "confirmation") {
-      await db.insert(issueThreadInteractions).values({ companyId, issueId: child.id, kind: "request_confirmation", status: "pending", payload: { prompt: "Approve?" } });
+      await db.insert(issueThreadInteractions).values({ companyId, issueId: child.id, kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Approve?" } });
     }
     parameterCounts.length = 0;
     const batch = await issueService(db).listBlockerAttentionBatch(companyId, [root]);
@@ -495,7 +495,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
         const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status: "running" }).returning();
         await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, live.id));
       } else if (kind === "confirmation") await db.insert(issueThreadInteractions).values({ companyId, issueId: live.id,
-        kind: "request_confirmation", status: "pending", payload: { prompt: "Still waiting" } });
+        kind: "request_confirmation", status: "pending", payload: { version: 1, prompt: "Still waiting" } });
     }
     statements.length = 0; parameterCounts.length = 0;
     captureBlockerPlan = kind === "completed";
@@ -687,13 +687,13 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     let query!: Parameters<typeof db.execute>[0], returned = 0;
     await db.transaction(async tx => {
       const execute = tx.execute.bind(tx);
-      vi.spyOn(tx, "execute").mockImplementation(async statement => {
+      vi.spyOn(tx, "execute").mockImplementation((async (statement: Parameters<typeof execute>[0]) => {
         const result = await execute(statement);
         if (new PgDialect().sqlToQuery(statement as SQL).sql.includes("with recursive affected")) {
           query = statement; returned = result.length;
         }
         return result;
-      });
+      }) as unknown as typeof execute);
       await notifyIssueAttentionRetentionWork(tx, { companyId, issueId: leaf.id });
     });
     expect(returned).toBe(101);
@@ -804,7 +804,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     const [decision] = await db.insert(decisions).values({ companyId, originAgentId: agentId, originIssueId: origin.id, originRunId: run.id,
       title: "Decision", body: "Choose", options: [], signedSpec: "fixture", targetSnapshots: {}, expiresAt: new Date(Date.now() + 86_400_000), updatedAt: old() }).returning();
     const [recovery] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: origin.id, kind: "execution", ownerType: "board", cause: "fixture", fingerprint: "fixture", nextAction: "Choose", updatedAt: old() }).returning();
-    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId: origin.id, kind: "ask_user_questions", payload: { questions: [] }, updatedAt: old() }).returning();
+    const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId: origin.id, kind: "ask_user_questions", payload: { version: 1, questions: [] }, updatedAt: old() }).returning();
     await start(); await quiet();
     await issueService(db).update(origin.id, { hiddenAt: null });
     for (const [kind, id] of [["decision", decision.id], ["recovery_action", recovery.id], ["failed_run", run.id], ["issue_thread_interaction", interaction.id]]) await archived(kind, id);
@@ -933,10 +933,10 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     await db.insert(decisions).values({ companyId, originAgentId: agentId, originIssueId: origin.id, originRunId: run.id,
       title: "Decision", body: "Choose", options: [], signedSpec: "fixture", targetSnapshots: {}, expiresAt: new Date(Date.now() + 86_400_000), updatedAt: old() });
     await db.insert(issueThreadInteractions).values([
-      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { questions: [] }, updatedAt: old() },
-      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { questions: [] }, addresseeAgentId: agentId, updatedAt: old() },
-      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { questions: [] }, addresseeUserId: "board", updatedAt: old() },
-      { companyId, issueId: hidden.id, kind: "ask_user_questions", payload: { questions: [] }, updatedAt: old() },
+      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { version: 1, questions: [] }, updatedAt: old() },
+      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { version: 1, questions: [] }, addresseeAgentId: agentId, updatedAt: old() },
+      { companyId, issueId: origin.id, kind: "ask_user_questions", payload: { version: 1, questions: [] }, addresseeUserId: "board", updatedAt: old() },
+      { companyId, issueId: hidden.id, kind: "ask_user_questions", payload: { version: 1, questions: [] }, updatedAt: old() },
     ]);
     await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: origin.id, kind: "execution", ownerType: "board", cause: "fixture", fingerprint: "fixture", nextAction: "Choose", updatedAt: old() });
     const [policy] = await db.insert(budgetPolicies).values({ companyId, scopeType: "company", scopeId: companyId, windowKind: "calendar_month_utc", amount: 100 }).returning();
@@ -1024,16 +1024,16 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
       { companyId, name: "Unhealthy", role: "engineer", status: "active" },
     ]).returning();
     await db.update(agents).set({ reportsTo: manager.id }).where(eq(agents.id, unhealthy.id));
-    const common = { companyId, issueId: origin.id, kind: "request_confirmation", payload: { prompt: "Approve?" }, createdAt: old(), updatedAt: old() };
+    const common = { companyId, issueId: origin.id, kind: "request_confirmation", payload: { version: 1, prompt: "Approve?" }, createdAt: old(), updatedAt: old() };
     const [older, newest, independent] = await db.insert(issueThreadInteractions).values([
       common, { ...common, createdAt: new Date(old().getTime() + 1000) },
       { ...common, payload: { prompt: "Independent", qualityReview: { artifactKey: "copy" } } },
       { ...common, createdAt: new Date(), addresseeUserId: "board" },
       { ...common, addresseeAgentId: agentId },
       { ...common, issueId: hidden.id },
-      { ...common, issueId: conversation.id, kind: "ask_user_questions", payload: { questions: [] } },
+      { ...common, issueId: conversation.id, kind: "ask_user_questions", payload: { version: 1, questions: [] } },
       { ...common, issueId: conversation.id, addresseeAgentId: paused.id },
-      { ...common, issueId: conversation.id, addresseeAgentId: unhealthy.id, kind: "ask_user_questions", payload: { questions: [] } },
+      { ...common, issueId: conversation.id, addresseeAgentId: unhealthy.id, kind: "ask_user_questions", payload: { version: 1, questions: [] } },
     ] as typeof issueThreadInteractions.$inferInsert[]).returning();
     const feed = await attentionService(db).list(companyId, { all: true, allowUnscopedAll: true });
     const expected = [...new Set(feed.items.map(item => `${item.sourceKind}:${item.subject.id}`))].sort();
@@ -1048,7 +1048,7 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
   it("excludes maintained reviews until a pending approval creates human attention", async () => {
     const row = await insertIssue("in_review", { assigneeAgentId: agentId });
     const [interaction] = await db.insert(issueThreadInteractions).values({ companyId, issueId: row.id,
-      kind: "request_confirmation", addresseeAgentId: agentId, payload: { prompt: "Agent verdict" } }).returning();
+      kind: "request_confirmation", addresseeAgentId: agentId, payload: { version: 1, prompt: "Agent verdict" } }).returning();
     expect((await loadAll()).some(entry => entry.sourceKind === "review")).toBe(false);
     const [approval] = await db.insert(approvals).values({ companyId, type: "hire_agent", payload: {}, status: "pending" }).returning();
     await db.insert(issueApprovals).values({ companyId, issueId: row.id, approvalId: approval.id });

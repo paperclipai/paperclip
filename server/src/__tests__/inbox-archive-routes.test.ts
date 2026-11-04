@@ -154,16 +154,16 @@ describeEmbeddedPostgres("inbox archive routes", () => {
     return { companyId, agentId, runId, issueId, responsibleUserId, targetUserId };
   }
 
-  function agentActor(seed: Awaited<ReturnType<typeof seed>>): Express.Request["actor"] {
+  function agentActor(seeded: Awaited<ReturnType<typeof seed>>): Express.Request["actor"] {
     return {
       type: "agent",
       source: "agent_jwt",
-      agentId: seed.agentId,
-      companyId: seed.companyId,
-      runId: seed.runId,
-      onBehalfOfUserId: seed.responsibleUserId,
+      agentId: seeded.agentId,
+      companyId: seeded.companyId,
+      runId: seeded.runId,
+      onBehalfOfUserId: seeded.responsibleUserId,
       onBehalfOfMemberships: [{
-        companyId: seed.companyId,
+        companyId: seeded.companyId,
         membershipRole: "operator",
         status: "active",
       }],

@@ -19,7 +19,6 @@ function associate(suites: readonly string[], cases: Record<string, readonly str
 }
 
 associate(["product-journeys"], {
-  "agent-settings-persistence": ["agents/instructions", "tasks/completion"],
   "company-access-isolation": ["companies/selection", "access/resources"],
   "repository-continuation": ["projects/task-context", "documents-artifacts/attachments"],
   "routine-scheduled-run": ["routines/definition", "routines/triggers", "routines/history", "routines/management"],
@@ -28,7 +27,9 @@ associate(["product-journeys"], {
   "question-answer-resume": ["questions-and-approvals/questions", "questions-and-approvals/continuation"],
   "followup-while-running": ["steering/queue"],
   "hire-delegate-reuse": ["agents/hire", "documents-artifacts/documents"],
+  "agent-settings-persistence": ["agents/instructions", "tasks/completion"],
   "project-task-context": ["projects/lifecycle", "projects/task-context", "tasks/create"],
+  "task-edit-lifecycle": ["tasks/properties", "tasks/completion"],
   "task-properties": ["tasks/properties"], "task-document-persistence": ["documents-artifacts/documents"], "task-search-filter": ["tasks/organize"], "cloud-onboarding": ["onboarding/first-task"] });
 associate(["antigravity-agent-journey"], {
   "saved-subscription-two-turn": ["agents/hire", "agents/instructions", "runs-adapters/validation", "runs-adapters/session",

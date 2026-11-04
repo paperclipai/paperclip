@@ -1254,7 +1254,13 @@ impl CodexProvider {
             } else {
                 "baseInstructions"
             };
-            params_object.insert(instruction_field.to_owned(), json!(config.instructions));
+            params_object.insert(
+                instruction_field.to_owned(),
+                json!(crate::task_memory::instructions_with_memory_note(
+                    &config.instructions,
+                    MAX_INSTRUCTIONS_BYTES,
+                )),
+            );
             if provider.permission_profile == "paperclip-runner-external-sandbox" {
                 // The execution target (for example Daytona) is the OS sandbox.
                 // Codex must not try to create nested user/network namespaces,

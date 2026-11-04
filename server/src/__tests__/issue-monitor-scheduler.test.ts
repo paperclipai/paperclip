@@ -166,7 +166,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     const monitorAttemptCount = input?.monitorAttemptCount ?? 0;
-    const monitor = {
+    const monitor: Record<string, unknown> = {
       nextCheckAt: nextCheckAt.toISOString(),
       notes: "Check deploy",
       scheduledBy: "assignee",

@@ -2436,6 +2436,7 @@ async function startRuntime(input: {
   const bridge = await startOpenCodeMcpBridge({
     tools: input.options.dynamicTools,
     handler: input.dispatch,
+    onDiagnostic: input.options.onDiagnostic,
     ...(input.options.durableToolRequests ? { timeoutMs: null } : {}),
   }).catch(async (error) => {
     await removeIsolatedHome(isolatedHome).catch(() => undefined);

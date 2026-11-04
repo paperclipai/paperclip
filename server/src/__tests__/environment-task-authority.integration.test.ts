@@ -17,7 +17,7 @@ databaseSuite("environment task lease authority", () => {
   let stopDb: (() => Promise<void>) | undefined;
   beforeAll(async () => {
     const started = await startEmbeddedPostgresTestDatabase("environment-task-authority");
-    stopDb = started.stop; db = createDb(started.connectionString);
+    stopDb = started.cleanup; db = createDb(started.connectionString);
   });
   afterAll(async () => { await stopDb?.(); });
 
@@ -27,7 +27,7 @@ databaseSuite("environment task lease authority", () => {
     await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", adapterType: "paperclip_runner" });
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "fixture-warm-replacement", version: "1", status: "ready",
       manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }] } as never });
-    await db.insert(environments).values({ id: environmentId, companyId, name: `Fixture ${environmentId}`, driver: "plugin",
+    await db.insert(environments).values({ id: environmentId, name: `Fixture ${environmentId}`, driver: "plugin",
       config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "manual", status: "running" });
     await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: runId,
@@ -65,7 +65,7 @@ databaseSuite("environment task lease authority", () => {
     await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", adapterType: "paperclip_runner" });
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "fixture-warm-replacement", version: "1", status: "ready",
       manifestJson: { capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }] } as never });
-    await db.insert(environments).values({ id: environmentId, companyId, name: `Fixture ${environmentId}`, driver: "plugin",
+    await db.insert(environments).values({ id: environmentId, name: `Fixture ${environmentId}`, driver: "plugin",
       config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } });
     await db.insert(heartbeatRuns).values({ id: runId, companyId, agentId, invocationSource: "manual", status: "running" });
     await db.insert(environmentLeases).values({ id: leaseId, companyId, environmentId, heartbeatRunId: runId,
@@ -128,7 +128,7 @@ databaseSuite("environment task lease authority", () => {
     const oldRunId = randomUUID(), nextRunId = randomUUID(), oldLeaseId = randomUUID(), nextLeaseId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Lease transition", issuePrefix: `T${companyId.slice(0, 7).replace(/-/g, "").toUpperCase()}` });
     await db.insert(agents).values({ id: agentId, companyId, name: "Fixture", role: "engineer", adapterType: "paperclip_runner" });
-    await db.insert(environments).values({ id: environmentId, companyId, name: `Fixture ${environmentId}`, driver: "plugin", config: {} });
+    await db.insert(environments).values({ id: environmentId, name: `Fixture ${environmentId}`, driver: "plugin", config: {} });
     await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "fixture-continuation", version: "1.0.0", status: "ready", manifestJson: {
       capabilities: ["environment.drivers.register"], environmentDrivers: [{ driverKey: "tasks", supportsTasks: true }],
     } as never });

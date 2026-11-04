@@ -1374,6 +1374,13 @@ Invites tab does not hide this Cloud action.
 
 ## 10.3 Agents
 
+Saving an existing agent's configuration with a healthy saved AI account checks
+current account access, installation, provider/model compatibility, and environment
+selection without allocating a computer or running a provider hello test. Use
+**Test** to verify the runtime. Unverified legacy-account adoption, task connection
+adoption, and Copilot's account-specific model checks retain their live validation.
+A configuration save confirms persistence; it does not certify runtime readiness.
+
 The Harness / Runtime configuration page offers **Upgrade runner** for existing
 legacy Claude, Codex, and Grok Build agents when the target environment selects Paperclip
 Runner by default. The action uses the normal authorized agent PATCH with
@@ -1729,7 +1736,10 @@ Scheduler must skip invocation when:
 - an existing run is active
 - hard budget limit has been hit
 
-Budget admission and accounting serialize under the company accounting lock.
+Authoritative paid-work admission and accounting mutations serialize under the
+company accounting lock. Preliminary invocation checks use a read-only snapshot
+and take that lock only when a hold, incident, or enforcement transition needs
+reconciliation; reconciliation rereads current state under the lock.
 The dispatch boundary rechecks current company, agent, and project policies and
 reserves capacity before paid work starts. Accounting commits budget blocks and
 durable stop intent without waiting for provider shutdown or reconciling unrelated

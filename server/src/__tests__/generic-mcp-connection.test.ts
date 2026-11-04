@@ -43,7 +43,7 @@ import {
   toolRuntimeSlots,
 } from "@paperclipai/db";
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { APP_DEFINITIONS, MCP_CONFIG_HELP_PROMPT } from "@paperclipai/shared";
+import { APP_DEFINITIONS, MCP_CONFIG_HELP_PROMPT, createToolConnectionSchema } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -52,8 +52,6 @@ import { toolAccessService } from "../services/tool-access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import * as instanceSettingsModule from "../services/instance-settings.js";
 import { connectionIntentService } from "../services/connection-intents.js";
-import { ComposioApiError, type ComposioClient } from "../services/composio.js";
-import { createComposioSessionManager } from "../services/composio-session-manager.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
@@ -485,7 +483,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await db.insert(toolProfileEntries).values({ companyId: company.id, profileId: profile!.id, selectorType: "connection", effect: "include", connectionId: connected.connectionId });
     const gateway = createToolGatewayService(db);
     const named = await gateway.createNamedGateway({ companyId: company.id, body: { name: "Notebook context", profileId: profile!.id, agentId: agent!.id, issueId: issue!.id } });
-    const token = await gateway.createNamedGatewayToken({ companyId: company.id, gatewayId: named.id, body: { name: "Context run", subjectType: "heartbeat_run", subjectId: run!.id } });
+    const token = await gateway.createNamedGatewayToken({ companyId: company.id, gatewayId: named.id, body: { name: "Context run", subjectType: "heartbeat_run", subjectId: run!.id, clientLabel: "Context run client", ownerNote: "" } });
     const context = (method: "resources/list" | "resources/read" | "prompts/list" | "prompts/get", params?: Record<string, unknown>) =>
       gateway.executeContextForNamedGateway({ gatewayPublicId: named.gatewayPublicId, bearerToken: token.token, method, params });
     const resources = await context("resources/list"), prompts = await context("prompts/list");
@@ -549,9 +547,9 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     await expect(service.connectGalleryApp(company.id, { galleryKey: "paperclip-notebook", grantKind: "user" }, actor))
       .rejects.toMatchObject({ status: 403, details: { code: "connector_disabled" } });
     await request(app).get(`/api/companies/${company.id}/tools/apps/paperclip-notebook/preflight`).expect(403);
-    await expect(service.createConnection(company.id, { name: "Notebook bypass", transport: "mcp_remote", config: {
+    await expect(service.createConnection(company.id, createToolConnectionSchema.parse({ name: "Notebook bypass", transport: "mcp_remote", config: {
       sourceTemplateKey: "paperclip-notebook", url: MCP_URL,
-    } }, actor)).rejects.toMatchObject({ status: 403, details: { code: "connector_disabled" } });
+    } }), actor)).rejects.toMatchObject({ status: 403, details: { code: "connector_disabled" } });
     expect(await db.select().from(toolConnections).where(eq(toolConnections.companyId, company.id))).toEqual([]);
     expect(await db.select().from(companySecrets).where(eq(companySecrets.companyId, company.id))).toEqual([]);
     await settings.updateExperimental({ enablePaperclipNotebook: true });
@@ -656,7 +654,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
     const [profile] = await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${connected.connectionId}`));
     const gateway = createToolGatewayService(db, { toolActionSigningSecret: "notebook-mcp-fixture" });
     const named = await gateway.createNamedGateway({ companyId: company.id, body: { name: "Notebook MCP", profileId: profile!.id, agentId: agent!.id, issueId: issue!.id } });
-    const token = await gateway.createNamedGatewayToken({ companyId: company.id, gatewayId: named.id, body: { name: "Notebook run", subjectType: "heartbeat_run", subjectId: run!.id } });
+    const token = await gateway.createNamedGatewayToken({ companyId: company.id, gatewayId: named.id, body: { name: "Notebook run", subjectType: "heartbeat_run", subjectId: run!.id, clientLabel: "Notebook run client", ownerNote: "" } });
     const descriptors = await gateway.listToolsForNamedGateway({ gatewayPublicId: named.gatewayPublicId, bearerToken: token.token });
     const publish = descriptors.find(tool => tool.upstreamToolName === "notebook_publish")!;
     const share = descriptors.find(tool => tool.upstreamToolName === "notebook_set_sharing")!;
@@ -1284,13 +1282,13 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       const start = await service.startOAuth(company.id, connected.connectionId, input);
       expect(new URL(start.authorizationUrl).searchParams.get("scope")).toBe("mcp:read offline_access");
       const saved = await service.getConnection(connected.connectionId, company.id);
-      expect(saved.config.oauth).toMatchObject({ scopes: ["mcp:read", "offline_access"] });
+      expect(saved.config?.oauth).toMatchObject({ scopes: ["mcp:read", "offline_access"] });
       const callback = await approveFixtureAuthorization(start.authorizationUrl);
       const completed = await service.completeOAuthCallback({
         state: callback.searchParams.get("state")!, code: callback.searchParams.get("code")!,
         iss: callback.searchParams.get("iss")!, redirectUri: input.redirectUri, actor,
       });
-      expect(completed.connection.config.oauth).toMatchObject({ scopes: ["mcp:read", "offline_access"] });
+      expect(completed.connection.config?.oauth).toMatchObject({ scopes: ["mcp:read", "offline_access"] });
       const grants = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
       expect(grants).toHaveLength(1);
       expect(grants[0].providerTenant?.oauth).toMatchObject({
@@ -1382,7 +1380,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
       const input = { redirectUri: "http://127.0.0.1:3100/api/tools/oauth/callback", actor: { actorType: "user" as const, actorId: "board-user" } };
       await service.startOAuth(company.id, connected.connectionId, input);
       const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
-      const oauth = { ...connection!.config.oauth as Record<string, unknown>, scopes: ["mcp:read"] };
+      const oauth: Record<string, unknown> = { ...connection!.config.oauth as Record<string, unknown>, scopes: ["mcp:read"] };
       delete oauth.offlineAccessSupported;
       delete oauth.grantTypesSupported;
       const config = { ...connection!.config, oauth };
@@ -2834,7 +2832,7 @@ describeEmbeddedPostgres("generic remote MCP connections", () => {
 
     // Installation targets the chosen agent, same as a curated connection.
     await service.putConnectionInstalls(connected.connectionId, {
-      installs: [{ targetType: "agent", targetId: agent!.id, enabled: true }],
+      installs: [{ targetType: "agent", targetId: agent!.id }],
     }, { actorType: "user", actorId: "board-user" });
     const installs = await db.select().from(toolConnectionInstalls)
       .where(eq(toolConnectionInstalls.connectionId, connected.connectionId));
