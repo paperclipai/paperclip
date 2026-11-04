@@ -177,18 +177,25 @@ function answeredQuestionValue() {
   const base = valid();
   const row = { id: "question", companyId: "company", issueId: "source", sourceRunId: "initial", createdByAgentId: "ceo",
     addresseeUserId: "person", resolverPolicy: "human_only", continuationPolicy: "wake_assignee", kind: "ask_user_questions", status: "answered",
-    resolvedByUserId: "person", resolvedAt: "2026-11-04T13:30:00Z", result: { version: 1, commentId: "answer", answers: [{ questionId: "saved", optionIds: ["yes"] }] },
+    resolvedByUserId: "person", resolvedAt: "2026-11-04T13:30:00Z", result: { version: 1, summaryMarkdown: null, answers: [{ questionId: "saved", optionIds: ["yes"] }] },
     payload: questionSetToAskUserQuestionsPayload({ schema: "paperclip.question_set.v1", description: "Set your own personal publishing value securely in My secrets. Never paste your credential in chat.", questions: [{ id: "saved", prompt: "Have you saved your own value?", helpText: "Settings Secrets My secrets Set my value definition PERSONAL_PUBLISHING_KEY", answerMode: "single_select", required: true,
       options: [{ id: "yes", label: "Yes", description: "My personal value is saved." }, { id: "later", label: "Not yet" }] }] }),
   };
   const admitted = personalSecretQuestionHandoff(row, { companyId: "company", issueId: "source", agentId: "ceo", userId: "person", runId: "initial", definitionId: "definition" }, "answered");
   if (!admitted) throw Error("Invalid question test prerequisite");
-  return { ...base, interactions: [row], comments: [{ id: "answer", companyId: "company", issueId: "source", authorUserId: "person" }],
-    phaseReplies: base.phaseReplies.slice(1), runs: base.runs.map(run => run.id === "confirmed" ? { ...run, contextSnapshot: { interactionId: "question" } } : run),
+  return { ...base, interactions: [row], comments: [
+    { id: "query", companyId: "company", issueId: "source", authorUserId: "person", body: "Set up my personal publishing credential for this task." },
+    { id: "reply", companyId: "company", issueId: "source", authorAgentId: "ceo", createdByRunId: "confirmed", body: base.reply },
+  ], activity: [...base.activity,
+    { companyId: "company", action: "issue.thread_interaction_answered", entityId: "source", actorType: "user", actorId: "person", details: { interactionId: "question", interactionKind: "ask_user_questions", interactionStatus: "answered" } },
+    { companyId: "company", action: "issue.question_response_delivered", entityId: "source", actorType: "system", actorId: "question-response-delivery", details: { interactionId: "question", sourceRunId: "initial", targetRunId: "confirmed", deliveryStatus: "delivered" } },
+  ],
+    phaseReplies: base.phaseReplies.slice(1), runs: base.runs.map(run => run.id === "confirmed" ? { ...run, companyId: "company", agentId: "ceo", contextSnapshot: { issueId: "source", interactionId: "question" } } : run),
     state: { ...base.state, sourceIssueId: "source", definitionId: "definition", initialQuestionId: row.id, initialQuestionOptionId: "yes", initialQuestionPayloadHash: admitted.payloadHash,
       currentSecret: { ...base.state.currentSecret, createdAt: "2026-11-04T13:29:00Z" } } };
 }
-it("accepts the same human question answered only after actual own-value save and bound worker/continuation evidence", () => {
+it("accepts the production answer shape without a commentId or human answer comment, with owner audit and delivery evidence", () => {
+  const row = answeredQuestionValue(); expect(row.comments).toHaveLength(2); expect(row.comments.filter(comment => comment.authorUserId === "person")).toHaveLength(1); expect(row.interactions[0]!.result).not.toHaveProperty("commentId");
   expect(gradePersonalSecret(answeredQuestionValue()).passed).toBe(true);
 });
 it.each(["foreign resolver", "changed payload", "before save", "wrong continuation", "missing UI"])("rejects question completion with %s", fault => {
@@ -196,7 +203,7 @@ it.each(["foreign resolver", "changed payload", "before save", "wrong continuati
   if (fault === "foreign resolver") value.interactions[0]!.resolvedByUserId = "other-person";
   if (fault === "changed payload") value.state.initialQuestionPayloadHash = "wrong";
   if (fault === "before save") value.interactions[0]!.resolvedAt = "2026-11-04T13:28:00Z";
-  if (fault === "wrong continuation") value.runs = value.runs.map(run => run.id === "confirmed" ? { ...run, contextSnapshot: { interactionId: "other" } } : run);
+  if (fault === "wrong continuation") { const run = value.runs.find(row => row.id === "confirmed"); if (run?.contextSnapshot && "interactionId" in run.contextSnapshot) run.contextSnapshot.interactionId = "other"; }
   if (fault === "missing UI") value.state.humanSubmittedSecurely = false;
   expect(gradePersonalSecret(value).passed).toBe(false);
 });

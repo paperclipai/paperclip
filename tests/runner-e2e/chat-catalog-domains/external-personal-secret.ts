@@ -165,11 +165,12 @@ export function gradePersonalSecret(value: unknown) {
     questionRow = o.interactions.find(row => row.id === o.state.initialQuestionId),
     question = personalSecretQuestionHandoff(questionRow, { companyId: o.companyId, issueId: String(o.state.sourceIssueId),
       agentId: o.leadId, userId: String(o.state.currentPersonId), runId: String(o.state.initialRunId), definitionId: String(o.state.definitionId) }, "answered"),
-    answeredQuestion = questionRow as Partial<AskUserQuestionsInteraction> | undefined,
     questionAnswered = !!question && question.payloadHash === o.state.initialQuestionPayloadHash
       && question.optionId === o.state.initialQuestionOptionId
-      && o.comments.some(comment => comment.id === answeredQuestion?.result?.commentId && comment.companyId === o.companyId
-        && comment.issueId === o.state.sourceIssueId && comment.authorUserId === o.state.currentPersonId && !comment.authorAgentId),
+      && o.activity.some(event => event.action === "issue.thread_interaction_answered" && event.companyId === o.companyId
+        && event.entityId === o.state.sourceIssueId && event.actorType === "user" && event.actorId === o.state.currentPersonId
+        && event.details?.interactionId === question.interactionId && event.details.interactionKind === "ask_user_questions"
+        && event.details.interactionStatus === "answered"),
     last = o.phaseReplies
       .filter((row) => row.runId !== o.state.initialRunId)
       .at(-1);
@@ -241,7 +242,12 @@ export function gradePersonalSecret(value: unknown) {
       ) &&
       personalSecretConfirmation(last.body) &&
       (!o.state.initialQuestionId || (questionAnswered
-        && o.runs.some(run => run.id === last.runId && run.contextSnapshot?.interactionId === question?.interactionId)
+        && o.runs.some(run => run.id === last.runId && run.companyId === o.companyId && run.agentId === o.leadId
+          && run.contextSnapshot?.issueId === o.state.sourceIssueId && run.contextSnapshot?.interactionId === question?.interactionId)
+        && o.activity.some(event => event.action === "issue.question_response_delivered" && event.companyId === o.companyId
+          && event.entityId === o.state.sourceIssueId && event.actorType === "system" && event.actorId === "question-response-delivery"
+          && event.details?.interactionId === question?.interactionId && event.details.sourceRunId === o.state.initialRunId
+          && ["delivered", "fallback_queued"].includes(String(event.details.deliveryStatus)))
         && Number.isFinite(Date.parse(String(secret?.createdAt))) && Number.isFinite(Date.parse(String(questionRow?.resolvedAt)))
         && Date.parse(String(secret?.createdAt)) <= Date.parse(String(questionRow?.resolvedAt)))) &&
       o.state.secretScanComplete === true &&
@@ -380,6 +386,11 @@ export const personalSecretExternalCases = [
     gradePersonalSecret,
     {
       authentication: "human-session",
+      expectedHumanQuestionAnswer(value) {
+        const o = externalObservation(value);
+        if (!o?.state.initialQuestionId || !gradePersonalSecret(value).passed) return;
+        return { interactionId: String(o.state.initialQuestionId), sourceRunId: String(o.state.initialRunId), userId: String(o.state.currentPersonId) };
+      },
       oracleVersion: "paperclip.chat-catalog.personal-secret.v3",
       setupPolicy: { readiness: "preserve-scenario", invariantCheckIds: ["current-owner-missing-required-personal-value"] },
       expectedRunCount: 3,
