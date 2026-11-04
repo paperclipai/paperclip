@@ -28,7 +28,7 @@ function makeClient(config?: { enabled?: boolean }) {
   };
 }
 
-function trackAllProposedConnectorEvents(client: TelemetryClient) {
+function trackAllConnectorEvents(client: TelemetryClient) {
   trackConnectionCreated(client, {
     connector_key: "github",
     transport: "mcp_remote",
@@ -56,28 +56,33 @@ function trackAllProposedConnectorEvents(client: TelemetryClient) {
   });
 }
 
-describe("proposed connector events against the real TelemetryClient", () => {
+describe("registered connector events against the real TelemetryClient", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
   });
 
-  it("cannot queue or send: state stays untouched and nothing hits the wire", async () => {
+  it("queues and sends the three registered connector events", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     const { client, stateFactory } = makeClient();
 
-    trackAllProposedConnectorEvents(client);
+    trackAllConnectorEvents(client);
     await client.flush();
 
-    expect(stateFactory).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
+    expect(stateFactory).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String(vi.mocked(fetch).mock.calls[0]?.[1]?.body));
+    expect(body.events.map((event: { name: string }) => event.name)).toEqual([
+      "connection.created", "connection.updated", "connection.invoked",
+    ]);
   });
 
-  it("differential control: a registered event through the same client does send", async () => {
+  it("batches connector events with other registered events", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     const { client } = makeClient();
 
-    trackAllProposedConnectorEvents(client);
+    trackAllConnectorEvents(client);
     client.track("project.created", {});
     await client.flush();
 
@@ -86,15 +91,18 @@ describe("proposed connector events against the real TelemetryClient", () => {
       String((vi.mocked(fetch).mock.calls[0]?.[1] as RequestInit).body),
     );
     expect(body.events).toEqual([
+      expect.objectContaining({ name: "connection.created" }),
+      expect.objectContaining({ name: "connection.updated" }),
+      expect.objectContaining({ name: "connection.invoked" }),
       expect.objectContaining({ name: "project.created" }),
     ]);
   });
 
-  it("reports the three connector event names as unregistered", () => {
+  it("reports the three connector event names as registered", () => {
     const { client } = makeClient();
-    expect(client.isRegisteredEventName("connection.created")).toBe(false);
-    expect(client.isRegisteredEventName("connection.updated")).toBe(false);
-    expect(client.isRegisteredEventName("connection.invoked")).toBe(false);
+    expect(client.isRegisteredEventName("connection.created")).toBe(true);
+    expect(client.isRegisteredEventName("connection.updated")).toBe(true);
+    expect(client.isRegisteredEventName("connection.invoked")).toBe(true);
     expect(client.isRegisteredEventName("project.created")).toBe(true);
   });
 
@@ -102,6 +110,7 @@ describe("proposed connector events against the real TelemetryClient", () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
     const { client, stateFactory } = makeClient({ enabled: false });
 
+    trackAllConnectorEvents(client);
     client.track("project.created", {});
     await client.flush();
 
