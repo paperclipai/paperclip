@@ -134,7 +134,8 @@ export class CodexHarnessSession
         this.eventQueue.clear();
       }
       if (this.codexUsageBaseline && input.runId !== this.runId) {
-        this.codexUsageBaseline = { baseline: { ...this.codexUsageBaseline.latest }, latest: { ...this.codexUsageBaseline.latest } };
+        this.codexUsageBaseline = { baseline: { ...(this.accountedCodexUsage ?? this.codexUsageBaseline.latest) }, latest: { ...this.codexUsageBaseline.latest } };
+        this.accountedCodexUsage = null;
         this.usageSnapshot = codexRunUsage(this.codexUsageBaseline);
       }
       this.runId = input.runId;
@@ -729,6 +730,7 @@ export class CodexHarnessSession
           reconciledUsage.total,
           false,
         );
+        this.accountedCodexUsage = { ...this.codexUsageBaseline.latest };
         this.usageSnapshot = {
           ...reconciledUsage,
           ...codexRunUsage(this.codexUsageBaseline),

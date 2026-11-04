@@ -81,8 +81,7 @@ const finishedRunStatuses = ["succeeded", "failed", "timed_out", "cancelled", "i
 /** The Runner names a late report's owner when the turn proves it. A session's
  * usage belongs to that session, so an unproven owner is the session's last
  * finished run, recorded as inferred. */
-export async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput,
-  event: Pick<PrpEvent, "eventType" | "normalizedSessionId" | "sourceEventId" | "sourceSeq" | "emittedAt" | "turnId">, payload: Record<string, unknown>) {
+async function captureLateUsageForOwner(db: Db, input: NativeUsageDeliveryInput, event: PrpEvent, payload: Record<string, unknown>) {
   const reconciliation = payload.reconciliation;
   if (!reconciliation || typeof reconciliation !== "object" || !isUuid(event.normalizedSessionId)) return false;
   const measured = { runDelta: payload.runDelta };

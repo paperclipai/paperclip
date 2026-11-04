@@ -1680,13 +1680,16 @@ already happened, so it never fails a run or blocks a session. Codex usage total
 are cumulative, so the Runner reports the exact increment above the known total and
 names its owning run when the provider turn proves the owner. A report at or below
 the known total was already counted by the run that saw it, and it adds nothing, so
-the sum across runs always equals the thread total. Core posts the increment to that run as a
+the sum across runs always equals the thread total. For a remote session, Core posts the increment to that run as a
 separate cost event and records `cost.late_usage_posted` in the activity log. If
 the owner is not proven, Core charges the session's last finished run, or the
-delivering run if the session has none, and records the attribution as inferred. Local and remote Runner sessions follow the same rule. A late charge can put an agent over budget after later
+delivering run if the session has none, and records the attribution as inferred. A late charge can put an agent over budget after later
 work started; budget evaluation runs after each correction. Conflicting evidence,
 such as a lower total or a changed model, stays visible as accounting debt for
-an operator to review. It does not change the charge or stop the session.
+an operator to review. It does not change the charge or stop the session. A local
+session has no durable path for this, so its late usage stays with the run that is
+active when it arrives, or the next run. The total stays exact, but the attribution
+can be off by those tokens.
 
 ### Session settlement after a run
 

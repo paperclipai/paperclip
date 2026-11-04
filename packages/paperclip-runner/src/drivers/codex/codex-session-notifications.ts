@@ -1,4 +1,4 @@
-import { absorbLateCodexUsage, observeCodexUsage, codexRunUsage } from "./codex-usage-baseline.js";
+import { observeCodexUsage, codexRunUsage } from "./codex-usage-baseline.js";
 import { classifyCodexNotification } from "./codex-notification-identity.js";
 import { paperclipWorkspaceFileReferencesFromText } from "../../live/workspace-file-reference.js";
 import { canonicalProviderEventsFromCodex, isCanonicalProviderEventType } from "../../provider-events.js";
@@ -569,17 +569,6 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       }
       return;
     }
-    if (notification.method === "thread/tokenUsage/updated" && state.driverKind === "codex_app_server"
-      && Object.keys(record(params.reconciliation)).length > 0) {
-      // This usage belongs to an earlier run. Never bill it to the active turn;
-      // publish it so the host can post it to the run that owns it.
-      const tokenUsage = record(params.tokenUsage);
-      state.codexUsageBaseline = absorbLateCodexUsage(state.codexUsageBaseline, tokenUsage.total, tokenUsage.runDelta);
-      state.usageSnapshot = { ...state.usageSnapshot, ...codexRunUsage(state.codexUsageBaseline) };
-      state.emit("harness.diagnostic", { code: "codex_late_usage", runDelta: boundedPayload(record(tokenUsage.runDelta)),
-        reconciliation: boundedPayload(record(params.reconciliation)) });
-      return;
-    }
     if (notification.method === "thread/tokenUsage/updated") {
       state.usageSnapshot = boundedPayload(record(params.tokenUsage));
       if (state.driverKind === "codex_app_server") {
@@ -600,6 +589,7 @@ async function mapNotificationBody(state: CodexSessionState, notification: Codex
       // is being attached, before the next turn has started. Keep the snapshot,
       // but do not turn that benign replay into a fatal turn-binding violation.
       if (state.activeTurnId === null || turnId !== state.activeTurnId) return;
+      if (state.codexUsageBaseline) state.accountedCodexUsage = { ...state.codexUsageBaseline.latest };
       state.emit(
         "item.completed",
         { kind: "usage", usage: state.usageSnapshot },

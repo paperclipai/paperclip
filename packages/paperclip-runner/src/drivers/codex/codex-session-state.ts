@@ -112,6 +112,9 @@ export class CodexSessionState {
   activeTurnId: string | null;
   usageSnapshot: Record<string, unknown> | null = null;
   codexUsageBaseline: CodexUsageBaseline | null = null;
+  /** Totals the current run has accounted for. Usage above this at attachment
+   * was never charged, so it stays in the next run's delta and is not lost. */
+  accountedCodexUsage: Record<string, number> | null = null;
   result: PrpStructuredRunResult | null = null;
   resultFingerprint: string | null = null;
   readonly normalizeReplayPayload?: HarnessSessionRecoveryOptions["normalizeReplayPayload"];
