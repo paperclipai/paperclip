@@ -32,7 +32,7 @@ type PreparedAuthorization = {
   expandedTargets: Set<string>;
   referencedConnections: string[];
   currentGatewayResource: ConnectionManagementResource | undefined;
-  savedNonAiConnection: boolean;
+  savedConnection: boolean;
 };
 type ConnectionCapability = { allowed: boolean; reason: string; operation: string };
 
@@ -88,7 +88,7 @@ export function connectionManagementService(db: Db) {
     const expandedTargets = new Set(options.targetAgentIds ?? []);
     const referencedConnections: string[] = [];
     let currentGatewayResource: ConnectionManagementResource | undefined;
-    let savedNonAiConnection = false;
+    let savedConnection = false;
     if (resource.gatewayId && !options.gatewayContextChecked) {
       const [gateway] = await db.select().from(toolMcpGateways).where(and(eq(toolMcpGateways.id, resource.gatewayId), eq(toolMcpGateways.companyId, resource.companyId)));
       if (!gateway) throw forbidden("Gateway is unavailable in this company");
@@ -159,7 +159,7 @@ export function connectionManagementService(db: Db) {
     if (resource.connectionId) {
       const [connection] = await db.select().from(toolConnections).where(and(eq(toolConnections.id, resource.connectionId), eq(toolConnections.companyId, resource.companyId)));
       if (!connection) throw forbidden("Connection is unavailable in this company");
-      savedNonAiConnection = connection.connectionPurpose !== "ai";
+      savedConnection = true;
       resource = { ...resource, selfServiceUserId: connection.createdByUserId,
         purpose: connection.connectionPurpose === "ai" ? "ai" : connection.connectionPurpose === "channel" ? "chat" : "tool",
         provider: typeof connection.config.sourceTemplateKey === "string" ? connection.config.sourceTemplateKey
@@ -241,7 +241,7 @@ export function connectionManagementService(db: Db) {
       }
     }
     return { actor, action, resource, options, responsibleUserId, workContext, capturedRun,
-      expandedTargets, referencedConnections, currentGatewayResource, savedNonAiConnection };
+      expandedTargets, referencedConnections, currentGatewayResource, savedConnection };
   }
 
   async function evaluateTarget(prepared: PreparedAuthorization, targetAgentId: string | undefined): Promise<AuthorizationDecision> {
@@ -388,7 +388,9 @@ export function connectionManagementService(db: Db) {
     }
     const resolved = prepared.resource;
     const isCanonicalAgentId = (id: string) => isUuidLike(id) && id === id.toLowerCase();
-    const eligible = actor.type === "board" && prepared.savedNonAiConnection
+    // Direct AI accounts use the same target checks. Pools with members still
+    // use the full evaluator through referencedConnections below.
+    const eligible = actor.type === "board" && prepared.savedConnection
       && [resolved.profileId, resolved.gatewayId, resolved.routineId, resolved.projectId, resolved.issueId].every(id => id == null)
       && !Object.hasOwn(resolved, "requestedProvider") && !Object.hasOwn(resolved, "requestedInstallCompanyIds")
       && !resolved.selfServiceAgentInstalls

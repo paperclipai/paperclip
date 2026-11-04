@@ -85,9 +85,11 @@ import {
   type LiveRunForIssue,
 } from "../api/heartbeats";
 import { instanceSettingsApi } from "../api/instanceSettings";
-import { accessApi, type CurrentBoardAccess } from "../api/access";
+import { accessApi } from "../api/access";
 import {
   canBoardManageRuntime,
+  canBoardResolveRecoveryAction,
+  isRetainedWorkspaceExportCause,
   readRecoveryReconcileWorkspaceId,
 } from "../lib/recovery-reconcile";
 import { agentsApi } from "../api/agents";
@@ -489,31 +491,11 @@ function treeControlPreviewErrorCopy(error: unknown): string {
   return error instanceof Error ? error.message : "Unable to load preview.";
 }
 
-export function canBoardResolveRecoveryAction(
-  companyId: string | null | undefined,
-  boardAccess: CurrentBoardAccess | undefined,
-) {
-  if (!companyId || !boardAccess) return false;
-  if (boardAccess.source === "local_implicit" || boardAccess.isInstanceAdmin)
-    return true;
-  if (!boardAccess.memberships || boardAccess.memberships.length === 0) {
-    return boardAccess.companyIds.includes(companyId);
-  }
-
-  const membership = boardAccess.memberships.find(
-    (item) => item.companyId === companyId && item.status === "active",
-  );
-  if (!membership) return false;
-  return (
-    membership.membershipRole !== "viewer" && membership.membershipRole !== null
-  );
-}
-
 // `canBoardManageRuntime` and `readRecoveryReconcileWorkspaceId` moved to `@/lib/recovery-reconcile`
 // so the run-page recovery surface can reuse them without importing this page module. Re-exported
 // here (from the top-of-file import) to keep existing import sites — and their tests — stable, while
 // the imported bindings stay usable within this module.
-export { canBoardManageRuntime, readRecoveryReconcileWorkspaceId };
+export { canBoardManageRuntime, canBoardResolveRecoveryAction, readRecoveryReconcileWorkspaceId };
 
 export function shouldScrollIssueDetailToTopOnNavigation(input: {
   previousIssueId: string | undefined;
@@ -977,13 +959,23 @@ function useTaskDetailInterfaceMode(conversationMode = false) {
 
 export function IssueDetailLoadingState({
   headerSeed,
+  titleEditor,
 }: {
   headerSeed: ReturnType<typeof readIssueDetailHeaderSeed>;
+  titleEditor?: React.ReactNode;
 }) {
   const identifier =
     headerSeed?.identifier ?? headerSeed?.id.slice(0, 8) ?? null;
   const { taskChatShellEnabled, streamlinedUiEnabled, coordinatorWorkspaceEnabled, loaded } = useTaskDetailInterfaceMode();
   const { isMobile } = useSidebar();
+  if (titleEditor) {
+    return <div className="max-w-3xl space-y-6">
+      <div data-testid="issue-detail-header">{titleEditor}</div>
+      <div role="status" aria-label="Loading conversation" className="flex items-center justify-center">
+        <Skeleton aria-hidden="true" className="h-4 w-24" />
+      </div>
+    </div>;
+  }
   if (!loaded) {
     return <div data-testid="task-detail-presentation-loading" role="status" aria-label="Loading conversation" className="flex h-full min-h-0 w-full flex-1 items-center justify-center">
       <Skeleton aria-hidden="true" className="h-4 w-24" />
@@ -1004,7 +996,7 @@ export function IssueDetailLoadingState({
           {headerSeed ? (
             <>
               <StatusIcon
-                status={headerSeed.status}
+                status={headerSeed.status} displayStatus={headerSeed.displayStatus}
                 blockerAttention={headerSeed.blockerAttention}
               />
               {/* PAP-411: priority UI hidden behind SHOW_TASK_PRIORITY_UI. */}
@@ -3206,6 +3198,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 } }) {
   const { issueId: routeIssueId, companyPrefix } = useParams<{ issueId: string; companyPrefix: string }>();
   const issueId = conversation ? conversation.issue?.id : routeIssueId;
+  const [loadingTitleIssueId, setLoadingTitleIssueId] = useState<string | null>(null);
+  useEffect(() => setLoadingTitleIssueId(null), [issueId, companyPrefix]);
   const [draftWorkMode, setDraftWorkMode] = useState<IssueWorkMode>("standard");
   const draftIssue = useMemo(() => conversation ? agentChatDraft(conversation.agent, draftWorkMode) : undefined, [conversation?.agent, draftWorkMode]);
   const pendingDraftWorkMode = useRef<IssueWorkMode | null>(null);
@@ -3380,6 +3374,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     value instanceof ApiError && [401, 403, 404].includes(value.status),
   );
   const issue = accessError ? undefined : queriedIssue ?? coreIssueQuery.data ?? conversation?.issue ?? draftIssue;
+  const loadingTitleOwner = issue?.id;
+  const handleLoadingTitleEditingChange = useCallback((editing: boolean) => {
+    if (!loadingTitleOwner) return;
+    setLoadingTitleIssueId((current) => editing ? loadingTitleOwner : current === loadingTitleOwner ? null : current);
+  }, [loadingTitleOwner]);
   const taskRetry = useTaskRetry(issue ?? undefined);
   const resolveWritableIssueId = async () => {
     if (!conversation) return issueId!;
@@ -4228,13 +4227,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // from the blocker counts — so the key signs over the full blockerAttention,
   // not just `state`, to avoid a stale label when counts change.
   const breadcrumbStatusKey = breadcrumbStatus
-    ? `${breadcrumbStatus}|${issue?.externalConversationState ?? ""}|${JSON.stringify(breadcrumbBlockerAttention ?? null)}`
+    ? `${breadcrumbStatus}|${issue?.displayStatus ?? issueHeaderSeed?.displayStatus ?? ""}|${issue?.externalConversationState ?? ""}|${JSON.stringify(breadcrumbBlockerAttention ?? null)}`
     : "loading-task-status";
   const breadcrumbStatusLeading = useMemo(
     () =>
       breadcrumbStatus ? (
         <StatusIcon
           status={breadcrumbStatus}
+          displayStatus={issue?.displayStatus ?? issueHeaderSeed?.displayStatus}
           externalConversationState={issue?.externalConversationState}
           className="size-3"
           blockerAttention={breadcrumbBlockerAttention}
@@ -4753,8 +4753,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
   const stopResponse = useMutation({
     mutationFn: async (runId: string) => {
-      await heartbeatsApi.cancel(runId);
-      await waitForStoppedRuns([runId]);
+      const stoppedRun = await heartbeatsApi.cancel(runId);
+      await waitForStoppedRuns([runId], { initialRuns: [stoppedRun] });
     },
     onSettled: () => Promise.all([
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) }),
@@ -4880,7 +4880,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             currentUserId,
           )}
           createIssueLabel="Sub-task"
-          defaultSortField="workflow"
+          showChecklist
           showProgressSummary
           parentIssueIdForCostSummary={issue.id}
           onUpdateIssue={handleChildIssueUpdate}
@@ -5928,9 +5928,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     if (conversationAgent) {
       setBreadcrumbs([{
         label: conversationAgent.name,
-        leading: <AgentAvatar agent={conversationAgent} size={24} />,
+        control: coordinatorWorkspaceEnabled ? <CoordinatorAgentSwitcher agent={conversationAgent} /> : undefined,
+        controlKey: coordinatorWorkspaceEnabled ? `switch:${conversationAgent.id}:${JSON.stringify(conversationAgent.appearance)}` : undefined,
+        leading: coordinatorWorkspaceEnabled ? undefined : <AgentAvatar agent={conversationAgent} size={24} />,
         leadingKey: `agent:${conversationAgent.id}:${JSON.stringify(conversationAgent.appearance)}`,
-        trailing: coordinatorWorkspaceEnabled ? <CoordinatorAgentSwitcher agent={conversationAgent} /> : <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
+        trailing: coordinatorWorkspaceEnabled ? undefined : <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
         trailingKey: `${coordinatorWorkspaceEnabled ? "switch" : "configure"}:${conversationAgent.id}`,
       }]);
       return;
@@ -6756,6 +6758,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const loadOlderComments = useCallback(() => paginatedConversation
     ? earlierChatComments.load() : fetchOlderComments(), [paginatedConversation, earlierChatComments.load, fetchOlderComments]);
   const refetchLatestComments = useCallback(async () => {
+    // Submission reconciliation needs the current admission receipt as well as comments.
+    void refetchIssueDetail();
     if (paginatedConversation) {
       await recentComments.refetch();
       return;
@@ -6789,7 +6793,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       }
       window.requestAnimationFrame(() => resolve());
     });
-  }, [issueId, queryClient, refetchComments, paginatedConversation, recentComments.refetch]);
+  }, [issueId, queryClient, refetchIssueDetail, refetchComments, paginatedConversation, recentComments.refetch]);
   useEffect(() => {
     if (
       !shouldPrefetchOlderComments &&
@@ -7334,9 +7338,25 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // branch: its input can be detached before the chosen file is returned.
   // Keep the existing metadata/header skeleton until the canonical view owns
   // the interaction; comments may then load without another route-key change.
-  if (!taskRouteReady || !taskInterfaceSettingsLoaded)
+  // Finishing presentation preferences must not detach an input the person
+  // already opened in the loading header. Complete the handoff when that edit
+  // saves or is left unchanged/cancelled; failed saves keep their editor.
+  if (!taskRouteReady || !taskInterfaceSettingsLoaded || loadingTitleIssueId === issue.id)
     return (
       <IssueDetailLoadingState
+        titleEditor={taskRouteReady && currentUserId && !issue.conversationAgentId ? (
+          // The known account can edit the title without choosing a task
+          // presentation before its workspace preference has loaded.
+          <InlineEditor
+            key={issue.id}
+            value={issue.title}
+            onSave={(title) => updateIssue.mutateAsync({ title })}
+            onEditingChange={handleLoadingTitleEditingChange}
+            draftKey={`issue:${issue.id}:title`}
+            as="h2"
+            className="text-xl font-semibold leading-normal"
+          />
+        ) : undefined}
         headerSeed={
           loadedIssue
             ? readIssueDetailHeaderSeed(
@@ -7515,7 +7535,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
 
   const issueStatusControl = (
     <StatusIcon
-      status={issue.status} externalConversationState={issue.externalConversationState}
+      status={issue.status} displayStatus={issue.displayStatus} externalConversationState={issue.externalConversationState}
       size={proposedTaskHeader ? "md" : "lg"}
       blockerAttention={issue.blockerAttention}
       onChange={(status) => updateIssue.mutate({ status })}
@@ -8108,15 +8128,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             issueCacheRefs={issueCacheRefs}
           />
 
-          {resolvedDetailTab === "chat" && !issue.interruption && !issue.executionBlocker?.workspaceRecovery && (
+          {resolvedDetailTab === "chat" && (
             <WorkspaceExportRecovery key={`workspace-export:${issue.activeRecoveryAction?.id ?? issue.id}`}
               className={shellSectionClass}
+              issueId={issue.id} companyId={issue.companyId}
+              showStatus={!issue.interruption && !issue.executionBlocker?.workspaceRecovery}
               action={issue.activeRecoveryAction ?? null} />
           )}
           {resolvedDetailTab === "chat" && (
             <ExecutionBlockerNotice className={shellSectionClass} presentation={issue.interruption}
               issueId={issue.id} agentName={agentMap.get(issue.assigneeAgentId ?? "")?.name} projectName={issue.project?.name}
-              canRetry={canResolveBoardRecoveryAction} onRetry={taskRetry.retry}
+              canRetry={canResolveBoardRecoveryAction && !(issue.executionBlocker?.workspaceRepairRequired
+                && isRetainedWorkspaceExportCause(issue.executionBlocker.cause))} onRetry={taskRetry.retry}
               optimistic={taskRetry.optimistic} takingLonger={taskRetry.takingLonger} error={taskRetry.error} />
           )}
 
@@ -8188,7 +8211,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   currentUserId,
                 )}
                 createIssueLabel="Sub-task"
-                defaultSortField="workflow"
+                showChecklist
                 showProgressSummary
                 parentIssueIdForCostSummary={issue.id}
                 onUpdateIssue={handleChildIssueUpdate}

@@ -143,6 +143,16 @@ describe("live connection coverage", () => {
 });
 
 describe("target and selected credential boundaries", () => {
+  it("passes a bounded GET timeout and preserves the default for other readers", async () => {
+    const fetch = vi.fn(async () => ({ ok: () => true, json: async () => ({ passed: true }) }));
+    const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");
+    await api.get("/api/health", { timeoutMs: 17 });
+    expect(fetch).toHaveBeenLastCalledWith("https://qa.test.paperclip.app/api/health", expect.objectContaining({ timeout: 17 }));
+    await api.get("/api/health");
+    expect(fetch).toHaveBeenLastCalledWith("https://qa.test.paperclip.app/api/health", expect.objectContaining({ timeout: 30_000 }));
+    await expect(api.get("/api/health", { timeoutMs: 0 })).rejects.toThrow("invalid_api_timeout");
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
   it("keeps scoped requests on tenant APIs and bounds extended probe timeouts", async () => {
     const fetch = vi.fn(async (_url: string, _options: unknown) => ({ ok: () => true, json: async () => ({ passed: true }) }));
     const api = new ConnectionApi({ fetch } as any, "https://qa.test.paperclip.app");

@@ -1,10 +1,10 @@
-import { remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
+import { readRemoteWorkspaceAuthority, remoteWorkspaceRunReferenceSchema } from "@paperclipai/shared";
 import type { CancelledWorkspacePreservationScope } from "../cancelled-workspace-preservation-notifications.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { registerScopedDeadlineWork } from "../scoped-deadline-work.js";
 import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { and, asc, eq, gt, inArray, isNull, or, sql } from "drizzle-orm";
-import { environmentLeases, heartbeatRuns, workspaceRestoreFailureCodesSql, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
+import { environmentLeases, executionWorkspaces, heartbeatRuns, workspaceRestoreFailureCodesSql, issues, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { recordRequiredWorkspaceRestoreFailure } from "../legacy-execution-recovery.js";
 import { hasRequiredWorkspaceRecovery, nativeRunHasNoWorkspaceAccess } from "../workspace-restore-recovery-state.js";
 import { logActivity } from "../activity-log.js";
@@ -15,11 +15,38 @@ import { hasAcknowledgedNativeRunStopReceipt } from "../acknowledged-native-stop
 import { logger } from "../../middleware/logger.js";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { preserveRemoteWorkspacePreparationFailure } from "./native-workspace-finalization-state.js";
+import { pinFailedObservedWorkspace } from "./native-observed-workspace-preservation.js";
 
 
 function workspaceRecoveryReference(profile: Record<string, unknown> | null | undefined) {
   const remote = remoteWorkspaceRunReferenceSchema.safeParse(profile?.remoteWorkspace);
   return readNativeWorkspaceSyncReference(profile?.nativeWorkspaceSync) ?? (remote.success ? remote.data : null);
+}
+
+export async function preserveTaskRemoteWorkspaceWriter(db: Db, companyId: string, issueId: string) {
+  const [bound] = await db.select({ id: executionWorkspaces.id, metadata: executionWorkspaces.metadata }).from(issues)
+    .innerJoin(executionWorkspaces, and(eq(executionWorkspaces.id, issues.executionWorkspaceId),
+      eq(executionWorkspaces.companyId, issues.companyId)))
+    .where(and(eq(issues.companyId, companyId), eq(issues.id, issueId)));
+  if (!bound) return;
+  const authority = readRemoteWorkspaceAuthority(bound.metadata);
+  if (!authority?.dirty || !authority.writerRunId) return;
+  const [run] = await db.select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId,
+    nativeIssueId: heartbeatRuns.nativeIssueId, issueId: heartbeatRuns.issueId,
+    contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->'issueId')`,
+    runnerProfileJson: sql<Record<string, unknown>>`jsonb_build_object('remoteWorkspace', ${heartbeatRuns.runnerProfileJson}->'remoteWorkspace',
+      'nativeWorkspaceSync', ${heartbeatRuns.runnerProfileJson}->'nativeWorkspaceSync')`,
+  }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, authority.writerRunId),
+    eq(heartbeatRuns.runtimeMode, "native"), eq(heartbeatRuns.status, "failed"),
+    sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
+      ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueId}`,
+  ));
+  const reference = remoteWorkspaceRunReferenceSchema.safeParse(run?.runnerProfileJson.remoteWorkspace);
+  if (!run || run.runnerProfileJson.nativeWorkspaceSync != null || !reference.success || reference.data.state !== "prepared"
+    || reference.data.workspaceId !== bound.id || reference.data.epoch !== authority.epoch) return;
+  try { return await preserveNativeFailedWorkspace(db, run); }
+  catch (error) { if (!(error instanceof NativeWorkspaceFinalizationBusyError)) throw error; }
 }
 
 export async function preserveNativeFailedWorkspace(db: Db, selected: Pick<typeof heartbeatRuns.$inferSelect,
@@ -117,6 +144,7 @@ export async function preserveOrphanedNativeWorkspace(db: Db, lease: Pick<typeof
       return Boolean(retained && hasRequiredWorkspaceRecovery(retained.resultJson));
     }
     if (run.status !== "failed") return false;
+    if (await pinFailedObservedWorkspace(db, run.companyId, run.id)) return true;
     const retained = await preserveNativeFailedWorkspace(db, run);
     return Boolean(retained && hasRequiredWorkspaceRecovery(retained.resultJson));
   } catch (error) {

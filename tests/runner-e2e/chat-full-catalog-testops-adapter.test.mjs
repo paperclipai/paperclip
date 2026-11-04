@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fullCatalogCases, fullCatalogPlanName, catalogTargetSha } from './chat-full-catalog-testops-manifest.mjs';
 import { admitDispatch, validateSelection, evidencePolicy, catalogWorkflow, catalogDefinition } from './chat-completion-testops-contract.mjs';
-import { bindingFromEnv, validatePilotSelection, verifyPilotUpload, completePilotRegistration } from './chat-completion-testops-api.mjs';
+import { bindingFromEnv, validatePilotSelection, verifyPilotUpload, verifyPilotCaseUpload, completePilotRegistration } from './chat-completion-testops-api.mjs';
 import { executionMatrix, executionPartition, run } from './chat-completion-testops-cli.mjs';
 import { mkdtemp, writeFile, readFile, readdir, rm, realpath } from 'node:fs/promises';
 import os from 'node:os';
@@ -66,6 +66,22 @@ test('the complete 244 mapping uses compact actual IDs and preserves the legacy 
   assert.equal(value.targetSha, catalogTargetSha);
 });
 
+test('selection accepts the exact master workflow URL returned by a build-server refresh', async () => {
+  const job = { id: 11, type: 'github', name: 'Chat catalog TestOps',
+    url: 'https://github.com/paperclipai/paperclip/blob/master/.github/workflows/chat-catalog-testops.yml',
+    parameters: [{ id: 34, name: 'Branch', defaultValue: 'master' }] };
+  const refreshed = api({ '/api/job/11': job });
+  const value = await validatePilotSelection(refreshed.get, env, context, 99);
+  assert.deepEqual(value.cases.map(row => row.caseId), selected.map(row => row.caseId));
+  assert.equal(value.targetSha, catalogTargetSha);
+  for (const url of [job.url.replace('/master/', '/other-branch/'), job.url.replace('/paperclipai/', '/other-owner/'),
+    job.url.replace('chat-catalog-testops.yml', 'chat-catalog-testops-case.yml')]) {
+    const wrong = api({ '/api/job/11': { ...job, url } });
+    await assert.rejects(validatePilotSelection(wrong.get, env, context, 99), /job_mismatch/);
+    assert.equal(wrong.calls.includes('/api/jobrun/77'), false);
+  }
+});
+
 test('the actual full registration receipt fits one protected variable without a later source change', async () => {
   const prepared = { planId: 10, integrationId: 1, cases: selected.map(row => Object.fromEntries(
     ['key', 'scenario', 'executionId', 'fullName', 'registeredFullName', 'caseId'].map(key => [key, row[key]]))) };
@@ -103,14 +119,15 @@ test('full catalog source admission is independent from the old three-case workf
   assert.throws(() => validateSelection({ ...selection, targetSha: 'b'.repeat(40) }, context, '77'), /selection_binding/);
 });
 
-test('native and external partitions preserve exact selections, serial small runs and the GitHub output bound', () => {
+test('native and external partitions preserve exact selections, bounded overlapping small runs and the GitHub output bound', () => {
   for (const rows of [selected, selected.slice(0, 3), selected.filter(row => row.externalInput), [selected[0], selected.find(row => row.externalInput)]]) {
     const input = { ...selection, cases: rows }, partition = executionPartition(input, context, '77');
     const merged = [...partition.native.include, ...partition.external.include].map(row => row.executionId);
     assert.equal(new Set(merged).size, rows.length);
     assert.deepEqual(merged.sort(), rows.map(row => row.executionId).sort());
     if (rows.length <= 3) {
-      assert.equal(partition.parallelism, '1'); assert.equal(partition.external.include.length, 0);
+      assert.equal(partition.parallelism, rows.some(row => row.externalInput) ? '1' : '2');
+      assert.equal(partition.external.include.length, rows.filter(row => row.externalInput).length);
     } else {
       assert.equal(partition.parallelism, '8'); assert.ok(partition.external.include.every(row => row.external));
     }
@@ -222,5 +239,38 @@ test('the real bootstrap facade preserves fixed reconciliation failures and disc
       assert.deepEqual(await readdir(state), ['failure.json']);
       assert.doesNotMatch(stderr + JSON.stringify(failure), /SYNTHETIC_|PRIVATE_BODY|catalog_page_private_body/);
     } finally { capture.mock.restore(); await rm(root, { recursive: true, force: true }); }
+  }
+});
+
+test('a finished case verifies while known sibling rows coexist in the same launch', async () => {
+  const f = api();
+  const value = await verifyPilotCaseUpload(f.get, selection, context, selected[0].executionId, [exported[0]]);
+  assert.equal(value.verification, 'VERIFIED');
+  assert.deepEqual(value.results.map(row => row.caseId), [selected[0].caseId]);
+  assert.equal(f.calls.filter(route => /^\/api\/testresult\/\d+$/.test(route)).length, 1);
+});
+
+test('partial verification rejects foreign sibling identities before qualifying the current case', async () => {
+  const base = api(), first = await base.get('/api/testresult?launchId=12&page=0&size=100');
+  first.content[1].testCaseId = 999999;
+  const f = api({ '/api/testresult?launchId=12&page=0&size=100': first });
+  await assert.rejects(verifyPilotCaseUpload(f.get, selection, context, selected[0].executionId, [exported[0]]), /foreign_result/);
+});
+
+test('partial verification retains the exact current-result jobrun binding', async () => {
+  const base = api(), wrong = await base.get('/api/testresult/2000'); wrong.jobRun.id = 78;
+  const f = api({ '/api/testresult/2000': wrong });
+  await assert.rejects(verifyPilotCaseUpload(f.get, selection, context, selected[0].executionId, [exported[0]]), /result_mismatch/);
+});
+
+test('small external selections remain in the serial external lane while native overlap stays bounded', () => {
+  const external = selected.filter(row => row.externalInput).slice(0, 2);
+  assert.equal(external.length, 2);
+  for (const rows of [external, [selected.find(row => !row.externalInput), ...external]]) {
+    const partition = executionPartition({ ...selection, cases: rows }, context, '77');
+    assert.deepEqual(partition.external.include.map(row => row.executionId), external.map(row => row.executionId));
+    assert.ok(partition.native.include.every(row => !row.external));
+    assert.equal(partition.parallelism, '1');
+    assert.equal(partition.native.include.length + partition.external.include.length, rows.length);
   }
 });

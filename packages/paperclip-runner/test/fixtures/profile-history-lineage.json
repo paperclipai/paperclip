@@ -152,6 +152,66 @@
       "version": 17,
       "commandDigest": "sha256:e3da3859ef3fe4904d2b917c2cbdde6181f4dbeb6480eba43d37614fb29ddd70",
       "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/copilot-profile-v89-identity.json",
+      "originRevision": "59da15066acd2077b1161b06217acfbd11f8da04",
+      "originPath": "packages/paperclip-runner/test/fixtures/copilot-profile-v89-identity.json",
+      "sha256": "655db7f684b2f001f4fca974fe3bcae2dd3e08c36b60d2d82169c6fc72580cee",
+      "agent": "copilot",
+      "version": 89,
+      "commandDigest": "sha256:995381b2cec7a0faf3f5cefbe2421eae7936a2bfa50bb153645f57341f968db3",
+      "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/copilot-profile-v89-cursor-cloud-qualification-historical-identity.json",
+      "originRevision": "42e9d3d710a2ef5b387f9bb29bf615973b4adba9",
+      "originPath": "packages/paperclip-runner/test/fixtures/copilot-profile-v89-identity.json",
+      "sha256": "9990fd9cdd23df111a180984160a11db7a2f972a60787e8ddea9793678cc268e",
+      "agent": "copilot",
+      "version": 89,
+      "commandDigest": "sha256:4502feb20b925f88c3317f637962d38f8b8df7f1425a485c0f8e3526213fe52b",
+      "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/copilot-profile-v90-identity.json",
+      "originRevision": "59da15066acd2077b1161b06217acfbd11f8da04",
+      "originPath": "packages/paperclip-runner/test/fixtures/copilot-profile-v90-identity.json",
+      "sha256": "b51e3191380900b74ead659f1b8416e5c9ac8cd111eacdc3d89941c8ea80c5f0",
+      "agent": "copilot",
+      "version": 90,
+      "commandDigest": "sha256:8922d3d41dae0a7b7f7e2de69d50b272b58283232fefb22ffdb6c9b34fa26a6b",
+      "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/copilot-profile-v90-cursor-cloud-qualification-historical-identity.json",
+      "originRevision": "42e9d3d710a2ef5b387f9bb29bf615973b4adba9",
+      "originPath": "packages/paperclip-runner/test/fixtures/copilot-profile-v90-identity.json",
+      "sha256": "44eba85a0102b72cbdbdf685188e473ba9651a6e45a959499135a0d92ed70d32",
+      "agent": "copilot",
+      "version": 90,
+      "commandDigest": "sha256:33ea3458bc7c190aa314f495c02c868df9bcaddba40a3b53d11a792b7a243a80",
+      "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/grok-profile-v16-identity.json",
+      "originRevision": "59da15066acd2077b1161b06217acfbd11f8da04",
+      "originPath": "packages/paperclip-runner/test/fixtures/grok-profile-v16-identity.json",
+      "sha256": "407f336abf6b8b19478047e12458d4edc1c92ccc98bc4764042c8362dc40758c",
+      "agent": "grok",
+      "version": 16,
+      "commandDigest": "sha256:4d6b4c857ba6e63a3eb8c5c406280e4bd0164d3109c940918392c52868bb4263",
+      "launchAuthority": false
+    },
+    {
+      "path": "packages/paperclip-runner/test/fixtures/grok-profile-v16-cursor-cloud-qualification-historical-identity.json",
+      "originRevision": "42e9d3d710a2ef5b387f9bb29bf615973b4adba9",
+      "originPath": "packages/paperclip-runner/test/fixtures/grok-profile-v16-identity.json",
+      "sha256": "15a56a2e69b4862b68f5a767d2b3cb5b93a884b814df55c089344a9d040a5163",
+      "agent": "grok",
+      "version": 16,
+      "commandDigest": "sha256:b7b300d0dc72006ae0017aaf8957c780180c6db9c2bfef54cba4bed6461a0c50",
+      "launchAuthority": false
     }
   ]
 }

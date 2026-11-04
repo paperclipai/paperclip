@@ -230,7 +230,7 @@ export function chatChannelRoutes(db: Db, options: ChatChannelRouteOptions) {
     if (req.actor.type === "agent") { res.json(await setupHandoff(req, "The responsible user must open the saved setup to bind their browser session and consent to Slack access.")); return; }
     res.json(await service.slackRegistration.managerGrants.authorize(endpointId(req), slackActor(req)));
   });
-  router.post("/chat-endpoints/:endpointId/slack/managed/provision", managementGuard("connections:configure", "POST /chat-endpoints/:endpointId/slack/managed/provision"), validate(slackManagedProvisionSchema), async (req, res) => {
+  router.post("/chat-endpoints/:endpointId/slack/managed/provision", managementGuard("connections:configure", "POST /chat-endpoints/:endpointId/slack/managed/provision", { slackManagerGrant: true }), validate(slackManagedProvisionSchema), async (req, res) => {
     if (!(await assertEndpointManagementAccess(req, res))) return;
     res.set("Cache-Control", "no-store");
     res.json(await service.slackRegistration.managed.provision(endpointId(req), slackActor(req), req.body));

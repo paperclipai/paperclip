@@ -5,16 +5,16 @@ import {
   nativeRunFinalizations,
   type Db,
 } from "@paperclipai/db";
-import { redactCurrentUserText, type CurrentUserRedactionOptions } from "../../log-redaction.js";
+import type { CurrentUserRedactionOptions } from "../../log-redaction.js";
 import type { RunLogHandle, RunLogReadOptions, RunLogStore } from "../run-log-store.js";
 import { instanceSettingsService } from "../instance-settings.js";
-import { compactRunLogChunk } from "../heartbeat/run-log.js";
+import { canonicalNativeRunLogRedactionForms, redactCanonicalNativeRunLogChunk } from "../heartbeat/run-log.js";
 import { beginIdleTrackedWork } from "../task-admission.js";
 import { agentIdentityService } from "../agent-identity.js";
 import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { logger } from "../../middleware/logger.js";
-import { createNativeRunLogExporter, nativeRunLogSourceWhere } from "./native-run-log-export.js";
+import { createNativeRunLogExporter, nativeRunLogPrefixCursor, nativeRunLogSourceWhere } from "./native-run-log-export.js";
 
 interface Recovery {
   work: Promise<void>;
@@ -148,37 +148,44 @@ export async function recoverSettledNativeRunLog(
     let lastSourceCursor = handle.initialSourceCursor ?? 0;
     const receipts: Promise<number>[] = [];
     let failure: unknown;
-    const exporter = createNativeRunLogExporter({
-      db,
-      companyId,
-      runId,
-      afterCursor: handle.initialSourceCursor ?? 0,
-      signal,
-      enqueue: async (sourceCursor, chunk) => {
-        const receipt = await store.enqueue!(handle, {
-          stream: "stdout",
-          ts: new Date().toISOString(),
-          seq: ++sequence,
-          sourceCursor,
-          chunk: compactRunLogChunk(
-            redactCurrentUserText(identityRedactor.chunk("stdout", chunk), redaction),
-          ),
-        });
-        receipts.push(
-          receipt.committed.catch((error) => {
-            failure ??= error;
-            return 0;
-          }),
-        );
-        lastSourceCursor = sourceCursor;
-      },
-      flush: async () => {
-        await store.flush!(handle);
-        await Promise.all(receipts.splice(0));
-        if (failure) throw failure;
-      },
-    });
     try {
+      lastSourceCursor = await nativeRunLogPrefixCursor({
+        db, companyId, runId, store, handle, signal,
+        redactChunks: (chunk) => canonicalNativeRunLogRedactionForms(chunk, {
+          redactIdentity: identityRedactor.redact, currentUser: redaction,
+        }),
+      });
+      const exporter = createNativeRunLogExporter({
+        db,
+        companyId,
+        runId,
+        afterCursor: lastSourceCursor,
+        signal,
+        enqueue: async (sourceCursor, chunk) => {
+          const receipt = await store.enqueue!(handle, {
+            stream: "stdout",
+            ts: new Date().toISOString(),
+            seq: ++sequence,
+            sourceCursor,
+            preservesSourceCoverage: true,
+            chunk: redactCanonicalNativeRunLogChunk(chunk, {
+              redactIdentity: identityRedactor.redact, currentUser: redaction,
+            }),
+          });
+          receipts.push(
+            receipt.committed.catch((error) => {
+              failure ??= error;
+              return 0;
+            }),
+          );
+          lastSourceCursor = sourceCursor;
+        },
+        flush: async () => {
+          await store.flush!(handle);
+          await Promise.all(receipts.splice(0));
+          if (failure) throw failure;
+        },
+      });
       await exporter.recover();
     } catch (error) {
       failure ??= error;

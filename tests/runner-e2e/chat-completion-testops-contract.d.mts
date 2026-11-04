@@ -31,4 +31,13 @@ export function evidencePolicy(selection: PilotSelection, context: PilotContext,
 };
 
 export const catalogWorkflow: string;
-export function catalogDefinition(context?: { catalog?: "full" }): { cases: readonly Readonly<CatalogCase>[]; planName: string; targetSha: string; workflow: string; bindingKey: string };
+export interface CatalogDefinition {
+  cases: readonly Readonly<CatalogCase>[];
+  planName: string;
+  targetSha: string;
+  launchSha256?: string;
+  workflow: string;
+  bindingKey: string;
+}
+export function catalogDefinition(context: { catalog: "full" }): CatalogDefinition & { launchSha256: string };
+export function catalogDefinition(context?: { catalog?: "full" }): CatalogDefinition;

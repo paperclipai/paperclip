@@ -7,6 +7,7 @@ import { admitDispatch, hash, reject, validateSelection, evidencePolicy, catalog
 import { testopsClient, bootstrapPilotPlan, completePilotRegistration, validatePilotSelection, launchPilotPlan, verifyPilotUpload } from './chat-completion-testops-api.mjs';
 import { parseOfficialBootstrapContext } from './testops-chat-reporter.mjs';
 import { exportPilotAllure, readPilotExport } from './chat-completion-testops-results.mjs';
+import { prepareCaseBundle, publishCaseBundle, publicationSet, gatherCaseProjections } from './chat-catalog-testops-streaming.mjs';
 
 const execute = promisify(execFile);
 const fullCatalogFailureCodes = new Set([
@@ -31,12 +32,12 @@ export function executionPartition(selection, context, jobRunId) {
   const matrix = executionMatrix(selection, context, jobRunId);
   if (context.catalog !== 'full') reject('catalog');
   const small = matrix.include.length <= 3;
-  const native = { include: matrix.include.filter(row => small || !row.external) };
-  const external = { include: matrix.include.filter(row => !small && row.external) };
+  const native = { include: matrix.include.filter(row => !row.external) };
+  const external = { include: matrix.include.filter(row => row.external) };
   const size = [matrix, native, external, selection.cases.map(row => row.executionId)]
     .reduce((sum, value) => sum + JSON.stringify(value).length * 2, 0);
   if (size > 1_000_000) reject('matrix_size');
-  return { matrix, native, external, parallelism: small ? '1' : '8' };
+  return { matrix, native, external, parallelism: small ? external.include.length ? '1' : '2' : '8' };
 }
 async function readOwned(file, root, limit) {
   const absolute = path.resolve(file), base = await realpath(root);
@@ -92,7 +93,8 @@ function mutationMarker(root) {
 export async function run(command, argument, env = process.env, { fetchImpl = fetch, exec = execute } = {}) {
   let state;
   try {
-    if (!['guard', 'bootstrap', 'bootstrap-context', 'selection', 'launch-plan', 'verify-selection', 'upload', 'verify-upload'].includes(command)) reject('operation');
+    if (!['guard', 'bootstrap', 'bootstrap-context', 'selection', 'launch-plan', 'verify-selection', 'upload', 'verify-upload',
+      'prepare-case-upload', 'upload-case', 'verify-stream', 'gather-case-projections'].includes(command)) reject('operation');
     const context = await actualContext(env, exec);
     if (command === 'guard') {
       await output(env, 'operation', context.operation); await output(env, 'target_sha', context.targetSha);
@@ -104,8 +106,21 @@ export async function run(command, argument, env = process.env, { fetchImpl = fe
     }
     if (['bootstrap', 'bootstrap-context'].includes(command) && context.operation !== 'bootstrap'
       || command === 'launch-plan' && context.operation !== 'launch-plan'
-      || ['selection', 'upload', 'verify-upload'].includes(command) && context.operation !== 'evaluate') reject('operation');
+      || ['selection', 'upload', 'verify-upload', 'prepare-case-upload', 'upload-case', 'verify-stream', 'gather-case-projections'].includes(command) && context.operation !== 'evaluate') reject('operation');
     state = await stateDirectory(env, command === 'bootstrap-context' ? 'bootstrap' : command, command === 'bootstrap-context');
+    if (command === 'prepare-case-upload') {
+      if (Object.hasOwn(env, 'ALLURE_TOKEN')) reject('worker_credential');
+      const selected = await readSelection(path.join(env.GITHUB_WORKSPACE, 'chat-completion-testops-selection', 'testops-pilot-selection.json'), env, context);
+      const prepared = await prepareCaseBundle(path.resolve(argument), env.ALLURE_RESULTS, context, selected,
+        env.CHAT_TESTOPS_EXECUTION_ID, env.EXPECTED_SELECTION_SHA256);
+      await writeReceipt(state, 'prepared.json', prepared); return 0;
+    }
+    if (command === 'gather-case-projections') {
+      if (Object.hasOwn(env, 'ALLURE_TOKEN')) reject('worker_credential');
+      const selected = await readSelection(path.join(env.GITHUB_WORKSPACE, 'chat-completion-testops-selection', 'testops-pilot-selection.json'), env, context);
+      await gatherCaseProjections(env.CHAT_TESTOPS_BUNDLES, path.resolve(argument), context, selected, env.EXPECTED_SELECTION_SHA256);
+      return 0;
+    }
     const api = await testopsClient(env.ALLURE_TOKEN, fetchImpl);
     if (command === 'bootstrap') {
       const prepared = await bootstrapPilotPlan(api, Number(env.CHAT_TESTOPS_INTEGRATION_ID), mutationMarker(state), context);
@@ -144,6 +159,24 @@ export async function run(command, argument, env = process.env, { fetchImpl = fe
       await output(env, 'policy', JSON.stringify(context.catalog === 'full' ? null : evidencePolicy(selection, context, env.ALLURE_JOB_RUN_ID))); return 0;
     }
     const selected = await readSelection(path.join(env.GITHUB_WORKSPACE, 'chat-completion-testops-selection', 'testops-pilot-selection.json'), env, context);
+    if (command === 'upload-case') {
+      const prepared = JSON.parse(await readOwned(env.CHAT_TESTOPS_PREPARED_FILE, env.RUNNER_TEMP, 65_536));
+      const publication = await publishCaseBundle(api, path.resolve(argument), env.ALLURE_RESULTS, prepared, context, selected,
+        env.CHAT_TESTOPS_EXECUTION_ID, env.EXPECTED_SELECTION_SHA256, () => mutationMarker(state)('upload_case'));
+      await writeReceipt(state, 'publication.json', publication);
+      return publication.exported.status === 'passed' ? 0 : 1;
+    }
+    if (command === 'verify-stream') {
+      const exported = await publicationSet(env.CHAT_TESTOPS_BUNDLES, env.CHAT_TESTOPS_PUBLICATIONS, context, selected, env.EXPECTED_SELECTION_SHA256);
+      const { campaign } = await readPilotExport(path.resolve(argument), context, selected);
+      if (exported.some(row => {
+        const original = campaign.results.find(value => value.executionId === row.executionId);
+        return !original || row.status !== (original.status === 'passed' && original.cleanup === 'passed' ? 'passed' : 'failed') || row.cleanup !== original.cleanup;
+      })) reject('upload_receipt');
+      const verification = await verifyPilotUpload(api, selected, context, exported);
+      await writeReceipt(state, 'verification.json', verification);
+      return exported.some(row => row.status !== 'passed') ? 1 : 0;
+    }
     if (command === 'upload') {
       const exported = await exportPilotAllure(path.resolve(argument), env.ALLURE_RESULTS, context, selected);
       await writeReceipt(state, 'exported.json', exported); return exported.some(row => row.status !== 'passed') ? 1 : 0;
@@ -161,6 +194,11 @@ export async function run(command, argument, env = process.env, { fetchImpl = fe
     const code = fullCatalogFailureCodes.has(error?.message)
       || /^(chat_completion_testops_[a-z_]{1,80}|testops_(?:api|auth)_http(?:_[1-5][0-9]{2})?)$/.test(error?.message ?? '') ? error.message : 'chat_completion_testops_unknown';
     const receipt = { command, code, httpStatus: Number.isInteger(error?.status) ? error.status : null };
+    if (code === 'chat_completion_testops_stream_upload_uncertain'
+      && ['testops_api_http', 'testops_response_invalid', 'testops_response_too_large', 'transport_or_response_failure'].includes(error.uploadFailure?.kind)) {
+      receipt.uploadFailure = { kind: error.uploadFailure.kind,
+        httpStatus: Number.isInteger(error.uploadFailure.httpStatus) ? error.uploadFailure.httpStatus : null };
+    }
     if (state) await writeReceipt(state, 'failure.json', receipt).catch(() => {});
     process.stderr.write(`Chat completion TestOps stopped: ${JSON.stringify(receipt)}\n`); return 1;
   }

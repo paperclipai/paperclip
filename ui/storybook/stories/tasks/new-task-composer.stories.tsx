@@ -12,6 +12,7 @@ import {
   buildUserMentionHref,
 } from "@paperclipai/shared";
 import { MarkdownBody } from "@/components/MarkdownBody";
+import { composerImageFiles } from "../../support/composerImageFiles";
 import { NewIssueDialog } from "@/components/NewIssueDialog";
 import { useCompany } from "@/context/CompanyContext";
 import { useDialog } from "@/context/DialogContext";
@@ -69,7 +70,6 @@ function NewTaskStory({
 
   useLayoutEffect(() => {
     const originalFetch = window.fetch;
-    const imageUrls: string[] = [];
     window.fetch = async (input, init) => {
       const url = new URL(
         typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
@@ -82,13 +82,6 @@ function NewTaskStory({
         if (worktrees === "loading") return new Promise<Response>(() => {});
         if (worktrees === "error") return Response.json({ error: "Worktrees unavailable" }, { status: 503 });
         return Response.json(worktrees === "empty" || url.searchParams.get("projectId") !== "project-board-ui" ? [] : WORKTREES);
-      }
-      if (url.pathname === `/api/companies/${COMPANY_ID}/assets/images` && init?.method === "POST") {
-        const file = init.body instanceof FormData ? init.body.get("file") : null;
-        if (!(file instanceof File)) return Response.json({ error: "Select an image" }, { status: 400 });
-        const contentPath = URL.createObjectURL(file);
-        imageUrls.push(contentPath);
-        return Response.json({ contentPath });
       }
       if (url.pathname === `/api/companies/${COMPANY_ID}/issues` && init?.method === "POST") {
         if (scenario === "saving") return new Promise<Response>(() => {});
@@ -112,7 +105,6 @@ function NewTaskStory({
     };
     return () => {
       window.fetch = originalFetch;
-      imageUrls.forEach((url) => URL.revokeObjectURL(url));
     };
   }, [scenario, worktrees]);
 
@@ -225,7 +217,7 @@ const meta = {
       "status": "current",
       "implementation": "production",
       "boundary": "fixtures",
-      "notes": "WorktreePicker, ReuseWorktree, CreateWithReusedWorktree and NewWorktreeAfterReuse exercise workspace selection and submitted fixture request values. Actual admission/binding and execution remain outside this story. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
+      "notes": "Images and MobileImages exercise staged image thumbnails above the editor; Files includes a document. These examples do not create a real task. WorktreePicker, ReuseWorktree, CreateWithReusedWorktree and NewWorktreeAfterReuse exercise workspace selection and submitted fixture request values. Actual admission/binding and execution remain outside this story. The filter uses one lowercase label without helper text. All chat-channel tasks count as bot-created; the focused visibility stories cover human-initiated channel work."
     },
   },
   args: { scenario: "empty" },
@@ -326,15 +318,32 @@ export const Files: Story = {
     const page = within(canvasElement.ownerDocument.body);
     await page.findByTestId("task-chat-composer-input");
     const input = canvasElement.ownerDocument.querySelector<HTMLInputElement>('input[type="file"]')!;
+    const [image] = await composerImageFiles();
     await userEvent.upload(input, [
       new File(["# Sign-in plan\n\nReproduce the redirect."], "plan.md", {
         type: "text/markdown",
       }),
-      new File(["fixture"], "redirect.png", { type: "image/png" }),
+      image!,
     ]);
     await expect(page.getByText("plan.md")).toBeVisible();
-    await expect(page.getByText("redirect.png")).toBeVisible();
+    await expect(page.getByAltText("desktop-reference.jpg")).toBeVisible();
   },
+};
+export const Images: Story = {
+  args: { scenario: "prefilled" },
+  play: async ({ canvasElement }) => {
+    const page = within(canvasElement.ownerDocument.body);
+    await page.findByTestId("task-chat-composer-input");
+    const input = canvasElement.ownerDocument.querySelector<HTMLInputElement>('input[type="file"]')!;
+    await userEvent.upload(input, await composerImageFiles());
+    await expect(page.getByAltText("desktop-reference.jpg")).toBeVisible();
+    await expect(page.getByAltText("mobile-reference.jpg")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "editable markdown" })).toHaveTextContent(REQUEST);
+  },
+};
+export const MobileImages: Story = {
+  ...Images,
+  globals: { viewport: { value: "mobile", isRotated: false } },
 };
 export const Saving: Story = {
   args: { scenario: "saving" },

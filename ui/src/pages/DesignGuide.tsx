@@ -822,6 +822,10 @@ export function DesignGuide() {
           </div>
         </SubSection>
 
+        <SubSection title="Monitoring task">
+          <StatusIcon status="in_progress" displayStatus="monitoring" showLabel />
+          <IssueStatusBadge status="in_progress" displayStatus="monitoring" />
+        </SubSection>
         <SubSection title="Idle Slack conversation">
           <StatusIcon status="in_review" externalConversationState="waiting" showLabel />
           <IssueStatusBadge status="in_review" externalConversationState="waiting" />
@@ -2310,6 +2314,12 @@ export function DesignGuide() {
           execution badges. Active transcript headers keep saying Working during automatic
           recovery. Recovery decisions and attempts belong in the run log;
           there is no execution status card or reconciliation form.
+        </p>
+        <p className="text-sm text-muted-foreground">
+          When retained-file recovery needs another authorized request, the source task and
+          run inspector offer Recover saved files. This queues the existing file-preservation
+          worker. Work remains held until the server verifies the saved files; a queued
+          acknowledgement does not mean that recovery finished.
         </p>
       </Section>
 

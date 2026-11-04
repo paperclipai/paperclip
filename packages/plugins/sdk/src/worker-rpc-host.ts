@@ -6,6 +6,7 @@ import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/s
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
 import { environmentCreationCleanupErrorData } from "./environment-creation-cleanup.js";
 import { environmentSyncErrorData, withEnvironmentSyncErrorCapture } from "./environment-sync-error.js";
+import { environmentRunnerIngressErrorData } from "./environment-runner-ingress-error.js";
 import { createInvocationTracer } from "./invocation-tracer.js";
 import { createPluginIdleDrain } from "./idle-drain.js";
 /**
@@ -1644,7 +1645,8 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       sendMessage(createErrorResponse(id, errorCode, errorMessage,
         method === "environmentAcquireLease" || method === "environmentDestroyLease"
           ? environmentCreationCleanupErrorData(err, method === "environmentAcquireLease")
-          : method === "environmentSyncOut" ? environmentSyncErrorData(err) : undefined));
+          : method === "environmentSyncOut" ? environmentSyncErrorData(err)
+          : method === "environmentRunnerIngressEndpoint" ? environmentRunnerIngressErrorData(err) : undefined));
     } finally {
       done?.();
     }

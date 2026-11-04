@@ -181,76 +181,31 @@ backlog is 5/5 and delegation is 5/6. The local
 `results/chat-feature-recheck/verification.md` records the follow-up evidence;
 its standard dashboard is explicitly scoped to the latest campaign.
 
-## TestOps completion pilot
+## Retired TestOps plans
 
-The separate `Chat completion TestOps` workflow connects only these preserved
-catalog cases to the private Paperclip Evals project:
+The one-case **Chat feature evals** plan and three-case
+**Chat completion pilot — OpenCode 1017** plan are retired. Their scenarios are
+included in the [full catalog](#full-catalog-in-testops). Use that plan or select
+cases from it; do not recreate the smoke or pilot plans.
 
-- `projects.project-work`
-- `projects.project-defaults`
-- `instance-operations.restart-service`
+The former `chat-feature-testops.yml` and `chat-completion-testops.yml` workflows
+are removed. Their bootstrap functions reject registration before any API call
+or mutation marker. Shared transport, evidence, export and verification helpers
+remain for the full-catalog workflow and retained historical evidence. Retiring a
+plan does not delete its cases, results, launches or private evidence.
 
-It evaluates the immutable catalog source in
-`chat-completion-testops-contract.mjs`. This keeps the broader catalog on its
-integration branch. The source includes the bounded TestOps host prerequisite
-from #18515. Changing the pin requires source review. The original DeepSeek
-1017 model, case clocks, independent checks, and zero retries remain fixed.
-Source registration does not establish a new live result.
-
-Run the named plan **Chat completion pilot — OpenCode 1017** in TestOps. The
-adapter validates the actual project, plan, job, launch and selected cases before
-build or provider access. A selected subset runs only those cases. The AWS matrix
-has concurrency one and does not cancel sibling cases after a failure.
-
-The main-only reporter uses the existing protected `ALLURE_TOKEN`; the evaluated
-app and worker never receive it. Original evidence stays in the existing private
-AWS storage with the unchanged validators, scanners, byte bounds and exact-key
-policies. A separate trusted projection carries verdicts, checks, accounting and
-private-evidence receipts. The final PNGs are verified in protected storage;
-only their checksums and availability are recorded in TestOps. GitHub artifacts
-contain metadata only. Raw logs, screenshots, hidden
-reasoning, API snapshots, credentials and provider sessions are not attachments.
-Original failed grades and cleanup failures remain failed. Same-run readback
-requires matching results and complete result-owned attachment metadata within
-the existing bounded processing window; it does not claim remote byte hashes.
-
-Initial setup uses the existing workflow operations:
-
-1. Dispatch reviewed `master` once with `operation=bootstrap`. This creates or
-   reconciles only the three exact automated cases and the dedicated plan. It
-   registers the GitHub job with an empty Allure results directory. It reuses
-   only the existing enabled GitHub integration from
-   `CHAT_TESTOPS_INTEGRATION_ID`. No model or fabricated result is created.
-   The observation receipt captures a closed parameter-shape inspection before
-   binding. Only the observed single `Branch/defaultValue` definition for
-   `refs/heads/master` is accepted. Bootstrap enables the job and assigns cases
-   while preserving that definition; the plan uses its default branch.
-   Assignment inspection records unassigned and existing-job counts before
-   binding. A single unassigned bucket must cover the exact selected cases;
-   foreign jobs and unknown or incomplete buckets stop before writes.
-2. Read the closed registration receipt. Store its observed `binding` JSON as
-   `CHAT_COMPLETION_TESTOPS_BINDING` in `runner-e2e-testops-reporting`.
-3. Use TestOps **Run**. For the initial operator launch, set an exact next
-   workflow run number in `CHAT_COMPLETION_TESTOPS_LAUNCH_RUN_NUMBER`, set a new
-   32-hex `CHAT_COMPLETION_TESTOPS_LAUNCH_NONCE`, then dispatch `launch-plan`
-   once. Its request produces the TestOps-owned `evaluate` dispatch. Do not
-   manually dispatch an additional evaluation after an uncertain launch.
-4. Verify the fresh TestOps launch, all selected case results, source links,
-   independent checks, private-evidence receipts and cleanup. Inspect screenshots
-   through authenticated private-history retrieval. Retain earlier failed attempts.
-
-The runtime accepts only `operation`, `ALLURE_JOB_RUN_ID` and reserved username
-metadata. It rejects arbitrary source/model/budget selectors, branch workflows,
-replays and foreign cases. All secret-bearing jobs recheck actual GitHub run and
-actor identities. The existing one-case backlog plan remains independent.
+Retained launch helpers encode TestOps name filters as Base64 of UTF-8 JSON in
+`search`. Plain name text returns HTTP 400. Their nonce and once-only guards
+remain unchanged; this transport contract does not restore the retired plans.
 
 ## Full catalog in TestOps
 
 The [Chat catalog TestOps workflow](../../.github/workflows/chat-catalog-testops.yml)
 registers all 244 scenarios from the 35 YAML areas in a separate
 **Chat feature catalog — OpenCode 1017 (candidate)** plan. Its source-derived
-manifest is `chat-full-catalog-testops-manifest.json`. The existing backlog plan
-and three-case completion pilot keep their own jobs, selections and history.
+manifest is `chat-full-catalog-testops-manifest.json`. This is the active chat
+plan. The former backlog and three-case pilot plans are retired; their cases
+and measured history are preserved.
 Legacy aliases reuse existing TestOps case identities without renaming them.
 
 The catalog contains 236 Agent Chat routes, five browser boundaries, one external
@@ -262,10 +217,21 @@ overlap. Exact requirements and limitations appear in each case's preconditions.
 A declared credential does not establish whether its runtime reference exists.
 
 This lane runs the app and fixtures from candidate
-`3b66c3c144360ddf32714a0742fd774b8ceafb16`. Its app and domain definitions are
-unchanged from `de0941835cc8f0d01c982574ee258e110babdbeb`; the successor adds only
-finite TestOps host admission. Trusted selection, evidence transfer and publishing
-use the workflow's immutable master revision. Each result records both revisions.
+`ab2019e976076ec0eb60b026844f3d9211cb0208`. It retains the evaluated app from
+`3b66c3c144360ddf32714a0742fd774b8ceafb16`. The first repair source added:
+owned SDK staging, public membership for three incidental human fixtures,
+company settings observation inside its original case deadline, and exact
+controller-secret baseline handling for secure human entry. The last repair
+uses the explicit `company-secret-controller-baseline.v2` oracle. Its deployment
+secret, Morgan-only binding and privacy checks remain required.
+
+The manifest retains the original `de0941835cc8f0d01c982574ee258e110babdbeb`
+definition provenance and records each changed row field in `source.repairMetadata`.
+Case clocks and the controller model remain unchanged. Source3's explicit Studio144 native-accounting revision is described below. The later repair source records its
+query and outcome changes explicitly; see Repair source 2 below.
+Original failed measurements stay historical. Trusted selection, evidence transfer
+and publishing use the workflow's immutable master revision. Each result records
+both revisions.
 A pass qualifies that candidate measurement, not the current master app. Other
 lanes sharing a case retain their own sources. This integration does not merge
 the broad catalog branch or its core fixes, reset earlier campaign ordinals, or
@@ -273,8 +239,8 @@ change the previous 196-of-244 acceptance gate.
 
 Native execution uses OpenCode and
 `openrouter/deepseek/deepseek-v4.1-flash-1017` on the existing AWS fleet. Each case
-keeps its original query, oracle, run counts, clocks, budgets and zero automatic
-retries. Browser boundaries and the external assistant retain their original
+uses the manifest-declared query, oracle, counts, clocks and budgets with zero
+automatic retries; explicit reviewed condition changes are recorded below. Browser boundaries and the external assistant retain their original
 surfaces and may have zero native work runs. The external companion keeps its own
 declared provider requirement. Setup inference and unpriced usage are not free.
 
@@ -295,19 +261,32 @@ Initial setup uses the existing reporting environment:
    evaluation after an uncertain request. Initial route verification uses a small
    selection and does not qualify all 244 cases.
 
-Each worker executes one case. Selections of up to three cases run serially.
-Larger selections allow eight independent cases and one external-input case at
-once. External-input cases remain serial because they can share QA resources.
-A full run can take hours. Its elapsed time depends on setup and fleet capacity;
-the declared case clocks are not a completion-time guarantee. Each worker and
-report reader has a singleton private-evidence approval and exact-key AWS
-session; the existing eight-cell
-authority limit is unchanged. Reports wait for all selected workers. A
-credential-free job then validates and merges their metadata projections. The
-protected reporter uploads original outcomes and verifies every selected result,
-including paginated selections over 100 cases. Failed originals and failed
-cleanup remain failed beside passed results. Missing originals cannot become
-fabricated measurements or a full-selection pass.
+Each worker executes one case. Selections of up to three cases allow two cases
+at once. Larger selections allow eight independent cases and one external-input
+case at once. External-input cases remain serial because they can share QA
+resources. A full run can take hours. Its elapsed time depends on setup and fleet
+capacity; the declared case clocks are not a completion-time guarantee.
+
+Each finished worker starts its own protected reader and safe exporter. A
+separate reporting job uploads that case and verifies its result and two JSON
+attachments while other workers continue. The reader has only an exact-key AWS
+session. The worker has only its declared model keys. Only the uploader has the
+TestOps key. The existing eight-cell private authority limit is unchanged.
+
+The exporter freezes each UUID-bearing Allure bundle once. An uncertain upload
+response triggers readback, never an automatic resend. The final job verifies
+complete selected-case coverage and the original statuses without uploading the
+results again. Failed originals and failed cleanup remain failed beside passed
+results. Missing originals cannot become fabricated measurements or a
+full-selection pass. Backend ingestion does not guarantee that an open TestOps
+page refreshes without user action.
+
+The caller and reusable case workflow must both be admitted at their exact
+`refs/heads/master` paths in the existing runner group. Called jobs use their own
+protected environments; the caller passes empty named secret placeholders and
+never inherits or forwards actual model or reporting keys. Streaming runs use
+the fixed `chat-catalog-testops-streaming-v1` serialization group. Runs started
+before this change retain their original batch-reporting flow.
 
 Raw evidence and final PNGs remain in protected storage. Public GitHub artifacts
 and TestOps attachments contain only allowlisted provenance, checks, accounting
@@ -317,76 +296,42 @@ reach only cases that declare them. External inputs use the existing selected-ca
 private-input owner, disposable-resource checks and oracle commitments.
 Unconfigured inputs remain setup blockers.
 
-## TestOps-backed AWS backlog cell
+### Historical repair source 2 (2026-11-03)
 
-The dedicated `Chat feature TestOps` workflow accepts only the shipped default
-branch and the fixed OpenCode backlog cell. `evaluate` is the default operation
-and requires TestOps' `ALLURE_JOB_RUN_ID`. A protected reporting job verifies the
-project, singleton plan, assigned public workflow, selected case and current
-GitHub run before any build or provider access. The evaluated process receives
-no TestOps token. It retains the original one-query, one-work-run, 120-second
-turn, 420-second attempt, 300-second settled-state and zero-retry limits.
+On 2026-11-03, repair source 2 pinned candidate `36dff2eab3dfb6de6efb4fd2ce6c1a58f8a5f383`, succeeding `9ab0f951a5b5990c266ef4456610e0a0775aa334`. It carries the reviewed fixture, scoped observation, version-readback and evidence-readiness repairs. The checked static descriptor snapshot is byte-exact to this candidate and its digest is verified. Runtime descriptors are synchronized with the actual declarations; all 242 lazy factories must pass the real no-callback consistency check, together with the two legacy-cell controls, before each new repair-batch GO. The previous candidate's mismatched metadata caused launch 1690 to be cancelled before case/model work; it is an operational attempt, not a feature result.
 
-Two metadata operations prepare that route. `bootstrap` registers the actual
-public CI job through pinned `allurectl` with an empty results directory and
-reconciles only the dedicated case and singleton plan. It produces no passing
-test result. After the registered job and protected case/plan/job identifiers
-are verified, `launch-plan` sends one TestOps plan-run request and exits.
-The TestOps job then dispatches `evaluate`; an operator must not dispatch a
-second evaluation manually. Missing or ambiguous registration and selection
-metadata stops before inference.
+The manifest keeps the original definition source and values, with explicit scoped changes: Fast response names the requested product feature; goal-tree and authored-skill outcomes use the product-supported optional-owner and ordinary navigation contracts; question delivery/validation and company-secret setup declare their reviewed oracle versions. Each new measurement binds this candidate and the exact changed definition; earlier grades and the 244-case gate are unchanged. SDK scan-audit capture improves private failure diagnosis only: rejection, evidence requirements and privacy bounds remain in force, and the other SDK cases stay held until the finding is understood.
 
-The workflow reuses the existing AWS fleet and strict private evidence storage.
-Its shipped-main authority is separate from manual candidate approval. Original
-logs, provider records and failure evidence remain private. The reporting adapter
-exports only a source/run-bound normalized result, JUnit and screenshots already
-marked by the owned fixture screenshot producer with matching file hashes.
-A separate protected reporting job converts that projection to the exact TestOps
-case. Failed grades and cleanup failures remain failed.
+Workflow, model, case clocks, native-run bounds, credentials, protected reporting and case identities do not change. The full harness TypeScript graph has not been qualified by local pure tests; source import/admission and the existing credential-free remote Runner build remain required before native queries. Static TestOps descriptions may still show the original definition until a separate idempotent metadata reconciliation at a safe source boundary.
 
-Reporting setup uses the master-only `runner-e2e-testops-reporting` environment,
-with the existing reporting token delivered through the reviewed sealed-box
-bootstrap. `CHAT_TESTOPS_CASE_ID`, `CHAT_TESTOPS_PLAN_ID` and
-`CHAT_TESTOPS_JOB_ID` must name the observed dedicated mapping; the numeric
-`CHAT_TESTOPS_GITHUB_WORKFLOW_ID` supports TestOps' registered workflow URL.
-No arbitrary source, model, case, retry or budget input is accepted.
+### Historical repair source 3 (2026-11-03; candidate only)
 
-The initial `launch-plan` administrator operation also requires a protected
-`CHAT_TESTOPS_LAUNCH_RUN_NUMBER`. After registration, the trusted operator creates
-this variable once with the reviewed next workflow run number and reads it back.
-The launcher compares GitHub's actual run number, attempt, workflow, source and
-actors before any TestOps mutation. A later dispatch or replay cannot reuse that
-approved number. Missing or uncertain metadata stops; an uncertain request needs
-reconciliation rather than a new send. The nonce and launch search provide
-additional evidence. Normal TestOps **Run** uses `evaluate` and is independent of
-this one-time administrator fence. The launch nonce is protected configuration,
-not a dispatch input. Job parameter IDs are opaque. The launcher preserves the
-API's exact ID/value pair for `refs/heads/master` and uses the fixed workflow's
-`evaluate` default. An operation parameter is used only when the protected
-`CHAT_TESTOPS_OPERATION_PARAMETER_ID` matches a returned ID with a `bootstrap`
-or `evaluate` value; the launcher then sets it to `evaluate`. Other values,
-duplicate IDs and conflicting configuration are rejected. No relationship to
-global environment-variable IDs or names is inferred.
+Historical target `43c44ccc823a8c972b247fa7159281887e6f5255` added the reviewed skill import guidance, version-aware Studio sample checks, scoped app review/test and team-auth prerequisites, and the synthetic announcement-dismissal input. The core guidance PR remains unmerged; candidate-owned catalogs carry that explicit runtime/tool-description change. App testing declares its changed setup context and outcome. The exact human query is preserved.
 
-`CHAT_TESTOPS_INTEGRATION_ID` names the reviewed existing project GitHub
-integration. The launcher verifies its project, type and enabled state, then binds
-only the newly registered public job to it. It never changes integration settings
-or credentials. Since the job response does not expose that association, only the
-real TestOps-to-GitHub dispatch can qualify it.
+Studio test 144 alone changes native accounting from minimum/maximum 2/2 to 2/3. Acceptance requires all three genuine settled turns: initial CEO, actual Studio worker, and exactly one source-bound completion delivery. The original 540-second case clock, controller, one human request and all other case limits remain fixed. The manifest records each previous/current field against the original definition source; no old grade or catalog pass gate is rewritten.
 
-After `allurectl watch` finishes, the same protected reporter checks the actual
-TestOps job-run, launch, selected case, result source/status and attachment
-metadata. Processing reads are bounded to 12 polls, five-second gaps and a
-120-second processing deadline. Unknown or missing results remain unverified.
-The check downloads no attachment content and claims no server-side attachment
-byte hash. Its closed receipt is retained separately. An upload success alone
-is not a passing feature result, and verifying an original failure cannot turn
-that failure into a pass.
+The SDK public-input registry is generated from the committed candidate tree. Compiler, parser, Zod, lock runtime identities, scanner and canary build certificates are unchanged. This does not establish the original SDK detector or a plugin pass. Plugin 558 remains held until genuine canary build evidence is reauthenticated. The public announcement fixture is one reviewed synthetic 443-byte JSON under an isolated staging prefix; production announcements and the global index are untouched. Each original worker process still selects one case, so only the dismissal case enables that input.
 
-Build and worker installs use the existing reviewed report-lock policy. Only its
-committed input or output lock is accepted; its authenticated correction is the
-only allowed normalization. Dependency manifests, patch inputs and policy must
-remain unchanged. Installs are frozen with lifecycle scripts disabled. The
-credential-free build rechecks that boundary before packaging, and the worker
-matches the source/lock receipt before installing. Arbitrary resolver drift is
-rejected before provider access.
+The full-catalog private evidence policy binds the launcher digest from the same reviewed manifest as the immutable candidate target. Every final GO reads `launch.ts` from that exact Git object and validates its digest against every selected singleton policy before submission. The legacy pilot launcher digest remains separately pinned.
+
+
+### Historical repair source 4 (2026-11-03; candidate only)
+
+Historical target `51ef450754370c8a8f2cbe4bd18e1536bbc93966` adds remaining-original-deadline observation for primary guidance; independently expected normalized MCP results; fixed owned timeline-file reads through fixture board authority; finite supported CLI profile guidance with no identifier substitutions and fresh board/API/company/human readback; real completion-turn observation for plan review; and the reviewed true-price hire counterpart. Original failed attempts remain unchanged.
+
+The app-review journey now requires inspection of the exact full redacted arguments and audit hash in the normal shared review card, then verifies that authorized provider dispatch equals that proposal. The 17-line product disclosure is an explicit candidate-only overlay from unmerged core PR #18734; no backend permission or approval rule changes. The independent core guidance PR #18717 also remains unmerged.
+
+SDK public-source eligibility explicitly changes its expected restored lock from stale c7f230 to the authenticated credential-free build-input SHA256 `54a81b2ed3f1f85eaa085c034560ac248e384db34fbc7aba8c5a3846c29b3ce8`. Compiler/parser/Zod identities and all privacy/AST/custody guards remain enforced. This correction is not a plugin pass: case 115 must qualify with its original 300-second/one-native limits, and the other five SDK cases, including plugin 558's canary certificates, remain held. All case clocks and the controller model remain unchanged; Studio144's earlier explicit 2..3 accounting revision remains the only native-bound change.
+
+### Historical repair source 5 (2026-11-03; candidate only)
+
+The reviewed prior cut `de6d29e025683f5c28125bcaa4f38b41836d8516` has not run as a campaign lane. It adds case53 observation within its original300s budget, case74 actual rich-editor ordered-block inspection, case550 normal Projects-surface announcement fixture, case578 server-canonical secret-key metadata checks, and case466 canonical native status audit joins to the exact accepted task/run/worker decision. The timeline keeps its real exit1, human handoff and exit0 checks; legacy audit support remains. Queries, models and original per-case clocks/run counts stay fixed. Its candidate-only UI487 overlay includes reviewed pre-trim size guards from unmerged corePR18734/50600786. Historical Source4 `51ef450754370c8a8f2cbe4bd18e1536bbc93966` remains the source of launch1888; later master metadata never retargets that running workflow. These repairs and focused controls are not real feature acceptance. Other five SDK cases remain held pending actual115 evidence; no core PR is merged.
+
+
+### Repair source 6 (2026-11-03; candidate only)
+
+The canonical candidate above retains Source5 and adds initial personal-secret and team-install observation within their original deadlines, real hire-review link readiness, and skill-update observation at genuine provider checkpoints after local native readiness. Case queries, controller model, permissions and declared clocks/run counts remain unchanged from Source5; Studio144 retains its earlier explicit 2..3 accounting revision.
+
+The reviewed product overlay from unmerged core PR #18742 at `61996a96dd09e90a5788e8711a94fc5ae631f425` allows a new Ask-first review for a strictly authenticated later same-person human intent following a declined request, including the normal reopened-comment source. Repeating the same intent stays denied; this grants no approval or execution authority. Both PostgreSQL route regressions ran and passed on that core head. The candidate preserves the compatible gateway and actual database row contracts; this is not a core merge or a qualified chat pass. Core PRs #18717, #18734 and #18742 remain unmerged. SDK115 completion remains unknown; the other five SDK cases remain held.
+
+For one selected case, the trusted controller downloads each exact bundle and publication artifact name into an explicit matching child directory. For multiple cases, it keeps separate named artifact directories. The gather command authenticates the frozen selection, every prepared bundle and its hashes before it copies the safe projections. Final coverage still authenticates the original publication receipts and verifies TestOps results without another export or upload. Empty, mixed, foreign and symbolic-link layouts fail closed. The producer's optional once-upload marker has an exact closed schema; it does not replace a verified publication receipt.

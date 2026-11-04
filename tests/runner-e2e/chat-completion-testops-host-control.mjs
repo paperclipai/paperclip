@@ -5,6 +5,26 @@ import { pathToFileURL } from 'node:url';
 import { parse } from 'yaml';
 import { model, catalogDefinition, catalogWorkflow } from './chat-completion-testops-contract.mjs';
 
+export function paidWorker(definition, called) {
+  const path = './.github/workflows/chat-catalog-testops-case.yml';
+  for (const name of ['chat', 'chat_external']) {
+    const job = definition.jobs?.[name];
+    if (job?.uses !== path || job.with?.protocol !== 'streaming-v1'
+      || job.with?.target_sha !== '${{ needs.authorize.outputs.target_sha }}'
+      || job.with?.selection_artifact_id !== '${{ needs.select.outputs.artifact_id }}'
+      || job.with?.selection_sha256 !== '${{ needs.select.outputs.selection_sha256 }}'
+      || JSON.stringify(job.secrets) !== JSON.stringify({ OPENROUTER_API_KEY: '${{ secrets.OPENROUTER_API_KEY }}',
+        ANTHROPIC_API_KEY: '${{ secrets.ANTHROPIC_API_KEY }}', ALLURE_TOKEN: '${{ secrets.ALLURE_TOKEN }}' })) {
+      throw new Error('Workflow caller boundary mismatch');
+    }
+  }
+  if (!called?.on?.workflow_call || Object.keys(called.on).length !== 1
+    || called.jobs?.chat?.environment !== 'runner-e2e-private-paid'
+    || called.jobs?.report?.environment !== 'runner-e2e-private-history'
+    || called.jobs?.upload?.environment !== 'runner-e2e-testops-reporting') throw new Error('Workflow environment boundary mismatch');
+  return called.jobs.chat;
+}
+
 /** A credential-free caller/source control with synthetic IMDS responses.
  * It does not qualify an actual AWS host or make a provider call.
  */
@@ -15,7 +35,10 @@ export async function verifyHostContract(workspace, temporaryRoot, env = process
   const source = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: workspace, encoding: 'utf8' }).trim();
   if (source !== targetSha) throw new Error('Source control pin mismatch');
   const definition = parse(await readFile(new URL(`../../${workflow}`, import.meta.url), 'utf8'));
-  const paid = definition.jobs.chat.steps.find(step => step.env?.OPENROUTER_API_KEY);
+  // Only the reviewed local callee at the same trusted checkout is read. A
+  // workflow input or another repository/ref cannot supply the worker body.
+  const worker = full ? paidWorker(definition, parse(await readFile(new URL('../../.github/workflows/chat-catalog-testops-case.yml', import.meta.url), 'utf8'))) : definition.jobs.chat;
+  const paid = worker.steps.find(step => step.env?.OPENROUTER_API_KEY);
   if (paid.env.PAPERCLIP_CHAT_COMPLETION_TESTOPS !== 'v1' || paid.env.ALLURE_JOB_RUN_ID !== '${{ inputs.ALLURE_JOB_RUN_ID }}'
     || !paid.run.includes('--max-automatic-retries 0') || definition.jobs.chat.strategy['max-parallel'] !== (full ? '${{ fromJSON(needs.select.outputs.parallelism) }}' : 1)) throw new Error('Workflow host contract mismatch');
   const { runnerMatrix } = await import(pathToFileURL(path.join(workspace, 'tests/runner-e2e/catalog.ts')).href);

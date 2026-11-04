@@ -1,5 +1,30 @@
 # Runner E2E security for a public repository
 
+The deployment-targeted `saved-skill-use` journey creates one synthetic skill on
+the campaign-owned agent. Its random receipt reference and numeric inputs occur
+only in the saved skill source. Exact source, immutable version, ordinary assignment, native read
+events and run-authored document revisions remain in the private bundle. The
+existing public projection exports closed checks and the authenticated owned
+task screenshot. The journey changes no shared agent, instance flag or budget.
+
+Native `cursor-cloud` acceptance uses a separate callback-only loopback listener.
+Its external HTTPS tunnel must never target the local_trusted operator app.
+Credential-free ingress checks require `/` and `/api/health` to return 404 and
+an unauthenticated callback POST to return 401 before fixture creation. Only
+capability authorization and MCP protocol headers reach the application; browser
+cookies are stripped. Native provider identifiers remain private. Dedicated
+observer evidence hashes them, and the public history publisher refuses this
+suite because ordinary diagnostic snapshots may retain them. Cleanup may cancel
+or delete only resources linked by exact local-run-owned persisted notices.
+
+The deployment-targeted `file-input-answer` journey uploads a small synthetic
+CSV through the normal task composer. Its reference and numeric inputs are
+generated per attempt and occur only in the file. The independent fixture and
+run/revision receipts remain in the private Cloud bundle; the public QA report
+exports only the existing closed checks and authenticated task screenshot.
+The `inbox-triage` journey creates and changes only its owned self-assigned task.
+It uses no model, no foreign user records, and no direct database writes.
+
 The explicit `remote-workspace-storage` cell snapshots only its synthetic
 projectless task folder in an owned disposable sandbox. Its prompt creates a
 small Python project, local Git history without a remote, and an untracked random
@@ -625,3 +650,6 @@ S3 prefix, and generated secrets between controllers. It removes the entire old
 home after graceful handoff. Its read-only observer does not create recovery
 authority. Provider credentials still enter through encrypted fixture secrets.
 Local rolling smoke receipts explicitly exclude active-agent and hosted proof.
+
+The personal inbox journey requires a separately authenticated, registered QA human author. Its target provider exposes one controlled comment operation on the exact campaign-owned task. The public oracle independently reads the saved comment and verifies its distinct human author, exact content, company, task, and absence of an agent run. The private provider closes the isolated author context during evidence-first cleanup. No provider or native run is allowed for this browser-only journey; agent cross-task execution guards remain intact.
+The `routine-scheduled-run` journey uses one campaign-owned routine, project, and scheduled task. It enables a minute schedule only for the bounded observation. Cleanup must pause the routine, disable its triggers, and reconcile scheduler-created tasks before stopping agent work. Private recovery repeats these checks after a lost response. Retain task and routine history; never leave a recurring trigger enabled after an attempt.

@@ -78,7 +78,8 @@ function registerClient(key: string, client: RegisteredPostgresClient): void {
  * its teardown cannot close another fixture's clients on that host.
  */
 export async function closeRegisteredClients(url: string, options?: { scope: "database" }): Promise<void> {
-  const key = hostPortKey(url);
+  const key = hostPortKeyOrNull(url);
+  if (key === null) return;
   const database = options?.scope === "database" ? decodeURIComponent(new URL(url).pathname.slice(1)) : undefined;
   if (database === "") throw new Error("Database-scoped teardown requires an explicit database name");
   const refs = clientsByHostPort.get(key);
@@ -590,7 +591,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0413_tired_kronos.sql",
   "0414_closed_edwin_jarvis.sql",
   "0419_slippery_impossible_man.sql",
-  "0423_opposite_harrier.sql",
+  "0432_opposite_harrier.sql",
 
 
   "0384_funny_adam_warlock.sql",

@@ -37,12 +37,12 @@ const mockIssueReferenceService = vi.hoisted(() => ({
   syncIssue: vi.fn(async () => undefined),
 }));
 const mockHeartbeatService = vi.hoisted(() => ({
-  wakeup: vi.fn(async () => undefined),
+  wakeup: vi.fn(async (): Promise<{ id: string } | undefined> => undefined),
   reportRunActivity: vi.fn(async () => undefined),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
-  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async (): Promise<Array<{ id: string; kind: string; status: string }>> => []),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 

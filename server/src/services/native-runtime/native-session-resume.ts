@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import { and, desc, eq, exists, inArray, isNotNull, ne, not, or, sql } from "drizzle-orm";
-import { heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, desc, eq, exists, inArray, isNotNull, ne, not, notInArray, or, sql } from "drizzle-orm";
+import {
+  heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, nativeRunnerCheckpoints, nativeRunResults, type Db,
+} from "@paperclipai/db";
 import type {
   NativeExecutionInput,
   PersistedNativeSession,
@@ -91,6 +93,10 @@ export function nativeToolContractFingerprintForTarget(
 /** Default local-target fingerprint retained for callers and test fixtures. */
 export const NATIVE_TOOL_CONTRACT_FINGERPRINT =
   nativeToolContractFingerprintForTarget("local");
+
+/** The runner proved that this run's saved provider session cannot be
+ * restored by the current runner build. Its checkpoint is not resumable. */
+export const NATIVE_PROVIDER_STATE_INCOMPATIBLE = "native_provider_state_incompatible";
 
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -214,20 +220,78 @@ export async function nativeSessionProviderEvidence(
   return new Set(rows.map((row) => row.runId));
 }
 
-export async function findNativeSessionResumeRun(
-  db: Db,
-  input: {
-    companyId: string;
-    agentId: string;
-    issueId: string;
-    normalizedSessionId: string;
-    currentRunId: string;
-    beforeCreatedAt: Date;
-    /** Recovery discovery must retain an ineligible newest progress barrier. */
-    includeProgressBarrier?: boolean;
-  },
-) {
+type NativeSessionResumeSelection = {
+  companyId: string;
+  agentId: string;
+  issueId: string;
+  normalizedSessionId: string;
+  currentRunId?: string;
+  beforeCreatedAt: Date;
+  /** Recovery discovery must retain an ineligible newest progress barrier. */
+  includeProgressBarrier?: boolean;
+};
+
+const NATIVE_RESUME_CANDIDATE_WINDOW = 32;
+const INHERITED_CHECKPOINT_SOURCE_FIELDS = ["backendKind", "driverKind", "sessionId", "providerSessionId"] as const;
+
+export async function findNativeSessionResumeRun(db: Db, input: NativeSessionResumeSelection) {
   if (!isNativeSessionId(input.normalizedSessionId)) return null;
+  const barrier = await selectNativeSessionResumeBarrier(db, input, []);
+  // A follow-up that failed before any provider or controller work holds only
+  // the checkpoint it inherited. Select its source instead, but only when
+  // every skipped run proves that and inherited exactly that source session.
+  const skipped: NonNullable<typeof barrier>[] = [];
+  let selected = barrier;
+  while (selected && skipped.length < NATIVE_RESUME_CANDIDATE_WINDOW &&
+      await isUnstartedInheritedFollowUp(db, input, selected)) {
+    skipped.push(selected);
+    selected = await selectNativeSessionResumeBarrier(db, input, skipped.map(run => run.id));
+  }
+  if (!skipped.length) return selected;
+  const source = record(selected?.runnerProfileJson.sessionCheckpoint);
+  const inherited = selected !== null && typeof source.sessionId === "string" && skipped.every(run => {
+    const checkpoint = record(run.runnerProfileJson.sessionCheckpoint);
+    return INHERITED_CHECKPOINT_SOURCE_FIELDS.every(field => checkpoint[field] === source[field]);
+  });
+  return inherited ? selected : barrier;
+}
+
+/** The run row, its coordinator, and the absence of controller checkpoints,
+ * results and provider events together prove no provider work started. */
+async function isUnstartedInheritedFollowUp(
+  db: Db,
+  input: NativeSessionResumeSelection,
+  run: { id: string; runtimeMode: string | null; status: string; processPid: number | null;
+    processGroupId: number | null; processStartedAt: Date | null; runnerProfileJson: { sessionCheckpoint: unknown; nativeControllerRecovery: unknown } },
+): Promise<boolean> {
+  const checkpoint = record(run.runnerProfileJson.sessionCheckpoint);
+  const identity = record(checkpoint.identity);
+  if (run.runtimeMode !== "native" || run.status !== "failed" || run.processPid !== null ||
+      run.processGroupId !== null || run.processStartedAt !== null || run.runnerProfileJson.nativeControllerRecovery != null ||
+      identity.runId !== run.id || identity.sessionId !== input.normalizedSessionId || checkpoint.cursor !== null) return false;
+  const [evidence] = await db.select({
+    executionRecovery: sql<unknown>`${heartbeatRuns.resultJson}->'executionRecovery'`,
+    phase: nativeRunFinalizations.phase,
+    resultId: nativeRunFinalizations.resultId,
+    leaseOwner: nativeRunFinalizations.leaseOwner,
+    controllerPid: nativeRunFinalizations.controllerPid,
+    controllerCheckpoint: sql<boolean>`exists (select 1 from ${nativeRunnerCheckpoints}
+      where ${nativeRunnerCheckpoints.companyId} = ${heartbeatRuns.companyId} and ${nativeRunnerCheckpoints.runId} = ${heartbeatRuns.id})`,
+    result: sql<boolean>`exists (select 1 from ${nativeRunResults}
+      where ${nativeRunResults.companyId} = ${heartbeatRuns.companyId} and ${nativeRunResults.runId} = ${heartbeatRuns.id})`,
+  }).from(heartbeatRuns).innerJoin(nativeRunFinalizations, and(
+    eq(nativeRunFinalizations.runId, heartbeatRuns.id), eq(nativeRunFinalizations.companyId, heartbeatRuns.companyId),
+    eq(nativeRunFinalizations.issueId, input.issueId),
+  )).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, input.companyId),
+    eq(heartbeatRuns.agentId, input.agentId), eq(heartbeatRuns.nativeIssueId, input.issueId)));
+  const recovery = record(evidence?.executionRecovery);
+  return Boolean(evidence && recovery.kind === "bootstrap" && recovery.providerWorkStarted === false &&
+    evidence.phase === "terminal_failure" && evidence.resultId === null && evidence.leaseOwner === null &&
+    evidence.controllerPid === null && !evidence.controllerCheckpoint && !evidence.result &&
+    !(await nativeSessionProviderEvidence(db, [run.id])).has(run.id));
+}
+
+async function selectNativeSessionResumeBarrier(db: Db, input: NativeSessionResumeSelection, skippedRunIds: string[]) {
   const candidates = db.$with("native_resume_candidates").as(db
     .select({
       id: heartbeatRuns.id,
@@ -242,7 +306,7 @@ export async function findNativeSessionResumeRun(
     .from(heartbeatRuns)
     .where(
       and(
-        ne(heartbeatRuns.id, input.currentRunId),
+        input.currentRunId ? ne(heartbeatRuns.id, input.currentRunId) : undefined,
         eq(heartbeatRuns.companyId, input.companyId),
         eq(heartbeatRuns.agentId, input.agentId),
         eq(heartbeatRuns.nativeIssueId, input.issueId),
@@ -250,12 +314,12 @@ export async function findNativeSessionResumeRun(
       ),
     )
     .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
-    .limit(32));
+    .limit(NATIVE_RESUME_CANDIDATE_WINDOW));
   const terminalStatuses = [...LEGACY_RETRY_SOURCE_TERMINAL_STATUSES];
   const barrier = db.$with("native_resume_barrier").as(db
     .select()
     .from(candidates)
-    .where(or(
+    .where(and(skippedRunIds.length ? notInArray(candidates.id, skippedRunIds) : undefined, or(
       ne(candidates.runtimeMode, "native"),
       not(inArray(candidates.status, terminalStatuses)),
       candidates.hasCheckpoint,
@@ -268,7 +332,7 @@ export async function findNativeSessionResumeRun(
           eq(heartbeatRunEvents.runId, candidates.id),
           inArray(heartbeatRunEvents.eventType, NATIVE_SESSION_PROVIDER_EVENT_TYPES),
         ))),
-    ))
+    )))
     .orderBy(desc(candidates.createdAt), desc(candidates.id))
     .limit(1));
   const [run] = await db.with(candidates, barrier)
@@ -281,6 +345,7 @@ export async function findNativeSessionResumeRun(
       nativeIssueId: heartbeatRuns.nativeIssueId,
       runtimeMode: heartbeatRuns.runtimeMode,
       status: heartbeatRuns.status,
+      errorCode: heartbeatRuns.errorCode,
       createdAt: heartbeatRuns.createdAt,
       processPid: heartbeatRuns.processPid,
       processGroupId: heartbeatRuns.processGroupId,
@@ -536,6 +601,7 @@ export function rebindNativeSessionCheckpoint(input: {
     companyId: string;
     agentId: string;
     nativeSessionId: string | null;
+    errorCode?: string | null;
     runnerProfileJson: unknown;
   };
   currentExecution: NativeExecutionInput;
@@ -544,6 +610,9 @@ export function rebindNativeSessionCheckpoint(input: {
   refreshTools?: boolean;
 }): PersistedNativeSession | null {
   if (input.refreshTools && input.toolRefreshOnResume !== true) return null;
+  // The source is still the progress barrier. Its provider session cannot be
+  // restored, so the next run starts a fresh session in the same workspace.
+  if (input.previousRun.errorCode === NATIVE_PROVIDER_STATE_INCOMPATIBLE) return null;
   const previousProfile = record(input.previousRun.runnerProfileJson);
   if (
     previousProfile.nativeToolContractFingerprint !==

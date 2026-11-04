@@ -23,7 +23,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: chat-catalog-testops
+  group: chat-catalog-testops-streaming-v1
   cancel-in-progress: false
 
 env:
@@ -78,8 +78,7 @@ jobs:
       - *checkout
       - *node
       - *guard
-      - &allure
-        if: needs.authorize.outputs.operation != 'launch-plan'
+      - if: needs.authorize.outputs.operation != 'launch-plan'
         uses: allure-framework/setup-allurectl@2d89ee0b7ba2f59dbe9849b6df5763cab78e14db # v1
         with:
           allurectl-version: 2.23.1
@@ -204,107 +203,24 @@ jobs:
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.select.outputs.parallelism) }}
       matrix: ${{ fromJSON(needs.select.outputs.native_matrix) }}
-    runs-on: ${{ needs.authorize.outputs.runner }}
-    timeout-minutes: ${{ matrix.timeout_minutes }}
-    environment: runner-e2e-private-paid
     permissions:
       contents: read
       actions: read
       id-token: write
-    env: &retention
-      TARGET_SHA: ${{ needs.authorize.outputs.target_sha }}
-      MANUAL_PRIVATE_IDS: ${{ matrix.private_ids }}
-      MANUAL_PRIVATE_APPROVALS_JSON: ${{ matrix.private_policy }}
-      RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_S3_BUCKET }}
-    steps: &catalog_worker_steps
-      - *checkout
-      - *node
-      - *guard
-      - *pnpm
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ needs.authorize.outputs.target_sha }}
-          persist-credentials: false
-      - name: Reject target-owned trusted helper paths
-        id: target_boundary
-        run: test -z "$(git ls-tree --name-only HEAD -- .testops-trusted)"
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-        with:
-          ref: ${{ github.sha }}
-          path: .testops-trusted
-          persist-credentials: false
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          artifact-ids: ${{ needs.build.outputs.artifact_id }}
-          path: chat-completion-build
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          artifact-ids: ${{ needs.select.outputs.artifact_id }}
-          path: chat-completion-testops-selection
-      - name: Verify source-bound build and authenticated selection before credentials
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
-          EXPECTED_SELECTION_SHA256: ${{ needs.select.outputs.selection_sha256 }}
-          ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
-        run: |
-          set -euo pipefail
-          test "$(git -C .testops-trusted rev-parse HEAD)" = "$GITHUB_SHA"
-          node .testops-trusted/tests/runner-e2e/chat-completion-testops-cli.mjs verify-selection chat-completion-testops-selection/testops-pilot-selection.json
-          (cd chat-completion-build && sha256sum -c chat-completion-build.tar.gz.sha256)
-          tar -xzf chat-completion-build/chat-completion-build.tar.gz -C "$GITHUB_WORKSPACE"
-          pnpm install --frozen-lockfile --ignore-scripts
-          (cd .testops-trusted && node tests/runner-e2e/prepare-report-lock.mjs && pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/chat-completion-retention-store")
-      - name: Qualify the pinned provider runtime and preinstalled browser
-        run: |
-          node packages/paperclip-runner/scripts/materialize-opencode-binary.mjs
-          node -e 'const fs=require("node:fs");fs.chmodSync(process.execPath,fs.statSync(process.execPath).mode&~0o022);if(fs.statSync(process.execPath).mode&0o022)throw Error("Writable provider Node")'
-          google-chrome --version
-          pnpm exec playwright install ffmpeg
-      - name: Bind exact private evidence under the authenticated TestOps authority
-        id: private
-        env:
-          TARGET_ROOT: ${{ github.workspace }}
-          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
-        run: node .testops-trusted/cli/node_modules/tsx/dist/cli.mjs .testops-trusted/tests/runner-e2e/manual-private-transfer.ts prepare
-      - name: Obtain only this cell's exact-key storage session
-        id: cell_credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-        with:
-          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
-          inline-session-policy: ${{ steps.private.outputs.session_policy }}
-          output-env-credentials: false
-          output-credentials: true
-          disable-retry: true
-          action-timeout-s: 60
-      - name: Verify private custody before delivering the model key
-        env: &cell_session
-          SELECTED_EXECUTION_ID: ${{ matrix.executionId }}
-          PRIVATE_EVIDENCE_ROOT: ${{ steps.private.outputs.root }}
-          AWS_ACCESS_KEY_ID: ${{ steps.cell_credentials.outputs.aws-access-key-id }}
-          AWS_SECRET_ACCESS_KEY: ${{ steps.cell_credentials.outputs.aws-secret-access-key }}
-          AWS_SESSION_TOKEN: ${{ steps.cell_credentials.outputs.aws-session-token }}
-          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
-        run: node .testops-trusted/cli/node_modules/tsx/dist/cli.mjs .testops-trusted/tests/runner-e2e/manual-private-transfer.ts verify
-      - name: Execute only the selected original case with zero retries
-        env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-          ANTHROPIC_API_KEY: ${{ contains(matrix.required_credentials, 'ANTHROPIC_API_KEY') && secrets.ANTHROPIC_API_KEY || '' }}
-          PAPERCLIP_CHAT_COMPLETION_TESTOPS: v1
-          ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
-          PAPERCLIP_RUNNER_E2E_PRIVATE_PREFLIGHT: ${{ steps.private.outputs.root }}/preflight.json
-          PRIVATE_EVIDENCE_ROOT: ${{ steps.private.outputs.root }}
-          PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-1-${{ matrix.executionId }}
-          PAPERCLIP_E2E_ACCOUNTING_CAMPAIGN_ID: gha-${{ github.run_id }}-1
-          PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
-          PAPERCLIP_RUNNER_E2E_SOURCE_REF: refs/heads/codex/chat-catalog-master-integration
-          PAPERCLIP_PLAYWRIGHT_CHANNEL: chrome
-        run: pnpm test:e2e:runner -- --id "${{ matrix.executionId }}" --max-parallel 1 --max-automatic-retries 0 > "$PRIVATE_EVIDENCE_ROOT/launcher-output.log" 2>&1
-      - name: Retain original evidence after success or failure
-        if: always() && steps.cell_credentials.outcome == 'success'
-        env: *cell_session
-        run: node .testops-trusted/cli/node_modules/tsx/dist/cli.mjs .testops-trusted/tests/runner-e2e/manual-private-transfer.ts upload-cell
+    uses: ./.github/workflows/chat-catalog-testops-case.yml
+    with:
+      protocol: streaming-v1
+      cell: ${{ toJSON(matrix) }}
+      target_sha: ${{ needs.authorize.outputs.target_sha }}
+      runner: ${{ needs.authorize.outputs.runner }}
+      selection_artifact_id: ${{ needs.select.outputs.artifact_id }}
+      selection_sha256: ${{ needs.select.outputs.selection_sha256 }}
+      build_artifact_id: ${{ needs.build.outputs.artifact_id }}
+      ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
 
   chat_external:
     name: ${{ matrix.executionId }}
@@ -314,102 +230,29 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix: ${{ fromJSON(needs.select.outputs.external_matrix) }}
-    runs-on: ${{ needs.authorize.outputs.runner }}
-    timeout-minutes: ${{ matrix.timeout_minutes }}
-    environment: runner-e2e-private-paid
     permissions:
       contents: read
       actions: read
       id-token: write
-    env: *retention
-    steps: *catalog_worker_steps
-
-  report:
-    name: Retain private originals and build the exact safe TestOps projection
-    needs: [authorize, select, build, chat, chat_external]
-    if: always() && !cancelled() && needs.authorize.outputs.operation == 'evaluate' && needs.select.result == 'success' && needs.build.result == 'success' && (needs.chat.result == 'success' || needs.chat.result == 'failure' || needs.chat_external.result == 'success' || needs.chat_external.result == 'failure')
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    environment: runner-e2e-private-history
-    permissions:
-      contents: read
-      actions: read
-      id-token: write
-    env: *retention
-    strategy:
-      fail-fast: false
-      max-parallel: 4
-      matrix: ${{ fromJSON(needs.select.outputs.matrix) }}
-    steps:
-      - *checkout
-      - *node
-      - *guard
-      - *pnpm
-      - name: Install trusted reporting dependencies with lifecycle scripts disabled
-        run: |
-          node tests/runner-e2e/prepare-report-lock.mjs
-          pnpm install --frozen-lockfile --ignore-scripts --store-dir "$RUNNER_TEMP/chat-completion-report-store"
-      - name: Prepare unchanged exact-key report and cell policies
-        id: session
-        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/manual-private-transfer.ts report-session
-      - name: Obtain exact first-cell reader
-        id: reader_0
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
-        with:
-          role-to-assume: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_ROLE_ARN }}
-          aws-region: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
-          inline-session-policy: ${{ steps.session.outputs.read_policy_0 }}
-          output-env-credentials: false
-          output-credentials: true
-          disable-retry: true
-          action-timeout-s: 60
-      - name: Download the first exact original
-        env:
-          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
-          SELECTED_CELL_INDEX: '0'
-          AWS_ACCESS_KEY_ID: ${{ steps.reader_0.outputs.aws-access-key-id }}
-          AWS_SECRET_ACCESS_KEY: ${{ steps.reader_0.outputs.aws-secret-access-key }}
-          AWS_SESSION_TOKEN: ${{ steps.reader_0.outputs.aws-session-token }}
-          AWS_DEFAULT_REGION: ${{ vars.RUNNER_E2E_PRIVATE_HISTORY_AWS_REGION }}
-        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/manual-private-transfer.ts download-cell
-      - name: Verify every selected original and its completeness receipt
-        env:
-          PRIVATE_REPORT_ROOT: ${{ github.workspace }}
-        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/manual-private-transfer.ts verify-downloads
-      - name: Build the existing report while preserving failed source grades
-        id: normalize
-        continue-on-error: true
-        env:
-          PAPERCLIP_RUNNER_E2E_REPORT_ROOT: ${{ github.workspace }}/selected-runner-e2e
-          PAPERCLIP_RUNNER_E2E_REPORT_OUT: ${{ github.workspace }}/runner-e2e-merged-report/normalized
-          PAPERCLIP_RUNNER_E2E_EXPECTED_IDS: ${{ matrix.private_ids }}
-          PAPERCLIP_E2E_CAMPAIGN_ID: gha-${{ github.run_id }}-1
-          PAPERCLIP_RUNNER_E2E_SOURCE_SHA: ${{ needs.authorize.outputs.target_sha }}
-          PAPERCLIP_RUNNER_E2E_SOURCE_REF: refs/heads/codex/chat-catalog-master-integration
-        run: |
-          mkdir -p runner-e2e-merged-report
-          pnpm test:e2e:runner:report > runner-e2e-merged-report/report.log 2>&1
-      - name: Export only exact reviewed synthetic fixture results
-        id: export
-        if: always() && steps.reader_0.outcome == 'success'
-        run: node cli/node_modules/tsx/dist/cli.mjs tests/runner-e2e/chat-completion-testops-export.ts
-      - name: Require a complete safe projection even after a failed normalization
-        if: always()
-        env:
-          EXPORT_OUTCOME: ${{ steps.export.outcome }}
-        run: test "$EXPORT_OUTCOME" = success
-      - name: Retain the metadata-only TestOps projection
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: chat-catalog-testops-cell-${{ github.run_id }}-${{ matrix.key }}
-          path: runner-e2e-testops/
-          retention-days: 30
-          if-no-files-found: error
+    uses: ./.github/workflows/chat-catalog-testops-case.yml
+    with:
+      protocol: streaming-v1
+      cell: ${{ toJSON(matrix) }}
+      target_sha: ${{ needs.authorize.outputs.target_sha }}
+      runner: ${{ needs.authorize.outputs.runner }}
+      selection_artifact_id: ${{ needs.select.outputs.artifact_id }}
+      selection_sha256: ${{ needs.select.outputs.selection_sha256 }}
+      build_artifact_id: ${{ needs.build.outputs.artifact_id }}
+      ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
+    secrets:
+      OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
 
   aggregate:
     name: Validate and merge every selected metadata-only projection
-    needs: [authorize, select, report]
-    if: always() && !cancelled() && needs.authorize.outputs.operation == 'evaluate' && (needs.report.result == 'success' || needs.report.result == 'failure')
+    needs: [authorize, select, build, chat, chat_external]
+    if: always() && !cancelled() && needs.authorize.outputs.operation == 'evaluate' && needs.select.result == 'success' && needs.build.result == 'success' && (needs.chat.result == 'success' || needs.chat.result == 'failure' || needs.chat_external.result == 'success' || needs.chat_external.result == 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
@@ -427,10 +270,27 @@ jobs:
         with:
           artifact-ids: ${{ needs.select.outputs.artifact_id }}
           path: chat-completion-testops-selection
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+      # A single pattern match is flattened by this pinned action. Bind its
+      # exact name and explicit child destination instead of inferring a name.
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] == null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          pattern: chat-catalog-testops-cell-${{ github.run_id }}-*
-          path: catalog-projections
+          name: chat-catalog-case-bundle-${{ github.run_id }}-1-0
+          path: catalog-bundles/chat-catalog-case-bundle-${{ github.run_id }}-1-0
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] != null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: chat-catalog-case-bundle-${{ github.run_id }}-1-*
+          merge-multiple: false
+          path: catalog-bundles
+      - name: Gather only safe singleton projections from immutable bundles
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
+          ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
+          EXPECTED_SELECTION_SHA256: ${{ needs.select.outputs.selection_sha256 }}
+          CHAT_TESTOPS_BUNDLES: ${{ github.workspace }}/catalog-bundles
+        run: node tests/runner-e2e/chat-completion-testops-cli.mjs gather-case-projections catalog-projections
       - name: Authenticate selection and validate all singleton exports before aggregation
         env:
           GH_TOKEN: ${{ github.token }}
@@ -449,9 +309,9 @@ jobs:
           retention-days: 30
           if-no-files-found: error
 
-  upload:
-    name: Record and independently verify each TestOps result
-    needs: [authorize, select, chat, chat_external, report, aggregate]
+  verify:
+    name: Verify final coverage without uploading any result again
+    needs: [authorize, select, aggregate]
     if: always() && !cancelled() && needs.authorize.outputs.operation == 'evaluate' && needs.aggregate.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -468,10 +328,35 @@ jobs:
         with:
           artifact-ids: ${{ needs.select.outputs.artifact_id }}
           path: chat-completion-testops-selection
-      - *allure
-      - name: Upload original outcomes, checks and private-evidence receipts
-        id: allure_upload
-        env: &upload_env
+      # A single pattern match is flattened by this pinned action. Bind its
+      # exact name and explicit child destination instead of inferring a name.
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] == null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: chat-catalog-case-bundle-${{ github.run_id }}-1-0
+          path: catalog-bundles/chat-catalog-case-bundle-${{ github.run_id }}-1-0
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] != null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: chat-catalog-case-bundle-${{ github.run_id }}-1-*
+          merge-multiple: false
+          path: catalog-bundles
+      # A single pattern match is flattened by this pinned action. Bind its
+      # exact name and explicit child destination instead of inferring a name.
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] == null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: chat-catalog-case-publication-${{ github.run_id }}-1-0
+          path: catalog-publications/chat-catalog-case-publication-${{ github.run_id }}-1-0
+      - if: fromJSON(needs.select.outputs.execution_ids)[1] != null
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: chat-catalog-case-publication-${{ github.run_id }}-1-*
+          merge-multiple: false
+          path: catalog-publications
+      - name: Authenticate every frozen publication and verify the exact original selection
+        id: verification
+        env:
           GH_TOKEN: ${{ github.token }}
           TESTOPS_ALLOWED_ACTOR_IDS: ${{ vars.RUNNER_E2E_ALLOWED_ACTOR_IDS }}
           ALLURE_TOKEN: ${{ secrets.ALLURE_TOKEN }}
@@ -479,20 +364,14 @@ jobs:
           ALLURE_PROJECT_ID: '1'
           ALLURE_JOB_RUN_ID: ${{ inputs.ALLURE_JOB_RUN_ID }}
           EXPECTED_SELECTION_SHA256: ${{ needs.select.outputs.selection_sha256 }}
-          ALLURE_RESULTS: ${{ runner.temp }}/chat-completion-allure-results
-        run: allurectl watch -- node tests/runner-e2e/chat-completion-testops-cli.mjs upload runner-e2e-testops
-      - name: Verify actual selected results and complete result-owned attachments
-        id: verification
-        if: always() && !cancelled() && (steps.allure_upload.outcome == 'success' || steps.allure_upload.outcome == 'failure')
-        env: *upload_env
-        run: node tests/runner-e2e/chat-completion-testops-cli.mjs verify-upload runner-e2e-testops
-      - name: Retain closed TestOps verification receipts
-        if: always() && !cancelled() && (steps.verification.outcome == 'success' || steps.verification.outcome == 'failure')
+          CHAT_TESTOPS_BUNDLES: ${{ github.workspace }}/catalog-bundles
+          CHAT_TESTOPS_PUBLICATIONS: ${{ github.workspace }}/catalog-publications
+        run: node tests/runner-e2e/chat-completion-testops-cli.mjs verify-stream runner-e2e-testops
+      - name: Retain closed final coverage verification
+        if: always() && !cancelled()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: chat-completion-testops-verification-${{ github.run_id }}-1
-          path: |
-            ${{ runner.temp }}/chat-completion-testops-verify-upload/
-            ${{ runner.temp }}/chat-completion-testops-upload/exported.json
+          path: ${{ runner.temp }}/chat-completion-testops-verify-stream/
           retention-days: 30
           if-no-files-found: error

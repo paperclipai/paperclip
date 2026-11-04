@@ -32,6 +32,7 @@ import {
 import type { WakeQueuePostgresAdapterDeps } from "./postgres.js";
 import { createReleaseIssueExecution } from "../application/use-cases.js";
 import type { TransactionScope } from "../application/ports.js";
+import { withQueuedCommentIdsInRunContext, withQueuedCommentIdsInWakePayload } from "../../../services/issue-queued-comment-queue.js";
 
 // Proves the atomicity and company-scope properties the security review
 // requires: every mutation names `companyId` in its own SQL `WHERE` clause,
@@ -1139,6 +1140,36 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
   // owns it. These tests drive the admission writer directly against a
   // transaction they open themselves, the same way `heartbeat.ts` will.
   describe("wake admission", () => {
+    it.each(["running", "cancelled", "receipt-collision", "actor-mismatch"])("preserves both queued input sources after %s", async scenario => {
+      const companyId = await seedCompany();
+      const agentId = await seedAgent({ companyId });
+      const issueId = await seedIssue({ companyId, assigneeAgentId: agentId });
+      const [oldComment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "source-user", body: "Original input" }).returning();
+      const [newComment] = await db.insert(issueComments).values({ companyId, issueId, authorType: "user", authorUserId: "source-user", body: "Incoming input" }).returning();
+      const runId = await seedRun({ companyId, agentId, status: ["receipt-collision", "actor-mismatch"].includes(scenario) ? "queued" : scenario,
+        contextSnapshot: withQueuedCommentIdsInRunContext({ issueId }, [oldComment.id]) });
+      const [wake] = await db.insert(agentWakeupRequests).values({ companyId, agentId, runId, source: "assignment", status: "queued",
+        requestedByActorType: "user", requestedByActorId: "source-user",
+        payload: withQueuedCommentIdsInWakePayload({ issueId }, [oldComment.id]),
+      }).returning();
+      await db.update(heartbeatRuns).set({ wakeupRequestId: wake.id }).where(eq(heartbeatRuns.id, runId));
+      const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+      const operation = db.transaction(async tx => createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(
+        createAdmissionTransactionScope(companyId, tx as unknown as Db), {
+          companyId, agentId, activeExecutionRunId: runId, activeExecutionRunStatus: "queued",
+          mergedContextSnapshot: withQueuedCommentIdsInRunContext({ issueId }, [oldComment.id, newComment.id]),
+          source: "on_demand", triggerDetail: "manual", payload: { issueId, commentId: newComment.id },
+          requestedByActorType: "user", requestedByActorId: scenario === "actor-mismatch" ? "another-user" : "source-user", idempotencyKey: null,
+          ...(["receipt-collision", "actor-mismatch"].includes(scenario)
+            ? { durableReceipt: { id: scenario === "receipt-collision" ? wake.id : randomUUID(), requestedAt: new Date() } } : {}),
+        },
+      ));
+      if (scenario === "receipt-collision") await expect(operation).rejects.toMatchObject({ cause: { code: "23505" } });
+      else await expect(operation).resolves.toBeNull();
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)))[0]).toEqual(before);
+      expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, companyId))).toEqual([wake]);
+    });
+
     it("rolls back a deferred merge when its own durable receipt insert fails", async () => {
       const companyId = await seedCompany();
       const agentId = await seedAgent({ companyId });
@@ -1241,7 +1272,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
       try {
         await db.transaction(async tx => {
           await createWakeAdmissionWriter().coalesceIntoActiveExecutionRun(createAdmissionTransactionScope(companyId, tx as unknown as Db), {
-            companyId, activeExecutionRunId: runId, mergedContextSnapshot: { commentId: "fresh-input" },
+            companyId, activeExecutionRunId: runId, activeExecutionRunStatus: "running", mergedContextSnapshot: { commentId: "fresh-input" },
             agentId, source: "on_demand", triggerDetail: null, payload: null,
             requestedByActorType: "user", requestedByActorId: null, idempotencyKey: null,
           });
@@ -1269,6 +1300,7 @@ describeEmbeddedPostgres("wake-queue postgres adapter", () => {
           await writer.coalesceIntoActiveExecutionRun(scope, {
             companyId: otherCompanyId,
             activeExecutionRunId: runId,
+            activeExecutionRunStatus: "running",
             mergedContextSnapshot: { taskKey: "issue-1", commentId: "c1" },
             agentId,
             source: "on_demand",

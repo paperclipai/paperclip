@@ -206,7 +206,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
             continue;
           }
         }
-        let reference = source.reference;
+        let reference = source.preservationOnly ? null : source.reference;
         if (reference) {
           try { await readNativeWorkspaceSyncLocalCwd({ runId: input.runId, companyId: input.companyId,
             workspaceId: reference.workspaceId, reference }); }
@@ -446,6 +446,17 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
     where ${agentWakeupRequests.companyId} = ${issueRecoveryActions.companyId}
     and ${agentWakeupRequests.status} = 'deferred_issue_execution' and ${agentWakeupRequests.requestedByActorType} = 'user'
     and ${agentWakeupRequests.payload}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text)`;
+  const interruptedPreparation = sql`(${heartbeatRuns.runtimeMode} = 'legacy'
+    and ${heartbeatRuns.status} = 'interrupted'
+    and ${heartbeatRuns.runtimeModeResolvedAt} is null and ${heartbeatRuns.executionStage} = 'preparing'
+    and ${heartbeatRuns.runnerProfileJson}#>>'{adapterDispatch,adapterType}' = 'paperclip_runner'
+    and ${issueRecoveryActions.evidence}#>>'{automaticRecovery,replay}' = 'blocked'
+    and exists (select 1 from ${issues} where ${issues.companyId} = ${heartbeatRuns.companyId}
+      and ${issues.id} = ${issueRecoveryActions.sourceIssueId} and ${issues.assigneeAgentId} = ${heartbeatRuns.agentId}
+      and ${issues.status} in ('todo', 'in_progress', 'in_review', 'blocked')
+      and ${issues.executionRunId} is null and ${issues.checkoutRunId} is null
+      and (${issues.status} <> 'blocked' or
+        ${issueRecoveryActions.evidence}#>>'{nativeBootstrapFailureBlock,statusVersion}' = ${issues.statusVersion}::text)))`;
   return db.select({ action: issueRecoveryActions, run: heartbeatRuns }).from(issueRecoveryActions)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId), eq(heartbeatRuns.id,
       sql`case when ${issueRecoveryActions.evidence}->>'runId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
@@ -454,12 +465,12 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
       workspaceRecoverySourceEligible(true),
       unfinishedOnly ? sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')` : undefined,
       obligationsOnly ? sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')
-        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and ${cleanup}) or ${waitingInput})` : undefined,
+        or (${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete' and (${cleanup} or ${interruptedPreparation})) or ${waitingInput})` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
         and (${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
           or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${Date.now()}::bigint)))`,
       sql`(${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' is distinct from 'recovered' or
-        ${cleanup} or ${waitingInput})`,
+        ${cleanup} or ${waitingInput} or ${interruptedPreparation})`,
       cursor ? gt(issueRecoveryActions.id, cursor) : undefined,
       inFlightRunIds.length ? notInArray(heartbeatRuns.id, inFlightRunIds) : undefined,
     )).orderBy(asc(issueRecoveryActions.id)).limit(5);

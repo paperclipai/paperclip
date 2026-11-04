@@ -29,14 +29,17 @@ for (const route of ["issues", "inbox/mine"]) test(`${route} leaves task-detail 
   });
   let release!: () => void;
   const held = new Promise<void>(resolve => { release = resolve; });
-  const isIndex = (url: URL) => url.pathname === `/api/companies/${fixture.company.id}/issues` && url.searchParams.get("view") === "index";
-  await page.route(isIndex, async request => { await held; await request.continue(); });
-  const indexRequest = page.waitForRequest(request => isIndex(new URL(request.url())));
+  const isCollectionSource = (url: URL) => route === "inbox/mine"
+    ? url.pathname === `/api/companies/${fixture.company.id}/inbox/mine`
+    : url.pathname === `/api/companies/${fixture.company.id}/issues` && url.searchParams.get("view") === "index";
+  await page.route(isCollectionSource, async request => { await held; await request.continue(); });
+  const sourceRequest = page.waitForRequest(request => isCollectionSource(new URL(request.url())));
   const warmed = page.waitForResponse(response => /\/assets\/issue-detail-[^/]+\.js$/.test(response.url()));
   try {
     await page.goto(`/${fixture.company.issuePrefix}/${route}`);
-    await indexRequest;
+    await sourceRequest;
     expect(detailReads).toEqual([]);
+    await expect(page.getByRole("main").locator("[data-inbox-issue-link]")).toHaveCount(0);
   } finally { release(); }
   const first = page.getByRole("main").locator("[data-inbox-issue-link]").first();
   await expect(first).toBeVisible();
@@ -111,15 +114,14 @@ test("direct task opens preload their code while identity is still loading", asy
   await expect(page.getByTestId("task-chat-composer-stack").locator('[contenteditable="true"]')).toBeEditable();
 });
 
-test("Coordinator Inbox retains index reads when Streamlined UI is disabled", async ({ page }) => {
+test("Coordinator Inbox retains aggregate Mine reads when Streamlined UI is disabled", async ({ page }) => {
   await coordinatorPreference(page, false);
   const reads: URL[] = [];
   page.on("request", request => { if (request.url().includes("/api/")) reads.push(new URL(request.url())); });
   await page.goto(`/${fixture.company.issuePrefix}/inbox/mine`);
   await expect(page.locator("[data-inbox-issue-link]").first()).toBeVisible();
-  const tasks = reads.filter(url => /\/companies\/[^/]+\/issues$/.test(url.pathname) && url.searchParams.get("view") !== "rows");
-  expect(tasks).toHaveLength(1);
-  expect(tasks[0].searchParams.get("view")).toBe("index");
+  expect(reads.filter(url => url.pathname === `/api/companies/${fixture.company.id}/inbox/mine`)).toHaveLength(1);
+  expect(reads.filter(url => /\/companies\/[^/]+\/issues$/.test(url.pathname) && url.searchParams.get("view") !== "rows")).toEqual([]);
   expect(reads.filter(url => url.pathname.endsWith("/dashboard"))).toEqual([]);
   expect(reads.filter(url => url.pathname.endsWith("/attention") && url.searchParams.get("all") === "true")).toEqual([]);
 });

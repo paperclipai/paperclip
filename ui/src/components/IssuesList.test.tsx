@@ -15,6 +15,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { taskCollectionPreferencesStorageKey } from "../lib/task-collection-preferences";
+import { readIssueSortParams } from "../lib/issue-sort";
 
 const companyState = vi.hoisted(() => ({
   selectedCompanyId: "company-1",
@@ -379,6 +380,31 @@ describe("IssuesList", () => {
     container.remove();
   });
 
+  it.each([[true, true], [true, false], [false, true], [false, false]])("defaults task and subtask lists to newest updates (streamlined=%s, nesting=%s)", async (streamlined, nesting) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: streamlined });
+    const items = [
+      createIssue({ id: "child-newest", parentId: "parent", updatedAt: new Date(5000) }),
+      createIssue({ id: "parent", parentId: null, updatedAt: new Date(1000) }),
+      createIssue({ id: "newest-root", parentId: null, updatedAt: new Date(3000) }),
+      createIssue({ id: "child-older", parentId: "parent", updatedAt: new Date(4000) }),
+    ].map(issue => ({ ...issue, title: issue.id }));
+    const { root, queryClient } = renderWithQueryClient(<IssuesList issues={items} agents={[]} projects={[]}
+      viewStateKey="default-update-sort" showChecklist onUpdateIssue={() => undefined} />, container);
+    try {
+      await waitForAssertion(() => expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(4));
+      if (!nesting) {
+        act(() => container.querySelector<HTMLButtonElement>('button[title="Disable parent-child nesting"]')!.click());
+      }
+      await waitForAssertion(() => {
+        const rows = [...container.querySelectorAll('[data-testid="issue-row"]')];
+        expect(rows.map(row => row.querySelector("span")?.textContent)).toEqual(nesting
+          ? ["newest-root", "parent", "child-newest", "child-older"]
+          : ["child-newest", "child-older", "newest-root", "parent"]);
+        expect(rows.every(row => row.getAttribute("data-step"))).toBe(true);
+      });
+    } finally { act(() => root.unmount()); queryClient.clear(); }
+  });
+
   it("waits for the initial tree but keeps loaded rows visible while new ancestors load", async () => {
     const first = createIssue({ id: "child-one", parentId: "parent-one", title: "First nested task" });
     const second = createIssue({ id: "child-two", parentId: "parent-two", title: "Second nested task" });
@@ -404,6 +430,60 @@ describe("IssuesList", () => {
     await waitForAssertion(() => expect(container.textContent).toContain("Second nested task"));
     act(() => root.unmount());
     queryClient.clear();
+  });
+
+  it.each([true, false])("URL sorting overrides saved sorting and handles direction clicks (streamlined=%s)", async (enableStreamlinedUi) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi, enableExternalObjects: false });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ sortField: "title", sortDir: "asc" }));
+    const issues = [
+      createIssue({ id: "older", title: "Alpha older task", createdAt: new Date("2026-01-01") }),
+      createIssue({ id: "newer", title: "Zulu newer task", createdAt: new Date("2026-02-01") }),
+    ];
+    const onSortChange = vi.fn();
+    const { root, queryClient } = renderWithQueryClient(<IssuesList issues={issues} agents={[]} projects={[]}
+      viewStateKey="paperclip:test-issues" sort={{ sortField: "created", sortDir: "desc" }}
+      onSortChange={onSortChange} onUpdateIssue={() => undefined} />, container);
+    const titles = () => [...container.querySelectorAll('[data-testid="issue-row"]')].map(row => row.textContent);
+    await waitForAssertion(() => expect(titles()[0]).toContain("Zulu newer task"));
+    await act(() => container.querySelector<HTMLButtonElement>('button[title="Sort"]')!.click());
+    await waitForAssertion(() => expect([...document.querySelectorAll("button")].some(button => button.textContent?.startsWith("Created"))).toBe(true));
+    await act(() => [...document.querySelectorAll("button")].find(button => button.textContent?.startsWith("Created"))!.click());
+    expect(onSortChange).toHaveBeenLastCalledWith({ sortField: "created", sortDir: "asc" });
+    await act(() => root.render(<QueryClientProvider client={queryClient}><TooltipProvider>
+      <IssuesList issues={issues} agents={[]} projects={[]} viewStateKey="paperclip:test-issues"
+        sort={{ sortField: "created", sortDir: "asc" }} onSortChange={onSortChange} onUpdateIssue={() => undefined} />
+    </TooltipProvider></QueryClientProvider>));
+    await waitForAssertion(() => expect(titles()[0]).toContain("Alpha older task"));
+    await act(() => root.unmount()); queryClient.clear();
+  });
+
+  it.each([true, false])("honors a Coordinator task-ID link in the other task interfaces (streamlined=%s)", async (enableStreamlinedUi) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi });
+    const issues = [
+      createIssue({ id: "ten", identifier: "PAP-10", title: "Alpha", updatedAt: new Date("2026-03-01") }),
+      createIssue({ id: "two", identifier: "PAP-2", title: "Zulu", updatedAt: new Date("2026-01-01") }),
+    ];
+    const { root, queryClient } = renderWithQueryClient(<IssuesList issues={issues} agents={[]} projects={[]} viewStateKey="cross-interface-sort"
+      sort={readIssueSortParams(new URLSearchParams("sortField=taskId&sortDir=asc"))}
+      onUpdateIssue={() => undefined} />, container);
+    await waitForAssertion(() => expect([...container.querySelectorAll('[data-testid="issue-row"]')].map(row => row.textContent))
+      .toEqual([expect.stringContaining("Zulu"), expect.stringContaining("Alpha")]));
+    await act(() => root.unmount()); queryClient.clear();
+  });
+
+  it.each([true, false])("sorts shared status links by Monitoring display status (streamlined=%s)", async (enableStreamlinedUi) => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi });
+    const issues = [
+      createIssue({ id: "waiting", title: "Waiting for CI", status: "in_progress", displayStatus: "monitoring" }),
+      createIssue({ id: "working", title: "Active work", status: "in_progress" }),
+      createIssue({ id: "todo", title: "Next task", status: "todo" }),
+    ];
+    const { root, queryClient } = renderWithQueryClient(<IssuesList issues={issues} agents={[]} projects={[]} viewStateKey="monitoring-sort"
+      sort={readIssueSortParams(new URLSearchParams("sortField=status&sortDir=asc"))}
+      onUpdateIssue={() => undefined} />, container);
+    await waitForAssertion(() => expect([...container.querySelectorAll('[data-testid="issue-row"]')].map(row => row.textContent))
+      .toEqual([expect.stringContaining("Active work"), expect.stringContaining("Waiting for CI"), expect.stringContaining("Next task")]));
+    await act(() => root.unmount()); queryClient.clear();
   });
 
   it("uses the master list and legacy persistence when Streamlined UI is off", async () => {
@@ -1399,8 +1479,8 @@ describe("IssuesList", () => {
     });
 
     mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve([backlogIssue]);
-      if (filters?.status === "done") return Promise.resolve([doneIssue]);
+      if (filters?.displayStatus === "backlog") return Promise.resolve([backlogIssue]);
+      if (filters?.displayStatus === "done") return Promise.resolve([doneIssue]);
       return Promise.resolve([]);
     });
 
@@ -1418,13 +1498,13 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
-        status: "backlog",
+        displayStatus: "backlog",
         limit: 200,
         includeRoutineExecutions: true,
         includeAgentCreatedTasks: false,
       }), { signal: expect.any(AbortSignal) });
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
-        status: "done",
+        displayStatus: "done",
         limit: 200,
         includeRoutineExecutions: true,
         includeAgentCreatedTasks: false,
@@ -1461,7 +1541,7 @@ describe("IssuesList", () => {
     );
 
     mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve(backlogIssues);
+      if (filters?.displayStatus === "backlog") return Promise.resolve(backlogIssues);
       return Promise.resolve([]);
     });
 
@@ -1565,7 +1645,7 @@ describe("IssuesList", () => {
     );
 
     mockIssuesApi.list.mockImplementation((_companyId, filters) => {
-      if (filters?.status === "backlog") return Promise.resolve(cappedBacklogIssues);
+      if (filters?.displayStatus === "backlog") return Promise.resolve(cappedBacklogIssues);
       return Promise.resolve([]);
     });
 
@@ -2142,8 +2222,8 @@ describe("IssuesList", () => {
       await act(() => filterButton()!.click());
       await act(() => container.querySelector<HTMLButtonElement>('[aria-label="Board view"]')!.click());
       await waitForAssertion(() => {
-        const columns = mockIssuesApi.list.mock.calls.filter(([, filters]) => filters.status);
-        expect(columns).toHaveLength(7);
+        const columns = mockIssuesApi.list.mock.calls.filter(([, filters]) => filters.displayStatus);
+        expect(columns).toHaveLength(8);
         for (const [, filters] of columns) expect(filters).toMatchObject({
           q: "report", originKind: "routine_execution", includeRoutineExecutions: true, includeAgentCreatedTasks: true,
         });
