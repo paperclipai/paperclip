@@ -3,6 +3,7 @@ import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { SQL } from "drizzle-orm";
 import { createDb } from "@paperclipai/db";
 import { seedBoundChatAuthorization } from "../src/__tests__/helpers/bound-chat-authorization.js";
 import { startEmbeddedPostgresTestDatabase } from "../src/__tests__/helpers/embedded-postgres.js";
@@ -34,7 +35,7 @@ try {
   const readers = { baseline, treatment };
   const expected = { endpointId: fixture.endpointId, conversationId: fixture.conversationId };
   for (const reader of Object.values(readers)) {
-    for (let n = 0; n < 30; n++) assert.deepEqual(await reader(db, fixture.binding, fixture.context, "read"), expected);
+    for (let n = 0; n < 500; n++) assert.deepEqual(await reader(db, fixture.binding, fixture.context, "read"), expected);
   }
   const iterations = 500;
   const samples = [];
@@ -50,11 +51,25 @@ try {
       process.stdout.write(JSON.stringify(sample) + "\n");
     }
   }
+  const compilationCounts: Record<string, number> = {};
+  const original = SQL.prototype.toQuery;
+  for (const label of ["baseline", "treatment"] as const) {
+    let compilations = 0;
+    SQL.prototype.toQuery = function (...args) {
+      compilations++;
+      return Reflect.apply(original, this, args);
+    };
+    try {
+      assert.deepEqual(await readers[label](db, fixture.binding, fixture.context, "read"), expected);
+    } finally { SQL.prototype.toQuery = original; }
+    compilationCounts[label] = compilations;
+  }
+  assert.equal(compilationCounts.baseline - compilationCounts.treatment, 1);
   process.stdout.write(JSON.stringify({ baselineRevision, treatmentRevision, node: process.version,
-    platform: process.platform, arch: process.arch, iterations, rounds: 7, warmups: 30,
+    platform: process.platform, arch: process.arch, iterations, rounds: 7, warmups: 500,
     data: "one active Slack conversation, processed inbound message, linked member, enabled destination",
     surface: "authorizeChatConversationForBoundRun, real PostgreSQL, read mode, warmed exact root handle",
-    samples }) + "\n");
+    compilationCounts, samples }) + "\n");
 } finally {
   await db?.$client.end({ timeout: 1 });
   await temporary?.cleanup();
