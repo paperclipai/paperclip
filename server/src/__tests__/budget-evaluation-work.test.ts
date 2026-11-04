@@ -5,6 +5,7 @@ import { agents, budgetEvaluationWork, budgetIncidents, budgetPolicies, companie
 import { budgetService, budgetServiceInTransaction, flushBudgetEvaluationWork } from "../services/budgets.js";
 import { costService, createCostEventInTransaction } from "../services/costs.js";
 import { withAccountingTransaction, withOperationAccountingTransaction } from "../services/accounting-transaction.js";
+import { computeObservedSpends, type SpendPolicy } from "../services/budget-exposure.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "./helpers/embedded-postgres.js";
 
 const support = await getEmbeddedPostgresTestSupport();
@@ -117,6 +118,19 @@ postgres("independent accounting and deferred budget decisions", () => {
     await db.update(budgetEvaluationWork).set({ createdAt: new Date(Date.now() - 16_000) }).where(eq(budgetEvaluationWork.companyId, f.companyId));
     expect((await service.evaluateAdmission(f.companyId, f.agentId)).block).not.toBeNull();
     expect((await service.evaluateAdmission(f.companyId, otherAgentId)).block).toBeNull();
+  });
+
+  it("evaluates many distinct scopes without exceeding PostgreSQL's aggregate column limit", async () => {
+    const f = await fixture(1000);
+    await costService(db).createEvent(f.companyId, charge(f.agentId, randomUUID(), 1));
+    const policies: SpendPolicy[] = [{ companyId: f.companyId, scopeType: "company", scopeId: f.companyId,
+      windowKind: "lifetime", metric: "billed_cents" }, ...Array.from({ length: 450 }, () => ({
+      companyId: f.companyId, scopeType: "project", scopeId: randomUUID(), windowKind: "lifetime", metric: "billed_cents",
+    }))];
+    const observed = await withOperationAccountingTransaction(db, f.companyId, tx => computeObservedSpends(tx, policies));
+    expect(observed).toHaveLength(451);
+    expect(observed[0].ledgerCents).toBe("1.0000000");
+    expect(observed.slice(1).every(row => row.totalExact === "0.0000000")).toBe(true);
   });
 
   it("proves the legacy mutex waits while the independent ledger transaction commits", async () => {

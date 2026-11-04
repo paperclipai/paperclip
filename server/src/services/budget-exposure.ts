@@ -177,5 +177,13 @@ export async function computeObservedSpend(db: Db, policy: SpendPolicy, now = ne
 }
 
 export function computeObservedSpends(db: Db, policies: SpendPolicy[], now = new Date()): Promise<ObservedSpend[]> {
-  return withBudgetSpan("budget.exposure.evaluate", () => readObservedSpends(db, policies, now), { "budget.policy_count": policies.length });
+  return withBudgetSpan("budget.exposure.evaluate", async () => {
+    // Each policy contributes several aggregate columns. Bound statement width
+    // below PostgreSQL's target-list limit. Multi-scope evaluators/reports own
+    // a repeatable-read transaction; individual admission batches fit one SQL.
+    const result: ObservedSpend[] = [];
+    for (let offset = 0; offset < policies.length; offset += 128)
+      result.push(...await readObservedSpends(db, policies.slice(offset, offset + 128), now));
+    return result;
+  }, { "budget.policy_count": policies.length });
 }
