@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
 import { copyFile, lstat, mkdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { assertSecretFree, findSecretLeak, findSecretLeakInJsonValues, normalizedSecrets, sanitizeJson } from "./redaction.js";
+import { assertSecretFree, findSecretLeak, findSecretLeakInJsonValues, normalizedSecrets, sanitizeJson, redactText } from "./redaction.js";
 
 export const PRIVATE_FRAMEWORK_ORIGINAL_REPORT = "snapshots/playwright-framework-original.txt";
 export const PRIVATE_FRAMEWORK_REPORT = "snapshots/playwright-framework.json";
@@ -60,6 +60,7 @@ export function inspectPrivateFrameworkMetadata(relative: string, raw: string, s
       if (typeof attachment.body !== "string" || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(attachment.body)) fail();
       const body = Buffer.from(attachment.body, "base64"), text = body.toString("utf8");
       if (!["text/plain", "application/json"].includes(attachment.contentType) || !Buffer.from(text).equals(body) || findSecretLeak(body, expanded)) fail();
+      if (attachment.contentType === "text/plain" && redactText(text, secrets) !== text) fail();
       if (attachment.contentType === "application/json" && (findSecretLeak(JSON.stringify(JSON.parse(text)), expanded) || JSON.stringify(sanitizeJson(JSON.parse(text), secrets)) !== JSON.stringify(JSON.parse(text)))) fail();
     }
   }

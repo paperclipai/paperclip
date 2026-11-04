@@ -265,7 +265,7 @@ export async function packageEvidence(input: {
           : findSecretLeak(raw, input.secrets);
       if (leak) leaks.push({ file: relative, reason: leak });
       if (registeredAttachments.has(relative.split(path.sep).join("/"))) {
-        if (JSON.stringify(sanitizeJson(parsed ?? raw, input.secrets)) !== JSON.stringify(parsed ?? raw)) throw new Error("Private framework attachment requires redaction");
+        if (extension === ".json" ? JSON.stringify(sanitizeJson(parsed, input.secrets)) !== JSON.stringify(parsed) : redactText(raw, input.secrets) !== raw) throw new Error("Private framework attachment requires redaction");
         if (!leak) { await copyFile(source, destination); files.push(relative); }
         continue;
       }
