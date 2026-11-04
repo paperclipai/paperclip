@@ -13,6 +13,7 @@ import { isConversation } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { isPublishedGitHubReviewCompletionContinuation, readPublishedGitHubReviewCompletionContinuation, resolveExternalChatResponseWaitAuthorization } from "./chat-attachment-reuse.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
+import { assertCurrentWakeCommentsRead, resolveCurrentWakeCommentsBinding } from "./current-wake-comments.js";
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 import {
   approvals,
@@ -66,6 +67,21 @@ export async function nativeCompletionFeedback(
     )
     .then((rows) => rows[0]);
   if (!issue) throw new Error("Completion task no longer exists.");
+  const wakeScope = { companyId: run.companyId, issueId: issue.id, runId, agentId: run.agentId };
+  const currentWake = await resolveCurrentWakeCommentsBinding(db, wakeScope);
+  if (currentWake) {
+    try {
+      await assertCurrentWakeCommentsRead(db, wakeScope, currentWake);
+    } catch (error) {
+      if (error instanceof Error && ["native_current_wake_comments_unread", "native_current_wake_comments_changed_after_read"].includes(error.message)) {
+        const reason = error.message === "native_current_wake_comments_unread"
+          ? "The accepted comments have not been fully read."
+          : "The accepted comments changed after the complete read.";
+        throw new Error(`${reason} Call read_current_wake_comments without a cursor, then follow each nextCursor until complete=true. Reassess the complete current request and resubmit the completion report in this turn. Preserve completed work and do not repeat completed actions.`);
+      }
+      throw error;
+    }
+  }
   if (result.reportedWorkDisposition === "yielded" && isPublishedGitHubReviewCompletionContinuation(result.continuation)) {
     const current = await readPublishedGitHubReviewCompletionContinuation({ db,
       binding: { companyId: run.companyId, issueId: issue.id, runId, agentId: run.agentId } });
