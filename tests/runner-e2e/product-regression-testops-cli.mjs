@@ -5,7 +5,7 @@ import { appendFile, lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { testopsClient } from './chat-feature-testops-api.mjs';
-import { endpoint, workflowUrl, selectProductRegression, validateSelection, projectProductResults } from './product-regression-testops.mjs';
+import { endpoint, workflowUrls, selectProductRegression, validateSelection, projectProductResults } from './product-regression-testops.mjs';
 
 const execute = promisify(execFile);
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -47,7 +47,7 @@ export async function verifyProductJob(api, context, env) {
   if (run.id !== Number(context.jobRunId) || run.launchId !== context.launchId || !positive(run.job?.id)
       || run.job.type !== 'github' || run.url !== `https://github.com/paperclipai/paperclip/actions/runs/${env.GITHUB_RUN_ID}`) fail('job_run_mismatch');
   const [job, launch] = await Promise.all([api(`/api/job/${run.job.id}`), api(`/api/launch/${context.launchId}`)]);
-  if (job.id !== run.job.id || job.type !== 'github' || job.url !== workflowUrl
+  if (job.id !== run.job.id || job.type !== 'github' || !workflowUrls.has(job.url)
       || launch.id !== context.launchId || launch.projectId !== 1) fail('job_mismatch');
   return { jobId: job.id, launchId: launch.id };
 }

@@ -35,6 +35,12 @@ const identifier = value => typeof value === 'string' && /^[a-zA-Z0-9._:-]{1,200
 const modelIdentifier = value => typeof value === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(value);
 export const endpoint = 'https://paperclip.testops.cloud';
 export const workflowUrl = 'https://github.com/paperclipai/paperclip/actions/workflows/runner-full-stack-e2e.yml';
+// Official GitHub/Allure job metadata uses these exact aliases for workflow
+// 343807492, independently read from GitHub's workflow API before registration.
+export const workflowUrls = new Set([workflowUrl,
+  'https://github.com/paperclipai/paperclip/blob/master/.github/workflows/runner-full-stack-e2e.yml',
+  'https://github.com/paperclipai/paperclip/actions/workflows/343807492',
+]);
 
 export function selectProductRegression(plan, manual = 'all', fromTestOps = false) {
   if (fromTestOps && !plan) fail('plan_required');

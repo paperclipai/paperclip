@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { productRegressionCases, selectProductRegression, validateSelection, projectProductResults, workflowUrl } from './product-regression-testops.mjs';
+import { productRegressionCases, selectProductRegression, validateSelection, projectProductResults, workflowUrl, workflowUrls } from './product-regression-testops.mjs';
 import { admitProductTestOps, officialProductContext, verifyProductJob, validateUploadedProductResults } from './product-regression-testops-cli.mjs';
 
 const workflowSha = 'a'.repeat(40), targetSha = 'b'.repeat(40);
@@ -129,8 +129,13 @@ test('a TestOps job run must belong to this workflow, source launch and GitHub e
   const values = { '/api/jobrun/456': { id: 456, launchId: 789, job: { id: 50, type: 'github' }, url: 'https://github.com/paperclipai/paperclip/actions/runs/123' },
     '/api/job/50': { id: 50, type: 'github', url: workflowUrl }, '/api/launch/789': { id: 789, projectId: 1 } };
   assert.deepEqual(await verifyProductJob(route => values[route], { jobRunId: '456', launchId: 789 }, env), { jobId: 50, launchId: 789 });
+  for (const url of workflowUrls) {
+    assert.deepEqual(await verifyProductJob(route => route === '/api/job/50' ? { ...values[route], url } : values[route],
+      { jobRunId: '456', launchId: 789 }, env), { jobId: 50, launchId: 789 });
+  }
   await assert.rejects(verifyProductJob(route => route === '/api/launch/789' ? { id: 789, projectId: 2 } : values[route], { jobRunId: '456', launchId: 789 }, env));
   await assert.rejects(verifyProductJob(route => route === '/api/job/50' ? { ...values[route], url: 'https://github.com/other/repo' } : values[route], { jobRunId: '456', launchId: 789 }, env));
+  await assert.rejects(verifyProductJob(route => route === '/api/job/50' ? { ...values[route], url: workflowUrl.replace('runner-full-stack-e2e', 'runner-protocol-live-evals') } : values[route], { jobRunId: '456', launchId: 789 }, env));
 });
 
 test('server verification accepts real Allure string statuses and rejects wrong verdicts or identities', () => {
